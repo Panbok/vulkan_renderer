@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -9,8 +9,10 @@ authority: adr
 ## Status
 
 Accepted and implemented: pre-exposure, the moon as a second atmosphere light
-and the procedural star field. Native Vulkan runs on Windows; a same-revision
-Metal/Vulkan comparison remains pending.
+and the procedural star field. Both pipeline classes apply them, and each
+backend records its own native evidence. Native Vulkan runs on Windows; the
+Metal evidence below comes from the desktop implementation, removed on
+2026-10-06.
 
 ## Context
 
@@ -67,10 +69,10 @@ Consumers that need physical values divide P back out:
 - **Bloom.** Scales its threshold, knee, knee epsilon and firefly clamp by P.
   The Karis weight uses L/P.
 - **TAA.** Scales its transmission-reactivity luminance floor by P.
-- **Upscalers.** MetalFX and FSR 3.1 receive P as their `preExposure`.
+- **Upscaler.** FSR 3.1 receives P as its `preExposure`.
 
 Each backend records the exponent of every submission in a 32-entry ring. TAA,
-SSR, SSGI, cloud, froxel-injection and MetalFX/FSR stabilization histories are
+SSR, SSGI, cloud, froxel-injection and FSR stabilization histories are
 rescaled on reuse by 2^(k_now − k_producer), which is also exact. A producer
 outside the ring is treated as this frame's scale.
 
@@ -152,7 +154,8 @@ irradiance, so the hashes of moonless bakes are unchanged.
 
 ### Stars
 
-The deferred background draws a procedural star field behind the atmosphere.
+The sky background of both pipeline classes draws a procedural star field
+behind the atmosphere.
 
 - **Layout.** Each face of a cube around the celestial pole holds 64 × 64
   cells, and a cell holds at most one star (37 % do). A star's hashed
@@ -206,9 +209,10 @@ The field keeps its place relative to the sun:
 
 ### Evidence
 
-Metal Release, M1 Pro:
+Metal desktop implementation, removed on 2026-10-06, Release, M1 Pro:
 
-- **Bistro text snapshot** (`tools/cases/smoke/bistro_metal_text_snapshot.case.json`):
+- **Bistro text snapshot** (`bistro_metal_text_snapshot`, a Metal desktop case
+  since removed):
 
   | Forced P | Report digest | Result |
   |---|---|---|
@@ -224,17 +228,16 @@ Metal Release, M1 Pro:
     `sha256:752cf89a…`).
   - Before the TAA floor was scaled, 1,917 pixels differed.
 - **Validation.**
-  - One Metal API validation process on Bistro (automatic exposure, bloom,
-    TAA, SSR and GTAO at P = 8) reports no errors.
   - The CPU suite passes.
   - All 102 production SPIR-V modules pass `spirv-val`. Compiled offsets
     match the C roots for TAA (144), SSR temporal (496), SSGI temporal (360),
     froxel inject (44), cloud trace (120) and FSR stabilize (40).
 
-Moon evidence (Metal Release, M1 Pro):
+Moon evidence (Metal desktop implementation, Release, M1 Pro):
 
 - **Day output.** The Bistro atmosphere day case
-  (`tools/cases/local/atmosphere_bistro_local.case.json`) was captured before
+  (`atmosphere_bistro_local`, a Metal desktop case since removed) was captured
+  before
   the moon (`sha256:00618d07…`) and after it (`sha256:8ddd6b2c…`).
   - The mean HDR luminance ratio is 0.999999, with a largest pixel difference
     of 0.0236.
@@ -255,15 +258,13 @@ Moon evidence (Metal Release, M1 Pro):
   (`sha256:e2f1e388…`) shows moonlit clouds and the moon-projected cloud
   shadows.
 - **Validation.**
-  - One Metal API validation process on that case reports no errors
-    (`sha256:fb668b06…`).
   - CPU tests check that a moon keeps a dark-sun bake from being skipped,
     against the independent CPU baker, and that the moon is never the sun and
     is the key light only while the sun is below the horizon.
   - All 102 SPIR-V modules pass `spirv-val`, and the compiled atmosphere root
     (208 bytes) and sky record (448 bytes) offsets match the C asserts.
 
-Star evidence (Metal Release, M1 Pro):
+Star evidence (Metal desktop implementation, Release, M1 Pro):
 
 - **Starry sky.**
   `tools/cases/local/atmosphere_bistro_starry_sky_local.case.json`
@@ -273,16 +274,15 @@ Star evidence (Metal Release, M1 Pro):
   brighter stars between the clouds.
 - **Day output.** The day atmosphere case matches the pre-moon reference to a
   1.000000 mean HDR luminance ratio, with run-to-run noise of up to 0.026.
-- **Validation.** One Metal API validation process on the starry case is clean
-  (`sha256:3dd357d4…`). A CPU test checks that the field's frame turns with
+- **Validation.** A CPU test checks that the field's frame turns with
   the sun about the pole, and that the field is hidden in daylight and without
   intensity. The compiled sky offsets match the C asserts: `star_pole` at 400,
   `star_axis` at 416, and a 480-byte Vulkan record.
 
-Day/night cycle evidence (Metal Release, M1 Pro). These are diagnostic,
-single-process runs with no timing authority. A temporary diagnostic, since
-reverted, turned the sun and moon together about the celestial pole by 0.25
-degrees per frame for 1440 measured frames.
+Day/night cycle evidence (Metal desktop implementation, Release, M1 Pro). These
+are diagnostic, single-process runs with no timing authority. A temporary
+diagnostic, since reverted, turned the sun and moon together about the
+celestial pole by 0.25 degrees per frame for 1440 measured frames.
 
 - **Street exposure.** In the Bistro street (night case), the automatic
   exposure ran from 3.0 at noon to 10.9 at night, and P stayed 1 throughout.
@@ -311,14 +311,13 @@ degrees per frame for 1440 measured frames.
   0.999999 mean HDR ratio, with 4 final pixels differing as run-to-run noise
   (`sha256:ef33532c…`). The moonlit-cloud (`sha256:5a248d2e…`), moonlit-sky
   (`sha256:26e9cf1b…`) and starry-sky (`sha256:606f6e70…`) cases keep their
-  key light, and the Bistro text baseline passes (`sha256:feac04ef…`).
+  key light, and the then Metal Bistro text baseline passed
+  (`sha256:feac04ef…`).
 
 On Windows (RX 6700 XT), the night, moonlit-sky, starry-sky and moonlit-cloud
 cases render natively on Vulkan with the expected pre-exposure and clean Debug
-validation. Without a same-revision Metal comparison, the affected shader
-domains stay UNALIGNED in [ADR-044](044-shader-cross-backend-contract.md).
-The four cases leave their backend unpinned, so each machine runs its native
-backend.
+validation. The four cases leave their backend unpinned, so a Mac runs them
+on the tiled pipeline and Windows on the desktop pipeline.
 
 ## Alternatives considered
 

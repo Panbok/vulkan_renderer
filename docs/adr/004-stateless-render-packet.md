@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -143,21 +143,16 @@ The complete migration passed `./build_release.sh`, `./build_editor.sh Release`
 and `./build_test.sh` on macOS. CPU coverage includes stale-acquisition rejection,
 explicit resource completion inputs and moved UI/asset ownership contracts.
 
-Two serial Release Metal API-validation runs passed with `MTL_DEBUG_LAYER=1`
-and shader validation unset. The `renderer_api_draws_validation` case passed all
-six candidate/residency/overflow assertions with text/UI enabled and three target
-images. `text_windowed_resize` passed its native resize round trip under
-`local-metal-windowed-validation-serial.json`; logs confirmed validation activation
-without API errors in either process.
-
-The `renderer_api_bistro` Release captures preserve baseline depth bytes and all
-20 retained draw/candidate/upload work-volume rows. The first full-migration
-color capture failed the unchanged maximum-error gate at two pixels (3/255).
-An unchanged-binary repeat passed at 2/255. Earlier same-binary observations also
-showed color variation; its cause remains unestablished. Both observations are
-retained in local task evidence, with exact commands, report digests and comparison
-calculations. Manual-exposure telemetry assertions remain unavailable. No baseline
-was promoted and no deterministic-output or timing improvement is claimed.
+On the Metal desktop implementation, removed on 2026-10-06, the
+`renderer_api_bistro` Release captures (a Metal desktop case since removed)
+preserved baseline depth bytes and all 20 retained draw/candidate/upload
+work-volume rows. The first full-migration color capture failed the unchanged
+maximum-error gate at two pixels (3/255). An unchanged-binary repeat passed at
+2/255. Earlier same-binary observations also showed color variation; its cause
+remains unestablished. Both observations are retained in local task evidence,
+with exact commands, report digests and comparison calculations.
+Manual-exposure telemetry assertions remain unavailable. No baseline was
+promoted and no deterministic-output or timing improvement is claimed.
 
 All seven changed Vulkan translation units pass SDK 1.4.357 compile-only checks,
 including a Windows preprocessor configuration with temporary Win32 type shims.

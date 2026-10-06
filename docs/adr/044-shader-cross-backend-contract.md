@@ -14,162 +14,200 @@ Accepted.
 
 Sharing C frame inputs or shader source does not prove native binaries use the
 same bindings, layouts, dispatches or numerical meaning. Resource references differ
-between Metal and Vulkan.
+between Metal and Vulkan. Since 2026-10-06 each backend runs one graphics
+pipeline class ([ADR-087](087-gpu-class-graphics-pipelines.md)): Metal the
+tiled pipeline and Vulkan the desktop pipeline. The kernels in
+`renderer/src/shaders/shared/`, the shared host records and the passes both
+render graphs declare still have consumers on both backends.
+
+## Evidence rules
+
+Each domain below names the backends that run it:
+
+- **Shared**: both backends run it, Metal in the tiled class and Vulkan in the
+  desktop class. This covers GPU culling, draw encoding and geometry LOD,
+  compute skinning, shadow casting into the cascades and the local shadow
+  atlas, the sky atmosphere, clouds, IBL and SH, exposure, bloom, tonemapping
+  and display output, the editor passes, UI and text, and the material and
+  light arithmetic that forward and deferred shading both call.
+- **Desktop**: only Vulkan runs it. This covers the visibility buffer,
+  G-buffer resolve, deferred lighting, the local shadow mask, transmission
+  layers, TAA, FSR 3.1, SSR, SSGI, GTAO, depth of field, motion blur, froxel
+  fog, profiled surface diffusion, FXAA and the clearcoat, sheen, anisotropy
+  and thin-sheet diffuse transmission material layers.
+- **Tiled**: only Metal runs it: the tiled forward, atmosphere, blend and
+  picking passes (ADR-087).
+
+A domain is **ALIGNED** only within a class that both backends implement,
+when it has matching production semantics, applicable host and compiled
+reflection, and non-degenerate native comparisons on both backends. No class
+has two backends today, so no domain is ALIGNED. Each domain instead records
+its native evidence on every backend that runs it: Vulkan runs for desktop
+domains, Metal runs for tiled domains and runs on both for shared domains. The
+two consumers of a shared domain render different classes, so their images
+differ by design; ADR-087's art-level contract (decision 3) relates them, not
+pixel parity. Shared source, compilation and cross-compilation are not native
+evidence.
+
+Metal ran the desktop pipeline until 2026-10-06. Metal runs recorded before
+then remain evidence for shared passes whose Metal code is unchanged, such as
+the atmosphere bake or UI, and are no evidence for the removed desktop passes
+or for the tiled pipeline's own passes. Metal GPU shader validation supplies
+no result: it crashed in MetalTools while decoding a buffer diagnostic, and
+combined API and GPU validation aborts on the driver's assertion that
+command-buffer residency sets exceed 32. Current missing native evidence is
+summarized in [ARCHITECTURE](../ARCHITECTURE.md).
 
 ## Animation evidence state
 
-Compute skinning and the independent animation preview are **UNALIGNED** while
-native Vulkan validation and bilateral numeric comparisons are pending. The
-focused Metal API-validation Bistro run passes without diagnostics, and Release
-snapshots exercise deformed color, normals and motion; see ADR-071. Both production
-roots consume decoded bind vertices, four influences and asset-space joint
-palettes. Current output is a 32-byte record; prepared instances append current
-and compatible previous deformation addresses. The selected temporal producer,
-instance/geometry generations and discontinuity determine previous-position
-eligibility. [ADR-071](071-animation-bank-and-reference-pose.md) owns the feature,
-capacity and editor behavior. Source integration is not native parity evidence.
+Compute skinning and the independent animation preview are shared: both
+graphs run `Animation.Skinning`, and the tiled vertex stage and the desktop
+visibility and resolve passes read its output. Both production roots consume
+decoded bind vertices, four influences and asset-space joint palettes. Current
+output is a 32-byte record; prepared instances append current and compatible
+previous deformation addresses. On the desktop pipeline the selected temporal
+producer, instance/geometry generations and discontinuity determine
+previous-position eligibility. [ADR-071](071-animation-bank-and-reference-pose.md)
+owns the feature, capacity and editor behavior. Native evidence: the earlier
+Metal validation and deformed color, normal and motion snapshots (ADR-071)
+used the removed desktop passes; skinned captures on the tiled pipeline and
+on Vulkan are pending.
 
 ## Anisotropy evidence state
 
-Anisotropic GGX reflection is **UNALIGNED** pending native Vulkan validation
-and bilateral numeric comparison. Production Metal/Slang compilation and nine
-affected SPIR-V module layout/validation checks pass. Metal rotated scalar/map
-highlights, zero-strength comparison, layered SSR/SSGI and serial API-validated
-resize pass. Material rows are 320 bytes on Metal and 256 on Vulkan; array-table
-reference records are 32 and 16 bytes. Frame roots remain 528 and 608 bytes.
-Shared arithmetic and compiled layouts do not establish native parity.
+Anisotropic GGX reflection is desktop-only; the tiled forward shader does not
+draw it (ADR-087, decision 8). Vulkan material rows are 256 bytes and its
+array-table reference records 16 bytes. Production Slang compilation and nine
+affected SPIR-V module layout/validation checks pass, and the 2026-09-12
+Windows sweep below passes a Debug synchronization-validation resize. Native
+Vulkan output checks of rotated highlights are pending. Shared arithmetic and
+compiled layouts do not establish native output.
 [ADR-064](064-anisotropic-ggx-reflection.md) owns the accepted feature and budgets.
 
 ## Tiled pipeline evidence state
 
-The tiled pipeline ([ADR-087](087-gpu-class-graphics-pipelines.md)) is a
-Metal-only pipeline class; Vulkan implements no tiled class, so its shaders
-have no bilateral gate yet.
+The tiled pipeline ([ADR-087](087-gpu-class-graphics-pipelines.md)) runs only
+on Metal. It shares kernels and host records with the desktop pipeline:
 
 - **Changed contracts.**
-  - The Metal frame root grows to 560 bytes with `lightmap`, a 96-byte
-    `VkrMetalPacketLightmap`; the tiled sky root is 128 bytes. Both are
-    pinned in `vkr_metal_packet_abi.c` and checked against reflection at
-    pipeline creation.
+  - The 560-byte Metal frame root carries `lightmap` at byte 544, the address
+    of a 96-byte `VkrMetalPacketLightmap`, and `terrain_materials` at byte
+    552; the tiled sky root is 128 bytes. Both are pinned in
+    `vkr_metal_packet_abi.c` and checked against reflection at pipeline
+    creation.
   - The prepared instance row carries the lightmap slot in
     `normal_column2.w`; every shader on both backends reads only its xyz.
-  - The deferred background moves into `vkr_metal_packet_sky_clear`,
-    `vkr_metal_packet_sky_discs` and `vkr_metal_packet_sky_background`, which
-    the tiled sky and cloud draws share; the operations and their order are
-    unchanged.
+  - The Metal sky background helpers, `vkr_metal_packet_sky_clear`,
+    `vkr_metal_packet_sky_discs` and `vkr_metal_packet_sky_background`,
+    serve the tiled sky and cloud draws.
   - The tiled blend fragment composes glass with the shared
     `vkr_transmission_compose` and returns the factor the destination keeps
-    as its second, dual-source output; the transmission kernels and the
-    desktop composition are unchanged.
+    as its second, dual-source output; the Vulkan transmission kernels use
+    the same composition.
   - The tiled shading calls the shared local-light loop and rectangle-light
-    path, unchanged, without the coat and sheen layers. Its local shadows
-    take one bilinear comparison and read no refractive layers, through the
-    `Transmission` and `SoftFilter` template parameters of
-    `vkr_metal_packet_local_shadow_sample`; their defaults keep every
-    desktop caller unchanged. The harder tiled shadow edge is a class
-    difference the owner accepted (ADR-087, decision 11). Tiled rectangle
-    lights skip rows below a contribution bound through the
-    `ContributionCutoff` parameter of
-    `vkr_metal_packet_layered_rectangle_lights`; on every Metal caller a
-    receiver that no row faces skips the LTC table reads, which changes no
-    result.
+    path without the coat and sheen layers. Its local shadows take one
+    bilinear comparison and read no refractive layers
+    (`vkr_metal_packet_local_shadow_sample<false, false>`), where the Vulkan
+    receivers filter with the Poisson disk and read the transmission layers.
+    The harder tiled shadow edge is a class difference the owner accepted
+    (ADR-087, decision 11). Tiled rectangle lights skip rows below a
+    contribution bound through the `ContributionCutoff` parameter of
+    `vkr_metal_packet_layered_rectangle_lights`; a receiver that no row faces
+    skips the LTC table reads, which changes no result.
   - The tiled class draws no FXAA; its alpha-tested surfaces use alpha to
     coverage and its opaque pass a tone-mapped tile resolve
     (`vkr_metal_tiled_resolve_tile`), a class difference the owner accepted
-    (ADR-087, decision 6). The shared FXAA and tonemap shaders are
-    unchanged.
+    (ADR-087, decision 6). Vulkan's FXAA and tonemap shaders are unchanged.
   - The Metal tonemap root's last 12 bytes carry `bloom_intensity` and the
     `bloom` texture; with `VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM` the pass adds
     that bloom level to its scene-linear samples, rounded to FP16 as
-    `Post.Bloom.Combine` stores it. Only the tiled graph binds it; graphs
-    with the combine pass are unchanged.
-- **Metal evidence.** Pipeline creation validates the new layouts, and the
-  Bistro street view renders on both pipeline classes
-  (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`), as do the café
-  windows (`tiled_bistro_glass`, `tiled_bistro_glass_desktop`). The tiled
-  lighting variants render Bistro with no dynamic lights, unshadowed and
-  shadowed point and spot lights, and a rectangle light; a night view
-  compares the single-tap local shadow with the former filter (ADR-087,
+    `Post.Bloom.Combine` stores it. The desktop graph keeps
+    `Post.Bloom.Combine` on Vulkan.
+- **Metal evidence.** Pipeline creation validates the new layouts. The
+  Bistro street view (`tiled_bistro_capture`), the café windows
+  (`tiled_bistro_glass`) and a lightmap-baked Bistro
+  (`tiled_bistro_baked_capture`) render. The tiled lighting variants render
+  Bistro with no dynamic lights, unshadowed and shadowed point and spot
+  lights, and a rectangle light; a night view compares the single-tap local
+  shadow with the former filter (ADR-087,
   [Light shading variants](087-gpu-class-graphics-pipelines.md#light-shading-variants)).
-- **Vulkan evidence.** The Vulkan frame layouts are unchanged; the Vulkan
-  sources build on macOS. No native Vulkan run.
-- **Missing gates.** A numeric before/after comparison of the desktop Metal
-  background, and lightmap sampling on a baked Bistro.
+- **Vulkan evidence.** Vulkan consumes the changed shared records without
+  layout changes, and its sources build on macOS. No native Vulkan run has
+  followed the changes.
+- **Missing gates.** A native Vulkan run after the shared-record changes.
 
 ## Thin-sheet diffuse transmission evidence state
 
-Thin-sheet diffuse transmission is **UNALIGNED** pending native Vulkan and
-bilateral comparison. Production Metal/Slang compilation and nine affected
-SPIR-V layout/validation checks pass. Material rows are 336 bytes on Metal and
-272 on Vulkan. Deferred roots are 240/192 bytes; SSGI composite roots are
-496/432 bytes. Both borrow the existing visible-draw buffer at graph bindings
-13/11, without new images. [ADR-065](065-thin-sheet-diffuse-transmission.md)
-owns the split, input restrictions and offline transport. Native Metal checks
-pass for front/back energy, tint, black absorption, sun/point/rectangle lighting,
-shadow occlusion, cutout coverage, layered SSR/SSGI and API-validated resize.
-The zero-strength witness preserves all eight captured channels byte-for-byte.
+Thin-sheet diffuse transmission is desktop-only; the tiled forward shader does
+not draw it (ADR-087, decision 8). Production Slang compilation and nine
+affected SPIR-V layout/validation checks pass. Vulkan material rows are 272
+bytes, deferred roots 192 bytes and SSGI composite roots 432 bytes; both roots
+borrow the existing visible-draw buffer at graph binding 11, without new images.
+[ADR-065](065-thin-sheet-diffuse-transmission.md) owns the split, input
+restrictions and offline transport. The 2026-09-12 Windows sweep passes a Debug
+synchronization-validation resize; Vulkan output checks of front/back energy,
+tint, absorption, shadow occlusion and cutout coverage are pending.
 
 ## Terrain layer evidence state
 
 The terrain material blend ([ADR-084](084-agent-channel-and-level-design-toolkit.md#terrain))
-is **UNALIGNED** pending a bilateral comparison; native Vulkan execution
-passed on Windows (2026-10-04).
-Both G-buffer resolves call the shared `terrain_kernel.slangh` for weights,
-per-layer surfaces and the blend; each samples its own terrain segment.
-Common material rows are unchanged. The terrain segment rows are 192 bytes on
-Metal and 144 on Vulkan. The Metal resolve root gains `terrain_materials` at
-byte 440 within its 448 bytes, and the Vulkan resolve root reuses its
-reserved address at byte 16. Metal API validation of a painted Bistro
-terrain passes, and the four Vulkan resolve modules pass `spirv-val`.
+is shared. The Vulkan G-buffer resolve and the Metal tiled forward shader call
+the shared `terrain_kernel.slangh` for weights, per-layer surfaces and the
+blend; each samples its own terrain segment. Common material rows are
+unchanged. The terrain segment rows are 192 bytes on Metal and 144 on Vulkan.
+The Vulkan resolve root reuses its reserved address at byte 16, and the tiled
+shader reads the rows through the Metal frame root's `terrain_materials`.
+Native evidence: Vulkan execution passed on Windows (2026-10-04), and the four
+Vulkan resolve modules pass `spirv-val`; on Metal, a 128 m terrain painted with
+four layers in the headless editor shows the expected layer regions on the
+tiled pipeline (ADR-087).
 
 ## Geometry LOD evidence state
 
 Level selection, level encoding and terrain geomorphing
-([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md)) are **UNALIGNED**
-pending a bilateral comparison; native Vulkan execution passed on Windows
-(2026-10-04, and the 8 km terrain's strips of audit A20 on 2026-10-05).
+([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md)) are shared.
+Native Vulkan execution passed on Windows (2026-10-04, and the 8 km terrain's
+strips of audit A20 on 2026-10-05).
 `vkr_gpu_geometry_lod_row` computes the LOD row's address in bytes, because
 AMD's Vulkan driver offset a pointer cast of `records + lod_record` by the
-row's stride. Both backends
-select through the shared `lod_kernel.slangh` and morph through
-`vkr_gpu_terrain_morph` (shared Slang, mirrored in `draw.metalh`) with
-`terrain_kernel.slangh`'s topology. The Metal culling root carries the LOD
-views at byte 88, its former reserved field; the Vulkan cull root carries
-them and the geometry rows at bytes 192 and 200, its former reserved tail.
-Decode records keep 32 bytes, their last word now the LOD row's record
-offset. Metal API validation of a 1 km Bistro terrain passes, and all Vulkan
-modules pass `spirv-val`.
+row's stride. Both backends select through the shared `lod_kernel.slangh` and
+morph through `vkr_gpu_terrain_morph` (shared Slang, mirrored in
+`draw.metalh`) with `terrain_kernel.slangh`'s topology. The Metal culling
+root carries the LOD views at byte 88, its former reserved field; the Vulkan
+cull root carries them and the geometry rows at bytes 192 and 200, its former
+reserved tail. Decode records keep 32 bytes, their last word now the LOD row's
+record offset. Metal API validation of a 1 km Bistro terrain passes, and all
+Vulkan modules pass `spirv-val`. The tiled pipeline's cooked mesh levels are
+measured in ADR-085.
 
 ## Pre-exposure evidence state
 
-Pre-exposure ([ADR-081](081-physical-night-sky.md)) is **UNALIGNED**.
+Pre-exposure ([ADR-081](081-physical-night-sky.md)) is shared; its history
+rescaling applies to the histories each class keeps.
 
 - **Changed contracts.**
   - Frame, utility and Vulkan resolve roots carry `pre_exposure`, and the
     Metal tonemap root carries `inverse_pre_exposure`.
   - Bloom parameters carry `inverse_pre_exposure`.
-  - TAA, SSR temporal, SSGI temporal, cloud trace, froxel inject, and
-    MetalFX/FSR stabilize roots carry `history_pre_exposure_scale`. TAA also
-    carries `pre_exposure`.
-- **Root sizes.**
-  - Metal: SSGI temporal keeps 416 bytes, cloud trace grows to 144, froxel
-    inject to 64 and tonemap to 64.
-  - Vulkan: TAA grows to 160 bytes.
-- **Metal evidence.** Bistro output passes at forced P = 1, 8 and 1/64, and a
-  focused API validation run is clean.
+  - The cloud trace root carries `history_pre_exposure_scale` on both
+    backends; on Vulkan so do the TAA, SSR temporal, SSGI temporal, froxel
+    inject and FSR stabilize roots, and TAA also carries `pre_exposure`.
+- **Root sizes.** The Metal cloud trace root grows to 144 bytes and the Metal
+  tonemap root to 64; the Vulkan TAA root grows to 160 bytes.
+- **Metal evidence.** The forced P = 1, 8 and 1/64 Bistro runs used the
+  removed desktop passes; the tiled pipeline has no forced-P run.
 - **Vulkan evidence.** All production modules pass `spirv-val`, and their
   compiled offsets match the C roots. On Windows (RX 6700 XT, AMD 26.6.3),
   Release `local-offscreen` snapshots of the night (P = 1), moonlit-sky
   (P = 2^18), starry-sky (P = 2^19) and moonlit-cloud (P = 2^17) cases pass
   with finite HDR captures, and the night and moonlit-cloud cases run clean
   under Debug Vulkan validation with synchronization checks.
-- **Missing gates.** A same-revision bilateral comparison: no Metal capture of
-  these cases is published.
+- **Missing gates.** Forced-P and night captures on the tiled pipeline.
 
 ## Moon and star evidence state
 
 The moon, the atmosphere's second light, and the procedural star field
-([ADR-081](081-physical-night-sky.md)) are **UNALIGNED**. They change the sky
+([ADR-081](081-physical-night-sky.md)) are shared. They change the sky
 atmosphere, aerial perspective and volumetric cloud domains.
 
 - **Changed contracts.**
@@ -177,61 +215,61 @@ atmosphere, aerial perspective and volumetric cloud domains.
   - The sky record adds `key_light` and, for the star field, `star_pole` and
     `star_axis`: 432 bytes of parameters, a 496-byte Metal record and a
     480-byte Vulkan record.
-  - The deferred background draws the procedural star field from the shared
+  - The sky background, the Vulkan deferred background and the Metal tiled
+    sky draw, draws the procedural star field from the shared
     `vkr_atmosphere_stars`.
   - The atmosphere bake roots grow to 224 bytes on Metal and 208 on Vulkan.
   - The sky-view image is 384×108, a sun table and a moon table.
-- **Metal evidence.** Day Bistro output is within run-to-run noise, the night,
-  moonlit-sky, moonlit-cloud and starry-sky Bistro cases render, and focused
-  API validation runs are clean.
+- **Metal evidence.** The night, moonlit-sky, moonlit-cloud and starry-sky
+  Bistro cases rendered and focused API validation runs were clean before
+  2026-10-06; they cover the shared bake, sky-view and cloud kernels, not the
+  tiled sky draw.
 - **Vulkan evidence.** All production modules pass `spirv-val`, and their
   compiled atmosphere and sky offsets match the C asserts. The Windows runs
   under Pre-exposure render the moon disc and glow, the moonlit clouds and the
   star field natively, with clean Debug Vulkan validation.
-- **Missing gates.** A same-revision bilateral comparison.
+- **Missing gates.** Night captures on the tiled pipeline.
 
 ## Editor inspection views
 
 `VkrRenderMode` retains Lit (`DEFAULT`, 0) and Unlit (3), and adds Detail lighting
 (10), Lighting only (11) and Wireframe (12). The existing render-mode word carries
-these choices; no native root layout or resource binding changes. Both forward
-and visibility/deferred consumers use
+these choices; no native root layout or resource binding changes. The views are
+shared: the Vulkan forward and visibility/deferred consumers and the Metal
+tiled inspection variant (ADR-087, decision 11) use
 [`shared/editor_view.slangh`](../../renderer/src/shaders/shared/editor_view.slangh).
-
 Detail lighting evaluates the scene lights and environment with neutral linear 0.5
 albedo, dielectric F0 0.04, metallic 0 and perceptual roughness 0.5, retaining
 mapped shading normals. Lighting only uses the same neutral material with
 interpolated vertex normals and no normal map, matching the common editor split
-between geometry-only and detail lighting. Material emissive, sheen, clearcoat and anisotropy do not
-color these neutral views. Wireframe computes visible triangle-edge coverage from
-barycentric derivatives with a one-pixel edge and one-pixel coverage ramp. It
-preserves scene visibility and alpha coverage; hidden edges are not drawn through
-opaque surfaces. The forward path reconstructs barycentrics from the triangle
-and world position; the visibility path consumes its triangle reconstruction.
+between geometry-only and detail lighting; triangle face normals turned foliage
+cards black in an earlier capture. Material emissive, sheen, clearcoat and
+anisotropy do not color these neutral views. Wireframe computes visible
+triangle-edge coverage from barycentric derivatives with a one-pixel edge and
+one-pixel coverage ramp. It preserves scene visibility and alpha coverage;
+hidden edges are not drawn through opaque surfaces. The forward paths
+reconstruct barycentrics from the triangle or take them from the rasterizer;
+the visibility path consumes its triangle reconstruction.
 
-The three inspection modes bypass bloom, analytic/froxel fog, SSGI, SSR,
-subsurface diffusion, depth of field and motion blur. Wireframe also bypasses
-temporal reconstruction and GTAO. Orthographic frames have a separate per-frame spatial
-capability boundary recorded in
-[ADR-046](046-editor-viewport-mapping-and-picking.md).
+On the desktop pipeline the three inspection modes bypass bloom,
+analytic/froxel fog, SSGI, SSR, subsurface diffusion, depth of field and motion
+blur, and Wireframe also bypasses temporal reconstruction and GTAO.
+Orthographic frames have a separate per-frame spatial capability boundary
+recorded in [ADR-046](046-editor-viewport-mapping-and-picking.md).
 
-These modes are **UNALIGNED** pending matched native Metal/Vulkan captures. On
-Windows (RX 6700 XT), the Release Vulkan snapshot `smoke.bistro.editor.views`
-passes and captures all four channels, and the same case runs clean under Debug
-Vulkan validation. The Release editor build compiles both production shader
-paths. On Apple M1 Pro, the Release Metal snapshot
-`smoke.bistro.editor.views` (orthographic top view, `local-offscreen`) passes and
-captures final color, detail lighting, lighting only and wireframe. That capture
-exposed black foliage cards when Lighting only used triangle face normals; it now
-uses interpolated vertex normals. Shared source and compilation establish no
-bilateral image or frame-budget claim.
+Native evidence: on Windows (RX 6700 XT), the Release Vulkan snapshot
+`smoke.bistro.editor.views` passes and captures all four channels, and the same
+case runs clean under Debug Vulkan validation. On the M1 Pro, tiled-pipeline
+captures of Unlit, Detail lighting, Lighting only and Wireframe render (ADR-087,
+Unbaked lights, terrain, inspection and atmosphere). No frame-budget claim is
+made.
 
 ## Decision
 
 Keep portable arithmetic shared where both shader languages can consume it.
 Keep native bindings, address spaces, sampling and resource references owned by
 the backend. Metal native resource identifiers and Vulkan descriptor indices
-need equivalent semantics, not identical root sizes.
+need equivalent semantics in shared records, not identical root sizes.
 
 Pin host records in `vkr_gpu_abi` and each native ABI. Vulkan recursively reflects
 compiled SPIR-V physical-storage/root layouts at pipeline creation. Metal has
@@ -244,12 +282,11 @@ The split between public `VkrFrameInput` and private `VkrPreparedFrame` changes
 CPU preparation ownership, not the native root layouts or shader-visible instance
 records. Moving scene/assets to application owners and preparing all pass families
 before emission likewise preserve those native ABI and shader contracts. These
-source changes do not establish fresh bilateral execution evidence.
+source changes do not establish fresh native execution evidence.
 
 The library split relocates application/runtime sources without moving production
 shader sources from `renderer/src/shaders/`. It preserves shader-visible host
-records, native entry points and source ABI layout. It adds no fresh native
-cross-backend evidence; native Vulkan execution for the split remains unrun.
+records, native entry points and source ABI layout, and adds no native evidence.
 
 Match coordinate conventions, units, field order/types, basis signs, bounds,
 edge behavior and dispatch coverage explicitly. World/view space is right-handed
@@ -269,52 +306,20 @@ compaction record is 144 bytes. Direct draws preserve order through contiguous
 parity runs. Shaders transform tangents with the model's linear part and normals with
 the prepared columns. No per-pixel matrix inverse is required.
 
-Both G-buffer roots append the sky reprojection matrix at byte
-352 and have a 416-byte native size. The G-buffer owns sky motion for every
-temporal consumer; portable resolve carries no duplicate reprojection matrix.
-Temporal resolve roots carry current and previous pixel jitter for canonical
-color reconstruction and raw metadata validation. Vulkan offsets are 128/136
-with a 144-byte root; Metal offsets are 200/208 with a 224-byte root.
-The checked-scene flag occupies Vulkan byte 124 and Metal byte 216 without
-growing those roots. Both implementations store accumulation age in the existing
-depth-history second channel and retain raw depth in the first channel. Native
-content/revision eligibility and the portable signature gate the same static
-algorithm; unavailable Metal execution keeps this contract UNALIGNED.
+The Vulkan G-buffer root appends the sky reprojection matrix at byte 352 and
+has a 416-byte size. The G-buffer owns sky motion for every temporal consumer;
+portable resolve carries no duplicate reprojection matrix. The Vulkan temporal
+resolve root carries current and previous pixel jitter at bytes 128 and 136
+of its 144 bytes for canonical color reconstruction and raw metadata
+validation, and the checked-scene flag at byte 124. It stores accumulation age
+in the existing depth-history second channel and retains raw depth in the
+first. Native content/revision eligibility and the portable signature gate the
+static algorithm.
 
-A parity entry is ALIGNED only with matching production semantics, applicable
-host/compiled reflection and non-degenerate native comparisons on both backends.
-Missing or conflicting evidence is UNALIGNED. Shared source, compilation or a
-single native run cannot establish bilateral parity. MetalFX is an explicit
-backend-specific mode under ADR-040. Current missing native evidence is summarized
-in [ARCHITECTURE](../ARCHITECTURE.md).
-
-MetalFX's post-SDK stationary accumulation is an authorized Metal-only
-**UNALIGNED** exception under [ADR-040](040-metalfx-temporal-dynamic-resolution.md).
-Its native `VkrMetalPacketMetalfxStabilizeRoot` is 64 bytes, aligned to 16:
-output/history/validity texture IDs occupy bytes 0/8/16, output and source extents
-24/32, source-pixel jitter 40, history-valid and stationary flags 48/52, and
-reserved padding 56. The kernel consumes current output plus at most four
-jitter-adjusted integer validity samples and one same-pixel previous output,
-then writes once. Validity at or below 0.5 rejects unsupported motion; values
-above 1.5 reject all transmission/blend samples, including zero authored
-reactivity. It adds no reactive-mask image and does not inherit FSR composition
-mask behavior. The shared 128-sample limit and CPU SSR settling gate are reused;
-portable TAA/FSR algorithms are unchanged.
-
-MetalFX output alpha is private static-sample age. Metal's tonemap opaque-alpha
-flag occupies bit 4 and restores alpha 1 for Scene presentation/export, including
-paths through motion blur or DoF that preserve source alpha. Raw
-`hdr_pre_bloom` version 3, `dof_color` version 2 and `motion_blur_color` version 2
-retain that age when their producer is in the MetalFX/FSR post chain. Earlier
-capture versions cannot be treated as the same alpha contract. The bounded
-stationary improvement and continuous-history/moving-quality limits belong to
-ADR-040; they do not establish native Vulkan or bilateral parity.
-
-Vulkan FSR 3.1 is an authorized backend-specific **UNALIGNED** exception under
-ADR-052. Its prepare shader converts raw HDR, temporal validity and nearest
-transmission depth into depth and mask inputs. The SDK consumes these with
-normalized temporal motion and records the upscale. It has no Metal counterpart
-or portable parity claim.
+Vulkan FSR 3.1 ([ADR-052](052-vulkan-fsr31-upscaling.md)) is desktop-only. Its
+prepare shader converts raw HDR, temporal validity and nearest transmission
+depth into depth and mask inputs. The SDK consumes these with normalized
+temporal motion and records the upscale.
 Its 48-byte prepare root carries the submitted-history scene-stationary proof;
 optical contrast contributes only to composition and is suppressed for matching
 scenes. Reactive rejection retains authored reactivity and missing-motion protection. Its separate 48-byte stabilization root carries output
@@ -323,271 +328,194 @@ same stationary proof. The output-resolution pass averages 128 stationary sample
 and freezes completed pixels; changes or reactive footprints reset age. Age uses
 private output alpha, removed by the FSR-only fullscreen opaque-alpha flag.
 Production Vulkan compilation and reflection pass. Bounded Bistro static,
-camera-translation and editor-resize runs pass native Vulkan diagnostics; native Metal execution was
-unavailable. ADR-052 records the accepted capability boundary and evidence limits.
+camera-translation and editor-resize runs pass native Vulkan diagnostics.
+ADR-052 records the accepted capability boundary and evidence limits.
 
-Presentation sharpening shares bounded cross-neighborhood arithmetic in both
-production shader libraries. Frame version 32 carries `image_sharpness` in [0,1];
-zero takes the existing path without extra samples. The Vulkan utility root
-carries strength in `point_light_grid_origin_cell_size.z` beside output extent
-in xy, with unchanged native layout. Metal's 32-byte tonemap root replaces the
-two reserved words with flags at byte 8 and float strength at byte 12; exposure
-and extent remain at bytes 16 and 24, with the ABI manifest updated. This domain
-is **UNALIGNED** until same-revision native Metal compilation, validation and
-matched pixel evidence are available; Windows cannot execute those gates. Vulkan Release captures cover
-FSR/TAA/native, both FXAA states, zero/default/maximum strength and editor text.
-The enabled editor/text Debug case passes Khronos synchronization validation
-with no API warnings or errors; local cost and quality limits are in ADR-043.
+Presentation sharpening is shared: both production shader libraries use the
+bounded cross-neighborhood arithmetic of `shared/sharpen_kernel.slangh`. Frame
+version 32 carries `image_sharpness` in [0,1]; zero takes the existing path
+without extra samples. The Vulkan utility root carries strength in
+`point_light_grid_origin_cell_size.z` beside output extent in xy, with unchanged
+native layout. Metal's tonemap root carries flags at byte 8 and float strength
+at byte 12; exposure and extent remain at bytes 16 and 24, with the ABI
+manifest updated. Vulkan Release captures cover FSR/TAA/native, both FXAA
+states, zero/default/maximum strength and editor text. The enabled editor/text
+Debug case passes Khronos synchronization validation with no API warnings or
+errors; local cost and quality limits are in ADR-043. Native Metal sharpening
+captures are not recorded.
 
-Current evidence state: **UNALIGNED** for every domain below. The production
-source audit covers their counterparts; same-revision bilateral native
-comparisons and runtime reflection checks remain incomplete.
-The UI pass uses one pipeline per backend over a 96-byte vertex whose `mode`
-selects flat quad, MTSDF text, bitmap text, SDF box or image. The box mode
-shares one rounded-rectangle distance (per-corner radii, inner border, and a
-feather that ramps coverage across twice its softness) in `ui/default.metal` and
-`ui/default.slang`; the separate rounded-rectangle pipeline is removed. Editor
-icons are Phosphor MTSDF glyphs through the text mode. Host validation rejects
-glyph and image vertices in an untextured batch. The UI root is 48 bytes on
-Metal (a nested `VkrMetalPacketUiVertex` record) and 64 bytes on Vulkan. Both
-native roots compile and the macOS Release editor renders through Metal. Vulkan
-execution of this ABI and a bilateral image comparison are unavailable on this
-host, so Text/UI stays UNALIGNED.
+The UI pass is shared and uses one pipeline per backend over a 96-byte vertex
+whose `mode` selects flat quad, MTSDF text, bitmap text, SDF box or image. The
+box mode shares one rounded-rectangle distance (per-corner radii, inner border,
+and a feather that ramps coverage across twice its softness) in
+`ui/default.metal` and `ui/default.slang`; the separate rounded-rectangle
+pipeline is removed. Editor icons are Phosphor MTSDF glyphs through the text
+mode. Host validation rejects glyph and image vertices in an untextured batch.
+The UI root is 48 bytes on Metal (a nested `VkrMetalPacketUiVertex` record) and
+64 bytes on Vulkan. Both native roots compile; the macOS Release editor renders
+through Metal and the Windows Release editor through Vulkan.
 Bootstrap MTSDF atlases use a 16-texel distance range at 64 texels/em.
-Bounded Vulkan Release Bistro profiling and static/moving-camera snapshots pass
-on RX 6700 XT. A subsequent user-reported blur/static-jitter regression required
-preceding-submission history ordering, truthful center metadata, stationary
-coverage support and validated cubic history reconstruction. Focused Vulkan
-Debug execution loaded the Khronos validation layer and reported no synchronization
-hazards; Metal native execution remains unavailable. All 71 measured pass rows have valid GPU timestamps; captures
-were inspected without baseline promotion. The original host freeze cause is
-unconfirmed. Cooker arena growth, Vulkan upload fallback and harness report
-stack exhaustion were repaired during validation. Metal native execution is
-unavailable on that Windows host. Checked static-scene accumulation subsequently
-passed the aligned eight-phase Bistro capture and focused Vulkan validation;
-the matching moving-camera replay remained visually unchanged. These local
-observations do not close broader moving-image quality or bilateral comparison
-gates. Native Metal validation and same-revision bilateral captures were
-unavailable on that Windows host.
 
-Metal's native library concatenates the shared temporal filter helper before
-its MSL consumers. Shader size assertions match the existing 416-byte G-buffer
-and 224-byte temporal host roots. Native Release startup/reflection and the
-serial candidate residency fixture (`metal_candidate_residency_audit`, a
-Metal desktop case since removed) with TAA pass API/shader validation on M1 Pro. Static and moving Bistro
-final-color/depth captures at native 1280×720 remain byte-identical across the
-CPU preparation changes. This adds Metal execution evidence; same-revision
-bilateral captures and full stationary-accumulation/moving-image quality gates
-remain open.
+Portable TAA is desktop-only. Bounded Vulkan Release Bistro profiling and
+static/moving-camera snapshots pass on RX 6700 XT. A subsequent user-reported
+blur/static-jitter regression required preceding-submission history ordering,
+truthful center metadata, stationary coverage support and validated cubic
+history reconstruction. Focused Vulkan Debug execution loaded the Khronos
+validation layer and reported no synchronization hazards. All 71 measured pass
+rows have valid GPU timestamps; captures were inspected without baseline
+promotion. The original host freeze cause is unconfirmed. Cooker arena growth,
+Vulkan upload fallback and harness report stack exhaustion were repaired during
+validation. Checked static-scene accumulation subsequently passed the aligned
+eight-phase Bistro capture and focused Vulkan validation; the matching
+moving-camera replay remained visually unchanged. These local observations do
+not close broader moving-image quality gates.
 
-The editor retained-image path reuses the existing Tonemap pipeline for resolve
-and composite. Resolve performs output processing once into a swapchain-format
-image; composite samples that image with exposure 1, tonemap disabled and FXAA
-disabled. Scene preparation optionally freezes this retained image and selects
-bit 7 in each backend's existing post flags for backdrop blur. The shared
-`scene_blur_kernel.slangh` defines normalized binomial weights and offsets:
-25 bilinear taps over a 5×5 grid, four output pixels apart, clamped at source
-edges. The compositor averages presentation-linear values, preserving output
-scale; UI draws afterward and remains sharp. No shader root layout, binding,
-intermediate image or GPU retirement contract changes. Normal frames retain
-the original sampling path. Both native shader paths compile; native Vulkan
-execution and matched bilateral image comparison remain unavailable, so this
-contract remains **UNALIGNED**. A focused Bistro editor reload and cancellation
-passes Metal API validation with visible backdrop blur. Combined API/GPU
-validation aborts on the driver assertion that command-buffer residency sets
-exceed 32, so shader-validation evidence remains unavailable.
+The editor retained-image path is shared and reuses the existing Tonemap
+pipeline for resolve and composite. Resolve performs output processing once
+into a swapchain-format image; composite samples that image with exposure 1,
+tonemap disabled and FXAA disabled. Scene preparation optionally freezes this
+retained image and selects bit 7 in each backend's existing post flags for
+backdrop blur. The shared `scene_blur_kernel.slangh` defines normalized
+binomial weights and offsets: 25 bilinear taps over a 5×5 grid, four output
+pixels apart, clamped at source edges. The compositor averages
+presentation-linear values, preserving output scale; UI draws afterward and
+remains sharp. No shader root layout, binding, intermediate image or GPU
+retirement contract changes. Normal frames retain the original sampling path.
+Both native shader paths compile. A focused Bistro editor reload and
+cancellation passes Metal API validation with visible backdrop blur; native
+Vulkan evidence of the blur is not recorded.
 
 Metal command-buffer demand growth uses the existing candidate count as its
-per-view ICB command stride. Graph draw-table storage now follows scene demand
-on both backends through existing native capacity fields. Source capacity is
+per-view ICB command stride. Graph draw-table storage follows scene demand on
+both backends through existing native capacity fields. Source capacity is
 `C = pow2(max(candidate_count, 1))`; visible/classification/argument stride is
 `V = 4 * min(C, 65536)`. The per-bucket limit remains sufficient for a concentrated
 small scene and preserves the previous ceiling for larger scenes. Metal supplies
-`V` to classification, raster, resolve and picking; Vulkan also uses `V / 4` for
+`V` to classification, raster and picking; Vulkan also uses `V / 4` for
 indirect argument offsets and `maxDrawCount`. Native root layouts are unchanged.
-Same-revision native Vulkan validation of these smaller argument ranges remains
-unavailable; this domain remains **UNALIGNED**. The Metal command-capacity fixture
-with four shadow views and seven transmission candidates passed API validation
+The Metal command-capacity fixture with four shadow views and seven
+transmission candidates passed API validation
 (report SHA-256 `819dfb4ee766c027d61ee4144e01bd3e2112aa607304276e0476b419db8022a5`).
 Its matched Release captures were byte-identical with SHA-256
 `82510845bfe55d00ca57c4948579a0ebe367e8dd210f8f42fa48b9a2b49a7c28`.
-This local Metal evidence does not close the bilateral UNALIGNED state.
+Native Vulkan validation of these smaller argument ranges is not recorded.
 
 Local shadow views use a shared 144-byte record: matrix at byte 0, light
 position/near plane at 64, direction/far plane at 80, perspective footprint
 and texel bias parameters at 96, the light's shadow strength and the face's
 transmission layer plus one (zero without one) at 112, and the face's atlas
-square and layer at 128. `shadow_params.w` holds the light's source radius
-over twice the face's tan(half FOV); both mask passes apply contact-hardening
-through the shared `vkr_local_shadow_pcss_search_radius_texels`,
-`vkr_local_shadow_pcss_filter_radius_texels`, `vkr_local_shadow_forward_distance`
-and `vkr_local_shadow_atlas_texel`, with raw depth reads (`Load` on Vulkan,
-`read` on Metal) and the same search tap counts. Both receivers read transmission from that layer,
-not from the view index. `shadow_params.z` of
-one selects a single hardware-filtered tap and no contact shadows on both
-backends. Both receivers map face
-UVs into the square through the shared `vkr_local_shadow_atlas_uv`. Both receivers read the strength from the light's first view, skip
-lookups at zero, and blend through the shared `vkr_local_shadow_apply_strength`.
-A point-light tap inside the receiver's face takes its reference depth from the
-shared `vkr_local_shadow_in_face_depth`. A transmission
-lookup stops after the first crossing depth when the receiver lies in front of
-it, and an opaque-occluded tap skips transmission; both are exact because the
-crossings are peeled in order. Native frame roots append their local depth
-array reference and view pointer. Punctual row `p3.w` stores first-view index
-plus one; zero means unshadowed. CPU point-face orientation and shared face-ray
-reconstruction use the same canonical negative projection-Y convention.
-Local shadow parity remains **UNALIGNED** until matched native Vulkan and Metal
-captures and diagnostics pass. Production compilation does not close that gate.
-The first cross-backend run (RX 6700 XT, driver 26.6.3, `b7fd519f`, against the
-M1 Pro generations of `local_shadow_bistro_{street,indoor}_capture`) returned
-exit 4 before any pixel verdict: `--cross-backend` relaxes only the environment
-fingerprint, and the workload fingerprint's `case.scene_content` hashes the
-host-native cooked textures (ASTC on Apple, BC on x86-64) and, on Windows, a
-CRLF checkout of `bistro.scene.json`. A direct comparison of the canonical
-captures, outside the gate, measured mean errors of 0.0027 (street) and 0.0056
-(indoor) against the cases' 0.0005 limit. Vulkan's automatic exposure was 1.8%
-and 2.7% higher, and the differences follow texture detail and geometry edges.
-The scene content digest is now host-neutral (ADR-051). On 2026-10-05 the Mac
-re-accepted both generations under it, with Bistro's lamp source radii and its
-editor override file in the digest: street
-`sha256:e9391d671d3234815dd31c6875acbee1615052213ea3fcfd89c8d37f5d30e5f7`,
-indoor `sha256:4d9fdfd3f650878f777dc63bed0e9b1027767edf075f9e3953c8e0ea882e2be6`.
-The Windows `--cross-backend` run remains.
-Both backends run the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
+square and layer at 128. Both backends render the faces; the receivers
+differ by class. Every receiver maps face UVs into the square through the
+shared `vkr_local_shadow_atlas_uv`, reads the strength from the light's first
+view, skips lookups at zero and blends through the shared
+`vkr_local_shadow_apply_strength`. A point-light tap inside the receiver's face
+takes its reference depth from the shared `vkr_local_shadow_in_face_depth`. The
+tiled receiver takes one bilinear comparison and no transmission (ADR-087,
+decision 11).
+
+On Vulkan, `shadow_params.w` holds the light's source radius over twice the
+face's tan(half FOV); the mask pass and the inline receivers apply
+contact-hardening through the shared
+`vkr_local_shadow_pcss_search_radius_texels`,
+`vkr_local_shadow_pcss_filter_radius_texels`,
+`vkr_local_shadow_forward_distance` and `vkr_local_shadow_atlas_texel`, with
+raw depth `Load`s and the shared search tap counts. The receivers read
+transmission from the view's layer, not from the view index.
+`shadow_params.z` of one selects a single hardware-filtered tap and no contact
+shadows. A transmission lookup stops after the first crossing depth when the
+receiver lies in front of it, and an opaque-occluded tap skips transmission;
+both are exact because the crossings are peeled in order. Native frame roots
+append their local depth array reference and view pointer. Punctual row `p3.w`
+stores first-view index plus one; zero means unshadowed. CPU point-face
+orientation and shared face-ray reconstruction use the same canonical negative
+projection-Y convention.
+
+Vulkan runs the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
 with its own 128-byte root: frame, G-buffer inputs, visible rows, inverse
-view-projection, extent, the contact-shadow noise index (byte 120 on Metal,
-112 on Vulkan) and the temporal filter flag (byte 124 on Metal, 116 on
-Vulkan), nonzero under temporal reconstruction. The deferred-lighting kernels read the mask array at byte 216 on
-Metal and 168 on Vulkan; the roots are 256 and 208 bytes. Both append the
-per-light contribution counters, at byte 240 on Metal and 192 on Vulkan (null
-when not measured), into which the deferred punctual loop adds, per SIMD group
-or wave and light, the pixels' unshadowed contribution from the shared
-`vkr_local_light_contribution` for local-shadow priority (ADR-019). Mask layers are
-per-pixel slots: the k-th shadowed light in range of a pixel, in light
-traversal order, writes layer k with alpha tagging its light index through the
-shared `vkr_local_shadow_mask_tag`. Both deferred-lighting kernels count the
-same lights, skip the same lights below the shared
-`VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` that the mask gives no slot, and filter
-inline when the slot is past
-`VKR_LOCAL_SHADOW_MASK_SLOT_COUNT` or its tag names another light. Each
-backend builds the mask kernel with and without contact shadows and selects
-the variant from the payload's `contact_shadows` (Ultra only). The shared
-`local_shadow.slangh` owns the contact-shadow step count, length, noise,
-start offset, occlusion test and fade, and the full and temporal tap counts,
-tap rotation and rotation of a Poisson tap. Both receivers take an optional
-rotation and tap count that default to the fixed nine taps; only the mask
-passes the rotated four-tap kernel, and only when the temporal flag is set. The
-Metal mask, base deferred-lighting and G-buffer resolve kernels carry
-occupancy hints (`max_total_threads_per_threadgroup`, ADR-019); they change
-register allocation only, and Vulkan has no counterpart. The G-buffer resolve
-hint of 512 lowered the pass from 1.40 to 1.29 ms in the Bistro street view on
-the M1 Pro with unchanged output. Forward and transmission shading pass
-an inline visibility source (a functor on Metal, a Slang generic value parameter
-on Vulkan) to the shared punctual loop.
+view-projection, extent, the contact-shadow noise index at byte 112 and the
+temporal filter flag at byte 116, nonzero under temporal reconstruction. The
+208-byte deferred-lighting root reads the mask array at byte 168 and appends
+the per-light contribution counters at byte 192 (null when not measured), into
+which the deferred punctual loop adds, per wave and light, the pixels'
+unshadowed contribution from the shared `vkr_local_light_contribution` for
+local-shadow priority (ADR-019). Mask layers are per-pixel slots: the k-th
+shadowed light in range of a pixel, in light traversal order, writes layer k
+with alpha tagging its light index through the shared
+`vkr_local_shadow_mask_tag`. The deferred-lighting kernels skip the lights
+below the shared `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` that the mask gives no
+slot, and filter inline when the slot is past `VKR_LOCAL_SHADOW_MASK_SLOT_COUNT`
+or its tag names another light. Vulkan builds the mask kernel with and without
+contact shadows and selects the variant from the payload's `contact_shadows`
+(Ultra only). The shared `local_shadow.slangh` owns the contact-shadow step
+count, length, noise, start offset, occlusion test and fade, and the full and
+temporal tap counts, tap rotation and rotation of a Poisson tap. The receivers
+take an optional rotation and tap count that default to the fixed nine taps;
+only the mask passes the rotated four-tap kernel, and only when the temporal
+flag is set. Forward and transmission shading pass an inline visibility source
+(a Slang generic value parameter) to the shared punctual loop.
 2026-09-26: all 31 Vulkan modules that declare the record, including the mask
 and both deferred-lighting modules, pass `spirv-val` with offsets
 0/64/80/96/112/128, and the emitted Vulkan mask root matches the host offsets.
 Face passes draw into their atlas square: Metal clears it with a far-depth
 triangle under its viewport and scissor, Vulkan with `vkCmdClearAttachments`.
-API-only Metal validation of `bistro_light_leak_metal_validation` with the
-atlas, mask pass and contact shadows passes (report SHA-256
-`73a125116b28888a3dabcab438bea18ebdc2d137734299a628b4f0396467347e`). Native
-Vulkan execution remains unavailable.
-
-2026-09-07 local evidence on Apple M1 Pro / Metal 4 / Darwin 25.6.0:
-`./build_release.sh`, `./build_editor.sh Release`, and `./build_test.sh` pass.
-Metal and Vulkan production shaders compiled; at that checkpoint native roots
-were 480 and 496 bytes respectively. ADR-054 subsequently extended them. CPU checks cover perspective depth, all six point-face
-orientations, complete budget groups, and nested graph-use repetition.
-Release `local_shadow_point_on/off` and `local_shadow_spot_on/off` smoke snapshots
-show receiver occlusion; the point caster interior remains byte-identical to its
-unshadowed control after setting normal offset to two texels. The full-pool
-fixture executes sixteen local views, four directional cascades, and one deferred
-lighting pass with seven selected lights. The directional `shadow_receiver_pcf9`
-case passes all four caster-count assertions. These are focused synthetic
-observations, with no accepted performance claim or transparent-receiver pixel
-comparison.
-
-API-only Metal validation of `local_shadow_point_on` passes (report SHA-256
-`1e54c348964dbca060f22736f50022cab7d719c8f48f56b17566daacdbecb237`).
-Combined API/GPU validation crashes in Apple MetalTools
-`resolvedSharedPacketData` while decoding a buffer diagnostic; the directional-only
-control reproduces that failure. The underlying diagnostic remains unreadable,
-so shader validation is incomplete. Native Vulkan execution and cross-backend
-pixel comparison remain unavailable on this host. Local reports, exact commands,
-and retained capture paths are recorded in `.scratch/implement-local-shadows.md`.
+On Windows, Debug `local_shadow_bistro_vulkan_street_ultra_validation` passes
+with no VUID, synchronization hazard or error (2026-10-03,
+[Windows/Vulkan checklist](../proposals/windows-vulkan-verification.md)).
 
 ## Local transmitting-shadow evidence
 
-Local point/spot shadows now retain two 512² D32/RGBA16F crossing prefixes and a
-third blocking depth, under [ADR-019](019-bounded-forward-spatial-lighting.md).
-The shared coefficient and prefix selector live in
+Local transmitting shadows are desktop-only. Vulkan point/spot shadows retain
+two 512² D32/RGBA16F crossing prefixes and a third blocking depth, under
+[ADR-019](019-bounded-forward-spatial-lighting.md). The shared coefficient and
+prefix selector live in
 [`local_shadow_transmission.slangh`](../../renderer/src/shaders/shared/local_shadow_transmission.slangh).
-Metal and Vulkan apply the same RGB visibility per opaque PCF tap and in froxel
+Vulkan applies the same RGB visibility per opaque PCF tap and in froxel
 injection. Opaque/cutout and refractive local casters occupy separate cull views;
 directional caster semantics are unchanged. Public frame-input version is 45.
 
-The Metal frame root is 544 bytes with a 48-byte sampling record and a 32-byte
-per-view material record; its draw root remains 48 bytes. Vulkan's frame root is
-624 bytes, with the sampling pointer at byte 608, a 32-byte sampling record,
-an 80-byte shadow raster root and a 208-byte cull root. Local cull views exist
-only for faces drawn this submission, one per render slot, so the cull root
-carries no reused-face mask; bytes 192 to 207 are reserved. The shared local-view
-record remains 112 bytes. Native assertions and reflection pin these layouts.
-The dedicated MSL shadow vertex consumes buffer 0 and the frame root's existing
-row-vector matrix convention; instance matrices remain column-major.
+Vulkan's frame root is 624 bytes, with the sampling pointer at byte 608, a
+32-byte sampling record, an 80-byte shadow raster root and a 208-byte cull
+root. Local cull views exist only for faces drawn this submission, one per
+render slot, so the cull root carries no reused-face mask; bytes 192 to 207
+are reserved. Native assertions and reflection pin these layouts.
 
-2026-09-12 Metal Release captures on Apple M1 Pro pass all 18 independent
-receiver ratios: ordered prefixes, before/after overflow, tint, absorption,
-Fresnel, zero-transmission texels, cutout holes, opaque and thin-sheet blockers,
-mirrored sidedness and point-face seams. Maximum RGB ratio error is 0.000405
-against tolerance 0.006. The receiver checker is
+The removed Metal desktop implementation passed all 18 independent receiver
+ratios of the transmission fixture on 2026-09-12 (maximum RGB ratio error
+0.000405 against tolerance 0.006): ordered prefixes, before/after overflow,
+tint, absorption, Fresnel, zero-transmission texels, cutout holes, opaque and
+thin-sheet blockers, mirrored sidedness and point-face seams. The receiver
+checker is
 [`check_local_shadow_transmission_fixture.py`](../../tools/checks/check_local_shadow_transmission_fixture.py);
 fixture preparation is
 [`prepare.py`](../../tests/fixtures/rendering/local_shadow_transmission/prepare.py).
-Bistro housing, near-camera and approach captures restore glass-transmitted
-illumination with byte-identical camera depth. Serial Metal API validation
-passes with sixteen local faces, eight cascades, froxel fog and three target
-images across a 770×770 → 514×386 → 770×770 resize round trip (report SHA-256
-`f1189bd96846df82c7eb98fc135ff008efbf554e2ed45bac7ed8f63ba831b555`).
-That maximum-view case exposed missing anisotropy upload cells; preparation now
-counts each frame-root creator and its auxiliary records. The CPU cache check
-covers generation replacement, incomplete point faces and cancelled publication.
-Exact runs and digests are retained in
-`.scratch/fix-lantern-light-disappearance.md` and its evidence manifest.
-
-Production builds and SPIR-V validation/reflection pass for the affected raster,
-cull, deferred and froxel entry points. Native Vulkan execution and same-revision
-bilateral pixel comparison are unavailable on this macOS host; shadow and
-material/light entries remain **UNALIGNED**. Metal GPU shader validation retains
-the unresolved Apple MetalTools limitation recorded above.
+The fixture has not run on Vulkan. Production builds and SPIR-V
+validation/reflection pass for the affected raster, cull, deferred and froxel
+entry points.
 
 ## Consequences
 
-Editor overlay color and picking share packed geometry and an unjittered MVP.
-The Metal root is 112 bytes and the Vulkan root 128 bytes, with independently
-pinned layouts: Metal roots carry offset vertex/decode pointers, while Vulkan
-roots carry base addresses and explicit vertex/decode indices. Opaque linear color is written after tonemapping;
-picking writes the supplied integer ID with identical primitive order and no
-depth test or culling. This new domain is **UNALIGNED** until same-revision native
-Metal/Vulkan captures and reflection checks pass. The Windows Vulkan editor picks
-Bistro meshes by viewport click and draws the move, rotate and scale gizmos with
-clean Debug Vulkan validation.
+Editor overlay color and picking are shared and use packed geometry and an
+unjittered MVP. The Metal root is 112 bytes and the Vulkan root 128 bytes, with
+independently pinned layouts: Metal roots carry offset vertex/decode pointers,
+while Vulkan roots carry base addresses and explicit vertex/decode indices.
+Opaque linear color is written after tonemapping; picking writes the supplied
+integer ID with identical primitive order and no depth test or culling. The
+Windows Vulkan editor picks Bistro meshes by viewport click and draws the move,
+rotate and scale gizmos with clean Debug Vulkan validation.
 
 The selection outline ([ADR-046](046-editor-viewport-mapping-and-picking.md#selection-outline))
-reuses the overlay vertex path to write opaque white into an R8 mask, then
-blends the outline color from a twelve-tap edge test over the mask. Both
-outline roots are 48 bytes: Metal carries a read-access texture reference,
+is shared. It reuses the overlay vertex path to write opaque white into an R8
+mask, then blends the outline color from a twelve-tap edge test over the mask.
+Both outline roots are 48 bytes: Metal carries a read-access texture reference,
 Vulkan a bindless texture index, and each pins its layout by static assertion;
 Vulkan also checks the reflected fragment root. The outline color goes through
-the UI display-output transform. Metal renders it in the Release Bistro editor;
-Vulkan SPIR-V compiles, passes `spirv-val` and matches the host offsets. The
-Windows Release Vulkan editor draws the outline around a picked Bistro mesh, and
-Debug Vulkan validation is clean. The domain is **UNALIGNED** until a
-same-revision comparison passes.
+the UI display-output transform. The tiled pipeline draws it in the Release
+editor (ADR-087, Editor evidence); Vulkan SPIR-V compiles, passes `spirv-val`
+and matches the host offsets. The Windows Release Vulkan editor draws the
+outline around a picked Bistro mesh, and Debug Vulkan validation is clean.
 
-The editor ground grid (ADR-027) is one full-screen pass over the Scene image
-reading the opaque depth at binding 0. The shared kernel owns line coverage,
+The editor ground grid (ADR-027) is one shared full-screen pass over the Scene
+image reading the opaque depth at binding 0. The shared kernel owns line coverage,
 the tenfold level cross-fade, axis colors and distance fade; native entries own
 the unjittered ray (Metal flips NDC Y and the clip matrix, Vulkan does not),
 the depth read at the matching render-extent texel and the UI display-output
@@ -606,72 +534,81 @@ from 44 to 68 at 0.25 m, and left 6.6 m unchanged. On 2026-10-03 the macOS
 Release build compiled the Metal library with that change, and the windowed
 Bistro editor drew the grid at 0.25 and 1.7 m above it with lines up to the
 camera, hidden under the raised pavement; no contrast was measured on Metal.
-The domain is **UNALIGNED** until a same-revision comparison passes.
 
-The picking resolve also stores the opaque device depth at the picked pixel,
-which the editor's grid fit unprojects. The Vulkan root grows to 80 bytes
-(`depth_texture`, `depth_output` at 64) and writes the readback buffer at offset
-8 through its device address; the Metal root grows to 144 bytes
-(`depth_output` at 128) and writes 4 bytes after the object id in a readback
-prefix grown to 32 bytes. Windows Vulkan fits Bistro's grid from that depth.
-On 2026-10-03 the windowed macOS Release editor picked Bistro's `subset_9`
-with a click through Metal, and `grid.fit` after framing it read the GPU
-depth and set the grid 3.88 m high. Picking stays **UNALIGNED** until a
-same-revision comparison passes.
+Picking also returns the opaque device depth at the picked pixel, which the
+editor's grid fit unprojects. On Vulkan the picking resolve root grows to 80
+bytes (`depth_texture`, `depth_output` at 64) and writes the readback buffer at
+offset 8 through its device address; Windows Vulkan fits Bistro's grid from
+that depth. On Metal the tiled pipeline replays the opaque draws into the
+picking target, and the readback copies the picked pixel's resolved depth
+(ADR-087, decision 9); `grid.fit` on Bistro read 16.8432 m from it.
 
 Metal and Vulkan reject geometry range counts that cannot fit the existing
 32-bit temporal surface token before publication or narrowing loader counts.
 Metal's per-geometry CPU range storage changes neither that encoding nor shader
 roots. Native Vulkan validation of the publication guard remains unavailable.
 
-Portable contracts remain reviewable without pretending native roots are identical.
-A shader change requires both source/lowering paths to be inspected; output
-comparison needs a case-specific tolerance rather than a newly observed delta.
+Portable contracts remain reviewable without pretending native roots are
+identical. A shared kernel or record change requires every consuming
+source/lowering path on both backends to be inspected; output comparison
+against a same-backend reference needs a case-specific tolerance rather than a
+newly observed delta.
 
 ## Alternatives considered
 
 Frontend `.shadercfg` layout/staging was retired. Manifest-only ABI checks miss
 compiled layout drift. Requiring identical native resource bytes would erase
-backend resource models without proving equivalent rendering.
+backend resource models without proving equivalent rendering. Requiring
+pixel parity between the tiled and desktop classes would forbid the
+techniques ADR-087 chose per GPU class.
 
 ## Revisit when
 
-A new shader family, ABI, algorithm or native-only feature changes these contracts.
+A new shader family, ABI, algorithm or native-only feature changes these
+contracts, or a pipeline class gains a second backend.
 
 ## Implementation
 
 Paths below are relative to [`renderer/src/shaders/`](../../renderer/src/shaders).
 Native lowering lives in [`metal/`](../../renderer/src/metal) and
-[`vulkan/`](../../renderer/src/vulkan).
+[`vulkan/`](../../renderer/src/vulkan). Class names the backends that run a
+domain under the [evidence rules](#evidence-rules).
 
-| Domain | Shared source | Metal production | Vulkan production |
-|---|---|---|---|
-| Editor inspection views (UNALIGNED) | `shared/editor_view.slangh` | `metal/msl/world/default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
-| Editor handles/color/picking | CPU `VkrEditorOverlayDraw` | `metal/msl/editor/overlay.metal` | `vulkan/slang/editor/overlay.slang` |
-| Editor selection outline (UNALIGNED) | CPU `VkrEditorOverlayDraw` mask draws | `metal/msl/editor/overlay.metal`, `selection.metal` | `vulkan/slang/editor/overlay.slang`, `selection.slang` |
-| Editor ground grid (UNALIGNED) | `shared/editor_grid_kernel.slangh` | `metal/msl/editor/grid.metal` | `vulkan/slang/editor/grid.slang` |
-| Compute skinning | `shared/skinning_kernel.slangh` | `metal/msl/world/skinning.metal` | `vulkan/slang/world/skinning.slang` |
-| Terrain layer blend (UNALIGNED) | `shared/terrain_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
-| Geometry LOD and terrain geomorph (UNALIGNED) | `shared/lod_kernel.slangh`, `terrain_kernel.slangh`, `gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal`, `metal/slang/world/default.slang` | `vulkan/slang/world/deferred.slang`, `common/vertex.slangh` |
-| Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
-| Material/light math (UNALIGNED) | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
-| Transmission | `shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
-| Shadow receiver (UNALIGNED) | `shared/shadow_kernel.slangh`, `local_shadow.slangh`, `local_shadow_transmission.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang` |
-| Baked diffuse volumes (UNALIGNED) | `shared/diffuse_volume_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
-| Rectangle LTC (UNALIGNED) | `shared/ltc_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
-| Analytic fog (UNALIGNED) | `shared/fog_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/post/fog.metal`, `world/lighting.metalh` | `vulkan/slang/post/fog.slang`, `world/default.slang` |
-| Froxel volumetric fog (UNALIGNED) | `shared/froxel_fog_kernel.slangh`, `fog_kernel.slangh`, `punctual_light_kernel.slangh` | `metal/msl/post/froxel_fog.metal` | `vulkan/slang/post/froxel_fog.slang` |
-| IBL and SH (UNALIGNED) | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
-| Sky atmosphere and aerial perspective (UNALIGNED) | `shared/atmosphere_kernel.slangh` | `metal/msl/ibl/atmosphere.metal`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/fog.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/atmosphere.slang`, `world/default.slang`, `deferred.slang`, `post/fog.slang`, `post/froxel_fog.slang` |
-| Volumetric clouds (UNALIGNED) | `shared/cloud_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `ibl/sh_projection.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/clouds.slang`, `ibl/default.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |
-| Opaque SSR (UNALIGNED) | `shared/ssr_kernel.slangh` | `metal/msl/post/ssr.metal` | `vulkan/slang/world/deferred.slang` |
-| Opaque SSGI (UNALIGNED) | `shared/ssgi_kernel.slangh` | `metal/msl/post/ssgi.metal` | `vulkan/slang/post/ssgi.slang` |
-| Exposure/bloom/GTAO (UNALIGNED: pre-exposure) | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
-| Temporal resolve (UNALIGNED: pre-exposure) | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
-| MetalFX stationary accumulation (UNALIGNED: authorized Metal-only feature) | shared static-sample limit and CPU settling metadata | `metal/msl/post/metalfx.metal`, MetalFX SDK encode | — |
-| FSR 3.1 (UNALIGNED: authorized Vulkan-only feature) | graph inputs and prepared temporal metadata | — | `vulkan/slang/post/fsr31.slang`, FSR SDK dispatch |
-| Tonemap/FXAA/sharpening (UNALIGNED) | shared exposure state, `shared/sharpen_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
-| Text/UI (UNALIGNED: native comparison pending) | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
+| Domain | Class | Shared source | Metal production | Vulkan production |
+|---|---|---|---|---|
+| Editor inspection views | Shared | `shared/editor_view.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Editor handles/color/picking | Shared | CPU `VkrEditorOverlayDraw` | `metal/msl/editor/overlay.metal`, `metal/slang/picking/world.slang` | `vulkan/slang/editor/overlay.slang`, `picking/default.slang` |
+| Editor selection outline | Shared | CPU `VkrEditorOverlayDraw` mask draws | `metal/msl/editor/overlay.metal`, `selection.metal` | `vulkan/slang/editor/overlay.slang`, `selection.slang` |
+| Editor ground grid | Shared | `shared/editor_grid_kernel.slangh` | `metal/msl/editor/grid.metal` | `vulkan/slang/editor/grid.slang` |
+| Compute skinning | Shared | `shared/skinning_kernel.slangh` | `metal/msl/world/skinning.metal` | `vulkan/slang/world/skinning.slang` |
+| Culling, draw encoding and geometry decode | Shared | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang` |
+| Geometry LOD and terrain geomorph | Shared | `shared/lod_kernel.slangh`, `terrain_kernel.slangh`, `gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal`, `metal/msl/world/tiled.metal`, `metal/slang/world/default.slang` | `vulkan/slang/world/deferred.slang`, `common/vertex.slangh` |
+| Terrain layer blend | Shared | `shared/terrain_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
+| Tiled forward, atmosphere and blend | Tiled | shared material, light, fog, atmosphere and transmission kernels below | `metal/msl/world/tiled.metal`, `lighting.metalh`, `metal/msl/shadow/sampling.metalh` | — |
+| Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |
+| Material/light math | Shared | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/tiled.metal`, `lighting.metalh` | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Clearcoat, sheen, anisotropy, thin-sheet diffuse transmission | Desktop | `shared/clearcoat_kernel.slangh`, `sheen_kernel.slangh`, `anisotropy_kernel.slangh` | — | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Transmission composition | Shared | `shared/transmission_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
+| Transmission layers | Desktop | `shared/transmission_kernel.slangh` | — | `vulkan/slang/world/deferred.slang` |
+| Shadow receiver | Shared | `shared/shadow_kernel.slangh`, `local_shadow.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Local shadow mask and transmitting shadows | Desktop | `shared/local_shadow.slangh`, `local_shadow_transmission.slangh` | — | `vulkan/slang/world/deferred.slang`, `local_shadow_transmission.slang` |
+| Baked diffuse volumes | Shared | `shared/diffuse_volume_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/lighting.metalh`, `tiled.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Rectangle LTC | Shared | `shared/ltc_kernel.slangh` | `metal/msl/world/lighting.metalh`, `tiled.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Analytic fog | Shared | `shared/fog_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/post/fog.slang`, `world/default.slang` |
+| Froxel volumetric fog | Desktop | `shared/froxel_fog_kernel.slangh`, `fog_kernel.slangh`, `punctual_light_kernel.slangh` | — | `vulkan/slang/post/froxel_fog.slang` |
+| IBL and SH | Shared | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
+| Sky atmosphere and aerial perspective | Shared | `shared/atmosphere_kernel.slangh` | `metal/msl/ibl/atmosphere.metal`, `world/lighting.metalh`, `world/tiled.metal` | `vulkan/slang/ibl/atmosphere.slang`, `world/default.slang`, `deferred.slang`, `post/fog.slang`, `post/froxel_fog.slang` |
+| Volumetric clouds | Shared | `shared/cloud_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `ibl/sh_projection.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `world/tiled.metal` | `vulkan/slang/ibl/clouds.slang`, `ibl/default.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |
+| Opaque SSR | Desktop | `shared/ssr_kernel.slangh` | — | `vulkan/slang/world/deferred.slang` |
+| Opaque SSGI | Desktop | `shared/ssgi_kernel.slangh` | — | `vulkan/slang/post/ssgi.slang` |
+| Exposure/bloom | Shared | matching `shared/*_kernel.slangh` | `metal/msl/post/exposure.metal`, `bloom.metal` | `vulkan/slang/post/exposure.slang`, `bloom.slang` |
+| GTAO | Desktop | `shared/gtao_kernel.slangh` | — | `vulkan/slang/post/gtao.slang` |
+| Temporal resolve | Desktop | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | — | `vulkan/slang/world/deferred.slang` |
+| FSR 3.1 | Desktop | graph inputs and prepared temporal metadata | — | `vulkan/slang/post/fsr31.slang`, FSR SDK dispatch |
+| Depth of field, motion blur, surface diffusion | Desktop | `shared/dof_kernel.slangh`, `motion_blur_kernel.slangh`, `subsurface_kernel.slangh` | — | `vulkan/slang/post/dof.slang`, `motion_blur.slang`, `subsurface.slang` |
+| Tonemap/sharpening/display output | Shared | shared exposure state, `shared/sharpen_kernel.slangh`, `agx_kernel.slangh`, `display_output_kernel.slangh`, `color_grading_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
+| FXAA | Desktop | — | — | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
+| Text/UI | Shared | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
 mirrors the shared Slang record. Consult [`shared/README.md`](../../renderer/src/shaders/shared/README.md)
@@ -684,22 +621,20 @@ The renderer-features performance corrections reconstruct normal-map Z before
 strength, preserve explicit glTF zero strength, and version paired cooked recipes.
 Fog composition preserves scene HDR and ray reconstruction extrapolates beyond
 raster far depth. Material planes are conditionally declared from an opaque
-feature aggregate; both native paths guard absent texture bindings. Deferred,
+feature aggregate; the Vulkan path guards absent texture bindings. Deferred,
 forward and transmission lighting share active lobe traversal. Deferred lighting
 skips discarded environment diffuse, and SSGI excludes camera-directed specular
-from its source. Both backends split deferred lighting into base and layered
-kernels (Metal template instances, Slang generic value parameter) with the same
-8x8 group classification; the lighting root carries the split flag at byte 188
-on Metal and 164 on Vulkan. Both Vulkan modules pass `spirv-val` with matching
-root offsets; Metal API validation of the split path passes. Native Vulkan
-execution remains unavailable.
+from its source. Vulkan splits deferred lighting into base and layered kernels
+(a Slang generic value parameter) with 8x8 group classification; the lighting
+root carries the split flag at byte 164. Both Vulkan modules pass `spirv-val`
+with matching root offsets.
 
-SSGI depth-base now writes current-frame RG32UI receiver metadata with bit-preserved
+SSGI depth-base writes current-frame RG32UI receiver metadata with bit-preserved
 32-bit depth and an exact local offset. Trace, temporal and composite reuse it.
-Native Metal root sizes are 320/352/416/512 bytes for depth-base/trace/temporal/
-composite; Vulkan sizes are 304/320/368/448 bytes. Shared parameters remain 288
-bytes. Source review and CPU arithmetic do not establish bilateral execution;
-these changed domains remain **UNALIGNED** until fresh native gates pass.
+Vulkan root sizes are 304/320/368/448 bytes for depth-base/trace/temporal/
+composite; shared parameters remain 288 bytes. Source review and CPU
+arithmetic do not establish execution; a native Vulkan run of this change is
+pending.
 
 Material normals transform through the explicit tangent/bitangent/normal basis;
 Slang row constructors must not transpose that basis. Native model-matrix
@@ -714,130 +649,120 @@ the squared denominator. At or below `VKR_IBL_PREFILTER_MIRROR_ROUGHNESS`
 write one source-mip-zero fetch at the texel's normal, the value every one of
 its 256 importance samples took. Changes to the distribution and
 importance-sampling PDF must remain consistent. The Vulkan entry passes
-`spirv-val` with the branch at the shared threshold; native Vulkan execution
-remains unavailable, so IBL stays **UNALIGNED**.
+`spirv-val` with the branch at the shared threshold; native Vulkan execution of
+the branch is not recorded.
 
-The new material energy record uses correlated Smith visibility and one shared
-RG16F DFG lookup per surface in both native implementations. Metal adds the
-DFG texture at byte 472; Vulkan uses sampled-image and sampler indices at
-488/492. ADR-054 later extends the surrounding frame roots without moving DFG. Native
-manifests and Vulkan reflection include these fields. [ADR-053](053-energy-compensated-ggx.md)
-owns the equations and approximation. Native Metal Release furnace output and API
-validation pass. Metal shader validation remains unresolved after a report-decoding
-crash, and native Vulkan execution is unavailable on the current host. These domains
-remain **UNALIGNED** pending those diagnostics and a same-revision comparison.
+The material energy record uses correlated Smith visibility and one shared
+RG16F DFG lookup per surface in both native implementations: the Metal frame
+root holds the DFG texture at byte 472, and Vulkan uses sampled-image and
+sampler indices at 488/492. Native manifests and Vulkan reflection include
+these fields. [ADR-053](053-energy-compensated-ggx.md) owns the equations and
+approximation. No furnace test has run on the tiled pipeline or on Vulkan; the
+earlier Metal furnace used the removed deferred lighting.
 
-Clearcoat changes world material rows and resolve/deferred, SSGI composite,
-and SSR trace/temporal/composite roots. Metal rows are 240 bytes; Vulkan rows
-are 192 bytes. Production SPIR-V reflection passes all nine affected compute
-modules, and Metal furnace, material/SSR and API-validation resize checks pass.
-The domain remains **UNALIGNED** because native Vulkan execution and the
-same-revision comparison are unavailable. [ADR-062](062-layered-clearcoat.md) owns its independent-normal,
-layer allocation, graph storage and coat-priority SSR policy.
+Clearcoat is desktop-only and changes world material rows and resolve/deferred,
+SSGI composite, and SSR trace/temporal/composite roots; Vulkan rows are 192
+bytes. Production SPIR-V reflection passes all nine affected compute modules,
+and the 2026-09-12 Windows sweep passes a Debug synchronization-validation
+resize. Vulkan output checks are pending. [ADR-062](062-layered-clearcoat.md)
+owns its independent-normal, layer allocation, graph storage and coat-priority
+SSR policy.
 
-Charlie sheen extends those material rows to 288 bytes on Metal and 224 bytes
-on Vulkan. The shared layer and two-component rectangle kernels use a separate
-immutable table block (48 bytes on Metal, 32 bytes on Vulkan), addressed by the
-528-byte Metal and 608-byte Vulkan frame roots. Resolve writes a sheen G-buffer;
-deferred lighting and SSGI/SSR composites consume it. This domain is
-**UNALIGNED** because native Vulkan execution and same-revision comparison are
-unavailable. Actual SPIR-V reflection and Metal material, rectangle quadrature,
-furnace, zero-color equivalence, editor and API-validation resize checks pass.
-Both backends decode the same positive-orientation matrix parameters and clip
-rectangles to the receiver horizon before the two fitted lobe integrals.
+Charlie sheen is desktop-only and extends the Vulkan material rows to 224
+bytes. The shared layer and two-component rectangle kernels use a separate
+immutable 32-byte table block addressed by the Vulkan frame root. Resolve
+writes a sheen G-buffer; deferred lighting and SSGI/SSR composites consume it.
+Actual SPIR-V reflection passes, and the 2026-09-12 Windows sweep passes a
+Debug synchronization-validation resize. The implementation decodes
+positive-orientation matrix parameters and clips rectangles to the receiver
+horizon before the two fitted lobe integrals. Vulkan output checks are pending.
 [ADR-063](063-charlie-sheen.md) owns the layer, numerical domain, table budget
 and environment-filtering approximation.
 
-Baked diffuse volumes share cell lookup and trilinear weights. Metal's 512-byte
-frame root keeps the texture at 480 and the 48-byte parameter pointer at 488;
-origin, inverse spacing and dimensions remain at 0/16/32. Vulkan's 576-byte root
-keeps the corresponding texture/value offsets at 496/512/528/544. Both paths load
-an immutable RGBA32F texture and replace only diffuse lighting inside validated
-same-room cells. Native Metal reflection, opaque/BLEND HDR comparison (maximum
-error 0.000330536), and API validation pass. Actual deferred SPIR-V reflection
-confirms all volume offsets in the 576-byte span; shader SHA-256 is
-`dcbed9153947320b6163c397ec24361b39ca298f903a0c50f5cb617627f2d239`. This domain
-remains **UNALIGNED** because native Vulkan execution is unavailable.
+Baked diffuse volumes are shared and share cell lookup and trilinear weights.
+The Metal frame root keeps the texture at byte 480 and the 48-byte parameter
+pointer at 488; origin, inverse spacing and dimensions remain at 0/16/32. The
+576-byte Vulkan root keeps the corresponding texture/value offsets at
+496/512/528/544. Both paths load an immutable RGBA32F texture and replace only
+diffuse lighting inside validated same-room cells; the tiled pipeline uses them
+for draws without a lightmap (ADR-087, decision 8). Actual deferred SPIR-V
+reflection confirms all volume offsets in the 576-byte span; shader SHA-256 is
+`dcbed9153947320b6163c397ec24361b39ca298f903a0c50f5cb617627f2d239`. Native
+output evidence on the tiled pipeline and on Vulkan is not recorded.
 [ADR-054](054-baked-diffuse-volumes.md) owns asset and sampling semantics.
 
-Rectangle LTC appends a 32-byte light/table block after those volume fields: the
-Metal frame pointer is at 496 and the Vulkan block pointer at 560. Each block
-references 64-byte rectangle rows and two immutable 64×64 RGBA16F tables. Metal
-native MSL uses typed texture fields for sampling. The separate Metal Slang
-vertex/visibility/shadow layout never samples LTC; its block carries the row
-pointer plus raw 64-bit texture identifiers because nested Slang texture fields
-cause the Metal-target compiler to fault. The source still preserves the 32-byte
-block and frame-pointer offset, while native MSL ABI manifests validate the typed
-consumer layout. Compiled Vulkan SPIR-V confirms a 576-byte frame root, 32-byte
-LTC block and 64-byte row. Metal GGX quadrature, zero-light/back-face, radiance
-scaling, layered-path and API checks pass. Native Vulkan execution and bilateral
-comparison remain unavailable, so this domain is **UNALIGNED**. [ADR-056](056-rectangular-ltc-lights.md)
+Rectangle LTC is shared and appends a 32-byte light/table block after those
+volume fields: the Metal frame pointer is at 496 and the Vulkan block pointer
+at 560. Each block references 64-byte rectangle rows and two immutable 64×64
+RGBA16F tables. Metal native MSL uses typed texture fields for sampling. The
+separate Metal Slang vertex and shadow layout never samples LTC; its block
+carries the row pointer plus raw 64-bit texture identifiers because nested
+Slang texture fields cause the Metal-target compiler to fault. The source still
+preserves the 32-byte block and frame-pointer offset, while native MSL ABI
+manifests validate the typed consumer layout. Compiled Vulkan SPIR-V confirms a
+576-byte frame root, 32-byte LTC block and 64-byte row. On the tiled pipeline,
+night and daylight Bistro captures with a dynamic rectangle light changed by at
+most 4 and 8 of 255 with the contribution cut-off (ADR-087,
+[Light shading variants](087-gpu-class-graphics-pipelines.md#light-shading-variants));
+native Vulkan output is not recorded. [ADR-056](056-rectangular-ltc-lights.md)
 owns its authoring and transport policy.
 
-Directional PCSS retains the 96-byte cascade record, with `origin_inv_size_sun`
-at byte 80 and the sun half-angle tangent in its fourth component. Both receivers
-share the nearest-two-cascade gate and world-to-texel radius equations, with eight
-raw blocker samples and at most sixteen comparison-filter samples. Metal
-hard/default/wide-sun captures and API validation pass; native Vulkan receiver
-execution and bilateral output comparison remain unavailable. ADR-041 records
-the authored units, fallback and acceptance evidence.
+Directional PCSS is shared and retains the 96-byte cascade record, with
+`origin_inv_size_sun` at byte 80 and the sun half-angle tangent in its fourth
+component. Every receiver shares the nearest-two-cascade gate and
+world-to-texel radius equations, with eight raw blocker samples and at most
+sixteen comparison-filter samples. ADR-041 records the authored units,
+fallback and acceptance evidence.
 
 Far-cascade EVSM shares its warp, tent weights and Chebyshev visibility through
-`shadow_kernel.slangh` (`vkr_shadow_evsm_*`). Both moments passes
-(`pass.shadow.moments`) use a 32-byte root: depth and moments references, depth
-and moments layers, and the two square sizes. Metal binds 64-bit resource IDs
-at bytes 0 and 8, Vulkan bindless indices at 0 and 4. The deferred-lighting roots
-keep their sizes: Vulkan reuses bytes 172 for the moments index and 200 for the
-linear-sampler slot, Metal stores the moments texture at byte 248, and a null
-texture or `UINT32_MAX` keeps PCF. Vulkan's compiled-SPIR-V reflection test
-covers both roots. Metal captures and API validation pass; native Vulkan
-execution and bilateral comparison remain unavailable, so this domain is
-**UNALIGNED**.
+`shadow_kernel.slangh` (`vkr_shadow_evsm_*`). Both graphs run the moments
+passes (`pass.shadow.moments`) while the setting is on, but only the Vulkan
+receivers read them; the tiled forward shader keeps depth PCF. The passes use
+a 32-byte root: depth and moments
+references, depth and moments layers, and the two square sizes. Metal binds
+64-bit resource IDs at bytes 0 and 8, Vulkan bindless indices at 0 and 4. The
+Vulkan deferred-lighting root keeps its size and reuses bytes 172 for the
+moments index and 200 for the linear-sampler slot; `UINT32_MAX` keeps PCF.
+Vulkan's compiled-SPIR-V reflection test covers both roots. Native Vulkan
+output of the far cascades is not recorded.
 
 Both classify kernels skip a caster for any non-camera orthographic view when
 the shared `vkr_gpu_cascade_caster_too_small` (`lod_kernel.slangh`) finds its
 bounding-sphere diameter below one texel of the view's LOD scale. Native
-Vulkan execution is unavailable, so the culling result stays **UNALIGNED**.
+Vulkan evidence of the skip is not recorded.
 
-Directional GTAO keeps the existing 192-byte parameter record and native roots:
-Metal depth/evaluate/denoise are 224/256/240 bytes; Vulkan uses its existing
-240-byte utility root. Raw and denoised graph images change from R8 to RGBA8,
-with world bent direction in RGB and visibility in alpha. Both backends share
-horizon moments, packing, multi-bounce diffuse and cone specular arithmetic.
-Base deferred environment and SSR receiver weights use the shared cone factor.
-Deferred coat lighting and matching SSR probe removal use the coat-directed cone
-on both backends, with bent direction decoded against the coat normal and packed
-coat roughness. SSR composite uses filtered coat roughness for incoming reflection shading. This corrects
-Metal's former base-cone approximation and Vulkan's omitted coat occlusion;
-native Vulkan comparison is still missing. Baked volumes retain scalar AO. Metal's disabled output is byte-identical to
-its prior HDR fixture, and the corner lighting oracle has maximum HDR error
-0.000960297 across 34 samples. Native API validation and production SPIR-V
-validation pass. Native Vulkan execution and bilateral comparison remain
-unavailable, so the domain stays **UNALIGNED**. ADR-042 owns the lighting policy.
+Directional GTAO is desktop-only and keeps the existing 192-byte parameter
+record; Vulkan uses its existing 240-byte utility root. Raw and denoised graph
+images are RGBA8, with world bent direction in RGB and visibility in alpha. The
+shared kernel holds horizon moments, packing, multi-bounce diffuse and cone
+specular arithmetic. Base deferred environment and SSR receiver weights use the
+shared cone factor. Deferred coat lighting and matching SSR probe removal use
+the coat-directed cone, with bent direction decoded against the coat normal and
+packed coat roughness. SSR composite uses filtered coat roughness for incoming
+reflection shading. This corrected Vulkan's omitted coat occlusion. Baked
+volumes retain scalar AO. Production SPIR-V validation passes; native Vulkan
+output checks are pending. ADR-042 owns the lighting policy.
 
-Opaque SSR is **UNALIGNED** pending native Vulkan execution and same-revision
-bilateral comparison. [ADR-055](055-screen-space-reflections.md) owns its accepted
-reflected-hit reprojection, incoming-radiance history, storage and fallback policy.
-Shared `VkrSsrParams` stays 288 bytes. The temporal-only camera record is 128 bytes,
-with inverse current view at 0 and exact selected producer view at 64.
+Opaque SSR is desktop-only. [ADR-055](055-screen-space-reflections.md) owns its
+accepted reflected-hit reprojection, incoming-radiance history, storage and
+fallback policy. Shared `VkrSsrParams` stays 288 bytes. The temporal-only
+camera record is 128 bytes, with inverse current view at 0 and exact selected
+producer view at 64.
 
-| Root | Metal | Vulkan | Changed contract |
-| --- | ---: | ---: | --- |
-| SSR depth base | 320 B | 304 B | Independent floor-half extent; receiver-coordinate output removed |
-| SSR trace | 368 B | 336 B | Full-source raw and uint4 hit; receiver-coordinate input removed |
-| SSR temporal | 432 B | 512 B | Camera record, selected transforms, paired identities and wider geometry; receiver input removed |
-| SSR composite | 480 B | 416 B | Same-pixel incoming history, current receiver shading |
+| Vulkan root | Size | Changed contract |
+| --- | ---: | --- |
+| SSR depth base | 304 B | Independent floor-half extent; receiver-coordinate output removed |
+| SSR trace | 336 B | Full-source raw and uint4 hit; receiver-coordinate input removed |
+| SSR temporal | 512 B | Camera record, selected transforms, paired identities and wider geometry; receiver input removed |
+| SSR composite | 416 B | Same-pixel incoming history, current receiver shading |
 
-Metal binds the camera record through a constant pointer; temporal upload is
-560 payload bytes in two 512-byte cells, down from 1024 payload bytes in four
-cells when temporal owned the frame/LUT shading records. Vulkan embeds the camera
-record at offset 288, then visible rows/instances/prior transforms at 416/424/432,
-producer frame at 440, hit texture at 460, and output color/geometry/identity at
-476/480/484. Specular/coat indices are 488/492 and tail padding begins at 496.
-Metal temporal hit/transforms/camera/frame fields are 400/408/416/424; its
-durable ABI manifest pins 432 bytes. Native assertions and compiled reflection pin each layout. Existing
-80-byte GPU transform rows retain their layout; CPU graph-buffer history metadata
-adds an owned camera view matrix, published only after successful submission.
+Vulkan embeds the camera record at offset 288, then visible
+rows/instances/prior transforms at 416/424/432, producer frame at 440, hit
+texture at 460, and output color/geometry/identity at 476/480/484.
+Specular/coat indices are 488/492 and tail padding begins at 496. Native
+assertions and compiled reflection pin each layout. Existing 80-byte GPU
+transform rows retain their layout; CPU graph-buffer history metadata adds an
+owned camera view matrix, published only after successful submission.
 
 Trace stores fractional hit UV, positive view depth and reflected visible-row
 identity in full-source RGBA32_UINT. The full-resolution geometry history is
@@ -850,13 +775,13 @@ reflected-hit history expansion, the increase is 140.625/316.40625 MiB. Alignmen
 and resize overlap are excluded. History instance count and completion ownership
 are unchanged; the obsolete half-size RG32_UINT receiver image is removed.
 
-Both temporal entries gather rough raw samples at source offsets {-2,0,2}, with
+The temporal entry gathers rough raw samples at source offsets {-2,0,2}, with
 half-offset grid/bilateral weights preserving the former physical filter width.
 Integer source coordinates give mirrors one nonzero center tap. The shared
 ranking helper selects the largest weighted RGB component, breaking equal-energy
 ties by covered weight. History geometry therefore follows the sample supplying
 light, including bright lamps surrounded by more widely covered dark objects.
-They read that hit once and retain its visible row from the gather: one additional
+It reads that hit once and retains its visible row from the gather: one additional
 texture read, below the approved nine. Cross-instance receiver correspondence
 cannot seed or reuse history. Transported hit/receiver models and producer camera
 supply virtual reflected-point motion; adding its UV delta preserves the current
@@ -865,22 +790,22 @@ current jitter supplies history UV; the previous ray/receiver-plane intersection
 supplies expected receiver depth. Four independently validated taps require
 receiver/hit identities, both depths and selected normals to match. Invalid or
 absent correspondence uses current radiance/probes immediately. Shared affine,
-projection, octahedral and acceptance math is executed by both native entries.
-Curved surfaces remain approximate.
+projection, octahedral and acceptance math runs in the native entry. Curved
+surfaces remain approximate.
 
 The temporal source ceiling is 63 reads for rough base receivers and 60 for coat
 receivers with mixed neighbors (52 for a fully coated footprint), or 23/20 on
 mirrors, plus three writes. Former temporal material/LUT,
 motion and validity reads are removed. Graph bindings 17/18 supply the hit image
-and exact prior transform buffer. The graph declares these accesses; Metal event
-ordering and Vulkan same-queue barriers synchronize the selected producer, while
-submitted readers extend last use. Output reuse still requires GPU completion.
+and exact prior transform buffer. The graph declares these accesses; same-queue
+barriers synchronize the selected producer, while submitted readers extend last
+use. Output reuse still requires GPU completion.
 
 Composite applies current base BRDF, sheen/anisotropy and indirect-specular GTAO
 once. Coated pixels use filtered selected-normal roughness for new SSR and packed
 roughness with the coat-directed GTAO cone for exact old-probe removal. Trace
 keeps its one/five fractional linear-clamp source samples, full-resolution leaves
-and 48-decision limit. It now traces each source pixel, nominally four times the
+and 48-decision limit. It traces each source pixel, nominally four times the
 former floor-half grid, without another per-ray source read. The depth pyramid
 remains independently floor-half. Removed graph bindings are depth-base 3,
 trace 5 and temporal 1; surviving bindings retain their numbers.
@@ -890,123 +815,98 @@ version 2.
 
 The shared supported RGB-retention cap and 128-frame SSR settling period remain.
 Portable TAA caps ordinary history at 90% while settling, through the unchanged
-224/144-byte Metal/Vulkan roots. Its mode remains at offsets 216/124. SSR-off
-stationary retention and the following checked 128-sample integral are unchanged;
-FSR and MetalFX retain their accepted policies. The original reflected-hit change
-passed Release app/editor builds, 268
+144-byte Vulkan root, with its mode at offset 124. SSR-off stationary retention
+and the following checked 128-sample integral are unchanged; FSR retains its
+accepted policy. The reflected-hit change passed Release app/editor builds, 268
 independent shared-math outputs, eleven SSR/SSGI/deferred SPIR-V modules and
-Vulkan host syntax checks pass. Compiled temporal root/camera/transform strides
-are 512/128/80 bytes. Native Metal reflection, a serial API-validated resize,
-Bistro camera-motion captures, a moving reflected emitter, layered materials and
-an odd-size scaled editor capture pass their selected checks. The
-[reflected-hit record](../../assets/verification/renderer-features/ssr-reflected-hit.txt)
-owns exact commands, native layout evidence and the measured visual/cost limits.
-GPU shader validation previously crashed in MetalTools with SSR on and off and
-supplied no result. Native Vulkan and bilateral parity remain open gates.
-
-Before the full-resolution trial, the radiance-owner correction preserved the
-original reflected-hit layouts, reads and rejection rules. Its 290-output Slang oracle, production app/editor builds and temporal
-SPIR-V validation pass. Metal covers the reported bar view, camera motion with
-SSGI/MetalFX, emitter disappearance and serial API-validated resize. The
-[radiance-owner record](../../assets/verification/renderer-features/ssr-radiance-owner.txt)
-records reduced sampled-phase flicker and residual thin-edge/missing-hit shimmer;
-native Vulkan execution and bilateral comparisons remain unavailable.
-
-The retained full-resolution trial updates the root layouts and source-read
-ceilings above, with the same correspondence and rejection math. Production
-Metal captures exercise the later bar camera, a moving emitter and layered
-clearcoat/sheen materials. The narrower immediate-neighbor trial is superseded
-by nine spaced rough taps; both results remain in the
-[full-resolution tracing record](../../assets/verification/renderer-features/ssr-full-resolution-tracing.txt).
+Vulkan host syntax checks. Compiled temporal root/camera/transform strides are
+512/128/80 bytes. The radiance-owner selection, the nine spaced rough taps and
+full-resolution tracing were chosen from captures of the removed Metal desktop
+implementation; the
+[reflected-hit](../../assets/verification/renderer-features/ssr-reflected-hit.txt),
+[radiance-owner](../../assets/verification/renderer-features/ssr-radiance-owner.txt)
+and [full-resolution tracing](../../assets/verification/renderer-features/ssr-full-resolution-tracing.txt)
+records keep their commands, visual and cost limits. Native Vulkan output
+checks are pending (checklist).
 
 Analytic fog shares `VkrFogParams`, three `float4` values (48 bytes), between
 native passes: colour and density, height and distance limits, and sky lighting
 with anisotropy. The frame roots address it at byte 504 on Metal and byte 568 on
-Vulkan. Both 8x8 compute roots are 176 bytes. Metal places the parameter record,
-inverse view-projection, camera position, depth, target, extent, aerial volume,
-sky record and lit frame root at bytes 0/48/112/128/136/144/152/160/168. Vulkan
-places the parameter record, inverse view-projection, camera position, depth,
-target, extent, sky record, aerial descriptor and frame root at bytes
-0/48/112/128/132/136/144/152/160. The shared kernel owns the Henyey-Greenstein
-phase and the sky-lit in-scatter; native helpers derive the sun from the
-frame's directional light and the sky light's average from the published SH.
-The shared froxel regression checks that arithmetic on the CPU. Emitted SPIR-V
-reflection and Release compile-command C syntax checks pass; the retained
-diagnostic is [retained fog-spirv diagnostic](../../assets/verification/renderer-features/fog-spirv.txt).
-Metal Release and editor runs pass, including native MSL startup/API evidence
-in [retained fog-api diagnostic](../../assets/verification/renderer-features/fog-api.txt). Independent opaque/sky
-checks cover 98,304 pixels per case with maximum HDR error 0.0004891, and
-disabled fog is byte-identical. Clear-glass feedback and BLEND composition
-checks pass with maximum errors 0.0007009 and 0.0001494 respectively.
-Native Vulkan execution and bilateral image comparison remain unavailable, so
-analytic fog is **UNALIGNED**.
+Vulkan. Vulkan's `Fog.Apply` 8x8 compute root is 176 bytes and places the
+parameter record, inverse view-projection, camera position, depth, target,
+extent, sky record, aerial descriptor and frame root at bytes
+0/48/112/128/132/136/144/152/160. The tiled pipeline applies the same kernel in
+`Tiled.Atmosphere` and its blend fragment (ADR-087, decisions 6 and 8). The
+shared kernel owns the Henyey-Greenstein phase and the sky-lit in-scatter;
+native helpers derive the sun from the frame's directional light and the sky
+light's average from the published SH. The shared froxel regression checks that
+arithmetic on the CPU. Emitted SPIR-V reflection and Release compile-command C
+syntax checks pass; the retained diagnostic is
+[retained fog-spirv diagnostic](../../assets/verification/renderer-features/fog-spirv.txt).
+On the tiled pipeline a Bistro capture with height fog shows the expected haze
+and sky (ADR-087). Native Vulkan fog output is not recorded.
 
-Extended-linear output is implemented under
+Extended-linear output is shared and implemented under
 [ADR-061](061-extended-linear-display-output.md). The shared 16-byte display
 record carries headroom, native output scale and the selected extended-linear
 flag. Final, UI and editor-overlay roots are affected; world text remains
-scene-linear. Metal roots are tonemap 48B, UI 48B and overlay 112B; Vulkan
-roots are fullscreen 576B, UI 64B and overlay 128B (UI sizes as of the
-2026-09-25 vertex change). Generated SPIR-V validates
-the 16B parameter offsets 0/4/8/12 and root strides. Native Metal reflection,
-36-swatch FP16 output, one-time UI scaling, format transitions and API validation
-pass. The editor composite preserves pre-encoded highlights without a second
-scale or SDR clamp. Maximum numeric error is 0.003899. Native Vulkan execution remains
-unavailable, so affected presentation entries are **UNALIGNED**.
+scene-linear. At that change the Metal roots were tonemap 48B, UI 48B and
+overlay 112B, and the Vulkan roots fullscreen 576B, UI 64B and overlay 128B (UI
+sizes as of the 2026-09-25 vertex change). Generated SPIR-V validates the 16B
+parameter offsets 0/4/8/12 and root strides. Native Metal reflection, 36-swatch
+FP16 output, one-time UI scaling, format transitions and API validation pass.
+The editor composite preserves pre-encoded highlights without a second scale or
+SDR clamp. Maximum numeric error is 0.003899. Native Vulkan EDR output needs an
+HDR display on Windows and is not recorded.
 
-SSGI shares a 288-byte parameter record and has five phases: depth base/mips,
-trace, temporal, and composite. Bytes 280/284 now carry
+SSGI is desktop-only. It shares a 288-byte parameter record and has five
+phases: depth base/mips, trace, temporal, and composite. Bytes 280/284 carry
 `history_jitter_uv_x/y` in the former unused tail. Deferred lighting writes the
-isolated direct/emissive source only when SSGI is enabled; its roots retain
-existing solar fields and append the direct-source identifier and enable flag,
-producing 192-byte Metal and 160-byte Vulkan roots.
+isolated direct/emissive source only when SSGI is enabled; its root retains
+existing solar fields and appends the direct-source identifier and enable flag,
+producing a 160-byte Vulkan root.
 
-Both native paths use the same 256-phase Hammersley trace sequence and 3×3 raw
+The implementation uses a 256-phase Hammersley trace sequence and 3×3 raw
 bilateral filter over nearest covered receivers. Valid misses remain zero samples
 in that normalized average. History selection proves the exact
 temporal-transform instance, submit, frame, scene and compatible retained tuple.
 That same-queue predecessor may be in flight through existing barriers; no other
 in-flight tuple is eligible. Reprojection adds the producer's previous-minus-
 current raster jitter to unjittered motion on the raw grid. FSR uses its active
-phase count; MetalFX remains fixed at eight phases and no-TAA keeps zero offsets.
+phase count and no-TAA keeps zero offsets.
 Four bilinear color/depth/identity taps validate each depth and identity before
 resolving RGB with bilinear × history-confidence weight. The four taps add nine
 history texture accesses over the former single tap, with no new images or rays.
 
 Release builds, all ten SSR/SSGI SPIR-V modules, compiled parameter offsets and
-Vulkan host syntax pass. Current Metal captures cover TAA/MetalFX and no-TAA,
-and a serial SSR/SSGI resize passes Metal API validation. The
+Vulkan host syntax pass. The
 [correction record](../../assets/verification/renderer-features/ssgi-ssr-history-correction.txt)
-retains the reported-view comparisons and their limits. Earlier source-isolation,
-emissive-bounce, baked-volume exclusion,
-editor output and Bistro checks predate it. Native Vulkan execution and bilateral
-comparison remain unavailable, so SSGI is **UNALIGNED**.
-[ADR-060](060-screen-space-diffuse-indirect-lighting.md) owns the feature policy
-and acceptance evidence.
+retains the reported-view comparisons, made on the removed Metal desktop
+implementation, and their limits. Native Vulkan evidence is the 2026-09-12
+Release emission and Bistro runs and a Debug validation run
+([ADR-060](060-screen-space-diffuse-indirect-lighting.md), which owns the
+feature policy and acceptance evidence).
 
-Froxel volumetric fog uses a 944-byte `VkrFroxelFogParams` record. Fields through
-byte 799 retain their existing offsets; unjittered current view-projection and
-jittered inverse raster view-projection append at bytes 800 and 864, and the
-sky-lighting vector at byte 928. The phase lane carries the Henyey-Greenstein
-anisotropy that both native injection passes apply per light. Packet
-version 40 binds the Metal 512-byte frame root's froxel parameter pointer and
-integrated 3D texture at bytes 136 and 216. The Vulkan frame root is 592 bytes:
-the parameter address, integrated descriptor and sampler occupy bytes 576, 584
-and 588. The graph defines frame-slot-count plus two completion-gated RGBA16F
-3D scattering-history instances and one transient integrated volume per frame
-slot: four plus two in the current renderer, five plus three in the approved
-three-slot budget. History holds local
-scattering/extinction only; camera-integrated values are current-frame data.
-Metal host layout and native reflection, API validation, lifecycle, and numeric
-captures pass. Actual Vulkan SPIR-V reflection/validation and eight affected host
-translation units compile successfully. Native Vulkan execution and bilateral
-comparison remain unavailable, so froxel fog is **UNALIGNED**.
-[ADR-059](059-froxel-volumetric-fog.md) records the implemented scope and evidence.
+Froxel volumetric fog is desktop-only and uses a 944-byte `VkrFroxelFogParams`
+record. Fields through byte 799 retain their existing offsets; unjittered
+current view-projection and jittered inverse raster view-projection append at
+bytes 800 and 864, and the sky-lighting vector at byte 928. The phase lane
+carries the Henyey-Greenstein anisotropy that the injection pass applies per
+light. The Vulkan frame root holds the parameter address, integrated
+descriptor and sampler at bytes 576, 584 and 588. The graph defines
+frame-slot-count plus two completion-gated RGBA16F 3D scattering-history
+instances and one transient integrated volume per frame slot: four plus two in
+the current renderer, five plus three in the approved three-slot budget.
+History holds local scattering/extinction only; camera-integrated values are
+current-frame data. Actual Vulkan SPIR-V reflection/validation and eight
+affected host translation units compile successfully. Native Vulkan output is
+not recorded. [ADR-059](059-froxel-volumetric-fog.md) records the implemented
+scope and evidence.
 
-Sky atmosphere uses shared 128-byte parameters and three cold compute stages;
-the direct light's observer irradiance is a CPU integral, so no stage writes
-a readback. Its native bake root is 192 bytes on Metal and 176 bytes on
-Vulkan, with the scalar tail at byte 168 and 152; the lookup texture
+Sky atmosphere is shared and uses shared 128-byte parameters and three cold
+compute stages; the direct light's observer irradiance is a CPU integral, so no
+stage writes a readback. Its native bake root is 192 bytes on Metal and 176
+bytes on Vulkan, with the scalar tail at byte 168 and 152; the lookup texture
 references name the generation's own textures. Both source stages add the
 sunlit Lambertian ground for below-horizon rays and write no disc coverage.
 Packet version 50 carries the published medium lit by the scene's current sun
@@ -1018,36 +918,35 @@ embed it and append texture references: 416 bytes on Metal and 400 on Vulkan,
 addressed from byte 536 of the Metal frame root and byte 616 of the Vulkan
 frame root, whose sizes are unchanged. Vulkan sky-record slots name the
 sampled heap; an aerial-perspective slot formerly taken from the storage heap
-is corrected. Both sky builders use a 16-byte root. The deferred lighting root
-keeps its size and reuses the sky slot, flag and radiance vector as the
-sky-view lookup, sky mode and constant radiance. The fog roots also
-address the aerial volume, and the Metal froxel application root grows to 64
-bytes to do so. Shared helpers own the sky-view mapping, analytic disc, sun
-glow and aerial coordinates; native files own every sample and write. The sky
-record carries the glow coefficient in `atmosphere.mie_extinction.w`, a lane
-the bake leaves zero.
+is corrected. Both sky builders use a 16-byte root. The Vulkan deferred
+lighting root keeps its size and reuses the sky slot, flag and radiance vector
+as the sky-view lookup, sky mode and constant radiance; the Vulkan fog roots
+also address the aerial volume. Shared helpers own the sky-view mapping,
+analytic disc, sun glow and aerial coordinates; native files own every sample
+and write. The sky record carries the glow coefficient in
+`atmosphere.mie_extinction.w`, a lane the bake leaves zero.
 Actual Vulkan SPIR-V validation and layout reflection pass in
 [the retained diagnostic](../../assets/verification/renderer-features/atmosphere-spirv.txt).
 Metal startup reflection, API validation and Bistro captures pass, and the
 sky-view lookup agrees with the removed cube sky within 0.65% over open sky.
-Native Vulkan execution and bilateral comparison remain unavailable: atmosphere
-is **UNALIGNED**. [ADR-058](058-revision-baked-sky-atmosphere.md) owns the model.
+Vulkan renders the sky natively (see
+[Moon and star evidence state](#moon-and-star-evidence-state)).
+[ADR-058](058-revision-baked-sky-atmosphere.md) owns the model.
 
-Volumetric clouds share `shared/cloud_kernel.slangh`: tileable noise
-synthesis, density shaping, the phase and multiple-scattering octaves, step
-integration, the layer segment, screen and sun-projected coordinates and the
-history blend. Native files own the march loops and every sample and write.
-Noise synthesis uses one root (32 bytes on Metal, 16 on Vulkan), the shadow
-builder the 16-byte sky builder root, and the trace a 128-byte root on both
-backends with the previous canonical view-projection, sky and frame addresses,
-depth, history and output textures, extents, frame index and history flag.
-Metal startup reflection validates the three roots and the embedded cloud
-record; Vulkan SPIR-V validation and layout reflection pass for the five
-cloud modules and every sky-record consumer in
+Volumetric clouds are shared and share `shared/cloud_kernel.slangh`: tileable
+noise synthesis, density shaping, the phase and multiple-scattering octaves,
+step integration, the layer segment, screen and sun-projected coordinates and
+the history blend. Native files own the march loops and every sample and
+write. Noise synthesis uses one root (32 bytes on Metal, 16 on Vulkan), the
+shadow builder the 16-byte sky builder root, and the trace a 128-byte root on
+both backends with the previous canonical view-projection, sky and frame
+addresses, depth, history and output textures, extents, frame index and
+history flag. Metal startup reflection validates the three roots and the
+embedded cloud record; Vulkan SPIR-V validation and layout reflection pass for
+the five cloud modules and every sky-record consumer in
 [the retained diagnostic](../../assets/verification/renderer-features/clouds-spirv.txt).
-Metal API validation and Bistro captures pass. Native Vulkan execution and
-bilateral comparison remain unavailable: clouds are **UNALIGNED**.
-[ADR-074](074-volumetric-cloud-layer.md) owns the model.
+Metal API validation and Bistro captures pass, and Vulkan renders the moonlit
+clouds natively. [ADR-074](074-volumetric-cloud-layer.md) owns the model.
 
 The cloud-lit sky light adds march, projection and chain kernels on each
 backend that share one root (64 bytes on Vulkan, 80 on Metal, whose source is
@@ -1059,12 +958,11 @@ Both backends project through one loop that also serves the revision bake
 slot, the chain's face size and its address: Vulkan grows to 496 bytes with
 the address at 480, and Metal to 512 with the address at 504. Global
 prefiltered specular composites the chain in `world/default.slang` and in
-`world/lighting.metalh`, `default.metal` and `gpu_draws.metal`. Vulkan Release
-execution and Debug synchronization validation pass on the Windows host; the
-Metal library, ABI reflection, API validation and execution of these kernels
-are unavailable there and remain open.
+`world/lighting.metalh`. Vulkan Release execution and Debug synchronization
+validation pass on the Windows host; native Metal execution of these kernels
+is not recorded.
 
-AgX and grading share production kernels. Metal's post root is 48 bytes, with a
+AgX and grading are shared production kernels. Metal's post root carries a
 grading-block pointer at byte 32; Vulkan's utility root is 560 bytes, with the
 pointer at byte 544. The 64-byte grading record contains three matrix rows followed
 by contrast, saturation, enable and reserved controls. Native ABI manifests and
@@ -1084,19 +982,12 @@ Offline normal/roughness recipes use these existing shader inputs and GGX
 roughness units without changing shader sources, bindings or host ABI. They
 retain full normal moments, bake capped directional spread into roughness and
 fold normal strength/roughness factor into the images; ADR-012 owns that asset
-contract. A focused Release M1 Pro/Metal 4 fixture loaded two strength-specific
-pairs, passed draw/G-buffer assertions and produced the expected broader
-minified highlights. This is local output evidence. The paired material outputs
-still require matched native Vulkan/Metal comparison; the current macOS host
-cannot execute native Vulkan.
-
-Material/light math remains **UNALIGNED**: the Windows host cannot compile or
-execute native Metal, so a same-revision Metal build, focused diagnostic and
-matched native pixel comparison remain required.
-The corrected filter passes Vulkan Release Bistro motion and stationary captures
-with FSR and motion captures with portable TAA. The bounded Debug static-reset
-case loads Khronos synchronization validation and reports no API warnings or
-errors; ADR-052 records the small, mixed motion-quality changes and local cost.
+contract. The corrected filter passes Vulkan Release Bistro motion and
+stationary captures with FSR and motion captures with portable TAA. The
+bounded Debug static-reset case loads Khronos synchronization validation and
+reports no API warnings or errors; ADR-052 records the small, mixed
+motion-quality changes and local cost. Native Metal evidence of the filter on
+the tiled pipeline is not recorded.
 
 Exposure requires complete histogram groups and GTAO requires mip-selecting
 depth sampling under ADR-042.
@@ -1108,53 +999,23 @@ unchanged. Local probe influence bounds remain active independently of parallax
 projection. Bloom gain follows ADR-042's maximum-chain normalization.
 
 Audit remediation changes visibility, HZB producer-grid metadata, Metal reset
-ordering, optional resolve outputs and numerical edges. These domains remain
-**UNALIGNED** until the same-revision Metal build, focused native validation and
-bilateral capture gates pass. The available host is Windows/Vulkan; analytical
-oracles do not substitute for Metal execution.
+ordering, optional resolve outputs and numerical edges. Its Vulkan evidence is
+in [ARCHITECTURE](../ARCHITECTURE.md#remaining-implementation-and-evidence-boundaries);
+analytical oracles do not substitute for native execution.
 
 The 2026-09-24 shader audit changes the SSR/SSGI cell restart, layered light
-traversal, sheen view-visibility preparation, GTAO denoise and Metal temporal
-history reads, Vulkan resolve material-row reuse, motion-blur extent queries
-and the surface-diffusion same-row path. The restart recovers one SSR hit in
-each of the Metal clearcoat, sheen and sheen-rectangle fixtures; ADR-055 records
-its Bistro effect. Each other change leaves the deterministic Metal Release
-fixtures captured before and after it byte-identical: clearcoat, sheen
-rectangle, DoF/TAA, motion-blur/TAA, odd-size motion blur, surface-diffusion/TAA
-and mixed surface diffusion. The sheen view-visibility change moves 41 HDR
-pixels of the sheen fixture by one FP16 step. Bistro captures differ run to run
-on Metal; the other changes stay within that variation. ADR-062 records the
-Metal coat-shadow correction. Vulkan compiles and all 95 SPIR-V modules
-validate, so these domains remain **UNALIGNED** pending native Vulkan execution
-and same-revision comparison.
+traversal, sheen view-visibility preparation, GTAO denoise texel loads, Vulkan
+resolve material-row reuse, motion-blur extent queries and the
+surface-diffusion same-row path, all on the desktop pipeline. ADR-055 records
+the restart's measured effect and ADR-062 the coat-shadow correction, both on
+the removed Metal desktop implementation. Vulkan compiles and all 95 SPIR-V
+modules validate; native Vulkan before/after captures are pending (checklist).
 
-Metal G-buffer and transmission resolves also drop their visible-row, primitive
-and vertex bounds checks, matching Vulkan and ADR-028. Before the change, both
-resolve-invalid counters were zero on the Bistro glassware camera, the sheen
-fixture and the analytic transmission fixture. Afterward, fixture visibility
-IDs, primitives, depth, normals and specular stay byte-identical. The Metal
-compiler's default fast-math code generation changes albedo rounding by one
-8-bit code in 0.1-1.9% of fixture pixels; final color moves by at most 8 codes
-in 1.6% of sheen-fixture pixels and at most 3 codes in 0.035% of glassware
-pixels, which also vary run to run. The tracked Bistro Metal text baseline
-still passes with no failing pixels. Metal shader validation stops at the
-driver's 32-residency-set assertion, so it cannot check the removed bounds.
-
-The display-linear post target is now the default whenever FXAA or sharpening
+The display-linear post target is the default whenever FXAA or sharpening
 filters the final draw ([ADR-043](043-presentation-dpi-and-color-transfer.md)).
-FXAA now filters only frames without temporal reconstruction; the frontend
-decides it once per frame and both backends read that value. Metal captures
-confirm FXAA is skipped under portable TAA and kept with TAA disabled; the
-Vulkan path compiles but has no native execution evidence.
-Both native shader paths existed before; the Metal default was captured and
-timed, while the Vulkan path has compiled SPIR-V but no native execution.
-With `VKR_POST_TRANSFORM_CACHE=0` the tracked Bistro Metal text baseline passes
-all 14 captures with no failing pixels.
-
-Two near-degenerate reconstruction policies still differ: Metal rejects
-barycentric normalization sums at `1e-8`, Vulkan at `1e-12`; interpolated tangent
-handedness exactly zero maps to zero on Metal and positive handedness on Vulkan.
-These need a shared edge-case oracle before changing their thresholds or output.
+FXAA filters only desktop frames without temporal reconstruction; the frontend
+decides it once per frame, and the tiled class draws no FXAA. The Vulkan path
+has compiled SPIR-V but no recorded native execution.
 
 ## Windows Vulkan native feature sweep
 
@@ -1170,41 +1031,32 @@ synchronization checks and contain no API errors.
 
 The sweep also passes Release portable-TAA reference and Vulkan FSR static and
 motion snapshots. SSGI has separate Release emission/Bistro and Debug validation
-witnesses recorded in ADR-060. These local dirty-tree runs establish the Vulkan
-half of bounded execution only. They do not change any feature from UNALIGNED:
-same-revision Metal captures and canonical float16 comparisons remain required.
+witnesses recorded in ADR-060. These local dirty-tree runs establish bounded
+native Vulkan execution; output checks of these features remain open on
+Vulkan.
 
 ## Post-reconstruction depth of field
 
-The six DoF entry points and native roots are **UNALIGNED** pending native
-Vulkan execution and bilateral output comparison. Release compilation, compiled
-SPIR-V layout/validation and Metal focus/blur/bypass, odd-size, TAA, spatial,
-MetalFX and serial API-resize checks pass. Params are 48 bytes; Metal roots
-are 112 bytes and Vulkan roots are 80. [ADR-066](066-post-reconstruction-depth-of-field.md)
-owns the image, quality and transparency contract. Native Vulkan execution is
-unavailable on the current Mac.
+Depth of field is desktop-only. Release compilation and compiled SPIR-V
+layout/validation pass, and the Windows sweep above passes a Debug resize.
+Params are 48 bytes and Vulkan roots 80 bytes.
+[ADR-066](066-post-reconstruction-depth-of-field.md) owns the image, quality
+and transparency contract. Native Vulkan output checks are pending.
 
 ## Post-reconstruction motion blur
 
-**UNALIGNED**. [ADR-067](067-post-reconstruction-motion-blur.md) records the
-accepted 32-sample, 16-pixel-radius contract. Both production shader paths compile;
-compiled Vulkan root/binding and dispatch checks pass. Selected native Metal output, scaling, editor and API resize checks pass.
-Native Vulkan execution and bilateral comparison are unavailable.
+Motion blur is desktop-only. [ADR-067](067-post-reconstruction-motion-blur.md)
+records the accepted 32-sample, 16-pixel-radius contract. Compiled Vulkan
+root/binding and dispatch checks pass, and the Windows sweep above passes a
+Debug resize. Native Vulkan output checks are pending.
 
 ## Profiled surface diffusion
 
-**UNALIGNED**. [ADR-068](068-profiled-surface-diffusion.md) records the implemented
-32-sample, 32-pixel-radius surface approximation and ownership. Both production
-shader paths compile. Reflection and `spirv-val` pass for the actual gather,
-deferred and SSGI composite modules: parameters are 32 bytes, gather roots are
-208/192 bytes, material rows are 352/288 bytes, deferred roots are 240/192 bytes
-and SSGI roots are 496/432 bytes (Metal/Vulkan).
-
-Five native Metal output fixtures and their numeric checker pass, including
-zero-strength identity, RGB shadow spreading, furnace allocation and mixed
-SSR/SSGI/glass/coat. TAA, spatial scaling, MetalFX, combined editor composition
-and a separate API-validation resize pass. Final compilation, three-module
-reflection and the focused extreme-irradiance fixture pass after signed
-half-range source saturation: 49,056 covered pixels remain finite, with original
-and composed HDR exactly equal. The ordinary fixture and checker also pass again.
-Native Vulkan execution and bilateral comparison remain unavailable on this host.
+Profiled surface diffusion is desktop-only.
+[ADR-068](068-profiled-surface-diffusion.md) records the implemented 32-sample,
+32-pixel-radius surface approximation and ownership. Reflection and `spirv-val`
+pass for the actual gather, deferred and SSGI composite modules: parameters are
+32 bytes, gather roots 192 bytes, material rows 288 bytes, deferred roots 192
+bytes and SSGI roots 432 bytes. The Windows sweep above passes a Release
+snapshot and a Debug resize. Its five numeric output fixtures and checker ran
+on the removed Metal desktop implementation; Vulkan output checks are pending.

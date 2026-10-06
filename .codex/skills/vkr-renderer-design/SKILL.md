@@ -75,5 +75,5 @@ Choose the smallest evidence loop that exercises the changed invariant through
 detects a named failure more directly than the renderer case. A CPU
 suite, shader compile, or source review alone cannot prove GPU correctness.
 Use matched Release measurements for hot-path changes. Report unavailable
-native evidence as unavailable; do not claim bilateral compatibility from one
-backend's run.
+native evidence as unavailable; do not claim another backend's behavior from
+one backend's run.

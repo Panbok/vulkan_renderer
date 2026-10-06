@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,9 +8,12 @@ authority: adr
 
 ## Status
 
-Accepted. Both native implementations, material import, offline transport and
-deterministic table cooking are integrated. Available Metal checks pass; native
-Vulkan execution and bilateral comparison remain unavailable on this host.
+Accepted. Desktop-pipeline lighting on Vulkan, material import, offline
+transport and deterministic table cooking are integrated. The tiled pipeline
+does not draw anisotropy yet ([ADR-087](087-gpu-class-graphics-pipelines.md),
+decision 8). The native output checks below ran on the Metal desktop
+implementation, removed on 2026-10-06; native Vulkan execution is not yet
+recorded.
 
 ## Context
 
@@ -112,13 +115,9 @@ an isotropic transmission approximation hidden behind anisotropic reflection.
 
 ## Verification and limits
 
-Release application and production shader compilation pass with
-`./build_release.sh` on Apple M1 Pro / Metal 4, with graphics validation unset.
 The cooker reports unchanged output; the final data SHA256 is
 `8a1ff4b8f7fa07fa0e711dc8db9d6afe5aea3392b50102f764bea49b3e3b3c97`.
-The editor Release wrapper `./build_editor.sh Release` also passes; its 257×193
-anisotropic layered case renders successfully. Nine affected SPIR-V modules
-pass validation and compiled layout checks. This
+Nine affected SPIR-V modules pass validation and compiled layout checks. This
 proves compilation and ABI layout, not native Vulkan behavior.
 
 Independent GGX/VNDF checks cover 1,738,109 valid reflection samples: maximum
@@ -142,16 +141,18 @@ Dense off-grid DFG quadrature gives maximum absolute A/B/sum errors
 .020443/.042533/.023492. These measurements do not establish uniform relative
 accuracy or a frame-time improvement.
 
-Native cases use `tools/cases/local/anisotropy_*_local.case.json` with
-`tools/profiles/local-brdf-display-validation.json` and the Release harness:
+Native cases use `tools/cases/local/anisotropy_*_local.case.json`, now pinned
+to Vulkan, with `tools/profiles/local-brdf-display-validation.json` and the
+Release harness:
 
 ```sh
 env -u VKR_DISPLAY_OUTPUT -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
   ./build_release/tools/vkr_harness snapshot --case <case> --profile <profile>
 ```
 
-The scalar 90° rotation swaps highlight variance ratios from 3.80290 to .262957;
-the direction map produces .263183. The existing clearcoat scene with zero
+On the Metal desktop implementation, removed on 2026-10-06, the scalar 90°
+rotation swapped highlight variance ratios from 3.80290 to .262957; the
+direction map produced .263183. The existing clearcoat scene with zero
 anisotropy preserves seven channels byte-for-byte, including final color; one
 post-transmission HDR pixel changes by one half-float step (.00048828125).
 The layered witness passes the existing material/glass/SSR checks with 682 floor
@@ -164,13 +165,7 @@ was captured. Independent integration of the decoded LTC density gives .424795
 and an adjacent-code range [.424535,.431464], which contains the native value.
 This characterizes the fit and does not establish a uniform tolerance. The checker is
 [`check_anisotropy_rectangle.py`](../../tools/checks/check_anisotropy_rectangle.py).
-
-One serial resize case with `MTL_DEBUG_LAYER=1`, shader validation unset, and
-`local-metal-windowed-validation-serial.json` passes with no API errors. It
-recreates the target at 514×386 and restores 1024×768 with SSR and SSGI enabled.
-Report SHA256 is
-`aa791b5d941df30c4396b98a9903d75a26787034d9933cd9d5503069f7844454`.
-Native Vulkan execution, cross-backend pixels and performance remain unverified.
+Native Vulkan execution and performance remain unverified.
 
 ## Alternatives considered
 
@@ -184,6 +179,4 @@ history were also excluded.
 
 Revisit the fit resolution and approximation when measured rectangle or probe
 errors exceed a scene's quality requirements. Add anisotropic refraction only
-with an explicit transport/filtering design and budget. Native Vulkan and
-bilateral evidence must pass before this domain becomes aligned under
-[ADR-044](044-shader-cross-backend-contract.md).
+with an explicit transport/filtering design and budget.

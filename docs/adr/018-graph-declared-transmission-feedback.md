@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-02
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,7 +8,9 @@ authority: adr
 
 ## Status
 
-Accepted.
+Accepted. The desktop pipeline implements it on Vulkan. The tiled pipeline
+has no transmission peels; it draws glass as blended thin glass
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 10).
 
 ## Context
 
@@ -23,7 +25,7 @@ nearest. The graph declares separate feedback sources and outputs. Ordinary
 alpha blend follows transmission with its depth-ordered direct draws. A fifth
 peel is an explicit diagnostic and is absent from ordinary frames.
 
-Both shaders implement linear radiance composition
+The shared `vkr_transmission_compose` implements linear radiance composition
 `R + (1 - T)D + T(1 - M)(1 - F_rgb)B_tinted + E`.
 Transmission replaces diffuse response; it preserves reflection and emission.
 Resolve transmission/thickness textures, IOR, scaled thickness and attenuation
@@ -35,13 +37,14 @@ Zero roughness samples the ordered feedback chain. Positive roughness samples
 an immutable six-level opaque-color pyramid at a continuous IOR-adjusted LOD.
 This is a bounded approximation: frosted layers do not recursively blur all
 other transmissive layers. Compact pixel lists partition thin factor-only and
-extended work; production shader variants select temporal work only for layer 0.
-Metal transmission indirect buffers inherit the parent peel root. Each
-compaction copies its layer's source into its destination so unshaded pixels
-keep the layers behind; because a peeled layer covers only pixels its nearer
-layers cover, layers 1 and 0 skip that full-screen copy once layers 3 and 2
-have initialized both images (shared `vkr_transmission_compact_copies_source`).
-Output is unchanged; the Bistro street view saved 0.05 ms on Metal.
+extended work; production shader variants select temporal work only for layer
+0. Each compaction copies its layer's source into its destination so unshaded
+pixels keep the layers behind; because a peeled layer covers only pixels its
+nearer layers cover, layers 1 and 0 skip that full-screen copy once layers 3
+and 2 have initialized both images (shared
+`vkr_transmission_compact_copies_source`). Output is unchanged; on the Metal
+desktop implementation, removed on 2026-10-06, the Bistro street view saved
+0.05 ms.
 
 The importer treats omitted metallic/roughness factors without an ORM texture
 on positive-transmission glass as dielectric/smooth; explicit factors remain
@@ -69,5 +72,4 @@ quality requires a different feedback model.
 
 [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json),
 [`transmission_kernel.slangh`](../../renderer/src/shaders/shared/transmission_kernel.slangh),
-[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c), and
-[`vkr_metal_packet_commands.inc`](../../renderer/src/metal/internal/vkr_metal_packet_commands.inc).
+and [`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c).

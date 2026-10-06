@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-04
+updated: 2026-10-06
 authority: proposal
 ---
 # Meshlet cluster culling
@@ -15,11 +15,14 @@ visible candidate rasterizes every triangle of its submesh; nothing finer than
 the candidate is rejected before the vertex stage.
 
 Vertex shaders already fetch their own data through GPU addresses: the
-visibility vertex shader reads the visible row, geometry row, decode record
-and instance row, then decodes one 32-byte packed vertex
+Vulkan visibility vertex shader and the Metal tiled vertex stage read the
+visible row, geometry row, decode record and instance row, then decode one
+32-byte packed vertex
 ([ADR-031](../adr/031-versioned-packed-static-geometry-abi.md);
 `vk_visibility_vertex` in
-[deferred.slang](../../renderer/src/shaders/vulkan/slang/world/deferred.slang)).
+[deferred.slang](../../renderer/src/shaders/vulkan/slang/world/deferred.slang),
+`vkr_metal_tiled_vertex` in
+[tiled.metal](../../renderer/src/shaders/metal/msl/world/tiled.metal)).
 There is no fixed-function vertex input on either backend. The cooker uses
 meshoptimizer 1.2 for vertex-cache/fetch optimization and stream encoding
 ([ADR-030](../adr/030-offline-mesh-optimization-and-cooking.md)) but builds no
@@ -31,7 +34,9 @@ it must produce.
 
 ## Measured motivation
 
-Bistro on Apple M1 Pro, Metal 4, Release at `e8293e4b`; the tree differed only
+Bistro on Apple M1 Pro, Metal 4, Release at `e8293e4b`, when Metal still ran
+the desktop pipeline (removed on 2026-10-06,
+[ADR-087](../adr/087-gpu-class-graphics-pipelines.md)); the tree differed only
 by the `vendor/ktx-software` patch. Both runs used
 `tools/profiles/local-windowed-gpu-single.json`, which is non-authoritative
 (`profile.local_only`, `provenance.dirty`) and adds about 1.5 ms of pass
@@ -40,15 +45,8 @@ speed claim; they attribute cost.
 
 | Run | Case | Internal extent | Report SHA-256 |
 |---|---|---|---|
-| A | `tools/cases/performance/bistro_metal_production_040.case.json`, 5 × 300 frames | 1024×576 | `273f7be03de0b01f43a939cf7fa385d6a7b161902b57167ce3fc5e6a6d39d1c8` |
-| B | Same case with `render_scale` 1.0 and 2 repetitions (local copy under `tools/cases/local/`) | 2560×1440 | `1d6f719c7339e2eac1904faab54bab7e5bad383c04eda4d3a1c3e13c5cd89bf1` |
-
-```sh
-env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
-  ./build_release/tools/vkr_harness profile \
-  --case tools/cases/performance/bistro_metal_production_040.case.json \
-  --profile tools/profiles/local-windowed-gpu-single.json
-```
+| A | `bistro_metal_production_040`, a Metal desktop case since removed, 5 × 300 frames | 1024×576 | `273f7be03de0b01f43a939cf7fa385d6a7b161902b57167ce3fc5e6a6d39d1c8` |
+| B | Same case with `render_scale` 1.0 and 2 repetitions (local copy) | 2560×1440 | `1d6f719c7339e2eac1904faab54bab7e5bad383c04eda4d3a1c3e13c5cd89bf1` |
 
 Run A: frame wall 18.00 ms mean, 29.84 ms p95, GPU-bound (one command-slot
 wait per frame). The GPU pass sum is 18.37 ms per frame. Bistro holds 1.77 M
@@ -72,8 +70,9 @@ while pixel-bound passes grew ×5.4–6.0 (`GBuffer.Resolve`, `Lighting.Deferred
 `Temporal.Resolve`). Transmission peels doubled. Counting about 1.55 ms of
 `VBuffer.Opaque`, half of the peels and all shadow rows, about 4.4 ms per frame,
 24% of the GPU pass sum, is geometry-bound at the production scale. It does
-not fall with render scale or MetalFX, so it becomes a fixed floor as
-resolution drops. Individual refreshes cost 1.4–2.1 ms per cascade and
+not fall with render scale, so it becomes a fixed floor as resolution drops;
+the tiled pipeline's widest Bistro views are geometry-bound in the same way
+([Tiled graphics pipeline](tiled-pipeline.md#lightmaps), phase 3). Individual refreshes cost 1.4–2.1 ms per cascade and
 0.3–0.9 ms per local light.
 
 Cluster culling can only remove part of this cost: the share of submitted
@@ -156,8 +155,9 @@ bounds the geometry passes on M1 Pro.
 
 Chunking also exposed a contract: deferred specular antialiasing, SSR, SSGI and
 subsurface treat "neighbor has the same visible row" as "same surface" when
-estimating normal variance (`gpu_draws.metal`, `deferred.slang`, `ssr.metal`,
-`ssgi.*`, `subsurface.*`). Chunk seams follow creases, so those passes lost
+estimating normal variance (on Vulkan `deferred.slang`, `ssgi.slang` and
+`subsurface.slang`; the Metal copies were removed with the desktop
+pipeline). Chunk seams follow creases, so those passes lost
 their variance there and final color changed in about 3% of pixels of a Bistro
 night view. Any finer-than-range draw unit must keep a surface identity those
 passes can compare.
@@ -176,7 +176,9 @@ yet cached: the cache draws its face budget (High: 30) every frame until every
 light is valid. In Bistro that is about 13 frames of 9–16 ms of GPU each, 17
 frames above the steady state's 9–10 ms.
 
-Measured on the M1 Pro, Release, High preset, with `VKR_RG_GPU_TIMING=1`
+The tiled pipeline shadows at most four dynamic lights (ADR-087, decision
+11), so its bursts are smaller. Measured on the M1 Pro with the desktop
+pipeline, Release, High preset, with `VKR_RG_GPU_TIMING=1`
 (which adds pass timestamps) and a 22 s Metal System Trace, in the editor
 after an 8 s warm-up and a jump to eye (-2, 13, 6) looking at (-20, 6, 6):
 
@@ -204,7 +206,8 @@ depth cost above.
 Compute cluster culling only pays if surviving clusters are compacted into a
 few draws per bucket (for example a compacted index buffer), so draw count does
 not grow with cluster count. It must also keep the range-relative
-`primitive_id` mapping and the same-surface identity above on both backends.
+`primitive_id` mapping and the same-surface identity above on every backend
+that consumes them.
 
 Scope it to local shadow views first. Their depth passes write only depth, so
 the visible-row identity, `primitive_id` and the same-surface contract of the
@@ -224,8 +227,9 @@ until it does, which shortens a burst rather than cheapening it. It requires a
 light to show with some faces still undrawn, which today's rule (a light is
 shadowed once every face is valid) does not allow.
 
-Pixel-bound passes (`Lighting.Deferred`, `Shadow.LocalMask`,
-`Temporal.Resolve`, tonemap and UI) remain the larger steady-state costs.
+On the desktop pipeline, pixel-bound passes (`Lighting.Deferred`,
+`Shadow.LocalMask`, `Temporal.Resolve`, tonemap and UI) remain the larger
+steady-state costs.
 
 ## Decision boundaries
 
@@ -235,16 +239,18 @@ Pixel-bound passes (`Lighting.Deferred`, `Shadow.LocalMask`,
 - Whether a light may show before all its faces are drawn, so faces outside
   the view can wait.
 - Draw-count budgets: any finer culling unit must be measured against per-draw
-  cost in `VBuffer.Opaque`, cascades and `Cull.*`, not only triangles.
+  cost in `VBuffer.Opaque` or `Tiled.Opaque`, cascades and `Cull.*`, not only
+  triangles.
 
 ## Evidence needed
 
 - The camera-jump burst above: frames, GPU time per burst frame and per face,
   and draws and submitted triangles per face, before and after.
-- Authoritative matched Release before/after runs on
-  `bistro_metal_production_040` with `tools/profiles/performance-windowed-gpu.json`
-  on the M1 Pro, and a matched Bistro Vulkan case on the RX 6700 XT. Report
-  local shadow, `VBuffer.Opaque`, cascade, `Cull.*` and p95 frame time.
+- Authoritative matched Release before/after runs of a tiled Bistro case
+  with shadowed dynamic lights, such as `tiled_bistro_baked_dynamic_native`,
+  under a `performance-windowed-gpu` profile on the M1 Pro, and a matched
+  Bistro Vulkan case on the RX 6700 XT. Report local shadow, `Tiled.Opaque`
+  or `VBuffer.Opaque`, cascade, `Cull.*` and p95 frame time.
 - Equivalent output: Bistro depth, shadow-cascade and final-color captures within
   policy, picking, matching work-volume rows and candidate overflow metrics.
 - Native Vulkan execution and synchronization validation on Windows; a Metal

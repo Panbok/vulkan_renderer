@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,8 +8,11 @@ authority: adr
 
 ## Status
 
-Accepted. Runtime and offline transport are implemented. Native Metal checks
-pass; native Vulkan execution remains unavailable.
+Accepted. Runtime and offline transport are implemented. Surface diffusion
+belongs to the desktop pipeline, and Vulkan is its only implementation; the
+tiled pipeline turns it off ([ADR-087](087-gpu-class-graphics-pipelines.md),
+decision 7). Native Vulkan execution passed on Windows on 2026-09-12; the image
+checks come from the Metal desktop implementation, removed on 2026-10-06.
 
 ## Context
 
@@ -124,9 +127,9 @@ Upload estimates add 8,320 bytes and one operation. Release consumes the scene
 reference; failed native destruction remains registered under the texture
 system's existing final-destruction ownership.
 
-The gather parameter block is 32 bytes; native roots are 208 bytes on Metal and
-192 on Vulkan. Deferred roots are 240/192 bytes and SSGI roots 496/432 bytes
-(Metal/Vulkan), including the optional source image and profile count. Disabled
+The gather parameter block is 32 bytes and the Vulkan gather root 192 bytes.
+The Vulkan deferred root is 192 bytes and the SSGI root 432 bytes, including
+the optional source image and profile count. Disabled
 scenes allocate neither diffusion graph image.
 
 ### Approximation limits
@@ -158,23 +161,19 @@ Eligibility, zero strength, distances down to 1e-40 metres, and photon density
 without a second incident cosine pass. The tilted case also demonstrates the
 folded-sheet limitation above.
 
-The normal Release wrapper compiles both production shader paths. Reflection
+The normal Release wrapper compiles the production shaders. Reflection
 and `spirv-val` pass for the actual gather, deferred and SSGI composite modules,
 including the 32-byte parameters, 192-byte Vulkan gather root and material row.
 These are compilation and ABI results, not native Vulkan execution.
 
-Five 513×321 Metal fixtures pass: enabled, disabled, zero strength, white furnace,
-and mixed SSR/SSGI/glass/coat. The checker measures the shadow transition widening
-from 7.7635 pixels to RGB widths 13.2813/9.3432/8.4262. Disabled and zero-strength
-final color and post-transmission HDR are byte-identical; the furnace remains
-0.8061523 across strengths. The pre-change disabled comparison has identical
+On the Metal desktop implementation, removed on 2026-10-06, five 513×321
+fixtures passed: enabled, disabled, zero strength, white furnace, and mixed
+SSR/SSGI/glass/coat. The checker measured the shadow transition widening from
+7.7635 pixels to RGB widths 13.2813/9.3432/8.4262. Disabled and zero-strength
+final color and post-transmission HDR were byte-identical; the furnace stayed
+0.8061523 across strengths. The pre-change disabled comparison had identical
 final color, visibility and G-buffer, with three HDR pixels differing by one
 half-float ULP (0.00048828125), consistent with arithmetic reassociation.
-
-TAA, spatial scaling, MetalFX and combined editor SSS/motion-blur/DoF/bloom
-snapshots pass. The editor's 257×193 output has an 84×51 Scene viewport. A separate
-serialized Metal API-validation resize from 513×321 to 257×193 and back passes.
-These checks establish bounded integration coverage, not general temporal quality.
 
 An actual scene bake with active surface diffusion, nested glass, ordinary blend,
 thin-sheet transmission and photon caustics passes: 20,000 emitted photons,
@@ -184,7 +183,8 @@ are finite (maximum absolute value 0.521083713). The 17,116-byte asset has SHA-2
 Disabling surface diffusion reproduces the preceding bake byte-for-byte, SHA-256
 `62ec80db491e8b89bfcb294441ae9b0d13f31a03fe2061b4d2c2f50bc3cf8c67`.
 
-Reproduction commands, run on 2026-09-08:
+Commands run on 2026-09-08 on the Metal desktop implementation; the harness
+case now runs on Vulkan:
 
 ```sh
 env -u VKR_DISPLAY_OUTPUT -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release.sh
@@ -200,20 +200,17 @@ Numeric results are retained in `.scratch/subsurface-profile-math.json`,
 `.scratch/subsurface-endpoint-math.json`, `.scratch/subsurface-native-numeric.json`,
 `.scratch/subsurface-sampler.json` and `.scratch/subsurface-bake/numeric.json`.
 Native run manifests are `.scratch/subsurface-native-runs.json` and
-`.scratch/subsurface-extra-runs.json`; the resize report SHA-256 is
-`8a9246d16225195c6146323ddd4d060628b984568f45a2b07f3d9e2e152804e2`.
-The final Release rebuild and repeated three-module reflection check pass. A
-1,216-case shared-source/half-conversion oracle passes; the focused Metal
-extreme-irradiance fixture keeps all 49,056 covered source pixels finite at
-65,504 and preserves original/composed HDR exactly at 39,200. Its report SHA-256
-is `fc9612a5e6ea534f2481d9d88315fedee3e8acdb937ea8a35cee5574f45d60c7`.
-The ordinary enabled fixture and numeric checker pass again after saturation.
+`.scratch/subsurface-extra-runs.json`. The final Release rebuild and repeated
+three-module reflection check pass. A 1,216-case shared-source/half-conversion
+oracle passes; the focused extreme-irradiance fixture on the Metal desktop
+implementation kept all 49,056 covered source pixels finite at 65,504 and
+preserved original/composed HDR exactly at 39,200. Its report SHA-256 is
+`fc9612a5e6ea534f2481d9d88315fedee3e8acdb937ea8a35cee5574f45d60c7`.
+The ordinary enabled fixture and numeric checker passed again after saturation.
 Results are retained in `.scratch/subsurface-half-range.json` and
 `.scratch/subsurface-hdr-range-numeric.json`; final build and reflection logs are
 `.scratch/renderer-improvements-subsurface-final-release.log` and
-`.scratch/subsurface-final-reflection.json`. The dedicated Release editor build
-also passes with `env -u VKR_DISPLAY_OUTPUT -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_editor.sh Release`; its log is
-`.scratch/renderer-improvements-post-effects-editor.log`.
+`.scratch/subsurface-final-reflection.json`.
 
 Native Vulkan execution now passes on Windows. The first Debug validation run
 found that gather allocated a fresh frame root but left it zeroed before
@@ -232,9 +229,7 @@ subsurface source/composite, G-buffer and visibility channels, also passes:
 `20260912T111422.875Z-003ffe`, SHA-256
 `ce2ee2896257522f972aa200a9eeae78937ba9ed0be9decc77af81920ad9664b`.
 This dirty-tree local witness establishes bounded native Vulkan execution only.
-The feature remains **UNALIGNED** under
-[ADR-044](044-shader-cross-backend-contract.md) until same-revision Metal
-comparison passes. No frame-cost claim is made.
+No frame-cost claim is made.
 
 ## Alternatives considered
 

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,10 +8,13 @@ authority: adr
 
 ## Status
 
-Accepted. Production graph, native commands and completion-protected history
-ownership are integrated. Current Metal captures cover TAA, MetalFX, camera
-movement and no-TAA; a small resize passes Metal API validation. Native Vulkan execution remains
-unavailable on this host.
+Accepted. SSGI belongs to the desktop pipeline, and Vulkan is its only
+implementation; the tiled pipeline turns it off
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7). Production graph,
+native commands and completion-protected history ownership are integrated.
+Native Vulkan execution passed on Windows on 2026-09-12; output evidence for the
+history correction comes from the Metal desktop implementation, removed on
+2026-10-06.
 
 ## Context
 
@@ -54,15 +57,14 @@ the normalized average. This preserves constant radiance on a locally continuous
 surface without mixing discontinuous receivers.
 
 History is the color/depth/identity tuple matching the transform that supplies
-motion: its instance, submit value, frame, scene generation,
-lighting/resource revisions, dimensions, and retained shadow state must match.
-Metal uses its existing submission-event wait; Vulkan uses its existing same-queue
-image barriers. These order the shared predecessor before CPU-observed completion.
-Other producers must already be complete.
-The temporal pass reprojects the unjittered motion coordinate onto the raw grid by
-adding the producer's previous-minus-current raster jitter. FSR derives that
-jitter from its active upscale sequence length; non-FSR paths, including MetalFX,
-use the fixed eight-phase sequence. No-TAA leaves the offsets zero.
+motion: its instance, submit value, frame, scene generation, lighting/resource
+revisions, dimensions, and retained shadow state must match. Vulkan's existing
+same-queue image barriers order the shared predecessor before CPU-observed
+completion. Other producers must already be complete. The temporal pass
+reprojects the unjittered motion coordinate onto the raw grid by adding the
+producer's previous-minus-current raster jitter. FSR derives that jitter from
+its active upscale sequence length; non-FSR paths use the fixed eight-phase
+sequence. No-TAA leaves the offsets zero.
 
 Four bilinear history color taps independently validate depth and stable identity.
 Their RGB values resolve with bilinear weight multiplied by each tap's history
@@ -79,11 +81,11 @@ there. SSR can then reflect the completed opaque diffuse lighting.
 
 The public frame borrows an enable flag. Renderer preparation owns normalized
 quality controls, the 256-phase index, and temporal invalidation. The graph owns
-image dependencies; Metal and Vulkan realize storage and retain independent
+image dependencies; the Vulkan backend realizes storage and retains
 completion-proven history tuples. Failed or canceled submissions do not publish
 new history.
 
-Portable TAA, FSR and MetalFX select the immediate transform predecessor for
+Portable TAA and FSR select the immediate transform predecessor for
 motion continuity. SSGI consumes its exact matching tuple through the existing
 queue dependency, even when the GPU has not completed it. An older completed
 tuple cannot replace that motion reference. When no compatible predecessor exists,
@@ -125,46 +127,48 @@ composite. Deferred lighting writes the isolated direct/emissive source only
 when SSGI is enabled.
 
 `VkrSsgiParams` remains 288 bytes. Its former unused tail at bytes 280 and 284
-is `history_jitter_uv_x/y`; no root or image allocation changes. The Metal and
-Vulkan temporal shaders implement the same four-tap, confidence-weighted
-reconstruction and exact-predecessor contract.
+is `history_jitter_uv_x/y`; no root or image allocation changes. The Vulkan
+temporal shader implements the four-tap, confidence-weighted reconstruction
+and exact-predecessor contract.
 
 The receiver-cache and diffuse-only-source changes supersede the relevant source
 and storage statements in older observations below. Production-Slang arithmetic
 checks exercise nearest covered ties, uncovered samples and odd-tail offsets.
-Fresh native execution and bilateral comparison are required for these changes;
-prior feature runs do not establish their parity or speed.
+Fresh native Vulkan execution is required for these changes; prior feature
+runs do not establish their output or speed.
 
-Earlier Release, reflection and Metal API records cover the preceding
-completed-history implementation. The current revision passes Release app/editor
-builds, all ten SSR/SSGI SPIR-V validation checks, compiled parameter reflection,
-Vulkan host syntax and a serial Metal API resize check. Current Bistro captures
-reduce excess displayed variation above the SSGI-off control by 86.6% in the
-reported view; a no-TAA emission fixture also runs successfully.
-[The correction record](../../assets/verification/renderer-features/ssgi-ssr-history-correction.txt)
-retains commands, hashes and limits; native Vulkan remains unavailable.
-The existing source-isolation, emission and
-baked-volume observations remain evidence for the SSGI source and composite
-policy, not for this temporal change.
+The current revision passes Release app/editor builds, all ten SSR/SSGI SPIR-V
+validation checks, compiled parameter reflection and Vulkan host syntax. On the
+Metal desktop implementation, removed on 2026-10-06, Bistro captures reduced
+excess displayed variation above the SSGI-off control by 86.6% in the reported
+view. [The correction
+record](../../assets/verification/renderer-features/ssgi-ssr-history-correction.txt)
+retains commands, hashes and limits; native Vulkan has not run this revision.
+The existing source-isolation, emission and baked-volume observations remain
+evidence for the SSGI source and composite policy, not for this temporal
+change.
 
-The source-isolation capture has 98,304 byte-identical HDR pixels with SSGI
-on/off. The emissive fixture gains red bounce at 2,853 non-emissive opaque
-pixels. A valid enclosing baked-volume cell suppresses that contribution at
-all 39,722 covered samples, producing byte-identical on/off HDR. The same
-geometry without the volume retains the visible bounce. Editor composition
-uses its own `scene_pre_transmission` target; a 257×193 editor capture passes.
+On the Metal desktop implementation, the source-isolation capture had 98,304
+byte-identical HDR pixels with SSGI on/off. The emissive fixture gains red
+bounce at 2,853 non-emissive opaque pixels. A valid enclosing baked-volume cell
+suppresses that contribution at all 39,722 covered samples, producing
+byte-identical on/off HDR. The same geometry without the volume retains the
+visible bounce. Editor composition uses its own `scene_pre_transmission`
+target; a 257×193 editor capture passes.
 
-The serialized Release Bistro observations at 1280×720 on Apple M1 Pro used
-24 warmup and 16 measured frames, with TAA, SSR and GTAO enabled. The added
-SSGI passes total 2.594 ms mean: trace 0.720 ms, spatial/temporal 0.712 ms,
-composite 1.000 ms, and depth construction 0.162 ms. Live graph storage grows
-by 18 images and 39,321,304 bytes (37.50 MiB) with the current two frame slots.
-These are single-process local observations from a dirty tree, not an
-authoritative performance comparison. The profile command was
+The serialized Release Bistro observations at 1280×720 on the Metal desktop
+implementation (Apple M1 Pro), removed on 2026-10-06, used 24 warmup and 16
+measured frames, with TAA, SSR and GTAO enabled. The added SSGI passes total
+2.594 ms mean: trace 0.720 ms, spatial/temporal 0.712 ms, composite 1.000 ms,
+and depth construction 0.162 ms. Live graph storage grows by 18 images and
+39,321,304 bytes (37.50 MiB) with the current two frame slots. These are
+single-process local observations from a dirty tree, not an authoritative
+performance comparison. The profile command was
 `./build_release/tools/vkr_harness profile --case tools/cases/local/ssgi_bistro_on_profile_local.case.json --profile tools/profiles/local-offscreen-gpu-single.json`
 with graphics validation variables unset; the paired off case changes only
-SSGI. [The measurement record](../../assets/verification/renderer-features/ssgi-cost-numeric.txt) retains
-both run identities and distributions.
+SSGI. Both cases are now pinned to Vulkan.
+[The measurement record](../../assets/verification/renderer-features/ssgi-cost-numeric.txt)
+retains both run identities and distributions.
 
 Native Vulkan execution now passes on Windows with an AMD Radeon RX 6700 XT,
 driver 26.6.3 and Vulkan API 1.4.315. The reported device loss exposed three
@@ -187,12 +191,4 @@ Focused Debug synchronization validation is
 (`8368380187d0358eadf810dfe0b0a1e187db988ade6933ac00da749dc2018ac1`).
 The child loaded Khronos validation and reported no API or synchronization
 errors. These dirty-tree local reports establish bounded native Vulkan
-execution, not authoritative acceptance or pixel parity. Same-revision Metal
-execution and bilateral comparison remain unavailable on this host, so SSGI
-stays **UNALIGNED** under [ADR-044](044-shader-cross-backend-contract.md).
-
-The retained MetalFX Bistro camera-sweep record preserves all 924,963 captured
-motion pixels relative to SSGI disabled after the earlier motion-producer fix.
-[The regression record](../../assets/verification/renderer-features/screen-effects-stability.txt)
-predates synchronized selection and four-tap validation, so it does not establish
-the current temporal contract.
+execution, not authoritative acceptance or verified output.

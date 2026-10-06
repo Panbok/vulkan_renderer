@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -14,30 +14,34 @@ Accepted.
 
 Pixel-scaled Scene work can dominate a high-DPI frame. Reducing the physical
 target would also reduce UI resolution and change capture/picking semantics.
+The tiled pipeline's adaptive quality
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 12) also needs a
+Scene scale that changes between frames.
 
 ## Decision
 
-Accept a finite Metal Scene scale in `(0,1]` at initialization; zero selects
-unit scale for API callers. Vulkan's spatial path rejects non-unit scale, so
-the sample runtime renders a Vulkan Scene without temporal upscaling at unit
-scale and keeps the stored preference for when FSR is enabled again. Vulkan
-FSR 3.1, accepted separately in ADR-052, accepts a live scale in `[1/3, 1]`.
-Keep native physical output and UI extent separate from the Scene presentation
-extent: whole target in direct mode or the dock-owned panel in editor mode.
+Accept a finite Metal Scene scale in `(0,1]`; zero selects unit scale for API
+callers. `vkr_renderer_set_render_scale` changes it between frames within the
+range `vkr_renderer_render_scale_range` reports. Vulkan's spatial path rejects
+non-unit scale, so the sample runtime renders a Vulkan Scene without temporal
+upscaling at unit scale and keeps the stored preference for when FSR is
+enabled again. Vulkan FSR 3.1, accepted separately in ADR-052, accepts a live
+scale in `[1/3, 1]`. Keep native physical output and UI extent separate from
+the Scene presentation extent: whole target in direct mode or the dock-owned
+panel in editor mode.
 
-Spatial mode rounds Scene output dimensions times scale to the nearest internal
-pixel, with a minimum of one. MetalFX rounds upward so integer content dimensions
-cannot cross the device's maximum upscaling factor at small dock extents.
-Viewport-domain graph resources use that internal extent.
-Spatial reconstruction samples internal HDR during final tonemap/composition;
-FXAA offsets use output pixels and UI composes afterward at native resolution.
-Portable TAA stays same-resolution within the internal Scene domain.
+Spatial mode rounds Scene output dimensions times scale to the nearest
+internal pixel, with a minimum of one. Viewport-domain graph resources use
+that internal extent. On Metal the tiled pipeline's tonemap pass samples the
+internal HDR and upscales it spatially to the output; UI composes afterward at
+native resolution.
 
 Picking maps physical target/panel coordinates to the internal extent using the
 same authoritative viewport mapping as camera aspect, gizmos and composition.
-Extent/scale transitions invalidate temporal history. Dynamic scale changes are
-owned separately by ADR-040. The harness includes scale and both extents in
-workload identity and capture/report metadata.
+A scale or extent change recreates the viewport-sized graph images and restarts
+their histories; on the tiled pipeline these are the cloud and HZB histories.
+ADR-087 (decision 12) owns dynamic scale changes. The harness includes scale and
+both extents in workload identity and capture/report metadata.
 
 ## Consequences
 

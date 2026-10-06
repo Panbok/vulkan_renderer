@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-04
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,9 +8,12 @@ authority: adr
 
 ## Status
 
-Accepted. The portable graph, scene authoring, and both native implementations
-are integrated. Metal checks pass; native Vulkan execution and bilateral image
-comparison remain unavailable on this host.
+Accepted. Froxel fog belongs to the desktop pipeline, and Vulkan is its only
+implementation; the tiled pipeline turns it off
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7). The graph and
+scene authoring are integrated. The output evidence below comes from the Metal
+desktop implementation, removed on 2026-10-06; native Vulkan execution is not
+yet recorded.
 
 ## Context
 
@@ -63,8 +66,8 @@ drawn at another size, and the selected lights' places in the frame's light
 array. The cascade count, map and sun size, receiver bias, and each selected
 light with its faces' world-space projections still reject it, as does a
 different light selection while the camera moves. Gliding over an 8 km
-terrain with fog on Metal, history missed 0–2 of every 240 frames, against
-33–44 before (`56d2d39c`). Integration
+terrain with fog on the Metal desktop implementation, history missed 0–2 of
+every 240 frames, against 33–44 before (`56d2d39c`). Integration
 then traverses each current-camera column front to back. Opaque fog resolves
 after SSR and before the opaque transmission pyramid, replacing analytic fog
 while enabled. Transparent local radiance uses `T * local + S * (1 - W)` over
@@ -120,85 +123,86 @@ beyond the 50-unit far plane, and homogeneous absorption. The original helper
 returns 5,000 for the 60,000 identity and approximately -50 for the -200 sky
 position; the corrected helper passes. Native Vulkan high-HDR
 opaque/BLEND/transmission captures and fixed-medium far-plane comparisons
-remain required for these corrections. The shader contract remains **UNALIGNED**.
+remain required for these corrections.
 
-The retained `froxel_bistro_regression_{off,empty,thin,range_50,range_500}`
+The Vulkan-pinned `froxel_bistro_regression_{off,empty,thin,range_50,range_500}`
 cases use Bistro and runtime material cards spanning opaque, BLEND and
 transmission at 1,000/10,000/30,000 emissive radiance. They require no cooked
 fixture payload. `tools/checks/check_froxel_bistro_regression.py` compares their
 raw HDR, requires bright witnesses in every material path, and compares common
-sky pixels with a density box beyond the short raster far plane. Native Metal
-Release captures preserve the bright opaque/BLEND/transmission
-patches at 30,000/15,000/30,000 with empty fog. Thin-density values are
-29,984/14,992/29,984. The 92,079 common sky pixels differ by at most
-0.000030517578125 between raster far planes 50 and 500.
+sky pixels with a density box beyond the short raster far plane. On the Metal
+desktop implementation, removed on 2026-10-06, Release captures preserved the
+bright opaque/BLEND/transmission patches at 30,000/15,000/30,000 with empty
+fog. Thin-density values were 29,984/14,992/29,984. The 92,079 common sky
+pixels differed by at most 0.000030517578125 between raster far planes 50 and
+500.
 
-The empty-medium comparison has identical HDR on all 230,398 pixels with
-matching captured primitive and normal inputs. Two Bistro pixels, (25,202)
-and (323,209), choose different raster primitives at the same recorded depth:
-2,119 versus 15,351 and 22 versus 89, respectively. Their packed normals also
-change; depth is identical over the entire frame. Both pixels differ already
-before transmission, and neither has transmission visibility. Opaque visible-row
-indices permute between scene instances; one source row maps consistently over
-1,617 pixels and another over 473, with only these equal-depth winners selecting
-a different row. The checker reports those changed geometry inputs separately
-and retains the same HDR tolerance for matching inputs. Every bright witness
-requires matching geometry. These captures establish the bright-HDR identity,
-not whole-frame byte identity across differing raster winners.
+In those captures, the empty-medium comparison has identical HDR on all 230,398
+pixels with matching captured primitive and normal inputs. Two Bistro pixels,
+(25,202) and (323,209), choose different raster primitives at the same recorded
+depth: 2,119 versus 15,351 and 22 versus 89, respectively. Their packed normals
+also change; depth is identical over the entire frame. Both pixels differ
+already before transmission, and neither has transmission visibility. Opaque
+visible-row indices permute between scene instances; one source row maps
+consistently over 1,617 pixels and another over 473, with only these
+equal-depth winners selecting a different row. The checker reports those
+changed geometry inputs separately and retains the same HDR tolerance for
+matching inputs. Every bright witness requires matching geometry. These
+captures establish the bright-HDR identity, not whole-frame byte identity
+across differing raster winners.
 
-After the atmosphere became the only sky, its aerial perspective attenuates the
-bright patches by one half-float step: 29,984/14,992/29,984 with fog off or
-empty and 29,968/14,984/29,968 with thin fog. The checker still passes: the
-empty-medium identity holds within 0.000061 relative over 230,398 pixels, and
-common sky pixels differ by at most 0.0000076 between the two far planes
-(snapshot reports sha256:b58b7cc1, b1ee2d9e, 809f9220, d77b13df and 96184db6
-for off, empty, thin, range 50 and range 500).
+On the same implementation, after the atmosphere became the only sky, its
+aerial perspective attenuates the bright patches by one half-float step:
+29,984/14,992/29,984 with fog off or empty and 29,968/14,984/29,968 with thin
+fog. The checker still passes: the empty-medium identity holds within 0.000061
+relative over 230,398 pixels, and common sky pixels differ by at most 0.0000076
+between the two far planes (snapshot reports sha256:b58b7cc1, b1ee2d9e,
+809f9220, d77b13df and 96184db6 for off, empty, thin, range 50 and range 500).
 
-Earlier Release and editor wrappers compile the production shaders and host contracts.
-Native Metal reflection and API validation pass. The lifecycle fixture checks
-completed history selection, camera reprojection, medium/projection invalidation,
-disable/re-enable without image churn, and resize with subsequent history reuse.
-A separate native check confirms 13 valid shadow views, two chosen fog sources,
-and history rejection/recovery after selected-light and caster changes.
+On the Metal desktop implementation, the lifecycle fixture checked completed
+history selection, camera reprojection, medium/projection invalidation,
+disable/re-enable without image churn, and resize with subsequent history
+reuse. A separate native check confirmed 13 valid shadow views, two chosen fog
+sources, and history rejection/recovery after selected-light and caster
+changes.
 
-Independent HDR checks cover homogeneous scattering, pure absorption, terminal
-depth clamping, density-box interiors, and ordered glass/BLEND composition.
-The largest homogeneous error is 0.001638; pure absorption stays below 0.000091.
-Box interiors stay below 0.005406, excluding the one-cell trilinear transition
-around the authored discontinuity. Clear glass and BLEND errors are below
-0.001848 and 0.000423. Fog-disabled HDR remains byte-identical to the reference.
+On the same implementation, independent HDR checks cover homogeneous
+scattering, pure absorption, terminal depth clamping, density-box interiors,
+and ordered glass/BLEND composition. The largest homogeneous error is 0.001638;
+pure absorption stays below 0.000091. Box interiors stay below 0.005406,
+excluding the one-cell trilinear transition around the authored discontinuity.
+Clear glass and BLEND errors are below 0.001848 and 0.000423. Fog-disabled HDR
+remains byte-identical to the reference.
 
 The local-light fixture retains identical sky HDR over 35,076 pixels when an
 eligible dim third light is added. Removing the caster brightens 19,530 sky
 pixels by more than 0.01 luminance, proving local shadows affect scattering.
-The 1280×720 Bistro capture contains 921,600 finite HDR pixels. Invalid density
-and a seventeenth box are rejected at scene load.
+Invalid density and a seventeenth box are rejected at scene load.
 
 Actual Vulkan SPIR-V validation/reflection and eight affected host translation
-units pass compilation checks. Native Vulkan commands and pixels remain unverified;
-the shader contract stays **UNALIGNED** under
-[ADR-044](044-shader-cross-backend-contract.md). Exact commands, report digests
-and retained payloads are indexed in the
-[local evidence ledger](../../assets/verification/renderer-features/froxel-evidence-digests.txt).
+units pass compilation checks. Native Vulkan commands and pixels remain
+unverified. Exact commands, report digests and retained payloads are indexed in
+the [local evidence
+ledger](../../assets/verification/renderer-features/froxel-evidence-digests.txt).
 
-On Bistro (`local.froxel.bistro.sky`, sky lighting 1, anisotropy 0.6) a
-reference region changes from RGB (0.058, 0.073, 0.069) with the isotropic
-unlit-sky medium to (0.061, 0.081, 0.084). Metal API validation of that case
-passes without diagnostics (report
-sha256:4dc24f8764aa8d51942636b77759b2f7019790e66f353395c7d84075091a302e).
-Vulkan SPIR-V validation/reflection confirms `lighting` at byte 928 of the
-944-byte record
+On the Metal desktop implementation, Bistro (`local.froxel.bistro.sky`, sky
+lighting 1, anisotropy 0.6; the case now runs on Vulkan) showed a reference
+region change from RGB (0.058, 0.073, 0.069) with the isotropic unlit-sky
+medium to (0.061, 0.081, 0.084). Vulkan SPIR-V validation/reflection confirms
+`lighting` at byte 928 of the 944-byte record
 ([fog-spirv.txt](../../assets/verification/renderer-features/fog-spirv.txt)).
 
 The corrected graph accounting reports exactly 11,059,200 added image bytes
 for six 80×45×64 volumes in the current two-slot renderer.
 
-A local Apple M1 Pro Release observation at 1280×720, three offscreen target
-images and two frame slots used 24 warmup and 16 measured frames with GTAO, SSR
-and TAA enabled. Mean fog GPU costs were 0.975151 ms injection, 0.043292 ms
-integration and 0.084810 ms apply. Each had 16 valid samples. These dirty-tree,
-single-process observations are non-authoritative and do not establish a speed
-claim or a base-M1 frame budget. Commands use `vkr_harness profile`,
-`tools/cases/local/froxel_bistro_{off,on}_local.case.json`, and
-`tools/profiles/local-offscreen-gpu-single.json`; the
-[cost record](../../assets/verification/renderer-features/froxel-cost-numeric.txt) retains exact report identities.
+A local Release observation on the Metal desktop implementation (Apple M1 Pro),
+removed on 2026-10-06, at 1280×720, three offscreen target images and two frame
+slots used 24 warmup and 16 measured frames with GTAO, SSR and TAA enabled.
+Mean fog GPU costs were 0.975151 ms injection, 0.043292 ms integration and
+0.084810 ms apply. Each had 16 valid samples. These dirty-tree, single-process
+observations are non-authoritative and do not establish a speed claim. Commands
+used `vkr_harness profile`,
+`tools/cases/local/froxel_bistro_{off,on}_local.case.json`, since pinned to
+Vulkan, and `tools/profiles/local-offscreen-gpu-single.json`; the [cost
+record](../../assets/verification/renderer-features/froxel-cost-numeric.txt)
+retains exact report identities.

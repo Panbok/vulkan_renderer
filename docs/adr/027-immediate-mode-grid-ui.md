@@ -349,8 +349,9 @@ dependency cases, restart/live classification, and missing-file handling. The
 process-group cancellation oracle passes. The Release and Debug wrappers pass
 without cooking log entries; a third `./build_editor.sh Release` pass also
 passes. SHA-256 values for all four shared tables remain unchanged. A native
-macOS Graphics check on `editor_lights.scene.json` exits 0 and covers the
-Graphics menu as the sole item, all five left tabs, the right pane, live
+macOS Graphics check on `editor_lights.scene.json`, run on the Metal desktop
+implementation removed on 2026-10-06, exited 0 and covered the Graphics menu as
+the sole item, all five left tabs, the right pane, live
 Bloom-off, shadows-off, SSR-off, SSGI-on, fog-off, depth-of-field and motion-blur
 enablement, brightness change, persisted values, Restore defaults, and the
 display Vsync restart notice. Bakery UI coverage also exits 0: the GGX recipe
@@ -484,22 +485,23 @@ The sample runtime owns player Graphics settings in `VkrGraphicsSettings`.
 Settings > Graphics uses a left tab rail and a clipped, scrollable right pane
 with Display, Quality, Lighting, Effects, and Color tabs. The editor borrows
 current state during UI build and sends a typed `VkrGraphicsSettingsRequest`;
-the runtime validates and applies the request. HDR, temporal upscaling and
-the tiled pipeline ([ADR-087](087-gpu-class-graphics-pipelines.md)) are
-startup-owned values and set a restart-required notice when changed. Vsync
-switches between frames (`vkr_renderer_set_present_mode`: the Metal layer's
-display sync, a recreated Vulkan swapchain); a windowed macOS editor still
-presents at most once per display refresh, because the compositor paces the
-layer's drawables. Render scale and dynamic resolution apply between frames when
-the renderer reports the scale inside `vkr_renderer_render_scale_range`
-(MetalFX builds its scaler for the dynamic-resolution floor up to native;
-Vulkan FSR 3.1 and the spatial Metal path accept 1/3..1); otherwise they also
-wait for a restart. Vulkan without temporal upscaling renders at unit scale, so
-render scale is disabled there and the Scene percentage reads 100%. With
-dynamic resolution on, the render scale caps the scale the controller chooses,
-so Metal defaults to 1.0. The frame limit is read every frame. Other controls
-apply to live frame state; lighting changes invalidate the relevant shadow and
-temporal histories.
+the runtime validates and applies the request. HDR and temporal upscaling are
+startup-owned values and set a restart-required notice when changed. The
+graphics pipeline class follows the backend and has no setting
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7). Vsync switches
+between frames (`vkr_renderer_set_present_mode`: the Metal layer's display
+sync, a recreated Vulkan swapchain); a windowed macOS editor still presents at
+most once per display refresh, because the compositor paces the layer's
+drawables. Render scale and dynamic resolution apply between frames when the
+renderer reports the scale inside `vkr_renderer_render_scale_range` (Vulkan FSR
+3.1 and the spatial Metal path accept 1/3..1); otherwise they also wait for a
+restart. Vulkan without temporal upscaling renders at unit scale, so render
+scale is disabled there and the Scene percentage reads 100%. Dynamic resolution
+exists only on Metal, as the tiled pipeline's adaptive quality (ADR-087,
+decision 12). With it on, the render scale caps the scale the controller
+chooses, so Metal defaults to 1.0. The frame limit is read every frame. Other
+controls apply to live frame state; lighting changes invalidate the relevant
+shadow and temporal histories.
 
 Settings load from `VKR_GRAPHICS_SETTINGS_PATH`, or the project
 `.vkr-graphics-settings.json` default when the variable is absent. The

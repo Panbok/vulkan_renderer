@@ -67,7 +67,8 @@ For each independently verifiable change:
 Use `vkr-renderer-design` for renderer changes, `vkr-memory` for allocation or
 lifetime changes, `vkr-shaders` for shaders or their host contracts, and
 `vkr-performance` for hot-path changes or speed claims. Shader changes preserve
-Metal/Vulkan behavior; backend-specific optimizations need measured evidence.
+the behavior of every consumer on each backend; a backend-specific variant of a
+shared kernel needs measured evidence.
 
 ## Complete
 

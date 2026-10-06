@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-05
+updated: 2026-10-06
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -27,9 +27,7 @@ The parent launches isolated children and records effective configuration and
 build/device provenance alongside workload, policy, and environment fingerprints.
 Snapshot reports adopt the first verified child's actual render extent, as
 profile reports do. Recomputing that extent from requested scale used obsolete
-nearest rounding and could disagree with the captured source textures. The
-[MetalFX extent check](../../assets/verification/renderer-features/metalfx-snapshot-extent.txt)
-records parent/child/capture agreement after this correction.
+nearest rounding and could disagree with the captured source textures.
 The camera script is versioned: warmup holds its initial pose and measured frame
 zero starts the authored path. Version 5 starts warmup at the common zero of the
 active raster jitter and 64-phase GTAO noise sequences, invalidating temporal
@@ -88,11 +86,10 @@ so those baselines are incompatible. `ssr_reflection` version 4 contains
 RGB. Version 3 held half-resolution shaded RGB; earlier versions held incoming
 radiance. Those history baselines are incompatible with the new extent and receiver. `ssr_raw` remains incoming radiance at version 2. Numeric comparison
 decodes finite half values and never substitutes
-a preview for radiance data. Under MetalFX, both `scene_color` and `hdr_pre_bloom`
-select `metalfx_output_color`; the former remains a display-converted PNG and the
-latter is raw reconstructed scene-linear HDR. Portable temporal modes select
-`temporal_history_color`. This avoids capturing the inactive portable history as
-MetalFX output. SDR final-color PNG and scalar/vector channels keep
+a preview for radiance data. Portable temporal modes capture `scene_color` and
+`hdr_pre_bloom` from `temporal_history_color`; the former is a display-converted
+PNG and the latter raw reconstructed scene-linear HDR. SDR final-color PNG and
+scalar/vector channels keep
 their existing contracts. Extended-linear final color under ADR-061 uses
 `RGBA16_FLOAT_LE` version 2 with `extended_srgb_linear` color space. Its
 sidecar records producer `display_headroom` and `display_output_scale`; its
@@ -138,8 +135,9 @@ pass's consumer barrier blocks only the stages that read the producers. Since
 previous timed pass in execution order, so overlap is counted once, in the
 earlier pass
 ([`vkr_metal_packet_commands.inc`](../../renderer/src/metal/internal/vkr_metal_packet_commands.inc)).
-Before, `World.Blend.Fullscreen` with no transparent draws read 7.4 ms in the
-Bistro street view, and the pass sum exceeded the frame; after, it reads
+Before, on the Metal desktop implementation, `World.Blend.Fullscreen` with no
+transparent draws read 7.4 ms in the Bistro street view, and the pass sum
+exceeded the frame; after, it reads
 0.05 ms. Compute intervals are unchanged.
 
 Vulkan writes a pass's begin stamp at the top of the pipe before its barrier
@@ -175,8 +173,11 @@ Run artifacts live under `build/_artifacts/`. Ordinary runs do not change
 `tools/baselines/`. `baseline propose` writes a digest-addressed review plan;
 `baseline accept` verifies its confirmation digest, source artifacts, and prior
 generation before publishing an immutable generation and atomically replacing
-`current.json`. Cross-backend comparison is explicit and still requires matching
-workload and policy fingerprints.
+`current.json`. Cross-backend comparison is explicit and still requires
+matching workload and policy fingerprints. The workload fingerprint records a
+tiled run's graphics pipeline class (`renderer.graphics_pipeline`), so a Metal
+run and a Vulkan run of one case never match
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7).
 
 The workload fingerprint's `case.scene_content` digests the scene's dependency
 closure by path and host-neutral identity
@@ -199,7 +200,7 @@ adds `renderer.shadow_evsm` to the workload fingerprint only when set. A change 
 block encoder on one host therefore shows in the pixel comparison rather than in
 the fingerprint. Introducing this identity on 2026-10-03 changed every workload
 fingerprint once, so each accepted generation needs one re-acceptance on the
-host that produced it ([Metal follow-ups](../proposals/metal-followups.md)).
+host that produced it.
 
 ## Metal crash diagnostics
 
@@ -233,7 +234,7 @@ separate, bounded native runs; CPU manifest checks do not establish GPU stabilit
 
 ## Consequences
 
-FSR and MetalFX cases default to FXAA disabled. An explicitly authored
+FSR cases default to FXAA disabled. An explicitly authored
 `renderer.fxaa_enabled` overrides that default, so post-upscaler filtering can
 be compared with the runtime. Capture channels select their replay render mode:
 use `unlit` for unlit output; `final_color` selects the normal shaded path.

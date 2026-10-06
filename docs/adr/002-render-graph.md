@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -18,12 +18,16 @@ contracts or explain why a pass is retained.
 
 ## Decision
 
-Author production topology in `assets/render_graphs/main.rendergraph.json`.
-The selected backend parses it once, resolves frame conditions, extent/format
-aliases, named executors and repeated passes, then builds and compiles the frame
-graph. Each backend registry resolves executor names and pass types to operation
-IDs; native switches record those operations. Repeated passes carry a typed
-`repeat_index` for their native recorder.
+Author production topology in
+[`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json) for
+the desktop pipeline and
+[`tiled.rendergraph.json`](../../assets/render_graphs/tiled.rendergraph.json)
+for the tiled pipeline ([ADR-087](087-gpu-class-graphics-pipelines.md)). The
+selected backend parses its class's graph once, resolves frame conditions,
+extent/format aliases, named executors and repeated passes, then builds and
+compiles the frame graph. Each backend registry resolves executor names and
+pass types to operation IDs; native switches record those operations. Repeated
+passes carry a typed `repeat_index` for their native recorder.
 
 `vkr_render_graph_prepare_frame()` owns portable per-frame conditions and counts:
 viewport, exposure mode, transmission, picking, timing, shadows and
@@ -37,9 +41,7 @@ consume these typed records; native encoder and command-buffer boundaries remain
 fallible.
 
 Name/type binding includes conditional declarations before frame conditions are
-evaluated. Vulkan recognizes the shared MetalFX executor names, but rejects them
-if they enter the compiled execution order, before resource realization or command
-recording. Disabled Metal-only passes do not prevent portable graph startup.
+evaluated.
 
 The shared compiler validates declarations, orders dependencies, culls work
 outside exported/present/`NO_CULL` roots and emits subresource image barriers and

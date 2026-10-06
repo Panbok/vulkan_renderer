@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-04
+updated: 2026-10-06
 authority: proposal
 ---
 # Level toolkit audit
@@ -45,7 +45,7 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 
 | # | Finding | Evidence | Closes it |
 |---|---|---|---|
-| A2 | Native Vulkan runs the terrain material, LOD selection, geomorph, streamed terrain, proxies and rebase (H2 to H6, 2026-10-04), but no bilateral comparison exists, so both ADR-085 entries in [ADR-044](../adr/044-shader-cross-backend-contract.md) stay UNALIGNED | [Windows record](windows-vulkan-verification.md) | Matched Metal and Vulkan captures of the H2 and H4 views |
+| A2 | Native Vulkan runs the terrain material, LOD selection, geomorph, streamed terrain, proxies and rebase (H2 to H6, 2026-10-04). Both ADR-085 entries are shared domains in [ADR-044](../adr/044-shader-cross-backend-contract.md): Metal runs them in the tiled pipeline and Vulkan in the desktop pipeline, so their evidence is recorded per backend and no cross-class pixel comparison applies | [Windows record](windows-vulkan-verification.md) | A tiled-pipeline capture of the H4 view on the Mac; the H2 layer blend is checked on the tiled pipeline ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md)) |
 
 ### P2
 

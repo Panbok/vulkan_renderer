@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,8 +8,10 @@ authority: adr
 
 ## Status
 
-Accepted. Both native implementations are integrated. Metal output and lifecycle
-checks pass; native Windows/Vulkan execution remains unavailable on this host.
+Accepted. Both native implementations are integrated, and both pipeline
+classes use the output path. Metal output and lifecycle checks passed on the
+Metal desktop implementation, removed on 2026-10-06; the tiled pipeline has not
+rerun them. Native Windows/Vulkan execution is not yet recorded.
 
 ## Context
 
@@ -89,20 +91,19 @@ presentation and authored mastering controls become requirements.
 
 ## Verification
 
-[Shared output selection](../../renderer/src/vkr_display_output.c) has a focused
-boundary oracle for native units, offscreen fallback, unavailable/nonfinite
-input and FP16 representability. The compiled shared shader helper checks the
-SDR bypass, headroom-1 bootstrap, white anchor, dark-value preservation, hue,
-component bounds and one-time scaling. Native Metal checks cover H=1/H=4,
-scale 1/2.5, SDR fallback, re-enable and odd-size resize through normal frame
-preparation. Headroom-only changes retain pipelines and target generation.
-The 36-swatch numeric oracle has maximum absolute FP16 error 0.003899; an
-opaque UI-white pixel is exactly 2.5 with native output scale 2.5. The same
-lifecycle passes Metal API validation. These are local Release observations on
-an Apple M1 Pro, not timing or cross-backend parity claims. The native commands
-are `env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION .scratch/edr-native-lifecycle`,
-`python3 .scratch/check-edr-native.py`, and the separate diagnostic
-`env -u MTL_SHADER_VALIDATION MTL_DEBUG_LAYER=1 .scratch/edr-native-lifecycle`.
+[Shared output selection](../../renderer/src/vkr_display_output.c) has a
+focused boundary oracle for native units, offscreen fallback,
+unavailable/nonfinite input and FP16 representability. The compiled shared
+shader helper checks the SDR bypass, headroom-1 bootstrap, white anchor,
+dark-value preservation, hue, component bounds and one-time scaling. Native
+checks on the Metal desktop implementation cover H=1/H=4, scale 1/2.5, SDR
+fallback, re-enable and odd-size resize through normal frame preparation.
+Headroom-only changes retain pipelines and target generation. The 36-swatch
+numeric oracle has maximum absolute FP16 error 0.003899; an opaque UI-white
+pixel is exactly 2.5 with native output scale 2.5. These are local Release
+observations on an Apple M1 Pro, not timing claims. The native commands are
+`env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION .scratch/edr-native-lifecycle`
+and `python3 .scratch/check-edr-native.py`.
 
 The editor composite also preserves already-mapped FP16 values without a
 second scale or SDR clamp. Its H=4/scale=2.5 swatch check has maximum error
@@ -117,9 +118,7 @@ different or invalid producer display metadata under
 [ADR-051](051-renderer-harness-and-evidence.md).
 
 Generated Vulkan SPIR-V validates the 16-byte parameter layout and native root
-strides; Metal startup reflection validates its consumed roots. Native
-Vulkan execution is unavailable on this macOS host; affected shader entries
-remain UNALIGNED under [ADR-044](044-shader-cross-backend-contract.md).
-The local task evidence retains wrapper and
+strides; Metal startup reflection validates its consumed roots. Native Vulkan
+execution is not yet recorded. The local task evidence retains wrapper and
 harness commands, report digests and limits. Original snapshot payloads remain
 local; no baseline generation was promoted.

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -52,31 +52,32 @@ failures propagate through begin/render/cancel. A Metal failure after queue comm
 also reports `DEVICE_ERROR`; already-submitted GPU work and native history cannot
 be rolled back as though preparation had failed.
 
-The shared native pass/timing capacity is 410
+The shared native pass/timing capacity is 411
 ([`VKR_RENDERER_IMPL_MAX_GRAPH_PASSES`](../../renderer/src/vkr_renderer_impl.h)),
 derived from the authored main graph's full feature and repeat envelope,
 including the local-shadow atlas clear, the opaque and three transmitting
 passes for each of the 64 local-shadow render slots
 (`VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX`), the local shadow mask and the
 layered deferred-lighting pass. Disabling temporal reconstruction
-restores culling HZB generation, so the no-TAA graph is larger than the MetalFX
-or FSR graph. The CPU graph-expansion check covers all three modes and the 720p
-envelope without allocating 16K render targets. Backend-owned pass records,
+restores culling HZB generation, so the no-TAA graph is larger than the FSR
+graph. The CPU graph-expansion check covers the 720p envelope without
+allocating 16K render targets. Backend-owned pass records,
 labels and timestamp capacity are reserved at initialization and released at
 renderer teardown; GPU completion rules and image budgets are unchanged.
 The [Bistro capacity check](../../assets/verification/renderer-features/ssr-no-taa-capacity.txt)
-records the reproduced overflow, CPU graph envelope and native Metal validation.
+records the reproduced overflow and the CPU graph envelope.
 
 Metal records each run of consecutive compute and transfer passes in one
-compute encoder; graphics and MetalFX passes keep their own encoders. On the M1
-development host every encoder boundary left the GPU idle for 25 to 50 µs, about
-2.2 ms per Bistro frame. A run first waits, with one queue consumer barrier, for
-every producer its passes need from earlier encoders. Each later pass takes an
-intra-encoder barrier with its own dependency stages, limited to dispatch and
-blit stages, so passes without a dependency may overlap. The run ends with the
-union of its passes' producer barriers and the capture barriers. Per-pass
-timestamps and debug groups remain inside the shared encoder, so timings of
-overlapping passes are less isolated. In matched runs without timestamps, the
+compute encoder; graphics passes keep their own encoders. On the Metal desktop
+implementation, removed on 2026-10-06 (M1 development host), every encoder
+boundary left the GPU idle for 25 to 50 µs, about 2.2 ms per Bistro frame. A
+run first waits, with one queue consumer barrier, for every producer its passes
+need from earlier encoders. Each later pass takes an intra-encoder barrier with
+its own dependency stages, limited to dispatch and blit stages, so passes
+without a dependency may overlap. The run ends with the union of its passes'
+producer barriers and the capture barriers. Per-pass timestamps and debug
+groups remain inside the shared encoder, so timings of overlapping passes are
+less isolated. In matched runs without timestamps on that implementation, the
 Bistro street view fell from 16.54 ms to 15.31 ms per frame and the motion case
 from 16.84 ms to 15.82 ms. Vulkan records one command buffer with pipeline
 barriers and is unchanged.
@@ -91,8 +92,8 @@ requirements.
 
 The application and editor share `renderer_lib` and a neutral sample runtime.
 Backend-specific quality modes retain explicit capability boundaries, as in
-ADR-039/040. No generic command RHI, legacy Vulkan 1.2 fallback, frontend pipeline
-registry or per-draw runtime dispatch is introduced.
+ADR-039 and ADR-087. No generic command RHI, legacy Vulkan 1.2 fallback,
+frontend pipeline registry or per-draw runtime dispatch is introduced.
 
 ## Consequences
 
@@ -106,7 +107,7 @@ Unused renderer owner/scratch arenas and their capability sizes are removed;
 native graph DMemory retains its backend owner. Backend allocator queries expose
 that native allocator rather than an unused shared arena.
 API-specific code remains substantial, and shared semantics still require native
-evidence from both backends. There is no Linux or
+evidence on each backend that runs them. There is no Linux or
 D3D12 implementation promise.
 
 ## Alternatives considered

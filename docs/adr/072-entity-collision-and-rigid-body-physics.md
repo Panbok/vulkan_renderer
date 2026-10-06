@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-04
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -11,7 +11,8 @@ authority: adr
 Accepted. Scene bodies, collider children, simulation, editor authoring and overlay
 persistence are integrated. This status records the implementation; native
 platform checks, interactive acceptance and matched frame-cost measurements are
-separate evidence. No performance or bilateral native success is claimed here.
+separate evidence. No performance or native success on either backend is
+claimed here.
 
 ## Context
 

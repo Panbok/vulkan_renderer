@@ -24,11 +24,12 @@ The remaining design is in
 
 ## Context
 
-The renderer has one graphics pipeline for every supported GPU: a visibility
-buffer, a compute G-buffer resolve, compute deferred lighting, four
-transmission layers, screen-space effects and temporal reconstruction
-([ARCHITECTURE.md](../ARCHITECTURE.md#rendering-pipeline)). Metal and Vulkan
-implement the same semantics ([ADR-044](044-shader-cross-backend-contract.md)).
+Before this decision the renderer had one graphics pipeline for every
+supported GPU, implemented with the same semantics on Metal and Vulkan
+([ADR-044](044-shader-cross-backend-contract.md)): a visibility buffer, a
+compute G-buffer resolve, compute deferred lighting, four transmission
+layers, screen-space effects and temporal reconstruction. It is now the
+desktop pipeline ([ARCHITECTURE.md](../ARCHITECTURE.md#rendering-pipeline)).
 The supported GPUs differ in kind: Apple M1 to M4 are tile-based deferred
 renderers with unified memory, RDNA 2 and Ampere are immediate-mode discrete
 GPUs ([ADR-083](083-supported-hardware-matrix.md)).
@@ -38,14 +39,15 @@ the hardware allows, including ray and path tracing. Apple M-series should run
 at native resolution without upscaling at 60 fps, and its pipeline should be
 the base for a later mobile renderer.
 
-The current pipeline cannot meet the M-series target. On the M1 Pro, Bistro
-with production effects at 2560×1440, render scale 1.0, portable TAA and no
-upscaler took 56.12 ms mean, 52.88 ms median and 71.38 ms p95 per frame, and
-the frame was GPU-bound (Release, `local-windowed-gpu-single`, one process,
-120 measured frames, report digest
+That pipeline could not meet the M-series target. On the M1 Pro, its Metal
+implementation, since removed, rendered Bistro with production effects at
+2560×1440, render scale 1.0, portable TAA and no upscaler in 56.12 ms mean,
+52.88 ms median and 71.38 ms p95 per frame, and the frame was GPU-bound
+(Release, `local-windowed-gpu-single`, one process, 120 measured frames,
+report digest
 `sha256:1e63ae765ec38fb310c031a0a2f0abbfff50c72caae407956ee7ca9bb54b54dd`,
-2026-10-05; a temporary copy of `bistro_metal_production_040` with
-`render_scale` 1.0). Compute passes took 49.5 ms and raster passes 5.8 ms of
+2026-10-05; a temporary copy of `bistro_metal_production_040`, a Metal
+desktop case since removed, with `render_scale` 1.0). Compute passes took 49.5 ms and raster passes 5.8 ms of
 the 55.3 ms pass sum:
 
 | Pass | GPU ms | Limiter in a GPU-counter trace of the same case |
@@ -236,22 +238,31 @@ pipeline rather than a backend mechanism.
     [`lighting.metalh`](../../renderer/src/shaders/metal/msl/world/lighting.metalh)).
     A glossy receiver keeps distant rectangles it can reflect.
 12. Adaptive quality (owner decision, 2026-10-06, after Valve's VR adaptive
-    quality): with dynamic resolution on, the tiled pipeline steps its render
-    scale between 0.65 and native by 0.05 to hold a 16 ms GPU frame, and its
+    quality): with dynamic resolution on, the tiled pipeline steps its
+    internal render scale ([ADR-039](039-metal-internal-render-scale.md))
+    between 0.65 and native by 0.05 to hold a 16 ms GPU frame, and its
     tonemap pass upscales the scene spatially to the output. Native
     resolution stays the target whenever the frame fits. The controller
-    follows raw completed-frame GPU times
-    (`VKR_DYNAMIC_RESOLUTION_POLICY_RESPONSIVE` in
-    [`vkr_dynamic_resolution.c`](../../renderer/src/vkr_dynamic_resolution.c)):
-    two frames over the target step down, two steps when both exceed it by a
-    quarter, and thirty frames below 80% of it step up; MetalFX keeps the
-    slower policy that protects its history. A step recreates the
-    viewport-sized graph images, so the cloud and HZB histories restart, and
-    the memoryless multisampled targets retire until the GPU completes the
-    frames that drew into them instead of stalling it. The sample's tiled
-    settings use 0.65 to 1 and 16 ms
+    ([`vkr_dynamic_resolution.c`](../../renderer/src/vkr_dynamic_resolution.c))
+    keeps fixed-size CPU state and consumes only completed GPU submission
+    times tagged with the scale they ran at; it ignores duplicate samples and
+    samples from another scale. It follows the raw times: two frames over
+    the target step down, two steps when both exceed it by a quarter, and
+    thirty frames below 80% of it step up. When a step up exceeds the target
+    and falls back, the controller keeps the measured cost ratio of the two
+    scales and steps up again only when the lower scale's time multiplied by
+    that ratio falls below 80% of the target, so unchanged work does not
+    probe the same failure again; sustained headroom at the upper scale
+    clears the ratio, and a change of the Scene output extent clears all
+    learned timing but keeps the scale. A step recreates the viewport-sized
+    graph images, so the cloud and HZB histories restart, and the memoryless
+    multisampled targets retire until the GPU completes the frames that drew
+    into them instead of stalling it. The sample's tiled settings use 0.65
+    to 1 and 16 ms
     ([`vkr_sample_runtime_config.c`](../../runtime/src/vkr_sample_runtime_config.c));
-    the dynamic-resolution setting turns it off.
+    the dynamic-resolution setting turns it off. Vulkan has no dynamic
+    resolution; FSR 3.1 takes a fixed scale
+    ([ADR-052](052-vulkan-fsr31-upscaling.md)).
 
 ### First tiled pipeline measurement
 
@@ -260,7 +271,8 @@ render scale 1.0, 120 warm-up and 300 measured frames, one process per run,
 `./build_release/tools/vkr_harness profile --case
 tools/cases/local/tiled_bistro_native.case.json --profile
 tools/profiles/local-windowed-gpu-submission-single.json` and its desktop
-counterpart `tiled_bistro_native_desktop`, run alternately twice:
+counterpart `tiled_bistro_native_desktop`, which ran the desktop pipeline on
+Metal and was removed with it, run alternately twice:
 
 | Pipeline | `gpu.submission` median | p95 | Reports |
 |---|---|---|---|
@@ -275,9 +287,9 @@ p95 sits 0.1 ms above the budget before those return. With pass timestamps
 `Tiled.Opaque` takes 8.1 ms median (11.6 ms p95), a re-rendered cascade 1.4
 to 2.1 ms, tonemapping with its display-linear cache 1.75 ms, and the cloud
 trace and cloud draw 0.35 and 0.32 ms. By inspection, street-view captures
-of both pipelines (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`)
-match in sky and sunlit surfaces; the tiled one lacks lamp light, glass and
-ambient occlusion.
+of both pipelines (`tiled_bistro_capture` and the removed Metal desktop case
+`tiled_bistro_capture_desktop`) match in sky and sunlit surfaces; the tiled
+one lacks lamp light, glass and ambient occlusion.
 
 ### Glass evidence
 
@@ -286,7 +298,8 @@ Release, M1 Pro, 2026-10-06: the Bistro orbit with pass timestamps
 `sha256:88d5f93cdc606960a49341ae3d0622b7b4cefa3f9561aff1428b9054edaf26a9`)
 draws 325 blended draws, all glass, and `Tiled.Blend` takes 0.40 ms median
 and 0.60 ms p95. Captures of the café windows on both pipelines
-(`tiled_bistro_glass`, `tiled_bistro_glass_desktop`, reports
+(`tiled_bistro_glass` and the removed Metal desktop case
+`tiled_bistro_glass_desktop`, reports
 `sha256:e526a05950f7929f62d2eff55c7980e1596b24637d0ebcd2cc8d6109fd2f5599`
 and `sha256:a665f9223234785166e38502f335266702e156483cb1f6f4db4aa1c77d42b571`)
 show the interior through the panes on both. The tiled panes reflect the
@@ -299,7 +312,7 @@ by lamps the tiled one does not draw yet.
 Release editor, M1 Pro, 2026-10-06, the toolkit test level at 22:00: a
 dynamic spot light casting shadows over a brush pillar and an unshadowed
 dynamic point light, added through `vkr_mcp`, light the room on both
-pipelines with the same pool, pillar shadow and tint, over the baked lamp
+pipelines, the desktop one on Metal before its removal, with the same pool, pillar shadow and tint, over the baked lamp
 groups on the tiled one. `test_point_light_limit_keeps_nearest` and the
 time-of-day lighting test cover the limit and the static-light filter.
 
@@ -312,7 +325,7 @@ start ran the tiled pipeline with `gfx.restart` false after the project
 opened, a click picked the floor and its outline,
 grid and labels drew. On Bistro, which has no collision, `camera.view top;
 grid.fit` read the picked depth as 16.8432 m on the tiled pipeline and
-16.8431 m on the desktop one. The CPU test `test_tiled_graph_topology`
+16.8431 m on the desktop pipeline's removed Metal implementation. The CPU test `test_tiled_graph_topology`
 compiles an editor frame that picks.
 
 ### Baked Bistro measurement
@@ -328,7 +341,8 @@ since have the same pages, layers and format. The dynamic variant,
 [`bistro_tiled_dynamic_lights_local`](../../assets/scenes/fixtures/bistro_tiled_dynamic_lights_local.scene.json),
 adds 16 dynamic lights near the orbit centre, 4 shadowed spot lights and 12
 point lights. The desktop pipeline ignores the set and lights the model's
-static lamps at runtime.
+static lamps at runtime; its row ran on the removed Metal implementation
+(`tiled_bistro_baked_native_desktop`, since removed).
 
 | Case | `gpu.submission` median | p95 | Reports |
 |---|---|---|---|
@@ -545,8 +559,9 @@ Reports, in table order:
 The orbit's heavy stretches last 35 to 40 frames. With the 16 dynamic lights
 the scale holds 0.65 to 0.75 through them, and the heaviest views still exceed
 16.7 ms at the floor. Frames that change scale took up to 19 to 22 ms of wall
-time against a 17.0 to 17.6 ms p95. The filtered controller MetalFX uses
-stepped once per 33 frames and left the p95 at 16.6 and 20.6 ms. A 0.75 capture
+time against a 17.0 to 17.6 ms p95. The filtered controller that MetalFX
+used, removed with it, stepped once per 33 frames and left the p95 at 16.6
+and 20.6 ms. A 0.75 capture
 of `tiled_bistro_baked_capture` is visibly softer at text and thin edges than
 native. Metal API validation passed a run of the dynamic-light case that
 stepped six times (4 ms target).
@@ -589,11 +604,12 @@ unbaked
 `sha256:62fc47a50dde9ffa2db38940c0846b49b93f1545d2ec5482a807ac536bbede95`,
 `sha256:785e1cc481c9183709ef459c1024686fa2ff7fa6ed3cf5d4dd630c92ff03607e`.
 
-By inspection against the desktop pipeline: a 128 m terrain painted with its
-four layers in the headless editor shows the same layer regions; harness
-captures of unlit, detail lighting, lighting only and wireframe match their
-desktop counterparts (unlit within about 1 of 255), and a Bistro capture with
-height fog shows the same haze and sky (sky means within 0.2 of 255).
+By inspection against the desktop pipeline's removed Metal implementation:
+a 128 m terrain painted with its four layers in the headless editor shows
+the same layer regions; harness captures of unlit, detail lighting, lighting
+only and wireframe match their desktop counterparts (unlit within about 1 of
+255), and a Bistro capture with height fog shows the same haze and sky (sky
+means within 0.2 of 255).
 
 ## Consequences
 
@@ -602,9 +618,10 @@ height fog shows the same haze and sky (sky means within 0.2 of 255).
   kept per class. Cases that need the desktop pipeline name the Vulkan
   backend, so their native evidence needs a Windows machine; the Metal
   desktop and MetalFX cases and the Metal desktop baselines were removed.
-- The `AGENTS.md` rule that Metal and Vulkan share rendering semantics applies
-  within a pipeline class; with one backend per class, a change is validated
-  natively on its class's backend.
+- `AGENTS.md` applies the shared rules per class: the classes share this
+  art-level contract and the shared shader kernels, and with one backend per
+  class a change is validated natively on its class's backend, a shared
+  kernel on every backend that consumes it.
 - Ray and path tracing can be added to the desktop pipeline without a
   tile-based equivalent.
 - The tiled pipeline needs more baked data, which `vkr_bakery` owns

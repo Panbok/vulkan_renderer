@@ -1,6 +1,6 @@
 ---
 status: declined
-updated: 2026-09-05
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -19,18 +19,19 @@ predicted occlusion against current depth, but adds raster and reduction work.
 ## Decision
 
 Keep ADR-028's one-phase path and exact history compatibility gates. Do not
-ship the experimental second classify/raster/HZB phase. The prior bounded Metal
-experiment deferred zero candidates in its moving-camera workload, so there was
+ship the experimental second classify/raster/HZB phase. The prior bounded
+experiment on the Metal desktop implementation, removed on 2026-10-06, deferred
+zero candidates in its moving-camera workload, so there was
 no deferred population to offset the extra work.
 
 That observation justified declining the experiment for that workload; it is
 not a claim that all scenes or devices produce zero candidates. No current
-production predictor implementation is implied. The original 2026-08-24 Metal
-Bistro orbit observation used two repetitions and 600 measured frames; it was
-local, dirty-tree, and warmup-unstable. Its report digest is
-`sha256:f54a508cbb1adac7233738b682cb6ac12c017b1bb263e595eaf8d0671e3b5f0e`.
-The exact transient command was not retained, and the removed predictor cannot
-be reproduced from the current binary.
+production predictor implementation is implied. The original 2026-08-24 Bistro
+orbit observation on that implementation used two repetitions and 600 measured
+frames; it was local, dirty-tree, and warmup-unstable. Its report digest is
+`sha256:f54a508cbb1adac7233738b682cb6ac12c017b1bb263e595eaf8d0671e3b5f0e`. The
+exact transient command was not retained, and the removed predictor cannot be
+reproduced from the current binary.
 
 ## Consequences
 

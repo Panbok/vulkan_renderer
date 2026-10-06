@@ -19,6 +19,7 @@ below are starting points for checking a definition, not alternate API specs.
 | Prepared frame | Private `VkrPreparedFrame`: borrowed input plus derived temporal, exposure, bloom and GTAO values. | [vkr_prepared_frame.h](../renderer/src/vkr_prepared_frame.h) |
 | Acquired frame | `VkrFrame`, identifying one target/command-slot acquisition with resolved dimensions and target generation. Render or cancel consumes it; acquisition number does not prove GPU completion. | [vkr_renderer.h](../renderer/src/vkr_renderer.h) |
 | Payload | The typed data a pass consumes, such as world candidates, shadows, UI draws, or picking requests. | [vkr_frame_input.h](../renderer/src/vkr_frame_input.h) |
+| Shared kernel | Portable shader arithmetic in `renderer/src/shaders/shared/` that Metal and Vulkan sources include; one kernel can have consumers in both pipeline classes. | [ADR-044](adr/044-shader-cross-backend-contract.md) |
 | Root / GPU ABI | A shader-visible record and its exact host/shader layout. Backend roots reference shared GPU tables; frame-input layout and GPU ABI are distinct contracts. | [vkr_gpu_abi.h](../renderer/src/vkr_gpu_abi.h), [ADR-044](adr/044-shader-cross-backend-contract.md) |
 | Bindless | GPU-addressed buffers and indexed texture/sampler tables, replacing per-draw descriptor binding. It does not mean unlimited resources. | [ADR-025](adr/025-selected-renderer-implementation-strategy.md), [ADR-023](adr/023-vulkan-1-4-bindless-capability-profile.md) |
 | Frame slot | Bounded in-flight storage and command resources whose reuse requires GPU completion. | [Vulkan frame slots](../renderer/src/vulkan/vkr_vulkan_internal.h), [Metal command slots](../renderer/src/metal/vkr_metal_packet_renderer.m) |
@@ -27,7 +28,7 @@ below are starting points for checking a definition, not alternate API specs.
 | Render thread | Renderer-owned worker, on by default, that acquires and renders a submitted frame while the frame-loop thread builds the next; every other renderer call waits for it. | [ADR-082](adr/082-renderer-owned-render-thread.md) |
 | Decoupled frame | A frame built from the previous frame's target values and acquired by the render thread; coupled frames are acquired on the frame-loop thread. | [ADR-082](adr/082-renderer-owned-render-thread.md) |
 | Present target | Window/swapchain or ordinary-image offscreen output, with explicit extent and attachment properties. | [vkr_renderer.h](../renderer/src/vkr_renderer.h) |
-| Graphics pipeline class | Desktop or tiled (`VkrGraphicsPipelineClass`): which render graph and shading path a renderer runs. The tiled class shades forward in one multisampled render pass with baked lightmaps. | [ADR-087](adr/087-gpu-class-graphics-pipelines.md) |
+| Graphics pipeline class | Desktop or tiled (`VkrGraphicsPipelineClass`): the render graph and shading path a renderer runs. It follows the backend (`vkr_graphics_pipeline_for_backend`): Metal runs the tiled class, which shades forward in one multisampled render pass with baked lightmaps, and Vulkan the desktop class. | [ADR-087](adr/087-gpu-class-graphics-pipelines.md) |
 
 ## Graph and lifetime
 
@@ -83,7 +84,7 @@ below are starting points for checking a definition, not alternate API specs.
 | Bloom / GTAO | HDR bright-region filtering / ground-truth ambient occlusion from depth and surface information. | [vkr_bloom.h](../renderer/src/vkr_bloom.h), [vkr_gtao.h](../renderer/src/vkr_gtao.h) |
 | TAA / jitter / reactivity | Temporal antialiasing / subpixel projection displacement / reduced history trust for changing composition. | [vkr_temporal.h](../renderer/src/vkr_temporal.h) |
 | Internal render scale | Scene shading extent relative to output extent; UI and physical presentation remain at native output size. | [ADR-039](adr/039-metal-internal-render-scale.md) |
-| MetalFX / dynamic resolution | Metal temporal reconstruction / choosing bounded internal scale tiers from completed GPU timing. | [ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) |
+| Dynamic resolution / adaptive quality | Choosing bounded internal scale tiers from completed GPU timing / the tiled pipeline's use of it: the scale steps between 0.65 and native to hold the frame budget and the tonemap pass upscales spatially. Vulkan has neither. | [ADR-087](adr/087-gpu-class-graphics-pipelines.md) (decision 12) |
 
 ## Scene, assets, and tools
 

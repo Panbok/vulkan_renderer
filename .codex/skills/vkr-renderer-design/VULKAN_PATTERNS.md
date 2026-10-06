@@ -27,10 +27,12 @@ or a function-pointer dispatch per draw.
 
 ## Shared graph and publication
 
-`assets/render_graphs/main.rendergraph.json` declares frame resources and passes.
+`assets/render_graphs/main.rendergraph.json` declares the desktop pipeline's
+frame resources and passes, which Vulkan runs; `tiled.rendergraph.json`
+declares the tiled pipeline's, which Metal runs (ADR-087).
 `vkr_rg_build_from_json()` realizes prepared frame conditions and dimensions;
 `vkr_rg_compile_schedule()` computes shared ordering, culling, and dependencies.
-Metal and Vulkan realize API objects and lower those dependencies into native
+Each backend realizes API objects and lowers those dependencies into native
 commands. Inspect `vkr_rg_compile.c` plus the affected backend's graph and
 recording code together.
 
@@ -47,7 +49,7 @@ records carry logical indices. Native roots remain backend-owned.
 
 Keep pipelines ready before recording their work. Capability selection happens
 at initialization using typed data. Use `vkr-shaders` for bindings, ABI, shader
-algorithms, and Metal/Vulkan comparison.
+algorithms, and the consumers of shared kernels on each backend.
 
 ## Completion and reuse
 

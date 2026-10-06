@@ -35,4 +35,4 @@ hypothesis, rather than every available metric.
 A pre-existing failing baseline or missing native backend changes what the run
 proves. Investigate available evidence and describe that limit when it appears.
 Do not treat a CPU pass or a changed workload as replacement performance or
-cross-backend evidence.
+native evidence for another backend.

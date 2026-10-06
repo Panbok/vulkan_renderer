@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-05
+updated: 2026-10-06
 authority: proposal
 ---
 
@@ -9,7 +9,10 @@ authority: proposal
 This checklist records evidence still required on a Windows Vulkan host. The
 ADRs define the feature contracts. A successful build or compiled SPIR-V
 reflection does not prove native Vulkan execution, synchronization, display
-behavior, or Metal/Vulkan pixel parity.
+behavior or output. Since 2026-10-06 Vulkan is the only backend of the desktop
+pipeline ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md)), so its
+native runs are the only native evidence for desktop features, and no
+Metal/Vulkan pixel comparison applies.
 
 ## 2026-10-04 Windows execution record: level toolkit
 
@@ -114,7 +117,7 @@ Radeon RX 6700 XT, driver 26.6.3, Vulkan 1.4.315, Windows 10, Ryzen 5 2600 with
 | Vulkan text baseline | After the recook: `missing_baseline`. Against the before image, mean error is 0.0007 to 0.0024 per capture; the differences lie on foliage cutouts and local shadow edges. Accepted generation `683333909dc5c3fb464adbc16701b2a8ee571be05338067d0439eb9848576f60`; `compare --run` passes | `snapshot/20261003T154533.726Z-00204f` / `f3bd7607f95a19e17f344d4944d0e5a86a3d3ae51611e58a95f8b92f365fd090`; `compare/20261003T155438.610Z-001587` / `128589322fb4662b052de6a18861422345b22cfca2a656618513ab7064f6e2a7` |
 | Hardware matrix | RDNA 2 row and [capability profile](../../assets/verification/renderer-features/windows-vulkan-capability-profile.txt) updated ([ADR-083](../adr/083-supported-hardware-matrix.md)) | FSR entry: `profile/20261003T155453.534Z-00091b` / `5f6ffe139c2380a87a8fdc95a35804f7597cb49c4fa291ec12c2e7cc9db3c2ec` |
 | Memory floor | Textures 3.176 GB at full resolution and 1.995 GB at 2048; peaks 4.84 and 3.56 GB ([ADR-083](../adr/083-supported-hardware-matrix.md)) | `profile/20261003T155717.083Z-002d3a` / `8d895b4ae299d9502408cbec901d4bd327bf89541838359951668a01f478fdac`; `profile/20261003T155846.795Z-000812` / `6c579d8cb48d5fe1a658e92263a50b8b191787e1edb6bd40ac20a0c1fb09e283` |
-| Cross-backend local shadows | Exit 4 for both cases: the workload fingerprints differ ([ADR-044](../adr/044-shader-cross-backend-contract.md)) | street `snapshot/20261003T151320.506Z-0013f3` / `f4d3fa0ad318b90d4220bd6b0a906477df331d720d3edea7c92069c39ea4f947`; indoor `snapshot/20261003T151634.384Z-001c25` / `2c90dd177456e1007f2b49ba095b49a031aa565616440e94f77c586cca160508` |
+| Cross-backend local shadows | Exit 4 for both cases: the workload fingerprints differ ([ADR-051](../adr/051-renderer-harness-and-evidence.md)) | street `snapshot/20261003T151320.506Z-0013f3` / `f4d3fa0ad318b90d4220bd6b0a906477df331d720d3edea7c92069c39ea4f947`; indoor `snapshot/20261003T151634.384Z-001c25` / `2c90dd177456e1007f2b49ba095b49a031aa565616440e94f77c586cca160508` |
 
 The recook needed four fixes. OBJ faces reserved exact capacity in arenas, which
 keep each superseded block, so storage grew quadratically: `falcon.obj` peaked at
@@ -151,8 +154,9 @@ Follow-up the same day:
   ([ADR-051](../adr/051-renderer-harness-and-evidence.md)), and the glTF source
   fingerprint ignores CR line endings. The Vulkan text generation was
   re-accepted under the new fingerprint (`f184f283648e494618ecad6ffcf0713d8012d849b8bd3f86c96d10c02fc00e94`).
-  The Mac re-accepted both local-shadow generations on 2026-10-05, so the
-  cross-backend comparison can run ([Metal follow-ups](metal-followups.md)).
+  The Mac generations of both local-shadow cases were removed with the
+  Metal desktop pipeline on 2026-10-06, so no cross-backend comparison
+  remains; both cases now run on Vulkan.
   Bistro's editor override file, which carries the lamp source radii, now
   joins the scene content digest, so the Vulkan text generation needs one
   more re-acceptance on this host.
@@ -213,9 +217,8 @@ Release and two validation-enabled Debug runs ended with zero pending, failed or
 demanded-missing assignments, zero omitted publication candidates, empty stderr,
 and no Vulkan API or synchronization diagnostics.
 
-This Windows host cannot complete the checklist's bilateral Metal comparisons,
-HDR-display inspection, multi-DPI monitor transitions or manual editor/Bakery
-UI actions. Those boxes remain open rather than being inferred from Vulkan.
+This Windows host cannot complete the checklist's HDR-display inspection,
+multi-DPI monitor transitions or manual editor/Bakery UI actions. Those boxes remain open rather than being inferred from Vulkan.
 The original eight-image WSI item also combined incompatible requirements:
 windowed image count is selected by WSI and the harness rejects a forced count.
 The new eight-image witness therefore covers offscreen frame-slot/history
@@ -298,11 +301,13 @@ three-image hidden-window witness.
 
 ## Native Vulkan feature matrix
 
-For each item, run the smallest existing local case, inspect its assertions and
-captures, and repeat the same revision on Metal for a bilateral comparison.
-Record native Vulkan diagnostics, effective configuration, capture metadata and
-the comparison result. Keep a feature UNALIGNED until both native runs and the
-comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
+For each item, run the smallest existing local case on Vulkan and inspect its
+assertions and captures against the feature's ADR. Record native Vulkan
+diagnostics, effective configuration and capture metadata in the feature's ADR
+and in [ADR-044](../adr/044-shader-cross-backend-contract.md). Desktop
+features have no other implementation; shared items (GGX energy, baked
+volumes, rectangle lights, analytic fog, the atmosphere and EDR output) also
+run on Metal in the tiled pipeline, whose evidence is recorded separately.
 
 - [ ] Energy-compensated GGX and shared DFG: [ADR-053](../adr/053-energy-compensated-ggx.md).
 - [ ] Baked diffuse volumes, room boundaries, thick glass, multi-bounce diffuse
@@ -334,9 +339,9 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   `tools/checks/check_ssr_reflected_flicker.py` on its retained snapshot. Confirm
   that weighted RGB, rather than coverage alone, selects the history's reflected
   object. Assess the bar lip and upper woodwork before static accumulation;
-  absent current hits and thin edges remain limitations on Metal. The separate
-  `ssr_reflected_hit_flicker_motion.case.json` is MetalFX-specific; use a separately
-  identified Vulkan/FSR witness for that mode, not a bilateral comparison.
+  absent current hits and thin edges were limitations on the removed Metal
+  implementation. For FSR motion, use a separately identified Vulkan/FSR
+  witness.
   Unsupported correspondence must use current radiance/probes without fading
   an old reflection. Four history taps retain individual validation; raw bounds
   reuse nine guided rough samples at source offsets {-2,0,2}, weighted at half
@@ -350,7 +355,7 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
   `ssgi_bistro_remaining_flicker.case.json`. Check filtered coat SSR against exact
   packed-roughness probe removal, sheen/anisotropy and disabled GTAO's 1×1 sentinel.
   Assess visible trails, flicker, reflection strength and measured temporal cost
-  before claiming parity: [ADR-055](../adr/055-screen-space-reflections.md).
+  before accepting the Vulkan output: [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Rectangular LTC lights and offline rectangle transport:
   [ADR-056](../adr/056-rectangular-ltc-lights.md).
 - [ ] Analytic height fog and ordered transmission composition:
@@ -381,16 +386,18 @@ comparison satisfy [ADR-044](../adr/044-shader-cross-backend-contract.md).
 - [ ] 2026-09-24 shader audit changes: SSR/SSGI cell restart, single-pass
   layered forward/transmission lighting with the coat's own punctual shadow,
   GTAO denoise texel loads, resolve material-row reuse, motion-blur extent
-  queries and the surface-diffusion same-row path. Vulkan captures of
-  `local/ssr_bar_turn_stop` before and after the restart should gain SSR hits
-  along rounded pixel columns and lose almost none, as on Metal. The other
-  changes should leave deterministic fixtures byte-identical:
+  queries and the surface-diffusion same-row path. Vulkan captures of the
+  SSR bar view before and after the restart should gain SSR hits along
+  rounded pixel columns and lose almost none, as on the removed Metal
+  implementation; port the camera of the deleted Metal case
+  `ssr_bar_turn_stop` from Git history. The other changes should leave
+  deterministic fixtures byte-identical:
   [ADR-044](../adr/044-shader-cross-backend-contract.md),
   [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Default display-linear post target: run `post_transform_cache_bistro`
   unset and with `VKR_POST_TRANSFORM_CACHE=0`, confirm the
   `Post.DisplayLinear.Fullscreen` pass only in the default run, and compare
-  both with the same-revision Metal captures. Check EDR scaling and accept a new
+  the two runs. Check EDR scaling and accept a new
   Vulkan Bistro text baseline generation, whose default workload fingerprint now
   differs: [ADR-043](../adr/043-presentation-dpi-and-color-transfer.md).
 
@@ -446,15 +453,16 @@ Native BC7/BC5 derived textures and Windows import measurements are in
 ## Temporal, target, and WSI checks
 
 - [ ] Disable TAA with all post effects in Bistro and verify that the expanded
-  graph fits the shared 163-pass native capacity. Port the Metal-pinned
-  `ssr_bar_no_taa.case.json` settings to a Vulkan witness and inspect the actual
-  native pass count and frame result. The CPU envelope check and
-  [Metal capacity evidence](../../assets/verification/renderer-features/ssr-no-taa-capacity.txt)
+  graph fits the shared 163-pass native capacity. Port the settings of the
+  deleted Metal case `ssr_bar_no_taa` (Git history before 2026-10-06) to a
+  Vulkan witness and inspect the actual native pass count and frame result.
+  The CPU envelope check and the removed Metal implementation's
+  [capacity evidence](../../assets/verification/renderer-features/ssr-no-taa-capacity.txt)
   do not establish native Vulkan acceptance.
 - [ ] With SSR and portable TAA enabled below 100% scale, exercise a camera turn
-  followed by a hold beyond 256 unchanged frames. Port the Metal-pinned
-  `ssr_bar_turn_stop.case.json`, `ssr_bar_turn_stop_settled.case.json` and
-  `ssr_bar_scaled_taa.case.json` settings to Vulkan, then repeat with FSR 3.1.
+  followed by a hold beyond 256 unchanged frames. Port the settings of the
+  deleted Metal cases `ssr_bar_turn_stop`, `ssr_bar_turn_stop_settled` and
+  `ssr_bar_scaled_taa` to Vulkan, then repeat with FSR 3.1.
   Check that the first 128 matching submitted frames keep ordinary accumulation
   and FSR composition masking, then begin the existing 128-sample static mean.
   Motion, SSR toggles, invalid history, scene/resource changes and resize must
@@ -465,7 +473,8 @@ Native BC7/BC5 derived textures and Windows import measurements are in
   case `ssr_ghost_under_bar_taa` and separate `ssgi_bistro_remaining_flicker` case
   for shorter trails and the possible pre-settle shimmer tradeoff. Compare
   trails, reflection strength, the first static sample and the final held image;
-  [Metal settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
+  the removed Metal implementation's
+  [settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
   does not validate FSR SDK execution or native Vulkan history ordering.
 - [ ] Run the portable TAA reference and Vulkan FSR 3.1 static case, then the
   moving-camera cases. Use `snapshot` and inspect final color, motion/depth
@@ -575,14 +584,14 @@ Native BC7/BC5 derived textures and Windows import measurements are in
   capture records. Require finite payloads, complete channels, passing
   assertions, and the expected backend, target, present mode, image count, and
   feature settings.
-- [ ] Use same-revision, same-case, same-profile captures for bilateral checks.
+- [ ] Use same-revision, same-case, same-profile captures for before/after checks.
   Compare canonical float16 channels and their sidecars; do not compare PNG
   previews as radiance data. Keep captures and report digests until review, and
   use `compare --run` before proposing a baseline.
 - [ ] Treat unavailable native execution, missing captures, incomplete GPU
   timestamps, validation-layer absence, or a fallback configuration as an
-  evidence failure. Do not promote a baseline or call a feature aligned from
-  compilation, a single backend, or a process exit alone.
+  evidence failure. Do not promote a baseline or accept a feature from
+  compilation or a process exit alone.
 - [ ] Record exact commands, binary/device/driver identity, report SHA-256,
   comparison limits, and the remaining unavailable gates in the owning ADR or
   task evidence. Optional refinements from the removed image-quality proposal

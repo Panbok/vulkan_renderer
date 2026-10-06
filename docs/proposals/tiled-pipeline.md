@@ -9,55 +9,39 @@ authority: proposal
 [ADR-087](../adr/087-gpu-class-graphics-pipelines.md) accepts a separate
 pipeline class for tile-based GPUs and its M1 Pro budget: Bistro at
 2560×1440, render scale 1.0, no upscaler, 16.7 ms p95. This proposal holds
-the open design, the prototype that tests the budget, and the evidence needed
-to accept the design.
+the open design, the prototype measurements that chose its structure, the
+remaining work and the evidence needed to accept the design.
 
 ## Current baseline
 
-Apple M-series runs the desktop pipeline by default. At the budget's
-resolution it takes 56.12 ms mean per frame on the M1 Pro; ADR-087 records
-the configuration and the passes. A first tiled pipeline runs on Metal when
-selected: its graph, opaque pass, forward shader, lightmap sampling and
-measurement (13.2 ms median, 16.8 ms p95 without transmission or local
-lights) are in [ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
-decisions 6 to 11. Three further measurements from the same day (Release, M1 Pro,
-native 2560×1440, single local runs, not authoritative) bound what tuning the
-desktop pipeline can recover:
-
-- Register spills, attributed by giving each compute pass its own encoder in a
-  temporary build and recording a Metal System Trace: `World.Blend` spills
-  1.91 KiB per thread, `Transmission.Shade.Compact` layers 1 to 3 spill
-  1.73 KiB and layer 0 816 B. `Lighting.Deferred` spills 64 B and
-  `GBuffer.Resolve` 48 B; their low occupancy is the register limit that
-  [ADR-019](../adr/019-bounded-forward-spatial-lighting.md) already tuned.
-- A `max_total_threads_per_threadgroup` hint of 256 on the six transmission
-  shade kernels lowered their summed time from 3.41 and 3.43 ms (two runs
-  without a hint) to 2.69 ms; 192 and 128 gave 2.80 and 2.78 ms. The change is
-  not landed.
-- Keeping the current G-buffer in tile memory would save at most about 1 ms:
-  `GBuffer.Resolve` and `Lighting.Deferred` move about 87 and 148 MB per frame
-  at 4 to 13 GB/s.
-
-Tuning the desktop pipeline can therefore recover a few milliseconds, not the
-39 ms between the measured frame and the budget.
+Every Metal renderer, including the editor, runs the tiled pipeline
+(ADR-087, decisions 7 and 9); the desktop pipeline runs only on Vulkan. Its
+graph, opaque pass, forward shader, lightmap sampling, glass, dynamic lights,
+adaptive quality and measurements are in
+[ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decisions 5 to 12. On a
+lightmap-baked Bistro with cooked mesh levels it takes 15.5 ms p95 at native
+scale and 14.9 ms with adaptive quality; 16 dynamic lights reach 20.7 ms p95
+at native scale. The desktop pipeline's removed Metal implementation took
+56.12 ms mean on the same view (ADR-087, Context).
 
 ## Candidate design
 
-Every item below is open until the prototype measures it.
+Rows marked decided follow ADR-087 and rows marked queued are approved
+remaining work; the others stay open until measured.
 
-| Stage | Desktop pipeline today | Tiled candidate |
+| Stage | Desktop pipeline (Vulkan) | Tiled pipeline |
 |---|---|---|
-| Culling and draw encoding | GPU classification, ICB or indirect-count draws | Shared |
+| Culling and draw encoding | GPU classification, indirect-count draws | Shared classification, Metal ICB draws |
 | Opaque surfaces | Visibility buffer, compute G-buffer resolve, compute lighting | One MSAA render pass: depth pre-pass, then forward shading with clustered lists of the dynamic lights (decided) |
-| Anti-aliasing | Portable TAA, MetalFX or FSR 3.1 | 4× MSAA with alpha to coverage and a tone-mapped resolve in tile memory; no FXAA or temporal history (decided, ADR-087) |
+| Anti-aliasing | Portable TAA or FSR 3.1 | 4× MSAA with alpha to coverage and a tone-mapped resolve in tile memory; no FXAA or temporal history (decided, ADR-087) |
 | Static light | Every static light evaluated per pixel each frame | Lightmaps baked by `vkr_bakery`: direct and bounced diffuse light from static lights, on a second UV set (owner decision, 2026-10-05) |
 | Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)), optional SSGI | Lightmaps on static surfaces; IBL and baked volumes for dynamic objects; no SSGI |
-| Ambient occlusion | GTAO in compute | Baked or probe occlusion |
-| Reflections | IBL and optional SSR | IBL and local probes |
+| Ambient occlusion | GTAO in compute | Baked AO in the lightmap alpha (queued) |
+| Reflections | IBL and optional SSR | IBL, per-draw reflection probes (queued) and [planar reflections](planar-reflections.md) for mirror-like surfaces; no SSR (owner decision, 2026-10-06) |
 | Directional shadows | Retained cascades with PCF | Shared retained cascades; a tier may lower filtering |
-| Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights with one bilinear comparison each, drawn in the lighting pass (decided: 4 of the 16 dynamic lights, ADR-087) |
-| Transmission | Four peeled layers shaded in compute | Sorted forward blend with dual-source transmittance (decided for thin glass, ADR-087); one refraction sample for thick and rough glass |
-| Post-processing | Compute bloom, exposure, tonemap | Shared color pipeline; tonemap and bloom combine in the final render pass where possible |
+| Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights filtered in the lighting pass (decided: 4 of the 16 dynamic lights, ADR-087); one bilinear comparison each today, a small gather PCF queued |
+| Transmission | Four peeled layers shaded in compute | Sorted forward blend with dual-source transmittance (decided for thin glass, ADR-087); absorption, then refraction from a half-resolution copy, for thick and rough glass (queued) |
+| Post-processing | Compute bloom, exposure, tonemap | Shared color pipeline; the tonemap pass samples the bloom chain itself (decided, ADR-087) |
 | Arithmetic | 32-bit throughout | 32-bit; 16-bit only where a measured kernel is register-bound (no ALU gain on M1, see below) |
 
 Mobile Vulkan implements the same structure with dynamic-rendering local read
@@ -101,13 +85,17 @@ transmission, blend and post-processing.
 
 ### First prototype measurements
 
-A Metal prototype (2026-10-05, worktree only, not landed) replays the culled
+These series ran on the M1 Pro while Metal still ran the desktop pipeline;
+their baselines are that removed implementation. A Metal prototype
+(2026-10-05, worktree only, not landed) replays the culled
 `VBuffer.Opaque` draws after that pass into one render pass with memoryless
 color and depth, shades them with the existing forward shader
-(`vkr_metal_packet_opaque_fragment`) and resolves on chip. Its output feeds
+(`vkr_metal_packet_opaque_fragment`, since removed with the Metal desktop
+pipeline) and resolves on chip. Its output feeds
 nothing, so its cost is the change in whole-frame GPU time. Each row is one
-process of a temporary native-resolution copy of `bistro_metal_production_040`
-(2560×1440, render scale 1.0, portable TAA, 120 warmup and 180 measured
+process of a temporary native-resolution copy of `bistro_metal_production_040`,
+a Metal desktop case since removed (2560×1440, render scale 1.0, portable
+TAA, 120 warmup and 180 measured
 frames) under a temporary single-process copy of
 `performance-windowed-gpu-submission` (Release, M1 Pro, non-authoritative).
 The desktop baseline measured 50.14 to 50.30 ms `gpu.submission` median in
@@ -233,10 +221,8 @@ Remaining phases:
    16.7 to 17.0 ms p95 at native scale, and adaptive quality (decision 12)
    holds 15.8 ms p95
    ([measurements](../adr/087-gpu-class-graphics-pipelines.md#adaptive-quality-measurement)).
-   Remaining: the opaque pass on the widest views, the dynamic-light tier
-   at its 0.65 floor (17.1 to 17.5 ms p95), the remaining material layers,
-   IBL probes, rough and thick glass, specular highlights of static lights,
-   and making the tiled pipeline the Apple default.
+   The tiled pipeline is the only Metal pipeline (ADR-087, decision 7).
+   [Remaining work](#remaining-work) lists what is left.
 3. Cooked mesh LOD: implemented
    ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md#cooked-mesh-levels));
    the tiled native orbit takes 11.3 ms median and 15.5 ms p95 with it.
@@ -260,10 +246,37 @@ Remaining phases:
    the largest remaining lever for the tiled p95; their saving is below
    this bound, since near geometry keeps its detail.
 
+## Remaining work
+
+The owner approved these tiled-pipeline features on 2026-10-06, to land in
+this order as one measured change each against the 16.7 ms p95 budget:
+
+1. Per-draw reflection probes: one or two box-projected cubemaps chosen for
+   each draw before shading, for glossy surfaces.
+2. Baked ambient occlusion in the lightmap alpha, applied to environment
+   specular and dynamic lights.
+3. A small fixed gather PCF for the four shadowed dynamic lights, in the
+   shadowed shading variant only.
+4. Thick glass: Beer-Lambert absorption in the blend shader first, then
+   refraction and rough blur from a half-resolution copy of the scene, only
+   on frames with thick or rough glass.
+
+SSR is not planned for the tiled pipeline (owner decision, 2026-10-06).
+Mirror-like surfaces get [planar reflections](planar-reflections.md) per
+surface instead; other glossy surfaces use the probes of item 1.
+
+Also open: the opaque pass on the widest views, the dynamic-light tier at
+its 0.65 floor (17.1 to 17.5 ms p95 before the cooked mesh levels), the
+remaining material layers (clearcoat, sheen, anisotropy and diffuse
+transmission), and the specular highlights of static lights.
+
 ## Acceptance evidence
 
 - Matched Release `gpu.submission` runs of the complete tiled pipeline on the
   M1 Pro meeting 16.7 ms p95 on Bistro, with the selected tier recorded.
 - Captures showing that the art-level contract holds: equal exposure, color
-  pipeline and material response on surfaces both pipelines light the same way.
+  pipeline and material response on surfaces both pipelines light the same
+  way. The tiled pipeline runs on the Mac and the desktop pipeline on the
+  Windows host, so this compares captures of one view from both machines;
+  the harness cannot pair them (ADR-087, decision 7).
 - A Vulkan implementation plan for mobile GPUs, or an explicit deferral.

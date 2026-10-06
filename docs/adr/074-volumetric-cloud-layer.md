@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-05
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,15 +8,16 @@ authority: adr
 
 ## Status
 
-Accepted and implemented on both backends. Metal execution, API validation and
-the frame budget are verified; native Vulkan execution and bilateral image
-comparison remain unavailable on the development host, so the shader contract
-is **UNALIGNED** under [ADR-044](044-shader-cross-backend-contract.md).
-
-The cloud-lit sky light (2026-10-05) runs and passes Vulkan synchronization
-validation on the Windows host. Its Metal implementation has not been
-compiled, validated or timed: the Metal shader library, ABI reflection and the
-M1 budget for `Clouds.SkyLight` remain open gates.
+Accepted and implemented on both backends. Both pipeline classes run the
+layer; the tiled pipeline composes it in `Tiled.Atmosphere`
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 6). Each backend
+records its own native evidence. On Metal, execution and the frame budget were
+verified on the desktop implementation, removed on 2026-10-06, and ADR-087
+records the tiled cloud trace and draw costs. On Vulkan, the cloud-lit sky light
+(2026-10-05) runs and passes synchronization validation on the Windows host.
+The Metal shader library, ABI reflection and the M1 budget for
+`Clouds.SkyLight` were open gates when it landed; this ADR records no Metal
+result for it.
 
 ## Context
 
@@ -128,8 +129,10 @@ antialiasing the newest completed producer seeds the trace. The harness
 resets the wind clock with its other phase clocks, so bootstrap duration does
 not move the layer in captures.
 
-Deferred lighting composites sky pixels as `L_sky * T + S` from the current
-history instance. `L_sky` holds the sky and the sun glow; the sun disc is added
+In the desktop pipeline, deferred lighting composites sky pixels as
+`L_sky * T + S` from the current history instance; the tiled pipeline's
+`Tiled.Atmosphere` lays the same layer and disc over its sky pixels. `L_sky`
+holds the sky and the sun glow; the sun disc is added
 after it, scaled by `saturate((T - 0.1) / 0.9)`. A cloud that reads as solid
 against the sky still passes a few percent of light, and the disc's radiance is
 thousands of times the sky's, so the physical `T` would show it through that
@@ -242,9 +245,9 @@ into the base, the wind wrap, the render-mode rule and the authoring domain,
 and loads and rejects scene `clouds` objects. When the layer shipped, the full
 main graph had 167 passes, then the renderer's pass capacity.
 
-Metal Release on the M1 Pro development host at 1280x720, five
-non-authoritative processes of 300 measured frames each, measured the layer in
-`bistro.scene.json` (coverage 0.45):
+On the Metal desktop implementation, removed on 2026-10-06 (Release, M1 Pro
+development host, 1280x720), five non-authoritative processes of 300 measured
+frames each measured the layer in `bistro.scene.json` (coverage 0.45):
 
 | View | Clouds.Trace | Clouds.Shadow | Deferred lighting change | GPU pass sum change |
 |---|---|---|---|---|
@@ -257,17 +260,9 @@ reports (sha256:535fa6e0 sky, 6f844870 street) and after reports
 (sha256:ba20c628 sky, da8ff653 street, 278f2467 zenith) share the case and
 profile; the dirty tree keeps them non-authoritative.
 
-The Bistro Metal text baseline was re-accepted with the layer (generation
-`sha256:74b6e5c517c668ed17354a0d3f1026bc0d0767b82b17666727fb9c1ca3f4c19c`);
-two same-build reruns compare against it with failed-pixel ratio 0 and mean
-absolute error at most 8.7e-7 per view. Its successor for the directional sun
-light of ADR-058 keeps the same look.
-
-Metal API validation of `local.clouds.bistro_sky` passes without diagnostics
-(report sha256:dee8faa8e4cc6d7a6a458fcc69e0d8776b30d2263327995517e0c60266324f8a).
-A cloud-free Bistro sky keeps geometry HDR byte-identical; 33,178 sky pixels
-move by compiler codegen, 98% by one half-float step. Vulkan SPIR-V validation
-and layout reflection pass for the five cloud modules and every sky-record
-consumer
+On the same implementation, a cloud-free Bistro sky kept geometry HDR
+byte-identical; 33,178 sky pixels moved by compiler codegen, 98% by one
+half-float step. Vulkan SPIR-V validation and layout reflection pass for the
+five cloud modules and every sky-record consumer
 ([clouds-spirv.txt](../../assets/verification/renderer-features/clouds-spirv.txt)).
-Native Vulkan execution and bilateral comparison remain unavailable.
+Native Vulkan evidence is limited to the cloud-lit sky light runs above.

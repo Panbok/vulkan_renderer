@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-04
+updated: 2026-10-06
 authority: proposal
 ---
 
@@ -1088,7 +1088,7 @@ the existing limit, including colliders/character proxies as applicable.
 | Movement/camera | Bistro stairs/slopes/doorways, moving platform, wall-adjacent muzzle, obstruction, teleport and view switching. Inspect grounded behavior, clipping and aim/camera correspondence. |
 | Visual authoring | A chart and its equivalent native scenario produce the same accepted actions/state trace. Test invalid/cyclic graphs, undo, save/reopen, missing references and failed revision replacement. |
 | Reload/lifetime | Same-schema reload succeeds; incompatible schema is rejected; failed build preserves running state; repeated Play/Stop and reload drain live handles/allocations. |
-| Portability | Native macOS and Windows builds/execution; renderer integration evidence on Metal and Vulkan separately. Source review or one-backend execution does not prove parity. |
+| Portability | Native macOS and Windows builds/execution; renderer integration evidence on Metal and Vulkan separately. Source review or one-backend execution does not prove the other backend's behavior. |
 
 Use existing deterministic CPU tests where they supply the direct oracle;
 add tests only for these named failure modes. Use small synthetic fixtures for
@@ -1108,11 +1108,11 @@ gameplay-specific inclusive/exclusive CPU scopes and queue/debt counters.
 Measure code-only, trace-enabled and graph-editor-open configurations
 separately. Verify rendering output independently through captures; do not
 reuse capture timing as steady-state performance. A future first-person
-rendering change needs its own bilateral visual evidence.
+rendering change needs its own visual evidence on each backend.
 
 The proposed gameplay workload, metrics and external input-to-photon
 measurement are not currently available as an acceptance run. No runtime,
-native parity, end-to-end latency or budget pass is claimed here.
+native backend, end-to-end latency or budget pass is claimed here.
 
 ## Delivery order and decisions
 

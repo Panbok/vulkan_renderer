@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,8 +8,12 @@ authority: adr
 
 ## Status
 
-Accepted. Production compilation, compiled shader contracts and selected Metal
-image/API checks pass. Native Vulkan execution remains unavailable.
+Accepted. Motion blur belongs to the desktop pipeline, and Vulkan is its only
+implementation; the tiled pipeline turns it off
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7). Production
+compilation and compiled shader contracts pass. The native image checks below
+ran on the Metal desktop implementation, removed on 2026-10-06; native Vulkan
+execution is not yet recorded.
 
 ## Decision
 
@@ -22,8 +26,8 @@ shutter. Zero shutter bypasses all blur resources and passes.
 [Frame input](../../renderer/src/vkr_frame_input.h) version 43 adds the controls.
 [Preparation](../../renderer/src/vkr_motion_blur.c) produces a 48-byte record
 containing shutter fraction, perspective depth range, output-to-raster mapping
-and output/tile extents. Frame delta must be finite and nonnegative. The native
-roots occupy 96 bytes on Metal and 80 on Vulkan.
+and output/tile extents. Frame delta must be finite and nonnegative. The Vulkan
+root occupies 80 bytes.
 
 Motion vectors retain the existing previous-UV minus current-UV convention.
 The shutter fraction is scaled by current frame duration divided by the elapsed
@@ -63,39 +67,25 @@ roots to their submission.
 
 ## Verification and limits
 
-The Release wrapper compiles both production shader paths. Compiled SPIR-V
+The Release wrapper compiles the production shaders. Compiled SPIR-V
 reflection and validation pass for all three passes, their root layouts and
 dispatch sizes. An independent exposure oracle covers 11,800 shutter/history
 cases with maximum radius error 1.81e-6 pixels. Directed depth coverage and
-constant-color checks pass. Native fixtures pass camera and rigid-object motion, static output, zero shutter
-and transparent coverage. Disabled and zero-shutter final/HDR payloads match
-byte-for-byte; a static active pass preserves HDR bytes exactly. The moving
-red edge's largest step falls from 4.990 to 2.794 at 180 degrees and 1.834 at
-360 degrees. The transparent green edge stays sharp. A 1.849-pixel tile radius
-matches the authored camera displacement despite a three-frame predecessor;
-360 degrees doubles the radius to 3.697 pixels.
-
-Odd 257×193 output, portable TAA, spatial scaling at 2/3 and MetalFX temporal
-at .8 pass. A serial Metal API-validation resize passes at 514×386 and restores
-1026×770 without API errors. Report SHA256:
-`c29ad4469bb7bd173a7956d599ac4c6d65904063712db2f8895741020c96a381`.
-The odd editor capture combines motion blur, DoF and bloom, report SHA256:
-`5a3a6d9139b741b056b0fdf93fc59de287aef876bfa792cd490408eead88d03a`.
-The dedicated Release editor build passes with the surface-diffusion integration:
-`env -u VKR_DISPLAY_OUTPUT -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_editor.sh Release`.
-Its log is `.scratch/renderer-improvements-post-effects-editor.log`.
+constant-color checks pass. On the Metal desktop implementation, removed on
+2026-10-06, native fixtures passed camera and rigid-object motion, static
+output, zero shutter and transparent coverage. Disabled and zero-shutter
+final/HDR payloads matched byte-for-byte; a static active pass preserved HDR
+bytes exactly. The moving red edge's largest step fell from 4.990 to 2.794 at
+180 degrees and 1.834 at 360 degrees. The transparent green edge stayed sharp.
+A 1.849-pixel tile radius matched the authored camera displacement despite a
+three-frame predecessor; 360 degrees doubled the radius to 3.697 pixels.
 
 Commands: `./build_release.sh`; `python3 tools/checks/check_motion_blur.py
 .scratch/motion-blur-native-runs.json`; and `./build_release/tools/vkr_harness
 snapshot --case tools/cases/local/motion_blur_180_local.case.json --profile
 tools/profiles/local-brdf-display-validation.json`, with graphics validation
-variables unset. The resize selects `motion_blur_resize_local.case.json`,
-`local-metal-windowed-validation-serial.json` and `MTL_DEBUG_LAYER=1` with shader
-validation unset. Twelve runs and their payloads are retained under
-`.scratch/renderer-evidence/motion-blur`; original snapshots remain intact.
+variables unset. The motion blur cases are now pinned to Vulkan.
 
 This screen-space approximation cannot recover hidden background or motion
 from deformation. It deliberately preserves transparent-covered pixels.
-No performance claim is made. Native Vulkan execution is unavailable on this
-Mac; the feature remains UNALIGNED under
-[ADR-044](044-shader-cross-backend-contract.md).
+No performance claim is made. Native Vulkan execution remains unrecorded.

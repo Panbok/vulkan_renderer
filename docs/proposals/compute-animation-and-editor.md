@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-13
+updated: 2026-10-06
 authority: proposal
 ---
 
@@ -32,7 +32,7 @@ rendering contracts before assets relying on them can be accepted.
 |---|---|
 | Assets | Static v17 and skinned v18 meshes retain source identity; `.vka` banks preserve exact TRS keys, node closure and skins. Managed import/rebuild/reimport publishes compatible mesh/bank revisions. Morph animation and more than four influences remain unsupported. |
 | Playback and scene | Independent CPU players and inline graph controllers use seconds, local-TRS crossfades, blend spaces and conditional states while preserving authored ECS transforms. Frame extraction supplies current palettes, per-instance bindings and conservative bounds. |
-| Rendering | Both native implementations contain compute skinning and deformation consumers for visibility, shadows, picking, material reconstruction, blend and motion. Previous deformation comes from compatible submitted history. Native Metal has an animated Bistro snapshot; native Vulkan comparison is unavailable, so the shader contract remains **UNALIGNED**. |
+| Rendering | Both backends run compute skinning. Vulkan's desktop pipeline consumes the deformation in visibility, shadows, picking, material reconstruction, blend and motion; Metal's tiled pipeline in its shadow, forward, blend and picking draws. Previous deformation comes from compatible submitted history. The animated Bistro snapshot ran on the removed Metal desktop implementation; skinned captures on the tiled pipeline and on Vulkan are pending ([ADR-044](../adr/044-shader-cross-backend-contract.md)). |
 | Editor | A movable window has typed blend nodes, parameter/state editing, clip transport and a 16-block sequence with crossfades and undo/redo. Workspace settings preserve authoring; Apply installs a copied controller in the live scene. Managed controller assets and scene-override serialization remain future work. |
 | Preview | An independent player and orbit camera render actual deformed geometry into a 512-square graph target consumed by UI. The initial neutral directional material omits authored materials and main-scene postprocessing. |
 | Scheduling | The existing graph orders skinning, consumers and UI on the graphics submission path. There is no asynchronous compute queue. |
@@ -70,8 +70,8 @@ The subsequent binary audit verified finite four-weight influences (maximum sum
 error `1.37e-7`), rest skin displacement below `1.61e-6` metres, scales down to
 about `0.0001`, and 30 opposite-sign adjacent quaternion pairs. The two root-motion
 clips move node 67 along negative Z by about 1.30 and 2.437 metres respectively.
-ADR-071 records source/cooked pose checks and local Metal rendering evidence.
-Bilateral numeric GPU comparisons remain unavailable.
+ADR-071 records source/cooked pose checks and local Metal rendering evidence
+from the removed Metal desktop implementation.
 
 The source inspection used the user's Testbed assets. Scene-based renderer
 acceptance uses a Bistro case containing this character; no such animation case
@@ -375,9 +375,9 @@ cases. Native diagnostics follow
 [validation policy](../../.codex/skills/vkr-validation/SKILL.md), with one minimal
 Metal process at a time and no broad shader-validation capture suite. Compile,
 reflection, CPU tests, native execution, and timing establish different claims.
-Do not label Metal/Vulkan parity complete until the
-[shader contract](../adr/044-shader-cross-backend-contract.md)'s applicable gates
-pass; unavailable native evidence remains explicit. ADR-071 owns the implementation
+Record native skinning evidence per backend under the
+[shader contract](../adr/044-shader-cross-backend-contract.md); unavailable
+native evidence remains explicit. ADR-071 owns the implementation
 and its verification record. A native Metal animated Bistro snapshot now exists;
 native Vulkan comparison, GPU-versus-reference numerical checks, and matched
 performance measurements remain outstanding. No performance baseline is published.

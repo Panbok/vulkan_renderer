@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,9 +8,11 @@ authority: adr
 
 ## Status
 
-Accepted. Both native implementations, material publication and offline
-transport are integrated. Available Metal output and API-validation checks
-pass; native Vulkan execution is unavailable on this host.
+Accepted. Desktop-pipeline lighting on Vulkan, material publication and
+offline transport are integrated. The tiled pipeline does not draw diffuse
+transmission yet ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8).
+The native output checks below ran on the Metal desktop implementation,
+removed on 2026-10-06; native Vulkan execution is not yet recorded.
 
 ## Context
 
@@ -63,9 +65,9 @@ owners, publication generations and GPU retirement govern the extra 16 bytes
 per material per retained copy. No texture slots, images, history or passes are
 added. Deferred and SSGI composite borrow the existing visible-draw buffer and
 look up material through the visibility image. Their graph buffer bindings are
-13 and 11 in both fullscreen and editor paths. Deferred root sizes are 240 bytes
-on Metal and 192 on Vulkan; SSGI composite roots are 496 and 432 respectively.
-Frame roots and their two-cell Metal allocation remain unchanged.
+13 and 11 in both fullscreen and editor paths. On Vulkan the deferred root is
+192 bytes and the SSGI composite root 432 bytes. Frame roots and their two-cell
+Metal allocation remain unchanged.
 
 ## Consequences
 
@@ -77,25 +79,22 @@ second shadow query to preserve the independent coat’s original bias.
 
 ## Verification and limits
 
-Release application and production Metal/Slang compilation pass. Nine affected
-SPIR-V modules pass compiled layout checks and validation. An initial Metal
-frame failed because both host helpers were passed buffer ordinal zero instead
-of graph bindings 13/11; both implementations were corrected.
+Nine affected SPIR-V modules pass compiled layout checks and validation.
 
 Independent CPU checks find maximum Lambert error 8.55e-9, sampled/quadrature
-error .000500, identical sample/evaluation PDFs and 1,029,446 non-delta unit-eta
-crossings. 131,072 zero-strength samples are bit-identical to prior production,
-including glass. Actual integrator NEE and opposite-side photon gathering agree
-with independent Lambert values within 8.94e-9. Input checks cover defaults,
-linear tint, opaque/cutout, type ordering and invalid range/media/map inputs.
-Runtime rejection also covers uppercase unsupported map keys, matching the
-loader's case-insensitive key handling; the final editor build includes this fix.
-The Release wrappers `./build_release.sh` and `./build_editor.sh Release` pass
-on Apple M1 Pro / Metal 4 with graphics validation unset. Prepare the source
-fixtures with `python3 tools/checks/prepare_diffuse_sheet.py`; the script cooks
-flat-sheet geometry and applies the authored custom material fields. Pack its
+error .000500, identical sample/evaluation PDFs and 1,029,446 non-delta
+unit-eta crossings. 131,072 zero-strength samples are bit-identical to prior
+production, including glass. Actual integrator NEE and opposite-side photon
+gathering agree with independent Lambert values within 8.94e-9. Input checks
+cover defaults, linear tint, opaque/cutout, type ordering and invalid
+range/media/map inputs. Runtime rejection also covers uppercase unsupported map
+keys, matching the loader's case-insensitive key handling; the final editor
+build includes this fix. Prepare the source fixtures with `python3
+tools/checks/prepare_diffuse_sheet.py`; the script cooks flat-sheet geometry
+and applies the authored custom material fields. Pack its
 `tests/fixtures/rendering/diffuse_sheet` texture folder before the cutout case.
-Native captures use this command with the respective case names:
+Native captures use this command with the respective case names, which are now
+pinned to Vulkan:
 
 ```sh
 env -u VKR_DISPLAY_OUTPUT -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
@@ -104,37 +103,28 @@ env -u VKR_DISPLAY_OUTPUT -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INST
   --profile tools/profiles/local-brdf-display-validation.json
 ```
 
-The `back`, `front`, `off`, `black`, `shadow`, `rectangle`, `sun` and `cutout`
-cases pass the independent
+On the Metal desktop implementation, removed on 2026-10-06, the `back`,
+`front`, `off`, `black`, `shadow`, `rectangle`, `sun` and `cutout` cases passed
+the independent
 [`check_diffuse_sheet.py`](../../tools/checks/check_diffuse_sheet.py) oracle:
 maximum absolute point-light error .000317, rectangle error .000138, sun error
 .000073. Black tint gives zero response; a blocker removes backlighting and
 cutout holes remain uncovered. The rectangle reference uses independent emitter
-area quadrature, with 128²→256² convergence delta 2.73e-6. These are local numeric
-checks, not a performance measurement or universal scene-quality guarantee.
+area quadrature, with 128²→256² convergence delta 2.73e-6. These are local
+numeric checks, not a performance measurement or universal scene-quality
+guarantee.
 
-The layered SSR/SSGI scene passes material/glass checks with 682 floor SSR hits,
-including 33 red hits. The existing clearcoat scene with zero sheet strength
-preserves all eight captured channels byte-for-byte against the preceding
-anisotropy implementation. Its report SHA256 is
-`23fb0a613cac83f71f17182dadf222aa7d089bb1b56daa7a795777ce4c3ba324`.
-
-One serial `diffuse_sheet_resize_local` capture with `MTL_DEBUG_LAYER=1`, shader
-validation unset, and `local-metal-windowed-validation-serial.json` passes with
-no API errors. The target changes from 1024×768 to 514×386 and back with SSR/SSGI
-enabled. Report SHA256 is
-`3d0fd8f7f58b9ac196f73952b055aef1b0da34cb211424b364f112624bdd255f`.
-
-The editor's `diffuse_sheet_editor_odd_local` capture passes at 257×193;
-its preview was inspected. Report SHA256 is
-`836fed4f4c83bddedebebd0eab7d35ccc48ccec312b36a6ca90f3b90b1596347`.
+On the same implementation, the layered SSR/SSGI scene passed material/glass
+checks with 682 floor SSR hits, including 33 red hits. The existing clearcoat
+scene with zero sheet strength preserved all eight captured channels
+byte-for-byte against the preceding anisotropy implementation. Its report
+SHA256 is `23fb0a613cac83f71f17182dadf222aa7d089bb1b56daa7a795777ce4c3ba324`.
 
 A real scene bake combines the thin sheet, anisotropy, blended surfaces, nested
 glass and 20,000 photons: 100 valid probes, 30 valid cells, 1,550 caustic deposits
 and 4,032 finite SH floats. The 17,116-byte cooked output SHA256 is
 `62ec80db491e8b89bfcb294441ae9b0d13f31a03fe2061b4d2c2f50bc3cf8c67`.
-Native Vulkan execution and bilateral comparison remain open under
-[ADR-044](044-shader-cross-backend-contract.md).
+Native Vulkan execution remains open.
 
 ## Alternatives considered
 

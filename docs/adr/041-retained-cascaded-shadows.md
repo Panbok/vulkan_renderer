@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-05
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,7 +8,10 @@ authority: adr
 
 ## Status
 
-Accepted.
+Accepted. Both pipeline classes render and retain the cascades. The receiver
+details below are the desktop pipeline's; the tiled forward shader samples
+every cascade with depth PCF/PCSS
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8).
 
 ## Context
 
@@ -127,13 +130,15 @@ one layer per filtered cascade, with no mip chain, retained per target image
 like `shadow_map`. `Shadow.Moments.${i}` runs only for a filtered cascade that
 redraws (`shadow_moments_render_mask`). Each moments texel takes the 4x4 depth
 texels around its 2x2 footprint with (1, 3, 3, 1) tent weights per axis and
-stores the weighted moments of the warps `exp(40 d)` and `-exp(-5 d)`, with
-`d` the normalized depth remapped to `[-1, 1]`. `Lighting.Deferred` samples a
-filtered cascade with one bilinear fetch and takes the smaller of the two
+stores the weighted moments of the warps `exp(40 d)` and `-exp(-5 d)`, with `d`
+the normalized depth remapped to `[-1, 1]`. Desktop `Lighting.Deferred` samples
+a filtered cascade with one bilinear fetch and takes the smaller of the two
 one-sided Chebyshev bounds against the PCF reference depth. The minimum
 variance follows each warp's slope, and a 0.2 light-bleeding reduction clips
-the bound. Cascades 0 and 1, forward, transmission and froxel shading keep
-depth PCF/PCSS; the cascade cross-fade blends PCF and EVSM visibility.
+the bound. Cascades 0 and 1, desktop forward, transmission and froxel shading,
+and tiled forward shading keep depth PCF/PCSS; the cascade cross-fade blends
+PCF and EVSM visibility. The tiled graph still renders the moments while the
+setting is on.
 
 Moments derive from retained depth, so `VkrRetainedShadowToken` reports
 `moments_valid_cascade_mask` from the moments image's per-layer content
@@ -181,68 +186,69 @@ receiver-gated transmission (ADR-019).
 ## Contact-hardening evidence
 
 Production Release and editor wrappers pass. A compiled shared Slang helper
-checks the nearest-two-cascade gate and world/depth/texel conversion. Metal
-captures use equal plates at 0.1 m and 8 m above a receiver, with 0, 0.53 and
+checks the nearest-two-cascade gate and world/depth/texel conversion. Captures
+on the Metal desktop implementation, removed on 2026-10-06, used equal plates
+at 0.1 m and 8 m above a receiver, with 0, 0.53 and
 2-degree sun sizes. With a 4096-square shadow map and 768-square output, the
-far shadow's 10–90% transition covers 400, 479 and 818 pixels respectively. The
-near-contact region and every pixel outside the far-shadow region remain
-byte-identical; all three raw depth maps are identical. A focused Metal API
-validation run passes. These are output checks, not a performance comparison.
-Native Vulkan execution and bilateral image comparison remain unavailable.
+far shadow's 10–90% transition covered 400, 479 and 818 pixels respectively.
+The near-contact region and every pixel outside the far-shadow region remained
+byte-identical; all three raw depth maps were identical. These are output
+checks, not a performance comparison. Neither native Vulkan nor the tiled
+pipeline has run them.
 
 ## Moving-light evidence
 
-Bistro with the atmosphere, Metal Release on the M1 Pro, 1280×720 offscreen,
-60 warmup and 600 measured frames, with a temporary diagnostic turning the sun
-0.0042 degrees per frame from the phase start. Single-process, non-authoritative
-runs. With the tolerance, whole-submission GPU time is 25.90 ms at p50 and
-35.80 ms at p95; the same binary with the tolerance forced to zero gives 33.49
-and 43.43 ms. Cascades 0-3 render in 200, 100, 50 and 24 of the 600 frames. At
-0.6 degrees per frame every step exceeds every tolerance and GPU time is
-unchanged, 33.26 ms with the sun up and 24.44 ms with it set. A CPU test turns a
-retained light by 0.01, 0.03 and 5 degrees and stops it: nothing, cascade 0,
-and every cascade render, and a light repeated four times is adopted exactly. The static
-Bistro snapshot is unchanged.
+Bistro with the atmosphere, on the Metal desktop implementation, removed on
+2026-10-06 (Release, M1 Pro), 1280×720 offscreen, 60 warmup and 600 measured
+frames, with a temporary diagnostic turning the sun 0.0042 degrees per frame
+from the phase start. Single-process, non-authoritative runs. With the
+tolerance, whole-submission GPU time is 25.90 ms at p50 and 35.80 ms at p95;
+the same binary with the tolerance forced to zero gives 33.49 and 43.43 ms.
+Cascades 0-3 render in 200, 100, 50 and 24 of the 600 frames. At 0.6 degrees
+per frame every step exceeds every tolerance and GPU time is unchanged, 33.26
+ms with the sun up and 24.44 ms with it set. A CPU test turns a retained light
+by 0.01, 0.03 and 5 degrees and stops it: nothing, cascade 0, and every cascade
+render, and a light repeated four times is adopted exactly. The static Bistro
+snapshot is unchanged.
 
 ## Far-cascade EVSM evidence
 
-Metal Release on the M1 Pro, 2026-10-05, dirty tree, non-authoritative. With
-the setting off, the Bistro street capture is byte-identical to the capture
-before EVSM existed. `shadow_bistro_far_cascade_capture` (long street view,
-1280x720, no TAA) with `VKR_SHADOW_EVSM=1` changes 0.36% of pixels by more
-than 2 of 255 (maximum 50), along distant facades in cascades 2 and 3, with no
-visible acne or bleeding. `shadow_bistro_far_cascade_perf` under
-`local-offscreen-perf-audit-gpu` (five children of 300 frames) measured
-`Lighting.Deferred` at 3.65 ms against 3.68 ms p50 (spread 0.035 ms) and an
-unchanged frame. With a temporary diagnostic forcing every cascade to redraw,
-`Shadow.Moments.0` and `.1` each took 0.25 ms per redraw against 1.8–2.1 ms
-per cascade raster, which was unchanged. The moments add 32 MiB per target image
-at the High preset's 2048² maps. A Metal API validation run with the setting on
-passes. The Vulkan shader-ABI reflection test checks both roots against the
-compiled SPIR-V; native Vulkan execution remains unavailable.
+On the Metal desktop implementation, removed on 2026-10-06 (Release, M1 Pro,
+2026-10-05, dirty tree, non-authoritative). With the setting off, the Bistro
+street capture was byte-identical to the capture before EVSM existed.
+`shadow_bistro_far_cascade_capture` (long street view, 1280x720, no TAA; now a
+Vulkan case) with `VKR_SHADOW_EVSM=1` changed 0.36% of pixels by more than 2 of
+255 (maximum 50), along distant facades in cascades 2 and 3, with no visible
+acne or bleeding. `shadow_bistro_far_cascade_perf`, a Metal desktop case since
+removed, under `local-offscreen-perf-audit-gpu` (five children of 300 frames)
+measured `Lighting.Deferred` at 3.65 ms against 3.68 ms p50 (spread 0.035 ms)
+and an unchanged frame. With a temporary diagnostic forcing every cascade to
+redraw, `Shadow.Moments.0` and `.1` each took 0.25 ms per redraw against
+1.8–2.1 ms per cascade raster, which was unchanged. The moments add 32 MiB per
+target image at the High preset's 2048² maps. The Vulkan shader-ABI reflection
+test checks both roots against the compiled SPIR-V; native Vulkan execution is
+not yet recorded.
 
 ## Retained-cascade culling evidence
 
-Metal Release on the M1 Pro, 2026-10-05, dirty tree, non-authoritative.
-`bistro_native_perf_audit_steady` under `local-offscreen-perf-audit-gpu` (five
-children of 300 frames, every cascade retained) measured `Cull.Encode` at
+On the Metal desktop implementation, removed on 2026-10-06 (Release, M1 Pro,
+2026-10-05, dirty tree, non-authoritative), `bistro_native_perf_audit_steady`,
+a Metal desktop case since removed, under `local-offscreen-perf-audit-gpu`
+(five children of 300 frames, every cascade retained) measured `Cull.Encode` at
 0.035 ms against 0.159 ms p50, with `Cull.Classify` unchanged at 0.023 ms.
 An earlier variant that also rejected every candidate in classification
 saved a further 0.008 ms but zeroed the retained cascades' command counts that
-twelve cases assert on. `bistro_shadow_orbit` and `bistro_metal_production_040`
-pass their `min >= 1` cascade assertions, and the Bistro street, indoor and
-fourteen-view text snapshots, whose camera jumps redraw cascades partially,
-pass against their accepted generations. A temporary diagnostic
-that redraws one cascade per three frames in rotation, leaving the other views
-idle, produced cascade depth captures byte-identical to a normal run's for all
-four cascades. A Metal API validation run passes; native Vulkan execution
-remains unavailable.
+twelve cases assert on. A temporary diagnostic that redraws one cascade per
+three frames in rotation, leaving the other views idle, produced cascade depth
+captures byte-identical to a normal run's for all four cascades. Native Vulkan
+execution is not yet recorded.
 
 ## Sub-texel caster evidence
 
-Metal Release on the M1 Pro, 2026-10-05, dirty tree, non-authoritative, Bistro
-long street view. With a temporary diagnostic redrawing every cascade each
-frame, `shadow_bistro_far_cascade_perf` under `local-offscreen-perf-audit-gpu`
+On the Metal desktop implementation, removed on 2026-10-06 (Release, M1 Pro,
+2026-10-05, dirty tree, non-authoritative), Bistro long street view. With a
+temporary diagnostic redrawing every cascade each frame,
+`shadow_bistro_far_cascade_perf` under `local-offscreen-perf-audit-gpu`
 measured `draw.shadow.cascade{1,2,3}.indirect_commands` at 2,740, 2,548 and
 1,140 against 2,862, 2,909 and 2,909, and `Shadow.Cascade.3` at 1.506 ms
 against 1.758 ms p50 per redraw; cascades 0 to 2 changed by at most 0.024 ms.
@@ -250,14 +256,15 @@ The before run's report is incomplete only for local-shadow work-volume
 variation between repetitions. Captured cascade 2 depth is byte-identical and
 cascade 3 differs in one of 4.2 million texels, by 2.5e-4, so the skipped
 casters drew no visible depth; final color differs only by run-to-run noise.
-A Metal API validation run passes; native Vulkan execution remains unavailable.
+Native Vulkan execution is not yet recorded.
 
 ## Revisit when
 
 A focused scene exposes containment, bias, transition or distance artifacts, or
 matched quality/cost evidence justifies changing defaults. Make far-cascade
 EVSM a default only after grazing-angle captures show a quality gain over PCF,
-bleeding is inspected at overlapping casters, and native Vulkan matches.
+bleeding is inspected at overlapping casters, and native Vulkan captures
+confirm both.
 
 ## Implementation
 

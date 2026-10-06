@@ -14,6 +14,11 @@ unavailable or add a scoped Bistro case without weakening the chosen profile.
 1. State the invariant or measurement the run must establish. Select the
    smallest case that exercises it and a profile with the required evidence
    policy. Inspect the actual JSON files; do not infer settings from names.
+   `renderer.backend` selects the pipeline class (ADR-087): `metal` runs the
+   tiled pipeline, `vulkan` the desktop pipeline, and an unpinned case the
+   host's backend. A case pinned to a backend the host lacks exits `3`, and
+   a Metal case that names a desktop-only render mode or capture channel
+   is rejected.
 2. Build with `./build_release.sh` when the Release binary or assets need
    updating. Use Debug only for a concrete diagnostic reproduction.
 3. Match case target/present settings to the profile. Cases own workload,
@@ -28,14 +33,14 @@ Small Release execution check, with no timing authority:
 ```sh
 env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
   ./build_release/tools/vkr_harness profile \
-  --case tools/cases/smoke/bistro_shading_diagnostics.case.json \
+  --case tools/cases/smoke/bistro_owner_third_audit_depth.case.json \
   --profile tools/profiles/local-offscreen.json
 ```
 
 For ordinary snapshots and baselines, use Release with validation variables
 unset. For a focused diagnostic run, use `vkr-validation`. For timing claims,
 use `vkr-performance`. Native backend evidence remains backend-specific;
-`vkr-shaders` owns bilateral shader and ABI acceptance.
+`vkr-shaders` owns shader and ABI acceptance.
 
 ## Choose the command
 
@@ -80,7 +85,7 @@ Check these fields before accepting an observation:
 | `status`, `exit_code` | Execution and assertion verdict; a report file alone does not prove success |
 | `authoritative`, `authority_reasons` | Authority policy result; a passing local or dirty run cannot support an authoritative timing claim |
 | `comparison` | Environment, workload, and policy fingerprints; compare only compatible runs |
-| `effective_config` | Realized boot, subsystem mask, target image count, extent, formats, present mode, and feature settings |
+| `effective_config` | Realized boot, subsystem mask, target image count, extent, formats, present mode, `graphics_pipeline` class, and feature settings |
 | `provenance` | Binary/build, GPU, and driver identity; `effective_config.renderer_backend=external` alone does not distinguish Metal from Vulkan |
 | `execution` | Independent repetition count and warmup stability |
 | `aggregate.metrics`, `aggregate.passes` | Valid samples, nearest-rank percentiles, population standard deviation |
@@ -123,7 +128,11 @@ already authorized, run `baseline accept --plan <plan.json>
 digests, writes an immutable generation, and atomically updates `current.json`.
 Do not copy capture files into the baseline tree manually.
 
-For cross-machine shader parity:
+Cross-machine comparison applies only to a pipeline class that both backends
+implement; none does today (ADR-087). The workload fingerprint names the class
+a case's backend runs, so a Mac (tiled) and a Windows (desktop) run of one
+unpinned case are incompatible and the comparison exits `4`. Record each
+backend's evidence on its own host instead. For a class with two backends:
 
 1. Use the same backend-neutral case and profile on both machines. Leave
    `renderer.backend` unpinned in both case manifests.

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-27
+updated: 2026-10-06
 authority: proposal
 ---
 # Codebase audit remediation: remaining work
@@ -103,8 +103,7 @@ checkout before quoting any of them as a change.
 
 ## Unavailable on this host
 
-- Native Vulkan execution and validation, and bilateral Metal/Vulkan
-  comparison, for every renderer change. Vulkan compiles on macOS with
+- Native Vulkan execution and validation for every renderer change. Vulkan compiles on macOS with
   warnings as errors, and the non-Apple branches were syntax-checked. The
   Vulkan IBL commit fix (`0bffcb18`) and the debug-messenger fix (`3680d390`)
   were verified by compilation and reading only.

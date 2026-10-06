@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -28,8 +28,8 @@ targets. Capture is asynchronous and explicitly released; capacity pressure
 returns busy rather than overwriting an owned result.
 
 Physical output extent is separate from internal Scene extent and, in the
-editor, the Scene panel rectangle. ADR-039/040 own Metal reconstruction and
-ADR-043 owns output transfer.
+editor, the Scene panel rectangle. ADR-039 owns the Metal render scale,
+ADR-087 decision 12 the Metal dynamic resolution, and ADR-043 output transfer.
 
 ## Consequences
 

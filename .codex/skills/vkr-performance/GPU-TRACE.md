@@ -74,7 +74,8 @@ do not add per-frame string construction for instrumentation.
 
 Counters identify hypotheses, not guarantees. F16/F32 utilization alone does
 not prove that narrower precision is safe or faster. Use `vkr-shaders` for
-precision and backend parity decisions, then measure the proposed change.
+precision decisions and their consumers on each backend, then measure the
+proposed change.
 
 Per-line shader attribution requires supported Xcode capture/profiling tools;
 an empty shader-profiler table supplies no attribution. Verify capability in

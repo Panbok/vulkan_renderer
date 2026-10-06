@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -51,7 +51,10 @@ energy weight and Lambert response.
 
 Opaque deferred, forward, and transmission reflection paths share the light
 semantics and direct-light diagnostic modes. Transmission replaces diffuse as
-before. No rectangles means a valid zero-count block and no lookup samples.
+before. The tiled forward shader evaluates dynamic rectangles through the same
+LTC path and skips one whose contribution bound falls below the cut-off
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 11). No rectangles
+means a valid zero-count block and no lookup samples.
 
 Native renderers own lookup creation, upload and completion-safe retirement.
 Metal adds a 32-byte resource/table block through the frame pointer at byte 496;
@@ -74,21 +77,23 @@ multi-bounce and caustic transport then consumes those photons.
 Runtime rectangles improve extended-light response without adding shadow passes.
 LTC remains a fitted BRDF approximation, and unshadowed runtime light can cross
 walls. The baker's visibility and transport are more complete than runtime direct
-visibility. Native Vulkan execution and bilateral image comparison are unavailable
-on the current macOS host; compilation does not establish that parity.
+visibility. Native Vulkan execution is not yet recorded; compilation does not
+establish its output.
 
 The eight-light affine cost is not an accepted performance result. One
-non-authoritative deferred measurement recorded GPU time of 10.664609 ms with
+non-authoritative deferred measurement on the Metal desktop implementation,
+removed on 2026-10-06, recorded GPU time of 10.664609 ms with
 eight lights and 4.658021 ms without, and wall-clock p50 of 23.409458 ms and
 16.934666 ms respectively. That roughly 6 ms difference is a limitation of the
 measured configuration, not a speed claim or a cross-backend budget.
 
 ## Evidence and remaining checks
 
-Metal evaluates the 12-pixel GGX quadrature fixture after the affine update with
-maximum error `0.001048130738` (`.scratch/ltc-affine-numeric.log`). No-light and
-back-face cases preserve the prior HDR exactly. The radiance/8 scaling and layered
-forward, deferred and transmission paths pass, as does Metal API validation. Scene
+On the Metal desktop implementation, removed on 2026-10-06, the 12-pixel GGX
+quadrature fixture measured maximum error `0.001048130738` after the affine
+update (`.scratch/ltc-affine-numeric.log`). No-light and back-face cases
+preserved the prior HDR exactly, and the radiance/8 scaling and layered
+forward, deferred and transmission paths passed. Scene
 mutation and synchronous/asynchronous loaders reject a ninth authored rectangle.
 
 The baker's opaque rectangle fixture has 27 valid probes and emits 2,000 photons.
@@ -97,11 +102,9 @@ deposits. The full CPU suite passed (`.scratch/ltc-cpu-verified`). The final
 shared affine and fast-path Release build passed, and the front-facing pre-fast-path
 and first fast-path outputs are byte-identical.
 
-The Metal API result remains applicable because the lookup-resource path did not
-change. A later run stopped before LTC execution because an older executable did
-not recognize a newer fog graph condition; it is not an LTC failure. Compiled
-Vulkan SPIR-V reflection confirms the 576-byte frame root, 32-byte LTC block and
-64-byte row. Native Vulkan execution remains unavailable on this macOS host.
+Compiled Vulkan SPIR-V reflection confirms the 576-byte frame root, 32-byte LTC
+block and 64-byte row. Native Vulkan execution is not yet recorded. ADR-087
+records the tiled pipeline's rectangle-light captures and timings.
 
 ## Alternatives considered
 

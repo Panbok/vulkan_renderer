@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-01
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -9,6 +9,8 @@ authority: adr
 ## Status
 
 Accepted (partial): rigid-motion production path; deformation and broader motion acceptance remain open.
+The desktop pipeline implements it on Vulkan. The tiled pipeline keeps no
+temporal history ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7).
 
 ## Context
 
@@ -18,12 +20,11 @@ including transparent composition.
 
 ## Decision
 
-Metal and Vulkan share a same-resolution scene-linear temporal resolve with
+The desktop pipeline uses a same-resolution scene-linear temporal resolve with
 renderer-owned Halton jitter, previous transforms and reset policy. History
 selection uses the immediately preceding submitted frame, independently of
 command slots. Vulkan orders same-queue history writes before compute/fragment
-readers; Metal waits on the producer's GPU completion event before committing
-its consumer. CPU completion still governs output reuse. If the fixed history
+readers. CPU completion still governs output reuse. If the fixed history
 ring is busy, output acquisition waits for its oldest combined last use rather
 than failing the frame or overwriting live storage. Arbitrary completed-frame
 selection can split the eight jitter phases into independent accumulation chains.
@@ -72,23 +73,23 @@ identity do not establish stationarity of animated alpha, materials or lighting.
 
 For consecutive unchanged scenes, a checked accumulation path retains coverage
 even when thin geometry disappears from the entire current neighborhood. One
-allocation-free CPU scan hashes explicit packet semantics into two 64-bit words:
-unjittered camera, geometry and transforms, materials, lighting, shadows and GTAO
-controls. Native color history also records resource-radiance, candidate-publication
-and graph revisions. Both eligible records must match; a camera-only match is
-insufficient. Text and pending publication/upload/IBL writer frames are excluded.
-SSR-enabled frames first remain on ordinary TAA for 128 consecutive matching
-rendered frames, then begin the existing 128-sample static integral. This lets
-recursive reflection history settle before its output enters an image that can
-freeze. The user accepted this roughly 4.3-second sequence at 60 fps. One capped
-CPU counter belongs to each submitted scene-history record; mismatched scene,
-resource or graph state and invalid history reset it. Preparation advances the
-selected producer's count, but only successful submission publishes that result.
-Cancelled frames cannot advance the next producer. SSR toggles change the input
-signature; SSR-off scenes keep the original immediate accumulation rule.
-The shared rule also gates FSR composition masking and static convergence.
-MetalFX does not use this proof. No images, roots, bindings or read ceilings
-change; ordinary TAA runs during the settling period.
+allocation-free CPU scan hashes explicit packet semantics into two 64-bit
+words: unjittered camera, geometry and transforms, materials, lighting, shadows
+and GTAO controls. Native color history also records resource-radiance,
+candidate-publication and graph revisions. Both eligible records must match; a
+camera-only match is insufficient. Text and pending publication/upload/IBL
+writer frames are excluded. SSR-enabled frames first remain on ordinary TAA for
+128 consecutive matching rendered frames, then begin the existing 128-sample
+static integral. This lets recursive reflection history settle before its
+output enters an image that can freeze. The user accepted this roughly
+4.3-second sequence at 60 fps. One capped CPU counter belongs to each submitted
+scene-history record; mismatched scene, resource or graph state and invalid
+history reset it. Preparation advances the selected producer's count, but only
+successful submission publishes that result. Cancelled frames cannot advance
+the next producer. SSR toggles change the input signature; SSR-off scenes keep
+the original immediate accumulation rule. The shared rule also gates FSR
+composition masking and static convergence. No images, roots, bindings or read
+ceilings change; ordinary TAA runs during the settling period.
 
 The user approved capping ordinary TAA history retention at 0.9 while SSR is
 unsettled, including immediately after camera movement stops. Previously the
@@ -97,20 +98,19 @@ of the settling interval. Confidence, reactivity, motion attenuation and current
 neighborhood clamping still reduce that cap. SSR-off ordinary stationary TAA
 retains 0.99, and the checked 128-sample integral remains unchanged. Faster
 response may expose more shimmer before convergence; this does not correct
-SSR's own receiver-based reflection reprojection or MetalFX's private history.
+SSR's own receiver-based reflection reprojection.
 
 Native TAA lowering encodes ordinary, static-accumulate or SSR-settling mode in
 the existing scene-history word. The selected producer's scene equality and
 unchanged-frame counter retain their CPU ownership. Camera stationarity remains
-separate because it also controls metadata validation. Metal's mode is at offset
-216 in its 224-byte root; Vulkan's is at offset 124 in its 144-byte root. Shared
-constants and retention math define both shader paths. There are no new images,
-texture reads, rays, root bytes or lifetime changes. FSR and MetalFX policy is
-unchanged by this cap.
+separate because it also controls metadata validation. Vulkan's mode is at
+offset 124 in its 144-byte root, and shared constants define the retention
+math. There are no new images, texture reads, rays, root bytes or lifetime
+changes. FSR policy is unchanged by this cap.
 
 The signature is a probabilistic content check, not collision-free equality.
-It excludes jitter/noise phase and downstream exposure, bloom and UI. Disabled
-portable TAA and MetalFX skip the scan.
+It excludes jitter/noise phase and downstream exposure, bloom and UI. The scan
+runs only while portable TAA, SSR or SSGI is on.
 
 That path reads canonical history at the same pixel without coverage rejection,
 neighborhood clipping or contrast-derived glass reactivity. Authored material
@@ -131,8 +131,8 @@ successful submission and preserve the existing GPU lifetime rules.
 Opaque and rigid transmission/blend paths publish current-to-previous motion.
 Stationary transparency can accumulate, while moving composition and authored
 material reactivity limit history, including with a stationary camera. The
-G-buffer producer writes translation-free sky rotation motion for both portable
-TAA and MetalFX. Native clip conventions remain backend-owned; sky validity uses
+G-buffer producer writes translation-free sky rotation motion for temporal
+reconstruction. Native clip conventions remain backend-owned; sky validity uses
 background depth one rather than a finite far-plane point's projected depth.
 Extent, scene, camera and source discontinuities
 reset accumulation. Invalid history uses a one-sample passthrough.
@@ -141,8 +141,7 @@ Exposure is applied after temporal resolve, so changing exposure does not change
 stored history radiance. Output-space FXAA does not run on frames this resolve
 reconstructs; it remains for frames with TAA disabled (ADR-043).
 Deferred lighting applies bounded normal-footprint roughness filtering before
-temporal accumulation. The portable resolve works at the internal Scene extent;
-ADR-040 selects a separate MetalFX consumer when enabled.
+temporal accumulation. The portable resolve works at the internal Scene extent.
 
 Deformation, procedural/particle motion and broader dynamic material signals
 are not complete production motion contracts.
@@ -162,22 +161,24 @@ The portable consumer has shared semantics, but image quality depends on identit
 reactivity and motion coverage. Source agreement and fixed-camera captures do
 not establish moving-camera or animation acceptance.
 
-The approved SSR settling window passes its CPU boundary/reset check and a
-native Metal camera-turn/hold at 80% scale. After settling and accumulation, the
-sampled bar region is identical in reconstructed HDR and final color. The first
-static sample can still change visibly, and early motion outliers remain.
+The approved SSR settling window passes its CPU boundary/reset check. On the
+Metal desktop implementation, removed on 2026-10-06, a camera turn and hold at
+80% scale left the sampled bar region identical in reconstructed HDR and final
+color after settling and accumulation. The first static sample could still
+change visibly, and early motion outliers remained.
 [The settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
-records the transitions and serial API validation; native Vulkan remains unrun.
+records the transitions. Native Vulkan, the only implementation since
+2026-10-06, has not run the settling window.
 
-The 90% settling cap passes Release compilation, native Metal captures and a
-serial Metal API resize. At the user under-bar camera, half a second after
-stopping, scene-linear error against a long-held reference decreases by 28% on
-the countertop and 56% on the bar front. In the separate SSGI-on flicker view,
-pixels varying by more than 3/255 increase from 26,467 to 48,097 before settling.
+The 90% settling cap was measured on the Metal desktop implementation. At the
+user under-bar camera, half a second after stopping, scene-linear error against
+a long-held reference decreased by 28% on the countertop and 56% on the bar
+front. In the separate SSGI-on flicker view, pixels varying by more than 3/255
+increased from 26,467 to 48,097 before settling.
 The [cap evidence](../../assets/verification/renderer-features/ssr-taa-settling-cap.txt)
 records configurations, raw measurements, commands and the independent-replay
 limits. This establishes a response/shimmer tradeoff; SSR's own trails remain.
-Native Vulkan and bilateral comparison remain unavailable.
+Native Vulkan has not run the cap.
 
 ## Alternatives considered
 
@@ -187,7 +188,7 @@ triangle matching rejects coverage that a previous raster sample missed, while
 unrestricted history acceptance loses disocclusion boundaries. The accepted
 raw-footprint coverage support keeps surface/depth validation and requires
 moving-image acceptance for its coverage/ghosting tradeoff.
-MSAA remains a separate unimplemented proposal.
+MSAA for the visibility buffer remains a separate unimplemented proposal.
 
 ## Revisit when
 
@@ -197,6 +198,5 @@ signals or unacceptable rejection/ghosting.
 ## Implementation
 
 [`vkr_temporal.c`](../../renderer/src/vkr_temporal.c),
-[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c),
-[`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal), and
+[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c), and
 [`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang).

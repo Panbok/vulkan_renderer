@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,7 +8,10 @@ authority: adr
 
 ## Status
 
-Accepted.
+Accepted. Both pipeline classes share the color transfer, display transform,
+grading and sharpening. FXAA runs only in the desktop pipeline on Vulkan; the
+tiled pipeline anti-aliases with MSAA instead
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 6).
 
 ## Context
 
@@ -54,25 +57,26 @@ bypass grading.
 Capture summary version 9 preserves the controls; versions 2–8 migrate to neutral
 grading and ACES fitted to reproduce their historical presentation.
 
-A native Metal Release emissive grid spans six colors at radiance 0.01–64.
-AgX, ACES fitted and non-neutral grading match independent CPU references within
-one 8-bit code value. Their captured pre-display HDR bytes are identical.
-Metal API validation passes; GPU shader validation remains unresolved after a
-MetalTools report-decoding crash. Native Vulkan execution is unavailable.
+On the Metal desktop implementation, removed on 2026-10-06, a native Release
+emissive grid spanned six colors at radiance 0.01–64. AgX, ACES fitted and
+non-neutral grading matched independent CPU references within one 8-bit code
+value, and their captured pre-display HDR bytes were identical. Neither the
+tiled pipeline nor native Vulkan has run this grid.
 
 Direct mode tonemaps to the target. Editor mode tonemaps/composites the Scene
-rectangle and draws native-resolution UI afterward. Output-space FXAA stays in
-the final draw, with offsets expressed in output pixels. It filters only frames
-without temporal reconstruction; portable TAA, MetalFX and FSR frames omit it.
-On the M1 Pro, `bistro_metal_production_040` (0.4 render scale, portable TAA)
-ran at 17.54 ms per frame with FXAA and 16.27 ms without, and an orbit frame
-changed by more than 8/255 in 2,044 of 921,600 pixels (non-authoritative
-`local-windowed-gpu-single` runs, 2026-10-01). Frames with TAA disabled keep
-FXAA. HDR/intermediate and
+rectangle and draws native-resolution UI afterward. In the desktop pipeline,
+output-space FXAA stays in the final draw, with offsets expressed in output
+pixels. It filters only frames without temporal reconstruction; portable TAA
+and FSR frames omit it. On the Metal desktop implementation, removed on
+2026-10-06, `bistro_metal_production_040` (a Metal desktop case since removed;
+M1 Pro, 0.4 render scale, portable TAA) ran at 17.54 ms per frame with FXAA and
+16.27 ms without, and an orbit frame changed by more than 8/255 in 2,044 of
+921,600 pixels (non-authoritative `local-windowed-gpu-single` runs,
+2026-10-01). Frames with TAA disabled keep FXAA. HDR/intermediate and
 final-color captures are different contracts and must be compared accordingly.
 
 The user-approved `VkrFrameGlobals.image_sharpness` control applies to FSR,
-portable TAA, MetalFX and native Scene presentation. It accepts finite values in
+portable TAA and native Scene presentation. It accepts finite values in
 [0,1]; zero bypasses sharpening, and the sample app starts at 0.25. The harness
 default is zero so existing cases retain their settings. Frame-input version 32
 makes the added control explicit.
@@ -89,10 +93,10 @@ This is bounded detail recovery, not FSR RCAS or a new antialiasing algorithm.
 Sharpening adds no temporal history; its source is the display-linear image
 described below. Editor.Resolve applies the filter once before overlays;
 Editor.Composite bypasses it. UI and diagnostic render modes are excluded. The
-SDK's FSR sharpener stays disabled, avoiding two sharpening stages. Native roots
-and the outstanding Metal validation gate are recorded in ADR-044. Increased
-edge contrast can expose existing temporal variation, so quality and cost
-require matched static and moving captures.
+SDK's FSR sharpener stays disabled, avoiding two sharpening stages. Native
+roots are recorded in ADR-044. Increased edge contrast can expose existing
+temporal variation, so quality and cost require matched static and moving
+captures.
 
 
 ## Display-linear preparation
@@ -127,29 +131,32 @@ whenever a case's frames use the intermediate; the analytic reference keeps its
 earlier identity. Different transform paths are separate quality/cost
 observations, not equivalent-work speedup evidence.
 
-[The Bistro comparison case](../../tools/cases/local/post_transform_cache_bistro.case.json)
-uses bright opaque, blended and transmitting surfaces with AgX, non-neutral
-grading, FXAA and 0.4 sharpening at 640×360. On 2026-09-24, 13.91% of its
-final pixels differ from the analytic path, 0.8% by more than 32 codes and at
-most 201/255: the analytic path's bright rim around emissive edges becomes an
-antialiased edge. Two runs of either path differ in at most 32 pixels. Its
-[capture-free counterpart](../../tools/cases/local/post_transform_cache_bistro_cost.case.json)
-retains that workload at 1280×720, where the
-[2026-09-12 M1 Pro evaluation](../../assets/verification/renderer-features/renderer-features-perf.txt)
-measured 1.381 ms analytic post against 0.128 ms preparation plus 0.326 ms
-finish.
+[The Bistro comparison
+case](../../tools/cases/local/post_transform_cache_bistro.case.json), now
+pinned to Vulkan, uses bright opaque, blended and transmitting surfaces with
+AgX, non-neutral grading, FXAA and 0.4 sharpening at 640×360. On 2026-09-24, on
+the Metal desktop implementation removed on 2026-10-06, 13.91% of its final
+pixels differed from the analytic path, 0.8% by more than 32 codes and at most
+201/255: the analytic path's bright rim around emissive edges became an
+antialiased edge. Two runs of either path differed in at most 32 pixels. Its
+[capture-free
+counterpart](../../tools/cases/local/post_transform_cache_bistro_cost.case.json)
+retains that workload at 1280×720, where the [2026-09-12 M1 Pro
+evaluation](../../assets/verification/renderer-features/renderer-features-perf.txt)
+on the same implementation measured 1.381 ms analytic post against 0.128 ms
+preparation plus 0.326 ms finish.
 
-On 2026-09-24 the owner made the intermediate the default after a local M1 Pro
-comparison of `bistro_metal_production_040`: 2560×1440 output from 1024×576,
-TAA and FXAA, `local-windowed-gpu`, five children of 300 frames per path.
-Post.Tonemap took 3.630 ms (SD 0.570) analytically, against 0.372 ms
-preparation plus 1.260 ms finish; mean frame wall time fell from 22.850 ms to
-20.813 ms. These runs are non-authoritative: the tree was dirty and warmup did
-not stabilize. At that output the intermediate holds 84.4 MiB across three
-images. Tracked baselines accepted before the change match
-`VKR_POST_TRANSFORM_CACHE=0`; default runs report a fingerprint mismatch until
-new generations are accepted. Native Vulkan execution, EDR scaling and
-authoritative clean-tree timing remain open.
+On 2026-09-24 the owner made the intermediate the default after a comparison on
+the Metal desktop implementation (M1 Pro) of `bistro_metal_production_040`:
+2560×1440 output from 1024×576, TAA and FXAA, `local-windowed-gpu`, five
+children of 300 frames per path. Post.Tonemap took 3.630 ms (SD 0.570)
+analytically, against 0.372 ms preparation plus 1.260 ms finish; mean frame
+wall time fell from 22.850 ms to 20.813 ms. These runs are non-authoritative:
+the tree was dirty and warmup did not stabilize. At that output the
+intermediate holds 84.4 MiB across three images. Tracked baselines accepted
+before the change match `VKR_POST_TRANSFORM_CACHE=0`; default runs report a
+fingerprint mismatch until new generations are accepted. Native Vulkan
+execution, EDR scaling and authoritative clean-tree timing remain open.
 
 
 ## High-DPI rendering switch
@@ -179,8 +186,9 @@ with `resolution`.
 
 The reason is cost. Scene passes scale with output pixels, so a Retina editor
 window costs far more than the 1280x720 output that most Bistro cases use.
-The following were measured on the M1 Pro, Metal Release, at the Bistro street
-view of `tools/cases/local/local_shadow_cache_bistro_metal_street.case.json`
+The following were measured on the Metal desktop implementation, removed on
+2026-10-06 (M1 Pro, Release), at the Bistro street view of
+`local_shadow_cache_bistro_metal_street`, a Metal desktop case since removed,
 with `shadow_preset` high, `shadow_map_size` 2048 and TAA on, each a single
 `local-offscreen-gpu-single` run of 120 measured frames
 (`VKR_LOCAL_SHADOW_FADE_DISTANCE=0.001` for the rows without local shadows).
@@ -197,12 +205,12 @@ They are local observations, not matched speed claims:
 The frames are GPU-bound; `Lighting.Deferred` and `Shadow.LocalMask` grow
 from 1.67 and 1.48 ms at 1280x720 to 9.77 and 7.81 ms at 3024x1890.
 
-In the editor's default window on the same host, Bistro with the High preset,
-0.7 render scale, MetalFX without dynamic resolution and vsync off rendered
-the Scene at 1359x749 in 17.7 ms with `high_dpi` on and at 680x375 in 7.3 ms
-with it off (median of the last 120 frame intervals, `stats.frame_ms`).
-Switching back restored 1359x749 and 17.8 ms without a restart, with no
-errors in the log:
+In the editor's default window on the same implementation, Bistro with the High
+preset, 0.7 render scale, the removed MetalFX upscaler without dynamic
+resolution and vsync off rendered the Scene at 1359x749 in 17.7 ms with
+`high_dpi` on and at 680x375 in 7.3 ms with it off (median of the last 120
+frame intervals, `stats.frame_ms`). Switching back restored 1359x749 and 17.8
+ms without a restart, with no errors in the log:
 
 ```sh
 ./build_release/editor/vkr_editor --scene assets/scenes/bistro.scene.json \
@@ -243,7 +251,7 @@ Scene rectangle exactly while changing Scene pixels.
 Release and Debug wrappers pass. The enabled editor/text case passes three
 assertions under Khronos synchronization validation with no API warnings or
 errors and empty stderr; the known bootstrap publication warning remains outside
-measured frames. Native Metal compilation and execution are unavailable here.
+measured frames.
 
 ```powershell
 .\build_release.bat

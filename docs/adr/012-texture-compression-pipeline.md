@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-06
 authority: adr
 ---
 # ADR-012: Host-native KTX2 texture artifacts
@@ -56,105 +56,102 @@ Downloaded scenes and the rest of `assets/textures` cook through
 
 On Apple silicon the ASTC encoding (`--encoding astc`, astcenc's `fastest`
 preset) stores 6x6 blocks for colours and data masks and 4x4 for normals and
-alpha-tested colours; on x86-64 BC is the default (below). On Bistro's converted colours, paired normals
-and metallic-roughness, `fastest` measured 52.6, 40.1 and 49.2 dB against 52.2,
-38.5 and 47.4 dB for UASTC `faster`, at four to nine times its speed. The
-settings identity records `encoding=astc-6x6-fastest` or `astc-4x4-fastest`,
-so files encoded before 6x6 re-encode. Final and preview files take
-host-neutral names (`<source>.vkt`, `.preview` variants), so tracked
-references name the same file on every host; the identity tells the hosts'
-encodings apart and re-encodes a file cooked on another host. ASTC normals
-store alpha as one, and BC5 stores none; every shader samples XY.
-The packer calls astcenc directly, since libktx exposes no search limits: other
-classes keep the preset, and normals stop searching a block at 39 dB with one
-candidate. On baked Bistro normals that encoded 1.8 times faster and scored
-41.2 dB in RG against 40.9 for UASTC `faster`.
-The 6x6 blocks cost 3.56 bits per texel against 8, which cuts colour and
-data-mask memory by 2.25 times for the M1 memory floor (ADR-083). On one in
-six of Bistro's level-0 images (31 colours, 158 Mpx; 32 metal-roughness masks,
-133 Mpx; astcenc `fastest`, 2026-10-03), colours measured 43.8 against
-51.5 dB for 4x4 (worst image 33.6 against 40.4 dB) and masks 51.4 against
-72.6 dB (worst 39.6 against 59.6 dB), at 1.2 and 1.4 times the encode speed.
-Alpha-tested colours lost about 10 dB in RGB at 6x6 and keep 4x4, since
-their alpha decides coverage; normals keep 4x4 because their error enters
-shading directly. On Metal a 1024² Bistro colour rendered from 6x6 blocks
-measured 46.5 dB in final colour against its UASTC transcode, and 47.5 dB
-as a linear texture. ASTC LDR support covers every block size, so the
-existing ASTC capability gates 6x6 on both backends.
-A third encoding, `astc-fast`, encodes every class as ASTC 4x4 with Apple's
-system encoder (AppleTextureEncoder, macOS only), with channels weighed
-equally and blocks accepted below a mean square error of 2^-12. It is for
-textures only the editor shows (ADR-077's `texture_encode_speed`): on Bistro's
-pre-encode data it ran 2.2 times astcenc's speed on paired normals (36.6
-against 40.4 dB in RG; the encoder saturates there at any threshold), 3.4
-times on metallic-roughness (62.0 against 67.4 dB) and 2.6-3.3 dB below
-astcenc on alpha-weighted colours. Its identity records
-`encoding=astc-4x4-system-equal-t12-v1` and its files carry `.astc-fast`
-names, so neither ASTC encoding satisfies the other's recipe.
-A native BC encoding, `bc`, serves x86-64 hosts, whose desktop GPUs all
-sample BC; managed imports choose it by default there, and it is built only
-on x86-64 (`cmake/vkr_bc7e.cmake`), so other hosts reject it. Colours and
-data encode BC7 (vkFormat 145 unorm, 146 sRGB) with Binomial's bc7e
-([vendored](../../vendor/bc7enc_rdo.md)); normals encode BC5 (141) from R and
-G with rgbcx. On one in six of a Bistro finalize's pre-encode images (84
-level-0 images dumped before encoding; a Ryzen 5 2600 on 12 threads, whole
-class as one mean square error), UASTC `faster` scored 51.1 dB in RGB on
-colours at 4.1 Mpx/s, 65.8 dB on metallic-roughness at 16.5 and 41.7 dB in RG
-on paired normals at 2.4. bc7e's `veryfast` profile scored 54.1 dB on colours
-at 13.0 Mpx/s, better on 25 of 28 images; rgbcx's BC5 scored 48.5 dB on
-normals at 566 Mpx/s, since BC5 keeps the two channels apart. Data masks keep
-bc7e's default profile, whose channel-rotation modes uncorrelated channels
-need: 65.3 dB for the class at 31 Mpx/s, 0.5 dB below UASTC because one
-texture loses 1.9 dB under every BC7 profile, while the mean per image is 70.2
-against 66.6 dB and 8 of the 12 textured images score higher; accepted
-(2026-09-28). The faster profiles drop those modes and do not keep constant
-masks exact. Compressonator's CMP_Core was measured and rejected: 2.3-3.1
-Mpx/s and 50.4-52.8 dB on colours, 50.6-61.9 dB on data masks. The
-identities record `encoding=bc7-bc7e-veryfast-v1`, `bc7-bc7e-default-v1` and
-`bc5-rgbcx-v1`, and files carry `.bc` names. `bc-fast`, the editor's fast
-speed, encodes colours with bc7e's `ultrafast` profile (51.4 dB at 54 Mpx/s,
-`bc7-bc7e-ultrafast-v1`) and data masks with bc7e limited to modes 4, 5 and 6
-and rotations 0, 2 and 3 (`bc7-bc7e-m456-r023-v1`), under `.bc-fast` names;
-normals encode as `bc` does. On another one-in-six sample of 42 masks that
-profile scored 64.7 dB for the class (mean 63.0, worst image 49.5) against
-65.9 for the default profile and 63.5 (62.3, 49.1) for UASTC `faster`, at 63
-against 36 and 17 Mpx/s, and kept constant masks exact.
-The encoder repeats one encoded block row for a uniform image, and paired
-bakes tabulate base-level moments over the 65,536 normal X/Y byte pairs; both
-produce the bytes the direct computation does. A data-mask row encodes each
-distinct block once, solid blocks grouped ahead of the rest, and copies the
-result to its repeats (176 against 113 Mpx/s on Bistro's masks, same bytes).
-bc7e is built for four-lane SSE2 and SSE4 only (2026-09-29): on a Ryzen 5
-2600 that encoded Bistro's colours 1.55 times as fast as eight-lane AVX2 (83
-against 53 Mpx/s, 52.276 against 52.275 dB, masks 64.411 against 64.414),
-and without fused multiply-adds every x86 host encodes the same bytes.
-The base colour of an opaque glTF material, whose alpha no shader reads
-(both backends output alpha one for opaque materials and test or blend it
-only for cutout and blend), packs with alpha one under its own identity
-(`alpha=opaque-v1`, `basecolor_opaque` names). Bistro's RGBA diffuse maps
-carry stray alpha of 251-254 in a few percent of texels, which sent whole
-blocks down bc7e's alpha modes: opaque, its colours encoded at 203 against
-83 Mpx/s and 52.309 against 52.276 dB in RGB. A Bistro render of the
-finalized scene against the one before these changes: PSNR 67.2 dB, mean
-0.003/255, 13 of 691,200 pixels above 10/255.
+alpha-tested colours; on x86-64 BC is the default (below). On Bistro's
+converted colours, paired normals and metallic-roughness, `fastest` measured
+52.6, 40.1 and 49.2 dB against 52.2, 38.5 and 47.4 dB for UASTC `faster`, at
+four to nine times its speed. The settings identity records
+`encoding=astc-6x6-fastest` or `astc-4x4-fastest`, so files encoded before 6x6
+re-encode. Final and preview files take host-neutral names (`<source>.vkt`,
+`.preview` variants), so tracked references name the same file on every host;
+the identity tells the hosts' encodings apart and re-encodes a file cooked on
+another host. ASTC normals store alpha as one, and BC5 stores none; every
+shader samples XY. The packer calls astcenc directly, since libktx exposes no
+search limits: other classes keep the preset, and normals stop searching a
+block at 39 dB with one candidate. On baked Bistro normals that encoded 1.8
+times faster and scored 41.2 dB in RG against 40.9 for UASTC `faster`. The 6x6
+blocks cost 3.56 bits per texel against 8, which cuts colour and data-mask
+memory by 2.25 times for the M1 memory floor (ADR-083). On one in six of
+Bistro's level-0 images (31 colours, 158 Mpx; 32 metal-roughness masks, 133
+Mpx; astcenc `fastest`, 2026-10-03), colours measured 43.8 against 51.5 dB for
+4x4 (worst image 33.6 against 40.4 dB) and masks 51.4 against 72.6 dB (worst
+39.6 against 59.6 dB), at 1.2 and 1.4 times the encode speed. Alpha-tested
+colours lost about 10 dB in RGB at 6x6 and keep 4x4, since their alpha decides
+coverage; normals keep 4x4 because their error enters shading directly. On the
+Metal desktop implementation, removed on 2026-10-06, a 1024² Bistro colour
+rendered from 6x6 blocks measured 46.5 dB in final colour against its UASTC
+transcode, and 47.5 dB as a linear texture. ASTC LDR support covers every block
+size, so the existing ASTC capability gates 6x6 on both backends. A third
+encoding, `astc-fast`, encodes every class as ASTC 4x4 with Apple's system
+encoder (AppleTextureEncoder, macOS only), with channels weighed equally and
+blocks accepted below a mean square error of 2^-12. It is for textures only the
+editor shows (ADR-077's `texture_encode_speed`): on Bistro's pre-encode data it
+ran 2.2 times astcenc's speed on paired normals (36.6 against 40.4 dB in RG;
+the encoder saturates there at any threshold), 3.4 times on metallic-roughness
+(62.0 against 67.4 dB) and 2.6-3.3 dB below astcenc on alpha-weighted colours.
+Its identity records `encoding=astc-4x4-system-equal-t12-v1` and its files
+carry `.astc-fast` names, so neither ASTC encoding satisfies the other's
+recipe. A native BC encoding, `bc`, serves x86-64 hosts, whose desktop GPUs all
+sample BC; managed imports choose it by default there, and it is built only on
+x86-64 (`cmake/vkr_bc7e.cmake`), so other hosts reject it. Colours and data
+encode BC7 (vkFormat 145 unorm, 146 sRGB) with Binomial's bc7e
+([vendored](../../vendor/bc7enc_rdo.md)); normals encode BC5 (141) from R and G
+with rgbcx. On one in six of a Bistro finalize's pre-encode images (84 level-0
+images dumped before encoding; a Ryzen 5 2600 on 12 threads, whole class as one
+mean square error), UASTC `faster` scored 51.1 dB in RGB on colours at 4.1
+Mpx/s, 65.8 dB on metallic-roughness at 16.5 and 41.7 dB in RG on paired
+normals at 2.4. bc7e's `veryfast` profile scored 54.1 dB on colours at 13.0
+Mpx/s, better on 25 of 28 images; rgbcx's BC5 scored 48.5 dB on normals at 566
+Mpx/s, since BC5 keeps the two channels apart. Data masks keep bc7e's default
+profile, whose channel-rotation modes uncorrelated channels need: 65.3 dB for
+the class at 31 Mpx/s, 0.5 dB below UASTC because one texture loses 1.9 dB
+under every BC7 profile, while the mean per image is 70.2 against 66.6 dB and 8
+of the 12 textured images score higher; accepted (2026-09-28). The faster
+profiles drop those modes and do not keep constant masks exact.
+Compressonator's CMP_Core was measured and rejected: 2.3-3.1 Mpx/s and
+50.4-52.8 dB on colours, 50.6-61.9 dB on data masks. The identities record
+`encoding=bc7-bc7e-veryfast-v1`, `bc7-bc7e-default-v1` and `bc5-rgbcx-v1`, and
+files carry `.bc` names. `bc-fast`, the editor's fast speed, encodes colours
+with bc7e's `ultrafast` profile (51.4 dB at 54 Mpx/s, `bc7-bc7e-ultrafast-v1`)
+and data masks with bc7e limited to modes 4, 5 and 6 and rotations 0, 2 and 3
+(`bc7-bc7e-m456-r023-v1`), under `.bc-fast` names; normals encode as `bc` does.
+On another one-in-six sample of 42 masks that profile scored 64.7 dB for the
+class (mean 63.0, worst image 49.5) against 65.9 for the default profile and
+63.5 (62.3, 49.1) for UASTC `faster`, at 63 against 36 and 17 Mpx/s, and kept
+constant masks exact. The encoder repeats one encoded block row for a uniform
+image, and paired bakes tabulate base-level moments over the 65,536 normal X/Y
+byte pairs; both produce the bytes the direct computation does. A data-mask row
+encodes each distinct block once, solid blocks grouped ahead of the rest, and
+copies the result to its repeats (176 against 113 Mpx/s on Bistro's masks, same
+bytes). bc7e is built for four-lane SSE2 and SSE4 only (2026-09-29): on a Ryzen
+5 2600 that encoded Bistro's colours 1.55 times as fast as eight-lane AVX2 (83
+against 53 Mpx/s, 52.276 against 52.275 dB, masks 64.411 against 64.414), and
+without fused multiply-adds every x86 host encodes the same bytes. The base
+colour of an opaque glTF material, whose alpha no shader reads (both backends
+output alpha one for opaque materials and test or blend it only for cutout and
+blend), packs with alpha one under its own identity (`alpha=opaque-v1`,
+`basecolor_opaque` names). Bistro's RGBA diffuse maps carry stray alpha of
+251-254 in a few percent of texels, which sent whole blocks down bc7e's alpha
+modes: opaque, its colours encoded at 203 against 83 Mpx/s and 52.309 against
+52.276 dB in RGB. A Bistro render of the finalized scene against the one before
+these changes: PSNR 67.2 dB, mean 0.003/255, 13 of 691,200 pixels above 10/255.
 
 A load limit drops the mips of a 2D texture above a maximum extent after
-decode, for every KTX2 load. The texture then
-loads as its first mip within the limit; the kept mips move to 16-byte-aligned
-offsets at the front of the upload bytes. Cubemaps, arrays and single-level
-images load unchanged, and the smallest mip always remains. The Graphics
-setting `texture_resolution` selects 1024, 2048 or full resolution and
-defaults to 2048 on Metal and full resolution on Vulkan (ADR-083's memory
-floor). Scene material textures reload when it changes, as described below;
-other textures take it at the next start. Cooked files do not change.
-Bistro, measured on the M1 Pro (Metal Release, a one-repetition copy of
-`bistro_metal_production_040`, `local-windowed-gpu-single`, 2026-10-03):
-texture memory fell from 3.176 to 1.995 GB and driver allocation from 5.86 to
-4.65 GB (reports `a6f36ee8…`, `a477dc1b…`). Its 74 textures at 4096² hold
-most of the difference. Final colour against the unlimited load measured
-109.5 dB PSNR from the street overview of `bistro_windowed_snapshot` (maximum
-1/255) and 88.2 dB from a street-level facade view at 1920x1440 output, with
-three G-buffer albedo pixels above 10/255.
+decode, for every KTX2 load. The texture then loads as its first mip within the
+limit; the kept mips move to 16-byte-aligned offsets at the front of the upload
+bytes. Cubemaps, arrays and single-level images load unchanged, and the
+smallest mip always remains. The Graphics setting `texture_resolution` selects
+1024, 2048 or full resolution and defaults to 2048 on Metal and full resolution
+on Vulkan (ADR-083's memory floor). Scene material textures reload when it
+changes, as described below; other textures take it at the next start. Cooked
+files do not change. Bistro, measured on the Metal desktop implementation,
+removed on 2026-10-06 (M1 Pro, Release, a one-repetition copy of
+`bistro_metal_production_040`, a Metal desktop case since removed,
+`local-windowed-gpu-single`, 2026-10-03): texture memory fell from 3.176 to
+1.995 GB and driver allocation from 5.86 to 4.65 GB (reports `a6f36ee8…`,
+`a477dc1b…`). Its 74 textures at 4096² hold most of the difference. Final
+colour against the unlimited load measured 109.5 dB PSNR from the Bistro street
+overview (maximum 1/255) and 88.2 dB from a street-level facade view at
+1920x1440 output, with three G-buffer albedo pixels above 10/255.
 
 Each scene also carries a texture limit, `VkrSceneSettings.texture_max_extent`
 (full, or a power of two from 256 to 16384), which applies live. It is saved

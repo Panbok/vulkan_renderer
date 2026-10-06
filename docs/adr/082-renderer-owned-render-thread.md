@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-06
 authority: adr
 ---
 # ADR-082: Renderer-owned render thread
@@ -188,23 +188,25 @@ then measures update alone: 0.29 ms mean threaded against 0.31 ms inline in
 the case below.
 
 The thread is on by default at the owner's direction (2026-10-03), without a
-measured speed-up. In matched local profiles of
-`bistro_metal_production_040` (`local-windowed`, Release, M1 Pro, 1,500
-samples each, same build) `frame.wall` mean and p95 were 13.44 and 20.19 ms
+measured speed-up. In matched local profiles on the Metal desktop
+implementation, removed on 2026-10-06, of `bistro_metal_production_040`, a
+Metal desktop case since removed (`local-windowed`, Release, M1 Pro, 1,500
+samples each, same build), `frame.wall` mean and p95 were 13.44 and 20.19 ms
 threaded against 13.48 and 20.50 ms inline; acquisition (`cpu.render_prepare`,
-about 10 ms) dominates both, so the frame is bound by the GPU and
-presentation, not by the frame-loop thread. Every frame of the threaded
-profile was decoupled. The deterministic `bistro_shadow_motion_snapshot`
-captures stayed byte-identical to the previous build in both modes; the
-texture-streaming `bistro_metal_text_snapshot` captures varied between runs
-of the previous build by up to 1.7 % of pixels, and both modes stayed in that
-range.
+about 10 ms) dominates both, so the frame is bound by the GPU and presentation,
+not by the frame-loop thread. Every frame of the threaded profile was
+decoupled. The deterministic `bistro_shadow_motion_snapshot` captures stayed
+byte-identical to the previous build in both modes; the texture-streaming
+`bistro_metal_text_snapshot` captures, from a Metal desktop case since removed,
+varied between runs of the previous build by up to 1.7 % of pixels, and both
+modes stayed in that range.
 
 The ThreadSanitizer runs exposed a pre-existing race: the resource system
 freed request keys and unload names from its shared allocator after releasing
 the request mutex. Those frees now happen under the mutex.
 
-Native Vulkan behavior is unverified; only Metal ran.
+Native Vulkan behavior is unverified; only the Metal desktop implementation
+ran.
 
 ## Alternatives considered
 

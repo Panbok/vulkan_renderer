@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-13
+updated: 2026-10-06
 authority: proposal
 ---
 
@@ -125,8 +125,8 @@ handoff remain future controller work. Bone attachment frames use evaluated glob
 node poses before inverse-bind multiplication, as specified in ADR-072.
 
 The projected debug overlay has a 512-line cap. Larger inspection workloads or
-depth-tested rendering need measured justification and bilateral shader evidence
-if native contracts change. SDK/adapter allocations remain outside VKR tag totals;
+depth-tested rendering need measured justification and native shader evidence
+on both backends if native contracts change. SDK/adapter allocations remain outside VKR tag totals;
 complete physics-memory reporting needs explicit accounting.
 
 ## AVBD and destructible entities
@@ -214,7 +214,7 @@ two solvers can affect the same interacting objects.
 Timing claims require matched, capture-free normal Release measurements with
 equivalent work/output, graphics validation variables unset, valid samples and
 spread. Report step cost, catch-up debt, active/sleeping bodies, contact/event work,
-memory and debug-display cost separately. Native editor appearance and shader
-parity require their own checks; CPU tests and library benchmarks do not establish
+memory and debug-display cost separately. Native editor appearance and native
+shader behavior on each backend require their own checks; CPU tests and library benchmarks do not establish
 those claims. Move accepted implementation decisions into the owning ADR and
 narrow this proposal again as extensions ship.

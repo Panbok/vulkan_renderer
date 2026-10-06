@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -10,8 +10,12 @@ authority: adr
 
 Accepted. Runtime publication, sky-light controls, the constant fixture source,
 the camera-dependent sky, aerial perspective, the per-frame directional sun
-light, the sun glow and offline diffuse transport are implemented. Image skies are removed. Native
-Vulkan execution remains unavailable on the development host.
+light, the sun glow and offline diffuse transport are implemented. Image skies
+are removed. Both pipeline classes draw the sky and aerial perspective: the
+desktop pipeline in its deferred background and fog pass on Vulkan, the tiled
+pipeline in `Tiled.Opaque` and `Tiled.Atmosphere` on Metal
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 6). Native Vulkan
+execution is not yet recorded.
 
 ## Context
 
@@ -315,29 +319,30 @@ and [environment preparation](../../runtime/src/renderer/systems/vkr_world_resou
 The [CPU atmosphere baker](../../tools/bake/vkr_bake_atmosphere.cpp) owns its
 temporary LUTs and scene-lifetime source cube.
 
-Metal Release captures cover zero extinction, day, sunset, elevated observer,
-disabled fallback and Bistro. A focused native API-validation fixture covers
-completion, superseded candidates, failure, disable and reload. A CPU/GPU
-day-sky comparison outside two degrees of the sun has maximum RGB absolute
-error 0.000853. A glass-ceiling smoke bake produces 27 valid probes, eight
-interpolation cells and 9,072 caustic deposits from 20,000 photons. These
-checks establish the available native path and bounded transport fixture;
-SPIR-V compilation and host checks do not establish native Vulkan parity.
+Release captures on the Metal desktop implementation, removed on 2026-10-06,
+covered zero extinction, day, sunset, elevated observer, disabled fallback and
+Bistro. A CPU/GPU day-sky comparison outside two degrees of the sun had maximum
+RGB absolute error 0.000853. A glass-ceiling smoke bake produces 27 valid
+probes, eight interpolation cells and 9,072 caustic deposits from 20,000
+photons. These checks established the native path on that implementation and
+a bounded transport fixture; SPIR-V compilation and host checks do not
+establish native Vulkan output.
 
 The atmosphere-only change passes `./build_release.sh`, `./build_editor.sh
 Release`, the diffuse-baker build and `./build_test.sh`. The CPU suite adds
 loader tests for rejected image fields, constant parsing and bounds, sky-light
 controls under the atmosphere, conflicts and the moved SH window, plus Radiance
 texture rejection. `tools/checks/check_editor_project_jobs.py` and
-`tools/checks/check_path_contract.py` pass. Metal Release captures use
-`tools/profiles/local-offscreen.json` with validation unset, except the furnace,
-which uses `local-brdf-display-validation.json`:
+`tools/checks/check_path_contract.py` pass. Release captures on the Metal
+desktop implementation used `tools/profiles/local-offscreen.json` with
+validation unset, except the furnace, which used
+`local-brdf-display-validation.json`:
 
 | Observation | Result |
 |---|---|
 | Clearcoat furnace, constant source, `check_clearcoat_furnace.py` | pass; 36 samples, maximum error 0.00049 |
-| `atmosphere_bistro_local` scene-linear luminance | zenith sky 0.0336, sunlit facade 0.122, shaded street 0.0215 |
-| Bistro automatic exposure (`mac_bistro_exposure_parity_gtao_off`) | multiplier 4.06 |
+| `atmosphere_bistro_local`, a Metal desktop case since removed, scene-linear luminance | zenith sky 0.0336, sunlit facade 0.122, shaded street 0.0215 |
+| Bistro automatic exposure (`mac_bistro_exposure_parity_gtao_off`, a Metal desktop case since removed) | multiplier 4.06 |
 
 Baker inspection of one-cube scenes accepts the atmosphere and constant
 sources, records model version 2 with the environment's SH window, and rejects
@@ -345,9 +350,10 @@ stale or conflicting sky fields.
 
 Sun authoring adds CPU checks against Kim et al.'s Planckian-locus spline, within
 0.004 in CIE xy from 2000 K to 20000 K, plus range, loader-conflict and
-ignored-directional-light tests. The `atmosphere_bistro_temperature_local` case
-at 5778 K keeps the default case's sunlit-facade luminance, 0.1225 against
-0.122, with a warmer red-to-blue ratio of 1.74 against 1.42. Repeated Bistro
+ignored-directional-light tests. On the Metal desktop implementation,
+`atmosphere_bistro_temperature_local`, a Metal desktop case since removed, at
+5778 K kept the default case's sunlit-facade luminance, 0.1225 against 0.122,
+with a warmer red-to-blue ratio of 1.74 against 1.42. Repeated Bistro
 snapshots previously flipped between two lighting states per capture because
 the Metal IBL bake could read a partly written atmosphere source. With the
 queue barrier, two runs differ in at most 33 pixels per view.
@@ -359,63 +365,54 @@ calibrated irradiance exactly and a set sun gives zero. Others check that
 glow reaches only the sky record, that a moving light redraws at once but
 requests a revision at most once per interval after publication, that an
 unstarted request follows it immediately and that the final sun gets its own
-revision. Metal API validation of `clouds_bistro_sky_local` passes without
-diagnostics (report
-sha256:05d72c17d51b51bd9a016094e2a34c0de1b65976f7140c11ef75d9b0d5a060a2). The
-light-driven and authored 5778 K suns still agree to an HDR ratio of 1.000000
-and a final-colour mean absolute error of 2.1e-6. In Bistro the per-frame CPU
-irradiance keeps every view inside the baseline gate; only the glow changes
-view 13, around a sun just behind the clouds (mean absolute error 1.21e-3 in
-two runs). That look was re-accepted as generation
-`sha256:5a10ac6d9881514da1cea7b107f35afa9461533ca1c46701b07a718542cfabbf`,
-which a fresh run matches with failed-pixel ratio 0 and mean absolute error at
-most 8.4e-7.
+revision. On the Metal desktop implementation, the light-driven and authored
+5778 K suns agreed to an HDR ratio of 1.000000 and a final-colour mean absolute
+error of 2.1e-6. In Bistro the per-frame CPU irradiance kept every view inside
+the baseline gate; only the glow changed view 13, around a sun just behind the
+clouds (mean absolute error 1.21e-3 in two runs).
 
 The directional sun light adds CPU checks that the sun points against a rotated
 light, takes its tinted irradiance, ignores unflagged lights, keeps the
 authored disc for a hard-edged light, requests nothing for an unchanged light
 and restores the authored sun without one, plus loader checks of the
-temperature domain and flag. `sun_light_bistro_local` drives the sun from a
-light rotated a quarter turn about +Y at 5778 K and the default luminance;
-against `atmosphere_bistro_temperature_local`, which authors the same sun in
-the atmosphere block, mean HDR radiance agrees to a ratio of 0.999999, the mean
-relative difference is 8.4e-6 and final colour differs by a mean absolute error
-of 2.1e-6. `sun_light_bistro_low_sky_local` looks toward a 3200 K light 8
-degrees above the horizon and shows the disc and a warm horizon glow around
-it. Bistro without its sun entity still matches generation `74b6e5c5` (mean
-absolute error at most 6.3e-7, no failing pixels), and with the entity differs
-from that generation by at most 1.13e-6 per view. The entity changes the
-workload fingerprint, so the unchanged look was re-accepted as generation
-`sha256:d3a548c56cfb58bc3689ef7e421b7c4e5530204d38f6a0dc3b4febe0e6a69046`.
+temperature domain and flag. On the Metal desktop implementation,
+`sun_light_bistro_local`, a Metal desktop case since removed, drove the sun
+from a light rotated a quarter turn about +Y at 5778 K and the default
+luminance; against `atmosphere_bistro_temperature_local`, which authors the
+same sun in the atmosphere block, mean HDR radiance agreed to a ratio of
+0.999999, the mean relative difference was 8.4e-6 and final colour differed by
+a mean absolute error of 2.1e-6. `sun_light_bistro_low_sky_local`, also
+removed, looked toward a 3200 K light 8 degrees above the horizon and showed
+the disc and a warm horizon glow around it. Bistro without its sun entity
+matched the then Metal text baseline (mean absolute error at most 6.3e-7, no
+failing pixels), and with the entity differed from it by at most 1.13e-6 per
+view.
 
 The camera-dependent sky adds CPU checks of the camera altitude and world-scale
-boundary and a graph-capacity check at 165 passes. The
-`atmosphere_bistro_sky_local` case looks at the sun-side sky from 30 m. Against
-the removed cube sky rendered at the same 30 m, open sky more than one degree
-from the horizon and two degrees from the sun differs by at most 0.65%
-(mean 0.07%) over 648,208 pixels, and the ground below the horizon by at most
-0.33%. Within one degree of the horizon the lookup resolves the horizon more
+boundary and a graph-capacity check at 165 passes. On the Metal desktop
+implementation, `atmosphere_bistro_sky_local`, a Metal desktop case since
+removed, looked at the sun-side sky from 30 m. Against the removed cube sky
+rendered at the same 30 m, open sky more than one degree from the horizon and
+two degrees from the sun differed by at most 0.65% (mean 0.07%) over 648,208
+pixels, and the ground below the horizon by at most 0.33%. Within one degree of
+the horizon the lookup resolves the horizon more
 sharply than the cube's texels. At 100 metres per world unit, a Bistro facade
 about 8 km away loses red and gains blue as expected: RGB 0.0749, 0.0859,
 0.0769 becomes 0.0646, 0.0814, 0.0906. The clearcoat furnace passes unchanged
-at maximum error 0.00049. Metal API validation of the atmosphere Bistro case
-reports no diagnostics. On the M1 Pro at 1280×720, a non-authoritative
+at maximum error 0.00049. On the M1 Pro at 1280×720, a non-authoritative
 five-process steady Bistro profile measures the sky-view lookup at 0.0695 ms,
 the aerial volume at 0.0395 ms and the aerial-only fog pass at 0.0859 ms, each
 from 1,500 valid samples. A matched pre-change timing report is unavailable.
 Vulkan SPIR-V validation and layout reflection pass in
 [the retained diagnostic](../../assets/verification/renderer-features/atmosphere-spirv.txt).
-The Bistro Metal text baseline was re-accepted at the settled look of the sky
-system, including the cloud layer of ADR-074: generation
-`sha256:74b6e5c517c668ed17354a0d3f1026bc0d0767b82b17666727fb9c1ca3f4c19c`,
-succeeded by the sun-entity generation above.
-The Bistro Vulkan text baseline and native Vulkan runs remain unavailable.
+Native Vulkan sky measurements are not recorded here.
 
 Metal previously submitted each revision as two upload command buffers, whose
 command-slot acquisition blocked the CPU on in-flight frames, and then
 prefiltered the published source a second time into a renderer-owned cube in
 `IBL.Bake`. Moving both into the frame's `IBL.Bake` pass was measured on the
-Bistro atmosphere scene, Metal Release, M1 Pro, 1280×720 offscreen, 60 warmup
+Bistro atmosphere scene on the Metal desktop implementation, removed on
+2026-10-06 (Release, M1 Pro), 1280×720 offscreen, 60 warmup
 and 240 measured frames, with `tools/profiles/local-offscreen-gpu-single.json`
 and a temporary diagnostic that turned the sun 0.002 radians per frame about
 +Y. The runs are single-process and non-authoritative. Before, a revision
@@ -427,20 +424,17 @@ sun moving, frame wall time p95 fell from 68.4 ms to 43.6 ms and its maximum
 from 71.1 ms to 45.0 ms; the median stayed 33.4 ms against 24.6 ms with a still
 sun. Most of that remaining gap is CPU time in `cpu.render_prepare` outside the
 bake and is not attributed; redrawn shadow cascades and temporal resolve add
-3.2 ms of GPU time per frame. The Bistro Metal text snapshot passes against
-generation `8d8439fc` with failed-pixel ratio 0 in every view, matching an
-unchanged-renderer control run view by view; the IBL single-probe snapshot
-matches exactly. Metal API validation of `atmosphere_bistro_local`, with a
-still and a moving sun, reports no diagnostics.
+3.2 ms of GPU time per frame. The Bistro text snapshot views matched an
+unchanged-renderer control run view by view with failed-pixel ratio 0, and the
+IBL single-probe snapshot matched exactly.
 
 The prefilter's mirror mip, roughness zero and three quarters of its texels,
 now takes one source fetch instead of 256 identical importance samples
 (ADR-044). With the same diagnostic and configuration, a revision's `IBL.Bake`
 falls from 10.18 ms (16 samples, 10.17-10.21) to 3.55 ms (3.54-3.55); the
 moving-sun frame p95 falls from 42.7 ms to 36.9 ms and the maximum from 45.3 ms
-to 38.1 ms. The Bistro Metal text snapshot still has no failing pixels and keeps
-its per-view errors, and the IBL single-probe snapshot matches exactly. Metal
-API validation with pass timing and a moving sun reports no diagnostics.
+to 38.1 ms. The Bistro text snapshot still had no failing pixels and kept its
+per-view errors, and the IBL single-probe snapshot matched exactly.
 
 The dark-depression skip was checked against the CPU baker, which evaluates the
 same model without the bound's geometry: with the sun 0.01 degrees past the

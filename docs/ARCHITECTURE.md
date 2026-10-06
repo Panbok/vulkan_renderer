@@ -7,7 +7,9 @@ authority: architecture
 # Renderer architecture
 
 VKR is a C11 renderer with Metal 4 on macOS and capability-gated Vulkan 1.4 on
-Windows. Both consume explicit frame inputs and one authored render graph. Native
+Windows. Both consume explicit frame inputs and an authored render graph: Metal
+runs the tiled graphics pipeline and Vulkan the desktop pipeline
+([ADR-087](adr/087-gpu-class-graphics-pipelines.md)). Native
 implementations own GPU resources, pipelines, commands and completion; shared
 code owns portable contracts and scene-facing systems. Linux, D3D12 and the
 retired Vulkan 1.2 renderer are not current execution paths.
@@ -359,7 +361,7 @@ and checked serializer, separate from glTF URI and OBJ filename interpretation.
 regression gates; the [path proposal](proposals/portable-path-contract.md) retains
 unavailable native evidence checks. [ADR-069](adr/069-editor-projects-and-workspaces.md) records
 ownership, publication decisions and selected native Metal evidence. Native
-Windows/Vulkan parity, long-session stability and frame-budget acceptance remain
+Windows/Vulkan evidence, long-session stability and frame-budget acceptance remain
 separate gates.
 
 Managed scene and settings documents remain bounded to 1 MiB and nesting depth
@@ -377,11 +379,11 @@ headings, the Console's Ubuntu Mono and authored labels cover Latin-1. Other
 characters retain the existing missing-glyph fallback. This is fixed atlas
 coverage, not an on-demand Unicode glyph service or an IME implementation.
 
-The renderer loads its build-copied render graph through an explicit configured
-path, alongside its compiled shader resources. Managed harness processes keep
-workspace scene paths separate from the installation's bootstrap working
-directory. A focused Metal material-preview run produced and validated a 256×256
-sphere PNG; this establishes that preview path, not Vulkan pixel parity.
+The renderer loads its class's build-copied render graph through an explicit
+configured path, alongside its compiled shader resources. Managed harness
+processes keep workspace scene paths separate from the installation's bootstrap
+working directory. A focused Metal material-preview run produced and validated a
+256×256 sphere PNG; this establishes that preview path, not Vulkan output.
 
 Transform editing is available through Details and gizmos with axis, plane
 and center handles in world or local space; scale handles stretch one axis of
@@ -470,11 +472,13 @@ controllers evaluate weighted blend graphs, 1D/2D blend spaces and conditional s
 transitions before hierarchy/palette publication. Clip crossfades and graph mixtures
 blend local TRS; the existing compute pass consumes the resulting palette. Evaluated
 poses remain separate from authored ECS transforms. Both backends consume them
-through per-instance compute skinning, including geometry reconstruction, motion
-and shadow consumers. Conservative joint influence boxes supply current bounds.
+through per-instance compute skinning, read by either pipeline's shadow, scene
+and picking draws and by the desktop pipeline's geometry reconstruction and
+motion. Conservative joint influence boxes supply current bounds.
 The movable Animation editor has an independent player, graph/sequence controls
-and a graph-owned model preview. Static geometry remains shared. Native bilateral
-animation evidence remains pending; no performance claim is established.
+and a graph-owned model preview. Static geometry remains shared. Skinned captures
+on the tiled pipeline and on Vulkan remain pending; no performance claim is
+established.
 [ADR-071](adr/071-animation-bank-and-reference-pose.md) owns this partial integration
 contract and the scene configuration.
 
@@ -662,26 +666,29 @@ queued event payloads and latest-value resize delivery are in
 
 ## Graph and native execution
 
-Both implementations parse
-[`main.rendergraph.json`](../assets/render_graphs/main.rendergraph.json), resolve
-conditions, aliases, names and repeats per submitted frame, and use the shared
-compiler for dependencies, ordering, culling and barriers.
+Each backend parses its class's authored graph: Vulkan
+[`main.rendergraph.json`](../assets/render_graphs/main.rendergraph.json) for the
+desktop pipeline and Metal
+[`tiled.rendergraph.json`](../assets/render_graphs/tiled.rendergraph.json) for
+the tiled pipeline. Both resolve conditions, aliases, names and repeats per
+submitted frame and use the shared compiler for dependencies, ordering, culling
+and barriers.
 `vkr_render_graph_prepare_frame()` derives portable conditions, shadow counts,
 HZB/transmission/bloom/GTAO mip counts and GTAO constants once from the prepared
 frame. Native formats, resource instances and history/completion selection remain
 with each backend. Both native registries load one executor catalog from
 `vkr_render_graph_frame.c`, so every authored operation, including the
-conditional MetalFX and Vulkan FSR 3.1 declarations, resolves to the same
-executor id and pass type on either backend. Vulkan rejects active MetalFX
-passes; Metal ignores inactive FSR declarations. Disabled
-declarations do not block startup. There is one GPU-driven world topology;
-no retained-forward/legacy world branch remains.
+conditional Vulkan FSR 3.1 declarations, resolves to the same executor id and
+pass type on either backend. Disabled declarations do not block startup. Both
+classes draw the world from the same GPU-driven culling; no CPU-recorded
+forward world path remains.
 
-Shared native pass and timing storage covers the main graph's 410-pass maximum.
-The no-TAA path can expand beyond either temporal upscaler because it restores
-culling HZB generation. The graph-expansion test checks the full supported repeat
-envelope before native emission; [ADR-025](adr/025-selected-renderer-implementation-strategy.md)
-records the ownership and bound. Metal records each run of consecutive compute
+Shared native pass and timing storage covers the largest supported graph
+expansion. The desktop graph's no-TAA path can expand beyond its temporal path
+because it restores culling HZB generation. The graph-expansion test checks the
+full supported repeat envelope before native emission;
+[ADR-025](adr/025-selected-renderer-implementation-strategy.md) records the
+ownership and bound. Metal records each run of consecutive compute
 and transfer passes in one encoder, with intra-encoder barriers for the graph's
 dependencies inside the run.
 
@@ -717,33 +724,44 @@ with explicit native barriers and completion ownership. See [ADR-002](adr/002-re
 
 ## Rendering pipeline
 
-Every device runs the desktop pipeline described here by default.
-[ADR-087](adr/087-gpu-class-graphics-pipelines.md) adds a separate pipeline
-class for tile-based GPUs: on Metal, a renderer that selects it runs
-`tiled.rendergraph.json`, whose `Tiled.Opaque` pass shades the culled opaque
-draws forward after a depth pre-pass in one four-sample render pass resolved
-on chip, with baked lightmaps for static diffuse light. Its `Tiled.Blend`
-pass draws glass with the blended surfaces, back to front over the resolved
-image, and the editor runs it. Static lights reach it only through baked
-data; it draws the 16 dynamic lights nearest the camera, 4 of them
-shadowed with one bilinear shadow-map comparison each, and no screen-space
-effects yet. Its adaptive quality lowers the render scale to as little as
-0.65 while frames miss a 16 ms GPU budget and upscales spatially.
+The graphics pipeline class follows the backend
+([ADR-087](adr/087-gpu-class-graphics-pipelines.md)): Metal runs the tiled
+pipeline on Apple M-series GPUs, including in the editor, and Vulkan runs the
+desktop pipeline on immediate-mode discrete GPUs. No setting selects it. The
+classes share GPU culling, the cascades and local shadow atlas, the sky,
+clouds, IBL, exposure, bloom, tonemapping, editor, UI and text passes, the
+material model and the kernels in `renderer/src/shaders/shared/`.
+
+The tiled pipeline runs `tiled.rendergraph.json`. Its `Tiled.Opaque` pass
+shades the culled opaque draws forward after a depth pre-pass in one
+four-sample render pass resolved on chip, with baked lightmaps for static
+diffuse light; a scene without a lightmap set draws its static lights as
+dynamic lights. `Tiled.Atmosphere` lays the clouds, aerial perspective and
+analytic height fog over the resolved image, and `Tiled.Blend` draws glass
+with the blended surfaces, back to front. It draws the 16 dynamic lights
+nearest the camera, 4 of them shadowed with one bilinear shadow-map
+comparison each, and no FXAA, screen-space effects or temporal history. Its
+adaptive quality lowers the internal render scale to as little as 0.65 while
+frames miss a 16 ms GPU budget and upscales spatially
+([ADR-039](adr/039-metal-internal-render-scale.md)). ADR-087 owns its passes,
+evidence and budget. The rest of this section describes the desktop
+pipeline, which only Vulkan runs.
 
 Editor inspection adds Detail lighting, Lighting only and visible-edge Wireframe
 to Lit and Unlit. The two lighting views use neutral material response; Detail
 lighting retains mapped normals and Lighting only uses interpolated vertex normals.
-Both native shader roots consume shared inspection helpers through the existing
-render-mode field. Their exact material, edge and evidence contracts are in
+Both pipelines draw these modes; their shaders consume shared inspection
+helpers through the existing render-mode field. Their exact material, edge and
+evidence contracts are in
 [ADR-044](adr/044-shader-cross-backend-contract.md#editor-inspection-views).
 
 The active graph conditions select direct or editor presentation, optional picking,
 post controls and the temporal consumer. The main dataflow is:
 
 1. Publish transforms/candidate tables, classify camera, cascade and local-shadow
-   views, compact visible rows, and encode Metal ICB or Vulkan indirect-count
-   commands. Local shadows raster opaque depth and, when refractive casters
-   exist, two RGB transmission crossings plus a blocking overflow depth.
+   views, compact visible rows, and encode indirect-count commands. Local
+   shadows raster opaque depth and, when refractive casters exist, two RGB
+   transmission crossings plus a blocking overflow depth.
 2. Raster opaque/cutout visibility and depth, build HZB, and peel four ordered
    transmission visibility layers.
 3. Resolve the G-buffer, evaluate GTAO, and compute HDR lighting. When enabled,
@@ -756,26 +774,24 @@ post controls and the temporal consumer. The main dataflow is:
    transmission pyramid. Transmission and ordinary blend sample the current
    integrated volume when froxel fog is enabled. Shade transmission from deepest
    to nearest, resolve requested picking, then draw ordinary blend.
-4. Reconstruct temporal Scene HDR through portable TAA, selected MetalFX or
-   Vulkan FSR 3.1.
+4. Reconstruct temporal Scene HDR through portable TAA or FSR 3.1.
 5. Meter exposure, produce/combine bloom, tonemap/FXAA and compose native UI.
 
 Optional profiled surface diffusion uses eight scene-authored RGB distance
 profiles, 32 samples and a 32 internal-pixel radius cap. Two graph-owned RGBA16F
 images hold the diffuse source and composite; the existing texture system owns
 the immutable 8,320-byte profile bank. The offline baker samples the matching
-full-tail surface BSSRDF, including direct and photon irradiance. Native Metal
-integration checks and a bounded Windows Vulkan synchronization-validation
-resize pass now succeed. Vulkan withholds the subsurface graph until profile-bank
+full-tail surface BSSRDF, including direct and photon irradiance. A bounded
+Windows Vulkan synchronization-validation resize passes. Vulkan withholds the subsurface graph until profile-bank
 initialization completes, then fills the gather frame root at the dispatch owner before
 material access. [ADR-068](adr/068-profiled-surface-diffusion.md) owns the energy
 allocation, geometry approximation and evidence limits.
 
 Optional motion blur runs after reconstruction and exposure metering, before
 depth of field and bloom. The separate composites preserve temporal history.
-Motion blur compilation and selected native Metal output/API checks pass under [ADR-067](adr/067-post-reconstruction-motion-blur.md).
-[ADR-066](adr/066-post-reconstruction-depth-of-field.md) records the accepted
-budget, passing Metal checks and native Vulkan evidence limit.
+[ADR-067](adr/067-post-reconstruction-motion-blur.md) and
+[ADR-066](adr/066-post-reconstruction-depth-of-field.md) record their
+contracts, budgets and native Vulkan evidence limits.
 
 Shadow passes produce directional cascades when their retained reuse proof fails.
 Source topology and submission policy are in
@@ -868,7 +884,7 @@ motion-transform instance and submit/frame/scene tuple. Existing native queue
 dependencies admit that shared predecessor while in flight; no unrelated
 in-flight tuple is eligible. Unjittered motion gains the producer's
 previous-minus-current raster jitter on the raw grid. FSR uses its active phase
-count, MetalFX remains at eight phases, and no-TAA leaves zero jitter offsets.
+count, and no-TAA leaves zero jitter offsets.
 Four bilinear history taps independently validate depth and identity, then resolve
 RGB with bilinear × history-confidence weight. This adds nine history texture
 accesses over the former single tap, with no new SSGI images or rays. When no
@@ -878,7 +894,7 @@ cells. It remains optional and disabled by default; [ADR-060](adr/060-screen-spa
 owns its storage and evidence limits. Release emission and Bistro runs plus a
 focused Windows Vulkan synchronization-validation run pass on RX 6700 XT after
 correcting descriptor-family use, AMD trace-loop control and composite frame-root
-initialization. Bilateral Metal/Vulkan comparison remains open.
+initialization.
 
 Offline texture mips use linear-light sRGB color filtering and area-weighted
 footprints that retain odd source edges. Alpha and non-sRGB channels remain
@@ -997,11 +1013,11 @@ revision and drifted by a runtime wind offset. The renderer generates 2.1 MiB of
 tiling R8 noise once. Each frame with clouds builds a 512² sun-projected
 transmittance map and marches a half-resolution completion-gated history of
 cloud radiance and transmittance, with aerial perspective at cloud depth.
-Deferred lighting composites it over the sky, and every sun evaluation,
-including froxel injection and sky-lit analytic fog, multiplies by the map. The
-revision bake remains a clear sky. The measured worst Bistro view spends about
-1.05 ms of the 1.5 ms Metal budget; native Vulkan execution is unavailable.
-[ADR-074](adr/074-volumetric-cloud-layer.md) owns the layer.
+Deferred lighting, or the tiled pipeline's atmosphere draw, composites it over
+the sky, and every sun evaluation, including froxel injection and sky-lit
+analytic fog, multiplies by the map. The revision bake remains a clear sky.
+[ADR-074](adr/074-volumetric-cloud-layer.md) owns the layer and its measured
+cost.
 
 A scene may load one immutable baked diffuse-volume texture. The 8-by-probe-count
 RGBA32F texture stores seven packed `E/pi` SH vectors and room/cell metadata; the
@@ -1052,32 +1068,26 @@ A 128-byte camera record borrows the exact selected transform producer;
 existing waits/barriers and reader retirement remain.
 `ssr_reflection` capture version 5 identifies full-resolution incoming radiance.
 Vulkan SSR composite frame-root initialization is corrected and its compiled
-root reflects, but native output remains unavailable because the checked-in
-Vulkan fixture references a missing local HDR asset and the Bistro case is
-Metal-pinned. Bilateral comparison remains unavailable.
+root reflects, but native SSR output on Vulkan is not recorded: the checked-in
+Vulkan fixture references a missing local HDR asset. The Bistro SSR cases now
+run on Vulkan.
 
 SSR-enabled scenes wait 128 unchanged
-submitted frames before portable TAA, FSR or MetalFX's following pass begins
+submitted frames before portable TAA's or FSR's following pass begins
 128-sample static accumulation. Portable TAA caps ordinary history retention at
 90% during settling, including after camera movement stops; its former stationary
 99% boost could prolong reflection trails. This uses the existing TAA root word
 for an explicit history mode, with unchanged image storage and texture reads.
-SSR-off retention, the checked static integral, FSR and MetalFX remain unchanged.
+SSR-off retention, the checked static integral and FSR remain unchanged.
 The [cap evidence](../assets/verification/renderer-features/ssr-taa-settling-cap.txt)
-shows faster convergence and increased shimmer before convergence on Metal.
-Current reconstruction
-continues during settling.
+shows faster convergence and increased shimmer before convergence on the
+removed Metal desktop implementation. Current reconstruction continues during
+settling.
 The selected producer's CPU metadata owns the counter; failed history/input
-equality resets it. SSR history pool ownership and image count stay fixed;
-[ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) owns the separate
-MetalFX output-history budget.
+equality resets it. SSR history pool ownership and image count stay fixed.
 The earlier TAA-cap evidence and the reflected-hit evidence are separated in
-[ADR-055](adr/055-screen-space-reflections.md). Shader compilation and native
-Metal checks do not establish Vulkan compatibility. MetalFX remains an authorized
-backend-specific reconstruction mode; its eight-phase jitter and post-SDK static
-accumulation are unchanged here. Its HDR capture retains private sample age in
-alpha, while presentation restores opaque alpha. GPU shader validation previously
-crashed in MetalTools with SSR on or off and supplied no shader-validation result.
+[ADR-055](adr/055-screen-space-reflections.md). Shader compilation does not
+establish Vulkan output.
 
 Scenes may author analytic height fog. Frame preparation uploads one 48-byte
 record per frame slot; a zero record bypasses fog. Fog in-scatters its authored
@@ -1086,9 +1096,10 @@ through a Henyey-Greenstein lobe plus the sky light's average radiance. The in-p
 runs after SSR and before the opaque transmission pyramid, and also applies
 atmospheric aerial perspective before fog. Transmission fogs only
 new local lobes over already-fogged ordered feedback, and blend retains alpha.
-Fog changes invalidate normal temporal and SSR content. [ADR-057](adr/057-analytic-height-fog.md)
-owns the constants, composition and Metal evidence; native Vulkan execution is
-unavailable.
+Fog changes invalidate normal temporal and SSR content. The tiled pipeline
+applies the same fog in `Tiled.Atmosphere` and its blend draws (ADR-087).
+[ADR-057](adr/057-analytic-height-fog.md) owns the constants and composition;
+native Vulkan fog output is not recorded.
 
 Fog's 5,000 working radiance cap applies to fog accumulation, not final scene
 composition. Empty media preserve finite scene HDR and nearly transparent media
@@ -1102,16 +1113,13 @@ Froxel volumetric fog is implemented under
 completion-gated RGBA16F 3D local-scattering histories and one transient
 RGBA16F integrated volume per frame slot. The current two-slot renderer uses
 six images (10.547 MiB at 1280×720), within the approved three-slot 14.063 MiB budget. Each enabled frame uploads a 944-byte parameter
-record. Metal's frame root holds froxel fields at bytes 136 and 216; Vulkan's
-uses bytes 576, 584 and 588 for the parameter address, integrated descriptor and
-sampler. The contract retains fields through byte 799 and appends unjittered
+record. Vulkan's frame root uses bytes 576, 584 and 588 for the parameter
+address, integrated descriptor and sampler. The contract retains fields through byte 799 and appends unjittered
 current view-projection and jittered inverse raster view-projection at bytes
 800 and 864, and sky lighting at byte 928. Every light scatters through the
 authored Henyey-Greenstein anisotropy; a sky-lit medium adds the sky light's
-average radiance. Metal native reflection, API
-validation, lifecycle and numeric captures pass, as do production Vulkan SPIR-V
-and host compilation checks. Native Vulkan execution and bilateral comparison
-remain unavailable, so froxel fog is **UNALIGNED**.
+average radiance. Production Vulkan SPIR-V and host compilation checks pass;
+native Vulkan froxel output is not recorded.
 
 Directional shadows default to four cascades with snapping, fit hysteresis,
 per-target-image reuse and shared PCF/bias units. The nearest two cascades add
@@ -1147,7 +1155,7 @@ retain their completed value exactly. Sample age uses the existing depth-history
 spare channel, with no additional images. Retained shadow images converge to a
 common submitted projection so cached per-image fits cannot prevent temporal
 convergence after camera movement. The G-buffer writes
-sky rotation motion for portable TAA and MetalFX. Completed history remains
+sky rotation motion for portable TAA and FSR. Completed history remains
 scene-linear. It is stored at the frame's whole-stop pre-exposure, and each
 consumer rescales it exactly when that changes
 ([ADR-081](adr/081-physical-night-sky.md)).
@@ -1185,15 +1193,16 @@ The frame's `image_sharpness` control is finite in `[0,1]`, with zero as an exac
 bypass. The sample initializes it to 0.25; zero-initialized packet callers and
 harness cases default to zero. A shared, neighborhood-limited sharpening filter
 operates on tone-mapped linear Scene RGB in the existing presentation draw, after
-FXAA when enabled. FXAA reuses its samples and attenuates sharpening where its
-subpixel blend is strongest. UI, editor recomposition, diagnostic views and
+FXAA when the desktop pipeline enables it. FXAA reuses its samples and
+attenuates sharpening where its subpixel blend is strongest. UI, editor recomposition, diagnostic views and
 temporal histories are excluded. FSR's SDK sharpener remains disabled.
 When FXAA or sharpening filters the final draw, an output-size RGBA16F
 display-linear image is prepared first, so the display transform runs once per
-pixel rather than per filter sample. FXAA filters only frames without temporal
-reconstruction: portable TAA, MetalFX and FSR frames omit it. On the M1 Pro
-Bistro production case that removed 1.26 ms per frame
-([ADR-043](adr/043-presentation-dpi-and-color-transfer.md)).
+pixel rather than per filter sample. FXAA filters only desktop frames without
+temporal reconstruction: portable TAA and FSR frames omit it, and the tiled
+pipeline draws no FXAA (ADR-087).
+[ADR-043](adr/043-presentation-dpi-and-color-transfer.md) records its measured
+cost.
 `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic per-sample reference path. The
 final draw applies the physical output scale once; ADR-043 records the output
 difference, cost observations and open native gates.
@@ -1208,20 +1217,12 @@ is no legacy descriptor-set fallback. See
 Requested material anisotropy uses the enabled device feature and effective
 limit (up to 16); devices without it report a maximum of 1.
 
-Metal supports explicit internal scale and MetalFX temporal reconstruction. The
-sample selects dynamic MetalFX in direct and paneled modes; zero-initialized
-renderer API callers use unit-scale spatial mode. A post-MetalFX pass averages
-128 eligible stationary output samples after the SSR settling window. Scene,
-camera, material, light, resource or viewport changes immediately restore current
-MetalFX RGB and clear sample age; transparent or unreliable-motion footprints
-bypass this added accumulation. The existing RGBA16F output becomes a five-instance
-history image: two extra instances add 14.0625 MiB of pixel storage at 1280×720
-with three frame slots, excluding native allocation rounding and resize overlap.
-The pass reads current color, four existing validity texels and previous color,
-then writes once; it adds no mask or depth image. This addresses stationary
-shimmer, not moving MetalFX quality, and has no matched performance claim.
-Vulkan spatial rendering
-rejects non-unit scale and MetalFX. Vulkan FSR 3.1 accepts a scale in
+Metal supports an explicit internal Scene scale, which the tiled pipeline's
+adaptive quality steps between 0.65 and native while its tonemap pass upscales
+spatially ([ADR-039](adr/039-metal-internal-render-scale.md), ADR-087 decision
+12). Zero-initialized renderer API callers use unit scale. Metal has no temporal
+upscaler. Vulkan spatial rendering rejects non-unit scale. Vulkan FSR 3.1
+accepts a scale in
 `[1/3, 1]`, changeable between frames, including Native AA, with no frame
 generation or dynamic resolution.
 It consumes raw HDR, normalized previous-UV minus current-UV motion, portable
@@ -1243,12 +1244,8 @@ thin-edge motion remains a tuning gap. The tested camera
 rotation has valid, correctly scaled opaque/transmission motion; see ADR-052 for the bounded evidence.
 FSR's SDK-private resources and classic descriptors remain behind a C bridge;
 the graph restores Vulkan descriptor buffers and graphics/compute offsets afterward.
-Bounded native Vulkan validation passes. UI stays native after Scene reconstruction. MetalFX
-motion targets the exact preceding scaler encode, with GPU event/fence ordering.
-Under Metal validation, the sample explicitly uses portable TAA/spatial
-diagnostics because the installed native MetalFX wrappers are incompatible. See
-[ADR-039](adr/039-metal-internal-render-scale.md),
-[ADR-040](adr/040-metalfx-temporal-dynamic-resolution.md) and
+Bounded native Vulkan validation passes. UI stays native after Scene
+reconstruction. See [ADR-039](adr/039-metal-internal-render-scale.md) and
 [ADR-052](adr/052-vulkan-fsr31-upscaling.md).
 
 ## Memory, synchronization and observability
@@ -1345,9 +1342,11 @@ These are limits of current code or retained acceptance, not scheduled promises:
   16 GiB host, and Apple ASan does not support leak detection.
 
 - New viewport camera/grid controls, text sizing and inspection modes pass the
-  Release editor build with both production shader compilers. Focused CPU/native
-  Bistro evidence is pending. Inspection shaders remain **UNALIGNED** until native
-  Vulkan diagnostics and matched bilateral captures pass. No timing claim is made.
+  Release editor build with both production shader compilers. Inspection modes
+  render on the tiled pipeline (ADR-087) and pass a Release Vulkan snapshot and
+  Debug validation on Windows
+  ([ADR-044](adr/044-shader-cross-backend-contract.md#editor-inspection-views)).
+  No timing claim is made.
 
 - Physics authoring includes cooked convex/triangle collision, parented bodies,
   bone attachments/ragdolls, joints, sweeps, contacts and named layer matrices.
@@ -1369,8 +1368,8 @@ These are limits of current code or retained acceptance, not scheduled promises:
   retains identical depth; 21 of 480,000 color pixels differ, at most 3/255.
   Completed steady-state slots upload zero geometry-table bytes. Raw float16
   bloom captures across two, four and six levels differ by one output ULP.
-  Native Metal execution and cross-backend shader acceptance remain unavailable
-  for this audit. Transmission redesign, draw sorting and graph caching remain
+  The audit recorded no native Metal check. Transmission redesign, draw sorting
+  and graph caching remain
   unimplemented: local measurements do not establish a sufficient benefit.
 - Resource preparation, native object/encoder creation, command-buffer begin/end,
   acquisition, submission and completion remain fallible. Prepared command
@@ -1416,8 +1415,8 @@ These are limits of current code or retained acceptance, not scheduled promises:
   Scene image allocation once at the same requested extent after completion-gated
   reclamation of superseded targets. A bounded two-load Bistro editor check keeps
   1528×1074 output with all 517 texture assignments resident and zero missing,
-  pending, failed or evicted textures; the existing MetalFX frame-rate controller
-  still varies internal resolution. Failed upward tiers now require measured
+  pending, failed or evicted textures; the dynamic-resolution controller still
+  varied internal resolution. Failed upward tiers now require measured
   headroom before another probe, limiting repeated resizing for unchanged work.
   Recovered Scene-image allocation attempts emit one warning; terminal failures
   retain detailed errors. A separate full-target spatial check passes
@@ -1434,9 +1433,9 @@ These are limits of current code or retained acceptance, not scheduled promises:
   execution remains unavailable; see [ADR-054](adr/054-baked-diffuse-volumes.md).
 - Lightmap sets bake on Metal ray tracing into VKLM files that projects store
   and package, and scenes load them as ASTC 4×4 HDR textures and bind them to
-  their draws. Only the opt-in tiled pipeline samples them; the desktop
-  pipeline ignores light mobility, and hosts without Metal ray tracing cannot
-  bake them; see
+  their draws. Only the tiled pipeline, on Metal, samples them; the desktop
+  pipeline on Vulkan ignores light mobility, and hosts without Metal ray
+  tracing cannot bake them; see
   [ADR-088](adr/088-baked-lightmap-sets.md).
 - Charlie sheen is implemented below clearcoat in runtime and offline lighting.
   Its two-component rectangle fit retains measured errors for dim tilted lights;
@@ -1458,9 +1457,10 @@ These are limits of current code or retained acceptance, not scheduled promises:
   [audit](proposals/level-toolkit-audit.md)).
   [Meshlet cluster culling](proposals/meshlet-cluster-culling.md) records the
   measured geometry-bound cost and why finer culling has not paid yet.
-- Native source exists for both backends, but same-revision crossed transmission,
-  visibility/packed geometry, punctual lighting, shadow-transition, tonemap,
-  UI/text color/coverage/picking and mixed-DPI evidence remains incomplete.
+- Native evidence remains incomplete for transmission, visibility and packed
+  geometry, punctual lighting and shadow transitions on Vulkan, and for
+  tonemap, UI/text color, coverage, picking and mixed-DPI output on both
+  backends.
 - The Graphics Settings and twelve-recipe Bakery integration is source-integrated.
   Settings CPU oracles pass two round trips, twenty invalid/default and
   dependency cases, restart/live classification, and missing-file handling;
@@ -1474,25 +1474,23 @@ These are limits of current code or retained acceptance, not scheduled promises:
   cooker descendants; final UI opacity coverage also passes. Windows
   UI/process-tree behavior and native Vulkan acceptance remain unavailable; see [ADR-027](adr/027-immediate-mode-grid-ui.md)
   and the [Windows/Vulkan verification checklist](proposals/windows-vulkan-verification.md).
-- Near-degenerate barycentric rejection and zero interpolated tangent handedness
-  still have different native edge policies, recorded in ADR-044.
 - SH needs deterministic GPU projection fixtures, local-probe quality review,
   submitted-frame lifetime stress and a valid comparative performance record.
-- Moving TAA/MetalFX quality, final-color baseline acceptance and authoritative
-  post-effect/reconstruction performance require their own matched evidence.
-  Portable Metal validation does not certify native MetalFX.
+- Moving TAA and FSR quality, final-color baseline acceptance and authoritative
+  post-effect/reconstruction performance require their own matched Vulkan
+  evidence. No tiled-pipeline Bistro baseline is accepted yet.
 - Vulkan FSR 3.1 static, motion, Native AA, portable-TAA reference and editor-resize
   checks pass on Windows. Native Vulkan static and resize diagnostics are clean;
   performance and comprehensive temporal-quality evidence remain open.
-- The shader corrections and stationary coverage support remain UNALIGNED under
-  ADR-044. Bounded Vulkan Release Bistro profiling and static/moving-camera
-  snapshots pass on RX 6700 XT after fixing cooker memory growth, upload-memory
-  fallback and harness stack exhaustion. The earlier host freeze cause remains
-  unconfirmed. Metal execution and bilateral capture comparison are unavailable
-  on that Windows host. Focused Vulkan synchronization validation passes;
-  matched speedup measurements and broader moving-image quality acceptance
-  remain open gates.
+- The temporal shader corrections and stationary coverage support pass
+  bounded Vulkan Release Bistro profiling and static/moving-camera snapshots
+  on RX 6700 XT after fixing cooker memory growth, upload-memory fallback and
+  harness stack exhaustion. The earlier host freeze cause remains
+  unconfirmed. Focused Vulkan synchronization validation passes; matched
+  speedup measurements and broader moving-image quality acceptance remain
+  open gates.
 
 [ADR-044](adr/044-shader-cross-backend-contract.md) maps source counterparts and
-defines parity evidence. Builds, static source review and one backend's success
-do not prove bilateral native compatibility or performance.
+defines the native evidence each backend owes. Builds, static source review and
+one backend's success do not prove the other backend's behavior or
+performance.

@@ -19,7 +19,7 @@ launch. Use `vkr-harness` for repeatable renderer observations.
 | CPU invalid access, uninitialized read, data race, or leak | Select the matching Debug sanitizer profile below; run a reproduction that exercises the suspected defect |
 | Renderer output or feature behavior | Small Release harness case and affected captures/assertions |
 | Native commands, resource transitions, GPU lifetime | Small reproduction under the affected backend's native validation; inspect diagnostics and execution result |
-| Shader math, bindings, dispatch, host ABI | `vkr-shaders` parity gates, including compiled contracts and affected native cases |
+| Shader math, bindings, dispatch, host ABI | `vkr-shaders` gates: compiled contracts and affected native cases on each backend that consumes the change |
 | Pipeline cache persistence | Isolated cold/prewarm/warm execution with actual cache load/save evidence |
 | Threading, queues, slot reuse, target recreation | Case that exercises the changed state transition or lifetime, plus native synchronization validation |
 | Frame cost or memory efficiency claim | Correctness evidence above as applicable, then matched Release measurements from `vkr-performance` |

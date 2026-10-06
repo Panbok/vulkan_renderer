@@ -1,6 +1,6 @@
 ---
-status: partial
-updated: 2026-10-05
+status: implemented
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,11 +8,12 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The World clock, the turning sun and moon, the night fade,
-light group factors in the runtime lighting, diffuse volumes that follow the
-sun and the light groups, and the script and command controls are
-implemented. Lamp-layer scaling in the tiled pipeline
-([ADR-088](088-baked-lightmap-sets.md)) is pending.
+Accepted. The World clock, the turning sun and moon, the night fade, light
+group factors in the runtime lighting, diffuse volumes that follow the sun and
+the light groups, and the script and command controls are implemented. The
+tiled pipeline scales its baked lamp layers ([ADR-088](088-baked-lightmap-sets.md))
+by the same group factors
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8).
 
 ## Context
 
@@ -96,8 +97,9 @@ component's property, which the Details slider and `vkr_component_set` edit.
 
 ## Consequences
 
-- The desktop pipeline switches and dims static lamps the way the tiled
-  pipeline will scale their baked lamp layers.
+- The desktop pipeline switches and dims static lamps at runtime, and the
+  tiled pipeline scales their baked lamp layers by the same group factors
+  (`vkr_scene_light_layer_weights`).
 - Diffuse volumes take one SH set per probe per layer, about ten times the
   bake time of a single layer, and between two sun keys the blend
   approximates the bounce of a sun between them.
@@ -140,5 +142,5 @@ Unavailable: a Vulkan run, and a script module calling the SDK entries.
 
 ## Revisit when
 
-The tiled runtime scales lamp layers by the group factors, a level needs more
-than 16 light groups, or sun-key blending shows between keys.
+A level needs more than 16 light groups, or sun-key blending shows between
+keys.

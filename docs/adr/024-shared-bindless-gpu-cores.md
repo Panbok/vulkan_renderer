@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-04
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -105,8 +105,8 @@ rejections retain typed out-of-memory status through frame-upload preparation
 so bounded Scene recovery can run; other native creation failures remain terminal.
 
 Device-reported allocation and residency footprints remain separate observations.
-Driver/validation/compiler storage, opaque command and counter heaps, MetalFX
-internals, and external drawables are outside the managed cap. Texture views do
+Driver/validation/compiler storage, opaque command and counter heaps, and
+external drawables are outside the managed cap. Texture views do
 not get charged a second time. The managed cap does not guarantee a matching
 process footprint or that the host has enough available memory.
 

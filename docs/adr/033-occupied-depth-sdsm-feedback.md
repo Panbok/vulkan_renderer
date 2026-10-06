@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,7 +8,9 @@ authority: adr
 
 ## Status
 
-Accepted.
+Accepted. SDSM belongs to the desktop pipeline, which Vulkan implements; the
+tiled pipeline turns it off ([ADR-087](087-gpu-class-graphics-pipelines.md),
+decision 7).
 
 ## Context
 
@@ -17,8 +19,8 @@ can guide fitting only if its frame, projection and completion are known.
 
 ## Decision
 
-Offer graph-declared occupied-depth SDSM reduction on Metal and Vulkan as an
-explicit opt-in. Reduce rendered camera depth into occupied range/count data,
+Offer graph-declared occupied-depth SDSM reduction as an explicit opt-in.
+Reduce rendered camera depth into occupied range/count data,
 copy it through bounded readback, and publish only after its submit completes.
 Attach source frame, world/projection and extent metadata to each sample.
 
@@ -37,8 +39,9 @@ second-phase camera visibility proof.
 ## Consequences
 
 Completed delayed feedback can concentrate resolution but adds reduction and
-cascade work. The original measured Metal choice retained fixed defaults;
-source parity does not establish equal device cost.
+cascade work. The original measurement, on the Metal desktop implementation
+removed on 2026-10-06, retained fixed defaults; it does not establish Vulkan
+device cost.
 
 ## Alternatives considered
 
@@ -53,6 +56,5 @@ A representative quality/cost comparison justifies enabling it by default.
 ## Implementation
 
 [`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
-[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c),
-[`vkr_vulkan_renderer.c`](../../renderer/src/vulkan/vkr_vulkan_renderer.c), and
-[`vkr_metal_packet_frame.inc`](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc).
+[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c), and
+[`vkr_vulkan_renderer.c`](../../renderer/src/vulkan/vkr_vulkan_renderer.c).

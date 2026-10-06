@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-03
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -40,7 +40,7 @@ checked Windows drivers expose.
 
 | Backend | Initialization gate | Owner |
 |---|---|---|
-| Metal | macOS 26, `MTLGPUFamilyMetal4`, an MTL4 command queue and residency sets; the MetalFX temporal scaler when that upscale mode is selected | [`vkr_metal_packet_setup.inc`](../../renderer/src/metal/internal/vkr_metal_packet_setup.inc) |
+| Metal | macOS 26, `MTLGPUFamilyMetal4`, an MTL4 command queue and residency sets | [`vkr_metal_packet_setup.inc`](../../renderer/src/metal/internal/vkr_metal_packet_setup.inc) |
 | Vulkan | Vulkan 1.4, `VK_EXT_descriptor_buffer`, buffer device address, `drawIndirectCount`, `geometryShader` for `SV_PrimitiveID`, descriptor indexing, 16,384 sampled images plus the permanent rows and 2,048 samplers per stage | ADR-023, [`vkr_vulkan_device.c`](../../renderer/src/vulkan/vkr_vulkan_device.c) |
 
 ### Architectures
@@ -67,6 +67,7 @@ path depends on the capability.
 | Capability | M1 (Apple7) | M2 (Apple8) | M3, M4 (Apple9) | RDNA 2 | Ampere | VKR use |
 |---|---|---|---|---|---|---|
 | Rasterization | Tile-based deferred | Tile-based deferred | Tile-based deferred | Immediate | Immediate | Pass and bandwidth costs do not transfer between columns |
+| Graphics pipeline class | Tiled | Tiled | Tiled | Desktop | Desktop | The class follows the backend ([ADR-087](087-gpu-class-graphics-pipelines.md)) |
 | Memory | Unified | Unified | Unified | Discrete; ReBAR or a 256 MiB BAR | Discrete; ReBAR | Vulkan falls back to host memory when the mapped heap is full (ADR-024) |
 | BC formats | Yes | Yes | Yes | Yes | Yes | x86-64 managed imports |
 | ASTC LDR | Yes | Yes | Yes | No | No | Apple managed imports |
@@ -77,7 +78,7 @@ path depends on the capability.
 | Ray tracing | API, no hardware units | API, no hardware units | Hardware | `VK_KHR_ray_query` | `VK_KHR_ray_query` | Not used |
 | Lossy render-target compression | No | Yes | Yes | Not exposed | Not exposed | Not used |
 | Samplers per stage in argument buffers | 996 | 996 | 500,000 | Not applicable | Not applicable | The Metal sampler cache holds at most 932 states below Apple9, keeping 64 for inline MSL samplers, and reuses the closest cached state beyond that |
-| Temporal upscaler | MetalFX | MetalFX | MetalFX | FSR 3.1 | FSR 3.1 | ADR-039/040, ADR-052 |
+| Temporal upscaler | None; spatial upscale with adaptive quality | Same | Same | FSR 3.1 | FSR 3.1 | ADR-087 (decision 12), ADR-052 |
 | Memory budget source | `recommendedMaxWorkingSetSize` | Same | Same | `VK_EXT_memory_budget`, not enabled | Same | Metal only |
 | `VK_EXT_descriptor_heap` | Not applicable | Not applicable | Not applicable | Missing on Windows drivers | Present | Not used; adopting it drops Windows RDNA 2 |
 
@@ -113,10 +114,13 @@ to 2048. No 8 GB discrete GPU has run Bistro.
 
 ### Rules for performance and graphics work
 
-1. Name the device, family and memory size with every measured result. Do not
-   apply an M1 Pro result to another column without a measurement there.
-2. A capability that is absent from the M1, RDNA 2 or Ampere column needs a
-   capability boundary and a path that runs on the column without it.
+1. Name the device, family, memory size and pipeline class with every
+   measured result. Do not apply an M1 Pro result to another column without a
+   measurement there.
+2. A capability that is absent from a column that runs the code needs a
+   capability boundary and a path that runs on the column without it: the M1
+   column for the tiled pipeline and the passes both classes share, the
+   RDNA 2 and Ampere columns for the desktop pipeline.
 3. Judge memory changes against the 16 GB Mac cap. The M1 family is the
    memory-limited target; desktop Vulkan GPUs are not.
 4. BC is the only block-compressed format family that every supported GPU
@@ -124,11 +128,13 @@ to 2048. No 8 GB discrete GPU has run Bistro.
 
 ## Consequences
 
-The M1 column sets the feature floor for shared rendering techniques. A
-visibility-buffer design that needs 64-bit atomics, or a GPU-driven path that
-needs indirect mesh draws, requires a second path for M1 and M2. Texture memory
-reduction is a requirement on Metal: the 16 GB floor leaves textures less than
-8 GiB. Rows without native evidence stay unverified until a run on that device
+The M1 column sets the feature floor for the tiled pipeline and for the
+passes both classes share, such as GPU culling and draw encoding; the RDNA 2
+and Ampere columns set it for the desktop pipeline. A shared GPU-driven path
+that needs indirect mesh draws requires a second path for M1 and M2, while a
+desktop technique that needs 64-bit atomics runs on both desktop columns.
+Texture memory reduction is a requirement on Metal: the 16 GB floor leaves
+textures less than 8 GiB. Rows without native evidence stay unverified until a run on that device
 records them.
 
 ## Alternatives considered

@@ -42,7 +42,9 @@ Build with `./build_release.sh` when needed. Use `vkr-harness` to run and inspec
   --profile tools/profiles/performance-windowed-gpu.json
 ```
 
-Run with Metal and Vulkan validation variables unset. Debug, sanitizers,
+The case leaves `renderer.backend` unpinned, so it measures the tiled pipeline
+on a Mac and the desktop pipeline on Windows (ADR-087); never compare the two
+as one workload. Run with Metal and Vulkan validation variables unset. Debug, sanitizers,
 validation, GPU traces, and capture replays are diagnostic configurations.
 Their timings cannot establish normal Release performance.
 
@@ -54,10 +56,11 @@ adds instrumentation and requires complete pass availability accounting;
 
 A speed claim requires `status=pass`, `authoritative=true`, empty
 `authority_reasons`, and matching environment/workload/policy fingerprints.
-Match build/compiler, GPU/driver, resolution, assets, target/image count,
-presentation, editor/features, cache policy, and instrumentation. Compare
-GPU-timestamp-on with timestamp-on. FIFO can hide CPU savings behind refresh
-pacing; inspect the relevant CPU work scope as well as `frame.wall`.
+Match build/compiler, GPU/driver, pipeline class, resolution, assets,
+target/image count, presentation, editor/features, cache policy, and
+instrumentation. Compare GPU-timestamp-on with timestamp-on. FIFO can hide CPU
+savings behind refresh pacing; inspect the relevant CPU work scope as well as
+`frame.wall`.
 
 A dirty-tree or single-process observation may guide implementation. Label it
 non-authoritative and do not convert it into a claimed speedup. If a required

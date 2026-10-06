@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-26
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,9 +8,11 @@ authority: adr
 
 ## Status
 
-Accepted. Both native implementations and the offline baker are integrated.
-Metal execution and API validation pass; native Vulkan execution remains
-unavailable on the current host.
+Accepted. The desktop pipeline, which Vulkan implements, and the offline baker
+are integrated. The tiled pipeline does not draw clearcoat yet
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8). The output
+evidence below comes from the Metal desktop implementation, removed on
+2026-10-06; native Vulkan execution is not yet recorded.
 
 ## Context
 
@@ -45,7 +47,7 @@ GTAO cone occlusion, decoding bent direction against that normal and using the
 packed coat roughness. SSR's incoming history uses filtered coat roughness.
 This keeps probe removal equal to the term deferred lighting actually added.
 Deferred, forward and transmission lighting traverse each active punctual and
-rectangle list once for the base, coat and sheen. Each backend has one punctual
+rectangle list once for the base, coat and sheen. Vulkan has one punctual
 helper and one rectangle helper for all three passes; transmission skips the
 base diffuse lobe on fully transmissive surfaces outside diagnostic views.
 Punctual lights share row loads, geometry and attenuation; a coat whose
@@ -54,8 +56,7 @@ Sheen uses the front base normal; a backlit thin sheet retains its light-facing
 diffuse bias and zero front sheen response. Rectangle layers retain their own
 LTC frames and integrals, including the sheen frame when an anisotropic base
 rotates its axes. Directional lights retain the existing common base-normal
-shadow policy. These source changes do not establish measured savings or native
-parity.
+shadow policy. These source changes do not establish measured savings.
 
 Runtime lights, LTC and probe/global IBL share this allocation. The offline
 path/photon BSDF uses the same layer and a corresponding mixture PDF. It tracks
@@ -101,19 +102,20 @@ no graph allocation or uses. Native null/slot-zero bindings return an explicit
 zero material value and skip writes; no full-resolution load targets a fallback
 image.
 
-Deferred lighting has two kernels on each backend. The base kernel compiles the
-clearcoat, sheen and anisotropy paths out, so it needs fewer registers; the
-layered kernel keeps them. A frame whose aggregate has no material plane runs
-only the base kernel over the viewport. When any plane exists, the graph also
-runs `Lighting.Deferred.Layered.Fullscreen` or `.Editor`. Both kernels cover
-the same 8x8 groups, OR in group memory whether any geometry pixel holds a
-nonzero plane value, and shade only their own class of tiles, so every tile is
-shaded exactly once. A pixel whose planes are all zero shades identically in
-either kernel. On the M1 development host, Metal Release at 1280x720 in the
-Bistro street view (no planes), `Lighting.Deferred` fell from 9.71 ms to
-7.09 ms. In a Bistro fixture with a layered cube, split output matched a build
-that sent every tile to the layered kernel, apart from one-ULP rounding of the
-recompiled library and pixels that also vary between identical runs.
+Deferred lighting has two kernels. The base kernel compiles the clearcoat,
+sheen and anisotropy paths out, so it needs fewer registers; the layered kernel
+keeps them. A frame whose aggregate has no material plane runs only the base
+kernel over the viewport. When any plane exists, the graph also runs
+`Lighting.Deferred.Layered.Fullscreen` or `.Editor`. Both kernels cover the
+same 8x8 groups, OR in group memory whether any geometry pixel holds a nonzero
+plane value, and shade only their own class of tiles, so every tile is shaded
+exactly once. A pixel whose planes are all zero shades identically in either
+kernel. On the Metal desktop implementation, removed on 2026-10-06 (M1
+development host, Release, 1280x720, Bistro street view, no planes),
+`Lighting.Deferred` fell from 9.71 ms to 7.09 ms. In a Bistro fixture with a
+layered cube, split output matched a build that sent every tile to the layered
+kernel, apart from one-ULP rounding of the recompiled library and pixels that
+also vary between identical runs.
 
 ## Consequences
 
@@ -146,32 +148,21 @@ mip filtering, two-lobe SSR, or a reciprocal layered transport model.
 
 The production Release wrapper and actual Vulkan SPIR-V reflection validate all
 four resolve variants, deferred, SSR trace/temporal/composite and SSGI composite.
-Material and root offsets match independently pinned native layouts. Metal
-initialization compiles the production MSL and validates its reflected roots.
+Material and root offsets match independently pinned native layouts.
 
-A 480×480 unit-environment Metal capture checks 36 coated dielectric/metal samples
-across opaque, blend and transmission paths and six roughnesses. Its maximum
-absolute RGB error is 0.00048828125. The zero-coat final image is byte-identical
-to the retained pre-change image; three HDR pixels differ by one FP16 step
-(0.00048828125). Independent CPU integration and sampling check aligned furnace
+On the Metal desktop implementation, a 480×480 unit-environment capture
+checked 36 coated dielectric/metal samples across opaque, blend and
+transmission paths and six roughnesses. Its maximum absolute RGB error was
+0.00048828125. The zero-coat final image was byte-identical to the retained
+pre-change image; three HDR pixels differed by one FP16 step (0.00048828125).
+Independent CPU integration and sampling check aligned furnace
 energy, tilted/opposed normals and thin/thick glass event classification.
 
-Metal forward and transmission lighting take the coat's own local-shadow query
-through the deferred punctual helper, `vkr_metal_packet_punctual_layered` in
-[`lighting.metalh`](../../renderer/src/shaders/metal/msl/world/lighting.metalh);
-they formerly reused the base normal's query. No existing case lights a coated
-forward or transmission surface with a shadowed punctual light, so the shared
-call is the only evidence for that correction. The Metal clearcoat, sheen and
-sheen-rectangle fixtures stay byte-identical across the change, and the Bistro
-glassware case keeps identical lighting channels. Vulkan compiles and its
-SPIR-V validates.
-
-The 512×384 material fixture checks factor and roughness response, independent
-coat normals and green light through coated glass. A floor with base roughness
-1 and coat roughness .04 produces 682 SSR hits, including 33 red-emitter hits
-inside the floor region; its base is ineligible for SSR. A serial Metal API
-validation run with SSR and SSGI enabled completes a 1024×768 → 514×386 → 1024×768
-drawable resize, with three selected target images and no API diagnostics.
+On the same implementation, the 512×384 material fixture checked factor and
+roughness response, independent coat normals and green light through coated
+glass. A floor with base roughness 1 and coat roughness .04 produced 682 SSR
+hits, including 33 red-emitter hits inside the floor region; its base is
+ineligible for SSR.
 
 A coated nested-glass bake completes 20,000 emitted photons with 1,605 caustic
 deposits, 100 valid probes and 32 valid cells. All 4,032 stored SH components are
@@ -180,10 +171,10 @@ unlit combinations and invalid factors before generated-material publication.
 A direct material-loader check verifies R/G channel use, independent RG normal,
 default/zero normal scale and invalid scalar/texture-intent rejection.
 
-Reproduction uses [the material case](../../tools/cases/local/clearcoat_local.case.json),
-[its checker and cooking command](../../tools/checks/check_clearcoat_fixture.py),
-[the furnace checker](../../tools/checks/check_clearcoat_furnace.py), and
-[the resize case](../../tools/cases/local/clearcoat_resize_local.case.json).
-These are local correctness observations, not matched performance measurements
-or bilateral native parity. ADR-044 remains **UNALIGNED** for this domain until
-native Vulkan and same-revision pixel comparison gates pass.
+[The material case](../../tools/cases/local/clearcoat_local.case.json) and [the
+resize case](../../tools/cases/local/clearcoat_resize_local.case.json), now
+pinned to Vulkan, with [its checker and cooking
+command](../../tools/checks/check_clearcoat_fixture.py) and [the furnace
+checker](../../tools/checks/check_clearcoat_furnace.py), are the native Vulkan
+gates for this domain; they have not run on Vulkan. These are local correctness
+observations, not matched performance measurements.

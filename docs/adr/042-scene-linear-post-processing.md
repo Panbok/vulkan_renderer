@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,7 +8,9 @@ authority: adr
 
 ## Status
 
-Accepted.
+Accepted. Both pipeline classes run exposure and bloom. GTAO and temporal
+history belong to the desktop pipeline, which Vulkan implements
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7).
 
 ## Context
 
@@ -28,32 +30,33 @@ time since the selected completed history, bounded by the shared hitch limit;
 it does not apply only one frame's delta to an older state. Vulkan passes the
 selected completed state to the resolve kernel as a host copy from that frame's
 readback, uploaded with the frame's roots
-([`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c)).
-A GPU read of the old state instance keeps it in use until the reading frame
-completes. The oldest instances are the ones the shared history ring reuses,
-so with temporal history also live the ring waited for an in-flight frame
-every third frame. In the Bistro street view at 1920x1080 with TAA on the
-RX 6700 XT, frames alternated 10, 20 and 2 ms (p95 20.5 ms); with the host
-copy they take 11.0 ms (p95 11.5 ms) and the final color is unchanged. Metal
-still reads the state instance on the GPU
+([`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c)). A
+GPU read of the old state instance keeps it in use until the reading frame
+completes. The oldest instances are the ones the shared history ring reuses, so
+with temporal history also live the ring waited for an in-flight frame every
+third frame. In the Bistro street view at 1920x1080 with TAA on the RX 6700 XT,
+frames alternated 10, 20 and 2 ms (p95 20.5 ms); with the host copy they take
+11.0 ms (p95 11.5 ms) and the final color is unchanged. Metal still reads the
+state instance on the GPU
 ([`vkr_metal_packet_graph.inc`](../../renderer/src/metal/internal/vkr_metal_packet_graph.inc)):
-with two frame slots and a four-instance ring, once a frame waits for its
-slot only the previous frame is in flight, so the oldest instance's last
-reader has completed and selection does not wait. In
-`local_shadow_taps_bistro_metal_street_taa` (M1 Pro, 1280x720, TAA, two
-children of 300 frames) `frame.wall` read p50 14.33 and p95 16.02 ms with no
-repeating pattern. Invalid history snaps
-to target. Defaults lower exposure at 8 EV/s, raise it at 1 EV/s, and clamp the
-target to [-8,+24] EV so night scenes are reachable. The rate names describe displayed-image brightness.
-Tonemap consumes GPU state
-without synchronous CPU readback; delayed completed samples expose diagnostics.
-Manual exposure remains an explicit alternative.
-Histogram dispatches use complete 16x16 threadgroups on both backends: all 256
-lanes initialize and merge bins, while edge lanes omit out-of-extent source reads.
+with two frame slots and a four-instance ring, once a frame waits for its slot
+only the previous frame is in flight, so the oldest instance's last reader has
+completed and selection does not wait. On the Metal desktop implementation,
+removed on 2026-10-06, `local_shadow_taps_bistro_metal_street_taa` (a Metal
+desktop case since removed; M1 Pro, 1280x720, TAA, two children of 300 frames)
+read `frame.wall` p50 14.33 and p95 16.02 ms with no repeating pattern. Invalid
+history snaps to target. Defaults lower exposure at 8 EV/s, raise it at 1 EV/s,
+and clamp the target to [-8,+24] EV so night scenes are reachable. The rate
+names describe displayed-image brightness. Tonemap consumes GPU state without
+synchronous CPU readback; delayed completed samples expose diagnostics. Manual
+exposure remains an explicit alternative. Histogram dispatches use complete
+16x16 threadgroups on both backends: all 256 lanes initialize and merge bins,
+while edge lanes omit out-of-extent source reads.
 
 Bloom prefilters scene-linear HDR with threshold/soft knee into a bounded
 half-resolution chain, downsamples, accumulates deepest-first, and combines into
-full-resolution HDR before exposure multiplication/tonemap. Separate graph
+full-resolution HDR before exposure multiplication/tonemap; the tiled pipeline
+folds the combine into its tonemap passes (ADR-087, decision 6). Separate graph
 resources preserve read/write dependencies. Shared arithmetic handles non-finite
 and extreme input and pins the knee/Karis behavior. Bloom can bypass independently.
 Combine intensity is multiplied once by configured maximum mip count divided
@@ -96,20 +99,20 @@ intermediate capture channels. Final output follows ADR-043.
 
 ## Consequences
 
-Effects have observable inputs and independent controls. Pixel equivalence,
-quality acceptance and GPU cost still require matched cases on each backend;
+Effects have observable inputs and independent controls. Quality acceptance
+and GPU cost still require matched cases on each backend that runs an effect;
 enabling effects is a workload change.
 
-The Release Metal corner fixture verifies that bent normals point away from a
-nearby wall and that diffuse/specular lighting follows the captured tuple
-(maximum HDR error 0.000960297 across 34 samples). Disabling GTAO preserves the
-previous fixture's HDR bytes. A mirror fixture exercises non-neutral SSR cone
-attenuation, with maximum HDR error 0.002351667 across 15 interior samples.
-A directional-SH volume fixture verifies scalar AO across 201,629 covered
-pixels (maximum HDR error 0.0002432). Bistro at 1280x720 completes with finite HDR output. Focused Metal API validation
-and production Vulkan SPIR-V validation pass; native Vulkan execution and
-bilateral output comparison remain unavailable. These checks establish local
-behavior, not a frame-time claim.
+On the Metal desktop implementation, removed on 2026-10-06, the Release corner
+fixture verified that bent normals point away from a nearby wall and that
+diffuse/specular lighting follows the captured tuple (maximum HDR error
+0.000960297 across 34 samples). Disabling GTAO preserved the previous fixture's
+HDR bytes. A mirror fixture exercised non-neutral SSR cone attenuation, with
+maximum HDR error 0.002351667 across 15 interior samples. A directional-SH
+volume fixture verified scalar AO across 201,629 covered pixels (maximum HDR
+error 0.0002432). Production Vulkan SPIR-V validation passes; native Vulkan
+GTAO output is not yet recorded. These checks establish local behavior, not a
+frame-time claim.
 
 ## Alternatives considered
 

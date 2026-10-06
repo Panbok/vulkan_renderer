@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-02
+updated: 2026-10-06
 authority: proposal
 ---
 # Local shadow architecture
@@ -8,7 +8,12 @@ authority: proposal
 Local-light shadows that never switch on or off for a visible static light,
 built in layers that later phases extend without replacing. The implemented
 system is [ADR-019](../adr/019-bounded-forward-spatial-lighting.md); this
-proposal changes what decides which lights are shadowed.
+proposal changes what decides which lights are shadowed. It concerns the
+desktop pipeline, which runs only on Vulkan since 2026-10-06
+([ADR-087](../adr/087-gpu-class-graphics-pipelines.md)). The tiled pipeline
+lights a baked scene's static lamps through lightmaps and shadows at most four
+dynamic lights (ADR-087, decision 11); it shares only the atlas and face cache
+of layer 2.
 
 ## Problem
 
@@ -20,7 +25,8 @@ budget while the camera moves and their shadows crossfade over 0.25 s.
 Indoors this matters most. Six lamps sit inside the café around the indoor
 probe at (-7.5, 2.2, 9.0), yet the ranges of 7 to 21 lamps contain each of the
 five owner-supplied indoor cameras (`bistro_light_leak_camera_1` to `_4` and
-`bistro_light_leak_owner_interior`); most are exterior lamps whose unshadowed
+`bistro_light_leak_owner_interior`, Metal desktop cases since removed; their
+cameras are in Git history); most are exterior lamps whose unshadowed
 light passes through walls. Within 15 m of those cameras are 40 to 51 lamps.
 
 ## Current baseline
@@ -30,7 +36,7 @@ shadow-casting light is resident in one shared multi-layer 4096² D16 atlas,
 with face sizes fixed by range; invalid and stale faces redraw by importance
 within the preset's face budget per frame, and a transmission pool of one layer
 per budgeted face serves the most important lights. Importance is measured
-visible contribution on both backends, distance until a sample arrives.
+visible contribution, distance until a sample arrives.
 Shadows fade out by camera distance. The `Shadow.LocalMask` pass writes
 per-pixel overlap slots that deferred lighting reads, with inline filtering
 past eight lights or for forward and transmission shading. Phase 1 still lacks
@@ -52,8 +58,9 @@ recorded with commands and reports in ADR-019:
 | `local_shadow_bistro_vulkan_walk` | High, distance / contribution ranking | unshadowed visible local light 43% / 26%; crossfading 1.4% / 2.0% mean, 10.4% / 8.6% p95 |
 | `local_shadow_bistro_vulkan_walk_ultra` | Ultra, distance / contribution ranking | unshadowed 23% / 13%; crossfading 0.6% / 0.9% mean, 8.0% / 3.9% p95 |
 
-Measured on the Mac host (Apple M1 Pro), Metal Release, before the mask slots
-and the larger budget ([lighting efficiency](lighting-efficiency.md)): local
+Measured on the Mac host (Apple M1 Pro) with the desktop pipeline's removed
+Metal implementation, Release, before the mask slots and the larger budget
+([lighting efficiency](lighting-efficiency.md)): local
 shadows cost about 4.9 ms of a 20.9 ms Bistro street-view frame at 1280x720,
 3.7 ms of it per-pixel filtering; two more full-filter lights added about
 3 ms of mask time.
@@ -65,7 +72,9 @@ frustum, and a budget must leave some of them unshadowed.
 ## Target hardware
 
 These are the architectures the system is built and measured for. Phases name
-which of them a capability may require.
+which of them a capability may require. Since 2026-10-06 the Apple rows run
+the tiled pipeline, which uses only the shared atlas and face cache; the other
+layers apply to the RDNA2 and Ampere rows.
 
 | Tier | Architecture | API | Relevant capability | Host in this environment |
 |---|---|---|---|---|
@@ -119,8 +128,8 @@ overlap through layer 3. Face size is fixed per light by range, so camera
 motion never redraws a face. The mask pass filters every in-range light; the
 nearest lights take the nine-tap filter and the rest the single tap, and a
 distance fade bounds how many lights a pixel filters. Contribution measurement
-is ported to Metal so both backends rank and fade by the same input. All three
-baseline architectures run the same shadow-map path; none requires ray tracing.
+ranks and fades the lights. Both desktop baseline architectures run the same
+shadow-map path; none requires ray tracing.
 
 **Phase 2: open world, baseline tier.** The cache holds lights within a
 residency radius of the camera instead of the whole scene. Fills are amortized
@@ -129,7 +138,7 @@ light's shadow is resident before it becomes visible. Residency follows world
 streaming cells.
 
 **Phase 3: high tier, indoor and open world.** Two producers become available
-behind the same contracts. On M4, RDNA3, RDNA4, Ada and Blackwell, ray-query
+behind the same contracts. On RDNA3, RDNA4, Ada and Blackwell, ray-query
 visibility replaces map redraws for moving lights and lights beyond the cache,
 writing layer 1 directly; Ada and Blackwell use opacity micromaps for
 alpha-tested casters. The cache may allocate partial faces at a resolution
@@ -148,30 +157,29 @@ needs its own decision.
 | Atlas, 128² cells, `atlas_rect`, face history and its validity rules | Layer 2 pool, allocation and cache keys |
 | `Shadow.LocalMask` overlap slots and inline fallback | Layer 1 contract |
 | Selection, knapsack, crossfade, incumbent preference | Layer 3 budget |
-| Measured contribution sample and its readback | Layer 4 input, ported to Metal |
+| Measured contribution sample and its readback | Layer 4 input |
 | Reused-face culling skip, 64-bit view masks, bounded transmission pool | Unchanged |
 
 ## Not chosen for the baseline tier
 
 - **Virtual shadow maps.** Page marking adds a per-pixel, per-light pass and
-  page rendering needs fine-grained culling. On the M1 Pro, finer culling cost
-  more than it saved ([meshlet cluster culling](meshlet-cluster-culling.md)),
-  and the M1 cost that dominates, per-pixel filtering, is unchanged by VSM.
-  Phase 3 can refine the cache toward it through the layer 2 seam.
-- **Ray-traced visibility.** M1 has no ray-tracing hardware, RDNA2 traverses in
-  shaders and has no opacity micromaps for Bistro's alpha-tested foliage, and
-  the baseline must run one path on all three architectures.
+  page rendering needs fine-grained culling. On the M1 Pro with the removed
+  Metal desktop implementation, finer culling cost more than it saved
+  ([meshlet cluster culling](meshlet-cluster-culling.md)), and the cost that
+  dominated, per-pixel filtering, is unchanged by VSM. Phase 3 can refine the
+  cache toward it through the layer 2 seam.
+- **Ray-traced visibility.** RDNA2 traverses in shaders and has no opacity
+  micromaps for Bistro's alpha-tested foliage, and the baseline must run one
+  path on both desktop architectures.
 
 ## Decisions
 
 - **Target.** 60 FPS (16.7 ms per frame) in the indoor cases with output at
-  1280x720 and the High preset: rendered at full resolution on RDNA2 and
-  Ampere, and at a 0.75 render scale (960x540, spatially upscaled) on the M1
-  family. The M1 Pro missed 60 FPS at full resolution with every measured
-  choice, 19.1 ms median with every lamp shadowed, and its 95th percentile
-  was 18.2 ms even without local shadows; at 0.75 it holds 12.6 ms median and 16.7 ms at the 95th percentile
-  (ADR-019). Everything else is measured against that target rather than fixed
-  in advance.
+  1280x720 and the High preset, rendered at full resolution on RDNA2 and
+  Ampere. The M1 family runs the tiled pipeline with its own budget (ADR-087,
+  decision 4); the earlier M1 Pro target of a 0.75 render scale applied to
+  the removed Metal desktop implementation (ADR-019). Everything else is
+  measured against that target rather than fixed in advance.
 - **Choices settled by measurement.** For each choice below, the
   highest-quality option that holds 60 FPS on every baseline host is taken;
   the recommendation applies when options tie:
@@ -185,24 +193,22 @@ needs its own decision.
      raster cost per touched face) or keep a separate dynamic layer sampled
      alongside the static one (a second lookup per tap). Recommendation:
      redraw.
-- **Order.** Phase 1 starts on the M1 Pro, the slowest baseline host, then
-  runs on the RX 6700 XT; Ampere gates wait for a host.
+- **Order.** Phase 1 runs on the RX 6700 XT; Ampere gates wait for a host.
 
 ## Evidence required
 
-Each gate runs on every baseline architecture with a host; an architecture
-without a host stays open. Bistro cases only. Correctness gates use the
+Each gate runs on every desktop baseline architecture with a host; an
+architecture without a host stays open. Bistro cases only. Correctness gates use the
 existing contribution-weighted metrics.
 
-1. **No static pop-in.** Vulkan and Metal copies of the five indoor cameras and
-   an indoor walk through them: with only static casters,
+1. **No static pop-in.** Vulkan copies of the five indoor cameras and an
+   indoor walk through them: with only static casters,
    `lighting.local_shadow.fading_ratio` is zero and
    `lighting.local_shadow.unshadowed_ratio` counts only lights beyond the fade
    distance. Final-color captures show no exterior lamp light inside the café.
 2. **60 FPS.** Frame time on the indoor walk with every in-range light
-   shadowed holds 16.7 ms at the target's render scale:
-   `local_shadow_cache_bistro_metal_indoor_walk` (0.75) on the M1 Pro and
-   `local_shadow_cache_bistro_vulkan_indoor_walk` (1.0) on the RX 6700 XT, with
+   shadowed holds 16.7 ms: `local_shadow_cache_bistro_vulkan_indoor_walk`
+   (1.0) on the RX 6700 XT, with
    `Shadow.LocalMask` and `Lighting.Deferred` recorded per option; matched
    Release reports per `vkr-performance`.
 3. **Memory.** Live cache bytes from `memory.gpu.*` and `rendergraph.*` rows
@@ -211,8 +217,8 @@ existing contribution-weighted metrics.
    frame-time spike while filling.
 5. **Moving casters.** A scoped Bistro case with moving casters inside the café
    measuring redraw cost per frame against the 60 FPS target.
-6. **Native validation.** One Debug Vulkan validation run and one Metal API
-   validation run of the indoor walk, each with zero messages.
+6. **Native validation.** One Debug Vulkan validation run of the indoor walk
+   with zero messages.
 
 Phase 2 adds a Bistro streaming case, and phase 3 a ray-query parity check
 against the shadow-map producer, when those phases start.

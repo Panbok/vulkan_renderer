@@ -83,5 +83,6 @@ smallest evidence of the changed behavior and `vkr-harness` for renderer cases.
 Use an existing CPU test when it is the cheapest independent falsifier. A new
 unit test needs a specific failure, independent oracle, and reason existing
 harness/build/test evidence is insufficient. Use `vkr-performance` for Release
-measurements and `vkr-shaders` for native Metal/Vulkan parity. Repair behavioral,
-visual, lifetime, or measured performance regressions before the next change.
+measurements and `vkr-shaders` for native shader evidence on each consuming
+backend. Repair behavioral, visual, lifetime, or measured performance
+regressions before the next change.

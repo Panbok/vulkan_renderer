@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-30
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -16,8 +16,9 @@ bindings are implemented. Both renderer backends now consume CPU palettes throug
 compute skinning, with per-instance output, conservative current bounds and
 submitted deformation history. A movable editor window has independent playback,
 a model preview, parameter-driven blend graph, conditional state transitions and
-sequence timeline. Managed import/rebuild publishes the mesh and bank together. Native checks are recorded below; shader parity
-remains UNALIGNED under [ADR-044](044-shader-cross-backend-contract.md).
+sequence timeline. Managed import/rebuild publishes the mesh and bank together.
+Both pipeline classes run compute skinning. Native checks are recorded below;
+native Vulkan output is not yet recorded.
 
 ## Context
 
@@ -197,8 +198,7 @@ the metadata; acquired slot age is never the completion proof. Material resolve
 uses current triangle barycentrics to reconstruct previous deformed positions.
 Main visibility, shadows, picking, deferred material reconstruction, transmission
 and ordinary blend all consume the stream. Rigid-only SSR/SSGI history reuse
-rejects deforming surfaces; native Metal additionally avoids choosing incompatible
-independent transform producers for its motion reconstruction.
+rejects deforming surfaces.
 
 ## Movable animation editor
 
@@ -312,28 +312,24 @@ they require no GPU. They verify that sampled poses leave authored transforms
 unchanged and that stale bindings release their resources. JSON number tests
 also reject malformed playback rates through the shared number reader.
 `VKR_BUILD_TARGET=vkr_runtime ./build.sh Release` builds the runtime. These checks
-do not establish visible deformation, native Metal/Vulkan animation parity, or
-performance.
+do not establish visible deformation, native animation output on either
+backend, or performance.
 
 Compute integration passes the Debug ASan/UBSan CPU suite, including selected-submit
 history identity, stale geometry rejection and non-finite preview input rejection.
-Both shader inventories compile through the Release wrappers. A local Bistro case
-with two independent player instances passes Metal Release snapshots of final
-color, normals and motion. The frame-30 motion payload is finite, with 66,456
+Both shader inventories compile through the Release wrappers. On the Metal
+desktop implementation, removed on 2026-10-06, a local Bistro case with two
+independent player instances passed Release snapshots of final color, normals
+and motion. The frame-30 motion payload is finite, with 66,456
 nonzero pixels and maximum component 0.00205803. This is exercised motion evidence,
 not a CPU-reference numeric deformation comparison.
 
-A separate eight-frame, single-process Bistro run with `MTL_DEBUG_LAYER=1`
-passes; stderr confirms Metal API Validation Enabled and contains no errors.
-Report SHA-256: `3f45c7afa84bda4945c1c81d6915f1367608ba81a4b2985b696cd03a49d5a075`.
 The floating editor was exercised with the same Bistro/player fixture: clip
 playback, two-clip sequence playback, graph-node dragging and preview orientation.
-A separate single-process editor run with Metal API validation exercised preview
-playback, seeking and closing; stderr contains only validation initialization.
 
-Native Vulkan execution is unavailable on this macOS host, so the animation
-shader contract remains **UNALIGNED**. No performance claim or baseline publication
-is made. The local task note retains fixture paths, exact commands and reports.
+Native Vulkan execution is not yet recorded, and the tiled pipeline has not
+rerun these snapshots. No performance claim or baseline publication is made.
+The local task note retains fixture paths, exact commands and reports.
 
 Blending checks pass `./build_test.sh` under Debug ASan/UBSan. Independent tests
 cover weighted TRS and quaternion hemispheres, interrupted crossfades, 1D/2D
@@ -342,14 +338,16 @@ and completion times, invalid-graph rollback, JSON parsing, and synchronous and
 asynchronous scene-controller ownership. The Bakery publication test also verifies
 that inline controllers survive mesh/bank rebuilds unchanged.
 
-The Release Bistro blending snapshot passes with an Idle-to-Blend2 state
-transition and an independent 2D blend space. All captured motion components are
-finite; frame 30 has 66,541 nonzero motion pixels. Report SHA-256:
-`eb9009cb10e3f5ab46690c04f3066cf670141012c91e53e448c8b4bf592d4487`.
-Both capture children have empty stderr. Live editor checks exercise Blend2
-wiring, a changed weight parameter, Apply to scene, state/transition controls,
-cycle-phase scrubbing, and a two-clip sequence with a visible 0.2-second overlap.
-These checks establish local integration; native Vulkan parity remains unavailable.
+On the Metal desktop implementation, the Release Bistro blending snapshot
+passed with an Idle-to-Blend2 state transition and an independent 2D blend
+space. All captured motion components are finite; frame 30 has 66,541 nonzero
+motion pixels. Report SHA-256:
+`eb9009cb10e3f5ab46690c04f3066cf670141012c91e53e448c8b4bf592d4487`. Both
+capture children have empty stderr. Live editor checks exercise Blend2 wiring,
+a changed weight parameter, Apply to scene, state/transition controls,
+cycle-phase scrubbing, and a two-clip sequence with a visible 0.2-second
+overlap. These checks establish local integration; native Vulkan output remains
+unrecorded.
 
 ## Revisit when
 

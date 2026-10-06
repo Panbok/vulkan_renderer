@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-12
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,10 +8,11 @@ authority: adr
 
 ## Status
 
-Accepted. Material import, graph storage, native lighting and offline transport
-are implemented. Metal material, rectangle, furnace, zero-color equivalence,
-editor and API-validation resize checks pass. Native Vulkan execution and
-same-revision pixel comparison are unavailable on the current Metal host.
+Accepted. Material import, graph storage, desktop-pipeline lighting on Vulkan
+and offline transport are implemented. The tiled pipeline does not draw sheen
+yet ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8). The output
+checks below ran on the Metal desktop implementation, removed on 2026-10-06;
+native Vulkan execution is not yet recorded.
 
 ## Context
 
@@ -120,11 +121,12 @@ Table generation and transport must change together when that domain changes.
 ## Verification and approximation limits
 
 Release app/editor builds and reflection of nine production SPIR-V modules
-pass. A 65×65 Metal rectangle capture, checked with
-`tools/checks/check_sheen_rectangle.py`, measures 0.0821533 against independent
-Charlie area quadrature of 0.0788004: 4.25% error. The reference uses the
-captured, quantized surface normal. Mixed rectangle/material, glass and SSR
-checks pass; the floor retains 682 SSR hits, including 33 red hits.
+pass. A 65×65 rectangle capture on the Metal desktop implementation, checked
+with `tools/checks/check_sheen_rectangle.py`, measured 0.0821533 against
+independent Charlie area quadrature of 0.0788004: 4.25% error. The reference
+uses the captured, quantized surface normal. Mixed rectangle/material, glass
+and SSR checks passed there; the floor retained 682 SSR hits, including 33 red
+hits.
 
 For 100 checked roughness/view/rectangle combinations, the cooked fit has maximum
 absolute error 0.002359 at unit emitted radiance; maximum relative error where
@@ -141,7 +143,7 @@ and support checks. The normalized mixture has no measured energy excess over
 its allocated directional albedo. Directional-energy and allocation-reserve data
 remain byte-identical through rectangle fitting, preserving the earlier furnace,
 BSDF and glass/photon-bake evidence. Final cooker regeneration reports unchanged
-output. Native Vulkan remains an evidence gap in [ADR-044](044-shader-cross-backend-contract.md).
+output. Native Vulkan output remains unrecorded.
 
 ## Alternatives considered
 

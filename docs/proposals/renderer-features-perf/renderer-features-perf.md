@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-12
+updated: 2026-10-06
 authority: proposal
 ---
 
@@ -17,8 +17,11 @@ Current contracts and evidence limits live in the owning ADRs linked from
 [implementation evidence](../../../assets/verification/renderer-features/renderer-features-perf.txt)
 records exact checks, local alternative evaluations and unavailable gates.
 
-Remaining acceptance work is native bilateral comparison, RX 6700 XT execution
-of this revision, and authoritative base-M1 timing/temporal quality evidence.
+Remaining acceptance work is RX 6700 XT execution of this revision and
+authoritative timing and temporal-quality evidence on Vulkan. These features
+belong to the desktop pipeline, which runs only on Vulkan since 2026-10-06
+([ADR-087](../../adr/087-gpu-class-graphics-pipelines.md)); the M1 Pro
+measurements below describe its removed Metal implementation.
 The high SSR and analytic post-transform defaults remain in force. The coarser
 SSR tier changes fallback quality without reducing full-resolution histories.
 LUT-based transforms, reflective-tile dispatch, variable ray density, shared SSR/SSGI hierarchy routing,

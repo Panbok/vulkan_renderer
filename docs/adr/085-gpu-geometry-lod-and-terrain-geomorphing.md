@@ -9,10 +9,10 @@ authority: adr
 ## Status
 
 Accepted (partial). The LOD table, per-view selection, level encoding and
-terrain geomorphing are implemented in both backends, and cooked static meshes
-carry levels (2026-10-06). Native Vulkan runs terrain levels (2026-10-04);
-cooked levels have no native Vulkan run yet, and a bilateral comparison is
-pending.
+terrain geomorphing are implemented in both backends and used by both
+pipeline classes, and cooked static meshes carry levels (2026-10-06). Native
+Vulkan runs terrain levels (2026-10-04); cooked levels have no native Vulkan
+run yet.
 
 ## Context
 
@@ -194,8 +194,10 @@ scene's triangles.
   macOS Release).
 - Cooked levels, Release, M1 Pro (2026-10-06): lightmapped Bistro cooked
   without and with levels, alternated on one build, two runs each. Captures of
-  `tiled_bistro_baked_capture` and its desktop counterpart differ in 3,560 and
-  3,794 pixels by more than 2 of 255, as sub-pixel edge shifts. Pass timings
+  `tiled_bistro_baked_capture` and its desktop counterpart on the Metal
+  desktop implementation, `tiled_bistro_baked_capture_desktop`, a Metal
+  desktop case since removed, differ in 3,560 and 3,794 pixels by more than 2
+  of 255, as sub-pixel edge shifts. Pass timings
   (`local-windowed-gpu-single`, median / p95):
 
   | Case and pass | Without levels | With levels |
@@ -203,13 +205,13 @@ scene's triangles.
   | `tiled_bistro_baked_native`, `Tiled.Opaque` | 8.74 / 12.52, 8.90 / 12.63 ms | 7.57 / 11.63, 7.56 / 11.60 ms |
   | same, `Shadow.Cascade.0` / `.2` / `.3` per refresh | 1.32, 2.15, 1.63 ms | 1.12, 1.47, 0.87 ms |
   | `tiled_bistro_baked_dynamic_native`, `Tiled.Opaque` | 10.60 / 17.95, 10.75 / 17.83 ms | 9.36 / 16.78, 9.50 / 16.75 ms |
-  | `tiled_bistro_baked_native_desktop`, `VBuffer.Opaque` | 1.87 / 2.37, 1.89 / 2.95 ms | 1.44 / 1.77, 1.46 / 1.88 ms |
+  | `tiled_bistro_baked_native_desktop` (Metal desktop case since removed), `VBuffer.Opaque` | 1.87 / 2.37, 1.89 / 2.95 ms | 1.44 / 1.77, 1.46 / 1.88 ms |
 
   `gpu.submission` (`local-windowed-gpu-submission-single`): the tiled native
   orbit 12.56 / 16.66 and 12.61 / 16.84 ms without levels, 11.33 / 15.52 and
   11.29 / 15.49 ms with them; with its dynamic lights 14.44 / 21.87 and
-  14.38 / 21.85 ms, then 13.23 / 20.81 and 13.27 / 20.70 ms; the desktop
-  orbit 54.61 / 69.20 and 54.63 / 68.96 ms, then 54.27 / 68.45 and
+  14.38 / 21.85 ms, then 13.23 / 20.81 and 13.27 / 20.70 ms; the Metal
+  desktop orbit 54.61 / 69.20 and 54.63 / 68.96 ms, then 54.27 / 68.45 and
   54.07 / 68.38 ms. Reports, without then with levels: tiled native
   `sha256:1981b30e239480dda4f3f0e3e7750e607c25cbd56783426f8640ef446f725f2d`,
   `sha256:81e7f27e97d19c3ab79b37b9049b3a51d4ef5323e9ac5ac3124cf621a4cbcdfa`,
@@ -243,7 +245,7 @@ scene's triangles.
   `sha256:63be06f798329ada6844b22522f088b99b2489bc4db672a70f25f3468d22d0f2`.
   Weight 0.5 for the attributes, without pruning, removed only 0.77 ms
   median from `Tiled.Opaque`; pruning alone moved cascade 3 from 1.20 to
-  0.91 ms. Both capture cases pass under Metal API validation with the
+  0.91 ms. The tiled capture case passes under Metal API validation with the
   levels published.
 - Border unlocking, Release, M1 Pro (2026-10-06): `bistro-lights.gltf` places
   551 single-primitive meshes on 5,982 nodes. Of its 404,551 open-border
@@ -268,5 +270,4 @@ scene's triangles.
   `sha256:fcf79f6e8841ea2a9030225613b42c922fab9ea9164f1f515211675d90b5a08e`,
   `sha256:7ffa586e183ea765a446a691edf60b6933d35a6d6055cb9446a3d022b37ecb2d`,
   `sha256:7429d8809e20a66ef8c68f999daaad518f8600860b12dfa27cd68a3ca2ced1eb`.
-- A Metal/Vulkan comparison and native Vulkan execution of cooked levels are
-  unverified.
+- Native Vulkan execution of cooked levels is unverified.

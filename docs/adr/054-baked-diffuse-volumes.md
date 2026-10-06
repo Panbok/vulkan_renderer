@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-05
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -177,11 +177,10 @@ room-containment proof.
 
 ## Evidence and remaining checks
 
-The native Metal opaque and `BLEND` numeric case reports maximum HDR error
-`0.000330536` and passes the baked colored-room fixture. Its report digest is
-`cceec0b4c93c8e27f51620e8958e6bbbdd814e15b463e52a28a34b0e8758cd2d`; the API
-validation report digest is
-`bfa61103bf2deee59dc6338a3210047db4f216e1cbac075e9a1d821311d38733`.
+On the Metal desktop implementation, removed on 2026-10-06, the native opaque
+and `BLEND` numeric case reported maximum HDR error `0.000330536` and passed the
+baked colored-room fixture. Its report digest is
+`cceec0b4c93c8e27f51620e8958e6bbbdd814e15b463e52a28a34b0e8758cd2d`.
 
 The CPU Lambert furnace evaluates 27 valid probes on six axes. With emission
 1 and albedo 0.5, depth 1 gives 1 and depth 3 gives 1.75; maximum errors are
@@ -196,8 +195,8 @@ photons produce 2,178 caustic deposits, and all 100 valid probes yield finite SH
 The `.vkdv` SHA-256 is
 `583fa2113db932af81095936d492ae7289b1ae1588786a3f7fad78a90da4615f`.
 
-On Metal, an all-invalid volume and a scene without a volume produce byte-identical
-HDR payloads (SHA-256
+On the same implementation, an all-invalid volume and a scene without a volume
+produced byte-identical HDR payloads (SHA-256
 `d130dbb29986f49ef80044a67dbdad3f0679a82c64531b7f360e0dd1754018f7`).
 `bake diffuse --check` detects stale source files, corrupt output, and source/output aliasing.
 
@@ -210,8 +209,9 @@ at zero and manual exposure, the closed room shows daylight bounce at noon and
 is black at midnight. `test_light_layer_sun_weights` and
 `test_diffuse_volume_layers_round_trip` cover the weights and the codec.
 
-Native Vulkan execution is unavailable; Metal evidence and compiled reflection
-do not establish Vulkan parity. These checks establish the implemented transport,
+Neither native Vulkan nor the tiled pipeline has run the numeric case;
+evidence from the removed Metal desktop implementation and compiled reflection
+do not establish their output. These checks establish the implemented transport,
 asset and runtime paths; they do not establish converged lighting quality or a
 Bistro bake-time target.
 

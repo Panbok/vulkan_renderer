@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -70,9 +70,9 @@ error against 262144 samples is 0.000302827. Independent solid-angle quadrature
 agrees within 0.000081038. Combined unit-albedo furnace energy reaches at most
 1.000330261, including lookup and integration error.
 
-A native Metal Release furnace with unit environment radiance covers six
-roughnesses, dielectric and metal materials, and opaque, blended and transmitting
-paths. All 36 center samples remain within 0.000489 of unit scene-linear RGB.
-Metal API validation passes. Shader validation stopped in MetalTools while decoding
-a GPU report, leaving the underlying diagnostic unresolved. Windows/Vulkan native
-execution remains unavailable; compiled SPIR-V does not establish bilateral parity.
+On the Metal desktop implementation, removed on 2026-10-06, a native Release
+furnace with unit environment radiance covered six roughnesses, dielectric and
+metal materials, and opaque, blended and transmitting paths. All 36 center
+samples stayed within 0.000489 of unit scene-linear RGB. Neither the tiled
+pipeline nor native Vulkan has run the furnace; compiled SPIR-V does not
+establish Vulkan output.

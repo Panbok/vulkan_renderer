@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,13 +8,14 @@ authority: adr
 
 ## Status
 
-Accepted.
+Accepted. FSR belongs to the desktop pipeline, which Vulkan implements; the
+tiled pipeline has no temporal upscaler
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7).
 
 ## Context
 
 Vulkan previously had only same-resolution portable TAA and rejected non-unit
-spatial scale. MetalFX is a Metal-only scaler, so it cannot provide a Vulkan
-upscaling path while retaining native output and UI resolution.
+spatial scale.
 
 ## Decision
 
@@ -23,8 +24,7 @@ Add `fsr31` as a Vulkan-only temporal upscaler. It accepts a render scale in
 context is sized to the Scene output, so `vkr_renderer_set_render_scale` changes
 the scale between frames without recreating it; the change resets temporal
 history like any extent change. It has no frame generation or
-dynamic-resolution control. Metal retains MetalFX; inactive
-FSR graph declarations do not activate a Metal path.
+dynamic-resolution control.
 
 FSR uses the portable jitter convention and a scale-dependent Halton phase count.
 The preparation pass receives raw HDR, temporal validity, opaque depth, and
@@ -51,8 +51,9 @@ stabilization use the same producer checks and readiness rule. The existing
 successful-submit publication owns the counter; the SDK continues dispatching.
 Native Vulkan verification of this settling correction is pending.
 [The shared settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
-records the CPU boundary/reset oracle, host syntax and native Metal TAA result;
-it does not validate SDK-enabled FSR execution.
+records the CPU boundary/reset oracle, host syntax and a TAA result on the Metal
+desktop implementation, removed on 2026-10-06; it does not validate SDK-enabled
+FSR execution.
 
 The user-approved static convergence pass follows the SDK dispatch. It averages
 128 stationary FSR output samples at each canonical output pixel, then copies
@@ -95,19 +96,19 @@ SDK RCAS remains disabled; the shared control also supports TAA and native outpu
 
 ## Consequences
 
-The Vulkan graph has a private native upscaler exception while portable TAA
-semantics remain unchanged. FSR has no Metal parity obligation. Windows Release
-and Debug wrappers compile the bridge and production shaders. Bistro static,
-camera-motion, Native AA and portable-TAA reference snapshots pass at 800x600;
-the fixed two-thirds cases prove 533x400 internal rendering. The motion case also
-checks automatic exposure and an exposure reset after reconstruction.
+The desktop graph has a private native upscaler exception while portable TAA
+semantics remain unchanged. Windows Release and Debug wrappers compile the
+bridge and production shaders. Bistro static, camera-motion, Native AA and
+portable-TAA reference snapshots pass at 800x600; the fixed two-thirds cases
+prove 533x400 internal rendering. The motion case also checks automatic
+exposure and an exposure reset after reconstruction.
 
 Native Vulkan static and editor-resize diagnostics pass with no validation
 errors or warnings on an RX 6700 XT, driver 26.6.3. The editor case observes
 400x300 and restored 320x240 window extents; SDK contexts follow the scene panes
 122x79, 202x139 and 122x79. Captures were inspected without promoting a baseline.
 These are execution and lifecycle checks, with no performance or comprehensive
-temporal-quality claim. Native Metal execution was unavailable.
+temporal-quality claim.
 
 The static mask correction was checked at 533x400 to 800x600 after 160 warmup
 frames. Across four independently replayed settled checkpoints, pixels spanning
@@ -138,8 +139,7 @@ The corresponding Debug camera-change profile and editor resize round trip pass
 Khronos synchronization validation with no API diagnostics and empty stderr.
 The resize run recreates outputs at 122x79, 202x139 and 122x79. Both runs log a
 startup geometry-publication warning; the measured reset case has zero omitted
-candidates. Metal execution remains unavailable; this mode retains its authorized
-Vulkan-only exception.
+candidates.
 
 ## Motion-quality limitation
 
@@ -222,13 +222,13 @@ match the captured correction. The Debug static-reset profile passes all seven
 assertions under Khronos synchronization validation with no API warnings or
 errors (report `c4d72cc27ef394dc7a70f50b90264cec30bcf477a8e1e3515065a57cf13d593f`).
 Its known bootstrap geometry-publication warning remains outside measured frames;
-measured omissions are zero. Native Metal checks remain unavailable.
+measured omissions are zero.
 
 ## Alternatives considered
 
-Using MetalFX on Vulkan is unavailable. Folding SDK descriptors into VKR's
-descriptor-buffer model would expose SDK ownership and layout policy. Frame
-generation and dynamic resolution are outside this accepted slice.
+Folding SDK descriptors into VKR's descriptor-buffer model would expose SDK
+ownership and layout policy. Frame generation and dynamic resolution are
+outside this accepted slice.
 
 ## Revisit when
 

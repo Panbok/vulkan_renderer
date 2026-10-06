@@ -287,8 +287,9 @@ draw's rectangle and its forward shader sums the active layers.
 - The texels store irradiance, so a surface's diffuse response is its
   diffuse albedo over π times the blended texel.
 - On the toolkit test level (23 brushes, ten layers on one 1024 page), the
-  tiled pipeline's view of a room matches the desktop pipeline's in exposure
-  and tone, with the bake's sampling noise
+  tiled pipeline's view of a room matches the desktop pipeline's, run on the
+  Metal desktop implementation since removed, in exposure and tone, with the
+  bake's sampling noise
   (`sha256:91f74e06739cb7bcc50bb0a2641235d70437ab2a4d90739b59ab8def310ab80c`
   tiled, `sha256:c55355971b2cb89ba6181ef19285052ae42b1e8280a5170cfe0b051e2b9e8970`
   desktop, 2026-10-06, temporary local cases on a copy of its effective
@@ -416,8 +417,9 @@ texels per meter with deferred textures:
   (`tiled_bistro_baked_capture`); its frame cost is in
   [ADR-087](087-gpu-class-graphics-pipelines.md#baked-bistro-measurement).
   At 16 samples the set shows bright single-texel speckles on walls and
-  pavement; the desktop capture of the same view lights the lamps
-  analytically and shows none. The same bake at 64 samples, after the gather
+  pavement; the desktop capture of the same view, on the Metal desktop
+  implementation since removed, lights the lamps analytically and shows none.
+  The same bake at 64 samples, after the gather
   split its samples into runs of eight (`--samples 64`: 1,819.4 s, 1,643.1 s
   of it GPU time and 37.7 s encoding, 6.7 GB peak,
   `sha256:ae552816713073148735a6ce8d6cc2b92a21650d48ecc4dbd2927293f9938056`),

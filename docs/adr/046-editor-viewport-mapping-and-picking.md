@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-26
+updated: 2026-10-06
 authority: adr
 ---
 # ADR-046: One editor viewport mapping for scene presentation and interaction
@@ -25,8 +25,10 @@ composites Scene output into the panel rectangle, and draws editor UI afterward
 at the native drawable extent.
 
 Picking requests use mapped scene coordinates. Picking IDs distinguish scene
-entities and gizmo handles. Scene-only mode uses the complete drawable mapping
-while preserving the dock tree.
+entities and gizmo handles. The desktop pipeline resolves a pick from its
+visibility buffer; the tiled pipeline replays the opaque draws into the picking
+target ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 9). Scene-only
+mode uses the complete drawable mapping while preserving the dock tree.
 
 The application borrows up to sixteen `VkrEditorOverlayDraw` records through
 packet submission. The gizmo system owns their published geometry references;
@@ -155,9 +157,10 @@ The user approved the extra scene-sized image and compositing pass so Render Sto
 preserves the visible scene while the editor and simulation remain independent.
 
 A Scene out-of-memory failure reduces Application-owned output scale by 0.75 and
-retries on a later frame, down to a 0.25 floor. Metal's existing dynamic-resolution
-ratio and MetalFX operate within this reduced Scene output; other paths multiply
-their existing viewport scale. The UI stays at window resolution. The reduced
+retries on a later frame, down to a 0.25 floor. Metal's dynamic-resolution
+ratio, the tiled pipeline's adaptive quality (ADR-087, decision 12), operates
+within this reduced Scene output; other paths multiply their existing viewport
+scale. The UI stays at window resolution. The reduced
 scale persists across Stop/Resume and asynchronous Scene activation; unloading
 resets it. The viewport reports the last successfully submitted render/output
 dimensions and the current fallback percentage without covering toolbar controls.
@@ -190,15 +193,15 @@ Unload removes waiting records with their materials.
 
 Standalone Metal applies this scale to its full physical target extent. Its
 fullscreen tonemap stretches the reduced Scene output to the drawable, then UI
-renders at native resolution. Both MetalFX and fixed-scale spatial modes honor
-the override; temporal preparation and picking use the resulting render extent.
-Application owns the output scale and relief generation for both presentations,
-and configures material recovery before asset publication. The runtime no longer
-restricts retry admission to the editor. If the floor cannot relieve an app OOM,
-the app exits through normal shutdown rather than repeating failed allocations;
-the paneled editor keeps its existing Render Stop behavior. Standalone Vulkan
-has no Scene-output scaling capability and retains its existing unscaled texture
-failure behavior. GPU completion and the 4 GiB default managed cap are unchanged.
+renders at native resolution. The spatial upscale honors the override, and
+picking uses the resulting render extent. Application owns the output scale and
+relief generation for both presentations, and configures material recovery
+before asset publication. The runtime no longer restricts retry admission to
+the editor. If the floor cannot relieve an app OOM, the app exits through
+normal shutdown rather than repeating failed allocations; the paneled editor
+keeps its existing Render Stop behavior. Standalone Vulkan has no Scene-output
+scaling capability and retains its existing unscaled texture failure behavior.
+GPU completion and the 4 GiB default managed cap are unchanged.
 
 On a live Scene image-allocation OOM, Metal retries image realization once at
 the same requested extent. Before that retry it waits for all submitted work,
@@ -259,29 +262,23 @@ edit. Escape explicitly restores the pre-drag transform.
 The orthographic views and inspection modes pass the Release editor build with
 both production shader compilers and the CPU suite, including orthographic
 resize/projection, wide-projection inversion and harness orthographic camera
-tests. On Apple M1 Pro with Metal, the `smoke.bistro.editor.views` Release
-snapshot passes. The Release Bistro editor was driven through the view bar:
-Top, Left, Perspective recall, Wireframe and grid scaling rendered with numbered
-and lettered labels. Live Perspective grid labels, native Vulkan execution and
-same-revision bilateral comparisons remain unverified; compilation does not
-establish them. No performance result is claimed.
+tests. On the Metal desktop implementation, removed on 2026-10-06 (Apple M1
+Pro), the `smoke.bistro.editor.views` Release snapshot, then run on the desktop
+pipeline, passed. The Release Bistro editor was driven through the view bar:
+Top, Left, Perspective recall, Wireframe and grid scaling rendered with
+numbered and lettered labels. Live Perspective grid labels and native Vulkan
+execution remain unverified; compilation does not establish them. No
+performance result is claimed.
 
-The standalone-app extension passes normal Release Bistro checks on Apple M1 Pro
-with a 3024×1898 physical target and the unchanged 4 GiB cap. The MetalFX case
-loads all 517 texture assignments with zero pending, failed, demanded-missing,
-or evicted assignments after reducing Scene output to 75%; dynamic resolution
-then renders at 1134×712. The fixed spatial case renders at 1701×1068 after bounded
-relief, captures picking IDs at that extent, and presents final color at
-3024×1898. Its report SHA-256 is
+The standalone-app extension passed normal Release Bistro checks on the Metal
+desktop implementation, removed on 2026-10-06 (Apple M1 Pro, 3024×1898
+physical target, unchanged 4 GiB cap). The fixed spatial case,
+`app_bistro_texture_memory_spatial`, a Metal desktop case since removed,
+rendered at 1701×1068 after bounded relief, captured picking IDs at that
+extent, and presented final color at 3024×1898. Its report SHA-256 is
 `c70b83a05b6ff4f4424547c759ce42e19591c15be351a2f267e371d0f2521ab4`.
-
-Reproduction commands use `./build_release/tools/vkr_harness snapshot --case`
-with `tools/cases/local/app_bistro_texture_memory.case.json` or
-`tools/cases/local/app_bistro_texture_memory_spatial.case.json`, followed by
-`--profile tools/profiles/local-metal-windowed-validation-serial.json`.
-Validation variables are unset; the profile name does not enable native validation.
-The existing `editor_memory_same_resolution_retry` snapshot passes Stop, resize,
-Resume and both 1528×1074 extent assertions (report SHA-256
+The `editor_memory_same_resolution_retry` snapshot, also removed, passed Stop,
+resize, Resume and both 1528×1074 extent assertions (report SHA-256
 `d19ebc4b3cef6d04963b8404e64a31868d29621355ac37d5360b7acb60350377`).
 These observations establish bounded startup recovery and composition, not a
 performance result, long-session memory stability, or native Vulkan acceptance.
@@ -345,23 +342,24 @@ payload, 2,684,354,560 bytes of dedicated texture-heap capacity, and
 asset set, transfer storage, and retained heap capacity are separate quantities.
 
 Demand-sized graph draw tables, post-publication budget sampling and one
-completion-gated image-allocation retry now avoid that memory-resolution fallback
-in the tested 1528×1074 editor configuration. A bounded 115-second normal Release
-run completes two Bistro loads with 517 resident assignments, zero missing,
-pending, failed or evicted textures, and six successful same-resolution allocation
-recoveries. Scene output stays 1528×1074; MetalFX still varies internal resolution
-for its existing frame-rate target. Stop retains the visible image, and unload
-returns to 10 live texture allocations / 12.368 MiB.
-A separate full-target spatial run disables docking and dynamic resolution to
-verify actual 1528×1074 internal rendering, all texture assignments resident and
-zero draw overflow under the same 4 GiB cap. This distinction matters: the nominal
-renderer size metric alone does not prove the packet viewport size in spatial
-paneled mode. A focused analytic resize case passes Metal API validation;
-smaller diagnostic caps exercise the single retry and bounded failure without
-validation errors. These are bounded memory/lifetime checks, not long-session or
-native Vulkan proof. The full-target fixed-scale Bistro case exercised 1528×1074
-rendering with 517 resident assignments and no missing, failed, or evicted
-assignments; it exited 0 with report SHA-256
+completion-gated image-allocation retry now avoid that memory-resolution
+fallback in the tested 1528×1074 editor configuration. A bounded 115-second
+normal Release run completes two Bistro loads with 517 resident assignments,
+zero missing, pending, failed or evicted textures, and six successful
+same-resolution allocation recoveries. Scene output stayed 1528×1074; the
+MetalFX upscaler, since removed, still varied internal resolution for its
+frame-rate target. Stop retains the visible image, and unload returns to 10
+live texture allocations / 12.368 MiB. A separate full-target spatial run
+disables docking and dynamic resolution to verify actual 1528×1074 internal
+rendering, all texture assignments resident and zero draw overflow under the
+same 4 GiB cap. This distinction matters: the nominal renderer size metric
+alone does not prove the packet viewport size in spatial paneled mode. A
+focused analytic resize case passes Metal API validation; smaller diagnostic
+caps exercise the single retry and bounded failure without validation errors.
+These are bounded memory/lifetime checks, not long-session or native Vulkan
+proof. The full-target fixed-scale Bistro case exercised 1528×1074 rendering
+with 517 resident assignments and no missing, failed, or evicted assignments;
+it exited 0 with report SHA-256
 `8cc36e5e8310b185bf84ac7c983f7329e14af50bcdd74cad0762726f56ecfd9a`.
 
 A subsequent normal Release tiny-scene UI run passed Console filtering, Scene
@@ -382,9 +380,8 @@ cause is asserted here.
 
 The first-stopped and Bistro frozen-resize/resume cases pass serial Metal API
 validation. A five-frame Release Bistro orbit captures byte-identical last-live
-and stopped images; the resumed capture changes with the camera. A bounded
-MetalFX/dynamic-resolution resize/resume case also passes. Native Vulkan execution
-and bilateral image comparison remain unavailable on this host.
+and stopped images; the resumed capture changes with the camera. Native Vulkan
+execution of these cases is not recorded.
 
 Two interactive runs produced the same macOS GPU firmware data abort
 (`agx_background`, 2026-09-06). The second used Debug with Metal API and shader
@@ -447,16 +444,16 @@ establish the cause of the earlier panics.
 Visible handles now pass native Metal interaction checks on the small node
 fixture: translation, rotation, uniform scale, undo/redo, independent child
 movement, and no-displacement clicks preserving redo history. A serial API
-validation run passes translation, rotation, scale and undo without reported API
-errors; a separate normal Release run supplies screenshots and the remaining
-interaction checks. The projection oracle checks 150 displayed pixels across
-camera distances, drawable extents and internal scales. Production Slang entries
-compile, but native Vulkan execution and bilateral pixel comparison remain
-unavailable. Mid-drag Escape and nonuniform-parent rotation were reviewed in
-source but were not exercised by the native UI checks. The final native Metal
-API editor run exited 0 without reported API errors and completed 28,070/28,070
-submissions; the normal Release interaction run also exited 0 after verifying
-translation, rotation, uniform-scale undo, and redo.
+validation run passes translation, rotation, scale and undo without reported
+API errors; a separate normal Release run supplies screenshots and the
+remaining interaction checks. The projection oracle checks 150 displayed pixels
+across camera distances, drawable extents and internal scales. Production Slang
+entries compile, but native Vulkan execution remains unavailable. Mid-drag
+Escape and nonuniform-parent rotation were reviewed in source but were not
+exercised by the native UI checks. The final native Metal API editor run exited
+0 without reported API errors and completed 28,070/28,070 submissions; the
+normal Release interaction run also exited 0 after verifying translation,
+rotation, uniform-scale undo, and redo.
 
 ## Alternatives considered
 

@@ -864,20 +864,22 @@ factors and every map. Layers 1 to 3 supply their base color, metallic,
 roughness, normal scale and occlusion strength, and their base color, normal
 and ORM maps into nine texture slots of their own
 (`VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR` onward), which stream like any
-material's. An unnamed layer 0 is the dev grid and an unnamed later layer
-plain white; `terrain.create` names the dev grid, floor, orange and blue
-materials by default. Each backend publishes the extra layers in a cold
-terrain segment of its material table, beside the transmission segment, and
-flags the common row. The visibility-buffer G-buffer resolve
-([gpu_draws.metal](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal),
-[deferred.slang](../../renderer/src/shaders/vulkan/slang/world/deferred.slang))
-reads the interpolated vertex color as weights normalized to sum to one, samples
-each layer the weights reach with that layer's base color sampler, and blends
-base color, metallic, roughness, occlusion and tangent-space normals in
+material's. An unnamed layer 0 is the dev grid and an unnamed later layer plain
+white; `terrain.create` names the dev grid, floor, orange and blue materials by
+default. Each backend publishes the extra layers in a cold terrain segment of
+its material table, beside the transmission segment, and flags the common row.
+The desktop G-buffer resolve
+([deferred.slang](../../renderer/src/shaders/vulkan/slang/world/deferred.slang))
+and the tiled forward shader
+([tiled.metal](../../renderer/src/shaders/metal/msl/world/tiled.metal),
+[ADR-087](087-gpu-class-graphics-pipelines.md) decision 8) read the
+interpolated vertex color as weights normalized to sum to one, sample each
+layer the weights reach with that layer's base color sampler, and blend base
+color, metallic, roughness, occlusion and tangent-space normals in
 [terrain_kernel.slangh](../../renderer/src/shaders/shared/terrain_kernel.slangh).
-Emission and the other extensions come from layer 0. Forward and
-transmission shading never see a terrain material, because publication
-rejects one that is not opaque.
+Emission and the other extensions come from layer 0. Desktop forward and
+transmission shading never see a terrain material, because publication rejects
+one that is not opaque.
 
 The accepted design carried weights in a weight texture. Vertex colors carry
 them instead: a vertex is a sample, so the resolution is the same, painting
@@ -1107,14 +1109,13 @@ material then).
   each later layer's factors, a white unnamed layer, each map streaming
   into its own layer slot, and a missing layer file failing (2026-10-04,
   macOS Debug).
-- Headless macOS Release on Bistro (2026-10-04): a 256 m terrain painted
-  with layers 2, 3 and 4 shows the floor, orange and blue dev colors where
-  painted in lit and unlit captures. The same run under Metal API validation
-  reports no diagnostics. The four Vulkan G-buffer resolve modules and six
+- Headless macOS Release on Bistro on the Metal desktop implementation,
+  removed on 2026-10-06 (2026-10-04): a 256 m terrain painted with layers 2,
+  3 and 4 showed the floor, orange and blue dev colors where painted in lit
+  and unlit captures. The four Vulkan G-buffer resolve modules and six
   transmission modules pass `spirv-val --target-env vulkan1.4
-  --scalar-block-layout`. Metal's startup reflection accepted its terrain
-  row; the Vulkan reflection check and native Vulkan execution are
-  unverified.
+  --scalar-block-layout`; the Vulkan reflection check and native Vulkan
+  execution are unverified.
 - `./build_test.sh` suite `spline` covers a straight curve's exact length,
   spacing and last sample, and a closed curve through eight points of a
   circle: it passes through each point, stays within 1.5% of the radius

@@ -7,11 +7,14 @@ description: Specify and verify Metal/Vulkan shader semantics, efficiency, bindi
 
 ## Locate the contract
 
-Read the state definitions and affected rows in
+Read the evidence rules and affected rows in
 `docs/adr/044-shader-cross-backend-contract.md`. Use its source inventory to
-find the shared helper, Metal entry/root, Vulkan entry/root, host lowering, and
-reflection. Inspect all affected counterparts before editing. A shared source
-file alone does not prove both production builds execute it.
+find the shared helper, each native entry and root that consumes it, host
+lowering, and reflection. Metal runs the tiled pipeline and Vulkan the desktop
+pipeline (ADR-087): a desktop-only domain has only Vulkan entries, a
+tiled-only domain only Metal entries, and a shared kernel can have consumers in
+both. Inspect every affected consumer before editing. A shared source file
+alone does not prove that a production build executes it.
 
 Keep portable math shared when Slang and MSL support the same semantics. Keep
 address spaces, bindings, resource references, and native sampling operations
@@ -20,10 +23,11 @@ any affected CPU oracle together when the ABI or algorithm changes.
 
 ## Compatibility and efficiency
 
-Both backends must implement the portable feature's semantic contract, including
-units, coordinate conventions, ranges, edge behavior, and output meaning. Native
-root sizes may differ: Metal resource references and Vulkan bindless indices
-have different representations. Pin each native layout independently.
+Every consumer of a shared kernel or host record implements its semantic
+contract, including units, coordinate conventions, ranges, edge behavior, and
+output meaning. Native root sizes may differ: Metal resource references and
+Vulkan bindless indices have different representations. Pin each native layout
+independently.
 
 Keep wire-ABI fields packed when the validated layout requires it, but expose
 their algorithmic meaning in pass-local names or a narrow internal record. Name
@@ -52,12 +56,13 @@ threads from rounded dispatches. Remove a guard only after data or dispatch
 shape proves its accesses valid. Do not replace divergent branches with more
 ALU or memory traffic without measuring the affected GPU path.
 
-Backend-specific intrinsics, dispatch shapes, or algorithms need a concrete
-capability or measured performance reason and must preserve the portable
+Backend-specific intrinsics, dispatch shapes, or algorithms in a shared kernel
+need a concrete capability or measured performance reason and must preserve its
 contract. A change to supported behavior, quality, or compatibility is an
 architecture decision: ask the user immediately with the tradeoff and
-recommendation. ADR-039/040 already authorize Metal scene scaling and MetalFX;
-validate those modes separately from bilateral portable TAA parity.
+recommendation. ADR-087 already authorizes differences between the classes in
+lighting, shadows, anti-aliasing, screen-space effects and quality presets
+within its art-level contract; ADR-039 authorizes Metal scene scaling.
 
 ## Verification loop
 
@@ -70,31 +75,37 @@ smallest non-degenerate case that exposes the changed output or invariant:
 1. Compile affected production shader paths and check host layouts plus compiled
    reflection where ABI or bindings changed.
 2. Run the focused native diagnostic on each changed backend. Metal diagnostics
-   run serially in the minimal case; follow the validation skill's MetalFX limits.
-3. Run the same focused Release case on Metal and Vulkan with validation unset.
-   Compare numeric payloads or pixels against the contract's existing tolerance.
-   A screenshot alone does not prove parity. A CPU reference is useful only when
-   it independently exposes a named arithmetic failure; add one only when that
-   advantage is demonstrated.
+   run serially in the minimal case.
+3. Run a focused Release case with validation unset on each backend that runs
+   the change. A case's `renderer.backend` selects its class: `metal` runs the
+   tiled pipeline, `vulkan` the desktop pipeline, and an unpinned case the
+   host's backend. Compare numeric payloads or pixels against the contract's
+   existing tolerance and a same-backend reference, such as the run before the
+   change or an accepted baseline. The two classes' images differ by design;
+   compare them only for ADR-087's art-level contract. A screenshot alone does
+   not prove a contract. A CPU reference is useful only when it independently
+   exposes a named arithmetic failure; add one only when that advantage is
+   demonstrated.
 4. For an efficiency claim, use matched Release measurements through
    `vkr-performance`. Compare work volume and quality as well as time. A different
    resolution or visual algorithm cannot establish equivalent-work speedup.
 5. Iterate on failed assertions, diagnostics, and output differences. Record case,
    configuration, devices, digest, compared values, and tolerance in the ledger.
 
-When native runs happen on separate machines, use the guarded `vkr-harness`
-baseline publication and `snapshot --cross-backend` workflow. Preserve the first
-portable witness before deleting its local run tree.
+Metal runs on the Mac and Vulkan on the Windows host. A change that both
+backends consume needs native runs on both machines; if one is unavailable,
+report that backend's native evidence as unavailable. `snapshot --cross-backend`
+applies only to a class that both backends implement (`vkr-harness`).
 
 ## Evidence state
 
-An affected entry becomes **UNALIGNED** when either implementation differs or
-required source, ABI, or native comparison evidence is missing. Update its row
-and document-level state in the same change. Name the missing side and exact
-gate when the gap appears; do not save a required decision for a closing list.
+ADR-044 records, for each domain, the backends that run it and the native
+evidence on each. Update the affected rows in the same change. Name the missing
+backend and exact gate when a gap appears; do not save a required decision for
+a closing list.
 
-Mark **ALIGNED** only when the ledger's applicable bilateral gates pass.
-Cross-compilation is not native execution. An authorized backend-specific mode
-retains its documented exception and evidence state; do not claim algorithmic
-parity for MetalFX. If the other backend is unavailable, complete the available
-checks and report the implementation and parity evidence separately.
+Mark **ALIGNED** only within a class that both backends implement, after the
+ledger's gates pass on both; no class has two backends today (ADR-087).
+Cross-compilation is not native execution. If a consuming backend is
+unavailable, complete the available checks and report its missing native
+evidence separately.
