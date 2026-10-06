@@ -309,11 +309,13 @@ static float vkr_metal_local_shadow_blocker_forward(
 // nonzero `blocker_count` widens their disk by the light's source radius from
 // that many blocker-search taps (contact-hardening); an empty search keeps the
 // fixed radius, since sparse taps do not prove the receiver is lit. Without
-// SoftFilter every light takes the one hardware-filtered tap. Without
-// Transmission the refractive layers are not read. The tiled pipeline takes
-// neither: its glass casts no local shadow, and the registers of the Poisson
-// filter and those reads cost its opaque pass (ADR-087).
-template <bool Transmission = true, bool SoftFilter = true>
+// SoftFilter every light takes the one hardware-filtered tap, or with Tent
+// four of them half a texel apart, a 3x3 tent kept a texel inside the face so
+// no tap reads a neighbouring one. Without Transmission the refractive layers
+// are not read. The tiled pipeline takes neither: its glass casts no local
+// shadow, and the registers of the Poisson filter and those reads cost its
+// opaque pass; its fully shadowed lights take the tent (ADR-087).
+template <bool Transmission = true, bool SoftFilter = true, bool Tent = false>
 float3 vkr_metal_packet_local_shadow_sample(
     constant VkrMetalPacketFrameRoot *root, uint first_view_encoded, uint kind,
     float3 world_position, float3 normal,
@@ -356,11 +358,33 @@ float3 vkr_metal_packet_local_shadow_sample(
   if (!SoftFilter ||
       root->local_shadow_views[first_view].shadow_params.z > 0.5) {
     // Lights past the most important few take one hardware-filtered tap.
-    float opaque = root->local_shadow_map.sample_compare(
-        vkr_metal_shadow_compare_sampler,
-        vkr_local_shadow_atlas_uv(view.atlas_rect, view.projection_params.y,
-                                  uv),
-        uint(view.atlas_rect.w), projected.z);
+    float opaque;
+    if (Tent && root->local_shadow_views[first_view].shadow_params.z <= 0.5) {
+      const float face_texel = view.projection_params.y;
+      const float2 center =
+          view.atlas_rect.xy +
+          clamp(uv, face_texel, 1.0 - face_texel) * view.atlas_rect.z;
+      const float step = 0.5 * face_texel * view.atlas_rect.z;
+      const uint layer = uint(view.atlas_rect.w);
+      opaque = 0.25 * (root->local_shadow_map.sample_compare(
+                           vkr_metal_shadow_compare_sampler,
+                           center + float2(-step, -step), layer, projected.z) +
+                       root->local_shadow_map.sample_compare(
+                           vkr_metal_shadow_compare_sampler,
+                           center + float2(step, -step), layer, projected.z) +
+                       root->local_shadow_map.sample_compare(
+                           vkr_metal_shadow_compare_sampler,
+                           center + float2(-step, step), layer, projected.z) +
+                       root->local_shadow_map.sample_compare(
+                           vkr_metal_shadow_compare_sampler,
+                           center + float2(step, step), layer, projected.z));
+    } else {
+      opaque = root->local_shadow_map.sample_compare(
+          vkr_metal_shadow_compare_sampler,
+          vkr_local_shadow_atlas_uv(view.atlas_rect, view.projection_params.y,
+                                    uv),
+          uint(view.atlas_rect.w), projected.z);
+    }
     float3 transmission =
         Transmission && opaque > 0.0
             ? vkr_metal_local_shadow_transmission_tap(

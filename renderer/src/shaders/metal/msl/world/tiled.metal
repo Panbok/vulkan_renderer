@@ -337,14 +337,14 @@ enum VkrMetalTiledLighting : uint {
   VKR_METAL_TILED_LIGHTING_INSPECT = 4u,
 };
 
-// The tiled pipeline's local shadows: one hardware-filtered tap on the opaque
-// atlas, without a soft penumbra and without the refractive layers its glass
-// never casts into.
+// The tiled pipeline's local shadows: four hardware-filtered taps on the
+// opaque atlas, a 3x3 tent that softens texel edges without the desktop
+// penumbra, and without the refractive layers its glass never casts into.
 struct VkrMetalTiledLocalShadow {
   float3 operator()(constant VkrMetalPacketFrameRoot *frame,
                     uint first_view_encoded, uint, uint kind,
                     float3 world_position, float3 normal) const {
-    return vkr_metal_packet_local_shadow_sample<false, false>(
+    return vkr_metal_packet_local_shadow_sample<false, false, true>(
         frame, first_view_encoded, kind, world_position, normal);
   }
 

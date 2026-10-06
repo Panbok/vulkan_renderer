@@ -256,8 +256,9 @@ this order as one measured change each against the 16.7 ms p95 budget:
 2. Baked ambient occlusion: done, in every lightmap layer's alpha and applied
    to environment specular
    ([ADR-088](../adr/088-baked-lightmap-sets.md#encoding)).
-3. A small fixed gather PCF for the four shadowed dynamic lights, in the
-   shadowed shading variant only.
+3. A small fixed PCF for the four shadowed dynamic lights: done, a four-tap
+   tent ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decision
+   11).
 4. Thick glass: Beer-Lambert absorption in the blend shader first, then
    refraction and rough blur from a half-resolution copy of the scene, only
    on frames with thick or rough glass.

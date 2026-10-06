@@ -234,11 +234,20 @@ pipeline rather than a backend mechanism.
     them cast shadows. The forward shader evaluates them through the shared
     light grid and local-light loop (`vkr_metal_packet_punctual_layered`),
     and dynamic rectangle lights through the shared LTC path. A shadowed
-    light takes one bilinear comparison of its local shadow map
-    (`vkr_metal_packet_local_shadow_sample<false, false>` in
-    [`sampling.metalh`](../../renderer/src/shaders/metal/msl/shadow/sampling.metalh))
-    instead of the desktop Poisson disk, so its shadow has no soft penumbra
-    and shows shadow-map texels at the edge (owner decision, 2026-10-06).
+    light takes four bilinear comparisons of its local shadow map half a
+    texel apart, a 3x3 tent kept a texel inside its face
+    (`vkr_metal_packet_local_shadow_sample<false, false, true>` in
+    [`sampling.metalh`](../../renderer/src/shaders/metal/msl/shadow/sampling.metalh)),
+    instead of the desktop Poisson disk, so its shadow edge is smooth over
+    about a texel but has no soft penumbra (owner decisions, 2026-10-06). A
+    light the shadow system marks reduced keeps one comparison. The tent
+    cost `Tiled.Opaque` on the 16-light orbit about 0.1 ms median and p95
+    over one comparison (9.85 / 17.66 and 9.77 / 17.44 ms before, 9.92 /
+    17.63 and 9.92 / 17.74 ms after;
+    `sha256:752276eac612fea43fe5c24c24d63689e5e6a03a2f25afbe55ff53d7aa6eb5c7`,
+    `sha256:da583340a13366a4aff7ee6870b97f4be6334478529f1228c5f47e53b58ff15c`,
+    `sha256:e2d293c0b3d7c19b7fbadc6c053208d650ba5ccd98ac2caa13cf2138d5f055cd`,
+    `sha256:8df0a2f181136be51ab40c98e7d3a7ad1ca06006e8e21a5998619c152092b87b`).
     The tiled graph renders the local shadow atlas with the desktop passes
     `Shadow.Local.Clear` and `Shadow.Local`; glass casts no local shadow, so
     the sampler reads no refractive layers. Each frame shades with the
