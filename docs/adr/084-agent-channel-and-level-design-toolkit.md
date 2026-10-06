@@ -80,6 +80,7 @@ waits or runs, so a script only needs to outlast the client's connection.
 | `VKR-AGENT-0007` | Capture failed |
 | `VKR-AGENT-0008` | A limit was exceeded |
 | `VKR-AGENT-0009` | An agent's undo or redo would take another author's step |
+| `VKR-AGENT-0010` | A write or claim touches another agent's claim |
 
 ### Operations
 
@@ -96,6 +97,7 @@ thread during the editor's build.
 | `component.add`, `component.set`, `component.remove` | Component values by descriptor property name, partial for `set` |
 | `batch` | Several write operations as one journal group |
 | `changes.list`, `changes.accept`, `changes.reject` | Review of agent edits |
+| `changes.feed`, `claims.set`, `claims.release`, `claims.list` | What every author changed since a sequence number; boxes that keep other agents out |
 | `undo`, `redo`, `cmd` | Cmd statements through the Cmd queue, returning the `[cmd]` lines they printed |
 | `query.raycast` | First physics surface along a ray |
 | `view.capture` | A PNG of the Scene or the whole window, optionally from another view, framed on an entity or box, with grid labels |
@@ -163,7 +165,8 @@ within 3 s, because rejected work leaves no redo. A refused reject keeps its
 card, outlined in red, with the reason: the later pending change that blocks
 it and must be rejected first, or the entity a later edit changed. The Scene
 outlines pending entities' local bounds in orange through the editor's line
-overlay, and a toast announces each new change. Accept removes the mark
+overlay, and a toast announces each new change. Claims (below) list after
+the changes. Accept removes the mark
 only. Reject calls `vkr_scene_edit_group_revert`:
 
 - an undone group only loses its redo entries;
@@ -186,6 +189,40 @@ newest 64 agent batches, reviewed or not, with their authors. An agent's
 own batches, and otherwise fails with `VKR-AGENT-0009` naming the step's
 author; the agent rejects its change instead. The editor's own requests and
 the Cmd `undo` stay unrestricted.
+
+### Working beside other agents
+
+An agent claims the box it builds in with `claims.set` (a region, a name
+and a container; `claim` moves one of its own). A claim that overlaps
+another agent's is refused; boxes that only touch do not overlap, so
+neighbouring regions share a wall plane. Another agent's write that touches
+a claim fails with `VKR-AGENT-0010`, naming the claim and its author:
+
+- before it applies, by the current box of each existing entity it edits
+  or deletes, and by the world rectangle each terrain edit may change
+  (`vkr_heightfield_op_rect`, mapped as the journal maps it);
+- after it applies, by the new box of each object it created or moved; the
+  editor then reverts the batch, the newest group, in the next build's edit
+  slot before it answers.
+
+An object's box is its solids' (brushes and blockout pieces, from their
+faces, `vkr_editor_entity_world_box`), else its meshes', else its position,
+so a mesh whose model still loads counts as a point; terrains count only by
+their edits. The designer's edits ignore claims. At most 64 claims live in
+memory with the operation table and leave with a scene reload;
+`claims.release` frees one or all of the caller's, the editor's own
+requests may free any, and the Changes window lists claims after the
+changes, filtered with them, with Focus and Release claim. The Scene draws
+each claim as a blue box through the line overlay.
+
+`changes.feed` returns, oldest first, what happened after a sequence number:
+each batch applied by any author, the editor's own included, each change
+accepted or rejected, and each claim set or released, with its author,
+label, objects (16 at most) and the box around them. The operation table
+keeps the newest 128 events; `next` continues the reading, `missed` says
+older events left the ring, and each container's journal `revision` grows
+with every edit, the designer's too. An agent polls the feed instead of
+paging `scene.describe` to learn what the others did.
 
 ### Captures
 
@@ -334,7 +371,12 @@ which the scene, the operations and the previews allocate; previews of
 longer shapes outline every n-th piece, at most 112. The journal keeps 2,048
 changes per group and 4,096 in all.
 `brush.stairs` and `blockout.corridor` create these shapes from the earlier
-arguments. `brush.snap` moves 2 to 16 objects against the
+arguments. `entity.place` moves an existing object by world boxes,
+as one `entity.set` of its position: `on` sets its bottom on the target's
+top, `inside` on the target's floor (`vkr_editor_entity_floor`, a room's
+floor slab), both centred unless `keep`; `against` sets it flush to the
+target's `side` (+x, -x, +z or -z), centred along that side unless `keep`;
+`gap` leaves metres between them. `brush.snap` moves 2 to 16 objects against the
 first. Each other object, unless it carries `free_placement`, moves the least
 distance that sets its world box flush against a side of an object placed
 before it, `gap` apart, lined up with that object's sides or center on the
@@ -844,6 +886,12 @@ sees all that earlier requests asked for; across clients, the order of
 arrival is the only order. A designer working beside agents keeps an
 unrestricted undo, while each agent undoes only its own batches.
 
+Claims judge objects by boxes, so a slanted or hollow object near a claim
+can be refused although no face enters it, and a write that only moves
+something into a claim costs a revert of the whole batch. Claims and the
+feed live in memory: an editor restart loses them, and a crashed agent's
+claims stay until the designer releases them.
+
 ## Alternatives considered
 
 - Extending only the Cmd bar keeps text results, one statement per frame and
@@ -1038,3 +1086,16 @@ material then).
   0.58 s from one client and 0.14 s spread over four; and an eighth client
   was served while a ninth received the refusal line. Release and Debug
   editor builds and `./build_test.bat` (685 passed) succeeded. No Metal run.
+- Windows and native Vulkan, 2026-10-06 (RX 6700 XT, headless Release
+  editor on Bistro, three `vkr_mcp` clients): alpha claimed a 30 m yard and
+  beta's overlapping claim was refused while a touching one succeeded;
+  beta's brush inside the yard was reverted and no longer existed, beta's
+  edit of alpha's crate was refused before it applied, beta's move of its
+  own box into the yard was reverted with the box at its old place, and
+  alpha's move of beta's box into beta's claim was reverted; a terrain raise
+  in a claim was refused and one outside applied. `changes.feed` listed the
+  claims and batches of both authors with the crate's 4 x 3 x 4 m box, and
+  reading on from `next` returned nothing. `entity.place` set a 1 m box on a
+  room's floor at its centre (1114, 0, 1113), on a crate's top at
+  (1102, 3, 1102) and 0.5 m beside its +x side. The Changes window listed
+  both authors' changes and claims, and its Release claim freed alpha's.

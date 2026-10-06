@@ -68,6 +68,20 @@ typedef struct VkrEditorChange {
   VkrEntityId entities[VKR_EDITOR_CHANGE_ENTITY_MAX];
 } VkrEditorChange;
 
+#define VKR_EDITOR_CLAIM_MAX 64u
+
+/* A box of one container an agent claimed (claims.set). Other agents'
+ * writes that touch it are refused, so the agents of a swarm build their own
+ * regions without conflicts; the designer's edits are not limited. */
+typedef struct VkrEditorClaim {
+  uint32_t id;
+  uint16_t container;
+  char author[VKR_EDITOR_AUTHOR_CAPACITY];
+  char name[48];
+  Vec3 min;
+  Vec3 max;
+} VkrEditorClaim;
+
 VkrEditorOps *vkr_editor_ops_create(VkrAllocator *allocator);
 void vkr_editor_ops_destroy(VkrEditorOps *ops);
 
@@ -95,6 +109,10 @@ const VkrEditorChange *vkr_editor_ops_change(const VkrEditorOps *ops,
                                              uint32_t index);
 /* Accepts change `id`, or every change for zero; false when none matched. */
 bool8_t vkr_editor_ops_accept(VkrEditorOps *ops, uint32_t id);
+
+uint32_t vkr_editor_ops_claim_count(const VkrEditorOps *ops);
+const VkrEditorClaim *vkr_editor_ops_claim(const VkrEditorOps *ops,
+                                           uint32_t index);
 
 /* The Agent changes window body: each pending change with Focus, Reject
    and Accept. Reject runs as a changes.reject request from the editor. */

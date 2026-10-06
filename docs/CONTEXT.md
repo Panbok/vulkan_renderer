@@ -189,6 +189,7 @@ Editor workflow terms:
 | Pending change | A reviewed agent batch the designer has not accepted or rejected; Reject reverts its journal group. | [editor ops](../editor/src/editor_ops.h) |
 | Settle | Wait until no brush, shape, terrain or population rule rebuilds after earlier edits and no scene loads; agent reads of collision or built geometry settle by default, and a write settles with `settle`. | [ADR-084](adr/084-agent-channel-and-level-design-toolkit.md#settling) |
 | Quick read / author | An agent operation cheap enough to share a build with other quick reads / the name a request carries (`agent`), recorded on its changes and limiting its undo to its own batches. | [ADR-084](adr/084-agent-channel-and-level-design-toolkit.md#socket-and-messages) |
+| Claim / change feed | A box of a scene one agent builds in, where other agents' writes are refused / the ordered events of what every author applied, accepted, rejected, claimed or released. | [ADR-084](adr/084-agent-channel-and-level-design-toolkit.md#working-beside-other-agents) |
 | Scene edit overlay | Authored overrides validated against source identities. Legacy saves use `<scene>.editor.json`; managed saves publish immutable overlay revisions referenced by the scene manifest. | [Scene edit owner](../runtime/src/renderer/systems/vkr_scene_edit.c), [project store](../editor/src/editor_project_store.c) |
 
 Object model terms ([ADR-076](adr/076-project-object-model.md)):

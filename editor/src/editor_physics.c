@@ -283,6 +283,38 @@ static void physics_pending_changes(VkrEditorUi *editor,
   }
 }
 
+/* Agents' claims (claims.set) as world boxes, so the designer sees
+   which agent builds where. */
+static void physics_claims(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                           uint32_t capacity) {
+  const VkrEditorOps *ops = vkr_editor_agent_ops(editor->agent);
+  const Vec4 color = vkr_ui_color_alpha(vkr_ui_theme()->info, 0.9f);
+  for (uint32_t c = 0; c < vkr_editor_ops_claim_count(ops); ++c) {
+    const VkrEditorClaim *claim = vkr_editor_ops_claim(ops, c);
+    const Vec3 lo = claim->min;
+    const Vec3 hi = claim->max;
+    for (uint32_t corner = 0; corner < 8; ++corner) {
+      const Vec3 from = {(corner & 1) ? hi.x : lo.x, (corner & 2) ? hi.y : lo.y,
+                         (corner & 4) ? hi.z : lo.z};
+      for (uint32_t axis = 0; axis < 3; ++axis) {
+        if (corner & (1u << axis)) {
+          continue;
+        }
+        Vec3 to = from;
+        if (axis == 0) {
+          to.x = hi.x;
+        } else if (axis == 1) {
+          to.y = hi.y;
+        } else {
+          to.z = hi.z;
+        }
+        physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from, to, color,
+                     capacity);
+      }
+    }
+  }
+}
+
 /* The box a brush drag outlines, in world space (no entity). */
 static void physics_brush_draft(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
@@ -875,6 +907,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   const VkrEditorLevelReport *report = editor->level_report;
   const uint32_t changes =
       vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent)) +
+      vkr_editor_ops_claim_count(vkr_editor_agent_ops(editor->agent)) +
       (editor->brush_dragging || editor->brush_raising ? 1u : 0u) +
       (editor->selection_extra_count ? 1u : 0u) +
       (editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE && editor->path_count
@@ -938,6 +971,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   }
   if (editor->physics_lines && changes) {
     physics_pending_changes(editor, frame, capacity);
+    physics_claims(editor, frame, capacity);
     if (editor->brush_dragging || editor->brush_raising) {
       physics_brush_draft(editor, frame, capacity);
     }

@@ -63,7 +63,9 @@ module there has no `AF_UNIX`, so script it through `vkr_mcp`.
 
 Name yourself with `agent` (or `--agent`) so your changes carry an author and
 `undo` takes only your own batches; to drop another step, `changes.reject`
-its change. Raycasts, `query.reachable`, `query.bounds`, `level.lint`,
+its change. Beside other agents, `claims.set` your region before building
+(writes into another agent's claim fail with `VKR-AGENT-0010`) and read
+`changes.feed` from the last `next` to see their work. Raycasts, `query.reachable`, `query.bounds`, `level.lint`,
 `level.map` and captures wait for rebuilds of earlier edits; a result with
 `"settled": false` read a scene that was still rebuilding, so repeat it
 before relying on it. Add `"settle": true` to a write to get each entity's

@@ -43,6 +43,7 @@
 #define OPS_CAPTURE "VKR-AGENT-0007"
 #define OPS_LIMIT "VKR-AGENT-0008"
 #define OPS_NOT_OWNER "VKR-AGENT-0009"
+#define OPS_CLAIMED "VKR-AGENT-0010"
 
 /* Entities scene.describe lists per request, and its default page. */
 #define OPS_DESCRIBE_MAX 500u
@@ -60,6 +61,38 @@
 #define OPS_SCENE_SETTLE_FRAMES 240u
 /* Newest agent batches whose author an agent's undo can check. */
 #define OPS_AUTHORED_MAX 64u
+/* World boxes one batch records for the regions its terrain edits change. */
+#define OPS_TOUCHED_MAX 64u
+/* Events the change feed keeps, and the entities one event names. */
+#define OPS_FEED_MAX 128u
+#define OPS_FEED_ENTITIES 16u
+
+typedef enum OpsFeedKind {
+  OPS_FEED_APPLIED = 0,
+  OPS_FEED_ACCEPTED,
+  OPS_FEED_REJECTED,
+  OPS_FEED_CLAIMED,
+  OPS_FEED_RELEASED,
+  OPS_FEED_KIND_COUNT,
+} OpsFeedKind;
+
+/* One event of the change feed (changes.feed): a batch applied, a change
+   accepted or rejected, or a claim set or released, with the box it
+   covers. */
+typedef struct OpsFeedEvent {
+  uint64_t sequence;
+  OpsFeedKind kind;
+  uint32_t change;
+  uint32_t claim;
+  uint16_t container;
+  bool8_t bounded;
+  char author[VKR_EDITOR_AUTHOR_CAPACITY];
+  char label[96];
+  Vec3 min;
+  Vec3 max;
+  uint32_t entity_count;
+  VkrEntityId entities[OPS_FEED_ENTITIES];
+} OpsFeedEvent;
 
 /* The journal group of an agent batch, reviewed or not, and its author. */
 typedef struct OpsAuthored {
@@ -89,6 +122,16 @@ struct VkrEditorOps {
      time its two-click Reject stops waiting for the confirming click. */
   char changes_filter[VKR_EDITOR_AUTHOR_CAPACITY];
   float64_t reject_all_armed_until;
+  /* Claimed boxes of the scene generation `claims_generation`; a scene
+     reload drops them. */
+  VkrEditorClaim claims[VKR_EDITOR_CLAIM_MAX];
+  uint32_t claim_count;
+  uint32_t next_claim_id;
+  uint64_t claims_generation;
+  /* A ring of the newest feed events, each in slot `sequence %
+     OPS_FEED_MAX`; `feed_last` is the newest sequence, zero for none. */
+  OpsFeedEvent feed[OPS_FEED_MAX];
+  uint64_t feed_last;
 };
 
 typedef struct OpsContext {
@@ -112,6 +155,10 @@ typedef struct OpsBatch {
   /* Select the first operation's entity once applied, as the editor's own
      tools do. */
   bool8_t select;
+  /* World boxes the batch's terrain edits may change, for claims. */
+  uint32_t touched_count;
+  Vec3 touched_min[OPS_TOUCHED_MAX];
+  Vec3 touched_max[OPS_TOUCHED_MAX];
 } OpsBatch;
 
 /* An entity argument: an existing entity, or `item` of the batch. */
@@ -575,6 +622,93 @@ static void ops_entity_built(OpsContext *ctx, const VkrScene *scene,
   if (status) {
     ops_set(ctx, entry, "status", vkr_bakery_json_cstr(ops_arena(ctx), status));
   }
+}
+
+// -----------------------------------------------------------------------------
+// Claims and the change feed (ADR-084)
+// -----------------------------------------------------------------------------
+
+/* Whether two boxes overlap with volume; boxes that only touch, as a wall
+   flush against a neighbour's claim, do not. */
+static bool8_t ops_boxes_overlap(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi) {
+  return a_lo.x < b_hi.x && a_hi.x > b_lo.x && a_lo.y < b_hi.y &&
+         a_hi.y > b_lo.y && a_lo.z < b_hi.z && a_hi.z > b_lo.z;
+}
+
+/* A claim of another author than `author` in `container` that the box
+   overlaps, or NULL. The editor's own requests have no author and ignore
+   claims. */
+static const VkrEditorClaim *ops_claim_hit(const VkrEditorOps *ops,
+                                           const char *author,
+                                           uint16_t container, Vec3 lo,
+                                           Vec3 hi) {
+  for (uint32_t i = 0; author[0] && i < ops->claim_count; ++i) {
+    const VkrEditorClaim *claim = &ops->claims[i];
+    if (claim->container == container && strcmp(claim->author, author) &&
+        ops_boxes_overlap(lo, hi, claim->min, claim->max)) {
+      return claim;
+    }
+  }
+  return NULL;
+}
+
+/* The world box claims and the feed judge `entity` by: its solids (brushes
+   and blockout pieces, from their faces), else its meshes, else its
+   position. */
+static void ops_object_box(const VkrScene *scene, VkrEntityId entity,
+                           VkrBrushGeometry *scratch, Vec3 *lo, Vec3 *hi) {
+  if (scratch && vkr_editor_entity_world_box(scene, entity, scratch, lo, hi)) {
+    return;
+  }
+  if (ops_world_bounds(scene, entity, lo, hi)) {
+    return;
+  }
+  const SceneTransform *transform = ops_transform(scene, entity);
+  *lo = *hi = transform ? mat4_position(transform->world) : vec3_zero();
+}
+
+/* Appends a feed event and returns it for the caller to fill. */
+static OpsFeedEvent *ops_feed_add(VkrEditorOps *ops, OpsFeedKind kind,
+                                  uint16_t container, const char *author,
+                                  const char *label) {
+  const uint64_t sequence = ++ops->feed_last;
+  OpsFeedEvent *event = &ops->feed[sequence % OPS_FEED_MAX];
+  *event = (OpsFeedEvent){
+      .sequence = sequence, .kind = kind, .container = container};
+  snprintf(event->author, sizeof(event->author), "%s", author);
+  snprintf(event->label, sizeof(event->label), "%s", label);
+  return event;
+}
+
+/* Names `entity` in `event` and grows its box by the entity's. */
+static void ops_feed_entity(OpsFeedEvent *event, const VkrScene *scene,
+                            VkrEntityId entity, VkrBrushGeometry *scratch) {
+  if (!scene || !entity.u64 || !vkr_scene_entity_alive(scene, entity)) {
+    return;
+  }
+  for (uint32_t i = 0; i < event->entity_count; ++i) {
+    if (event->entities[i].u64 == entity.u64) {
+      return;
+    }
+  }
+  if (event->entity_count < OPS_FEED_ENTITIES) {
+    event->entities[event->entity_count++] = entity;
+  }
+  if (vkr_scene_get_typed(scene, entity, &vkr_scene_terrain_type)) {
+    return;
+  }
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  ops_object_box(scene, entity, scratch, &lo, &hi);
+  event->min = event->bounded
+                   ? vec3_new(Min(event->min.x, lo.x), Min(event->min.y, lo.y),
+                              Min(event->min.z, lo.z))
+                   : lo;
+  event->max = event->bounded
+                   ? vec3_new(Max(event->max.x, hi.x), Max(event->max.y, hi.y),
+                              Max(event->max.z, hi.z))
+                   : hi;
+  event->bounded = true_v;
 }
 
 /* Component type named `name`: an edit component (transform, visibility,
@@ -3473,6 +3607,11 @@ typedef struct OpsPendingBatch {
   bool8_t applied;
   VkrBakeryJson *results;
   VkrEntityId *entities;
+  /* A batch that put something in another author's claim reverts its group
+     and then fails with `claim_error`. */
+  bool8_t reverting;
+  uint64_t revert_token;
+  char claim_error[256];
 } OpsPendingBatch;
 
 /* Remembers that `author` made `group`, for the undo of agents. */
@@ -3513,12 +3652,108 @@ static bool8_t ops_build_one(OpsContext *ctx, const OpsDef *def,
   return true_v;
 }
 
+/* Fails with the claim `hit` that `what` would touch. */
+static bool8_t ops_claim_fail(OpsContext *ctx, const VkrEditorClaim *hit,
+                              const char *what) {
+  return ops_fail(ctx, OPS_CLAIMED,
+                  "%s lies in %s's claim '%s' (claim %u); build outside it, "
+                  "or ask %s to release it",
+                  what, hit->author, hit->name[0] ? hit->name : "unnamed",
+                  hit->id, hit->author);
+}
+
+/* Refuses a batch before it applies when it changes another author's
+   claim: the existing entities it edits or deletes, by their current box,
+   and the regions its terrain edits change. */
+static bool8_t ops_claims_before(OpsContext *ctx, const OpsBatch *batch) {
+  VkrEditorOps *ops = ctx->ops;
+  if (!ctx->call->author[0] || !ops->claim_count) {
+    return true_v;
+  }
+  const uint16_t container = (uint16_t)batch->container;
+  const VkrScene *scene = ops_scene(ctx->frame, container);
+  VkrBrushGeometry *scratch = arena_alloc(
+      ops_arena(ctx), sizeof(VkrBrushGeometry), ARENA_MEMORY_TAG_STRUCT);
+  for (uint32_t op = 0; scene && op < batch->op_count; ++op) {
+    const VkrEntityId entity = batch->op_target[op];
+    if (!entity.u64 || !vkr_scene_entity_alive(scene, entity) ||
+        vkr_scene_get_typed(scene, entity, &vkr_scene_terrain_type)) {
+      continue;
+    }
+    Vec3 lo = {0};
+    Vec3 hi = {0};
+    ops_object_box(scene, entity, scratch, &lo, &hi);
+    const VkrEditorClaim *hit =
+        ops_claim_hit(ops, ctx->call->author, container, lo, hi);
+    if (hit) {
+      const String8 name = vkr_scene_get_name(scene, entity);
+      char what[96];
+      snprintf(what, sizeof(what), "ops[%u] changes '%.*s', which", op,
+               (int)Min(name.length, (uint64_t)48u), (const char *)name.str);
+      return ops_claim_fail(ctx, hit, what);
+    }
+  }
+  for (uint32_t i = 0; i < batch->touched_count; ++i) {
+    const VkrEditorClaim *hit =
+        ops_claim_hit(ops, ctx->call->author, container, batch->touched_min[i],
+                      batch->touched_max[i]);
+    if (hit) {
+      return ops_claim_fail(ctx, hit, "A terrain edit");
+    }
+  }
+  return true_v;
+}
+
+/* The claim of another author an applied batch put something in: each
+   operation's entity and every object it created, by its new box. */
+static const VkrEditorClaim *
+ops_claims_after(OpsContext *ctx, const OpsBatch *batch,
+                 const VkrSampleEditBatchResult *result,
+                 VkrEntityId *out_entity) {
+  VkrEditorOps *ops = ctx->ops;
+  const uint16_t container = (uint16_t)batch->container;
+  const VkrScene *scene = ops_scene(ctx->frame, container);
+  if (!scene) {
+    return NULL;
+  }
+  VkrBrushGeometry *scratch = arena_alloc(
+      ops_arena(ctx), sizeof(VkrBrushGeometry), ARENA_MEMORY_TAG_STRUCT);
+  for (uint32_t i = 0; i < batch->op_count + batch->count; ++i) {
+    VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+    if (i < batch->op_count) {
+      entity = batch->op_item[i] != UINT32_MAX
+                   ? result->created[batch->op_item[i]]
+                   : batch->op_target[i];
+    } else {
+      entity = result->created[i - batch->op_count];
+    }
+    if (!entity.u64 || !vkr_scene_entity_alive(scene, entity) ||
+        vkr_scene_entity_is_part(scene, entity) ||
+        vkr_scene_get_typed(scene, entity, &vkr_scene_terrain_type)) {
+      continue;
+    }
+    Vec3 lo = {0};
+    Vec3 hi = {0};
+    ops_object_box(scene, entity, scratch, &lo, &hi);
+    const VkrEditorClaim *hit =
+        ops_claim_hit(ops, ctx->call->author, container, lo, hi);
+    if (hit) {
+      *out_entity = entity;
+      return hit;
+    }
+  }
+  return NULL;
+}
+
 /* Hands the built batch to the runtime and waits for its result. */
 static VkrEditorOpStatus ops_submit(OpsContext *ctx, OpsBatch *batch,
                                     bool8_t dry_run) {
   VkrEditorOpCall *call = ctx->call;
   if (!batch->count) {
     ops_fail(ctx, OPS_INVALID, "The batch holds no edits");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ops_claims_before(ctx, batch)) {
     return VKR_EDITOR_OP_DONE;
   }
   if (dry_run) {
@@ -3587,6 +3822,22 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
   if (pending->applied) {
     return ops_batch_settle(ctx, pending);
   }
+  if (pending->reverting) {
+    const VkrSampleEditBatchResult *reverted = ctx->frame->edit_batch_result;
+    if (!reverted || reverted->token != pending->revert_token) {
+      if (++call->frames > OPS_WAIT_FRAMES) {
+        ops_fail(ctx, OPS_CLAIMED, "%s; the revert did not finish",
+                 pending->claim_error);
+        return VKR_EDITOR_OP_DONE;
+      }
+      return VKR_EDITOR_OP_WAIT;
+    }
+    ops_fail(ctx, OPS_CLAIMED, "%s%s%s", pending->claim_error,
+             reverted->ok ? "; the batch was reverted"
+                          : "; the batch could not be reverted: ",
+             reverted->ok ? "" : reverted->message);
+    return VKR_EDITOR_OP_DONE;
+  }
   const VkrSampleEditBatchResult *result = ctx->frame->edit_batch_result;
   if (!result || result->token != pending->token) {
     if (++call->frames > OPS_WAIT_FRAMES) {
@@ -3605,6 +3856,34 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
       ops_fail(ctx, OPS_REJECTED, "%s", result->message);
     }
     return VKR_EDITOR_OP_DONE;
+  }
+  /* Something now inside another author's claim: revert the whole batch,
+     the newest group, in this build's edit slot. */
+  VkrEntityId offender = VKR_ENTITY_ID_INVALID;
+  const VkrEditorClaim *claimed =
+      call->author[0] && ctx->ops->claim_count
+          ? ops_claims_after(ctx, batch, result, &offender)
+          : NULL;
+  if (claimed && ctx->frame->edit_batch && !ctx->frame->edit_batch->token) {
+    const VkrScene *where = ops_scene(ctx->frame, (uint32_t)batch->container);
+    const String8 name = vkr_scene_get_name(where, offender);
+    char what[96];
+    snprintf(what, sizeof(what), "'%.*s'", (int)Min(name.length, (uint64_t)48u),
+             (const char *)name.str);
+    (void)ops_claim_fail(ctx, claimed, what);
+    snprintf(pending->claim_error, sizeof(pending->claim_error), "%s",
+             call->error);
+    call->error_code = NULL;
+    call->error[0] = '\0';
+    pending->reverting = true_v;
+    pending->revert_token = ++ctx->ops->next_token;
+    *ctx->frame->edit_batch = (VkrSampleEditBatchRequest){
+        .token = pending->revert_token,
+        .container = (uint16_t)batch->container,
+        .revert_group = result->group,
+    };
+    call->frames = 0u;
+    return VKR_EDITOR_OP_WAIT;
   }
   const VkrScene *scene = ops_scene(ctx->frame, (uint32_t)batch->container);
   call->result = vkr_bakery_json_object(call->arena);
@@ -3653,6 +3932,18 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
   if (call->author[0]) {
     ops_authored_add(ops, result->group, change.container, call->author);
   }
+  /* The feed names the batch's objects and the box around them. */
+  char label[96];
+  snprintf(label, sizeof(label), "%.*s",
+           (int)Min(batch->label.length, (uint64_t)95u),
+           batch->label.length ? (const char *)batch->label.str : "");
+  OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_APPLIED, change.container,
+                                     call->author, label);
+  VkrBrushGeometry *scratch = arena_alloc(call->arena, sizeof(VkrBrushGeometry),
+                                          ARENA_MEMORY_TAG_STRUCT);
+  for (uint32_t i = 0; i < change.entity_count; ++i) {
+    ops_feed_entity(event, scene, change.entities[i], scratch);
+  }
   if (batch->review && ops->change_count < VKR_EDITOR_CHANGE_MAX) {
     change.id = ++ops->next_change_id;
     snprintf(change.label, sizeof(change.label), "%.*s",
@@ -3662,6 +3953,7 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
       snprintf(change.label, sizeof(change.label), "Agent edit %u", change.id);
     }
     ops->changes[ops->change_count++] = change;
+    event->change = change.id;
     ops_set(ctx, call->result, "change",
             vkr_bakery_json_int(call->arena, change.id));
     char toast[160];
@@ -4511,6 +4803,13 @@ static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   if (index >= 0) {
+    const VkrEditorChange *gone = &ops->changes[index];
+    OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_REJECTED, gone->container,
+                                       gone->author, gone->label);
+    event->change = gone->id;
+    for (uint32_t i = 0; i < Min(gone->entity_count, OPS_FEED_ENTITIES); ++i) {
+      event->entities[event->entity_count++] = gone->entities[i];
+    }
     ops_change_remove(ops, (uint32_t)index);
   }
   call->result = vkr_bakery_json_object(call->arena);
@@ -5482,6 +5781,40 @@ static bool8_t ops_terrain_arg(OpsContext *ctx, const OpsBatch *batch,
   return true_v;
 }
 
+/* Records the world rectangle a terrain edit may change, for claims; it
+   maps the edit to the terrain's space as the journal does
+   (vkr_scene_edit_terrain). */
+static void ops_terrain_touch(OpsContext *ctx, OpsBatch *batch,
+                              const OpsRef *ref, const VkrHeightfieldOp *op) {
+  const VkrScene *scene = ops_scene(ctx->frame, ref->container);
+  const VkrHeightfield *field =
+      scene ? vkr_scene_terrain_field(scene, ref->entity) : NULL;
+  Vec3 origin = {0};
+  if (!field || batch->touched_count >= OPS_TOUCHED_MAX ||
+      !vkr_scene_terrain_to_local(scene, ref->entity, vec3_zero(), &origin)) {
+    return;
+  }
+  VkrHeightfieldOp local = *op;
+  local.a = vec3_add(op->a, origin);
+  local.b = vec3_add(op->b, origin);
+  local.min = vec2_new(op->min.x + origin.x, op->min.y + origin.z);
+  local.max = vec2_new(op->max.x + origin.x, op->max.y + origin.z);
+  local.height = op->height + origin.y;
+  VkrHeightfieldRect rect;
+  if (!vkr_heightfield_op_rect(field, &local, &rect)) {
+    return;
+  }
+  /* Sample (0, 0) lies at local (-size / 2, -size / 2); heights are open. */
+  const float32_t half = 0.5f * field->spacing * (float32_t)field->cells;
+  const uint32_t n = batch->touched_count++;
+  batch->touched_min[n] =
+      vec3_new((float32_t)rect.x0 * field->spacing - half - origin.x, -1.0e30f,
+               (float32_t)rect.z0 * field->spacing - half - origin.z);
+  batch->touched_max[n] =
+      vec3_new((float32_t)rect.x1 * field->spacing - half - origin.x, 1.0e30f,
+               (float32_t)rect.z1 * field->spacing - half - origin.z);
+}
+
 static VkrSampleEditBatchItem *ops_terrain_item(OpsContext *ctx,
                                                 OpsBatch *batch,
                                                 const OpsRef *ref,
@@ -5492,6 +5825,7 @@ static VkrSampleEditBatchItem *ops_terrain_item(OpsContext *ctx,
     ops_item_target(item, ref);
     item->request.terrain = *op;
     batch->op_target[batch->op_count] = ref->entity;
+    ops_terrain_touch(ctx, batch, ref, op);
   }
   return item;
 }
@@ -6684,6 +7018,363 @@ static VkrEditorOpStatus ops_run_io_trace(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+// -----------------------------------------------------------------------------
+// claims.set, claims.release, claims.list, changes.feed
+// -----------------------------------------------------------------------------
+
+static VkrBakeryJson *ops_box(OpsContext *ctx, Vec3 lo, Vec3 hi) {
+  VkrBakeryJson *box = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, box, "min", ops_vec3(ctx, lo));
+  ops_set(ctx, box, "max", ops_vec3(ctx, hi));
+  return box;
+}
+
+static VkrBakeryJson *ops_claim_json(OpsContext *ctx,
+                                     const VkrEditorClaim *claim) {
+  char slot[16];
+  VkrBakeryJson *object = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, object, "claim", vkr_bakery_json_int(ops_arena(ctx), claim->id));
+  ops_set(ctx, object, "author",
+          vkr_bakery_json_cstr(ops_arena(ctx), claim->author));
+  ops_set(ctx, object, "name",
+          vkr_bakery_json_cstr(ops_arena(ctx), claim->name));
+  ops_set(ctx, object, "container",
+          vkr_bakery_json_cstr(
+              ops_arena(ctx),
+              ops_container_name(claim->container, slot, sizeof(slot))));
+  ops_set(ctx, object, "region", ops_box(ctx, claim->min, claim->max));
+  return object;
+}
+
+/* claims.set: the caller claims a box, or moves one of its claims. */
+static VkrEditorOpStatus ops_run_claims_set(OpsContext *ctx) {
+  VkrEditorOps *ops = ctx->ops;
+  const VkrBakeryJson *args = ctx->call->args;
+  if (!ctx->call->author[0]) {
+    ops_fail(ctx, OPS_INVALID,
+             "Only an agent claims a region; the designer edits anywhere");
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrBakeryJson *region = vkr_bakery_json_get(args, "region");
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  bool8_t has_lo = false_v;
+  bool8_t has_hi = false_v;
+  uint16_t container = 0u;
+  if (!region || region->type != VKR_BAKERY_JSON_OBJECT ||
+      !ops_arg_vec3(ctx, region, "min", &lo, &has_lo) ||
+      !ops_arg_vec3(ctx, region, "max", &hi, &has_hi) || !has_lo || !has_hi ||
+      !(hi.x > lo.x && hi.y > lo.y && hi.z > lo.z)) {
+    if (!ctx->call->error_code) {
+      ops_fail(ctx, OPS_INVALID,
+               "'region' is {\"min\": [..], \"max\": [..]}, a box with "
+               "volume");
+    }
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ops_arg_container(ctx, args, &container)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  float64_t id_value = 0.0;
+  const uint32_t id = ops_arg_number(args, "claim", &id_value)
+                          ? (uint32_t)Max(id_value, 0.0)
+                          : 0u;
+  const VkrEditorClaim *other =
+      ops_claim_hit(ops, ctx->call->author, container, lo, hi);
+  if (other) {
+    ops_fail(ctx, OPS_CLAIMED,
+             "The box overlaps %s's claim '%s' (claim %u); claim beside it",
+             other->author, other->name[0] ? other->name : "unnamed",
+             other->id);
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrEditorClaim *claim = NULL;
+  for (uint32_t i = 0; id && i < ops->claim_count; ++i) {
+    if (ops->claims[i].id == id) {
+      claim = &ops->claims[i];
+    }
+  }
+  if (id && (!claim || strcmp(claim->author, ctx->call->author))) {
+    ops_fail(ctx, claim ? OPS_NOT_OWNER : OPS_NOT_FOUND,
+             claim ? "Claim %u belongs to %s" : "No claim %u", id,
+             claim ? claim->author : "");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!claim) {
+    if (ops->claim_count == VKR_EDITOR_CLAIM_MAX) {
+      ops_fail(ctx, OPS_LIMIT, "The editor holds at most %u claims",
+               VKR_EDITOR_CLAIM_MAX);
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!ops->claim_count) {
+      ops->claims_generation = ctx->frame->scene_generation;
+    }
+    claim = &ops->claims[ops->claim_count++];
+    *claim = (VkrEditorClaim){.id = ++ops->next_claim_id};
+    snprintf(claim->author, sizeof(claim->author), "%s", ctx->call->author);
+  }
+  claim->container = container;
+  claim->min = lo;
+  claim->max = hi;
+  String8 name = {0};
+  if (vkr_bakery_json_get_string(args, "name", &name)) {
+    snprintf(claim->name, sizeof(claim->name), "%.*s",
+             (int)Min(name.length, (uint64_t)47u), (const char *)name.str);
+  }
+  OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_CLAIMED, container,
+                                     claim->author, claim->name);
+  event->claim = claim->id;
+  event->min = lo;
+  event->max = hi;
+  event->bounded = true_v;
+  ctx->call->result = ops_claim_json(ctx, claim);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* Releases the claim at `index` and feeds the event. */
+static void ops_claim_release_at(VkrEditorOps *ops, uint32_t index) {
+  const VkrEditorClaim *claim = &ops->claims[index];
+  OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_RELEASED, claim->container,
+                                     claim->author, claim->name);
+  event->claim = claim->id;
+  event->min = claim->min;
+  event->max = claim->max;
+  event->bounded = true_v;
+  ops->claims[index] = ops->claims[--ops->claim_count];
+}
+
+/* claims.release: one claim by id, or every claim of the caller; the
+   editor's own requests may release any claim, and all with 'all'. */
+static VkrEditorOpStatus ops_run_claims_release(OpsContext *ctx) {
+  VkrEditorOps *ops = ctx->ops;
+  const char *author = ctx->call->author;
+  float64_t id_value = 0.0;
+  const uint32_t id = ops_arg_number(ctx->call->args, "claim", &id_value)
+                          ? (uint32_t)Max(id_value, 0.0)
+                          : 0u;
+  const bool8_t all = ops_arg_bool(ctx->call->args, "all", false_v);
+  if (!id && !author[0] && !all) {
+    ops_fail(ctx, OPS_INVALID, "Name a 'claim', or release 'all'");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrBakeryJson *released = vkr_bakery_json_array(ops_arena(ctx));
+  for (uint32_t i = 0; i < ops->claim_count;) {
+    VkrEditorClaim *claim = &ops->claims[i];
+    const bool8_t mine = !author[0] || strcmp(claim->author, author) == 0;
+    const bool8_t named = id ? claim->id == id : (all || author[0]);
+    if (!named) {
+      ++i;
+      continue;
+    }
+    if (!mine) {
+      if (id) {
+        ops_fail(ctx, OPS_NOT_OWNER, "Claim %u belongs to %s", id,
+                 claim->author);
+        return VKR_EDITOR_OP_DONE;
+      }
+      ++i;
+      continue;
+    }
+    vkr_bakery_json_append(released,
+                           vkr_bakery_json_int(ops_arena(ctx), claim->id));
+    ops_claim_release_at(ops, i);
+  }
+  if (id && !released->count) {
+    ops_fail(ctx, OPS_NOT_FOUND, "No claim %u", id);
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "released", released);
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_claims_list(OpsContext *ctx) {
+  VkrBakeryJson *claims = vkr_bakery_json_array(ops_arena(ctx));
+  for (uint32_t i = 0; i < ctx->ops->claim_count; ++i) {
+    vkr_bakery_json_append(claims, ops_claim_json(ctx, &ctx->ops->claims[i]));
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "claims", claims);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* changes.feed: the events after sequence `after`, oldest first. */
+static VkrEditorOpStatus ops_run_feed(OpsContext *ctx) {
+  static const char *const kinds[OPS_FEED_KIND_COUNT] = {
+      "applied", "accepted", "rejected", "claimed", "released"};
+  const VkrEditorOps *ops = ctx->ops;
+  Arena *arena = ops_arena(ctx);
+  float64_t after_value = 0.0;
+  float64_t limit_value = 64.0;
+  (void)ops_arg_number(ctx->call->args, "after", &after_value);
+  (void)ops_arg_number(ctx->call->args, "limit", &limit_value);
+  const uint64_t after = (uint64_t)Max(after_value, 0.0);
+  const uint64_t limit =
+      (uint64_t)vkr_clamp_f64(limit_value, 1.0, OPS_FEED_MAX);
+  /* The ring holds the newest OPS_FEED_MAX events. */
+  const uint64_t oldest =
+      ops->feed_last > OPS_FEED_MAX ? ops->feed_last - OPS_FEED_MAX + 1u : 1u;
+  const uint64_t first = Max(after + 1u, oldest);
+  VkrBakeryJson *events = vkr_bakery_json_array(arena);
+  uint64_t last = after;
+  for (uint64_t sequence = first;
+       sequence <= ops->feed_last && sequence < first + limit; ++sequence) {
+    const OpsFeedEvent *event = &ops->feed[sequence % OPS_FEED_MAX];
+    const VkrScene *scene = ops_scene(ctx->frame, event->container);
+    char slot[16];
+    VkrBakeryJson *row = vkr_bakery_json_object(arena);
+    ops_set(ctx, row, "seq", vkr_bakery_json_int(arena, (int64_t)sequence));
+    ops_set(ctx, row, "kind", vkr_bakery_json_cstr(arena, kinds[event->kind]));
+    ops_set(ctx, row, "author",
+            vkr_bakery_json_cstr(arena,
+                                 event->author[0] ? event->author : "editor"));
+    if (event->label[0]) {
+      ops_set(ctx, row, "label", vkr_bakery_json_cstr(arena, event->label));
+    }
+    ops_set(
+        ctx, row, "container",
+        vkr_bakery_json_cstr(
+            arena, ops_container_name(event->container, slot, sizeof(slot))));
+    if (event->change) {
+      ops_set(ctx, row, "change", vkr_bakery_json_int(arena, event->change));
+    }
+    if (event->claim) {
+      ops_set(ctx, row, "claim", vkr_bakery_json_int(arena, event->claim));
+    }
+    if (event->bounded) {
+      ops_set(ctx, row, "bounds", ops_box(ctx, event->min, event->max));
+    }
+    if (event->entity_count) {
+      VkrBakeryJson *entities = vkr_bakery_json_array(arena);
+      for (uint32_t i = 0; i < event->entity_count; ++i) {
+        vkr_bakery_json_append(entities,
+                               ops_entity(ctx, scene, event->entities[i]));
+      }
+      ops_set(ctx, row, "entities", entities);
+    }
+    vkr_bakery_json_append(events, row);
+    last = sequence;
+  }
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "events", events);
+  ops_set(ctx, result, "next", vkr_bakery_json_int(arena, (int64_t)last));
+  ops_set(ctx, result, "latest",
+          vkr_bakery_json_int(arena, (int64_t)ops->feed_last));
+  ops_set(ctx, result, "missed",
+          vkr_bakery_json_bool(arena, after + 1u < oldest));
+  /* The designer's own edits reach no feed; a revision that grows tells a
+     client to look again. */
+  VkrBakeryJson *revisions = vkr_bakery_json_object(arena);
+  const VkrSceneEditState *edits = ops_journal(ctx->frame, 0u);
+  const VkrSceneEditState *world =
+      ops_journal(ctx->frame, VKR_SCENE_WORLD_ROOT_ID);
+  ops_set(ctx, revisions, "scene",
+          vkr_bakery_json_int(arena, edits ? (int64_t)edits->revision : 0));
+  ops_set(ctx, revisions, "world",
+          vkr_bakery_json_int(arena, world ? (int64_t)world->revision : 0));
+  ops_set(ctx, result, "revisions", revisions);
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+// -----------------------------------------------------------------------------
+// entity.place
+// -----------------------------------------------------------------------------
+
+/* entity.place: moves an object so its world box sits on, against or
+   inside another's, as an entity.set of its position. */
+static bool8_t ops_build_place(OpsContext *ctx, const VkrBakeryJson *args,
+                               OpsBatch *batch) {
+  OpsRef ref;
+  OpsRef target;
+  if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, "entity"), "entity",
+               &ref) ||
+      !ops_ref(ctx, batch, vkr_bakery_json_get(args, "target"), "target",
+               &target)) {
+    return false_v;
+  }
+  if (ref.item >= 0 || target.item >= 0) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "entity.place moves objects that exist; place what this "
+                    "batch creates in a later request");
+  }
+  if (ref.container != target.container ||
+      ref.entity.u64 == target.entity.u64) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'entity' and 'target' are two objects of one scene");
+  }
+  String8 mode = {0};
+  (void)vkr_bakery_json_get_string(args, "mode", &mode);
+  const bool8_t on = ops_equals(mode, "on");
+  const bool8_t inside = ops_equals(mode, "inside");
+  const bool8_t against = ops_equals(mode, "against");
+  if (!on && !inside && !against) {
+    return ops_fail(ctx, OPS_INVALID, "'mode' is on, against or inside");
+  }
+  String8 side = {0};
+  (void)vkr_bakery_json_get_string(args, "side", &side);
+  const int32_t axis =
+      against ? (ops_equals(side, "+x") || ops_equals(side, "-x")   ? 0
+                 : ops_equals(side, "+z") || ops_equals(side, "-z") ? 2
+                                                                    : -1)
+              : 1;
+  if (axis < 0) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'against' needs 'side': +x, -x, +z or -z of the target");
+  }
+  float64_t gap = 0.0;
+  (void)ops_arg_number(args, "gap", &gap);
+  const bool8_t keep = ops_arg_bool(args, "keep", false_v);
+  const VkrScene *scene = ops_scene(ctx->frame, ref.container);
+  const SceneTransform *transform = ops_transform(scene, ref.entity);
+  VkrBrushGeometry *scratch = arena_alloc(
+      ops_arena(ctx), sizeof(VkrBrushGeometry), ARENA_MEMORY_TAG_STRUCT);
+  if (!transform || !scratch) {
+    return ops_fail(ctx, OPS_INVALID, "'entity' has no pose to move");
+  }
+  Vec3 elo = {0};
+  Vec3 ehi = {0};
+  Vec3 tlo = {0};
+  Vec3 thi = {0};
+  ops_object_box(scene, ref.entity, scratch, &elo, &ehi);
+  ops_object_box(scene, target.entity, scratch, &tlo, &thi);
+  const Vec3 ec = vec3_scale(vec3_add(elo, ehi), 0.5f);
+  const Vec3 tc = vec3_scale(vec3_add(tlo, thi), 0.5f);
+  const float32_t g = (float32_t)gap;
+  Vec3 delta = vec3_zero();
+  if (on || inside) {
+    /* On the top, or on the floor inside (a room's floor slab). */
+    const float32_t floor =
+        on ? thi.y
+           : vkr_editor_entity_floor(scene, target.entity, scratch, tlo, thi);
+    delta.y = floor + g - elo.y;
+    if (!keep) {
+      delta.x = tc.x - ec.x;
+      delta.z = tc.z - ec.z;
+    }
+  } else if (axis == 0) {
+    delta.x = side.str[0] == '+' ? thi.x + g - elo.x : tlo.x - g - ehi.x;
+    delta.z = keep ? 0.0f : tc.z - ec.z;
+  } else {
+    delta.z = side.str[0] == '+' ? thi.z + g - elo.z : tlo.z - g - ehi.z;
+    delta.x = keep ? 0.0f : tc.x - ec.x;
+  }
+  /* The new world position in the parent's space. */
+  Vec3 position = vec3_add(mat4_position(transform->world), delta);
+  const SceneTransform *parent =
+      ops_transform(scene, ops_parent(scene, ref.entity));
+  if (parent) {
+    position = mat4_mul_vec3(mat4_inverse(parent->world), position);
+  }
+  char id[40];
+  ops_id_text(ref.entity, id, sizeof(id));
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *set = vkr_bakery_json_object(arena);
+  ops_set(ctx, set, "entity", vkr_bakery_json_cstr(arena, id));
+  ops_set(ctx, set, "position", ops_vec3(ctx, position));
+  return ops_build_set(ctx, set, batch);
+}
+
 #define OPS_ENTITY_SCHEMA                                                      \
   "{\"type\":\"string\",\"description\":\"An entity: world:index:generation, " \
   "an exact unique name, or $k for the entity operation k of the same batch "  \
@@ -6912,6 +7603,20 @@ static const OpsDef s_ops[] = {
      "\"array\",\"items\":" OPS_ENTITY_SCHEMA ",\"minItems\":2,"
      "\"maxItems\":8}," OPS_REVIEW_SCHEMA "},\"required\":[\"brushes\"]}",
      NULL, ops_build_merge},
+    {"entity.place",
+     "Move 'entity' against 'target' by their world boxes: 'mode' on sets "
+     "it on the target's top, inside on the target's floor (a room's floor "
+     "slab), centred unless 'keep'; against sets it flush to the target's "
+     "'side' (+x, -x, +z or -z), centred along that side unless 'keep'. "
+     "'gap' leaves metres between them. Both objects must exist before the "
+     "request.",
+     "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
+     ",\"target\":" OPS_ENTITY_SCHEMA ",\"mode\":{\"type\":\"string\","
+     "\"enum\":[\"on\",\"against\",\"inside\"]},\"side\":{\"type\":"
+     "\"string\",\"enum\":[\"+x\",\"-x\",\"+z\",\"-z\"]},\"gap\":{\"type\":"
+     "\"number\"},\"keep\":{\"type\":\"boolean\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"entity\",\"target\",\"mode\"]}",
+     NULL, ops_build_place},
     {"brush.snap",
      "Snap objects together: the first stays, each other one (unless it has "
      "free_placement) moves the least distance that sets its world box "
@@ -7191,6 +7896,36 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"string\"},\"args\":{\"type\":\"object\"}},\"required\":["
      "\"op\"]}}," OPS_REVIEW_SCHEMA "},\"required\":[\"ops\"]}",
      ops_run_batch, NULL},
+    {"changes.feed",
+     "What changed since sequence 'after' (0 for everything kept): batches "
+     "applied by any author (the editor's own included), changes accepted "
+     "or rejected, and claims set or released, each with its author, "
+     "label, objects and box, oldest first. Pass 'next' back as 'after' to "
+     "read on; 'missed' means older events left the ring. 'revisions' grow "
+     "with every edit, including the designer's.",
+     "{\"type\":\"object\",\"properties\":{\"after\":{\"type\":\"integer\","
+     "\"minimum\":0},\"limit\":{\"type\":\"integer\",\"minimum\":1,"
+     "\"maximum\":128}}}",
+     ops_run_feed, NULL, OPS_QUICK},
+    {"claims.set",
+     "Claim a box of a scene: other agents' writes that touch it are "
+     "refused (VKR-AGENT-0010) until you release it, so a swarm builds side "
+     "by side without conflicts. 'claim' moves one of your claims. Boxes "
+     "that only touch do not overlap.",
+     "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":\"object\","
+     "\"properties\":{\"min\":" OPS_VEC3_SCHEMA ",\"max\":" OPS_VEC3_SCHEMA
+     "},\"required\":[\"min\",\"max\"]},\"name\":{\"type\":\"string\"},"
+     "\"claim\":{\"type\":\"integer\"},\"container\":" OPS_CONTAINER_SCHEMA
+     "," OPS_AGENT_SCHEMA "},\"required\":[\"region\"]}",
+     ops_run_claims_set, NULL},
+    {"claims.release",
+     "Release one of your claims by 'claim', or all of yours.",
+     "{\"type\":\"object\",\"properties\":{\"claim\":{\"type\":\"integer\"},"
+     "\"all\":{\"type\":\"boolean\"}," OPS_AGENT_SCHEMA "}}",
+     ops_run_claims_release, NULL},
+    {"claims.list", "Every claim with its author, name, scene and box.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_claims_list, NULL,
+     OPS_QUICK},
     {"changes.list", "Pending changes awaiting the designer's review.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_changes_list, NULL,
      OPS_QUICK},
@@ -7429,6 +8164,11 @@ bool8_t vkr_editor_ops_quick(String8 op) {
 }
 
 void vkr_editor_ops_update(VkrEditorOps *ops, const VkrSampleUiFrame *frame) {
+  /* Claims name boxes of the scene they were made in. */
+  if (ops && ops->claim_count &&
+      ops->claims_generation != frame->scene_generation) {
+    ops->claim_count = 0u;
+  }
   for (uint32_t i = 0; ops && i < ops->change_count;) {
     const VkrSceneEditState *journal =
         ops_journal(frame, ops->changes[i].container);
@@ -7462,11 +8202,24 @@ bool8_t vkr_editor_ops_entity_pending(const VkrEditorOps *ops,
   return false_v;
 }
 
+/* Feeds the acceptance of `change`. */
+static void ops_feed_accept(VkrEditorOps *ops, const VkrEditorChange *change) {
+  OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_ACCEPTED, change->container,
+                                     change->author, change->label);
+  event->change = change->id;
+  for (uint32_t i = 0; i < Min(change->entity_count, OPS_FEED_ENTITIES); ++i) {
+    event->entities[event->entity_count++] = change->entities[i];
+  }
+}
+
 bool8_t vkr_editor_ops_accept(VkrEditorOps *ops, uint32_t id) {
   if (!ops) {
     return false_v;
   }
   if (!id) {
+    for (uint32_t i = 0; i < ops->change_count; ++i) {
+      ops_feed_accept(ops, &ops->changes[i]);
+    }
     ops->change_count = 0u;
     return true_v;
   }
@@ -7474,8 +8227,18 @@ bool8_t vkr_editor_ops_accept(VkrEditorOps *ops, uint32_t id) {
   if (index < 0) {
     return false_v;
   }
+  ops_feed_accept(ops, &ops->changes[index]);
   ops_change_remove(ops, (uint32_t)index);
   return true_v;
+}
+
+uint32_t vkr_editor_ops_claim_count(const VkrEditorOps *ops) {
+  return ops ? ops->claim_count : 0u;
+}
+
+const VkrEditorClaim *vkr_editor_ops_claim(const VkrEditorOps *ops,
+                                           uint32_t index) {
+  return ops && index < ops->claim_count ? &ops->claims[index] : NULL;
 }
 
 // =============================================================================
@@ -7559,6 +8322,13 @@ static bool8_t changes_shown(const VkrEditorOps *ops,
                              const VkrEditorChange *change) {
   return !ops->changes_filter[0] ||
          strcmp(ops->changes_filter, change->author) == 0;
+}
+
+/* Whether a claim by `author` passes the window's author filter. */
+static bool8_t changes_claim_shown(const VkrEditorOps *ops,
+                                   const VkrEditorClaim *claim) {
+  return !ops->changes_filter[0] ||
+         strcmp(ops->changes_filter, claim->author) == 0;
 }
 
 /* The container a change edited, as the Outliner names it. */
@@ -7669,7 +8439,7 @@ static VkrUiPlacement changes_cell(uint32_t column, uint32_t row,
    all. */
 static void changes_header(VkrEditorUi *editor, VkrEditorOps *ops,
                            VkrUiSystem *ui, uint32_t shown,
-                           uint32_t author_count) {
+                           uint32_t claims_shown, uint32_t author_count) {
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                 {.unit = VKR_UI_TRACK_AUTO},
@@ -7682,13 +8452,18 @@ static void changes_header(VkrEditorUi *editor, VkrEditorOps *ops,
     return;
   }
   char text[160];
+  char claims[32] = "";
+  if (claims_shown) {
+    snprintf(claims, sizeof(claims), "  \xc2\xb7  %u claim%s", claims_shown,
+             claims_shown == 1u ? "" : "s");
+  }
   if (ops->changes_filter[0]) {
-    snprintf(text, sizeof(text), "%u change%s from %s", shown,
-             shown == 1u ? "" : "s", ops->changes_filter);
+    snprintf(text, sizeof(text), "%u change%s from %s%s", shown,
+             shown == 1u ? "" : "s", ops->changes_filter, claims);
   } else {
-    snprintf(text, sizeof(text), "%u change%s to review from %u author%s",
+    snprintf(text, sizeof(text), "%u change%s to review from %u author%s%s",
              shown, shown == 1u ? "" : "s", author_count,
-             author_count == 1u ? "" : "s");
+             author_count == 1u ? "" : "s", claims);
   }
   VkrUiWidgetConfig summary =
       vkr_editor_text_config(theme->font_body, theme->text);
@@ -7702,7 +8477,7 @@ static void changes_header(VkrEditorUi *editor, VkrEditorOps *ops,
                string8_create_from_cstr((const uint8_t *)text, strlen(text)),
                &summary);
   const float64_t now = vkr_platform_get_absolute_time();
-  if (ops->changes_filter[0]) {
+  if (ops->changes_filter[0] && shown) {
     const bool8_t armed = now < ops->reject_all_armed_until;
     char label[48];
     snprintf(label, sizeof(label), armed ? "Confirm reject %u" : "Reject %u",
@@ -7734,7 +8509,7 @@ static void changes_header(VkrEditorUi *editor, VkrEditorOps *ops,
                      ops->changes_filter[0] ? string8_lit("Accept shown")
                                             : string8_lit("Accept all"),
                      VKR_UI_ICON_CHECK, changes_cell(2u, 0u, 1u),
-                     CHANGES_BUTTON_PRIMARY, false_v,
+                     CHANGES_BUTTON_PRIMARY, !shown,
                      string8_lit("Keep these changes and clear their marks"))) {
     for (uint32_t i = ops->change_count; i-- > 0u;) {
       if (changes_shown(ops, &ops->changes[i]) && !ops->changes[i].rejecting) {
@@ -7927,6 +8702,108 @@ static void changes_card(VkrEditorUi *editor, VkrEditorOps *ops,
   (void)vkr_ui_panel_end(ui);
 }
 
+/* One claim: its author and name, its size and scene, Focus and Release.
+   The designer releases a claim an agent left, as after it stopped. */
+static void changes_claim_card(VkrEditorUi *editor, VkrEditorOps *ops,
+                               const VkrSampleUiFrame *frame, VkrUiSystem *ui,
+                               const ChangesAuthors *authors,
+                               uint32_t claim_index, uint32_t row) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrEditorClaim claim = ops->claims[claim_index];
+  const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                                {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
+                                {.value = 178.0f, .unit = VKR_UI_TRACK_PX}};
+  const VkrUiTrack rows[] = {{.value = 22.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 18.0f, .unit = VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig card =
+      changes_grid(changes_cell(0u, row, 1u), columns, ArrayCount(columns),
+                   rows, ArrayCount(rows));
+  card.placement.align = VKR_UI_ALIGN_STRETCH;
+  card.style.padding_pt = (VkrUiEdges){8.0f, 10.0f, 8.0f, 12.0f};
+  card.style.gap_pt = theme->space_sm + 2.0f;
+  card.style.background_color = vkr_ui_color_alpha(theme->info, 0.06f);
+  card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  card.style.border_color = vkr_ui_color_alpha(theme->info, 0.45f);
+  card.style.corner_radius_pt =
+      (Vec4){theme->radius_large, theme->radius_large, theme->radius_large,
+             theme->radius_large};
+  card.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("claim"), &card)) {
+    return;
+  }
+  const VkrUiTrack title_columns[] = {{.unit = VKR_UI_TRACK_AUTO},
+                                      {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiPanelConfig title = changes_grid(changes_cell(0u, 0u, 1u), title_columns,
+                                        ArrayCount(title_columns), &fill, 1u);
+  title.style.gap_pt = theme->space_md;
+  title.clip_children = true_v;
+  if (vkr_ui_panel_begin(ui, string8_lit("title"), &title)) {
+    const Vec4 color = changes_author_color(authors, claim.author);
+    VkrUiWidgetConfig pill = vkr_editor_text_config(theme->font_caption, color);
+    pill.placement = changes_cell(0u, 0u, 1u);
+    pill.placement.justify = VKR_UI_ALIGN_START;
+    pill.style.padding_pt = (VkrUiEdges){1.0f, 8.0f, 1.0f, 8.0f};
+    pill.style.background_color = vkr_ui_color_alpha(color, 0.18f);
+    pill.style.corner_radius_pt = (Vec4){9.0f, 9.0f, 9.0f, 9.0f};
+    pill.text.font = editor->heading_font;
+    pill.center = true_v;
+    vkr_ui_label(ui, string8_lit("author"),
+                 string8_create_from_cstr((const uint8_t *)claim.author,
+                                          strlen(claim.author)),
+                 &pill);
+    VkrUiWidgetConfig name =
+        vkr_editor_text_config(theme->font_body, theme->text);
+    name.placement = changes_cell(1u, 0u, 1u);
+    name.placement.justify = VKR_UI_ALIGN_START;
+    name.text.font = editor->heading_font;
+    name.icon = VKR_UI_ICON_LOCK;
+    name.icon_size_pt = 13.0f;
+    name.icon_color = theme->info;
+    vkr_ui_label(
+        ui, string8_lit("name"),
+        string8_create_formatted(ui->frame_allocator, "Claims '%s'",
+                                 claim.name[0] ? claim.name : "a region"),
+        &name);
+    (void)vkr_ui_panel_end(ui);
+  }
+  char where[32];
+  changes_container(claim.container, where, sizeof(where));
+  VkrUiWidgetConfig meta =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  meta.placement = changes_cell(0u, 1u, 1u);
+  meta.placement.justify = VKR_UI_ALIGN_START;
+  vkr_ui_label(
+      ui, string8_lit("meta"),
+      string8_create_formatted(
+          ui->frame_allocator,
+          "%.0f \xc3\x97 %.0f \xc3\x97 %.0f m  \xc2\xb7  %s  \xc2\xb7  other "
+          "agents' writes inside are refused",
+          (float64_t)(claim.max.x - claim.min.x),
+          (float64_t)(claim.max.y - claim.min.y),
+          (float64_t)(claim.max.z - claim.min.z), where),
+      &meta);
+  VkrUiWidgetConfig focus = vkr_editor_icon_button_config(
+      1u, 0u, VKR_UI_ICON_FRAME, string8_lit("Frame this claim in the Scene"));
+  focus.placement.row_span = 2u;
+  if (vkr_ui_button(ui, string8_lit("focus"), (String8){0}, &focus) &&
+      frame->view_request) {
+    frame->view_request->frame_box = true_v;
+    frame->view_request->frame_min = claim.min;
+    frame->view_request->frame_max = claim.max;
+  }
+  VkrUiPlacement release = changes_cell(2u, 0u, 2u);
+  release.justify = VKR_UI_ALIGN_END;
+  if (changes_button(ui, editor, string8_lit("release"),
+                     string8_lit("Release claim"), VKR_UI_ICON_UNLOCK, release,
+                     CHANGES_BUTTON_ACTION, false_v,
+                     string8_lit("Free this region for every agent, as when "
+                                 "its agent stopped"))) {
+    ops_claim_release_at(ops, claim_index);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
 /* Nothing to review: what the window is for and where agents connect. */
 static void changes_empty(VkrEditorUi *editor, VkrUiSystem *ui) {
   const VkrUiTheme *theme = vkr_ui_theme();
@@ -7991,8 +8868,10 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
   const VkrUiTheme *theme = vkr_ui_theme();
   ChangesAuthors authors = {0};
   bool8_t filter_found = false_v;
-  for (uint32_t i = 0; i < ops->change_count; ++i) {
-    const char *author = ops->changes[i].author;
+  for (uint32_t i = 0; i < ops->change_count + ops->claim_count; ++i) {
+    const char *author = i < ops->change_count
+                             ? ops->changes[i].author
+                             : ops->claims[i - ops->change_count].author;
     filter_found = filter_found || strcmp(ops->changes_filter, author) == 0;
     uint32_t a = 0u;
     while (a < authors.count && strcmp(authors.names[a], author) != 0) {
@@ -8012,7 +8891,7 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
   /* Ids first: Accept and a finished reject remove changes while the cards
      build, so each card looks its change up again. Newest first. */
   uint32_t ids[VKR_EDITOR_CHANGE_MAX];
-  VkrUiTrack card_rows[VKR_EDITOR_CHANGE_MAX];
+  VkrUiTrack card_rows[VKR_EDITOR_CHANGE_MAX + VKR_EDITOR_CLAIM_MAX];
   uint32_t shown = 0u;
   for (uint32_t i = ops->change_count; i-- > 0u;) {
     if (changes_shown(ops, &ops->changes[i])) {
@@ -8022,10 +8901,21 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
                        .unit = VKR_UI_TRACK_PX};
     }
   }
+  /* Claims list after the changes, by id, as the filter shows them. */
+  uint32_t claim_ids[VKR_EDITOR_CLAIM_MAX];
+  uint32_t claims_shown = 0u;
+  for (uint32_t i = 0; i < ops->claim_count; ++i) {
+    if (changes_claim_shown(ops, &ops->claims[i])) {
+      claim_ids[claims_shown] = ops->claims[i].id;
+      card_rows[shown + claims_shown++] = (VkrUiTrack){
+          .value = 22.0f + 18.0f + 6.0f + 18.0f, .unit = VKR_UI_TRACK_PX};
+    }
+  }
   const bool8_t chips = authors.count > 1u;
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const bool8_t any = ops->change_count || ops->claim_count;
   const VkrUiTrack rows[] = {
-      {.value = ops->change_count ? 34.0f : 0.0f, .unit = VKR_UI_TRACK_PX},
+      {.value = any ? 34.0f : 0.0f, .unit = VKR_UI_TRACK_PX},
       {.value = chips ? 26.0f : 0.0f, .unit = VKR_UI_TRACK_PX},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
   VkrUiPanelConfig body = changes_grid(changes_cell(0u, 0u, 1u), &column, 1u,
@@ -8037,7 +8927,7 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
   if (!vkr_ui_panel_begin(ui, string8_lit("changes.body"), &body)) {
     return;
   }
-  if (!ops->change_count) {
+  if (!any) {
     VkrUiPanelConfig area =
         changes_grid(changes_cell(0u, 2u, 1u), &column, 1u, &column, 1u);
     area.placement.align = VKR_UI_ALIGN_STRETCH;
@@ -8048,12 +8938,13 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
     (void)vkr_ui_panel_end(ui);
     return;
   }
-  changes_header(editor, ops, ui, shown, authors.count);
+  changes_header(editor, ops, ui, shown, claims_shown, authors.count);
   if (chips) {
     changes_chips(ops, ui, &authors);
   }
-  VkrUiPanelConfig list = changes_grid(changes_cell(0u, 2u, 1u), &column, 1u,
-                                       card_rows, Max(shown, 1u));
+  VkrUiPanelConfig list =
+      changes_grid(changes_cell(0u, 2u, 1u), &column, 1u, card_rows,
+                   Max(shown + claims_shown, 1u));
   list.placement.align = VKR_UI_ALIGN_STRETCH;
   list.style.gap_pt = theme->space_sm + 2.0f;
   if (vkr_ui_scroll_area_begin(ui, string8_lit("cards"), &list)) {
@@ -8067,6 +8958,18 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
       changes_card(editor, ops, frame, ui, &authors, &ops->changes[index], i,
                    now);
       (void)vkr_ui_pop_id(ui);
+    }
+    for (uint32_t i = 0; i < claims_shown; ++i) {
+      for (uint32_t c = 0; c < ops->claim_count; ++c) {
+        if (ops->claims[c].id != claim_ids[i]) {
+          continue;
+        }
+        /* Claim ids and change ids share the id stack; claims sit apart. */
+        (void)vkr_ui_push_id_u64(ui, 0x100000000ull + claim_ids[i]);
+        changes_claim_card(editor, ops, frame, ui, &authors, c, shown + i);
+        (void)vkr_ui_pop_id(ui);
+        break;
+      }
     }
     (void)vkr_ui_scroll_area_end(ui);
   }
