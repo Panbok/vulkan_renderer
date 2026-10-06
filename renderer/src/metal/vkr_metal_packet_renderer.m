@@ -780,7 +780,6 @@ struct VkrMetalPacketRenderer {
   id<MTLDepthStencilState> tiled_sky_state;
   id<MTLTexture> tiled_msaa_color;
   id<MTLTexture> tiled_msaa_depth;
-  id<MTLResidencySet> tiled_residency;
   uint32_t tiled_width;
   uint32_t tiled_height;
   id<MTLRenderPipelineState> ui_pipeline;

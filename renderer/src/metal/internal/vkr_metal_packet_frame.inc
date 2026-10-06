@@ -4216,7 +4216,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_shadow(
 }
 
 /* Keeps memoryless multisampled colour and depth of the tiled pipeline's
-   opaque pass at the target's extent. Earlier frames may still render into
+   opaque pass at the target's extent. They have no memory to make resident,
+   and residency sets reject them. Earlier frames may still render into
    replaced targets, so a resize first waits for every submitted frame. */
 vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
     VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height)
@@ -4230,10 +4231,8 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
     return false_v;
   [renderer->tiled_msaa_color release];
   [renderer->tiled_msaa_depth release];
-  [renderer->tiled_residency release];
   renderer->tiled_msaa_color = nil;
   renderer->tiled_msaa_depth = nil;
-  renderer->tiled_residency = nil;
 
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
   descriptor.textureType = MTLTextureType2DMultisample;
@@ -4249,21 +4248,10 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
   renderer->tiled_msaa_depth =
       [renderer->device newTextureWithDescriptor:descriptor];
   [descriptor release];
-  MTLResidencySetDescriptor *residency = [MTLResidencySetDescriptor new];
-  residency.label = @"VKR tiled multisampled targets";
-  NSError *error = nil;
-  renderer->tiled_residency =
-      [renderer->device newResidencySetWithDescriptor:residency error:&error];
-  [residency release];
-  if (!renderer->tiled_msaa_color || !renderer->tiled_msaa_depth ||
-      !renderer->tiled_residency) {
-    vkr_metal_packet_print_error("tiled_targets", error);
+  if (!renderer->tiled_msaa_color || !renderer->tiled_msaa_depth) {
+    log_error("Metal tiled multisampled targets unavailable");
     return false_v;
   }
-  [renderer->tiled_residency addAllocation:renderer->tiled_msaa_color];
-  [renderer->tiled_residency addAllocation:renderer->tiled_msaa_depth];
-  [renderer->tiled_residency commit];
-  [renderer->tiled_residency requestResidency];
   renderer->tiled_width = width;
   renderer->tiled_height = height;
   return true_v;
@@ -5910,7 +5898,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
   [renderer->command_buffer
       beginCommandBufferWithAllocator:renderer->command_allocator];
   id<MTLResidencySet>
-      residency_sets[3u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
+      residency_sets[2u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
           (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
               renderer->memory),
           (id<MTLResidencySet>)vkr_metal_material_table_device_residency_set(
@@ -5922,8 +5910,6 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
        ++group)
     residency_sets[residency_set_count++] =
         renderer->active_command_slot->gpu_draw_icb_residencies[group];
-  if (renderer->tiled_residency)
-    residency_sets[residency_set_count++] = renderer->tiled_residency;
   [renderer->command_buffer useResidencySets:residency_sets
                                        count:residency_set_count];
   bool8_t passed = true_v;
