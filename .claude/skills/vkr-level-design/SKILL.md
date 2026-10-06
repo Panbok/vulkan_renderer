@@ -50,9 +50,10 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    most 200 cells a side: `#` walls, `n` gaps too narrow, `,` out of reach.
 4. `level.lint` in tiles of 76 m or less (0.3 m cells); expect no issue of
    a kind the spec forbids.
-5. One `view.capture` sheet (`views`, `max_width` 768) with `marks` at
-   doors, spawns and stairs. Judge look and scale from it, not positions;
-   marks draw over geometry whether it hides them or not.
+5. One `view.capture` sheet (`views`, `max_width` 768) with labelled
+   `marks` at doors, spawns and stairs. Each mark answers its pixel and
+   `hidden` (collision between the camera and the point); judge look and
+   scale from the picture, not positions.
 
 Reads wait for rebuilds; repeat a read that answers `settled` false. Only
 collision counts in checks: Bistro's own meshes have none, so checks see

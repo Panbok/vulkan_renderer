@@ -248,13 +248,17 @@ image, each pixel the average of the pixels it covers. `views` takes up to
 four views, each with its own `view`, `focus`, `eye` and `target` and
 `grid_labels`, captures them one after another and writes one sheet of two
 columns, `max_width` wide (the Scene's width without it); the answer gives
-each view's rectangle in the sheet. `marks` takes up to 32 world points:
-each view projects them through the camera of the build that asked for its
-frame (`VkrSampleUiFrame.view_projection`) and draws each as a numbered
-magenta cross over the scene, hidden by geometry or not, and the answer
-gives each mark's pixel in the image, or null outside the view. An agent
-checks where a door or a spawn point lands in one request instead of
-reading coordinates off a picture.
+each view's rectangle in the sheet. `marks` takes up to 32 world points,
+each bare or with a `label` of up to 15 characters: each view projects them
+through the camera of the build that asked for its frame
+(`VkrSampleUiFrame.view_projection`) and draws each as a cross with its
+number and label in a 3 by 5 pixel font. A physics ray from the near plane
+under the mark to the mark decides whether collision hides it: the cross is
+magenta where the camera sees the point and blue behind collision, and the
+answer gives each mark's pixel (`at`) and `hidden`, or null outside the
+view. Geometry without collision hides nothing. An agent checks where a
+door or a spawn point lands, and whether a wall blocks it, in one request
+instead of reading coordinates off a picture.
 
 ### MCP adapter
 
@@ -1146,3 +1150,10 @@ material then).
   scene with their ids 1 and 2; the restored claim still refused the other
   agent's brush with `VKR-AGENT-0010`; the next claim took id 3; releasing
   every claim removed the scene's claims file.
+- Windows and native Vulkan, 2026-10-06 (headless Release editor on
+  Bistro): in a three-view sheet of a room without a ceiling, a labelled
+  mark on a crate's top answered visible from the top and from a high eye
+  and hidden from a low eye behind the room's east wall, and a mark inside
+  the crate answered hidden in every view; each reported pixel held magenta
+  for a visible mark and blue for a hidden one, and the labels read
+  "1 CRATE" and "4 INSIDE".

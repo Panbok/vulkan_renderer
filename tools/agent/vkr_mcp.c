@@ -61,7 +61,8 @@ static const char *s_instructions =
     "of 76 m or less for full detail. Use vkr_view_capture (view top with "
     "grid_labels, or eye and target) to judge the look: pass max_width (768 "
     "is plenty), put several views in one sheet with 'views', and pass "
-    "'marks' (world points) to see numbered crosses where they land. Undo "
+    "'marks' (world points, with labels) to see where they land and "
+    "whether walls hide them. Undo "
     "takes only "
     "your own batches; reject your change with vkr_changes_reject instead "
     "of undoing other work.";

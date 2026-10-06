@@ -5287,6 +5287,8 @@ typedef struct OpsCaptureView {
      inside the image. */
   Vec2 marks[OPS_CAPTURE_MARKS_MAX];
   bool8_t mark_shown[OPS_CAPTURE_MARKS_MAX];
+  /* Collision lies between the camera and the mark. */
+  bool8_t mark_hidden[OPS_CAPTURE_MARKS_MAX];
 } OpsCaptureView;
 
 typedef struct OpsPendingCapture {
@@ -5308,6 +5310,8 @@ typedef struct OpsPendingCapture {
   OpsCaptureView views[OPS_CAPTURE_VIEWS_MAX];
   uint32_t mark_count;
   Vec3 marks[OPS_CAPTURE_MARKS_MAX];
+  /* Each mark's label as the agent gave it, empty for none. */
+  char mark_labels[OPS_CAPTURE_MARKS_MAX][16];
 } OpsPendingCapture;
 
 static float32_t ops_half_to_float(uint16_t half) {
@@ -5473,17 +5477,31 @@ static void ops_image_dot(uint8_t *pixels, uint32_t width, uint32_t height,
   pixel[2] = color[2];
 }
 
-/* Digits 0 to 9 in a 3 by 5 grid, rows from the top, three bits each. */
-static const uint16_t s_ops_digits[10] = {
-    0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9,
-    0x79CF, 0x79EF, 0x7292, 0x7BEF, 0x7BCF,
+/* The characters marks draw, each in a 3 by 5 grid, rows from the top,
+   three bits a row; lower case draws as capitals and others as blanks. */
+static const char s_ops_glyph_chars[] =
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-./_: ";
+static const uint16_t s_ops_glyphs[] = {
+    0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9, 0x79CF, 0x79EF, 0x7292, 0x7BEF,
+    0x7BCF, 0x2BED, 0x6BAE, 0x3923, 0x6B6E, 0x79A7, 0x79A4, 0x396B, 0x5BED,
+    0x7497, 0x126A, 0x5BAD, 0x4927, 0x5FED, 0x6B6D, 0x7B6F, 0x6BA4, 0x2B73,
+    0x6BAD, 0x388E, 0x7492, 0x5B6F, 0x5B6A, 0x5BFD, 0x5AAD, 0x5A92, 0x72A7,
+    0x01C0, 0x0002, 0x12A4, 0x0007, 0x0410, 0x0000,
 };
 
-/* Mark `number` at (x, y): a cross in a ring and its number beside it,
-   magenta outlined in black so it reads on any scene. */
+static uint16_t ops_glyph(char c) {
+  if (c >= 'a' && c <= 'z') {
+    c = (char)(c - 'a' + 'A');
+  }
+  const char *at = c ? strchr(s_ops_glyph_chars, c) : NULL;
+  return at ? s_ops_glyphs[at - s_ops_glyph_chars] : 0u;
+}
+
+/* A mark at (x, y): a cross in a ring and `text` (its number and label)
+   beside it, in `ink` outlined in black so it reads on any scene. */
 static void ops_image_mark(uint8_t *pixels, uint32_t width, uint32_t height,
-                           int32_t x, int32_t y, uint32_t number) {
-  static const uint8_t ink[3] = {255u, 40u, 210u};
+                           int32_t x, int32_t y, const char *text,
+                           const uint8_t ink[3]) {
   static const uint8_t edge[3] = {0u, 0u, 0u};
   for (uint32_t pass = 0; pass < 2u; ++pass) {
     const uint8_t *color = pass ? ink : edge;
@@ -5503,12 +5521,10 @@ static void ops_image_mark(uint8_t *pixels, uint32_t width, uint32_t height,
         ops_image_dot(pixels, width, height, x + rx, y + ry + t, color);
       }
     }
-    /* The number, two pixels a grid cell, up and to the right. */
-    char text[8];
-    snprintf(text, sizeof(text), "%u", number);
+    /* The text, two pixels a grid cell, up and to the right. */
     int32_t left = x + 9;
     for (const char *c = text; *c; ++c, left += 8) {
-      const uint16_t glyph = s_ops_digits[*c - '0'];
+      const uint16_t glyph = ops_glyph(*c);
       for (int32_t row = 0; row < 5; ++row) {
         for (int32_t column = 0; column < 3; ++column) {
           if (!(glyph & (1u << (14 - row * 3 - column)))) {
@@ -6148,6 +6164,44 @@ static void ops_capture_view_apply(const VkrSampleUiFrame *frame,
   }
 }
 
+/* Whether collision lies between the camera and the mark at `point`,
+   whose clip position `clip` the view's matrix gave: a ray from the near
+   plane under the mark (depth 0, mat4_perspective and mat4_ortho_zo_yinv)
+   to the mark. Geometry without collision hides nothing. */
+static bool8_t ops_capture_hidden(const VkrSampleUiFrame *frame,
+                                  Mat4 view_projection, Vec4 clip, Vec3 point) {
+  const Vec4 near_point =
+      mat4_mul_vec4(mat4_inverse(view_projection),
+                    (Vec4){clip.x / clip.w, clip.y / clip.w, 0.0f, 1.0f});
+  if (!isfinite(near_point.w) || fabsf(near_point.w) < 1.0e-9f) {
+    return false_v;
+  }
+  const Vec3 origin =
+      vec3_new(near_point.x / near_point.w, near_point.y / near_point.w,
+               near_point.z / near_point.w);
+  const Vec3 displacement = vec3_sub(point, origin);
+  const float32_t length = vec3_length(displacement);
+  if (!isfinite(length) || length < 1.0e-3f) {
+    return false_v;
+  }
+  /* A mark on a surface stays visible; the length term covers float
+     error on the long rays of an orthographic view. */
+  const float32_t slack = 0.05f + 1.0e-4f * length;
+  const VkrScene *scenes[2] = {frame->scene, frame->world};
+  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    VkrPhysicsQueryFilter filter = {.mask = UINT16_MAX};
+    VkrPhysicsRayHit hit = {0};
+    /* Physics queries take a mutable scene but change none of its state. */
+    if (scenes[i] &&
+        vkr_scene_physics_raycast_query((VkrScene *)scenes[i], origin,
+                                        displacement, &filter, &hit) &&
+        hit.fraction * length < length - slack) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 /* Keeps the captured frame of the current view at its cell size, with
    its marks drawn, and frees the full frame. */
 static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
@@ -6193,8 +6247,17 @@ static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
     }
     view->marks[i] = at;
     view->mark_shown[i] = true_v;
+    view->mark_hidden[i] = ops_capture_hidden(ctx->frame, view->view_projection,
+                                              clip, pending->marks[i]);
+    /* Magenta where the camera sees the mark, blue behind collision. */
+    static const uint8_t seen[3] = {255u, 40u, 210u};
+    static const uint8_t behind[3] = {70u, 170u, 255u};
+    char text[24];
+    snprintf(text, sizeof(text), "%u%s%s", i + 1u,
+             pending->mark_labels[i][0] ? " " : "", pending->mark_labels[i]);
     ops_image_mark(view->pixels, view->width, view->height,
-                   (int32_t)lroundf(at.x), (int32_t)lroundf(at.y), i + 1u);
+                   (int32_t)lroundf(at.x), (int32_t)lroundf(at.y), text,
+                   view->mark_hidden[i] ? behind : seen);
   }
   return true_v;
 }
@@ -6251,6 +6314,7 @@ static bool8_t ops_capture_finish(OpsContext *ctx, OpsPendingCapture *pending) {
           vkr_bakery_json_append(marks, vkr_bakery_json_null(arena));
           continue;
         }
+        VkrBakeryJson *mark = vkr_bakery_json_object(arena);
         VkrBakeryJson *at = vkr_bakery_json_array(arena);
         vkr_bakery_json_append(
             at,
@@ -6258,7 +6322,10 @@ static bool8_t ops_capture_finish(OpsContext *ctx, OpsPendingCapture *pending) {
         vkr_bakery_json_append(
             at,
             vkr_bakery_json_int(arena, y + (int64_t)lroundf(view->marks[m].y)));
-        vkr_bakery_json_append(marks, at);
+        ops_set(ctx, mark, "at", at);
+        ops_set(ctx, mark, "hidden",
+                vkr_bakery_json_bool(arena, view->mark_hidden[m]));
+        vkr_bakery_json_append(marks, mark);
       }
       ops_set(ctx, entry, "marks", marks);
     }
@@ -6326,11 +6393,22 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
     }
     for (const VkrBakeryJson *mark = marks ? marks->first : NULL; mark;
          mark = mark->next) {
+      /* A mark is a point, or {"point": [x, y, z], "label": "door"}. */
+      const VkrBakeryJson *point = mark;
+      String8 label = {0};
+      if (mark->type == VKR_BAKERY_JSON_OBJECT) {
+        point = vkr_bakery_json_get(mark, "point");
+        (void)vkr_bakery_json_get_string(mark, "label", &label);
+      }
+      snprintf(pending->mark_labels[pending->mark_count],
+               sizeof(pending->mark_labels[0]), "%.*s",
+               (int)Min(label.length, (uint64_t)15u), (const char *)label.str);
       float32_t xyz[3] = {0};
       uint32_t axis = 0u;
       for (const VkrBakeryJson *part =
-               mark->type == VKR_BAKERY_JSON_ARRAY && mark->count == 3u
-                   ? mark->first
+               point && point->type == VKR_BAKERY_JSON_ARRAY &&
+                       point->count == 3u
+                   ? point->first
                    : NULL;
            part; part = part->next, ++axis) {
         xyz[axis] = part->type == VKR_BAKERY_JSON_INT ? (float32_t)part->integer
@@ -6340,7 +6418,9 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
       }
       if (axis != 3u || !isfinite(xyz[0]) || !isfinite(xyz[1]) ||
           !isfinite(xyz[2])) {
-        ops_fail(ctx, OPS_INVALID, "Each mark is a world point [x, y, z]");
+        ops_fail(ctx, OPS_INVALID,
+                 "Each mark is a world point [x, y, z] or {\"point\": [x, y, "
+                 "z], \"label\": \"text\"}");
         return VKR_EDITOR_OP_DONE;
       }
       pending->marks[pending->mark_count++] = vec3_new(xyz[0], xyz[1], xyz[2]);
@@ -8725,10 +8805,11 @@ static const OpsDef s_ops[] = {
      "orthographic map), framed on an entity or box, from a perspective "
      "'eye' looking at 'target', with grid labels. 'views' takes up to 4 "
      "such views in one sheet of two columns; 'max_width' shrinks the image "
-     "(a sheet's whole width); 'marks' draws up to 32 world points as "
-     "numbered magenta crosses over the scene in every view, hidden by "
-     "geometry or not, and answers each one's pixel in the image, or null "
-     "where it lies outside the view.",
+     "(a sheet's whole width); 'marks' draws up to 32 world points (or "
+     "{point, label}) as numbered crosses with their labels in every view, "
+     "magenta where the camera sees them and blue behind collision, and "
+     "answers each one's pixel ('at') and 'hidden', or null where it lies "
+     "outside the view.",
      "{\"type\":\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
      ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
      "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA
@@ -8737,8 +8818,10 @@ static const OpsDef s_ops[] = {
      ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
      "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA
      "}}},\"max_width\":{\"type\":\"integer\",\"minimum\":64,\"maximum\":"
-     "8192},\"marks\":{\"type\":\"array\",\"maxItems\":32,"
-     "\"items\":" OPS_VEC3_SCHEMA
+     "8192},\"marks\":{\"type\":\"array\",\"maxItems\":32,\"items\":{"
+     "\"oneOf\":[" OPS_VEC3_SCHEMA ",{\"type\":\"object\",\"properties\":{"
+     "\"point\":" OPS_VEC3_SCHEMA ",\"label\":{\"type\":\"string\","
+     "\"maxLength\":15}},\"required\":[\"point\"]}]}"
      "},\"area\":{\"type\":\"string\",\"enum\":[\"scene\","
      "\"window\"],\"description\":\"The Scene image (default) or the whole "
      "editor window\"}," OPS_SETTLE_SCHEMA "}}",
