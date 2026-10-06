@@ -31,7 +31,7 @@ static void test_hash_table_create(void) {
   printf("  Running test_hash_table_create...\n");
   setup_suite();
   VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(&allocator, 10);
-  assert(table.capacity == 10 && "Hash table capacity is not 10");
+  assert(table.capacity == 16 && "Capacity rounds up to a power of two");
   assert(table.size == 0 && "Hash table size is not 0");
   assert(table.entries != NULL && "Hash table entries is NULL");
   vkr_hash_table_destroy_uint8_t(&table);
@@ -121,7 +121,8 @@ static void test_hash_table_collision_linear_probing(void) {
   uint64_t seen_index[4] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
   const char *seen_key[4] = {NULL, NULL, NULL, NULL};
   for (size_t i = 0; i < candidate_count; i++) {
-    uint64_t idx = vkr_hash_name_uint8_t(candidates[i], table.capacity);
+    uint64_t idx =
+        vkr_hash_table_hash_cstr(candidates[i]) & (table.capacity - 1u);
     if (seen_index[idx] == UINT64_MAX) {
       seen_index[idx] = idx;
       seen_key[idx] = candidates[i];
@@ -284,6 +285,17 @@ static void test_hash_table_allocation_failure_preserves_mappings(void) {
   assert(state.live_bytes == 0);
 }
 
+/* Finds `count` keys whose hash maps to `home` in a table of `capacity`. */
+static void hash_test_colliding_keys(char (*keys)[32], uint32_t count,
+                                     const char *prefix, uint64_t capacity,
+                                     uint64_t home, uint32_t *candidate) {
+  for (uint32_t i = 0; i < count; ++i) {
+    do {
+      snprintf(keys[i], sizeof(keys[i]), "%s-%u", prefix, (*candidate)++);
+    } while ((vkr_hash_table_hash_cstr(keys[i]) & (capacity - 1u)) != home);
+  }
+}
+
 static void test_hash_table_failed_rehash_preserves_entries(void) {
   ContainerTestAllocator state = {0};
   VkrAllocator alloc = container_test_allocator(&state);
@@ -291,18 +303,29 @@ static void test_hash_table_failed_rehash_preserves_entries(void) {
   assert(table.entries);
   char keys[129][32];
   uint32_t candidate = 0;
+  hash_test_colliding_keys(keys, ArrayCount(keys), "rehash", 256, 0,
+                           &candidate);
   for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
-    do {
-      snprintf(keys[i], sizeof(keys[i]), "rehash-%u", candidate++);
-    } while (vkr_hash_name_uint32_t(keys[i], 256) != 0);
     assert(vkr_hash_table_insert_uint32_t(&table, keys[i], i));
   }
   VkrHashEntry_uint32_t *original = table.entries;
   uint64_t bytes = state.live_bytes;
-  // 129 colliding keys exceed the probe limit only in the smaller table.
+  uint64_t calls = state.calls;
+  // Three quarters of 128 slots cannot hold 129 keys; nothing is allocated.
+  assert(!vkr_hash_table_resize_uint32_t(&table, 128));
+  assert(state.calls == calls);
+  state.fail = true;
   assert(!vkr_hash_table_resize_uint32_t(&table, 256));
+  state.fail = false;
   assert(table.entries == original && table.capacity == 1024);
   assert(table.size == ArrayCount(keys) && state.live_bytes == bytes);
+  for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
+    uint32_t *value = vkr_hash_table_get_uint32_t(&table, keys[i]);
+    assert(value && *value == i);
+  }
+  // The colliding keys share one probe run after the shrink.
+  assert(vkr_hash_table_resize_uint32_t(&table, 256));
+  assert(table.capacity == 256 && table.size == ArrayCount(keys));
   for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
     uint32_t *value = vkr_hash_table_get_uint32_t(&table, keys[i]);
     assert(value && *value == i);
@@ -311,62 +334,96 @@ static void test_hash_table_failed_rehash_preserves_entries(void) {
   assert(state.live_bytes == 0);
 }
 
-static void test_hash_table_failed_pending_insert_preserves_storage(void) {
+static void test_hash_table_long_probe_run_inserts(void) {
   ContainerTestAllocator state = {0};
   VkrAllocator alloc = container_test_allocator(&state);
-  VkrHashTable_uint32_t table = vkr_hash_table_create_uint32_t(&alloc, 256);
+  VkrHashTable_uint32_t table = vkr_hash_table_create_uint32_t(&alloc, 1024);
   assert(table.entries);
-  char collisions[129][32];
+  // 200 keys with one home slot form a probe run longer than 128 slots while
+  // the table is a fifth full. Every insert must succeed without growth.
+  static char collisions[200][32];
   uint32_t candidate = 0;
+  hash_test_colliding_keys(collisions, ArrayCount(collisions), "run", 1024, 0,
+                           &candidate);
   for (uint32_t i = 0; i < ArrayCount(collisions); ++i) {
-    do {
-      snprintf(collisions[i], sizeof(collisions[i]), "pending-%u", candidate++);
-    } while (vkr_hash_name_uint32_t(collisions[i], 512) != 0);
-    if (i < 128) {
-      assert(vkr_hash_table_insert_uint32_t(&table, collisions[i], i));
-    }
+    assert(vkr_hash_table_insert_uint32_t(&table, collisions[i], i));
   }
-  char others[64][32];
-  for (uint32_t i = 0; i < ArrayCount(others); ++i) {
-    do {
-      snprintf(others[i], sizeof(others[i]), "other-%u", candidate++);
-    } while (vkr_hash_name_uint32_t(others[i], 512) != 128 + i);
-    assert(vkr_hash_table_insert_uint32_t(&table, others[i], 128 + i));
-  }
-  assert(table.size == 192 && table.capacity == 256);
-  VkrHashEntry_uint32_t *original = table.entries;
-  uint64_t bytes = state.live_bytes;
-  // A removed entry in a full probe window can be restored without allocating.
-  state.fail = true;
-  uint64_t calls = state.calls;
-  assert(vkr_hash_table_remove_uint32_t(&table, collisions[63]));
-  assert(vkr_hash_table_insert_uint32_t(&table, collisions[63], 63));
-  assert(state.calls == calls && table.entries == original &&
-         table.size == 192);
-  state.fail = false;
-  // Growth can rehash every old entry but cannot place the pending key.
-  assert(!vkr_hash_table_insert_uint32_t(&table, collisions[128], 999));
-  assert(table.entries == original && table.capacity == 256 &&
-         table.size == 192);
-  assert(state.live_bytes == bytes);
-  assert(!vkr_hash_table_get_uint32_t(&table, collisions[128]));
-  for (uint32_t i = 0; i < 128; ++i) {
+  assert(table.size == ArrayCount(collisions) && table.capacity == 1024);
+  for (uint32_t i = 0; i < ArrayCount(collisions); ++i) {
     uint32_t *value = vkr_hash_table_get_uint32_t(&table, collisions[i]);
     assert(value && *value == i);
   }
-  for (uint32_t i = 0; i < ArrayCount(others); ++i) {
-    uint32_t *value = vkr_hash_table_get_uint32_t(&table, others[i]);
-    assert(value && *value == 128 + i);
+  // A key removed from the middle of the run returns without allocating.
+  VkrHashEntry_uint32_t *original = table.entries;
+  state.fail = true;
+  assert(vkr_hash_table_remove_uint32_t(&table, collisions[100]));
+  assert(!vkr_hash_table_get_uint32_t(&table, collisions[100]));
+  for (uint32_t i = 101; i < ArrayCount(collisions); ++i) {
+    uint32_t *value = vkr_hash_table_get_uint32_t(&table, collisions[i]);
+    assert(value && *value == i);
+  }
+  assert(vkr_hash_table_insert_uint32_t(&table, collisions[100], 100));
+  assert(table.entries == original && table.size == ArrayCount(collisions));
+  state.fail = false;
+  vkr_hash_table_destroy_uint32_t(&table);
+  assert(state.live_bytes == 0);
+}
+
+static void test_hash_table_churn_keeps_capacity(void) {
+  ContainerTestAllocator state = {0};
+  VkrAllocator alloc = container_test_allocator(&state);
+  VkrHashTable_uint32_t table = vkr_hash_table_create_uint32_t(&alloc, 128);
+  assert(table.entries);
+  // Unique keys pass through the table with at most 16 live, as resource
+  // requests do. Removed keys stay absent, live keys stay found and the
+  // capacity does not grow.
+  static char keys[4000][32];
+  const uint32_t live = 16;
+  for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
+    snprintf(keys[i], sizeof(keys[i]), "assets/textures/tex_%05u.ktx2", i);
+    assert(vkr_hash_table_insert_uint32_t(&table, keys[i], i));
+    if (i >= live) {
+      assert(vkr_hash_table_remove_uint32_t(&table, keys[i - live]));
+      assert(!vkr_hash_table_get_uint32_t(&table, keys[i - live]));
+    }
+    assert(table.capacity == 128);
+  }
+  assert(table.size == live);
+  for (uint32_t i = ArrayCount(keys) - live; i < ArrayCount(keys); ++i) {
+    uint32_t *value = vkr_hash_table_get_uint32_t(&table, keys[i]);
+    assert(value && *value == i);
   }
   vkr_hash_table_destroy_uint32_t(&table);
   assert(state.live_bytes == 0);
+}
+
+static void test_hash_table_string8_hash_matches_cstr(void) {
+  char request[] = "materials/brick.mt?variant=wet";
+  const String8 view = string8_create((uint8_t *)request, 18);
+  assert(vkr_hash_table_key_string8(view).hash ==
+         vkr_hash_table_hash_cstr("materials/brick.mt"));
+  // Keys that differ only in the high bits of one byte take different slots
+  // in a small table.
+  const char *keys[] = {"mat_a", "mat_q", "mat_A", "mat_Q"};
+  uint64_t distinct = 0;
+  for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
+    bool8_t repeated = false_v;
+    for (uint32_t j = 0; j < i; ++j) {
+      repeated |= (vkr_hash_table_hash_cstr(keys[i]) & 15u) ==
+                  (vkr_hash_table_hash_cstr(keys[j]) & 15u);
+    }
+    distinct += repeated ? 0u : 1u;
+  }
+  assert(distinct > 1u);
 }
 
 bool32_t run_hashtable_tests() {
   printf("--- Starting HashTable Tests ---\n");
   test_hash_table_allocation_failure_preserves_mappings();
   test_hash_table_failed_rehash_preserves_entries();
-  test_hash_table_failed_pending_insert_preserves_storage();
+  test_hash_table_long_probe_run_inserts();
+  test_hash_table_churn_keeps_capacity();
+  test_hash_table_string8_hash_matches_cstr();
   test_hash_table_create();
   test_hash_table_insert_get_contains_remove();
   test_hash_table_reset_and_empty();
