@@ -83,15 +83,17 @@ codepoints, the first glyph wins.
 - Former `Array` records grow by 8 bytes for `capacity`.
 - Slot-table pointer stability is an owner rule, not a type property.
 - Verified on Windows with Vulkan: the Debug CPU suite (94 suites), the
-  Debug and Release builds of every target except the editor, and a Release
-  Bistro run of `tools/cases/smoke/bistro_shading_diagnostics.case.json` with
-  `tools/profiles/local-offscreen.json` (pass, non-authoritative). The new
-  tests cover a 200-key probe run, request-style churn at capacity 128, low
-  hash bits, 64-byte alignment through growth and the legacy glyph index.
-- Not verified: the editor build and a Bistro load in the editor (another
-  session's unfinished editor edits did not compile on 2026-10-06), the
-  macOS Metal build and CPU suite, and a matched Release before/after timing
-  of resource request submission. No speed claim is made.
+  Debug and Release builds of every target, and a Release Bistro run of
+  `tools/cases/smoke/bistro_shading_diagnostics.case.json` with
+  `tools/profiles/local-offscreen.json` (pass, non-authoritative). At
+  `c40d86b1`, 10 headless Release editor runs of
+  `assets/scenes/bistro.scene.json` loaded the scene and quit with no error
+  lines. The new tests cover a 200-key probe run, request-style churn at
+  capacity 128, low hash bits, 64-byte alignment through growth and the
+  legacy glyph index.
+- Not verified: the macOS Metal build and CPU suite, and a matched Release
+  before/after timing of resource request submission. No speed claim is
+  made.
 
 ## Alternatives considered
 
