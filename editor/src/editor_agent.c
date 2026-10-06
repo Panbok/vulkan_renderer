@@ -41,7 +41,23 @@ typedef struct AgentQueued {
   uint32_t generation;
   char *line;
   uint64_t length;
+  /* A feed wait that already waited; it runs without waiting again. */
+  bool8_t waited;
 } AgentQueued;
+
+/* Longest a `changes.feed` request with `wait` waits, in seconds. */
+#define AGENT_FEED_WAIT_MAX 60.0
+
+/* A `changes.feed` request waiting outside the queue for something newer
+   than `after`: a feed event, or an edit that moves a journal's revision.
+   It owns its line until it returns to the queue. */
+typedef struct AgentWait {
+  bool8_t active;
+  AgentQueued request;
+  uint64_t after;
+  uint64_t revision;
+  float64_t deadline;
+} AgentWait;
 
 struct VkrEditorAgent {
   VkrAllocator *allocator;
@@ -53,6 +69,8 @@ struct VkrEditorAgent {
   AgentQueued queue[AGENT_QUEUE_MAX];
   uint32_t queue_head;
   uint32_t queue_count;
+  /* One feed wait per client slot. */
+  AgentWait waits[AGENT_CLIENT_MAX];
   /* The request in progress: its client, raw id text and call. */
   bool8_t active;
   AgentQueued current;
@@ -173,6 +191,98 @@ static void agent_finish(VkrEditorAgent *agent) {
   arena_clear(agent->arena, ARENA_MEMORY_TAG_STRUCT);
 }
 
+/* Appends a request that owns its line; false when the queue is full. */
+static bool8_t agent_enqueue_request(VkrEditorAgent *agent,
+                                     const AgentQueued *request) {
+  if (agent->queue_count == AGENT_QUEUE_MAX) {
+    return false_v;
+  }
+  const uint32_t slot =
+      (agent->queue_head + agent->queue_count) % AGENT_QUEUE_MAX;
+  agent->queue[slot] = *request;
+  agent->queue_count++;
+  return true_v;
+}
+
+static bool8_t ops_is_feed(String8 op) {
+  return op.length == 12u && MemCompare(op.str, "changes.feed", 12u) == 0;
+}
+
+/* The sum of the loaded journals' revisions: it moves with every edit,
+   undo and redo, the designer's included. */
+static uint64_t agent_revision(const VkrSampleUiFrame *frame) {
+  return (frame->edits ? frame->edits->revision : 0u) +
+         (frame->world_edits ? frame->world_edits->revision : 0u);
+}
+
+/* Sets a `changes.feed` request with `wait` aside when nothing is newer
+   than its `after`, so it holds no other request. True when parked; the
+   wait then owns the request's line. */
+static bool8_t agent_park(VkrEditorAgent *agent, const VkrSampleUiFrame *frame,
+                          const VkrBakeryJson *args) {
+  float64_t wait = 0.0;
+  int64_t after = 0;
+  if (agent->current.waited || agent->current.client == AGENT_CLIENT_SELF ||
+      !args || !vkr_bakery_json_get_number(args, "wait", &wait) ||
+      !(wait > 0.0)) {
+    return false_v;
+  }
+  (void)vkr_bakery_json_get_int(args, "after", &after);
+  if (vkr_editor_ops_feed_latest(agent->ops) > (uint64_t)Max(after, 0)) {
+    return false_v;
+  }
+  AgentWait *slot = &agent->waits[agent->current.client];
+  if (slot->active) {
+    /* A client's newer wait replaces its older one, which answers now. */
+    slot->request.waited = true_v;
+    if (!agent_enqueue_request(agent, &slot->request)) {
+      free(slot->request.line);
+    }
+  }
+  *slot = (AgentWait){
+      .active = true_v,
+      .request = agent->current,
+      .after = (uint64_t)Max(after, 0),
+      .revision = agent_revision(frame),
+      .deadline =
+          vkr_platform_get_absolute_time() + Min(wait, AGENT_FEED_WAIT_MAX),
+  };
+  /* The wait owns the line now. */
+  agent->current.line = NULL;
+  return true_v;
+}
+
+/* Returns each wait whose time came to the queue: a newer feed event, a
+   moved revision, its deadline, or a client that left. */
+static void agent_waits_update(VkrEditorAgent *agent,
+                               const VkrSampleUiFrame *frame) {
+  const uint64_t latest = vkr_editor_ops_feed_latest(agent->ops);
+  const uint64_t revision = agent_revision(frame);
+  const float64_t now = vkr_platform_get_absolute_time();
+  for (uint32_t i = 0; i < AGENT_CLIENT_MAX; ++i) {
+    AgentWait *slot = &agent->waits[i];
+    if (!slot->active) {
+      continue;
+    }
+    const AgentClient *client = &agent->clients[i];
+    if (client->socket == VKR_LOCAL_SOCKET_INVALID ||
+        client->generation != slot->request.generation) {
+      free(slot->request.line);
+      *slot = (AgentWait){0};
+      continue;
+    }
+    if (latest <= slot->after && revision == slot->revision &&
+        now < slot->deadline) {
+      continue;
+    }
+    slot->request.waited = true_v;
+    /* A full queue keeps the wait for the next build. */
+    if (agent_enqueue_request(agent, &slot->request)) {
+      *slot = (AgentWait){0};
+    }
+  }
+}
+
 /* Names the author of the current request: `agent` in its arguments or
    beside them, else its client slot. The editor's own requests have none,
    so the designer's undo and review stay unrestricted. */
@@ -203,7 +313,7 @@ static void agent_author(VkrEditorAgent *agent, const VkrBakeryJson *request,
 
 /* Parses the next queued line and starts its operation. A malformed line
    answers at once. */
-static void agent_begin(VkrEditorAgent *agent) {
+static void agent_begin(VkrEditorAgent *agent, const VkrSampleUiFrame *frame) {
   agent->current = agent->queue[agent->queue_head];
   agent->queue_head = (agent->queue_head + 1u) % AGENT_QUEUE_MAX;
   agent->queue_count--;
@@ -245,6 +355,9 @@ static void agent_begin(VkrEditorAgent *agent) {
       .args = args ? args : vkr_bakery_json_object(agent->arena),
   };
   agent_author(agent, request, args);
+  if (ops_is_feed(op) && agent_park(agent, frame, args)) {
+    agent_finish(agent);
+  }
 }
 
 /* Runs requests in arrival order. A build runs the active request; while
@@ -262,7 +375,7 @@ static void agent_advance(VkrEditorAgent *agent, VkrEditorUi *editor,
       if (!agent->queue_count) {
         return;
       }
-      agent_begin(agent);
+      agent_begin(agent, frame);
       if (!agent->active) {
         continue;
       }
@@ -303,13 +416,14 @@ static bool8_t agent_enqueue(VkrEditorAgent *agent, uint32_t client,
   }
   MemCopy(copy, line, length);
   copy[length] = '\0';
-  const uint32_t slot =
-      (agent->queue_head + agent->queue_count) % AGENT_QUEUE_MAX;
-  agent->queue[slot] = (AgentQueued){.client = client,
-                                     .generation = generation,
-                                     .line = copy,
-                                     .length = length};
-  agent->queue_count++;
+  const AgentQueued request = {.client = client,
+                               .generation = generation,
+                               .line = copy,
+                               .length = length};
+  if (!agent_enqueue_request(agent, &request)) {
+    free(copy);
+    return false_v;
+  }
   return true_v;
 }
 
@@ -547,6 +661,9 @@ void vkr_editor_agent_destroy(VkrEditorAgent *agent) {
     agent->queue_count--;
   }
   free(agent->current.line);
+  for (uint32_t i = 0; i < AGENT_CLIENT_MAX; ++i) {
+    free(agent->waits[i].request.line);
+  }
   vkr_editor_ops_destroy(agent->ops);
   if (agent->arena) {
     arena_destroy(agent->arena);
@@ -560,6 +677,7 @@ void vkr_editor_agent_update(VkrEditorAgent *agent, VkrEditorUi *editor,
     return;
   }
   vkr_editor_ops_update(agent->ops, frame);
+  agent_waits_update(agent, frame);
   if (agent->listener != VKR_LOCAL_SOCKET_INVALID) {
     agent_accept(agent);
     for (uint32_t i = 0; i < AGENT_CLIENT_MAX; ++i) {

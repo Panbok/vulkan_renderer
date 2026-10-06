@@ -110,6 +110,9 @@ const VkrEditorChange *vkr_editor_ops_change(const VkrEditorOps *ops,
 /* Accepts change `id`, or every change for zero; false when none matched. */
 bool8_t vkr_editor_ops_accept(VkrEditorOps *ops, uint32_t id);
 
+/* The newest change-feed sequence, zero before the first event. */
+uint64_t vkr_editor_ops_feed_latest(const VkrEditorOps *ops);
+
 uint32_t vkr_editor_ops_claim_count(const VkrEditorOps *ops);
 const VkrEditorClaim *vkr_editor_ops_claim(const VkrEditorOps *ops,
                                            uint32_t index);

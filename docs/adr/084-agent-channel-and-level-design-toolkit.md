@@ -225,8 +225,14 @@ accepted or rejected, and each claim set or released, with its author,
 label, objects (16 at most) and the box around them. The operation table
 keeps the newest 128 events; `next` continues the reading, `missed` says
 older events left the ring, and each container's journal `revision` grows
-with every edit, the designer's too. An agent polls the feed instead of
-paging `scene.describe` to learn what the others did.
+with every edit, the designer's too. With `wait` (up to 60 s) a read that
+finds nothing newer than `after` leaves the request queue
+([editor_agent.c](../../editor/src/editor_agent.c), one wait per client)
+and returns to it once a feed event arrives, a journal revision moves (the
+designer's edits and undos included) or the time ends, so the wait holds
+no other request and the agent learns of the others' work without polling.
+The MCP revision has no push for tool calls; the wait is a long poll that
+any client can make.
 
 ### Captures
 
@@ -964,7 +970,7 @@ one, takes its mesh at once and shows it as the uploads finish.
 
 ## Revisit when
 
-An agent needs notifications pushed to it,
+An agent needs events pushed without a request (MCP notifications),
 reviews must survive a scene reload, or a level's brush count makes the
 per-brush draw cost visible next to its other geometry (merge per cell and
 material then).
@@ -1157,3 +1163,8 @@ material then).
   the crate answered hidden in every view; each reported pixel held magenta
   for a visible mark and blue for a hidden one, and the labels read
   "1 CRATE" and "4 INSIDE".
+- Windows, 2026-10-06 (headless Release editor on Bistro, two `vkr_mcp`
+  clients): a `changes.feed` read with `wait` 10 answered 1.1 s later with
+  the other agent's batch while that agent's status reads took 11 to 25 ms;
+  a 2 s wait with nothing new answered after 2.0 s with no events; the
+  other agent's `undo` woke a wait after 1.05 s through the revision.

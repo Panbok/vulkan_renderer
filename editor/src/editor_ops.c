@@ -8681,10 +8681,13 @@ static const OpsDef s_ops[] = {
      "or rejected, and claims set or released, each with its author, "
      "label, objects and box, oldest first. Pass 'next' back as 'after' to "
      "read on; 'missed' means older events left the ring. 'revisions' grow "
-     "with every edit, including the designer's.",
+     "with every edit, including the designer's. 'wait' (up to 60 s) "
+     "answers once something newer happens, an event or any edit, without "
+     "holding other requests.",
      "{\"type\":\"object\",\"properties\":{\"after\":{\"type\":\"integer\","
      "\"minimum\":0},\"limit\":{\"type\":\"integer\",\"minimum\":1,"
-     "\"maximum\":128}}}",
+     "\"maximum\":128},\"wait\":{\"type\":\"number\",\"minimum\":0,"
+     "\"maximum\":60}}}",
      ops_run_feed, NULL, OPS_QUICK},
     {"claims.set",
      "Claim a box of a scene: other agents' writes that touch it are "
@@ -9023,6 +9026,10 @@ bool8_t vkr_editor_ops_accept(VkrEditorOps *ops, uint32_t id) {
   ops_feed_accept(ops, &ops->changes[index]);
   ops_change_remove(ops, (uint32_t)index);
   return true_v;
+}
+
+uint64_t vkr_editor_ops_feed_latest(const VkrEditorOps *ops) {
+  return ops ? ops->feed_last : 0u;
 }
 
 uint32_t vkr_editor_ops_claim_count(const VkrEditorOps *ops) {

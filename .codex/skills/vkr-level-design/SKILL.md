@@ -65,7 +65,9 @@ brushes, blockout shapes, terrain and colliders.
   the later change that blocks it. Never reject or edit another agent's
   work unless the user asks.
 - Read `changes.feed` from your last `next` to see what others changed near
-  you, instead of paging `scene.describe`.
+  you, instead of paging `scene.describe`. To wait for them, add `wait`
+  (up to 60 s): the read answers when something changes and holds no one
+  else's requests.
 - The designer reviews every change: report each change id with what it
   built.
 
