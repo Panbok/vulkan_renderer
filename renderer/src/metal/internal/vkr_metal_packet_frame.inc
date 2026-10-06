@@ -650,6 +650,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
   id<MTLTexture> source = vkr_metal_packet_subresource_texture(renderer, read);
   if (!source)
     return false_v;
+  /* Graphs without Post.Bloom.Combine bind the bloom chain's first level for
+     the pass to add to the scene it samples (ADR-087); a display-linear
+     source already holds it. */
+  const VkrRgImageUse *bloom_use =
+      cached ? NULL : vkr_rg_pass_find_image_use(&pass->desc, 6u, 0u);
+  id<MTLTexture> bloom =
+      vkr_metal_packet_subresource_texture(renderer, bloom_use);
+  if (bloom_use && !bloom)
+    return false_v;
   uint64_t root_gpu = 0;
   VkrMetalPacketTonemapRoot *root =
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
@@ -697,7 +706,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
                : 0u) |
           (renderer->prepared_frame.metalfx_enabled
                ? VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA
-               : 0u),
+               : 0u) |
+          (bloom ? VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM : 0u),
       .image_sharpness =
           !editor_rect && !prepare_display_linear &&
                   packet->input.globals.render_mode == VKR_RENDER_MODE_DEFAULT
@@ -707,6 +717,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       .output_extent = {output_width, output_height},
       .color_grading = color_grading_gpu,
       .display_output = upload->display_output_gpu,
+      .bloom_intensity =
+          bloom ? vkr_bloom_gpu_params(&renderer->bloom_config, &packet->bloom,
+                                       renderer->prepared_frame.bloom_mip_count)
+                      .intensity
+                : 0.0f,
+      .bloom_texture_id = bloom ? bloom.gpuResourceID._impl : 0u,
   };
   const VkrRgBufferUse *exposure_use =
       vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);

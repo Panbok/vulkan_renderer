@@ -1337,6 +1337,8 @@ enum {
   VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR = 1u << 5u,
   VKR_METAL_PACKET_TONEMAP_FLAG_PREPARE_DISPLAY_LINEAR = 1u << 6u,
   VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR = 1u << 7u,
+  /* The pass adds the bound bloom level to the scene it samples. */
+  VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM = 1u << 8u,
 };
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {
@@ -1349,13 +1351,18 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {
   uint64_t display_output;
   /** Returns pre-exposed radiance to scene-linear before exposure. */
   float32_t inverse_pre_exposure;
-  uint32_t reserved[3];
+  /** With VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM, the bloom chain's first level
+   * the pass adds, scaled by this intensity, to the scene it samples. */
+  float32_t bloom_intensity;
+  uint64_t bloom_texture_id;
 } VkrMetalPacketTonemapRoot;
 
 _Static_assert(offsetof(VkrMetalPacketTonemapRoot, display_output) == 40u,
                "Metal tonemap display-output ABI offset drift");
 _Static_assert(offsetof(VkrMetalPacketTonemapRoot, inverse_pre_exposure) == 48u,
                "Metal tonemap pre-exposure ABI offset drift");
+_Static_assert(offsetof(VkrMetalPacketTonemapRoot, bloom_texture_id) == 56u,
+               "Metal tonemap bloom ABI offset drift");
 _Static_assert(sizeof(VkrMetalPacketTonemapRoot) == 64u,
                "Metal tonemap root ABI size drift");
 

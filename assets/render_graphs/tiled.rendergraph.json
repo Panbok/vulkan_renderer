@@ -329,25 +329,6 @@
       ]
     },
     {
-      "name": "bloom_combined",
-      "type": "image",
-      "condition": "scene_rendering && bloom_enabled && !metalfx_enabled && !fsr31_enabled",
-      "extent": {
-        "mode": "viewport"
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
       "name": "sky_view_lut",
       "type": "image",
       "condition": "scene_rendering && atmosphere_enabled",
@@ -1503,38 +1484,6 @@
       "execute": "pass.bloom.upsample"
     },
     {
-      "name": "Post.Bloom.Combine",
-      "type": "compute",
-      "condition": "scene_rendering && bloom_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "hdr_scene_color",
-          "access": "SAMPLED",
-          "binding": 0
-        },
-        {
-          "image": "bloom_accum",
-          "access": "SAMPLED",
-          "binding": 2,
-          "subresource": {
-            "base_mip": 0,
-            "mip_count": 1
-          }
-        }
-      ],
-      "writes": [
-        {
-          "image": "bloom_combined",
-          "access": "STORAGE_WRITE",
-          "binding": 1
-        }
-      ],
-      "execute": "pass.bloom.combine"
-    },
-    {
       "name": "Post.DisplayLinear.Fullscreen",
       "type": "graphics",
       "domain": "POST",
@@ -1553,9 +1502,9 @@
           "when": "exposure_automatic"
         },
         {
-          "image": "bloom_combined",
+          "image": "bloom_accum",
           "access": "SAMPLED",
-          "binding": 2,
+          "binding": 6,
           "subresource": {
             "base_mip": 0,
             "mip_count": 1
@@ -1601,9 +1550,9 @@
           "when": "exposure_automatic"
         },
         {
-          "image": "bloom_combined",
+          "image": "bloom_accum",
           "access": "SAMPLED",
-          "binding": 2,
+          "binding": 6,
           "subresource": {
             "base_mip": 0,
             "mip_count": 1
@@ -1655,9 +1604,9 @@
           "when": "exposure_automatic"
         },
         {
-          "image": "bloom_combined",
+          "image": "bloom_accum",
           "access": "SAMPLED",
-          "binding": 2,
+          "binding": 6,
           "subresource": {
             "base_mip": 0,
             "mip_count": 1
@@ -1703,9 +1652,9 @@
           "when": "exposure_automatic"
         },
         {
-          "image": "bloom_combined",
+          "image": "bloom_accum",
           "access": "SAMPLED",
-          "binding": 2,
+          "binding": 6,
           "subresource": {
             "base_mip": 0,
             "mip_count": 1

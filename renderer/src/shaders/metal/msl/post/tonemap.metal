@@ -10,6 +10,10 @@ struct alignas(16) VkrMetalPacketTonemapRoot {
   constant VkrDisplayOutputParams *display_output;
   // Returns pre-exposed radiance to scene-linear before exposure.
   float inverse_pre_exposure;
+  // With VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM, the bloom chain's first level,
+  // added to the sampled scene at this intensity.
+  float bloom_intensity;
+  texture2d<float, access::sample> bloom;
 };
 
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED =
@@ -18,6 +22,15 @@ static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA = 1u << 4u;
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR = 1u << 5u;
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_PREPARE_DISPLAY_LINEAR = 1u << 6u;
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR = 1u << 7u;
+// The pass adds bloom to the scene-linear samples itself, as Post.Bloom.Combine
+// does in graphs that have it (ADR-087).
+static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM = 1u << 8u;
+
+// The bloom a tonemap tap adds to its scene-linear sample.
+struct VkrMetalPacketTonemapBloom {
+  texture2d<float, access::sample> texture;
+  float intensity;
+};
 
 static float3 vkr_metal_packet_aces_fitted(float3 color) {
   const float a = 2.51;
@@ -33,7 +46,8 @@ static float4
 vkr_metal_packet_post_sample(texture2d<float, access::sample> source,
                              sampler source_sampler, float2 uv, float exposure,
                              uint flags, VkrColorGrading grading,
-                             VkrDisplayOutputParams display_output) {
+                             VkrDisplayOutputParams display_output,
+                             VkrMetalPacketTonemapBloom bloom) {
   float4 hdr = source.sample(source_sampler, uv);
   // The editor Scene composite samples presentation-linear pixels from the
   // retained scene image. They already carry the physical-output scale, so a
@@ -41,6 +55,12 @@ vkr_metal_packet_post_sample(texture2d<float, access::sample> source,
   if ((flags & (VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED |
                 VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR)) != 0u) {
     return hdr;
+  }
+  if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM) != 0u) {
+    // The combine pass stored its sum in RGBA16F with an opaque alpha.
+    float3 bloomed = hdr.rgb + bloom.texture.sample(source_sampler, uv).rgb *
+                                   bloom.intensity;
+    hdr = float4(float3(half3(bloomed)), 1.0);
   }
   float3 color = vkr_color_grade(max(hdr.rgb * exposure, 0.0), grading);
   float3 display_linear =
@@ -76,36 +96,37 @@ static float4 vkr_metal_packet_fxaa(texture2d<float, access::sample> source,
                                     float2 inverse_extent, float exposure,
                                     uint flags, float sharpness,
                                     VkrColorGrading grading,
-                                    VkrDisplayOutputParams display_output) {
+                                    VkrDisplayOutputParams display_output,
+                                    VkrMetalPacketTonemapBloom bloom) {
   float4 center = vkr_metal_packet_post_sample(source, source_sampler, uv,
                                                exposure, flags, grading,
-                                               display_output);
+                                               display_output, bloom);
   float4 north = vkr_metal_packet_post_sample(
       source, source_sampler, uv - float2(0.0, inverse_extent.y), exposure,
-      flags, grading, display_output);
+      flags, grading, display_output, bloom);
   float4 south = vkr_metal_packet_post_sample(
       source, source_sampler, uv + float2(0.0, inverse_extent.y), exposure,
-      flags, grading, display_output);
+      flags, grading, display_output, bloom);
   float4 west = vkr_metal_packet_post_sample(source, source_sampler,
                                              uv - float2(inverse_extent.x, 0.0),
                                              exposure, flags, grading,
-                                             display_output);
+                                             display_output, bloom);
   float4 east = vkr_metal_packet_post_sample(source, source_sampler,
                                              uv + float2(inverse_extent.x, 0.0),
                                              exposure, flags, grading,
-                                             display_output);
+                                             display_output, bloom);
   float4 northwest = vkr_metal_packet_post_sample(
       source, source_sampler, uv + float2(-1.0, -1.0) * inverse_extent,
-      exposure, flags, grading, display_output);
+      exposure, flags, grading, display_output, bloom);
   float4 northeast = vkr_metal_packet_post_sample(
       source, source_sampler, uv + float2(1.0, -1.0) * inverse_extent, exposure,
-      flags, grading, display_output);
+      flags, grading, display_output, bloom);
   float4 southwest = vkr_metal_packet_post_sample(
       source, source_sampler, uv + float2(-1.0, 1.0) * inverse_extent, exposure,
-      flags, grading, display_output);
+      flags, grading, display_output, bloom);
   float4 southeast = vkr_metal_packet_post_sample(
       source, source_sampler, uv + inverse_extent, exposure, flags, grading,
-      display_output);
+      display_output, bloom);
   float luma_center = vkr_metal_packet_fxaa_luminance(center.rgb);
   float luma_northwest = vkr_metal_packet_fxaa_luminance(northwest.rgb);
   float luma_northeast = vkr_metal_packet_fxaa_luminance(northeast.rgb);
@@ -154,20 +175,21 @@ static float4 vkr_metal_packet_fxaa(texture2d<float, access::sample> source,
       0.5 * (vkr_metal_packet_post_sample(source, source_sampler,
                                           uv + direction * (1.0 / 3.0 - 0.5),
                                           exposure, flags, grading,
-                                          display_output) +
+                                          display_output, bloom) +
              vkr_metal_packet_post_sample(source, source_sampler,
                                           uv + direction * (2.0 / 3.0 - 0.5),
                                           exposure, flags, grading,
-                                          display_output));
-  float4 result_b = result_a * 0.5 +
-                    0.25 * (vkr_metal_packet_post_sample(source, source_sampler,
-                                                         uv + direction * -0.5,
-                                                         exposure, flags, grading,
-                                                         display_output) +
-                            vkr_metal_packet_post_sample(source, source_sampler,
-                                                         uv + direction * 0.5,
-                                                         exposure, flags, grading,
-                                                         display_output));
+                                          display_output, bloom));
+  float4 result_b =
+      result_a * 0.5 +
+      0.25 * (vkr_metal_packet_post_sample(source, source_sampler,
+                                           uv + direction * -0.5, exposure,
+                                           flags, grading, display_output,
+                                           bloom) +
+              vkr_metal_packet_post_sample(source, source_sampler,
+                                           uv + direction * 0.5, exposure,
+                                           flags, grading, display_output,
+                                           bloom));
   float result_b_luma = vkr_metal_packet_fxaa_luminance(result_b.rgb);
   float4 result = result_b_luma < luma_min || result_b_luma > luma_max
                       ? result_a
@@ -216,6 +238,7 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
   uint flags = root->flags;
   float sharpness = root->image_sharpness;
   VkrDisplayOutputParams display_output = *root->display_output;
+  VkrMetalPacketTonemapBloom bloom = {root->bloom, root->bloom_intensity};
   if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR) != 0u) {
     float4 blurred = float4(0.0);
     for (int y = -2; y <= 2; ++y) {
@@ -230,21 +253,21 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
   if ((root->flags & 2u) == 0u) {
     float4 result = vkr_metal_packet_post_sample(root->source, source_sampler, uv,
                                                 exposure, flags, *root->color_grading,
-                                                display_output);
+                                                display_output, bloom);
     if (sharpness > 0.0) {
       float2 step = 1.0 / float2(root->output_extent);
       float3 north = vkr_metal_packet_post_sample(root->source, source_sampler,
           uv - float2(0.0, step.y), exposure, flags, *root->color_grading,
-          display_output).rgb;
+          display_output, bloom).rgb;
       float3 south = vkr_metal_packet_post_sample(root->source, source_sampler,
           uv + float2(0.0, step.y), exposure, flags, *root->color_grading,
-          display_output).rgb;
+          display_output, bloom).rgb;
       float3 west = vkr_metal_packet_post_sample(root->source, source_sampler,
           uv - float2(step.x, 0.0), exposure, flags, *root->color_grading,
-          display_output).rgb;
+          display_output, bloom).rgb;
       float3 east = vkr_metal_packet_post_sample(root->source, source_sampler,
           uv + float2(step.x, 0.0), exposure, flags, *root->color_grading,
-          display_output).rgb;
+          display_output, bloom).rgb;
       result.rgb = vkr_sharpen_color(result.rgb,
           0.25 * (north + south + west + east),
           min(min(north, south), min(west, east)),
@@ -256,7 +279,7 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
       vkr_metal_packet_fxaa(root->source, source_sampler, uv,
                             1.0 / float2(root->output_extent), exposure,
                             flags, sharpness, *root->color_grading,
-                            display_output),
+                            display_output, bloom),
       flags, display_output);
 }
 

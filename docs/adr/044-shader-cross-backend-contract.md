@@ -78,6 +78,11 @@ have no bilateral gate yet.
     (`vkr_metal_tiled_resolve_tile`), a class difference the owner accepted
     (ADR-087, decision 6). The shared FXAA and tonemap shaders are
     unchanged.
+  - The Metal tonemap root's last 12 bytes carry `bloom_intensity` and the
+    `bloom` texture; with `VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM` the pass adds
+    that bloom level to its scene-linear samples, rounded to FP16 as
+    `Post.Bloom.Combine` stores it. Only the tiled graph binds it; graphs
+    with the combine pass are unchanged.
 - **Metal evidence.** Pipeline creation validates the new layouts, and the
   Bistro street view renders on both pipeline classes
   (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`), as do the café

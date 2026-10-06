@@ -113,7 +113,11 @@ pipeline rather than a backend mechanism.
    smoothly as dark ones. The tiled class draws no FXAA (owner decision,
    2026-10-06): its geometry and alpha-tested edges are multisampled, while
    glass, blended surfaces and shading detail inside a surface are not
-   anti-aliased.
+   anti-aliased. The tiled graph has no `Post.Bloom.Combine`: its tonemap
+   passes sample the bloom chain's first level themselves
+   (`VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM`) with the combine's FP16 rounding,
+   so the image is unchanged and the `hdr_combined` capture channel is
+   unavailable on tiled.
 7. `VkrRendererBackendConfig.graphics_pipeline` selects the class
    (`VKR_GRAPHICS_PIPELINE=desktop|tiled` overrides it, and harness cases set
    `renderer.graphics_pipeline`). Zero is the desktop pipeline. The tiled
@@ -441,6 +445,20 @@ samples, left the image unchanged (one pixel above 8 of 255) but raised
 runs each; it was not kept
 (`sha256:4d0422a1272a83a3997e97541a63f78af7607fc03a70d0116a96e47e19e9c83c`,
 `sha256:35c2dfd930e5b13712d5dedebdb51b727a459eb59556b860915972d4831c9195`).
+
+Folding the bloom combine into the tonemap passes, measured the same way
+(HEAD `53e5fd6e` with its own graph), removes the 0.43 ms
+`Post.Bloom.Combine` while `Post.Tonemap.Fullscreen` grows from 0.51 to
+0.69 ms; `tiled_bistro_baked_native` takes 12.87 / 16.81 and
+12.78 / 16.88 ms `gpu.submission` before and 12.59 / 16.55 and
+12.55 / 16.70 ms after
+(`sha256:f5cb163abc7a9e2818f4209ba72f74ab8cb4baf848487c4e09edec1459907444`,
+`sha256:537ec203e32e5464568436e89ab9c8921678ab6962a9c8e67040a434af08a89e`,
+`sha256:0bc446fb946c293205ddf96ca719a69206ac2b87d91a41090cfd460d4f0c1701`,
+the third `incomplete` on warm-up stability,
+`sha256:8abdec9b060d58607156397dc2eb0cee378821d39e3b6b9f6f12127b074ceff4`).
+The street, night and editor captures match the combine within 7 of 255 in
+at most 4 pixels.
 
 ## Consequences
 

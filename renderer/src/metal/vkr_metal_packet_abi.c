@@ -507,6 +507,9 @@ vkr_global const VkrMetalPacketAbiField vkr_tonemap_root_fields[] = {
                   40),
     VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, inverse_pre_exposure,
                   "inverse_pre_exposure", 48),
+    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, bloom_intensity, "bloom_intensity",
+                  52),
+    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, bloom_texture_id, "bloom", 56),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_atmosphere_root_fields[] = {
