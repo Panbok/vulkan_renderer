@@ -649,9 +649,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
        whose content survives the submission. */
     if ((local->retained_opaque_mask & (UINT64_C(1) << slot)) != 0u &&
         (slot >= local->transmission_render_count ||
-         (local->atlas_clear_mask &
-          (UINT32_C(1) << vkr_local_shadow_render_atlas_layer(local, slot))) !=
-             0u))
+         vkr_local_shadow_render_layer_cleared(local, slot)))
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.local_shadow.retained_opaque_mask",
                         "names a slot without transmission or a cleared layer");

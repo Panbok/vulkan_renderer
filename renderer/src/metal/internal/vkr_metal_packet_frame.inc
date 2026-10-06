@@ -2024,9 +2024,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         (uint32_t)target.height, result);
   }
   if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW) {
-    /* The face draws into its own atlas square and clears only that square,
-       even without casters, since the atlas is loaded rather than cleared.
-       Render slot i draws with culling view i. */
+    /* The face draws into its own atlas square. It clears only that square,
+       even without casters, unless its layer was cleared whole this
+       submission. Render slot i draws with culling view i. */
     const uint32_t slot = pass->desc.repeat_index;
     if (!packet->input.local_shadow ||
         slot >= packet->input.local_shadow->render_count)
@@ -2049,7 +2049,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     const uint32_t size = (uint32_t)(rect.z * atlas);
     prepared->indirect.viewport = (MTLViewport){x, y, size, size, 0.0, 1.0};
     prepared->indirect.clear_rect = (MTLScissorRect){x, y, size, size};
-    prepared->indirect.clear_depth = true_v;
+    prepared->indirect.clear_depth =
+        !vkr_local_shadow_render_layer_cleared(packet->input.local_shadow,
+                                               slot);
     prepared->active = true_v;
     return true_v;
   }

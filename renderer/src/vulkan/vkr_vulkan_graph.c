@@ -1229,9 +1229,12 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
         kind == VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW);
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
   case VKR_RG_EXECUTOR_SHADOW: {
+    /* Prepared passes are reused by execution order, so a clear set by an
+       earlier frame must not survive into this one. */
+    prepared->clear_depth_rect = false_v;
     if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW) {
-      /* The face draws into its own atlas square and clears only that
-         square, since the atlas is loaded rather than cleared. */
+      /* The face draws into its own atlas square. It clears only that square,
+         and only when its layer was not cleared whole this submission. */
       const uint32_t render_slot = pass->desc.repeat_index;
       if (!packet->input.local_shadow ||
           render_slot >= packet->input.local_shadow->render_count)
@@ -1259,9 +1262,12 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
       if ((packet->input.local_shadow->retained_opaque_mask &
            (UINT64_C(1) << render_slot)) != 0u)
         return true_v;
-      prepared->depth_clear_rect =
-          (VkClearRect){.rect = prepared->scissor, .layerCount = 1u};
-      prepared->clear_depth_rect = true_v;
+      if (!vkr_local_shadow_render_layer_cleared(packet->input.local_shadow,
+                                                 render_slot)) {
+        prepared->depth_clear_rect =
+            (VkClearRect){.rect = prepared->scissor, .layerCount = 1u};
+        prepared->clear_depth_rect = true_v;
+      }
       return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
                                             true_v, false_v, true_v);
     }

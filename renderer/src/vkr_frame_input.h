@@ -489,6 +489,16 @@ vkr_local_shadow_render_atlas_layer(const VkrLocalShadowPassPayload *payload,
   return (uint32_t)payload->views[payload->render_views[slot]].atlas_rect.w;
 }
 
+/** Whether the atlas layer of render slot `slot` is cleared whole this
+ * submission, so the face needs no clear of its own square. */
+static inline bool8_t
+vkr_local_shadow_render_layer_cleared(const VkrLocalShadowPassPayload *payload,
+                                      uint32_t slot) {
+  return (payload->atlas_clear_mask &
+          (UINT32_C(1) << vkr_local_shadow_render_atlas_layer(payload,
+                                                              slot))) != 0u;
+}
+
 /** Transmission layer of the face render slot `slot` draws; valid only for
  * slots below `transmission_render_count`. */
 static inline uint32_t vkr_local_shadow_render_transmission_layer(

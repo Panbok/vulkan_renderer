@@ -1471,16 +1471,8 @@
         "color": [
           {
             "image": "post_display_linear_fullscreen",
-            "load": "CLEAR",
-            "store": "STORE",
-            "clear": {
-              "color": [
-                0,
-                0,
-                0,
-                1
-              ]
-            }
+            "load": "DONT_CARE",
+            "store": "STORE"
           }
         ]
       },
@@ -1525,16 +1517,8 @@
         "color": [
           {
             "image": "swapchain",
-            "load": "CLEAR",
-            "store": "STORE",
-            "clear": {
-              "color": [
-                0,
-                0,
-                0,
-                1
-              ]
-            }
+            "load": "DONT_CARE",
+            "store": "STORE"
           }
         ]
       },
@@ -1573,16 +1557,8 @@
         "color": [
           {
             "image": "post_display_linear_editor",
-            "load": "CLEAR",
-            "store": "STORE",
-            "clear": {
-              "color": [
-                0,
-                0,
-                0,
-                1
-              ]
-            }
+            "load": "DONT_CARE",
+            "store": "STORE"
           }
         ]
       },
