@@ -104,11 +104,15 @@ on Metal. It shares kernels and host records with the desktop pipeline:
   - The tiled blend fragment composes glass with the shared
     `vkr_transmission_compose` and returns the factor the destination keeps
     as its second, dual-source output; the Vulkan transmission kernels use
-    the same composition.
+    the same composition. A glass volume refracts through the shared
+    `vkr_transmission_exit_point`, `vkr_transmission_project_uv` and
+    `vkr_transmission_rough_lod`, sampling a half-resolution copy of the
+    image through the frame root's `transmission_source` at byte 424, which
+    is null on frames without one.
   - The tiled shading calls the shared local-light loop and rectangle-light
-    path without the coat and sheen layers. Its local shadows take one
-    bilinear comparison and read no refractive layers
-    (`vkr_metal_packet_local_shadow_sample<false, false>`), where the Vulkan
+    path without the coat and sheen layers. Its local shadows take a
+    four-comparison tent and read no refractive layers
+    (`vkr_metal_packet_local_shadow_sample<false, false, true>`), where the Vulkan
     receivers filter with the Poisson disk and read the transmission layers.
     The harder tiled shadow edge is a class difference the owner accepted
     (ADR-087, decision 11). Tiled rectangle lights skip rows below a
@@ -411,7 +415,7 @@ shared `vkr_local_shadow_atlas_uv`, reads the strength from the light's first
 view, skips lookups at zero and blends through the shared
 `vkr_local_shadow_apply_strength`. A point-light tap inside the receiver's face
 takes its reference depth from the shared `vkr_local_shadow_in_face_depth`. The
-tiled receiver takes one bilinear comparison and no transmission (ADR-087,
+tiled receiver takes a four-comparison tent and no transmission (ADR-087,
 decision 11).
 
 On Vulkan, `shadow_params.w` holds the light's source radius over twice the

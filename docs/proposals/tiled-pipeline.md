@@ -26,8 +26,8 @@ at native scale. The desktop pipeline's removed Metal implementation took
 
 ## Candidate design
 
-Rows marked decided follow ADR-087 and rows marked queued are approved
-remaining work; the others stay open until measured.
+Rows marked decided follow ADR-087 or ADR-088; the others stay open until
+measured.
 
 | Stage | Desktop pipeline (Vulkan) | Tiled pipeline |
 |---|---|---|
@@ -36,11 +36,11 @@ remaining work; the others stay open until measured.
 | Anti-aliasing | Portable TAA or FSR 3.1 | 4× MSAA with alpha to coverage and a tone-mapped resolve in tile memory; no FXAA or temporal history (decided, ADR-087) |
 | Static light | Every static light evaluated per pixel each frame | Lightmaps baked by `vkr_bakery`: direct and bounced diffuse light from static lights, on a second UV set (owner decision, 2026-10-05) |
 | Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)), optional SSGI | Lightmaps on static surfaces; IBL and baked volumes for dynamic objects; no SSGI |
-| Ambient occlusion | GTAO in compute | Baked AO in the lightmap alpha (queued) |
-| Reflections | IBL and optional SSR | IBL, per-draw reflection probes (queued) and [planar reflections](planar-reflections.md) for mirror-like surfaces; no SSR (owner decision, 2026-10-06) |
+| Ambient occlusion | GTAO in compute | Baked AO in the lightmap alpha, on environment specular (decided, ADR-088) |
+| Reflections | IBL and optional SSR | IBL and one reflection probe per surface (decided, ADR-087); [planar reflections](planar-reflections.md) for mirror-like surfaces; no SSR (owner decision, 2026-10-06) |
 | Directional shadows | Retained cascades with PCF | Shared retained cascades; a tier may lower filtering |
-| Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights filtered in the lighting pass (decided: 4 of the 16 dynamic lights, ADR-087); one bilinear comparison each today, a small gather PCF queued |
-| Transmission | Four peeled layers shaded in compute | Sorted forward blend with dual-source transmittance (decided for thin glass, ADR-087); absorption, then refraction from a half-resolution copy, for thick and rough glass (queued) |
+| Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights filtered in the lighting pass with a four-tap tent (decided: 4 of the 16 dynamic lights, ADR-087) |
+| Transmission | Four peeled layers shaded in compute | Sorted forward blend with dual-source transmittance for thin glass; volumes absorb and refract through a half-resolution copy, only on frames with one in view (decided, ADR-087) |
 | Post-processing | Compute bloom, exposure, tonemap | Shared color pipeline; the tonemap pass samples the bloom chain itself (decided, ADR-087) |
 | Arithmetic | 32-bit throughout | 32-bit; 16-bit only where a measured kernel is register-bound (no ALU gain on M1, see below) |
 
@@ -248,21 +248,14 @@ Remaining phases:
 
 ## Remaining work
 
-The owner approved these tiled-pipeline features on 2026-10-06, to land in
-this order as one measured change each against the 16.7 ms p95 budget:
-
-1. Per-draw reflection probes: done, one probe per surface
-   ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#reflection-probe-measurement)).
-2. Baked ambient occlusion: done, in every lightmap layer's alpha and applied
-   to environment specular
-   ([ADR-088](../adr/088-baked-lightmap-sets.md#encoding)).
-3. A small fixed PCF for the four shadowed dynamic lights: done, a four-tap
-   tent ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decision
-   11).
-4. Thick glass: Beer-Lambert absorption with the transmission and thickness
-   textures is done (ADR-087, decision 10); refraction and rough blur from a
-   half-resolution copy of the scene, only on frames with thick or rough
-   glass, remain.
+The features the owner approved on 2026-10-06 have landed, one measured
+change each: one reflection probe per surface
+([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#reflection-probe-measurement)),
+baked ambient occlusion in the lightmap alpha
+([ADR-088](../adr/088-baked-lightmap-sets.md#encoding)), a four-tap tent for
+the shadowed dynamic lights (ADR-087, decision 11), and glass volumes that
+absorb and refract
+([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#refraction-measurement)).
 
 SSR is not planned for the tiled pipeline (owner decision, 2026-10-06).
 Mirror-like surfaces get [planar reflections](planar-reflections.md) per
@@ -272,7 +265,12 @@ Also open: the opaque pass on the widest views (its depth pre-pass is examined
 in [tiled-depth-prepass.md](tiled-depth-prepass.md)), the dynamic-light tier at
 its 0.65 floor (17.1 to 17.5 ms p95 before the cooked mesh levels), the
 remaining material layers (clearcoat, sheen, anisotropy and diffuse
-transmission), and the specular highlights of static lights.
+transmission), and the specular highlights of static lights. Glass has two
+gaps: thin rough glass takes no blur, because the runtime cannot see a
+roughness the importer folded into a texture, and the refraction copy's
+base level reads the full-resolution image (0.3 ms at 2560×1440 on frames
+with a volume in view), which writing the copy from tile memory during the
+atmosphere draw would avoid.
 
 ## Acceptance evidence
 

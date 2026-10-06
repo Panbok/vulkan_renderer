@@ -229,6 +229,9 @@ struct VkrMetalTiledSurface {
   bool normal_mapped;
   float metallic;
   float roughness;
+  // The roughness before the shading floor, which picks the level of the
+  // refraction source a volume blurs with (ADR-087).
+  float feedback_roughness;
   float occlusion;
 };
 
@@ -247,7 +250,7 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
   surface.normal_mapped = terrain || (material.flags & 1u) != 0u;
   surface.tangent_normal = float3(0.0f, 0.0f, 1.0f);
   surface.metallic = saturate(material.material_surface.x);
-  surface.roughness = clamp(material.material_surface.y, 0.04f, 1.0f);
+  surface.feedback_roughness = saturate(material.material_surface.y);
   surface.occlusion = saturate(material.material_surface.w);
   float3 orm = float3(1.0f);
   if ((material.flags & 2u) != 0u)
@@ -270,13 +273,14 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
     surface.base = layered.base;
     surface.tangent_normal = layered.tangent_normal;
     surface.metallic = layered.metallic;
-    surface.roughness = layered.roughness;
+    surface.feedback_roughness = layered.roughness;
     surface.occlusion = layered.occlusion;
   } else if ((material.flags & 2u) != 0u) {
     surface.occlusion *= orm.r;
-    surface.roughness = clamp(surface.roughness * orm.g, 0.04f, 1.0f);
+    surface.feedback_roughness = saturate(surface.feedback_roughness * orm.g);
     surface.metallic = saturate(surface.metallic * orm.b);
   }
+  surface.roughness = clamp(surface.feedback_roughness, 0.04f, 1.0f);
   return surface;
 }
 
@@ -827,10 +831,13 @@ struct VkrMetalTiledBlendOutput {
 
 // Glass and alpha-blended surfaces, drawn back to front over the resolved
 // image. Glass composes as the transmission passes do
-// (vkr_transmission_compose): the light behind it arrives through the
-// hardware blend, so stacked panes compose in draw order, absorbed through a
-// volume's thickness. The tiled pipeline takes no refraction offset or rough
-// blur (ADR-087).
+// (vkr_transmission_compose). Thin glass takes the light straight behind it
+// through the hardware blend, so stacked panes compose in draw order. A
+// volume refracts and absorbs the light behind it: on frames with volume glass
+// in view, a half-resolution copy of the opaque image, reduced to six levels,
+// stands in for that light, and the glass's roughness selects the level
+// (ADR-087). The copy holds no blended surface, so a volume hides the panes
+// behind it.
 template <VkrMetalTiledLighting Lighting, bool Probes>
 static VkrMetalTiledBlendOutput
 vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
@@ -878,6 +885,9 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
       input, frame, material, surface, front_facing,
       Probes ? vkr_metal_tiled_pixel_probe(frame, input.world_position) : 0u);
+  // The refracted light behind a volume, when this frame has the copy.
+  bool refracted = false;
+  float3 refracted_light = float3(0.0f);
   if (transmission > 0.0f) {
     VkrTransmissionLobes lobes = {light.diffuse, light.specular,
                                   light.emissive};
@@ -887,21 +897,38 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
                               lobes, float3(0.0f), light.base,
                               light.reflectance, transmission, light.metallic),
                           0.0f);
-    // A volume absorbs the light behind it along the refracted path through
-    // its thickness (Beer-Lambert). The light arrives from straight behind
-    // the pane: the tiled pipeline takes no refraction offset (ADR-087).
+    // A volume bends the view ray into the pane and absorbs the light behind
+    // it along that path through its thickness (Beer-Lambert).
     float3 absorption = float3(1.0f);
-    const float4 attenuation = material.material_attenuation_color;
-    if (thickness > 0.0f && attenuation.w > 1e-4f) {
+    if (thickness > 0.0f) {
       const device VkrMetalPacketInstance &instance =
           frame->instances[visible.instance_index];
       VkrTransmissionExit exit = vkr_transmission_exit_point(
-          input.world_position, frame->view_position.xyz,
+          input.world_position,
+          input.world_position +
+              vkr_metal_packet_view_direction(frame, input.world_position),
           normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f),
           instance.model[0].xyz, instance.model[1].xyz, instance.model[2].xyz,
           material.material_alpha.z, thickness);
-      absorption = pow(clamp(attenuation.rgb, 1e-4f, 1.0f),
-                       exit.path_length / attenuation.w);
+      const float4 attenuation = material.material_attenuation_color;
+      if (attenuation.w > 1e-4f)
+        absorption = pow(clamp(attenuation.rgb, 1e-4f, 1.0f),
+                         exit.path_length / attenuation.w);
+      if (!is_null_texture(frame->transmission_source)) {
+        constexpr sampler refraction_sampler(
+            coord::normalized, address::clamp_to_edge, filter::linear,
+            mip_filter::linear);
+        const float2 uv = saturate(vkr_transmission_project_uv(
+            float4(exit.position, 1.0f) * frame->view_projection, -1.0f));
+        const float lod = vkr_transmission_rough_lod(
+            surface.feedback_roughness, material.material_alpha.z,
+            frame->transmission_source.get_num_mip_levels());
+        refracted_light =
+            frame->transmission_source
+                .sample(refraction_sampler, uv, level(lod))
+                .rgb;
+        refracted = true;
+      }
     }
     output.behind = float4(vkr_transmission_compose(
                                no_lobes, absorption, light.base,
@@ -914,6 +941,12 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   }
   output.color.rgb = vkr_metal_tiled_atmosphere(
       frame, output.color.rgb, input.world_position, output.behind.rgb);
+  // The copy was taken after the atmosphere draw, so the refracted light
+  // takes the share the pane keeps after the media rather than through them.
+  if (refracted) {
+    output.color.rgb += refracted_light * output.behind.rgb;
+    output.behind.rgb = float3(0.0f);
+  }
   return output;
 }
 

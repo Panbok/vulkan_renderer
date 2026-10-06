@@ -502,6 +502,10 @@ vkr_internal VkrRendererError vkr_frame_input_validate_world(
         out_validation_error);
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
+    if (world->refractive_draw_count > world->transparent_draw_count)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.refractive_draw_count",
+                        "cannot exceed the blended draw count");
     error = vkr_frame_input_validate_world_skinning_bindings(
         world, out_validation_error);
     if (error != VKR_RENDERER_ERROR_NONE) {

@@ -181,6 +181,7 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .shadow_cascades = upload->shadow_cascades_gpu,
       .local_shadow_texture_id = upload->local_shadow_texture_id,
       .local_shadow_views = upload->local_shadow_views_gpu,
+      .transmission_texture_id = upload->transmission_texture_id,
       .dfg_texture_id = renderer->dfg_lut.resource_id,
       .view = frame_constants.view,
       .shadow_cascade_count = frame_constants.shadow_cascade_count,
@@ -1653,6 +1654,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_exposure_resolve(
  * (the downsample chain at the same depth) is used instead of binding 2.
  * Selecting on the CPU is what keeps the kernel free of a bootstrap branch and
  * keeps every sampled texel defined.
+ *
+ * The tiled pipeline's refraction source (ADR-087) is reduced by the same
+ * four-tap box, without the firefly clamp; its base level, read from the
+ * scene, takes the 2x2 box.
  */
 vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
@@ -1697,6 +1702,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
     pipeline = renderer->bloom_config.filter == VKR_BLOOM_FILTER_BOX_4
                    ? renderer->bloom_downsample_box4_pipeline
                    : renderer->bloom_downsample_tent13_pipeline;
+  } else if (kind == VKR_RG_EXECUTOR_TRANSMISSION_DOWNSAMPLE) {
+    const bool8_t base =
+        !destination_use->has_slice || destination_use->slice.mip_level == 0u;
+    pipeline = base ? renderer->bloom_downsample_box2_pipeline
+                    : renderer->bloom_downsample_box4_pipeline;
   }
   if (!pipeline)
     return false_v;
@@ -1719,6 +1729,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
       .params = vkr_bloom_gpu_params(&renderer->bloom_config, &packet->bloom,
                                      renderer->prepared_frame.bloom_mip_count),
   };
+  /* The light seen through glass keeps its highlights; the reduction still
+     drops non-finite and negative texels. */
+  if (kind == VKR_RG_EXECUTOR_TRANSMISSION_DOWNSAMPLE)
+    root->params.firefly_clamp = 65504.0f;
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = pipeline,
       .root = root_gpu,
@@ -2264,6 +2278,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_BLOOM_PREFILTER:
   case VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE:
   case VKR_RG_EXECUTOR_BLOOM_UPSAMPLE:
+  case VKR_RG_EXECUTOR_TRANSMISSION_DOWNSAMPLE:
     return vkr_metal_packet_prepare_bloom(renderer, pass, packet, prepared,
                                           upload, prepared->kind);
   case VKR_RG_EXECUTOR_GPU_DRAW_CLASSIFY:

@@ -86,6 +86,9 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->blend_pending = packet->scene_rendering && packet->input.world &&
                          (packet->input.world->transparent_draw_count > 0u ||
                           packet->input.world->text_draw_count > 0u);
+  frame->tiled_refraction_pending =
+      packet->tiled_pipeline && frame->blend_pending &&
+      packet->input.world->refractive_draw_count > 0u;
   /* The tiled pipeline draws glass with the blended surfaces, so it takes
      no transmission candidates (ADR-087). */
   frame->transmission_pending =
@@ -219,7 +222,12 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                                    frame->viewport_height)
                          : 0u;
   frame->hzb_reduce_pass_count = hzb_mip_count - 1u;
-  frame->transmission_rough_mip_pass_count = Min(hzb_mip_count, 6u) - 1u;
+  /* Six levels of the opaque copy at most: the desktop pipeline's is full
+     resolution, the tiled pipeline's half (ADR-087), one level shorter. */
+  const uint32_t transmission_source_chain =
+      packet->tiled_pipeline ? Max(hzb_mip_count - 1u, 1u) : hzb_mip_count;
+  frame->transmission_rough_mip_pass_count =
+      Min(transmission_source_chain, 6u) - 1u;
 
   /* Bloom requires enough viewport extent for both reduction and upsampling. */
   const uint32_t bloom_width =

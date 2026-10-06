@@ -342,6 +342,8 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t shadow_texture_id;
   uint64_t local_shadow_texture_id;
   uint64_t local_shadow_views_gpu;
+  /* The tiled pipeline's refraction source, on frames that declare it. */
+  uint64_t transmission_texture_id;
   uint64_t ibl_probes_gpu;
   uint64_t diffuse_volume_texture_id;
   uint64_t diffuse_volume_params_gpu;
@@ -737,6 +739,8 @@ struct VkrMetalPacketRenderer {
      build measures. Neither is a fallback for the other. */
   id<MTLComputePipelineState> bloom_downsample_tent13_pipeline;
   id<MTLComputePipelineState> bloom_downsample_box4_pipeline;
+  /* The tiled pipeline's refraction copy's base level (ADR-087). */
+  id<MTLComputePipelineState> bloom_downsample_box2_pipeline;
   id<MTLComputePipelineState> bloom_upsample_pipeline;
   id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
   id<MTLDepthStencilState> depth_write_state;

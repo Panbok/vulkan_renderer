@@ -239,6 +239,7 @@ typedef struct VkrSceneWorldClassification {
   uint32_t gpu_camera_opaque_candidate_count;
   uint32_t transmission_gpu_candidate_count;
   uint32_t transparent_draw_count;
+  uint32_t refractive_draw_count;
 } VkrSceneWorldClassification;
 
 /* Counting pass: sizes the GPU candidate span and its static-caster prefix,
@@ -294,6 +295,7 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
   uint32_t gpu_camera_opaque_candidate_count = 0u;
   uint32_t transmission_gpu_candidate_count = 0u;
   uint32_t transparent_draw_count = 0u;
+  uint32_t refractive_draw_count = 0u;
   uint32_t source_index = 0u;
 
   for (uint32_t i = 0; i < mesh_count; ++i) {
@@ -335,6 +337,10 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
                    "Visibility pass exceeded the counted sources");
         transparent_visible[source_index] = visible;
         transparent_draw_count += visible ? 1u : 0u;
+        refractive_draw_count +=
+            visible && transmissive && material->pbr.thickness_factor > 0.0f
+                ? 1u
+                : 0u;
         stats.objects_culled_camera += visible ? 0u : 1u;
       }
       source_index++;
@@ -383,6 +389,10 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
                    "Visibility pass exceeded the counted sources");
         transparent_visible[source_index] = visible;
         transparent_draw_count += visible ? 1u : 0u;
+        refractive_draw_count +=
+            visible && transmissive && material->pbr.thickness_factor > 0.0f
+                ? 1u
+                : 0u;
         stats.objects_culled_camera += visible ? 0u : 1u;
       }
       source_index++;
@@ -395,6 +405,7 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
       .gpu_camera_opaque_candidate_count = gpu_camera_opaque_candidate_count,
       .transmission_gpu_candidate_count = transmission_gpu_candidate_count,
       .transparent_draw_count = transparent_draw_count,
+      .refractive_draw_count = refractive_draw_count,
   };
 }
 
@@ -700,6 +711,7 @@ VkrRendererError vkr_scene_build_world_draws(
       .transmission_gpu_candidate_count = transmission_gpu_candidate_count,
       .transparent_draws = transparent_draws,
       .transparent_draw_count = transparent_draw_count,
+      .refractive_draw_count = totals.refractive_draw_count,
       .instances = transparent_instances,
       .instance_count = transparent_draw_count,
   };

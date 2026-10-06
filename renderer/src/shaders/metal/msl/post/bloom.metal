@@ -160,6 +160,22 @@ kernel void vkr_metal_packet_bloom_downsample_box4(
       float4(vkr_bloom_combine_box4(root, root.source, uv, texel), 1.0), pixel);
 }
 
+// One bilinear tap at the centre of the four source texels a destination
+// texel covers: a 2x2 box for a quarter of box4's samples. The tiled
+// pipeline's refraction copy takes it for its base level, which should be no
+// blurrier than its resolution (ADR-087).
+kernel void vkr_metal_packet_bloom_downsample_box2(
+    constant VkrMetalPacketBloomRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  if (!all(pixel < root.destination_extent))
+    return;
+  root.destination.write(
+      float4(vkr_bloom_tap(root, root.source,
+                           vkr_bloom_destination_uv(root, pixel)),
+             1.0),
+      pixel);
+}
+
 kernel void vkr_metal_packet_bloom_upsample(
     constant VkrMetalPacketBloomRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {

@@ -211,19 +211,36 @@ pipeline rather than a backend mechanism.
     [`vkr_scene_build_world_draws`](../../runtime/src/renderer/systems/vkr_scene_frame.h)),
     and `Tiled.Blend` (`pass.tiled.blend`) draws that list single-sampled
     over the resolved image after the clouds, then world text. Glass
-    composes as the transmission passes do (`vkr_transmission_compose`), but
-    the light behind it arrives through dual-source blending: the fragment's
-    second output is the factor the destination keeps per channel, so tinted
-    and stacked panes compose in draw order. Glass reads its transmission
-    and thickness textures through the frame root's transmission rows, and a
-    volume absorbs the light behind it as the desktop pipeline does,
-    `pow(attenuation colour, path length / attenuation distance)` along the
-    refracted path through its object-space thickness
-    (`vkr_transmission_exit_point`); that light still arrives from straight
-    behind the pane, without a refraction offset or rough blur. Bistro's 18
-    glass materials have no thickness and an effective roughness of zero;
-    the blend pass on the baked orbit took 0.47 / 0.85 and 0.48 / 0.78 ms
-    median / p95 before the volume and 0.51 / 1.11 and 0.49 / 0.83 ms after
+    composes as the transmission passes do (`vkr_transmission_compose`).
+    Thin glass takes the light behind it through dual-source blending: the
+    fragment's second output is the factor the destination keeps per
+    channel, so tinted and stacked panes compose in draw order. Glass reads
+    its transmission and thickness textures through the frame root's
+    transmission rows. A volume, glass with a thickness, absorbs the light
+    behind it as the desktop pipeline does, `pow(attenuation colour, path
+    length / attenuation distance)` along the refracted path through its
+    object-space thickness (`vkr_transmission_exit_point`), and refracts it.
+    On frames whose blend list holds a volume (`refractive_draw_count` in
+    the world payload, `tiled_refraction_pending` in the graph),
+    `Tiled.Refraction.Base` copies the image after the atmosphere draw into
+    the half-resolution `tiled_refraction_source` with a 2×2 box, and
+    `Tiled.Refraction.Downsample.${i}` (`pass.transmission.downsample`)
+    reduces it to six levels with a four-tap box. The volume samples the
+    copy at its projected exit point, at the level its roughness picks
+    (`vkr_transmission_rough_lod`), and adds that light itself, so the
+    blend keeps none of the destination. The copy holds no blended surface,
+    so a volume hides the panes behind it, and as in any screen-space
+    refraction its offset can pick up nearer surfaces. Thin glass takes no
+    offset or blur: the importer folds the roughness factor into the
+    roughness texture (Bistro's normal-mapped panes carry a factor of one
+    over a zero-roughness texture), so the runtime cannot tell rough thin
+    glass from smooth before shading, and gating the copy on a volume keeps
+    frames without one free of it. Bistro's 18 glass materials have no
+    thickness and an effective roughness of zero, so no Bistro frame takes
+    the copy (see [Refraction measurement](#refraction-measurement)). The
+    blend pass on the baked orbit took 0.47 / 0.85 and 0.48 / 0.78 ms
+    median / p95 before volume absorption and 0.51 / 1.11 and 0.49 / 0.83 ms
+    after
     (`sha256:043adce36b03e4b35ee87fe64b4f69c2ce7b48bf8266bf2381fcfc22bcaa0c24`,
     `sha256:d98e4027a1b5d7336414344fc5cdcefefe6f4558f561517d9dca2e809b27a072`,
     `sha256:f2919e430321daee721233ced99a5fdc3fb07baf5fc148c38d38696a0e623d36`,
@@ -687,6 +704,56 @@ A temporary interior view with the probe's specular intensity raised to one
 reflects the room's cubemap where the build before reflected the sky, and
 the baked street capture differs in at most 5 pixels by more than 2 of 255.
 A Metal API validation run of the interior view passed.
+
+### Refraction measurement
+
+Release, M1 Pro, 2026-10-06, the build before refraction (`1c64f848`,
+through `VKR_SHADER_CATALOG`) alternating with the refraction build on
+`tiled_bistro_baked_native`. With Bistro's glass unchanged no frame declares
+the copy. Pass timestamps (`local-windowed-gpu-single`) put `Tiled.Opaque` at
+7.94 and 7.77 ms median before and 7.98 and 7.76 ms after, and `Tiled.Blend`
+at 0.50 and 0.49 ms on both
+(`sha256:913ce53f54ec4d7c27a452a415a9a069f519078979dde8839ce1f2e11166a987`,
+`sha256:beb21f3659ce3f71254a8ef1e191e84d8c20c1cb3fe3354613b1e770327bce6e`,
+`sha256:8f75418a711b06a89207e02e02791c5c8c69f57f7da44dd4e545888d8f34c6f3`,
+`sha256:47206afc8fd138923a7d8e13093538014cd0622c2c2693e5db3713fc1e145371`).
+`gpu.submission` (`local-windowed-gpu-submission-single`, the refraction
+build first in each pair) took 11.68 / 15.97, 11.78 / 16.53 and
+11.88 / 16.52 ms median / p95 before and 11.62 / 16.01, 11.74 / 16.00 and
+12.21 / 17.29 ms after
+(`sha256:f031a1538f453b89f1a13754b721c6e86469c22b2cd0eed3241275af0cfe9a60`,
+`sha256:7f1212b68dadb5914d2aa5fc0b0600c51c1f4622f47eacdfb226c645e59d3493`,
+`sha256:217ee5f99e1c5839b7248adfa9f5de683562666dc87836b6aa19bd89819bc75d`,
+`sha256:b226cec5a66f809dd251121bf9b34f3eac995c9c87e6c292766ec57b2c2b3970`,
+`sha256:bb70389641338e1249c547969cb63dd629f90d9cfb293ae56bf1343c6cd0e308`,
+`sha256:59168f18f27296125bba9d6045160cddc82717c5c93dea31504e83b599483c9f`).
+Runs with the refraction build second showed it about 0.15 ms slower at the
+median, the drift between consecutive runs of one build; the reversed order
+removed it. Snapshots of `tiled_bistro_glass` and
+`tiled_bistro_baked_capture` differ from the build before in at most 3
+pixels by more than 2 of 255.
+
+With Bistro's glass temporarily given a 2 cm world thickness and
+attenuation, and its six normal-mapped panes a roughness of 0.45 without
+their roughness texture, the copy at 2560×1440 took 0.28 and 0.29 ms median
+for its base level, 0.05 ms for the first reduction and 0.01 ms for each of
+the four smaller ones, about 0.37 ms in all; `Tiled.Blend` took 0.51 and
+0.50 ms against 0.51 and 0.50 ms before
+(`sha256:5e26965670a6771fb1677bb9632efab0c5e8f521b4beee2c1adb56a5c3a9306e`,
+`sha256:471fee056bb56d0f45ae7d94192af57afe046332ff5fc808d4beed7e9ab6a92f`,
+`sha256:7d0c4842e3e78b08b864e094d8c5b1d09f20dd97923446a3f8799fa3ee72620e`,
+`sha256:1300aa68516db82531428419c8112cbec291b83c809e3676302b77e457d2b502`).
+The base level is bound by its read of the full-resolution image: four
+taps over the same 2×2 footprint took 0.28 and 0.31 ms
+(`sha256:cd2d4ab74551b8a4c0c9654d96163382904c8b82247ee9a386705eda8a83d6ee`,
+`sha256:ac083f193e42f25459f09ac08e3f4def0779dff446fcfed456340eebeaf5e41d`).
+At 1280×720 (`tiled_bistro_glass`, `local-offscreen-gpu-single`) the copy
+took 0.04 ms and 0.01 ms per reduction. Captures of the café windows show the
+rough panes blurring the interior and the smooth ones bending it slightly
+(`sha256:df6451c13b7506d6249ced3704be38eb75bcacc683fe81f6bd08ed7e4089eb51`
+before, `sha256:bcfe529c3dc64ad86eb8e5b59229ad57e106325984ecf00eb7f7a3453ec889e8`
+after), and a Metal API validation run of that view with the copy passed
+(`sha256:5ddd829c21b0b89f3fb439fa46db9149af5b37abc5506010a7ea8363f8dd8208`).
 
 ## Consequences
 

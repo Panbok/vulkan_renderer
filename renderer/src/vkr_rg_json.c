@@ -151,6 +151,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"blend_pending", VKR_RG_JSON_CONDITION_BLEND_PENDING},
     {"(clouds_enabled || fog_apply_enabled)",
      VKR_RG_JSON_CONDITION_CLOUDS_OR_FOG_APPLY_ENABLED},
+    {"tiled_refraction_pending",
+     VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING},
 };
 
 vkr_internal bool8_t vkr_rg_json_error(VkrRgJsonParseContext *ctx,
@@ -2178,6 +2180,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->blend_pending;
   case VKR_RG_JSON_CONDITION_CLOUDS_OR_FOG_APPLY_ENABLED:
     return frame->clouds_enabled || frame->fog_apply_enabled;
+  case VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING:
+    return frame->tiled_refraction_pending;
   default:
     return false_v;
   }
@@ -2631,12 +2635,12 @@ vkr_internal bool8_t vkr_rg_json_apply_slice(
   return true_v;
 }
 
+/* An authored count is an upper bound: a small viewport's chain is shorter,
+   and an image cannot have more levels than its extent halves to. */
 vkr_internal uint32_t vkr_rg_json_mip_levels(const VkrRgJsonImageDesc *image,
                                              uint32_t width, uint32_t height,
                                              uint32_t depth) {
-  if (image->mip_levels_is_set)
-    return image->mip_levels;
-  if (!image->mip_levels_full)
+  if (!image->mip_levels_is_set && !image->mip_levels_full)
     return 1u;
   uint32_t extent = Max(Max(width, height), depth);
   uint32_t levels = 0u;
@@ -2644,7 +2648,8 @@ vkr_internal uint32_t vkr_rg_json_mip_levels(const VkrRgJsonImageDesc *image,
     levels++;
     extent >>= 1u;
   }
-  return Max(levels, 1u);
+  levels = Max(levels, 1u);
+  return image->mip_levels_is_set ? Min(image->mip_levels, levels) : levels;
 }
 
 vkr_internal bool8_t vkr_rg_json_resolve_use_slice(

@@ -657,6 +657,9 @@ typedef struct VkrRenderGraphFrameInfo {
   /** The world has ordinary-blend draws, which include the tiled pipeline's
    * glass, or world text. */
   bool8_t blend_pending;
+  /** The tiled pipeline's blend has glass with a volume in view, whose
+   * refraction samples a reduced copy of the scene (ADR-087). */
+  bool8_t tiled_refraction_pending;
   VkrTextureFormat target_color_format; /**< Present-target color format */
   VkrTextureFormat target_depth_format; /**< Present-target depth format */
   /** Access/layout each imported target attachment arrives in. */

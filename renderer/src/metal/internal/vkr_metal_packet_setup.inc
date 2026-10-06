@@ -1136,6 +1136,11 @@ vkr_metal_packet_create_post_pipelines(VkrMetalPacketRenderer *renderer,
           renderer, fragment, "vkr_metal_packet_bloom_downsample_box4",
           VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
           @"VKR Metal packet bloom downsample box4");
+  renderer->bloom_downsample_box2_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_bloom_downsample_box2",
+          VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
+          @"VKR Metal packet bloom downsample box2");
   renderer->bloom_upsample_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_bloom_upsample",
       VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
@@ -1244,6 +1249,8 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
        "bloom tent13 downsample pipeline"},
       {renderer->bloom_downsample_box4_pipeline,
        "bloom box4 downsample pipeline"},
+      {renderer->bloom_downsample_box2_pipeline,
+       "bloom box2 downsample pipeline"},
       {renderer->bloom_upsample_pipeline, "bloom upsample pipeline"},
       {renderer->tiled_depth_pipeline, "tiled depth pre-pass pipeline"},
       {renderer->tiled_sky_pipeline, "tiled sky pipeline"},

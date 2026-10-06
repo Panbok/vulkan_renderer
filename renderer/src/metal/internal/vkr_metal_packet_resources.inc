@@ -2815,6 +2815,13 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
     upload->local_shadow_views_gpu = gpu + plan->local_shadow_views_offset;
     upload->local_shadow_texture_id = local_shadow_texture.gpuResourceID._impl;
   }
+  if (renderer->prepared_frame.tiled_refraction_pending) {
+    id<MTLTexture> refraction_source =
+        vkr_metal_packet_named_texture(renderer, "tiled_refraction_source");
+    if (!refraction_source)
+      return false_v;
+    upload->transmission_texture_id = refraction_source.gpuResourceID._impl;
+  }
   VkrMetalPacketLtc *ltc = (VkrMetalPacketLtc *)(cpu + plan->ltc_offset);
   *ltc = (VkrMetalPacketLtc){
       .lights = gpu + plan->rectangle_lights_offset,

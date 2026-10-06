@@ -754,12 +754,18 @@ vkr_internal void test_json_mip_chain_and_subresource_uses(void) {
       "{\"version\":1,\"name\":\"mips\",\"resources\":[{\"name\":\"hzb\","
       "\"type\":\"image\",\"extent\":{\"mode\":\"fixed\",\"width\":16,"
       "\"height\":8},\"format\":\"R32_SFLOAT\",\"mip_levels\":\"full_chain\","
-      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\"]}],\"passes\":["
+      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\"]},{\"name\":"
+      "\"pyramid\",\"type\":\"image\",\"extent\":{\"mode\":\"fixed\","
+      "\"width\":16,\"height\":8},\"format\":\"R32_SFLOAT\","
+      "\"mip_levels\":8,\"usage\":[\"STORAGE\"],\"flags\":["
+      "\"PER_FRAME_SLOT\"]}],\"passes\":["
       "{\"name\":\"write\",\"type\":\"compute\",\"flags\":[\"NO_CULL\"],"
       "\"writes\":[{\"image\":\"hzb\",\"access\":\"STORAGE_WRITE\","
       "\"binding\":0,\"subresource\":{\"base_mip\":1,\"mip_count\":2,"
-      "\"base_layer\":0,\"layer_count\":1}}],\"dispatch\":{\"type\":"
-      "\"direct\",\"x\":1,\"y\":1,\"z\":1},\"execute\":\"test.compute\"},"
+      "\"base_layer\":0,\"layer_count\":1}},{\"image\":\"pyramid\","
+      "\"access\":\"STORAGE_WRITE\",\"binding\":1}],\"dispatch\":{"
+      "\"type\":\"direct\",\"x\":1,\"y\":1,\"z\":1},\"execute\":"
+      "\"test.compute\"},"
       "{\"name\":\"read\",\"type\":\"compute\",\"flags\":[\"NO_CULL\"],"
       "\"reads\":[{\"image\":\"hzb\",\"access\":\"STORAGE_READ\","
       "\"binding\":0,\"subresource\":{\"base_mip\":1,\"mip_count\":2,"
@@ -787,6 +793,8 @@ vkr_internal void test_json_mip_chain_and_subresource_uses(void) {
   assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->images.data[0].desc.mip_levels == 5u);
+  /* An authored count longer than the extent's chain takes the chain. */
+  assert(graph->images.data[1].desc.mip_levels == 5u);
   assert(graph->passes.data[0].desc.image_writes.data[0].slice.mip_level == 1u);
   assert(graph->passes.data[0].desc.image_writes.data[0].slice.mip_count == 2u);
   assert(vkr_rg_compile_schedule(graph));

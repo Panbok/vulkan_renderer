@@ -737,6 +737,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->hzb_build_pipeline release];
   [renderer->bloom_upsample_pipeline release];
   [renderer->bloom_downsample_box4_pipeline release];
+  [renderer->bloom_downsample_box2_pipeline release];
   [renderer->bloom_downsample_tent13_pipeline release];
   [renderer->bloom_prefilter_pipeline release];
   [renderer->exposure_resolve_pipeline release];
