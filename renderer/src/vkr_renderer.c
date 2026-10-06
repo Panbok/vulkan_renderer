@@ -39,6 +39,15 @@ vkr_renderer_graph_path(VkrGraphicsPipelineClass graphics, char *storage,
   return storage;
 }
 
+/* The tiled pipeline upscales spatially without history, so its adaptive
+ * quality follows each frame like Valve's VR controller (ADR-087). */
+vkr_internal VkrDynamicResolutionPolicy
+vkr_renderer_dynamic_resolution_policy(VkrGraphicsPipelineClass graphics) {
+  return graphics == VKR_GRAPHICS_PIPELINE_TILED
+             ? VKR_DYNAMIC_RESOLUTION_POLICY_RESPONSIVE
+             : VKR_DYNAMIC_RESOLUTION_POLICY_STABLE;
+}
+
 vkr_internal bool8_t vkr_renderer_env_enabled(const char *name) {
   const char *value = name ? getenv(name) : NULL;
   return value && value[0] != '\0' && strcmp(value, "0") != 0 ? true_v
@@ -810,20 +819,23 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     log_error("Renderer graphics pipeline class is invalid");
     return false_v;
   }
-  /* The tiled pipeline resolves MSAA at native resolution (ADR-087). */
+  /* The tiled pipeline resolves MSAA in tile memory and upscales spatially
+     (ADR-087). */
   if (requested_graphics == VKR_GRAPHICS_PIPELINE_TILED &&
       (backend_type != VKR_RENDERER_BACKEND_TYPE_METAL ||
-       requested_upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
-       requested_dynamic_resolution.enabled)) {
+       requested_upscale_mode != VKR_UPSCALE_MODE_SPATIAL)) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
     log_error("The tiled graphics pipeline requires the Metal backend without "
-              "temporal upscaling or dynamic resolution");
+              "temporal upscaling");
     return false_v;
   }
+  /* Its adaptive quality steps the resolution of the spatial upscale. */
   if (requested_dynamic_resolution.enabled &&
-      requested_upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL) {
+      requested_upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
+      requested_graphics != VKR_GRAPHICS_PIPELINE_TILED) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
-    log_error("Dynamic resolution requires MetalFX temporal upscaling");
+    log_error("Dynamic resolution requires MetalFX temporal upscaling or the "
+              "tiled graphics pipeline");
     return false_v;
   }
   /* The live range: MetalFX builds its scaler once from the
@@ -897,9 +909,10 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->graphics_pipeline = requested_graphics;
   renderer->dynamic_resolution_request = dynamic_resolution_request;
   renderer->dynamic_resolution_config = requested_dynamic_resolution;
-  vkr_dynamic_resolution_init(&renderer->dynamic_resolution_state,
-                              &requested_dynamic_resolution,
-                              requested_render_scale);
+  vkr_dynamic_resolution_init(
+      &renderer->dynamic_resolution_state, &requested_dynamic_resolution,
+      requested_render_scale,
+      vkr_renderer_dynamic_resolution_policy(requested_graphics));
   renderer->frame_active = false;
   renderer->asset_publisher = (VkrAssetPublisher){0};
   renderer->timing_result = (VkrRendererImplSubmitResult){0};
@@ -2938,7 +2951,8 @@ VkrRendererError vkr_renderer_set_present_mode(VkrRenderer *renderer,
 bool8_t
 vkr_renderer_dynamic_resolution_switchable(const VkrRenderer *renderer) {
   return renderer &&
-         renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL;
+         (renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
+          renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED);
 }
 
 VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
@@ -2975,8 +2989,9 @@ VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
       config.max_scale == renderer->dynamic_resolution_config.max_scale)
     return VKR_RENDERER_ERROR_NONE;
   renderer->dynamic_resolution_config = config;
-  vkr_dynamic_resolution_init(&renderer->dynamic_resolution_state, &config,
-                              scale);
+  vkr_dynamic_resolution_init(
+      &renderer->dynamic_resolution_state, &config, scale,
+      vkr_renderer_dynamic_resolution_policy(renderer->graphics_pipeline));
   renderer->render_scale = scale;
   renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
 #if defined(PLATFORM_APPLE)

@@ -193,8 +193,11 @@ static bool8_t graphics_validate(const void *value, char *error,
     snprintf(error, capacity, "Temporal upscaling requires anti-aliasing");
     return false_v;
   }
-  if (settings->dynamic_resolution && !settings->temporal_upscaling) {
-    snprintf(error, capacity, "Dynamic resolution requires temporal upscaling");
+  if (settings->dynamic_resolution && !settings->temporal_upscaling &&
+      !settings->tiled_pipeline) {
+    snprintf(error, capacity,
+             "Dynamic resolution requires temporal upscaling or the tiled "
+             "pipeline");
     return false_v;
   }
   if (settings->tiled_pipeline && settings->temporal_upscaling) {
@@ -212,9 +215,10 @@ static void graphics_normalize(void *value) {
   if (settings->tiled_pipeline) {
     settings->temporal_upscaling = false_v;
   }
+  /* The tiled pipeline's adaptive quality steps its spatial resolution. */
   if (settings->temporal_upscaling) {
     settings->anti_aliasing = true_v;
-  } else {
+  } else if (!settings->tiled_pipeline) {
     settings->dynamic_resolution = false_v;
   }
 }
@@ -251,8 +255,9 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       result.label = state->temporal_upscaling_name;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, dynamic_resolution)) {
-    if (!settings->temporal_upscaling ||
-        (state && !state->dynamic_resolution_available)) {
+    if (!settings->tiled_pipeline &&
+        (!settings->temporal_upscaling ||
+         (state && !state->dynamic_resolution_available))) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, anti_aliasing)) {

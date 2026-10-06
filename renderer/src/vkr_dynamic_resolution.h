@@ -8,6 +8,18 @@
 #define VKR_DYNAMIC_RESOLUTION_DEFAULT_MAX_SCALE 1.0f
 #define VKR_DYNAMIC_RESOLUTION_DEFAULT_TARGET_FRAME_MS (1000.0f / 75.0f)
 
+/** How fast the controller follows the measured frame time. */
+typedef enum VkrDynamicResolutionPolicy {
+  /** Filtered samples, three over budget per step down and long cooldowns:
+   * each step resets MetalFX temporal history. */
+  VKR_DYNAMIC_RESOLUTION_POLICY_STABLE = 0,
+  /** Raw samples: two over budget step down, two steps when both exceed the
+   * budget by a quarter, and steps up after sustained headroom, like Valve's
+   * VR adaptive quality. The tiled pipeline's spatial upscale keeps no
+   * history to reset (ADR-087). */
+  VKR_DYNAMIC_RESOLUTION_POLICY_RESPONSIVE,
+} VkrDynamicResolutionPolicy;
+
 /** Deterministic, allocation-free state driven only by completed GPU samples.
  */
 typedef struct VkrDynamicResolutionState {
@@ -26,6 +38,9 @@ typedef struct VkrDynamicResolutionState {
   uint32_t under_budget_samples;
   uint32_t cooldown_samples;
   uint32_t transition_count;
+  VkrDynamicResolutionPolicy policy;
+  /* Every sample of the current over-budget run exceeded the far ratio. */
+  bool8_t far_over_budget;
   bool8_t filtered_sample_valid;
   bool8_t enabled;
 } VkrDynamicResolutionState;
@@ -38,11 +53,12 @@ bool8_t vkr_dynamic_resolution_config_normalize(
 /** Initializes a normalized controller. */
 void vkr_dynamic_resolution_init(VkrDynamicResolutionState *state,
                                  const VkrDynamicResolutionConfig *config,
-                                 float32_t initial_scale);
+                                 float32_t initial_scale,
+                                 VkrDynamicResolutionPolicy policy);
 
 /** Clears timing and learned tier costs after the output workload changes.
- * Preserves configuration, current scale, submit watermark and transition
- * total.
+ * Preserves configuration, policy, current scale, submit watermark and
+ * transition total.
  */
 void vkr_dynamic_resolution_reset_feedback(VkrDynamicResolutionState *state);
 

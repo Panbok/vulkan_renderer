@@ -508,7 +508,8 @@ vkr_internal void test_dynamic_resolution_hysteresis(void) {
       .enabled = true_v,
   };
   VkrDynamicResolutionState state = {0};
-  vkr_dynamic_resolution_init(&state, &config, 1.0f);
+  vkr_dynamic_resolution_init(&state, &config, 1.0f,
+                              VKR_DYNAMIC_RESOLUTION_POLICY_STABLE);
   float32_t next_scale = 0.0f;
 
   assert(
@@ -540,7 +541,8 @@ vkr_internal void test_dynamic_resolution_hysteresis(void) {
   assert(state.transition_count == 2u);
 
   VkrDynamicResolutionState stable = {0};
-  vkr_dynamic_resolution_init(&stable, &config, 0.75f);
+  vkr_dynamic_resolution_init(&stable, &config, 0.75f,
+                              VKR_DYNAMIC_RESOLUTION_POLICY_STABLE);
   for (uint64_t submit = 1u; submit <= 100u; ++submit)
     assert(!vkr_dynamic_resolution_update(&stable, submit, 12000000u, 0.75f,
                                           &next_scale));
@@ -553,7 +555,8 @@ vkr_internal void test_dynamic_resolution_hysteresis(void) {
       .enabled = true_v,
   };
   VkrDynamicResolutionState endpoint = {0};
-  vkr_dynamic_resolution_init(&endpoint, &endpoint_config, 0.35f);
+  vkr_dynamic_resolution_init(&endpoint, &endpoint_config, 0.35f,
+                              VKR_DYNAMIC_RESOLUTION_POLICY_STABLE);
   for (uint64_t submit = 1u; submit < 3u; ++submit)
     assert(!vkr_dynamic_resolution_update(&endpoint, submit, 20000000u, 0.35f,
                                           &next_scale));
@@ -561,6 +564,60 @@ vkr_internal void test_dynamic_resolution_hysteresis(void) {
                                        &next_scale));
   assert(temporal_near(next_scale, 0.334f));
   printf("  test_dynamic_resolution_hysteresis PASSED\n");
+}
+
+/* The tiled pipeline's policy steps down after two raw samples over the
+   frame target, two steps when both exceed it by a quarter, and steps up
+   after thirty samples of headroom. */
+vkr_internal void test_dynamic_resolution_responsive(void) {
+  printf("  Running test_dynamic_resolution_responsive...\n");
+  const VkrDynamicResolutionConfig config = {
+      .min_scale = 0.65f,
+      .max_scale = 1.0f,
+      .target_frame_ms = 16.0f,
+      .enabled = true_v,
+  };
+  VkrDynamicResolutionState state = {0};
+  vkr_dynamic_resolution_init(&state, &config, 1.0f,
+                              VKR_DYNAMIC_RESOLUTION_POLICY_RESPONSIVE);
+  float32_t next_scale = 0.0f;
+  uint64_t submit = 0u;
+
+  // One spike alone does not step down; a second sample over budget does.
+  assert(!vkr_dynamic_resolution_update(&state, ++submit, 17000000u, 1.0f,
+                                        &next_scale));
+  assert(!vkr_dynamic_resolution_update(&state, ++submit, 15000000u, 1.0f,
+                                        &next_scale));
+  assert(!vkr_dynamic_resolution_update(&state, ++submit, 17000000u, 1.0f,
+                                        &next_scale));
+  assert(vkr_dynamic_resolution_update(&state, ++submit, 17000000u, 1.0f,
+                                       &next_scale));
+  assert(temporal_near(next_scale, 0.95f));
+
+  // In-flight samples of the old tier are ignored; one cooldown sample, then
+  // two samples a quarter over budget step down twice.
+  assert(!vkr_dynamic_resolution_update(&state, ++submit, 21000000u, 1.0f,
+                                        &next_scale));
+  assert(!vkr_dynamic_resolution_update(&state, ++submit, 21000000u, 0.95f,
+                                        &next_scale));
+  assert(!vkr_dynamic_resolution_update(&state, ++submit, 21000000u, 0.95f,
+                                        &next_scale));
+  assert(vkr_dynamic_resolution_update(&state, ++submit, 21000000u, 0.95f,
+                                       &next_scale));
+  assert(temporal_near(next_scale, 0.85f));
+  assert(state.transition_count == 2u);
+
+  // Thirty samples below 80% of the target step back up one tier.
+  assert(!vkr_dynamic_resolution_update(&state, ++submit, 10000000u, 0.85f,
+                                        &next_scale));
+  for (uint32_t i = 0u; i < 29u; ++i)
+    assert(!vkr_dynamic_resolution_update(&state, ++submit, 10000000u, 0.85f,
+                                          &next_scale));
+  assert(vkr_dynamic_resolution_update(&state, ++submit, 10000000u, 0.85f,
+                                       &next_scale));
+  assert(temporal_near(next_scale, 0.9f));
+  assert(state.transition_count == 3u);
+  printf("  test_dynamic_resolution_responsive PASSED\n");
 }
 
 vkr_internal void test_dynamic_resolution_failed_upshift_headroom(void) {
@@ -572,7 +629,8 @@ vkr_internal void test_dynamic_resolution_failed_upshift_headroom(void) {
       .enabled = true_v,
   };
   VkrDynamicResolutionState state = {0};
-  vkr_dynamic_resolution_init(&state, &config, 0.85f);
+  vkr_dynamic_resolution_init(&state, &config, 0.85f,
+                              VKR_DYNAMIC_RESOLUTION_POLICY_STABLE);
   uint64_t submit = 0u;
   float32_t next_scale = 0.0f;
 
@@ -813,6 +871,7 @@ bool32_t run_temporal_tests(void) {
   test_dynamic_resolution_config();
   test_dynamic_resolution_hysteresis();
   test_dynamic_resolution_failed_upshift_headroom();
+  test_dynamic_resolution_responsive();
   printf("Temporal tests PASSED\n");
   return true_v;
 }

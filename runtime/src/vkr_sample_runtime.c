@@ -454,7 +454,8 @@ static void sample_graphics_apply_display(VkrStandardSceneRuntime *application,
   float32_t live_max = 1.0f;
   vkr_renderer_render_scale_range(renderer, &live_min, &live_max);
   const bool8_t dynamic =
-      settings->dynamic_resolution && settings->temporal_upscaling;
+      settings->dynamic_resolution &&
+      (settings->temporal_upscaling || settings->tiled_pipeline);
   if ((!state->graphics_scale_live ||
        settings->render_scale != state->graphics_started.render_scale ||
        settings->dynamic_resolution !=

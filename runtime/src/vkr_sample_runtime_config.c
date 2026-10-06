@@ -180,7 +180,8 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
   if (settings.tiled_pipeline) {
     settings.temporal_upscaling = false_v;
   }
-  if (!dynamic_available || !settings.temporal_upscaling) {
+  if (!settings.tiled_pipeline &&
+      (!dynamic_available || !settings.temporal_upscaling)) {
     settings.dynamic_resolution = false_v;
   }
   const bool8_t high_dpi_available = vkr_window_high_dpi_switchable();
@@ -362,11 +363,15 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
       .graphics_pipeline = graphics->tiled_pipeline
                                ? VKR_GRAPHICS_PIPELINE_TILED
                                : VKR_GRAPHICS_PIPELINE_DESKTOP,
+      /* MetalFX reconstructs from a third of the pixels; the tiled
+         pipeline's adaptive quality upscales spatially, so it keeps 0.65 of
+         each axis at least and holds the 60 Hz frame (ADR-087). */
       .dynamic_resolution =
           {
-              .min_scale = .334f,
+              .min_scale = graphics->tiled_pipeline ? 0.65f : .334f,
               .max_scale = 1.0f,
-              .target_frame_ms = 1000.0f / 75.0f,
+              .target_frame_ms =
+                  graphics->tiled_pipeline ? 16.0f : 1000.0f / 75.0f,
               .enabled = graphics->dynamic_resolution,
           },
       /* The UI may capture the window (VkrSampleCaptureRequest), one capture

@@ -806,6 +806,11 @@ struct VkrMetalPacketRenderer {
   id<MTLTexture> tiled_msaa_depth;
   uint32_t tiled_width;
   uint32_t tiled_height;
+  /* Targets a resize replaced, released once the GPU completes
+     `tiled_retired_submit_value`, the last submission that drew into them. */
+  id<MTLTexture> tiled_retired_color;
+  id<MTLTexture> tiled_retired_depth;
+  uint64_t tiled_retired_submit_value;
   id<MTLRenderPipelineState> ui_pipeline;
   id<MTLRenderPipelineState> picking_pipeline;
   id<MTLRenderPipelineState> editor_overlay_pipeline;
@@ -957,7 +962,9 @@ struct VkrMetalPacketRenderer {
   bool8_t srgb_output;
   bool8_t tonemap_enabled;
   bool8_t metalfx_enabled;
-  bool8_t metalfx_dynamic_resolution_enabled;
+  /* The renderer's resolution controller runs: MetalFX temporal or the tiled
+     pipeline's spatial upscale. Frames then report their GPU time. */
+  bool8_t dynamic_resolution_enabled;
   bool8_t deferred_candidate_drop_logged;
   bool8_t convert_vulkan_clip_y;
   bool8_t transmission_compact_enabled;

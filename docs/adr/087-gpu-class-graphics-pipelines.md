@@ -121,8 +121,8 @@ pipeline rather than a backend mechanism.
 7. `VkrRendererBackendConfig.graphics_pipeline` selects the class
    (`VKR_GRAPHICS_PIPELINE=desktop|tiled` overrides it, and harness cases set
    `renderer.graphics_pipeline`). Zero is the desktop pipeline. The tiled
-   class requires the Metal backend without temporal upscaling or dynamic
-   resolution; it turns off temporal reconstruction, SSR, SSGI, GTAO,
+   class requires the Metal backend without temporal upscaling; it turns
+   off temporal reconstruction, SSR, SSGI, GTAO,
    surface diffusion, depth of field, motion blur, froxel fog, the local
    shadow mask, SDSM and the transmission passes
    ([`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
@@ -205,6 +205,23 @@ pipeline rather than a backend mechanism.
     response (`vkr_metal_packet_layered_rectangle_lights<true, true>` in
     [`lighting.metalh`](../../renderer/src/shaders/metal/msl/world/lighting.metalh)).
     A glossy receiver keeps distant rectangles it can reflect.
+12. Adaptive quality (owner decision, 2026-10-06, after Valve's VR adaptive
+    quality): with dynamic resolution on, the tiled pipeline steps its render
+    scale between 0.65 and native by 0.05 to hold a 16 ms GPU frame, and its
+    tonemap pass upscales the scene spatially to the output. Native
+    resolution stays the target whenever the frame fits. The controller
+    follows raw completed-frame GPU times
+    (`VKR_DYNAMIC_RESOLUTION_POLICY_RESPONSIVE` in
+    [`vkr_dynamic_resolution.c`](../../renderer/src/vkr_dynamic_resolution.c)):
+    two frames over the target step down, two steps when both exceed it by a
+    quarter, and thirty frames below 80% of it step up; MetalFX keeps the
+    slower policy that protects its history. A step recreates the
+    viewport-sized graph images, so the cloud and HZB histories restart, and
+    the memoryless multisampled targets retire until the GPU completes the
+    frames that drew into them instead of stalling it. The sample's tiled
+    settings use 0.65 to 1 and 16 ms
+    ([`vkr_sample_runtime_config.c`](../../runtime/src/vkr_sample_runtime_config.c));
+    the dynamic-resolution setting turns it off.
 
 ### First tiled pipeline measurement
 
@@ -460,6 +477,49 @@ the third `incomplete` on warm-up stability,
 The street, night and editor captures match the combine within 7 of 255 in
 at most 4 pixels.
 
+A per-frame cap on cascade re-renders was considered for the p95 frames and
+not built: in one `gpu.submission` run of the new build (`sha256:0bc446fb946c293205ddf96ca719a69206ac2b87d91a41090cfd460d4f0c1701`),
+220 of 300 orbit frames render no cascade (median 12.37 ms), 76 render one
+(13.82 ms) and 4 render two (15.00 ms); frames without a cascade render reach
+18.1 ms, so the p95 follows the view's opaque cost rather than coinciding
+re-renders.
+
+### Adaptive quality measurement
+
+Release, M1 Pro, 2026-10-06, one build, `local-windowed-gpu-submission-single`,
+the fixed-scale and adaptive cases alternating twice
+(`tiled_bistro_baked_adaptive_native` and
+`tiled_bistro_baked_dynamic_adaptive_native` are the base cases with
+decision 12's range and target):
+
+| Case | Median / p95 | Frames over 16.7 ms | Mean scale | Steps |
+|---|---|---|---|---|
+| `tiled_bistro_baked_native` | 12.68 / 16.87, 13.19 / 17.97 ms | 16, 39 of 300 | 1 | 0 |
+| `tiled_bistro_baked_adaptive_native` | 11.58 / 15.80, 11.67 / 15.80 ms | 12, 13 | 0.89 | 16, 14 |
+| `tiled_bistro_baked_dynamic_native` | 15.01 / 22.94, 14.93 / 23.30 ms | 114, 107 | 1 | 0 |
+| `tiled_bistro_baked_dynamic_adaptive_native` | 11.07 / 17.07, 11.24 / 17.45 ms | 22, 22 | 0.73 | 22, 20 |
+
+Reports, in table order:
+`sha256:f4d81eab110b82edc5e26e609316520cad0b0d03145c0445803f4fd09bc7457e`,
+`sha256:aeb29c087409d8241cc1afcb2cef37ff992821affbaa130b24aef9838f4d6fbf`
+(`incomplete` on warm-up stability),
+`sha256:ea3007850f51db45c71cd5d8f789756e22911b1004b722903cfbd1a56d29c4ec`,
+`sha256:88c122a9e2f6f31f2d06ba1d4ee58dd1881f5c941897d6d662a3242697eaed90`,
+`sha256:72942fdb8d10ee8fb1660571e82361c8bbbdc7d19864e5ef680da655e89662b0`,
+`sha256:84c90d05d6d5615121db41ba2b8a7b18d39621ff07bf13b8bf4ee347bfcfcfce`,
+`sha256:bb2baa4bc314efcf6da41e5cc6a519c925ac58ed668002a00cc7733053044aeb`,
+`sha256:775e44c5461e1413740d7c6e85484891f0e82121dff3979b6e7c792f8e14b692`
+(`incomplete` on warm-up stability).
+
+The orbit's heavy stretches last 35 to 40 frames. With the 16 dynamic lights
+the scale holds 0.65 to 0.75 through them, and the heaviest views still exceed
+16.7 ms at the floor. Frames that change scale took up to 19 to 22 ms of wall
+time against a 17.0 to 17.6 ms p95. The filtered controller MetalFX uses
+stepped once per 33 frames and left the p95 at 16.6 and 20.6 ms. A 0.75 capture
+of `tiled_bistro_baked_capture` is visibly softer at text and thin edges than
+native. Metal API validation passed a run of the dynamic-light case that
+stepped six times (4 ms target).
+
 ## Consequences
 
 - Lighting, shadow, AA and screen-space work is implemented and validated once
@@ -479,8 +539,9 @@ at most 4 pixels.
   in techniques that presets can only scale, not replace.
 - **Pipelines selected by API.** Rejected: a later Vulkan mobile renderer would
   need a third pipeline or a port of the Metal one.
-- **Upscaling on M-series.** Rejected by the owner: native resolution is the
-  target.
+- **Fixed upscaling on M-series.** Rejected by the owner: native resolution
+  is the target. Decision 12 lowers it only while frames miss the budget
+  (revised by the owner, 2026-10-06).
 
 ## Revisit when
 

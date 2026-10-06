@@ -2,13 +2,43 @@
 
 #include <math.h>
 
-#define VKR_DYNAMIC_RESOLUTION_DOWNSHIFT_SAMPLES 3u
-#define VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES 45u
-#define VKR_DYNAMIC_RESOLUTION_COOLDOWN_SAMPLES 30u
-#define VKR_DYNAMIC_RESOLUTION_FILTER_ALPHA 0.2
-#define VKR_DYNAMIC_RESOLUTION_OVER_BUDGET_RATIO 1.02
-#define VKR_DYNAMIC_RESOLUTION_UNDER_BUDGET_RATIO 0.82
 #define VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON 1e-5f
+
+/* One policy's thresholds. Samples from another tier are ignored, so a short
+   cooldown only covers the first sample the new tier completes. */
+typedef struct VkrDynamicResolutionTuning {
+  uint32_t downshift_samples;
+  uint32_t upshift_samples;
+  uint32_t cooldown_samples;
+  float64_t filter_alpha;
+  float64_t over_budget_ratio;
+  float64_t under_budget_ratio;
+  /* Steps down twice when the filtered time exceeds this; zero never does. */
+  float64_t far_over_budget_ratio;
+} VkrDynamicResolutionTuning;
+
+static const VkrDynamicResolutionTuning vkr_dynamic_resolution_tunings[] = {
+    [VKR_DYNAMIC_RESOLUTION_POLICY_STABLE] =
+        {
+            .downshift_samples = 3u,
+            .upshift_samples = 45u,
+            .cooldown_samples = 30u,
+            .filter_alpha = 0.2,
+            .over_budget_ratio = 1.02,
+            .under_budget_ratio = 0.82,
+            .far_over_budget_ratio = 0.0,
+        },
+    [VKR_DYNAMIC_RESOLUTION_POLICY_RESPONSIVE] =
+        {
+            .downshift_samples = 2u,
+            .upshift_samples = 30u,
+            .cooldown_samples = 1u,
+            .filter_alpha = 1.0,
+            .over_budget_ratio = 1.0,
+            .under_budget_ratio = 0.8,
+            .far_over_budget_ratio = 1.25,
+        },
+};
 
 static float32_t vkr_dynamic_resolution_canonical_scale(float32_t scale) {
   return roundf(scale * 1000.0f) / 1000.0f;
@@ -88,10 +118,12 @@ bool8_t vkr_dynamic_resolution_config_normalize(
 
 void vkr_dynamic_resolution_init(VkrDynamicResolutionState *state,
                                  const VkrDynamicResolutionConfig *config,
-                                 float32_t initial_scale) {
+                                 float32_t initial_scale,
+                                 VkrDynamicResolutionPolicy policy) {
   if (!state)
     return;
   *state = (VkrDynamicResolutionState){0};
+  state->policy = policy;
   if (!config || !config->enabled)
     return;
   state->enabled = true_v;
@@ -112,6 +144,7 @@ void vkr_dynamic_resolution_reset_feedback(VkrDynamicResolutionState *state) {
   state->failed_upshift_upper_scale = 0.0f;
   state->over_budget_samples = 0u;
   state->under_budget_samples = 0u;
+  state->far_over_budget = false_v;
   state->cooldown_samples = 0u;
 }
 
@@ -124,6 +157,8 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
       submit_value <= state->last_submit_value || gpu_frame_ns == 0u ||
       fabsf(source_scale - state->current_scale) > 0.001f)
     return false_v;
+  const VkrDynamicResolutionTuning *tuning =
+      &vkr_dynamic_resolution_tunings[state->policy];
   state->last_submit_value = submit_value;
   if (!state->filtered_sample_valid) {
     state->filtered_frame_ns = (float64_t)gpu_frame_ns;
@@ -131,7 +166,7 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
   } else {
     state->filtered_frame_ns +=
         ((float64_t)gpu_frame_ns - state->filtered_frame_ns) *
-        VKR_DYNAMIC_RESOLUTION_FILTER_ALPHA;
+        tuning->filter_alpha;
   }
 
   if (state->cooldown_samples > 0u) {
@@ -141,10 +176,12 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
     return false_v;
   }
 
-  const float64_t over_threshold = (float64_t)state->target_frame_ns *
-                                   VKR_DYNAMIC_RESOLUTION_OVER_BUDGET_RATIO;
-  const float64_t under_threshold = (float64_t)state->target_frame_ns *
-                                    VKR_DYNAMIC_RESOLUTION_UNDER_BUDGET_RATIO;
+  const float64_t over_threshold =
+      (float64_t)state->target_frame_ns * tuning->over_budget_ratio;
+  const float64_t under_threshold =
+      (float64_t)state->target_frame_ns * tuning->under_budget_ratio;
+  const float64_t far_over_threshold =
+      (float64_t)state->target_frame_ns * tuning->far_over_budget_ratio;
   // A failed probe calibrates this boundary from measured costs. Do not expire
   // it on a timer: unchanged work would start probing the same failure again.
   const bool8_t failed_upshift_has_headroom =
@@ -154,20 +191,25 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
       state->filtered_frame_ns * state->failed_upshift_cost_ratio <
           under_threshold;
   if (state->filtered_frame_ns > over_threshold) {
-    state->over_budget_samples = Min(state->over_budget_samples + 1u,
-                                     VKR_DYNAMIC_RESOLUTION_DOWNSHIFT_SAMPLES);
+    // Far over budget only while every counted sample is.
+    if (state->over_budget_samples == 0u)
+      state->far_over_budget = far_over_threshold > 0.0;
+    state->far_over_budget =
+        state->far_over_budget && state->filtered_frame_ns > far_over_threshold;
+    state->over_budget_samples =
+        Min(state->over_budget_samples + 1u, tuning->downshift_samples);
     state->under_budget_samples = 0u;
   } else if (state->filtered_frame_ns < under_threshold &&
              failed_upshift_has_headroom) {
-    state->under_budget_samples = Min(state->under_budget_samples + 1u,
-                                      VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES);
+    state->under_budget_samples =
+        Min(state->under_budget_samples + 1u, tuning->upshift_samples);
     state->over_budget_samples = 0u;
   } else {
     state->over_budget_samples = 0u;
     state->under_budget_samples = 0u;
   }
 
-  if (state->under_budget_samples >= VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES) {
+  if (state->under_budget_samples >= tuning->upshift_samples) {
     // Sustained headroom at the upper tier completes its probe successfully.
     state->upshift_source_frame_ns = 0.0;
     if (fabsf(state->current_scale - state->failed_upshift_upper_scale) <=
@@ -176,11 +218,16 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
   }
 
   bool8_t changed = false_v;
-  if (state->over_budget_samples >= VKR_DYNAMIC_RESOLUTION_DOWNSHIFT_SAMPLES &&
+  if (state->over_budget_samples >= tuning->downshift_samples &&
       state->current_scale >
           state->min_scale + VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON) {
-    const float32_t lower_scale =
-        vkr_dynamic_resolution_next_scale(state, false_v);
+    float32_t lower_scale = vkr_dynamic_resolution_next_scale(state, false_v);
+    if (state->far_over_budget) {
+      const float32_t current_scale = state->current_scale;
+      state->current_scale = lower_scale;
+      lower_scale = vkr_dynamic_resolution_next_scale(state, false_v);
+      state->current_scale = current_scale;
+    }
     if (state->upshift_source_frame_ns > 0.0 &&
         fabsf(lower_scale - state->upshift_source_scale) <=
             VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON) {
@@ -192,8 +239,7 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
     state->upshift_source_frame_ns = 0.0;
     state->current_scale = lower_scale;
     changed = true_v;
-  } else if (state->under_budget_samples >=
-                 VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES &&
+  } else if (state->under_budget_samples >= tuning->upshift_samples &&
              state->current_scale <
                  state->max_scale - VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON) {
     state->upshift_source_frame_ns = state->filtered_frame_ns;
@@ -206,7 +252,8 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
 
   state->over_budget_samples = 0u;
   state->under_budget_samples = 0u;
-  state->cooldown_samples = VKR_DYNAMIC_RESOLUTION_COOLDOWN_SAMPLES;
+  state->far_over_budget = false_v;
+  state->cooldown_samples = tuning->cooldown_samples;
   state->filtered_sample_valid = false_v;
   state->transition_count++;
   *out_scale = state->current_scale;

@@ -3187,8 +3187,9 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
   renderer->metalfx_enabled =
       config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL;
   renderer->tiled = config->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
-  renderer->metalfx_dynamic_resolution_enabled =
-      renderer->metalfx_enabled && config->dynamic_resolution.enabled;
+  renderer->dynamic_resolution_enabled =
+      (renderer->metalfx_enabled || renderer->tiled) &&
+      config->dynamic_resolution.enabled;
   renderer->metalfx_min_render_scale =
       config->render_scale_min > 0.0f ? config->render_scale_min
       : config->dynamic_resolution.enabled

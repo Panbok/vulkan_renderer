@@ -4233,20 +4233,36 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_shadow(
 
 /* Keeps memoryless multisampled colour and depth of the tiled pipeline's
    opaque pass at the target's extent. They have no memory to make resident,
-   and residency sets reject them. Earlier frames may still render into
-   replaced targets, so a resize first waits for every submitted frame. */
+   and residency sets reject them. Frames still in flight may render into
+   replaced targets, so a resize retires them until the GPU completes the
+   last submission; a dynamic-resolution step therefore does not stall.
+   Only a second resize before that completion waits for it. */
 vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
     VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height)
     API_AVAILABLE(macos(26.0)) {
+  if (renderer->tiled_retired_color &&
+      renderer->completion.signaledValue >=
+          renderer->tiled_retired_submit_value) {
+    [renderer->tiled_retired_color release];
+    [renderer->tiled_retired_depth release];
+    renderer->tiled_retired_color = nil;
+    renderer->tiled_retired_depth = nil;
+  }
   if (renderer->tiled_msaa_color && renderer->tiled_width == width &&
       renderer->tiled_height == height)
     return true_v;
-  if (renderer->tiled_msaa_color &&
-      renderer->submit_value > renderer->completion.signaledValue &&
-      !vkr_metal_packet_wait(renderer, renderer->submit_value))
-    return false_v;
-  [renderer->tiled_msaa_color release];
-  [renderer->tiled_msaa_depth release];
+  if (renderer->tiled_msaa_color) {
+    if (renderer->tiled_retired_color) {
+      if (!vkr_metal_packet_wait(renderer,
+                                 renderer->tiled_retired_submit_value))
+        return false_v;
+      [renderer->tiled_retired_color release];
+      [renderer->tiled_retired_depth release];
+    }
+    renderer->tiled_retired_color = renderer->tiled_msaa_color;
+    renderer->tiled_retired_depth = renderer->tiled_msaa_depth;
+    renderer->tiled_retired_submit_value = renderer->submit_value;
+  }
   renderer->tiled_msaa_color = nil;
   renderer->tiled_msaa_depth = nil;
 
@@ -5292,7 +5308,7 @@ vkr_internal void vkr_metal_packet_plan_frame_submission(
       packet->input.debug && packet->input.debug->enable_timing &&
       packet->input.debug->capture_pass_timestamps;
   submission->submission_timing_requested =
-      renderer->metalfx_dynamic_resolution_enabled ||
+      renderer->dynamic_resolution_enabled ||
       (packet->input.debug && packet->input.debug->enable_timing &&
        packet->input.debug->capture_submission_timing);
   submission->deferred_diagnostics = packet->input.world != NULL;

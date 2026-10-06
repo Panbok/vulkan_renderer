@@ -918,11 +918,13 @@ vkr_internal bool8_t vkr_harness_parse_renderer_upscaling(
       (fsr31 &&
        (!string_equals(renderer->backend, "vulkan") || !renderer->taa_enabled ||
         fields->render_scale < (1.0 / 3.0))) ||
-      (renderer->dynamic_resolution && !metalfx_temporal)) {
+      (renderer->dynamic_resolution && !metalfx_temporal &&
+       renderer->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED)) {
     vkr_harness_error_set(
         error, "renderer.upscaler", "$.renderer.upscaler",
         "MetalFX requires Metal, FSR 3.1 requires Vulkan with temporal jitter "
-        "and scale in [1/3, 1], and dynamic resolution requires MetalFX");
+        "and scale in [1/3, 1], and dynamic resolution requires MetalFX or "
+        "the tiled pipeline");
     return false_v;
   }
   if (metalfx_temporal || fsr31)

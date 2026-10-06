@@ -856,6 +856,8 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->tiled_sky_state release];
   [renderer->tiled_msaa_color release];
   [renderer->tiled_msaa_depth release];
+  [renderer->tiled_retired_color release];
+  [renderer->tiled_retired_depth release];
   [renderer->ui_pipeline release];
   [renderer->picking_pipeline release];
   [renderer->editor_overlay_pipeline release];
@@ -961,8 +963,8 @@ vkr_metal_packet_renderer_set_present_mode(VkrMetalPacketRenderer *renderer,
 void vkr_metal_packet_renderer_set_dynamic_resolution(
     VkrMetalPacketRenderer *renderer, bool8_t enabled) {
   if (renderer)
-    renderer->metalfx_dynamic_resolution_enabled =
-        renderer->metalfx_enabled && enabled;
+    renderer->dynamic_resolution_enabled =
+        (renderer->metalfx_enabled || renderer->tiled) && enabled;
 }
 
 void vkr_metal_packet_renderer_request_memory_relief(

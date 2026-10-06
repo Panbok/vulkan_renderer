@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-09
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -69,6 +69,9 @@ the scaler's public fence. Output resize proves completion before replacing the
 scaler, fence and textures; live dock drags defer that recreation until completion.
 
 Dynamic resolution consumes completed GPU submission intervals tagged with scale.
+The tiled pipeline also runs it, without MetalFX and with a faster policy that
+follows raw samples ([ADR-087](087-gpu-class-graphics-pipelines.md), decision
+12); the rest of this section describes MetalFX's policy.
 Ignore duplicate and stale-tier samples. The allocation-free controller uses an
 EMA, asymmetric over/under-budget thresholds, bounded 0.05 tiers and a cooldown;
 retain the exact minimum endpoint and reset temporal state on transitions. The
