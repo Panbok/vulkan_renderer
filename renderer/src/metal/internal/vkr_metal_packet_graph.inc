@@ -313,7 +313,6 @@ vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   case VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE:
   case VKR_RG_EXECUTOR_BLOOM_UPSAMPLE:
   case VKR_RG_EXECUTOR_HZB_BUILD:
-  case VKR_RG_EXECUTOR_SHADOW_MOMENTS:
   case VKR_RG_EXECUTOR_TONEMAP:
   case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
   case VKR_RG_EXECUTOR_EDITOR:
@@ -1209,34 +1208,6 @@ void vkr_metal_packet_renderer_retained_editor_extent(
   }
 }
 
-/* Far cascades whose EVSM moments layer holds content in `image_index`'s
- * instance, at their cascade bit; zero without a live moments image. */
-vkr_internal uint32_t vkr_metal_packet_retained_moments_mask(
-    VkrMetalPacketRenderer *renderer, uint32_t image_index) {
-  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        array_get_VkrRgImage(&renderer->graph->images, i);
-    if (!image || !vkr_string8_equals_cstr(&image->name, "shadow_moments"))
-      continue;
-    const VkrMetalPacketImage *slot = &renderer->images[i];
-    if (!slot->live || slot->graph_generation != image->generation ||
-        image_index >= slot->instance_count ||
-        slot->desc.width != renderer->prepared_frame.shadow_map_size / 2u ||
-        !slot->instances[image_index].live)
-      return 0u;
-    const VkrMetalPacketImageInstance *instance = &slot->instances[image_index];
-    uint32_t mask = 0u;
-    const uint32_t layer_count =
-        MIN(slot->desc.layers, 32u - VKR_SHADOW_EVSM_FIRST_CASCADE);
-    for (uint32_t layer = 0u; layer < layer_count; ++layer) {
-      if (instance->retained_states[layer].content_valid)
-        mask |= UINT32_C(1) << (layer + VKR_SHADOW_EVSM_FIRST_CASCADE);
-    }
-    return mask;
-  }
-  return 0u;
-}
-
 void vkr_metal_packet_renderer_retained_shadow_token(
     VkrMetalPacketRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token) {
@@ -1266,8 +1237,6 @@ void vkr_metal_packet_renderer_retained_shadow_token(
       if (instance->retained_states[layer].content_valid)
         out_token->valid_layer_mask |= UINT32_C(1) << layer;
     }
-    out_token->moments_valid_cascade_mask =
-        vkr_metal_packet_retained_moments_mask(renderer, image_index);
     return;
   }
 }

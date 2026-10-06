@@ -397,19 +397,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
 _Static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
                "Metal HZB build root ABI must remain 48 bytes");
 
-/** Builds one far cascade's EVSM moments layer from its depth layer. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketShadowMomentsRoot {
-  uint64_t depth_texture_id;
-  uint64_t moments_texture_id;
-  uint32_t depth_layer;
-  uint32_t moments_layer;
-  uint32_t depth_size;
-  uint32_t moments_size;
-} VkrMetalPacketShadowMomentsRoot;
-
-_Static_assert(sizeof(VkrMetalPacketShadowMomentsRoot) == 32,
-               "Metal shadow moments root ABI must remain 32 bytes");
-
 /** Per-frame sky-view lookup and aerial-perspective volume builders. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSkyBuildRoot {
   uint64_t sky;
@@ -724,7 +711,6 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_FOG_PARAMS,
   VKR_METAL_PACKET_ABI_FROXEL_PARAMS,
   VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT,
-  VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT,
   VKR_METAL_PACKET_ABI_EXPOSURE_ROOT,
   VKR_METAL_PACKET_ABI_BLOOM_ROOT,
   VKR_METAL_PACKET_ABI_SKY,

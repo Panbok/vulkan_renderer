@@ -715,13 +715,12 @@ sixteen comparison-filter samples. ADR-041 records the authored units,
 fallback and acceptance evidence.
 
 Far-cascade EVSM shares its warp, tent weights and Chebyshev visibility through
-`shadow_kernel.slangh` (`vkr_shadow_evsm_*`). Both graphs run the moments
-passes (`pass.shadow.moments`) while the setting is on, but only the Vulkan
-receivers read them; the tiled forward shader keeps depth PCF. The passes use
-a 32-byte root: depth and moments
-references, depth and moments layers, and the two square sizes. Metal binds
-64-bit resource IDs at bytes 0 and 8, Vulkan bindless indices at 0 and 4. The
-Vulkan deferred-lighting root keeps its size and reuses bytes 172 for the
+`shadow_kernel.slangh` (`vkr_shadow_evsm_*`). Only the desktop graph runs the
+moments passes (`pass.shadow.moments`), on Vulkan; the tiled pipeline keeps
+depth PCF for every cascade and renders no moments (ADR-041). The passes use
+a 32-byte root: depth and moments bindless indices at bytes 0 and 4, depth
+and moments layers, and the two square sizes. The Vulkan deferred-lighting
+root keeps its size and reuses bytes 172 for the
 moments index and 200 for the linear-sampler slot; `UINT32_MAX` keeps PCF.
 Vulkan's compiled-SPIR-V reflection test covers both roots. Native Vulkan
 output of the far cascades is not recorded.

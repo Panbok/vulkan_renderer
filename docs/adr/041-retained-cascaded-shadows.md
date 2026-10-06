@@ -137,8 +137,10 @@ one-sided Chebyshev bounds against the PCF reference depth. The minimum
 variance follows each warp's slope, and a 0.2 light-bleeding reduction clips
 the bound. Cascades 0 and 1, desktop forward, transmission and froxel shading,
 and tiled forward shading keep depth PCF/PCSS; the cascade cross-fade blends
-PCF and EVSM visibility. The tiled graph still renders the moments while the
-setting is on.
+PCF and EVSM visibility. The tiled pipeline renders no moments: its graph has
+no moments pass, Metal implements none, Preferences greys the setting, and the
+runtime clears `far_cascade_evsm` on tiled frames so far cascades stay
+reusable without moments.
 
 Moments derive from retained depth, so `VkrRetainedShadowToken` reports
 `moments_valid_cascade_mask` from the moments image's per-layer content

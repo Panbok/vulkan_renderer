@@ -83,7 +83,6 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT:
   case VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
-  case VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
     return 0;
@@ -1061,10 +1060,6 @@ vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
       renderer, fragment, "vkr_metal_packet_hzb_build",
       VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT, false_v,
       @"VKR Metal packet HZB build");
-  renderer->shadow_moments_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_shadow_moments",
-      VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT, false_v,
-      @"VKR Metal packet shadow moments");
   renderer->exposure_clear_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_exposure_clear",
       VKR_METAL_PACKET_ABI_EXPOSURE_ROOT, false_v,
@@ -1203,7 +1198,6 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->cloud_shadow_pipeline, "Cloud shadow pipeline"},
       {renderer->cloud_trace_pipeline, "Cloud trace pipeline"},
       {renderer->hzb_build_pipeline, "HZB build pipeline"},
-      {renderer->shadow_moments_pipeline, "shadow moments pipeline"},
       {renderer->exposure_clear_pipeline, "exposure clear pipeline"},
       {renderer->exposure_histogram_pipeline, "exposure histogram pipeline"},
       {renderer->exposure_resolve_pipeline, "exposure resolve pipeline"},

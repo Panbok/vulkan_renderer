@@ -720,7 +720,6 @@ struct VkrMetalPacketRenderer {
   VkrSkinningHistory pending_skinning_history;
   uint64_t skinning_addresses[VKR_SKINNING_BINDING_CAPACITY];
   id<MTLComputePipelineState> hzb_build_pipeline;
-  id<MTLComputePipelineState> shadow_moments_pipeline;
   id<MTLComputePipelineState> exposure_clear_pipeline;
   id<MTLComputePipelineState> exposure_histogram_pipeline;
   id<MTLComputePipelineState> exposure_resolve_pipeline;

@@ -1560,49 +1560,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_hzb_build(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_prepare_shadow_moments(
-    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
-    API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !prepared || !upload ||
-      !renderer->shadow_moments_pipeline)
-    return false_v;
-  const VkrRgImageUse *moments_use =
-      vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
-  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
-  id<MTLTexture> moments =
-      moments_use ? vkr_metal_packet_texture(renderer, moments_use->image)
-                  : nil;
-  if (!moments_use || !moments_use->has_slice || !depth || !moments ||
-      moments.width == 0u || moments.width > UINT32_MAX ||
-      depth.width > UINT32_MAX)
-    return false_v;
-  /* The repeat index names the moments layer; its cascade follows the first
-     filtered cascade. */
-  const uint32_t layer = moments_use->slice.base_layer;
-  uint64_t root_gpu = 0u;
-  VkrMetalPacketShadowMomentsRoot *root =
-      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
-  if (!root)
-    return false_v;
-  *root = (VkrMetalPacketShadowMomentsRoot){
-      .depth_texture_id = depth.gpuResourceID._impl,
-      .moments_texture_id = moments.gpuResourceID._impl,
-      .depth_layer = layer + VKR_SHADOW_EVSM_FIRST_CASCADE,
-      .moments_layer = layer,
-      .depth_size = (uint32_t)depth.width,
-      .moments_size = (uint32_t)moments.width,
-  };
-  prepared->dispatch = (VkrMetalPacketDispatch){
-      .pipeline = renderer->shadow_moments_pipeline,
-      .root = root_gpu,
-      .threads = MTLSizeMake(moments.width, moments.width, 1u),
-      .group_size = MTLSizeMake(8u, 8u, 1u),
-  };
-  prepared->active = true_v;
-  return true_v;
-}
-
 vkr_internal bool8_t vkr_metal_packet_prepare_exposure_histogram(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -2272,9 +2229,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
                                                      prepared, upload);
   case VKR_RG_EXECUTOR_HZB_BUILD:
     return vkr_metal_packet_prepare_hzb_build(renderer, pass, prepared, upload);
-  case VKR_RG_EXECUTOR_SHADOW_MOMENTS:
-    return vkr_metal_packet_prepare_shadow_moments(renderer, pass, prepared,
-                                                   upload);
   case VKR_RG_EXECUTOR_BLOOM_PREFILTER:
   case VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE:
   case VKR_RG_EXECUTOR_BLOOM_UPSAMPLE:

@@ -630,21 +630,6 @@ vkr_global const VkrMetalPacketAbiField
                       "light_position", 16),
 };
 
-vkr_global const VkrMetalPacketAbiField vkr_shadow_moments_root_fields[] = {
-    VKR_ABI_FIELD(VkrMetalPacketShadowMomentsRoot, depth_texture_id, "depth",
-                  0),
-    VKR_ABI_FIELD(VkrMetalPacketShadowMomentsRoot, moments_texture_id,
-                  "moments", 8),
-    VKR_ABI_FIELD(VkrMetalPacketShadowMomentsRoot, depth_layer, "depth_layer",
-                  16),
-    VKR_ABI_FIELD(VkrMetalPacketShadowMomentsRoot, moments_layer,
-                  "moments_layer", 20),
-    VKR_ABI_FIELD(VkrMetalPacketShadowMomentsRoot, depth_size, "depth_size",
-                  24),
-    VKR_ABI_FIELD(VkrMetalPacketShadowMomentsRoot, moments_size, "moments_size",
-                  28),
-};
-
 vkr_global const VkrMetalPacketAbiField vkr_hzb_build_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketHzbBuildRoot, source_texture_id, "source", 0),
     VKR_ABI_FIELD(VkrMetalPacketHzbBuildRoot, destination_texture_id,
@@ -900,9 +885,6 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketHzbBuildRoot, "VkrMetalPacketHzbBuildRoot", 48, 16,
             vkr_hzb_build_root_fields),
-        [VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT] = VKR_ABI_RECORD(
-            VkrMetalPacketShadowMomentsRoot, "VkrMetalPacketShadowMomentsRoot",
-            32, 16, vkr_shadow_moments_root_fields),
         [VKR_METAL_PACKET_ABI_EXPOSURE_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketExposureRoot, "VkrMetalPacketExposureRoot", 112, 16,
             vkr_exposure_root_fields),

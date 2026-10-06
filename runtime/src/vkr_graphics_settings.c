@@ -210,6 +210,7 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
   const bool8_t tiled_unused =
       offset == offsetof(VkrGraphicsSettings, anti_aliasing) ||
       offset == offsetof(VkrGraphicsSettings, contact_shadows) ||
+      offset == offsetof(VkrGraphicsSettings, filtered_far_shadows) ||
       offset == offsetof(VkrGraphicsSettings, ambient_occlusion) ||
       offset == offsetof(VkrGraphicsSettings, screen_space_gi) ||
       offset == offsetof(VkrGraphicsSettings, screen_space_reflections) ||

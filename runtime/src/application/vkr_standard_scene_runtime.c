@@ -2274,6 +2274,11 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     return;
   }
   frame->shadow.config = application->shadow_config;
+  /* The tiled pipeline filters every cascade with PCF and renders no
+     moments, so a far cascade must not wait for moments to be reused
+     (ADR-087). */
+  if (application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED)
+    frame->shadow.config.far_cascade_evsm = false_v;
   frame->shadow.invalidate_fit =
       application->shadow_fit_invalidate_requested || target_changed;
   application->shadow_fit_invalidate_requested = false_v;
