@@ -48,11 +48,23 @@ typedef struct AgentQueued {
 /* Longest a `changes.feed` request with `wait` waits, in seconds. */
 #define AGENT_FEED_WAIT_MAX 60.0
 
-/* A `changes.feed` request waiting outside the queue for something newer
-   than `after`: a feed event, or an edit that moves a journal's revision.
-   It owns its line until it returns to the queue. */
+/* Longest a capture waits for the designer outside the queue, in seconds;
+   it then runs once and fails while the designer still works. */
+#define AGENT_CAPTURE_WAIT_MAX 20.0
+
+typedef enum AgentWaitKind {
+  /* `changes.feed` with `wait`: something newer than `after`, a feed event
+     or an edit that moves a journal's revision. */
+  AGENT_WAIT_FEED = 0,
+  /* `view.capture` in a windowed editor: the designer left it alone. */
+  AGENT_WAIT_CAPTURE,
+} AgentWaitKind;
+
+/* A request waiting outside the queue, so it holds no other request. It
+   owns its line until it returns to the queue. */
 typedef struct AgentWait {
   bool8_t active;
+  AgentWaitKind kind;
   AgentQueued request;
   uint64_t after;
   uint64_t revision;
@@ -208,11 +220,31 @@ static bool8_t ops_is_feed(String8 op) {
   return op.length == 12u && MemCompare(op.str, "changes.feed", 12u) == 0;
 }
 
+static bool8_t ops_is_capture(String8 op) {
+  return op.length == 12u && MemCompare(op.str, "view.capture", 12u) == 0;
+}
+
 /* The sum of the loaded journals' revisions: it moves with every edit,
    undo and redo, the designer's included. */
 static uint64_t agent_revision(const VkrSampleUiFrame *frame) {
   return (frame->edits ? frame->edits->revision : 0u) +
          (frame->world_edits ? frame->world_edits->revision : 0u);
+}
+
+/* Moves the current request into its client's wait slot, which then owns
+   its line. A client's newer wait returns its older one to the queue. */
+static void agent_wait_slot(VkrEditorAgent *agent, AgentWait wait) {
+  AgentWait *slot = &agent->waits[agent->current.client];
+  if (slot->active) {
+    slot->request.waited = true_v;
+    if (!agent_enqueue_request(agent, &slot->request)) {
+      free(slot->request.line);
+    }
+  }
+  wait.active = true_v;
+  wait.request = agent->current;
+  *slot = wait;
+  agent->current.line = NULL;
 }
 
 /* Sets a `changes.feed` request with `wait` aside when nothing is newer
@@ -231,24 +263,29 @@ static bool8_t agent_park(VkrEditorAgent *agent, const VkrSampleUiFrame *frame,
   if (vkr_editor_ops_feed_latest(agent->ops) > (uint64_t)Max(after, 0)) {
     return false_v;
   }
-  AgentWait *slot = &agent->waits[agent->current.client];
-  if (slot->active) {
-    /* A client's newer wait replaces its older one, which answers now. */
-    slot->request.waited = true_v;
-    if (!agent_enqueue_request(agent, &slot->request)) {
-      free(slot->request.line);
-    }
+  agent_wait_slot(agent, (AgentWait){
+                             .kind = AGENT_WAIT_FEED,
+                             .after = (uint64_t)Max(after, 0),
+                             .revision = agent_revision(frame),
+                             .deadline = vkr_platform_get_absolute_time() +
+                                         Min(wait, AGENT_FEED_WAIT_MAX),
+                         });
+  return true_v;
+}
+
+/* Sets an agent's capture aside while the designer works in a windowed
+   editor, so other agents' requests run meanwhile. */
+static bool8_t agent_park_capture(VkrEditorAgent *agent, bool8_t headless) {
+  if (headless || agent->current.waited ||
+      agent->current.client == AGENT_CLIENT_SELF ||
+      vkr_editor_ops_idle(agent->ops)) {
+    return false_v;
   }
-  *slot = (AgentWait){
-      .active = true_v,
-      .request = agent->current,
-      .after = (uint64_t)Max(after, 0),
-      .revision = agent_revision(frame),
-      .deadline =
-          vkr_platform_get_absolute_time() + Min(wait, AGENT_FEED_WAIT_MAX),
-  };
-  /* The wait owns the line now. */
-  agent->current.line = NULL;
+  agent_wait_slot(agent, (AgentWait){
+                             .kind = AGENT_WAIT_CAPTURE,
+                             .deadline = vkr_platform_get_absolute_time() +
+                                         AGENT_CAPTURE_WAIT_MAX,
+                         });
   return true_v;
 }
 
@@ -271,8 +308,11 @@ static void agent_waits_update(VkrEditorAgent *agent,
       *slot = (AgentWait){0};
       continue;
     }
-    if (latest <= slot->after && revision == slot->revision &&
-        now < slot->deadline) {
+    const bool8_t ready =
+        slot->kind == AGENT_WAIT_CAPTURE
+            ? vkr_editor_ops_idle(agent->ops)
+            : latest > slot->after || revision != slot->revision;
+    if (!ready && now < slot->deadline) {
       continue;
     }
     slot->request.waited = true_v;
@@ -313,7 +353,8 @@ static void agent_author(VkrEditorAgent *agent, const VkrBakeryJson *request,
 
 /* Parses the next queued line and starts its operation. A malformed line
    answers at once. */
-static void agent_begin(VkrEditorAgent *agent, const VkrSampleUiFrame *frame) {
+static void agent_begin(VkrEditorAgent *agent, const VkrEditorUi *editor,
+                        const VkrSampleUiFrame *frame) {
   agent->current = agent->queue[agent->queue_head];
   agent->queue_head = (agent->queue_head + 1u) % AGENT_QUEUE_MAX;
   agent->queue_count--;
@@ -354,8 +395,10 @@ static void agent_begin(VkrEditorAgent *agent, const VkrSampleUiFrame *frame) {
       .op = op,
       .args = args ? args : vkr_bakery_json_object(agent->arena),
   };
+  agent->call.waited = agent->current.waited;
   agent_author(agent, request, args);
-  if (ops_is_feed(op) && agent_park(agent, frame, args)) {
+  if ((ops_is_feed(op) && agent_park(agent, frame, args)) ||
+      (ops_is_capture(op) && agent_park_capture(agent, editor->headless))) {
     agent_finish(agent);
   }
 }
@@ -375,7 +418,7 @@ static void agent_advance(VkrEditorAgent *agent, VkrEditorUi *editor,
       if (!agent->queue_count) {
         return;
       }
-      agent_begin(agent, frame);
+      agent_begin(agent, editor, frame);
       if (!agent->active) {
         continue;
       }

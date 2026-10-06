@@ -44,6 +44,12 @@ typedef struct VkrEditorOpCall {
   uint32_t settle_frames;
   bool8_t settle_done;
   bool8_t settle_timeout;
+  /* When a capture began waiting for the designer to leave the editor
+     alone, zero before it waits. */
+  float64_t idle_since;
+  /* The request already waited outside the queue (editor_agent.c), so a
+     capture checks the designer once instead of waiting again. */
+  bool8_t waited;
 } VkrEditorOpCall;
 
 #define VKR_EDITOR_CHANGE_MAX 64u
@@ -109,6 +115,10 @@ const VkrEditorChange *vkr_editor_ops_change(const VkrEditorOps *ops,
                                              uint32_t index);
 /* Accepts change `id`, or every change for zero; false when none matched. */
 bool8_t vkr_editor_ops_accept(VkrEditorOps *ops, uint32_t id);
+
+/* Whether the designer left the editor alone long enough for an agent's
+   capture to switch the Scene's view. */
+bool8_t vkr_editor_ops_idle(const VkrEditorOps *ops);
 
 /* The newest change-feed sequence, zero before the first event. */
 uint64_t vkr_editor_ops_feed_latest(const VkrEditorOps *ops);

@@ -53,7 +53,9 @@ Put the checks in the same `level_run.py` plan as the writes, each with
 5. One `view.capture` sheet (`views`, `max_width` 768) with labelled
    `marks` at doors, spawns and stairs. Each mark answers its pixel and
    `hidden` (collision between the camera and the point); judge look and
-   scale from the picture, not positions.
+   scale from the picture, not positions. In the designer's windowed
+   editor a capture waits until they stop working; capture-heavy work
+   belongs in a headless editor.
 
 Reads wait for rebuilds; repeat a read that answers `settled` false. Only
 collision counts in checks: Bistro's own meshes have none, so checks see

@@ -56,6 +56,10 @@
 #define OPS_CAPTURE_KEEP 32u
 /* Builds a capture waits after changing the view, so the frame shows it. */
 #define OPS_CAPTURE_SETTLE_FRAMES 4u
+/* A windowed editor captures after this long without the designer's input,
+   and gives up after the limit. */
+#define OPS_CAPTURE_IDLE_SECONDS 1.5
+#define OPS_CAPTURE_IDLE_LIMIT_SECONDS 20.0
 /* Builds a request waits for brush, shape, terrain and scatter rebuilds
    before it answers with `settled` false. */
 #define OPS_SCENE_SETTLE_FRAMES 240u
@@ -135,6 +139,9 @@ struct VkrEditorOps {
   /* The level check the running request samples over builds; one request
      runs at a time, so one slot. */
   VkrEditorLevelJob *level_job;
+  /* Platform time of the last key, button, wheel or pointer motion, so a
+     windowed editor's captures wait for the designer to stop. */
+  float64_t input_last;
 };
 
 typedef struct OpsContext {
@@ -5305,6 +5312,8 @@ typedef struct OpsPendingCapture {
   /* A sheet or marks report each view's place; a plain capture answers
      with its path and size alone. */
   bool8_t describe_views;
+  /* When the capture switched to its current view. */
+  float64_t view_since;
   uint32_t view_count;
   uint32_t view_index;
   OpsCaptureView views[OPS_CAPTURE_VIEWS_MAX];
@@ -6141,6 +6150,53 @@ static bool8_t ops_capture_view_parse(OpsContext *ctx,
   return true_v;
 }
 
+typedef enum OpsIdle {
+  OPS_IDLE_READY = 0,
+  OPS_IDLE_WAITING,
+  OPS_IDLE_FAILED,
+} OpsIdle;
+
+/* A windowed editor captures only while the designer leaves it alone, so
+   an agent never moves the camera under their hands. A headless editor has
+   no one to wait for. */
+static OpsIdle ops_capture_idle(OpsContext *ctx) {
+  if (ctx->editor->headless) {
+    return OPS_IDLE_READY;
+  }
+  const float64_t now = vkr_platform_get_absolute_time();
+  if (ctx->call->idle_since <= 0.0) {
+    ctx->call->idle_since = now;
+  }
+  if (now - ctx->ops->input_last >= OPS_CAPTURE_IDLE_SECONDS) {
+    return OPS_IDLE_READY;
+  }
+  /* A request that waited its time outside the queue does not wait again. */
+  if (ctx->call->waited ||
+      now - ctx->call->idle_since >= OPS_CAPTURE_IDLE_LIMIT_SECONDS) {
+    ops_fail(ctx, OPS_BUSY,
+             "The designer kept working in the editor for %.0f s; capture "
+             "again later, or in a headless editor",
+             OPS_CAPTURE_IDLE_LIMIT_SECONDS);
+    return OPS_IDLE_FAILED;
+  }
+  return OPS_IDLE_WAITING;
+}
+
+/* Restores the view the capture found. */
+static void ops_capture_restore(const VkrSampleUiFrame *frame,
+                                const OpsPendingCapture *pending) {
+  if (!pending || !pending->restore) {
+    return;
+  }
+  *frame->view_request =
+      (VkrSampleViewRequest){.value = pending->saved_view, .apply = true_v};
+  if (frame->editor_state_request) {
+    frame->editor_state_request->apply_recall = true_v;
+    frame->editor_state_request->recall = pending->saved_recall;
+    frame->editor_state_request->recall.selection_valid = false_v;
+  }
+}
+
 /* Shows `view` from the next build. */
 static void ops_capture_view_apply(const VkrSampleUiFrame *frame,
                                    const OpsCaptureView *view) {
@@ -6359,6 +6415,10 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
       ops_fail(ctx, OPS_CAPTURE, "Captures are unavailable");
       return VKR_EDITOR_OP_DONE;
     }
+    const OpsIdle idle = ops_capture_idle(ctx);
+    if (idle != OPS_IDLE_READY) {
+      return idle == OPS_IDLE_WAITING ? VKR_EDITOR_OP_WAIT : VKR_EDITOR_OP_DONE;
+    }
     pending =
         arena_alloc(call->arena, sizeof(*pending), ARENA_MEMORY_TAG_STRUCT);
     if (!pending) {
@@ -6459,12 +6519,23 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
         first->request.value.grid_labels != frame->view_state.grid_labels ||
         first->request.value.grid_enabled != frame->view_state.grid_enabled;
     ops_capture_view_apply(frame, first);
+    pending->view_since = vkr_platform_get_absolute_time();
     call->state = pending;
     call->stage = 1u;
     call->frames = 0u;
     return VKR_EDITOR_OP_WAIT;
   }
   case 1u: {
+    /* The designer touched the editor while the view was switched: give
+       their view back now and wait for them to stop again. */
+    if (!ctx->editor->headless && ctx->ops->input_last > pending->view_since) {
+      ops_capture_restore(frame, pending);
+      call->stage = 0u;
+      call->frames = 0u;
+      call->idle_since = 0.0;
+      call->waited = false_v;
+      return VKR_EDITOR_OP_WAIT;
+    }
     /* The new view can stream terrain tiles in, so the scene settles again
        before the frame is taken. */
     const bool8_t settled =
@@ -6497,6 +6568,7 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
     } else if (ops_capture_keep(ctx, pending, ready->item)) {
       if (++pending->view_index < pending->view_count) {
         ops_capture_view_apply(frame, &pending->views[pending->view_index]);
+        pending->view_since = vkr_platform_get_absolute_time();
         call->stage = 1u;
         call->frames = 0u;
         return VKR_EDITOR_OP_WAIT;
@@ -6507,15 +6579,7 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
   }
     /* fall through */
   default:
-    if (pending && pending->restore) {
-      *frame->view_request =
-          (VkrSampleViewRequest){.value = pending->saved_view, .apply = true_v};
-      if (frame->editor_state_request) {
-        frame->editor_state_request->apply_recall = true_v;
-        frame->editor_state_request->recall = pending->saved_recall;
-        frame->editor_state_request->recall.selection_valid = false_v;
-      }
-    }
+    ops_capture_restore(frame, pending);
     return VKR_EDITOR_OP_DONE;
   }
 }
@@ -8957,7 +9021,37 @@ bool8_t vkr_editor_ops_quick(String8 op) {
   return def && (def->flags & OPS_QUICK) != 0u;
 }
 
+/* Whether the designer gave any input this frame: a key or button held or
+   pressed, the wheel or pointer motion. */
+static bool8_t ops_input_active(InputState *input) {
+  int32_t dx = 0;
+  int32_t dy = 0;
+  int32_t wheel = 0;
+  input_get_mouse_delta(input, &dx, &dy);
+  input_get_mouse_wheel(input, &wheel);
+  if (dx || dy || wheel) {
+    return true_v;
+  }
+  /* A tap pressed and released within one frame counts too. */
+  for (uint32_t button = 0; button < BUTTON_MAX_BUTTONS; ++button) {
+    if (input_is_button_down(input, (Buttons)button) ||
+        input_button_just_pressed(input, (Buttons)button)) {
+      return true_v;
+    }
+  }
+  for (uint32_t key = 0; key < KEY_MAX_KEYS; ++key) {
+    if (input_is_key_down(input, (Keys)key) ||
+        input_key_just_pressed(input, (Keys)key)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 void vkr_editor_ops_update(VkrEditorOps *ops, const VkrSampleUiFrame *frame) {
+  if (ops && frame->input && ops_input_active(frame->input)) {
+    ops->input_last = vkr_platform_get_absolute_time();
+  }
   /* Claims name boxes of the scene they were made in: a newly loaded scene
      brings its own from the claims file. */
   if (ops && frame->scene && !frame->scene_loading &&
@@ -9026,6 +9120,11 @@ bool8_t vkr_editor_ops_accept(VkrEditorOps *ops, uint32_t id) {
   ops_feed_accept(ops, &ops->changes[index]);
   ops_change_remove(ops, (uint32_t)index);
   return true_v;
+}
+
+bool8_t vkr_editor_ops_idle(const VkrEditorOps *ops) {
+  return !ops || vkr_platform_get_absolute_time() - ops->input_last >=
+                     OPS_CAPTURE_IDLE_SECONDS;
 }
 
 uint64_t vkr_editor_ops_feed_latest(const VkrEditorOps *ops) {

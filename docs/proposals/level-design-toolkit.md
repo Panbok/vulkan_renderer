@@ -24,6 +24,7 @@ are recorded in ADR-084 and ADR-085.
 |---|---|---|
 | Visual scripting | Later work. A future graph asset, in the style of Unreal Blueprints, uses the IO router and its value kinds | Designing the graph editor now |
 | Connection targets | An entity in the source's own container, because entity references never cross containers (ADR-076). Named targets across containers can come later | Cross-container references now |
+| Agent captures beside a designer (2026-10-06) | A windowed editor's captures wait until the designer is idle for 1.5 s (ADR-084) | A second, offscreen render path with its own targets and history in both backends |
 | Large worlds | Terrain and scene content stream by cells, implemented in [ADR-086](../adr/086-world-partition.md); follow-ups in [World partition](world-partition.md) | Streaming inside the toolkit |
 
 ## Current baseline
@@ -107,7 +108,6 @@ These remain:
 
 | Item | Need | Evidence |
 |---|---|---|
-| An offscreen capture view | Captures leave the designer's camera alone | A capture during a designer's camera drag leaves the drag unchanged |
 | MCP notifications for feed events | A client hears of others' work with no request open | An MCP client receives a notification for another agent's batch |
 
 ## Acceptance evidence

@@ -249,6 +249,17 @@ RGBA8 PNG of the Scene image rectangle, or of the whole window with `area`
 in the user's temporary directory), keeps the newest 32, and
 restores the previous view, grid labels and camera.
 
+A capture switches the designer's own Scene view, because the renderer
+draws one camera a frame. In a windowed editor an agent's capture therefore
+waits until the designer has given no input (a key or button held or
+pressed, the wheel, pointer motion) for 1.5 s. It waits outside the request
+queue, as a feed wait does, so other agents' requests run meanwhile, and
+after 20 s it runs once and fails with `VKR-AGENT-0006` while the designer
+still works. Input while a capture's view is switched, before its frame is
+asked for, gives the designer's view back at once and the capture waits
+again. A headless editor and the editor's own requests capture at once. The
+owner chose this over a second, offscreen render path (2026-10-06).
+
 Three options cut what an agent spends on pictures. `max_width` shrinks the
 image, each pixel the average of the pixels it covers. `views` takes up to
 four views, each with its own `view`, `focus`, `eye` and `target` and
@@ -1168,3 +1179,8 @@ material then).
   the other agent's batch while that agent's status reads took 11 to 25 ms;
   a 2 s wait with nothing new answered after 2.0 s with no events; the
   other agent's `undo` woke a wait after 1.05 s through the revision.
+- Windows and native Vulkan, 2026-10-06 (RX 6700 XT, windowed Release
+  editor on Bistro, input injected with `ui.drag`): a capture right after
+  the designer's input answered after 1.67 s; with input every 0.4 s for
+  3 s it answered after 4.44 s, while a third client's status reads took 15
+  to 29 ms. The headless suites passed unchanged.
