@@ -431,6 +431,17 @@ grill, resolve with intermediate steps. Lit foliage shows more texel-scale
 speckle than FXAA left: its holes and lighting vary inside the surface, which
 neither MSAA nor alpha to coverage filters.
 
+Skipping alpha-tested shading altogether lowers `Tiled.Opaque` from
+8.50 / 12.44 to 7.61 / 10.50 ms (diagnostic, incomplete image), so foliage
+costs about 0.9 ms median and 2 ms p95. Laying its covered depth in the
+pre-pass as well, with the same coverage code so both passes cover the same
+samples, left the image unchanged (one pixel above 8 of 255) but raised
+`Tiled.Opaque` to 9.00 / 12.58 ms median / p95 against 8.50 / 12.46 ms, and
+10.75 / 17.64 against 10.29 / 17.84 ms with dynamic lights, alternating two
+runs each; it was not kept
+(`sha256:4d0422a1272a83a3997e97541a63f78af7607fc03a70d0116a96e47e19e9c83c`,
+`sha256:35c2dfd930e5b13712d5dedebdb51b727a459eb59556b860915972d4831c9195`).
+
 ## Consequences
 
 - Lighting, shadow, AA and screen-space work is implemented and validated once
