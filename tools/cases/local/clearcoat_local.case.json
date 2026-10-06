@@ -17,6 +17,7 @@
   "asset_ready_timeout_ms": 60000,
   "frames": { "warmup": 8, "measure": 2 },
   "renderer": {
+    "backend": "vulkan",
     "editor": false,
     "skybox": false,
     "taa_enabled": false,

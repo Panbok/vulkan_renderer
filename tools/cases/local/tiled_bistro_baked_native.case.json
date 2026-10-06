@@ -40,8 +40,7 @@
     "bloom_intensity": 0.05,
     "gtao_enabled": true,
     "gtao_radius": 0.5,
-    "gtao_power": 2.2,
-    "graphics_pipeline": "tiled"
+    "gtao_power": 2.2
   },
   "camera": {
     "mode": "orbit",

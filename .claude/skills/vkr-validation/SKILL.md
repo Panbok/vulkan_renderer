@@ -209,19 +209,19 @@ matrices, or capture workers. Broad validation capture suites are prohibited:
 a validation-enabled multi-capture run was followed by a macOS watchdog panic;
 the cause was not established.
 
-For a layered-transmission issue, this existing bounded case is an example:
+For a tiled-pipeline issue on Bistro, this existing bounded case is an
+example:
 
 ```sh
-MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
-  ./build_debug/tools/vkr_harness profile \
-  --case tools/cases/local/p18_metal_dual_validation_serial.case.json \
-  --profile tools/profiles/local-metal-dual-validation-serial.json
+MTL_DEBUG_LAYER=1 \
+  ./build_release/tools/vkr_harness snapshot \
+  --case tools/cases/local/tiled_bistro_baked_capture.case.json \
+  --profile tools/profiles/local-metal-offscreen-validation-serial.json
 ```
 
-Build first with `./build.sh Debug` if needed. The example has one repetition;
-select another minimal case when transmission does not exercise the issue.
-MetalFX can be unavailable under Apple's validation wrappers; report the actual
-configuration and do not treat a fallback run as MetalFX evidence.
+The example captures one frame in one child process; select another minimal
+case when it does not exercise the issue. Each replay channel a case adds runs
+one more validation-enabled child.
 
 ## Pipeline cache check
 

@@ -41,7 +41,6 @@
     "gtao_enabled": true,
     "gtao_radius": 0.5,
     "gtao_power": 2.2,
-    "graphics_pipeline": "tiled",
     "dynamic_resolution": true,
     "dynamic_resolution_min_scale": 0.65,
     "dynamic_resolution_max_scale": 1.0,

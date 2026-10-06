@@ -22,6 +22,7 @@
     "measure": 1
   },
   "renderer": {
+    "backend": "vulkan",
     "render_scale": 1.0,
     "editor": false,
     "skybox": true,

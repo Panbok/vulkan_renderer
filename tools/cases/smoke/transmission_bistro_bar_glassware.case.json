@@ -16,7 +16,7 @@
   "repetition_timeout_ms": 300000,
   "asset_ready_timeout_ms": 180000,
   "frames": { "warmup": 256, "measure": 1 },
-  "renderer": { "editor": false, "skybox": true, "taa_enabled": false, "exposure_mode": "manual", "manual_exposure": 0.3, "shadow_preset": "balanced", "shadow_cascades": 4, "transmission_depth_diagnostic_enabled": true, "render_mode": "default" },
+  "renderer": { "backend": "vulkan", "editor": false, "skybox": true, "taa_enabled": false, "exposure_mode": "manual", "manual_exposure": 0.3, "shadow_preset": "balanced", "shadow_cascades": 4, "transmission_depth_diagnostic_enabled": true, "render_mode": "default" },
   "camera": { "mode": "static", "position": [-5.03, 2.24, 9.73], "yaw": -20.34, "pitch": -7.77, "vertical_fov_degrees": 70, "near_plane": 0.1, "far_plane": 500 },
   "compare": { "max_pixel_delta": 0.0078431373, "max_mean_absolute_error": 0.0003921569, "max_failed_pixel_ratio": 0.001, "emit_diff": true },
   "captures": [

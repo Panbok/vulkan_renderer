@@ -21,6 +21,7 @@
     "measure": 1
   },
   "renderer": {
+    "backend": "vulkan",
     "editor": false,
     "skybox": false,
     "taa_enabled": false,

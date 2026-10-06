@@ -23,6 +23,7 @@
     "measure": 1
   },
   "renderer": {
+    "backend": "vulkan",
     "editor": false,
     "skybox": true,
     "text_fixture": false,

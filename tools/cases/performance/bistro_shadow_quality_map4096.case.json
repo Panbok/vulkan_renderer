@@ -23,6 +23,7 @@
     "measure": 300
   },
   "renderer": {
+    "backend": "vulkan",
     "editor": false,
     "skybox": true,
     "shadow_preset": "default",
