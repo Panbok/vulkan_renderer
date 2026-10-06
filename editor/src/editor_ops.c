@@ -85,6 +85,10 @@ struct VkrEditorOps {
      recorded. */
   OpsAuthored authored[OPS_AUTHORED_MAX];
   uint32_t authored_next;
+  /* The Changes window's author filter, empty for every author, and the
+     time its two-click Reject stops waiting for the confirming click. */
+  char changes_filter[VKR_EDITOR_AUTHOR_CAPACITY];
+  float64_t reject_all_armed_until;
 };
 
 typedef struct OpsContext {
@@ -3608,6 +3612,7 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
   VkrEditorChange change = {.group = result->group,
                             .container = (uint16_t)batch->container};
   snprintf(change.author, sizeof(change.author), "%s", call->author);
+  change.created = vkr_platform_get_absolute_time();
   if (pending->settle) {
     pending->entities =
         arena_alloc(call->arena, sizeof(VkrEntityId) * Max(batch->op_count, 1u),
@@ -4386,6 +4391,40 @@ typedef struct OpsPendingReject {
   uint64_t token;
 } OpsPendingReject;
 
+/* Tells the designer why `change` could not revert: the later pending
+   change that edited `conflict`, which must be rejected first, else the
+   editor's message. */
+static void ops_reject_reason(VkrEditorOps *ops, VkrEditorChange *change,
+                              VkrEntityId conflict, const char *name,
+                              const char *message) {
+  change->rejecting = false_v;
+  for (uint32_t i = 0; conflict.u64 && i < ops->change_count; ++i) {
+    const VkrEditorChange *later = &ops->changes[i];
+    if (later->id <= change->id) {
+      continue;
+    }
+    for (uint32_t e = 0; e < later->entity_count; ++e) {
+      if (later->entities[e].u64 != conflict.u64) {
+        continue;
+      }
+      snprintf(change->problem, sizeof(change->problem),
+               "Blocked by %s's later change '%s'%s%s; reject that one "
+               "first.",
+               later->author[0] ? later->author : "the editor", later->label,
+               name[0] ? " to " : "", name);
+      return;
+    }
+  }
+  if (name[0]) {
+    snprintf(change->problem, sizeof(change->problem),
+             "Blocked by a later edit to %s; undo or reject that edit "
+             "first.",
+             name);
+    return;
+  }
+  snprintf(change->problem, sizeof(change->problem), "%s", message);
+}
+
 static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
   VkrEditorOpCall *call = ctx->call;
   VkrEditorOps *ops = ctx->ops;
@@ -4400,18 +4439,26 @@ static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
       ops_fail(ctx, OPS_NOT_FOUND, "No pending change %lld", (long long)id);
       return VKR_EDITOR_OP_DONE;
     }
+    VkrEditorChange *target = &ops->changes[index];
     if (ctx->frame->simulation_running || !ctx->frame->edit_batch ||
         ctx->frame->edit_batch->token) {
       ops_fail(ctx, OPS_BUSY, "The scene cannot change now");
+      snprintf(target->problem, sizeof(target->problem),
+               "The scene cannot change now: the game plays or another "
+               "edit applies. Try again.");
+      target->rejecting = false_v;
       return VKR_EDITOR_OP_DONE;
     }
     OpsPendingReject *pending =
         arena_alloc(call->arena, sizeof(*pending), ARENA_MEMORY_TAG_STRUCT);
     if (!pending) {
       ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+      target->rejecting = false_v;
       return VKR_EDITOR_OP_DONE;
     }
-    const VkrEditorChange *change = &ops->changes[index];
+    target->rejecting = true_v;
+    target->problem[0] = '\0';
+    const VkrEditorChange *change = target;
     *pending =
         (OpsPendingReject){.change = change->id, .token = ++ops->next_token};
     *ctx->frame->edit_batch = (VkrSampleEditBatchRequest){
@@ -4428,6 +4475,13 @@ static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
   if (!result || result->token != pending->token) {
     if (++call->frames > OPS_WAIT_FRAMES) {
       ops_fail(ctx, OPS_BUSY, "The revert was not applied");
+      const int32_t waiting = ops_change_find(ops, pending->change);
+      if (waiting >= 0) {
+        snprintf(ops->changes[waiting].problem,
+                 sizeof(ops->changes[waiting].problem),
+                 "The revert was not applied; try again.");
+        ops->changes[waiting].rejecting = false_v;
+      }
       return VKR_EDITOR_OP_DONE;
     }
     return VKR_EDITOR_OP_WAIT;
@@ -4435,11 +4489,25 @@ static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
   const int32_t index = ops_change_find(ops, pending->change);
   if (!result->ok) {
     char conflict[40] = "";
+    char name[64] = "";
     if (result->conflict.u64) {
       ops_id_text(result->conflict, conflict, sizeof(conflict));
+      const VkrScene *scene =
+          index >= 0 ? ops_scene(ctx->frame, ops->changes[index].container)
+                     : NULL;
+      if (scene && vkr_scene_entity_alive(scene, result->conflict)) {
+        const String8 text = vkr_scene_get_name(scene, result->conflict);
+        snprintf(name, sizeof(name), "%.*s",
+                 (int)Min(text.length, (uint64_t)48u), (const char *)text.str);
+      }
     }
-    ops_fail(ctx, OPS_REJECTED, "%s%s%s", result->message,
-             conflict[0] ? " Conflicting entity: " : "", conflict);
+    ops_fail(ctx, OPS_REJECTED, "%s%s%s%s%s%s", result->message,
+             conflict[0] ? " Conflicting entity: " : "", name,
+             name[0] ? " (" : "", conflict, name[0] ? ")" : "");
+    if (index >= 0) {
+      ops_reject_reason(ops, &ops->changes[index], result->conflict, name,
+                        ctx->call->error);
+    }
     return VKR_EDITOR_OP_DONE;
   }
   if (index >= 0) {
@@ -7446,24 +7514,470 @@ static void ops_change_focus(const VkrSampleUiFrame *frame,
   }
 }
 
-static bool8_t ops_row_button(VkrUiSystem *ui, VkrEditorUi *editor, String8 id,
-                              String8 text, uint32_t column, bool8_t primary) {
+/* Authors the window tells apart: chips, and the order that picks their
+   colours. */
+#define CHANGES_AUTHOR_CHIPS 8u
+
+/* The authors with pending changes, in the order their first change came,
+   so the first four keep distinct colours while they have changes. */
+typedef struct ChangesAuthors {
+  char names[CHANGES_AUTHOR_CHIPS][VKR_EDITOR_AUTHOR_CAPACITY];
+  uint32_t counts[CHANGES_AUTHOR_CHIPS];
+  uint32_t count;
+} ChangesAuthors;
+
+/* An author's pill colour by its place among the authors; the editor's own
+   changes are neutral. Amber and red stay with warnings and errors. */
+static Vec4 changes_author_color(const ChangesAuthors *authors,
+                                 const char *author) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  if (!author[0]) {
+    return theme->text_secondary;
+  }
+  const Vec4 colors[] = {
+      theme->accent_hover,
+      theme->success,
+      vkr_ui_color_mix(theme->accent_hover, theme->error, 0.5f),
+      vkr_ui_color_mix(theme->info, theme->success, 0.5f),
+  };
+  uint32_t index = 0u;
+  while (index < authors->count && strcmp(authors->names[index], author) != 0) {
+    ++index;
+  }
+  return colors[index % ArrayCount(colors)];
+}
+
+static String8 changes_author_name(const VkrEditorChange *change) {
+  return change->author[0]
+             ? string8_create_from_cstr((const uint8_t *)change->author,
+                                        strlen(change->author))
+             : string8_lit("Editor");
+}
+
+/* Whether `change` passes the window's author filter. */
+static bool8_t changes_shown(const VkrEditorOps *ops,
+                             const VkrEditorChange *change) {
+  return !ops->changes_filter[0] ||
+         strcmp(ops->changes_filter, change->author) == 0;
+}
+
+/* The container a change edited, as the Outliner names it. */
+static void changes_container(uint16_t container, char *out,
+                              uint32_t capacity) {
+  if (container == VKR_SCENE_WORLD_ROOT_ID) {
+    snprintf(out, capacity, "World");
+  } else if (container == 0u) {
+    snprintf(out, capacity, "Scene");
+  } else {
+    snprintf(out, capacity, "Scene slot %u", (uint32_t)container);
+  }
+}
+
+static void changes_age(float64_t seconds, char *out, uint32_t capacity) {
+  if (seconds < 5.0) {
+    snprintf(out, capacity, "just now");
+  } else if (seconds < 60.0) {
+    snprintf(out, capacity, "%.0f s ago", floor(seconds));
+  } else if (seconds < 3600.0) {
+    snprintf(out, capacity, "%.0f min ago", floor(seconds / 60.0));
+  } else {
+    snprintf(out, capacity, "%.0f h ago", floor(seconds / 3600.0));
+  }
+}
+
+typedef enum ChangesButtonKind {
+  CHANGES_BUTTON_ACTION = 0,
+  CHANGES_BUTTON_PRIMARY,
+  /* Reject reverts work and leaves no redo, so it reads as destructive. */
+  CHANGES_BUTTON_DANGER,
+} ChangesButtonKind;
+
+/* A padded text button with a leading icon, centred in its grid cell. */
+static bool8_t changes_button(VkrUiSystem *ui, VkrEditorUi *editor, String8 id,
+                              String8 text, VkrUiIcon icon,
+                              VkrUiPlacement placement, ChangesButtonKind kind,
+                              bool8_t disabled, String8 tooltip) {
+  const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiWidgetConfig button = vkr_ui_widget_config_default();
-  if (primary) {
+  if (kind == CHANGES_BUTTON_PRIMARY) {
     vkr_editor_primary_style(&button, editor->heading_font);
   } else {
     vkr_editor_action_style(&button, editor->heading_font);
   }
-  button.placement = (VkrUiPlacement){
-      .column = column,
-      .row = 0u,
-      .column_span = 1u,
-      .row_span = 1u,
-      .justify = VKR_UI_ALIGN_STRETCH,
-      .align = VKR_UI_ALIGN_CENTER,
-      .margin_pt = {0.0f, 3.0f, 0.0f, 3.0f},
-  };
+  if (kind == CHANGES_BUTTON_DANGER) {
+    button.style.background_color = vkr_ui_color_alpha(theme->error, 0.14f);
+    button.style.hover_background_color =
+        vkr_ui_color_alpha(theme->error, 0.28f);
+    button.style.active_background_color =
+        vkr_ui_color_alpha(theme->error, 0.38f);
+    button.style.border_color = vkr_ui_color_alpha(theme->error, 0.45f);
+    button.icon_color = theme->error;
+  }
+  button.placement = placement;
+  button.placement.align = VKR_UI_ALIGN_CENTER;
+  button.style.padding_pt = (VkrUiEdges){4.0f, 12.0f, 4.0f, 10.0f};
+  button.style.min_size_pt.y = theme->control_height + 4.0f;
+  button.icon = icon;
+  button.icon_size_pt = 13.0f;
+  button.disabled = disabled;
+  button.tooltip = tooltip;
   return vkr_ui_button(ui, id, text, &button);
+}
+
+/* Queues the revert of `change` as a request from the editor. Its card
+   waits for the answer: a refusal shows there with its reason. */
+static void changes_reject(VkrEditorUi *editor, VkrEditorChange *change) {
+  char request[160];
+  snprintf(request, sizeof(request),
+           "{\"v\":1,\"id\":\"changes\",\"op\":\"changes.reject\","
+           "\"args\":{\"change\":%u}}",
+           change->id);
+  change->problem[0] = '\0';
+  change->rejecting = vkr_editor_agent_submit(editor->agent, request);
+  if (!change->rejecting) {
+    snprintf(change->problem, sizeof(change->problem),
+             "The request queue is full; try again.");
+  }
+}
+
+static VkrUiPanelConfig changes_grid(VkrUiPlacement placement,
+                                     const VkrUiTrack *columns,
+                                     uint32_t column_count,
+                                     const VkrUiTrack *rows,
+                                     uint32_t row_count) {
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = placement;
+  panel.columns = columns;
+  panel.column_count = column_count;
+  panel.rows = rows;
+  panel.row_count = row_count;
+  panel.style.padding_pt = (VkrUiEdges){0};
+  return panel;
+}
+
+static VkrUiPlacement changes_cell(uint32_t column, uint32_t row,
+                                   uint32_t row_span) {
+  return (VkrUiPlacement){.column = column,
+                          .row = row,
+                          .column_span = 1u,
+                          .row_span = row_span,
+                          .justify = VKR_UI_ALIGN_STRETCH,
+                          .align = VKR_UI_ALIGN_CENTER};
+}
+
+/* The summary, Reject all for a filtered author (two clicks) and Accept
+   all. */
+static void changes_header(VkrEditorUi *editor, VkrEditorOps *ops,
+                           VkrUiSystem *ui, uint32_t shown,
+                           uint32_t author_count) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                                {.unit = VKR_UI_TRACK_AUTO},
+                                {.unit = VKR_UI_TRACK_AUTO}};
+  const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiPanelConfig header = changes_grid(changes_cell(0u, 0u, 1u), columns,
+                                         ArrayCount(columns), &row, 1u);
+  header.style.gap_pt = theme->space_sm + 2.0f;
+  if (!vkr_ui_panel_begin(ui, string8_lit("header"), &header)) {
+    return;
+  }
+  char text[160];
+  if (ops->changes_filter[0]) {
+    snprintf(text, sizeof(text), "%u change%s from %s", shown,
+             shown == 1u ? "" : "s", ops->changes_filter);
+  } else {
+    snprintf(text, sizeof(text), "%u change%s to review from %u author%s",
+             shown, shown == 1u ? "" : "s", author_count,
+             author_count == 1u ? "" : "s");
+  }
+  VkrUiWidgetConfig summary =
+      vkr_editor_text_config(theme->font_body, theme->text);
+  summary.placement = changes_cell(0u, 0u, 1u);
+  summary.placement.justify = VKR_UI_ALIGN_START;
+  summary.text.font = editor->heading_font;
+  summary.icon = VKR_UI_ICON_TERMINAL;
+  summary.icon_size_pt = 15.0f;
+  summary.icon_color = theme->accent_hover;
+  vkr_ui_label(ui, string8_lit("summary"),
+               string8_create_from_cstr((const uint8_t *)text, strlen(text)),
+               &summary);
+  const float64_t now = vkr_platform_get_absolute_time();
+  if (ops->changes_filter[0]) {
+    const bool8_t armed = now < ops->reject_all_armed_until;
+    char label[48];
+    snprintf(label, sizeof(label), armed ? "Confirm reject %u" : "Reject %u",
+             shown);
+    if (changes_button(
+            ui, editor, string8_lit("reject_all"),
+            string8_create_from_cstr((const uint8_t *)label, strlen(label)),
+            VKR_UI_ICON_CLOSE, changes_cell(1u, 0u, 1u), CHANGES_BUTTON_DANGER,
+            false_v,
+            string8_lit("Revert every change of this author, newest first. "
+                        "Rejected work leaves the undo history; click again "
+                        "within 3 s to confirm."))) {
+      if (!armed) {
+        ops->reject_all_armed_until = now + 3.0;
+      } else {
+        ops->reject_all_armed_until = 0.0;
+        /* Newest first, so a change never waits on a later one of its
+           own author. */
+        for (uint32_t i = ops->change_count; i-- > 0u;) {
+          VkrEditorChange *change = &ops->changes[i];
+          if (changes_shown(ops, change) && !change->rejecting) {
+            changes_reject(editor, change);
+          }
+        }
+      }
+    }
+  }
+  if (changes_button(ui, editor, string8_lit("accept_all"),
+                     ops->changes_filter[0] ? string8_lit("Accept shown")
+                                            : string8_lit("Accept all"),
+                     VKR_UI_ICON_CHECK, changes_cell(2u, 0u, 1u),
+                     CHANGES_BUTTON_PRIMARY, false_v,
+                     string8_lit("Keep these changes and clear their marks"))) {
+    for (uint32_t i = ops->change_count; i-- > 0u;) {
+      if (changes_shown(ops, &ops->changes[i]) && !ops->changes[i].rejecting) {
+        (void)vkr_editor_ops_accept(ops, ops->changes[i].id);
+      }
+    }
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
+/* All, then one chip per author with its count; a click filters the list. */
+static void changes_chips(VkrEditorOps *ops, VkrUiSystem *ui,
+                          const ChangesAuthors *authors) {
+  const uint32_t author_count = authors->count;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiTrack columns[CHANGES_AUTHOR_CHIPS + 2u];
+  for (uint32_t i = 0; i <= author_count; ++i) {
+    columns[i] = (VkrUiTrack){.unit = VKR_UI_TRACK_AUTO};
+  }
+  columns[author_count + 1u] =
+      (VkrUiTrack){.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiPanelConfig chips = changes_grid(changes_cell(0u, 1u, 1u), columns,
+                                        author_count + 2u, &row, 1u);
+  chips.style.gap_pt = theme->space_sm;
+  chips.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("chips"), &chips)) {
+    return;
+  }
+  uint32_t total = 0u;
+  for (uint32_t i = 0; i < author_count; ++i) {
+    total += authors->counts[i];
+  }
+  for (uint32_t i = 0; i <= author_count; ++i) {
+    const char *author = i ? authors->names[i - 1u] : "";
+    const bool8_t selected = strcmp(ops->changes_filter, author) == 0;
+    VkrUiWidgetConfig chip = vkr_ui_widget_config_default();
+    vkr_editor_ghost_style(&chip);
+    chip.placement = changes_cell(i, 0u, 1u);
+    chip.placement.justify = VKR_UI_ALIGN_START;
+    chip.style.min_size_pt.y = 22.0f;
+    chip.style.padding_pt = (VkrUiEdges){2.0f, 9.0f, 2.0f, 8.0f};
+    chip.style.corner_radius_pt = (Vec4){11.0f, 11.0f, 11.0f, 11.0f};
+    chip.style.text_color = selected ? theme->text : theme->text_secondary;
+    if (selected) {
+      chip.style.background_color = theme->raised;
+      chip.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+      chip.style.border_color = theme->border_strong;
+    }
+    if (i) {
+      chip.icon = VKR_UI_ICON_DOT;
+      chip.icon_size_pt = 12.0f;
+      chip.icon_color = changes_author_color(authors, author);
+    }
+    const String8 text =
+        i ? string8_create_formatted(ui->frame_allocator, "%s  %u",
+                                     author[0] ? author : "Editor",
+                                     authors->counts[i - 1u])
+          : string8_create_formatted(ui->frame_allocator, "All  %u", total);
+    chip.tooltip = i ? string8_lit("Show only this author's changes")
+                     : string8_lit("Show every author's changes");
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("chip"), text, &chip)) {
+      snprintf(ops->changes_filter, sizeof(ops->changes_filter), "%s", author);
+      ops->reject_all_armed_until = 0.0;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
+/* Height of a change card: its title and meta rows (and a refused
+   reject's reason), the gaps between them, padding and border. */
+static float32_t changes_card_height(const VkrEditorChange *change) {
+  return change->problem[0] ? 22.0f + 18.0f + 20.0f + 12.0f + 18.0f
+                            : 22.0f + 18.0f + 6.0f + 18.0f;
+}
+
+/* One change: its author and label, what it touched and when, a refused
+   reject's reason, and Focus, Reject and Accept. */
+static void changes_card(VkrEditorUi *editor, VkrEditorOps *ops,
+                         const VkrSampleUiFrame *frame, VkrUiSystem *ui,
+                         const ChangesAuthors *authors, VkrEditorChange *change,
+                         uint32_t row, float64_t now) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                                {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
+                                {.value = 86.0f, .unit = VKR_UI_TRACK_PX},
+                                {.value = 86.0f, .unit = VKR_UI_TRACK_PX}};
+  const VkrUiTrack rows[] = {{.value = 22.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 18.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 20.0f, .unit = VKR_UI_TRACK_PX}};
+  const uint32_t row_count = change->problem[0] ? 3u : 2u;
+  VkrUiPanelConfig card = changes_grid(changes_cell(0u, row, 1u), columns,
+                                       ArrayCount(columns), rows, row_count);
+  card.placement.align = VKR_UI_ALIGN_STRETCH;
+  card.style.padding_pt = (VkrUiEdges){8.0f, 10.0f, 8.0f, 12.0f};
+  card.style.gap_pt = theme->space_sm + 2.0f;
+  card.style.background_color = theme->raised;
+  card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  card.style.border_color = change->problem[0]
+                                ? vkr_ui_color_alpha(theme->error, 0.55f)
+                                : theme->border;
+  card.style.corner_radius_pt =
+      (Vec4){theme->radius_large, theme->radius_large, theme->radius_large,
+             theme->radius_large};
+  card.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("card"), &card)) {
+    return;
+  }
+  const VkrUiTrack title_columns[] = {{.unit = VKR_UI_TRACK_AUTO},
+                                      {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiPanelConfig title = changes_grid(changes_cell(0u, 0u, 1u), title_columns,
+                                        ArrayCount(title_columns), &fill, 1u);
+  title.style.gap_pt = theme->space_md;
+  title.clip_children = true_v;
+  if (vkr_ui_panel_begin(ui, string8_lit("title"), &title)) {
+    const Vec4 color = changes_author_color(authors, change->author);
+    VkrUiWidgetConfig pill = vkr_editor_text_config(theme->font_caption, color);
+    pill.placement = changes_cell(0u, 0u, 1u);
+    pill.placement.justify = VKR_UI_ALIGN_START;
+    pill.style.padding_pt = (VkrUiEdges){1.0f, 8.0f, 1.0f, 8.0f};
+    pill.style.background_color = vkr_ui_color_alpha(color, 0.18f);
+    pill.style.corner_radius_pt = (Vec4){9.0f, 9.0f, 9.0f, 9.0f};
+    pill.text.font = editor->heading_font;
+    pill.center = true_v;
+    vkr_ui_label(ui, string8_lit("author"), changes_author_name(change), &pill);
+    const String8 label = string8_create_from_cstr(
+        (const uint8_t *)change->label, strlen(change->label));
+    VkrUiWidgetConfig name =
+        vkr_editor_text_config(theme->font_body, theme->text);
+    name.placement = changes_cell(1u, 0u, 1u);
+    name.placement.justify = VKR_UI_ALIGN_START;
+    name.text.font = editor->heading_font;
+    name.tooltip = label;
+    vkr_ui_label(ui, string8_lit("label"), label, &name);
+    (void)vkr_ui_panel_end(ui);
+  }
+  char where[32];
+  char age[32];
+  changes_container(change->container, where, sizeof(where));
+  changes_age(now - change->created, age, sizeof(age));
+  VkrUiWidgetConfig meta =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  meta.placement = changes_cell(0u, 1u, 1u);
+  meta.placement.justify = VKR_UI_ALIGN_START;
+  vkr_ui_label(ui, string8_lit("meta"),
+               string8_create_formatted(
+                   ui->frame_allocator,
+                   "%u object%s  \xc2\xb7  %s  \xc2\xb7  %s",
+                   change->entity_count, change->entity_count == 1u ? "" : "s",
+                   where, age),
+               &meta);
+  if (change->problem[0]) {
+    const String8 problem = string8_create_from_cstr(
+        (const uint8_t *)change->problem, strlen(change->problem));
+    VkrUiWidgetConfig why =
+        vkr_editor_text_config(theme->font_caption, theme->error);
+    why.placement = changes_cell(0u, 2u, 1u);
+    why.placement.column_span = ArrayCount(columns);
+    why.placement.justify = VKR_UI_ALIGN_START;
+    why.icon = VKR_UI_ICON_WARNING_FILL;
+    why.icon_size_pt = 12.0f;
+    why.icon_color = theme->error;
+    why.tooltip = problem;
+    vkr_ui_label(ui, string8_lit("problem"), problem, &why);
+  }
+  VkrUiWidgetConfig focus = vkr_editor_icon_button_config(
+      1u, 0u, VKR_UI_ICON_FRAME,
+      string8_lit("Frame this change's objects in the Scene"));
+  focus.placement.row_span = 2u;
+  if (vkr_ui_button(ui, string8_lit("focus"), (String8){0}, &focus)) {
+    ops_change_focus(frame, change);
+  }
+  if (changes_button(
+          ui, editor, string8_lit("reject"), string8_lit("Reject"),
+          change->rejecting ? VKR_UI_ICON_SPINNER : VKR_UI_ICON_CLOSE,
+          changes_cell(2u, 0u, 2u), CHANGES_BUTTON_DANGER, change->rejecting,
+          string8_lit("Revert this change; refused while a later "
+                      "edit depends on it"))) {
+    changes_reject(editor, change);
+  }
+  if (changes_button(ui, editor, string8_lit("accept"), string8_lit("Accept"),
+                     VKR_UI_ICON_CHECK, changes_cell(3u, 0u, 2u),
+                     CHANGES_BUTTON_PRIMARY, change->rejecting,
+                     string8_lit("Keep this change and clear its mark"))) {
+    (void)vkr_editor_ops_accept(ops, change->id);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
+/* Nothing to review: what the window is for and where agents connect. */
+static void changes_empty(VkrEditorUi *editor, VkrUiSystem *ui) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                             {.value = 34.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 24.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 18.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 18.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 1.2f, .unit = VKR_UI_TRACK_FR}};
+  VkrUiPanelConfig empty = changes_grid(changes_cell(0u, 0u, 1u), &column, 1u,
+                                        rows, ArrayCount(rows));
+  empty.placement.align = VKR_UI_ALIGN_STRETCH;
+  empty.style.padding_pt = (VkrUiEdges){0.0f, 24.0f, 0.0f, 24.0f};
+  if (!vkr_ui_panel_begin(ui, string8_lit("empty"), &empty)) {
+    return;
+  }
+  VkrUiWidgetConfig icon =
+      vkr_editor_text_config(theme->font_body, theme->success);
+  icon.placement = changes_cell(0u, 1u, 1u);
+  icon.placement.justify = VKR_UI_ALIGN_CENTER;
+  icon.icon = VKR_UI_ICON_CHECK_CIRCLE;
+  icon.icon_size_pt = 26.0f;
+  icon.icon_color = theme->success;
+  vkr_ui_label(ui, string8_lit("icon"), (String8){0}, &icon);
+  VkrUiWidgetConfig title =
+      vkr_editor_text_config(theme->font_emphasis, theme->text);
+  title.placement = changes_cell(0u, 2u, 1u);
+  title.placement.justify = VKR_UI_ALIGN_CENTER;
+  title.text.font = editor->heading_font;
+  title.center = true_v;
+  vkr_ui_label(ui, string8_lit("title"), string8_lit("Nothing to review"),
+               &title);
+  VkrUiWidgetConfig body =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  body.placement = changes_cell(0u, 3u, 1u);
+  body.placement.justify = VKR_UI_ALIGN_CENTER;
+  body.center = true_v;
+  vkr_ui_label(ui, string8_lit("about"),
+               string8_lit("Agent edits made with review appear here, each "
+                           "with its author."),
+               &body);
+  /* The socket path can be long; the tooltip holds all of it. */
+  const char *status = vkr_editor_agent_status(editor->agent);
+  const String8 text =
+      string8_create_from_cstr((const uint8_t *)status, strlen(status));
+  body.placement.row = 4u;
+  body.style.text_color = theme->text_disabled;
+  body.tooltip = text;
+  vkr_ui_label(ui, string8_lit("status"), text, &body);
+  (void)vkr_ui_panel_end(ui);
 }
 
 void vkr_editor_changes_build(VkrEditorUi *editor,
@@ -7471,127 +7985,90 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
   (void)bounds;
   VkrUiSystem *ui = frame->ui;
   VkrEditorOps *ops = vkr_editor_agent_ops(editor->agent);
-  const VkrUiTheme *theme = vkr_ui_theme();
-  const uint32_t count = vkr_editor_ops_change_count(ops);
-  VkrUiTrack rows[VKR_EDITOR_CHANGE_MAX + 2u];
-  rows[0] = (VkrUiTrack){.value = 36.0f, .unit = VKR_UI_TRACK_PX};
-  for (uint32_t i = 0; i < count; ++i) {
-    rows[i + 1u] = (VkrUiTrack){.value = 40.0f, .unit = VKR_UI_TRACK_PX};
-  }
-  rows[count + 1u] = (VkrUiTrack){.value = 1.0f, .unit = VKR_UI_TRACK_FR};
-  const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
-  VkrUiPanelConfig list = vkr_ui_panel_config_default();
-  list.placement = (VkrUiPlacement){.column = 0u,
-                                    .row = 0u,
-                                    .column_span = 1u,
-                                    .row_span = 1u,
-                                    .justify = VKR_UI_ALIGN_STRETCH,
-                                    .align = VKR_UI_ALIGN_STRETCH};
-  list.columns = &column;
-  list.column_count = 1u;
-  list.rows = rows;
-  list.row_count = count + 2u;
-  list.style.padding_pt = (VkrUiEdges){8.0f, 10.0f, 8.0f, 10.0f};
-  list.clip_children = true_v;
-  if (!vkr_ui_panel_begin(ui, string8_lit("changes.list"), &list)) {
+  if (!ops) {
     return;
   }
-  const VkrUiTrack header_columns[] = {
-      column, {.value = 96.0f, .unit = VKR_UI_TRACK_PX}};
-  VkrUiPanelConfig header = vkr_ui_panel_config_default();
-  header.placement = list.placement;
-  header.columns = header_columns;
-  header.column_count = ArrayCount(header_columns);
-  header.rows = &column;
-  header.row_count = 1u;
-  header.style.padding_pt = (VkrUiEdges){0};
-  if (vkr_ui_panel_begin(ui, string8_lit("header"), &header)) {
-    char text[200];
-    if (count) {
-      snprintf(text, sizeof(text), "%u agent change%s to review", count,
-               count == 1u ? "" : "s");
-    } else {
-      snprintf(text, sizeof(text), "No agent changes. %s",
-               vkr_editor_agent_status(editor->agent));
+  const VkrUiTheme *theme = vkr_ui_theme();
+  ChangesAuthors authors = {0};
+  bool8_t filter_found = false_v;
+  for (uint32_t i = 0; i < ops->change_count; ++i) {
+    const char *author = ops->changes[i].author;
+    filter_found = filter_found || strcmp(ops->changes_filter, author) == 0;
+    uint32_t a = 0u;
+    while (a < authors.count && strcmp(authors.names[a], author) != 0) {
+      ++a;
     }
-    VkrUiWidgetConfig label =
-        vkr_editor_text_config(theme->font_body, theme->text_secondary);
-    label.placement = (VkrUiPlacement){.column = 0u,
-                                       .row = 0u,
-                                       .column_span = 1u,
-                                       .row_span = 1u,
-                                       .justify = VKR_UI_ALIGN_START,
-                                       .align = VKR_UI_ALIGN_CENTER};
-    vkr_ui_label(ui, string8_lit("summary"),
-                 string8_create_from_cstr((const uint8_t *)text, strlen(text)),
-                 &label);
-    if (count && ops_row_button(ui, editor, string8_lit("accept_all"),
-                                string8_lit("Accept all"), 1u, true_v)) {
-      (void)vkr_editor_ops_accept(ops, 0u);
+    if (a == authors.count && authors.count < CHANGES_AUTHOR_CHIPS) {
+      snprintf(authors.names[authors.count++], VKR_EDITOR_AUTHOR_CAPACITY, "%s",
+               author);
     }
-    (void)vkr_ui_panel_end(ui);
+    if (a < authors.count) {
+      authors.counts[a]++;
+    }
   }
-  const VkrUiTrack row_columns[] = {
-      column,
-      {.value = 72.0f, .unit = VKR_UI_TRACK_PX},
-      {.value = 72.0f, .unit = VKR_UI_TRACK_PX},
-      {.value = 72.0f, .unit = VKR_UI_TRACK_PX},
-  };
-  /* Rows act on a copy, because Accept removes the change it shows. */
-  VkrEditorChange shown[VKR_EDITOR_CHANGE_MAX];
-  for (uint32_t i = 0; i < count; ++i) {
-    shown[i] = *vkr_editor_ops_change(ops, i);
+  if (ops->changes_filter[0] && !filter_found) {
+    ops->changes_filter[0] = '\0';
   }
-  for (uint32_t i = 0; i < count; ++i) {
-    const VkrEditorChange *change = &shown[i];
-    (void)vkr_ui_push_id_u64(ui, change->id);
-    VkrUiPanelConfig row = vkr_ui_panel_config_default();
-    row.placement = list.placement;
-    row.placement.row = i + 1u;
-    row.columns = row_columns;
-    row.column_count = ArrayCount(row_columns);
-    row.rows = &column;
-    row.row_count = 1u;
-    row.style.padding_pt = (VkrUiEdges){2.0f, 6.0f, 2.0f, 8.0f};
-    row.style.border_pt = (VkrUiEdges){0.0f, 0.0f, 1.0f, 0.0f};
-    row.style.border_color = theme->separator;
-    if (vkr_ui_panel_begin(ui, string8_lit("row"), &row)) {
-      char text[200];
-      snprintf(text, sizeof(text), "%u  %s%s%s  (%u object%s)", change->id,
-               change->author, change->author[0] ? ": " : "", change->label,
-               change->entity_count, change->entity_count == 1u ? "" : "s");
-      VkrUiWidgetConfig label =
-          vkr_editor_text_config(theme->font_body, theme->text);
-      label.placement = (VkrUiPlacement){.column = 0u,
-                                         .row = 0u,
-                                         .column_span = 1u,
-                                         .row_span = 1u,
-                                         .justify = VKR_UI_ALIGN_START,
-                                         .align = VKR_UI_ALIGN_CENTER};
-      vkr_ui_label(
-          ui, string8_lit("label"),
-          string8_create_from_cstr((const uint8_t *)text, strlen(text)),
-          &label);
-      if (ops_row_button(ui, editor, string8_lit("focus"), string8_lit("Focus"),
-                         1u, false_v)) {
-        ops_change_focus(frame, change);
-      }
-      if (ops_row_button(ui, editor, string8_lit("reject"),
-                         string8_lit("Reject"), 2u, false_v)) {
-        char request[160];
-        snprintf(request, sizeof(request),
-                 "{\"v\":1,\"id\":\"changes\",\"op\":\"changes.reject\","
-                 "\"args\":{\"change\":%u}}",
-                 change->id);
-        (void)vkr_editor_agent_submit(editor->agent, request);
-      }
-      if (ops_row_button(ui, editor, string8_lit("accept"),
-                         string8_lit("Accept"), 3u, true_v)) {
-        (void)vkr_editor_ops_accept(ops, change->id);
-      }
+  /* Ids first: Accept and a finished reject remove changes while the cards
+     build, so each card looks its change up again. Newest first. */
+  uint32_t ids[VKR_EDITOR_CHANGE_MAX];
+  VkrUiTrack card_rows[VKR_EDITOR_CHANGE_MAX];
+  uint32_t shown = 0u;
+  for (uint32_t i = ops->change_count; i-- > 0u;) {
+    if (changes_shown(ops, &ops->changes[i])) {
+      ids[shown] = ops->changes[i].id;
+      card_rows[shown++] =
+          (VkrUiTrack){.value = changes_card_height(&ops->changes[i]),
+                       .unit = VKR_UI_TRACK_PX};
+    }
+  }
+  const bool8_t chips = authors.count > 1u;
+  const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {
+      {.value = ops->change_count ? 34.0f : 0.0f, .unit = VKR_UI_TRACK_PX},
+      {.value = chips ? 26.0f : 0.0f, .unit = VKR_UI_TRACK_PX},
+      {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
+  VkrUiPanelConfig body = changes_grid(changes_cell(0u, 0u, 1u), &column, 1u,
+                                       rows, ArrayCount(rows));
+  body.placement.align = VKR_UI_ALIGN_STRETCH;
+  body.style.padding_pt = (VkrUiEdges){10.0f, 12.0f, 10.0f, 12.0f};
+  body.style.gap_pt = theme->space_md;
+  body.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("changes.body"), &body)) {
+    return;
+  }
+  if (!ops->change_count) {
+    VkrUiPanelConfig area =
+        changes_grid(changes_cell(0u, 2u, 1u), &column, 1u, &column, 1u);
+    area.placement.align = VKR_UI_ALIGN_STRETCH;
+    if (vkr_ui_panel_begin(ui, string8_lit("area"), &area)) {
+      changes_empty(editor, ui);
       (void)vkr_ui_panel_end(ui);
     }
-    (void)vkr_ui_pop_id(ui);
+    (void)vkr_ui_panel_end(ui);
+    return;
+  }
+  changes_header(editor, ops, ui, shown, authors.count);
+  if (chips) {
+    changes_chips(ops, ui, &authors);
+  }
+  VkrUiPanelConfig list = changes_grid(changes_cell(0u, 2u, 1u), &column, 1u,
+                                       card_rows, Max(shown, 1u));
+  list.placement.align = VKR_UI_ALIGN_STRETCH;
+  list.style.gap_pt = theme->space_sm + 2.0f;
+  if (vkr_ui_scroll_area_begin(ui, string8_lit("cards"), &list)) {
+    const float64_t now = vkr_platform_get_absolute_time();
+    for (uint32_t i = 0; i < shown; ++i) {
+      const int32_t index = ops_change_find(ops, ids[i]);
+      if (index < 0) {
+        continue;
+      }
+      (void)vkr_ui_push_id_u64(ui, ids[i]);
+      changes_card(editor, ops, frame, ui, &authors, &ops->changes[index], i,
+                   now);
+      (void)vkr_ui_pop_id(ui);
+    }
+    (void)vkr_ui_scroll_area_end(ui);
   }
   (void)vkr_ui_panel_end(ui);
 }

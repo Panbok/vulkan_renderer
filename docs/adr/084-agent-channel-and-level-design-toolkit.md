@@ -153,11 +153,18 @@ runs, so Play counts as settled. Texture and mesh streaming do not count.
 
 A batch with `review` (the default) becomes a pending change: its group,
 container, label (`label`, else the operation's name) and the entities it
-created or edited, held in memory by the operation table. The Agent changes window (View menu, Cmd `window changes`)
-lists pending changes with Focus, Reject and Accept, the Scene outlines their
-entities' local bounds in orange through the editor's line overlay, and a
-toast announces each new change. Accept removes the mark only. Reject calls
-`vkr_scene_edit_group_revert`:
+created or edited, held in memory by the operation table. The Agent changes
+window (View menu, Cmd `window changes`) lists pending changes newest first,
+one card each: the author as a coloured pill, the label, the objects, the
+container and the age, with Focus, Reject and Accept. With changes from more
+than one author, chips filter the list by author; a filtered list offers
+Reject for all of its changes, newest first, after a confirming second click
+within 3 s, because rejected work leaves no redo. A refused reject keeps its
+card, outlined in red, with the reason: the later pending change that blocks
+it and must be rejected first, or the entity a later edit changed. The Scene
+outlines pending entities' local bounds in orange through the editor's line
+overlay, and a toast announces each new change. Accept removes the mark
+only. Reject calls `vkr_scene_edit_group_revert`:
 
 - an undone group only loses its redo entries;
 - otherwise no later applied entry may name an entity the group created,

@@ -58,6 +58,12 @@ typedef struct VkrEditorChange {
   uint16_t container;
   char label[96];
   char author[VKR_EDITOR_AUTHOR_CAPACITY];
+  /* Platform time the batch applied, for its age in the window. */
+  float64_t created;
+  /* A reject waits in the queue or runs; the window holds its actions. */
+  bool8_t rejecting;
+  /* Why the last reject was refused, empty otherwise. */
+  char problem[160];
   uint32_t entity_count;
   VkrEntityId entities[VKR_EDITOR_CHANGE_ENTITY_MAX];
 } VkrEditorChange;
