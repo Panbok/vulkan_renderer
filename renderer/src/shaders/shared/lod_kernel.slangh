@@ -23,6 +23,10 @@
 #define VKR_GPU_DRAW_LOD_MASK 7u
 #define VKR_GPU_DRAW_MORPH_SHIFT 11u
 #define VKR_GPU_DRAW_PREVIOUS_MORPH_SHIFT 19u
+// The tiled pipeline's reflection probe for a camera-view draw, as frame probe
+// index + 1 above the morph bits; zero takes the global environment.
+#define VKR_GPU_DRAW_PROBE_SHIFT 27u
+#define VKR_GPU_DRAW_PROBE_MASK 31u
 // Nearest distance a view measures, so a camera inside a bound stays finite.
 #define VKR_GPU_LOD_DISTANCE_MIN 1e-3f
 

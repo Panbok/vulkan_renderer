@@ -257,6 +257,13 @@ VkrGpuLodView vkr_gpu_lod_view(Mat4 view_projection, float32_t image_rows,
 #define VKR_GPU_DRAW_LOD_MASK 0x7u
 #define VKR_GPU_DRAW_MORPH_SHIFT 11u
 #define VKR_GPU_DRAW_PREVIOUS_MORPH_SHIFT 19u
+/* Above them, the tiled pipeline's reflection probe for a camera-view draw,
+   as frame probe index + 1; zero takes the global environment (ADR-087). */
+#define VKR_GPU_DRAW_PROBE_SHIFT 27u
+#define VKR_GPU_DRAW_PROBE_MASK 0x1Fu
+_Static_assert(VKR_GPU_DRAW_PREVIOUS_MORPH_SHIFT + 8u ==
+                   VKR_GPU_DRAW_PROBE_SHIFT,
+               "The probe bits follow the previous morph factor");
 
 /** Compute output indexed in geometry-local vertex order. */
 typedef struct VkrDeformedVertex {

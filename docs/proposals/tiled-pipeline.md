@@ -251,8 +251,8 @@ Remaining phases:
 The owner approved these tiled-pipeline features on 2026-10-06, to land in
 this order as one measured change each against the 16.7 ms p95 budget:
 
-1. Per-draw reflection probes: one or two box-projected cubemaps chosen for
-   each draw before shading, for glossy surfaces.
+1. Per-draw reflection probes: done, one probe per surface
+   ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#reflection-probe-measurement)).
 2. Baked ambient occlusion in the lightmap alpha, applied to environment
    specular and dynamic lights.
 3. A small fixed gather PCF for the four shadowed dynamic lights, in the

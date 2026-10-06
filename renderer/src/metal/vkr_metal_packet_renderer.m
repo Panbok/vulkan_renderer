@@ -558,6 +558,11 @@ typedef enum VkrMetalTiledLighting {
   VKR_METAL_TILED_LIGHTING_COUNT = 5,
 } VkrMetalTiledLighting;
 
+/* Each shading variant without and with reflection probes (ADR-087): probe
+   shading costs the opaque pass registers on every pixel, so frames whose
+   camera sees no probe volume take the variant without it. */
+#define VKR_METAL_TILED_PROBE_VARIANT_COUNT 2u
+
 struct VkrMetalPacketRenderer {
   VkrPixelReadbackResult picking_result;
   uint64_t picking_submit_value;
@@ -656,11 +661,14 @@ struct VkrMetalPacketRenderer {
      the cloud draw over the resolved image. */
   id<MTLRenderPipelineState> tiled_depth_pipeline;
   /* Opaque draws, which never discard, and alpha-tested draws, which write
-     the samples their alpha covers. */
+     the samples their alpha covers; without and with reflection probes, by
+     shading variant. */
   id<MTLRenderPipelineState>
-      tiled_forward_pipelines[VKR_METAL_TILED_LIGHTING_COUNT];
+      tiled_forward_pipelines[VKR_METAL_TILED_PROBE_VARIANT_COUNT]
+                             [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState>
-      tiled_coverage_pipelines[VKR_METAL_TILED_LIGHTING_COUNT];
+      tiled_coverage_pipelines[VKR_METAL_TILED_PROBE_VARIANT_COUNT]
+                              [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState> tiled_sky_pipeline;
   /* Tone-mapped multisample resolve at the end of the opaque pass. */
   id<MTLRenderPipelineState> tiled_resolve_pipeline;
@@ -669,7 +677,8 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> tiled_picking_pipeline;
   /* Glass and blended surfaces, and world text, over the resolved image. */
   id<MTLRenderPipelineState>
-      tiled_blend_pipelines[VKR_METAL_TILED_LIGHTING_COUNT];
+      tiled_blend_pipelines[VKR_METAL_TILED_PROBE_VARIANT_COUNT]
+                           [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState> tiled_text_pipeline;
   id<MTLDepthStencilState> tiled_prepass_state;
   id<MTLDepthStencilState> tiled_shade_state;

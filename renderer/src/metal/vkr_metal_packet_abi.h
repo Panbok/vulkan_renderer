@@ -334,6 +334,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
 
 typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
 
+/* VkrMetalPacketDrawRoot.flags: the GPU-encoded visible rows carry the draws,
+   and the camera view's encode chooses each draw's reflection probe. */
+enum {
+  VKR_METAL_PACKET_DRAW_ROOT_GPU_DRAW = 1u,
+  VKR_METAL_PACKET_DRAW_ROOT_PROBES = 2u,
+};
+
 enum {
   /* Camera, directional cascades, then the local render slots. */
   VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX =

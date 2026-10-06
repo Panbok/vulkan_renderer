@@ -231,6 +231,35 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
                         memory_order_relaxed);
 }
 
+// The reflection probe a camera-view draw shades with on the tiled pipeline
+// (ADR-087), as frame probe index + 1: the probe with the largest influence
+// at the draw's bounding-sphere centre, the smaller box on a tie, when that
+// reaches one half. Zero takes the global environment.
+static uint vkr_metal_packet_draw_probe(
+    constant VkrMetalPacketFrameRoot *frame,
+    const device VkrMetalPacketInstance &instance, float4 local_sphere) {
+  const uint count = min(frame->ibl_probe_count, VKR_GPU_DRAW_PROBE_MASK - 1u);
+  if (count == 0u || frame->ibl_probes == nullptr)
+    return 0u;
+  float3 center = (instance.model * float4(local_sphere.xyz, 1.0f)).xyz;
+  uint best = 0u;
+  float best_weight = 0.5f;
+  float best_volume = 0.0f;
+  for (uint i = 0u; i < count; ++i) {
+    const device VkrMetalPacketIblProbe &probe = frame->ibl_probes[i];
+    float weight = vkr_metal_packet_probe_influence(probe, center);
+    float3 extents = max(probe.extents_weight.xyz, 0.0f);
+    float volume = extents.x * extents.y * extents.z;
+    if (weight > best_weight ||
+        (best != 0u && weight == best_weight && volume < best_volume)) {
+      best = i + 1u;
+      best_weight = weight;
+      best_volume = volume;
+    }
+  }
+  return best;
+}
+
 kernel void vkr_metal_packet_gpu_draw_encode(
     constant VkrMetalPacketGpuDrawRoot &root [[buffer(0)]],
     constant VkrMetalPacketIcbContainer *icb [[buffer(1)]],
@@ -270,11 +299,22 @@ kernel void vkr_metal_packet_gpu_draw_encode(
     first_index += row->levels[level].first_index;
     index_count = row->levels[level].index_count;
   }
+  constant VkrMetalPacketDrawRoot &draw_root = root.draw_roots[view_index];
+  uint probe_state = 0u;
+  if ((draw_root.flags & VKR_METAL_PACKET_DRAW_ROOT_PROBES) != 0u)
+    probe_state = vkr_metal_packet_draw_probe(
+                      draw_root.frame, root.instances[candidate.instance_index],
+                      candidate.local_bounding_sphere)
+                  << VKR_GPU_DRAW_PROBE_SHIFT;
   root.visible_rows[view_base + visible_index] = {
-      candidate.geometry_index, candidate.material_index,
-      candidate.instance_index, first_index,
-      index_count,              candidate.vertex_offset,
-      candidate.decode_index,   candidate.state_flags | lod_state};
+      candidate.geometry_index,
+      candidate.material_index,
+      candidate.instance_index,
+      first_index,
+      index_count,
+      candidate.vertex_offset,
+      candidate.decode_index,
+      candidate.state_flags | lod_state | probe_state};
   device uint *indices = reinterpret_cast<device uint *>(
       geometry.index_address + ulong(first_index) * sizeof(uint));
 

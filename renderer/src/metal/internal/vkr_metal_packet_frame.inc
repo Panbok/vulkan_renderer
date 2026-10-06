@@ -1192,7 +1192,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
                             sizeof(VkrGpuVisibleDrawRow),
         .vertices = renderer->geometry_megabuffer.vertices.gpu_address,
         .frame = frame_root_gpu,
-        .flags = 1u,
+        .flags = VKR_METAL_PACKET_DRAW_ROOT_GPU_DRAW |
+                 (camera_view ? VKR_METAL_PACKET_DRAW_ROOT_PROBES : 0u),
     };
   }
   root->candidates = candidates->resource.gpu_address;
@@ -1923,6 +1924,29 @@ vkr_metal_packet_tiled_lighting(const VkrPreparedFrame *packet) {
   return VKR_METAL_TILED_LIGHTING_PUNCTUAL;
 }
 
+/* Whether the camera sees a reflection probe's influence volume, so the
+   frame takes the tiled shading variants with probes (ADR-087). Conservative:
+   a probe counts when the sphere around its box and blend band meets the
+   view frustum. */
+vkr_internal uint32_t
+vkr_metal_packet_tiled_probe_variant(const VkrPreparedFrame *packet) {
+  const VkrFrameLighting *lighting = packet->input.lighting;
+  if (!lighting || lighting->ibl_probe_count == 0u || !lighting->ibl_probes)
+    return 0u;
+  const VkrFrustum frustum = vkr_frustum_from_view_projection(
+      packet->input.globals.view, packet->input.globals.projection);
+  for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
+    const VkrFrameIblProbe *probe = &lighting->ibl_probes[i];
+    if (probe->weight <= 0.0f)
+      continue;
+    const float32_t radius =
+        vec3_length(probe->extents) + Max(probe->blend_distance, 0.0f);
+    if (vkr_frustum_test_sphere(&frustum, probe->center, radius))
+      return 1u;
+  }
+  return 0u;
+}
+
 /* Prepares the tiled pipeline's opaque pass (ADR-087): the camera's culled
    opaque draws, the clear sky's root, and multisampled targets in place of
    the pass's graph colour and depth, which they resolve into. Depth resolves
@@ -1934,10 +1958,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
     API_AVAILABLE(macos(26.0)) {
   const VkrMetalTiledLighting lighting =
       vkr_metal_packet_tiled_lighting(packet);
+  const uint32_t probes = vkr_metal_packet_tiled_probe_variant(packet);
   if (!vkr_metal_packet_prepare_gpu_draws(
           renderer, pass, prepared,
-          renderer->tiled_coverage_pipelines[lighting],
-          renderer->tiled_forward_pipelines[lighting])) {
+          renderer->tiled_coverage_pipelines[probes][lighting],
+          renderer->tiled_forward_pipelines[probes][lighting])) {
     return false_v;
   }
   VkrMetalPacketIndirectPass draws = prepared->indirect;
@@ -2078,7 +2103,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         vkr_metal_packet_tiled_lighting(packet);
     if (!vkr_metal_packet_prepare_draws(
             renderer, &prepared->world.direct,
-            renderer->tiled_blend_pipelines[lighting],
+            renderer
+                ->tiled_blend_pipelines[vkr_metal_packet_tiled_probe_variant(
+                    packet)][lighting],
             renderer->depth_read_state, upload->direct_draws,
             upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,

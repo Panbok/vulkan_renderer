@@ -540,6 +540,9 @@ struct VkrMetalPacketDrawRoot {
   constant VkrMetalPacketLocalShadowTransmissionDraw *local_shadow_transmission;
 };
 
+/* Mirrors VKR_METAL_PACKET_DRAW_ROOT_PROBES in vkr_metal_packet_abi.h. */
+constant uint VKR_METAL_PACKET_DRAW_ROOT_PROBES = 2u;
+
 struct VkrMetalPacketShadowCascade {
   float4x4 light_view_projection;
   float4 split_near_far_texel_depth;

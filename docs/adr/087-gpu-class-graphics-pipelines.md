@@ -161,8 +161,20 @@ pipeline rather than a backend mechanism.
    ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), reading the
    material table's terrain rows through the frame root. Blended surfaces,
    drawn after `Tiled.Atmosphere`, apply aerial perspective and fog to their
-   own light only. Clearcoat, sheen,
-   anisotropy, diffuse transmission and IBL probes are not drawn yet. The
+   own light only. Reflection probes give one environment per surface: the
+   camera view's encode kernel assigns each draw the frame probe whose
+   influence at the draw's bounding-sphere centre is largest and at least
+   one half, in the visible row's `state_flags` bits 27 to 31
+   (`VKR_GPU_DRAW_PROBE_SHIFT`, `vkr_metal_packet_draw_probe` in
+   [`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal)),
+   and the surface takes that probe's box-projected prefiltered cube and
+   SH diffuse in place of the global environment; glass picks its probe per
+   pixel by the same rule. The desktop pipeline instead blends every probe
+   per pixel by influence; that blend cost the tiled pass 0.35 ms median and
+   0.75 ms p95 on Bistro and was rejected. Frames whose camera frustum meets
+   no probe's box and blend band take shading variants without probe code
+   (`vkr_metal_packet_tiled_probe_variant`). Clearcoat, sheen, anisotropy and
+   diffuse transmission are not drawn yet. The
    vertex stage is MSL, because the Slang module numbers entry point buffers
    in declaration order and the GPU-encoded commands bind the draw root at
    buffer 0.
@@ -610,6 +622,38 @@ the same layer regions; harness captures of unlit, detail lighting, lighting
 only and wireframe match their desktop counterparts (unlit within about 1 of
 255), and a Bistro capture with height fog shows the same haze and sky (sky
 means within 0.2 of 255).
+
+### Reflection probe measurement
+
+Release, M1 Pro, 2026-10-06, the build before probes (`VKR_SHADER_CATALOG`
+copy at `982b3d77`) alternating with the probe build, two runs each, on
+`tiled_bistro_baked_native`, whose one indoor probe (specular intensity 0,
+diffuse 1) is in view for much of the orbit. With pass timestamps
+(`local-windowed-gpu-single`), `Tiled.Opaque` went from 7.67 / 12.24 and
+7.72 / 12.24 ms median / p95 to 8.03 / 12.44 and 7.85 / 12.77 ms
+(`sha256:7f53db6b4f0bfc7beed82f65c3ec9b72f82dc39d119ecbe2092dee576125698c`,
+`sha256:0a253bb36f5af95e1cc66bfa1497c3e90967c1bed45f873f032324c1069cbf67`,
+`sha256:a53b797c6733ca3514ea7016db5dbc0a6392fde470addb4d6ce730b6e7b1c233`,
+`sha256:95d32ab172de25be3b5d3a0d52c8fbbf3b3f7c12e1111bbf83acbe5aca4e2d69`);
+`gpu.submission` (`local-windowed-gpu-submission-single`) went from
+12.24 / 17.45 and 12.24 / 17.43 ms to 12.21 / 16.99 and 12.23 / 17.39 ms
+(`sha256:f9825c717a19cbd810e27a69c94c67a9e974ec467dfcfbc93a77c0cb04c6abbd`,
+`sha256:a823875b0a2617a747807f79ed58f8ba57e78e23e528043626571b32bdff19d0`,
+`sha256:7a8581cb5cd5831a663a2c4c1fc7b46fd19d3b5b3ae9610f982755b6aadce17c`,
+`sha256:c10e846078a7540948bfa5da5e0e4e3174f3b6f87e3cb1697d5b5ce6619334ca`).
+Both builds ran about 1.7 ms slower at p95 than the same case in the earlier
+measurements of this ADR, with a browser drawing on the same GPU; the runs
+alternate, so the comparison holds. A per-pixel blend of the probe and the
+global environment, measured the same way, raised `gpu.submission` p95 from
+16.5 to 18.2 and 18.5 ms
+(`sha256:5d0309ed5906bdd54a55ff08a445b142bd43faf071d9b67f874cbf35eb29412b`,
+`sha256:1d5ff4c2897063fc890206b2ddb1bde9d04a37653ae3c1c9e4e9f9263fe086d3`,
+`sha256:1c576286e3c0145321510010fa2a350b891938eccc9718efe5eb6abfa0dc4730`,
+`sha256:ec2ad5c85e8de23f99935bbf3504111aabefd2728f7a5b51ae5b19e744835bc2`).
+A temporary interior view with the probe's specular intensity raised to one
+reflects the room's cubemap where the build before reflected the sky, and
+the baked street capture differs in at most 5 pixels by more than 2 of 255.
+A Metal API validation run of the interior view passed.
 
 ## Consequences
 
