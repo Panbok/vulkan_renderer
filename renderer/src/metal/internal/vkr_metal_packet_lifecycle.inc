@@ -843,9 +843,11 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->tiled_depth_pipeline release];
   for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
     [renderer->tiled_forward_pipelines[i] release];
+    [renderer->tiled_coverage_pipelines[i] release];
     [renderer->tiled_blend_pipelines[i] release];
   }
   [renderer->tiled_sky_pipeline release];
+  [renderer->tiled_resolve_pipeline release];
   [renderer->tiled_clouds_pipeline release];
   [renderer->tiled_picking_pipeline release];
   [renderer->tiled_text_pipeline release];

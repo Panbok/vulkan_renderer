@@ -1074,12 +1074,13 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
   /* Portable TAA, MetalFX and FSR all reconstruct edges temporally, so FXAA
-     filters only frames without temporal reconstruction. */
+     filters only frames without temporal reconstruction. The tiled
+     pipeline's multisampling resolves its edges instead (ADR-087). */
   const bool8_t temporal_frame =
       rf->temporal_enabled && !tiled &&
       packet->globals.render_mode != VKR_RENDER_MODE_INDIRECT_DIFFUSE &&
       packet->globals.render_mode != VKR_RENDER_MODE_WIREFRAME && !orthographic;
-  prepared->frame.fxaa_enabled = rf->fxaa_enabled && !temporal_frame;
+  prepared->frame.fxaa_enabled = rf->fxaa_enabled && !temporal_frame && !tiled;
   /* The display-linear target only pays off when the final pass filters. */
   const bool8_t output_filtered =
       prepared->frame.fxaa_enabled || packet->globals.image_sharpness > 0.0f;

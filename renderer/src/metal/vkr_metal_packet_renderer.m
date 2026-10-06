@@ -637,6 +637,10 @@ typedef struct VkrMetalPacketTextureUploadBatch {
 /* Samples of the tiled pipeline's opaque render pass (ADR-087): four cost
    0.3 to 0.5 ms over one on the M1 Pro. */
 #define VKR_METAL_TILED_SAMPLE_COUNT 4u
+/* The opaque pass's tile, which its resolve kernel covers with one thread
+   per pixel; Metal's default for its four-sample targets on the M1 Pro. */
+#define VKR_METAL_TILED_TILE_WIDTH 32u
+#define VKR_METAL_TILED_TILE_HEIGHT 16u
 
 /* The tiled pipeline's shading variants by the dynamic lights a frame has
    (ADR-087), each without the light code its frames do not need; mirrors
@@ -779,9 +783,15 @@ struct VkrMetalPacketRenderer {
      the cloud draw over the resolved image. */
   bool8_t tiled;
   id<MTLRenderPipelineState> tiled_depth_pipeline;
+  /* Opaque draws, which never discard, and alpha-tested draws, which write
+     the samples their alpha covers. */
   id<MTLRenderPipelineState>
       tiled_forward_pipelines[VKR_METAL_TILED_LIGHTING_COUNT];
+  id<MTLRenderPipelineState>
+      tiled_coverage_pipelines[VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState> tiled_sky_pipeline;
+  /* Tone-mapped multisample resolve at the end of the opaque pass. */
+  id<MTLRenderPipelineState> tiled_resolve_pipeline;
   id<MTLRenderPipelineState> tiled_clouds_pipeline;
   /* Object ids of the camera's opaque draws, single-sampled, for a pick. */
   id<MTLRenderPipelineState> tiled_picking_pipeline;

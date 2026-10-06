@@ -4347,7 +4347,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
       vkr_metal_packet_tiled_lighting(packet);
   if (!vkr_metal_packet_prepare_gpu_draws(
           renderer, pass, packet, prepared,
-          renderer->tiled_forward_pipelines[lighting], nil, upload)) {
+          renderer->tiled_coverage_pipelines[lighting],
+          renderer->tiled_forward_pipelines[lighting], upload)) {
     return false_v;
   }
   VkrMetalPacketIndirectPass draws = prepared->indirect;
@@ -4371,6 +4372,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   depth.texture = renderer->tiled_msaa_depth;
   depth.storeAction = MTLStoreActionMultisampleResolve;
   depth.depthResolveFilter = MTLMultisampleDepthResolveFilterMin;
+  descriptor.tileWidth = VKR_METAL_TILED_TILE_WIDTH;
+  descriptor.tileHeight = VKR_METAL_TILED_TILE_HEIGHT;
   prepared->tiled.draws = draws;
   prepared->tiled.sky_root = sky_root;
   prepared->active = true_v;

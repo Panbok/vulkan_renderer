@@ -73,6 +73,11 @@ have no bilateral gate yet.
     `vkr_metal_packet_layered_rectangle_lights`; on every Metal caller a
     receiver that no row faces skips the LTC table reads, which changes no
     result.
+  - The tiled class draws no FXAA; its alpha-tested surfaces use alpha to
+    coverage and its opaque pass a tone-mapped tile resolve
+    (`vkr_metal_tiled_resolve_tile`), a class difference the owner accepted
+    (ADR-087, decision 6). The shared FXAA and tonemap shaders are
+    unchanged.
 - **Metal evidence.** Pipeline creation validates the new layouts, and the
   Bistro street view renders on both pipeline classes
   (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`), as do the café

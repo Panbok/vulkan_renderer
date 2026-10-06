@@ -49,7 +49,7 @@ Every item below is open until the prototype measures it.
 |---|---|---|
 | Culling and draw encoding | GPU classification, ICB or indirect-count draws | Shared |
 | Opaque surfaces | Visibility buffer, compute G-buffer resolve, compute lighting | One MSAA render pass: depth pre-pass, then forward shading with clustered lists of the dynamic lights (decided) |
-| Anti-aliasing | Portable TAA, MetalFX or FSR 3.1 | MSAA resolved in tile memory; no temporal history |
+| Anti-aliasing | Portable TAA, MetalFX or FSR 3.1 | 4× MSAA with alpha to coverage and a tone-mapped resolve in tile memory; no FXAA or temporal history (decided, ADR-087) |
 | Static light | Every static light evaluated per pixel each frame | Lightmaps baked by `vkr_bakery`: direct and bounced diffuse light from static lights, on a second UV set (owner decision, 2026-10-05) |
 | Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)), optional SSGI | Lightmaps on static surfaces; IBL and baked volumes for dynamic objects; no SSGI |
 | Ambient occlusion | GTAO in compute | Baked or probe occlusion |

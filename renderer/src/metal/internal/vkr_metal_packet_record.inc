@@ -322,8 +322,10 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
 }
 
 /* The tiled pipeline's opaque pass (ADR-087): a depth pre-pass over the
-   opaque buckets, which cannot discard, then shading of every bucket at the
-   laid depth, then the clear sky behind them. */
+   opaque buckets, which cannot discard, then shading of the opaque buckets
+   at the laid depth and of the alpha-tested buckets, which lay the depth of
+   the samples they cover, then the clear sky behind them, then the
+   tone-mapped resolve of their samples. */
 vkr_internal void vkr_metal_packet_record_tiled_opaque(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
@@ -345,18 +347,27 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
                         indirectBuffer:draw->arguments + (uint64_t)bucket * 2u *
                                                              sizeof(uint32_t)];
     }
+    /* Opaque buckets shade first, without discard, then the alpha-tested
+       ones write the samples their alpha covers. */
     [encoder setDepthStencilState:renderer->tiled_shade_state];
-    [encoder setRenderPipelineState:draw->pipeline];
-    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-         ++bucket) {
-      [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
-      [encoder
-          setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
-                                    ? MTLWindingClockwise
-                                    : MTLWindingCounterClockwise];
-      [encoder executeCommandsInBuffer:draw->commands
-                        indirectBuffer:draw->arguments + (uint64_t)bucket * 2u *
-                                                             sizeof(uint32_t)];
+    for (uint32_t cutout = 0u; cutout < 2u; ++cutout) {
+      [encoder setRenderPipelineState:cutout ? draw->pipeline
+                                             : draw->opaque_pipeline];
+      for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+           ++bucket) {
+        if (((bucket & 2u) != 0u) != (cutout != 0u)) {
+          continue;
+        }
+        [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
+        [encoder
+            setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+                                      ? MTLWindingClockwise
+                                      : MTLWindingCounterClockwise];
+        [encoder
+            executeCommandsInBuffer:draw->commands
+                     indirectBuffer:draw->arguments +
+                                    (uint64_t)bucket * 2u * sizeof(uint32_t)];
+      }
     }
   }
   [renderer->argument_table setAddress:pass->tiled.sky_root atIndex:1u];
@@ -368,6 +379,9 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
   [encoder drawPrimitives:MTLPrimitiveTypeTriangle
               vertexStart:0u
               vertexCount:3u];
+  [encoder setRenderPipelineState:renderer->tiled_resolve_pipeline];
+  [encoder dispatchThreadsPerTile:MTLSizeMake(VKR_METAL_TILED_TILE_WIDTH,
+                                              VKR_METAL_TILED_TILE_HEIGHT, 1u)];
 }
 
 /* The cloud layer over the tiled pipeline's resolved image. */

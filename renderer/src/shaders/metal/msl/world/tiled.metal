@@ -376,7 +376,13 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   return light;
 }
 
-template <VkrMetalTiledLighting Lighting>
+// Shades the opaque pass. Opaque draws never discard, so hidden-surface
+// removal keeps its fast path. With Coverage, alpha-tested draws return their
+// alpha sharpened about the material's cut-off to a transition about one
+// pixel wide; alpha to coverage turns it into the samples they cover, so their
+// edges resolve like geometry edges (ADR-087). Fully uncovered fragments
+// discard before shading.
+template <VkrMetalTiledLighting Lighting, bool Coverage>
 static float4
 vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
                         constant VkrMetalPacketDrawRoot *root,
@@ -389,18 +395,24 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
   float4 base = material.base_color_texture.sample(material.base_color_sampler,
                                                    input.texcoord) *
                 material.tint * input.color;
-  if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
-    discard_fragment();
+  float coverage = 1.0f;
+  if (Coverage && material.alpha_mode == 1u) {
+    coverage = saturate((base.a - material.material_alpha.x) /
+                            max(fwidth(base.a), 1e-4f) +
+                        0.5f);
+    if (coverage <= 0.0f)
+      discard_fragment();
+  }
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
       input, frame, material, base.rgb, front_facing);
-  return float4(light.diffuse + light.specular + light.emissive, 1.0f);
+  return float4(light.diffuse + light.specular + light.emissive, coverage);
 }
 
 fragment float4 vkr_metal_tiled_forward_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false>(
       input, root, front_facing);
 }
 
@@ -408,7 +420,7 @@ fragment float4 vkr_metal_tiled_forward_punctual_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false>(
       input, root, front_facing);
 }
 
@@ -416,7 +428,7 @@ fragment float4 vkr_metal_tiled_forward_shadowed_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false>(
       input, root, front_facing);
 }
 
@@ -424,8 +436,67 @@ fragment float4 vkr_metal_tiled_forward_all_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false>(
       input, root, front_facing);
+}
+
+fragment float4 vkr_metal_tiled_forward_coverage_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true>(
+      input, root, front_facing);
+}
+
+fragment float4 vkr_metal_tiled_forward_punctual_coverage_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true>(
+      input, root, front_facing);
+}
+
+fragment float4 vkr_metal_tiled_forward_shadowed_coverage_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true>(
+      input, root, front_facing);
+}
+
+fragment float4 vkr_metal_tiled_forward_all_coverage_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true>(
+      input, root, front_facing);
+}
+
+// The opaque pass's multisample resolve (ADR-087). A hardware resolve
+// averages scene-linear samples, so a bright sample dominates its pixel and
+// edges against light sources keep their steps. This tile kernel replaces a
+// pixel's samples with their average weighted by 1 / (1 + largest channel),
+// a tone-mapped resolve, and the pass's resolve then stores that value.
+struct VkrMetalTiledResolvePixel {
+  half4 color [[color(0)]];
+};
+
+kernel void vkr_metal_tiled_resolve_tile(
+    imageblock<VkrMetalTiledResolvePixel, imageblock_layout_implicit> block,
+    ushort2 coord [[thread_position_in_threadgroup]]) {
+  ushort sample_count = block.get_num_samples();
+  float4 sum = float4(0.0f);
+  float weight_sum = 0.0f;
+  for (ushort sample = 0; sample < sample_count; ++sample) {
+    float4 color = float4(
+        block.read(coord, sample, imageblock_data_rate::sample).color);
+    float weight = 1.0f / (1.0f + max(color.r, max(color.g, color.b)));
+    sum += color * weight;
+    weight_sum += weight;
+  }
+  VkrMetalTiledResolvePixel pixel;
+  pixel.color = half4(sum / weight_sum);
+  block.write(pixel, coord, ushort((1u << sample_count) - 1u));
 }
 
 // The blend pass's two outputs: the surface's own light, and the factor the

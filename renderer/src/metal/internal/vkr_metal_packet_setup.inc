@@ -625,6 +625,9 @@ typedef enum VkrMetalPacketBlend {
   VKR_METAL_PACKET_BLEND_ALPHA,
   /* The first output plus the destination times the second output. */
   VKR_METAL_PACKET_BLEND_BEHIND,
+  /* No blending; the first output's alpha selects the samples written
+     (alpha to coverage) and is stored as one. */
+  VKR_METAL_PACKET_BLEND_COVERAGE,
 } VkrMetalPacketBlend;
 
 vkr_internal id<MTLRenderPipelineState>
@@ -684,6 +687,9 @@ vkr_metal_packet_create_pipeline_with_targets(
           MTLBlendFactorZero;
       descriptor.colorAttachments[0].destinationAlphaBlendFactor =
           MTLBlendFactorOne;
+    } else if (blend == VKR_METAL_PACKET_BLEND_COVERAGE) {
+      descriptor.alphaToCoverageState = MTL4AlphaToCoverageStateEnabled;
+      descriptor.alphaToOneState = MTL4AlphaToOneStateEnabled;
     }
   }
   if (temporal_targets) {
@@ -985,36 +991,49 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
      code a frame does not need would still cost it registers. */
   static const struct {
     const char *forward;
+    const char *coverage;
     const char *blend;
     NSString *forward_label;
+    NSString *coverage_label;
     NSString *blend_label;
   } tiled_lighting[VKR_METAL_TILED_LIGHTING_COUNT] = {
       [VKR_METAL_TILED_LIGHTING_NONE] =
           {
               .forward = "vkr_metal_tiled_forward_fragment",
+              .coverage = "vkr_metal_tiled_forward_coverage_fragment",
               .blend = "vkr_metal_tiled_blend_fragment",
               .forward_label = @"VKR tiled forward",
+              .coverage_label = @"VKR tiled alpha-tested forward",
               .blend_label = @"VKR tiled blend",
           },
       [VKR_METAL_TILED_LIGHTING_PUNCTUAL] =
           {
               .forward = "vkr_metal_tiled_forward_punctual_fragment",
+              .coverage = "vkr_metal_tiled_forward_punctual_coverage_fragment",
               .blend = "vkr_metal_tiled_blend_punctual_fragment",
               .forward_label = @"VKR tiled forward with punctual lights",
+              .coverage_label =
+                  @"VKR tiled alpha-tested forward with punctual lights",
               .blend_label = @"VKR tiled blend with punctual lights",
           },
       [VKR_METAL_TILED_LIGHTING_SHADOWED] =
           {
               .forward = "vkr_metal_tiled_forward_shadowed_fragment",
+              .coverage = "vkr_metal_tiled_forward_shadowed_coverage_fragment",
               .blend = "vkr_metal_tiled_blend_shadowed_fragment",
               .forward_label = @"VKR tiled forward with shadowed lights",
+              .coverage_label =
+                  @"VKR tiled alpha-tested forward with shadowed lights",
               .blend_label = @"VKR tiled blend with shadowed lights",
           },
       [VKR_METAL_TILED_LIGHTING_ALL] =
           {
               .forward = "vkr_metal_tiled_forward_all_fragment",
+              .coverage = "vkr_metal_tiled_forward_all_coverage_fragment",
               .blend = "vkr_metal_tiled_blend_all_fragment",
               .forward_label = @"VKR tiled forward with all lights",
+              .coverage_label =
+                  @"VKR tiled alpha-tested forward with all lights",
               .blend_label = @"VKR tiled blend with all lights",
           },
   };
@@ -1026,6 +1045,14 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
             VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
             VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
             VKR_METAL_TILED_SAMPLE_COUNT, tiled_lighting[i].forward_label);
+    renderer->tiled_coverage_pipelines[i] =
+        vkr_metal_packet_create_pipeline_with_targets(
+            renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+            tiled_lighting[i].coverage, MTLPixelFormatRGBA16Float,
+            VKR_METAL_PACKET_BLEND_COVERAGE,
+            VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
+            VKR_METAL_TILED_SAMPLE_COUNT, tiled_lighting[i].coverage_label);
   }
   /* Without a visibility buffer, a pick replays the opaque draws; their
      alpha-tested surfaces pick whole. */
@@ -1040,6 +1067,28 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
       VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
       VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v, false_v, false_v,
       VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled sky");
+  {
+    MTL4LibraryFunctionDescriptor *function =
+        [MTL4LibraryFunctionDescriptor new];
+    function.library = fragment;
+    function.name = @"vkr_metal_tiled_resolve_tile";
+    MTL4TileRenderPipelineDescriptor *descriptor =
+        [MTL4TileRenderPipelineDescriptor new];
+    descriptor.label = @"VKR tiled resolve";
+    descriptor.tileFunctionDescriptor = function;
+    descriptor.rasterSampleCount = VKR_METAL_TILED_SAMPLE_COUNT;
+    descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+    descriptor.threadgroupSizeMatchesTileSize = YES;
+    NSError *error = nil;
+    renderer->tiled_resolve_pipeline = [renderer->compiler
+        newRenderPipelineStateWithDescriptor:descriptor
+                         compilerTaskOptions:renderer->compiler_options
+                                       error:&error];
+    if (!renderer->tiled_resolve_pipeline)
+      vkr_metal_packet_print_error("tiled_resolve", error);
+    [descriptor release];
+    [function release];
+  }
   /* Glass and alpha-blended surfaces, back to front over the resolved
      image, and world text over them. */
   for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
@@ -1829,12 +1878,14 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
     bool8_t lighting_ready = true_v;
     for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
       if (!renderer->tiled_forward_pipelines[i] ||
+          !renderer->tiled_coverage_pipelines[i] ||
           !renderer->tiled_blend_pipelines[i]) {
         lighting_ready = false_v;
       }
     }
     if (!lighting_ready || !renderer->tiled_depth_pipeline ||
         !renderer->tiled_sky_pipeline || !renderer->tiled_clouds_pipeline ||
+        !renderer->tiled_resolve_pipeline ||
         !renderer->tiled_picking_pipeline || !renderer->tiled_text_pipeline ||
         !renderer->tiled_prepass_state || !renderer->tiled_shade_state ||
         !renderer->tiled_sky_state) {

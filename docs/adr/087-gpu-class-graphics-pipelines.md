@@ -101,7 +101,19 @@ pipeline rather than a backend mechanism.
    unchanged. The cloud trace needs that depth, so `Tiled.Clouds`
    (`pass.tiled.clouds`) lays the cloud layer and the discs it lets through
    over the resolved sky pixels afterwards; edge pixels mixing sky and surface
-   samples miss the clouds.
+   samples miss the clouds. Opaque draws shade at the laid depth with
+   fragment variants that never discard, so hidden-surface removal keeps its
+   fast path; alpha-tested draws, which the pre-pass skips, shade after them
+   with their alpha sharpened about the material's cut-off to a transition
+   about one pixel wide and turned into covered samples (alpha to coverage).
+   Before the resolve, a tile kernel (`vkr_metal_tiled_resolve_tile`, one
+   thread per pixel of the pass's fixed 32×16 tiles) replaces each pixel's
+   samples with their average weighted by
+   1 / (1 + largest channel), so edges against bright surfaces resolve as
+   smoothly as dark ones. The tiled class draws no FXAA (owner decision,
+   2026-10-06): its geometry and alpha-tested edges are multisampled, while
+   glass, blended surfaces and shading detail inside a surface are not
+   anti-aliased.
 7. `VkrRendererBackendConfig.graphics_pipeline` selects the class
    (`VKR_GRAPHICS_PIPELINE=desktop|tiled` overrides it, and harness cases set
    `renderer.graphics_pipeline`). Zero is the desktop pipeline. The tiled
@@ -367,6 +379,57 @@ On a temporary night copy of `tiled_bistro_baked_dynamic_capture` looking at
 a hedge under a shadowed spot, the single tap changes 0.7% of pixels by more
 than 8 of 255, all along shadow edges, which become harder and stepped; the
 daylight capture changes by at most 6 of 255, in the clouds.
+
+### Anti-aliasing measurement
+
+Release, M1 Pro, 2026-10-06, the cases and settings above. HEAD `1cb001b5`,
+copied with its shader catalog, and the build with alpha to coverage, the
+tone-mapped resolve and no FXAA ran alternately in one session, two runs
+each. An earlier series that session ran with a virtual machine and a video
+call loading the machine; its absolute times were 25 to 30% higher and are
+not used.
+
+| Case | HEAD median / p95 | New median / p95 |
+|---|---|---|
+| `tiled_bistro_baked_native`, `gpu.submission` | 14.79 / 19.68, 14.49 / 18.59 ms | 13.10 / 17.88, 12.87 / 16.98 ms |
+| `tiled_bistro_baked_dynamic_native`, `gpu.submission` | 16.59 / 25.24, 16.34 / 23.75 ms | 15.47 / 25.20, 14.65 / 22.06 ms |
+| `tiled_bistro_baked_native`, `Tiled.Opaque` | 9.08 / 13.02, 9.22 / 13.14 ms | 8.74 / 12.64, 8.93 / 12.65 ms |
+| `tiled_bistro_baked_dynamic_native`, `Tiled.Opaque` | 10.99 / 18.39, 11.07 / 19.21 ms | 10.71 / 17.98, 10.66 / 17.89 ms |
+
+Pass timings use `local-windowed-gpu-single`, the others
+`local-windowed-gpu-submission-single`. Without FXAA the frame drops
+`Post.DisplayLinear.Fullscreen` (0.50 ms) and `Post.Tonemap.Fullscreen`
+falls from 1.30 to 0.50 ms. With the hardware resolve instead of the tile
+kernel, the same build's `Tiled.Opaque` measured 8.41 / 12.23 ms in the
+loaded series, which puts the tile resolve near 0.3 to 0.5 ms. Reports:
+HEAD `gpu.submission`
+`sha256:20485edbfd3e45289333e8e72d84faddffd1ebb573ab3d5cfb7afb8f59b4067a`,
+`sha256:d5e24fb2845626d6222f26c5d183869cb4da6197f09f10e2f2362617986295c2`,
+`sha256:8f16132663b02acd8157056bbedc0d88862076ae4c675dba5b0acc7aa5319ee8`,
+`sha256:681f8100af0785d15afcc60e5bb38a5b69d7693e175d1827cd0604172fa3fb1b`;
+new `gpu.submission`
+`sha256:625368a53d303a104824cc8adf6865fa0172f550293042b0e95b0ccf842ed245`,
+`sha256:5b145e6f2904f110f309e4d04538cffde58da0824d2c055afd16010a856c3894`,
+`sha256:c0a6ebcbf6207656958a6f4bb4602c102eb840f1e6a8dec7962fe86ed543d875`,
+`sha256:f8395307dbf4f0e4add9ba49a0bf0adba6e711b0a8a2300f94498759881e6745`;
+HEAD pass timings
+`sha256:46e242c8c31e274fe9bfe426392a78c37fe6b0938f7fec2a187361b2cd2d2e26`,
+`sha256:9c68612e73b06399fb85899b46785cfa359f7f3c976870d320389b71ea8c8015`,
+`sha256:e60c2474f9a80d1bd4c18857e0f228d0e64cc68d5b4b12b0b866398302ce7495`,
+`sha256:4c0091d4625ff697960b54379debed6864368781ee3f766f2467e06e966281f3`;
+new pass timings
+`sha256:f53f5122f7a4a6faaa8000652fbc8e7b6f801a469c07b35de79ab354b15b003f`,
+`sha256:4d124bd67bb91b6d5ee4f8c277e5c11d140f6aa2dfd3a0efed3c4574b41bdaef`,
+`sha256:fad58182c3f771aee12bba3cca0fa7cc81f9fd4c7315c55bb0befeeaa2ff346b`,
+`sha256:eea3ace9a8a5dfe20e4f81b2b72d75d6d17486e7ca13b5ce893e88c96ad5c503`.
+
+In `tiled_bistro_baked_capture` and a night view of the hedge
+(`sha256:6d4ad123e1e1e610f09713d0a84ebed4820378bbb5b656a5587c37d76ea0e790`,
+`sha256:05f55a325c1091f23566808b11c9639921d99d2230d6fa19c4dfc80bceb66253`),
+the image is sharper than with FXAA, and geometry edges, a curb and a window
+grill, resolve with intermediate steps. Lit foliage shows more texel-scale
+speckle than FXAA left: its holes and lighting vary inside the surface, which
+neither MSAA nor alpha to coverage filters.
 
 ## Consequences
 
