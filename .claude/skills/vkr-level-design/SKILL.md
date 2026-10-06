@@ -69,9 +69,12 @@ brushes, blockout shapes, terrain and colliders.
 - Read `changes.feed` from your last `next` to see what others changed near
   you, instead of paging `scene.describe`. To wait for them, add `wait`
   (up to 60 s): the read answers when something changes and holds no one
-  else's requests. An MCP client with `subscriptions/listen` can subscribe
-  to `vkr://editor/changes` instead; each notification means read the feed
-  again.
+  else's requests. In Claude Code, hear of them without asking instead:
+  run the `vkr_mcp --watch` command from the vkr server's instructions with
+  the Monitor tool (`timeout_ms` 1800000) and arm it again when it ends;
+  each line is another author's batch, review or claim. On Windows Monitor
+  needs Git Bash (`CLAUDE_CODE_GIT_BASH_PATH` when Claude Code cannot find
+  it).
 - The designer reviews every change: report each change id with what it
   built.
 

@@ -292,8 +292,8 @@ the [2026-07-28 revision](https://modelcontextprotocol.io/specification/2026-07-
 - `server/discover` returns the version, the `tools` capability with
   `listChanged`, the `resources` capability with `subscribe`, usage
   instructions (the verification order: plan as data and send one batch,
-  measure with queries and `level.map`, then capture) and the server
-  identity;
+  measure with queries and `level.map`, then capture, and the watch command
+  below with this executable's path and socket) and the server identity;
 - `tools/list` maps each operation to `vkr_<operation with dots as
   underscores>` in table order with `ttlMs` 60000 and `cacheScope` `private`;
 - `tools/call` forwards the arguments to the editor and returns the result as
@@ -334,6 +334,23 @@ The adapter reconnects once per call, so it survives an editor restart.
 each agent of a swarm that runs its own adapter is its own author; a call's
 own `agent` argument takes precedence. It links Bakery's JSON tree, which the
 `vkr_bakery_json` library now shares with Bakery and the editor.
+
+Claude Code 2.1.291 (2026-10-06) negotiates 2026-07-28, lists and reads the
+feed resource, and opens `subscriptions/listen` for `toolsListChanged`
+only; it never subscribes to a resource, so the feed's notifications do not
+reach its agents. Its channels, the one way a server pushes text into its
+sessions, refuse a server on 2026-07-28. `vkr_mcp --watch` therefore speaks
+no MCP: it reads the feed as the listener does and prints a line for each
+event of an author other than `--agent` (author, kind, label, change or
+claim, scene, the first three objects and their box), a line when the
+scene changed without an event (the designer's edit, an undo or a redo) at
+most every 5 s with the last such change still printed, and a line when the
+editor stops answering or restarts. A client's background monitor reads it;
+Claude Code's Monitor tool turns each line into a message in the agent's
+session, for 30 minutes at most before the agent arms it again. It exits
+once stdout closes. On Windows the Monitor tool needs Git Bash; Claude Code
+reports "Git Bash not found" for one outside the standard places until
+`CLAUDE_CODE_GIT_BASH_PATH` names its `bash.exe`.
 
 ### Brushes
 
@@ -981,10 +998,17 @@ waits with `changes.feed` instead.
 - Applying agent edits to a preview scene would need a second copy of every
   container; real edits with a review mark reuse the journal and the
   renderer.
-- Supporting the 2025-11-25 handshake as well was declined by the owner.
+- Supporting the 2025-11-25 handshake as well was declined by the owner,
+  and again on 2026-10-06 once Codex proved unable to connect without it.
+- A Claude Code channel would push feed lines into a session without a
+  monitor, but channels need the older handshake, a
+  `--dangerously-load-development-channels` flag and an interactive session;
+  the owner chose the watcher (2026-10-06).
 
 An MCP client that sends only 2025-11-25 or older requests cannot connect;
-it gets an explicit `UnsupportedProtocolVersion`. The socket admits only the
+it gets an explicit `UnsupportedProtocolVersion`. Codex 0.160.1 is one: it
+sends `initialize` for 2025-06-18 over stdio, also with its
+`mcp_2026_07_28` feature on (2026-10-06). The socket admits only the
 user's own processes, which can already edit the project's files.
 
 Population copies have no collision and no saved state: a game that needs
@@ -1229,3 +1253,17 @@ material then).
   ended the adapter in 3 ms. A feed wait with older `revisions` answered in
   16 ms and with the current ones after 1.03 s. The earlier headless suites
   passed with the 16-client limit.
+- Windows, 2026-10-06 (headless Release editor on Bistro, built with a
+  peer session's uncommitted renderer edits; clients recorded through a
+  logging relay): Claude Code 2.1.291 in `-p` mode negotiated 2026-07-28,
+  subscribed to `toolsListChanged` only, called `vkr_editor_status` and read
+  `vkr://editor/changes`, and kept all 72 tools; started before the
+  editor, it gave up on `tools/list` after four tries in 2 s, then listed
+  the tools again on the adapter's `tools/list_changed` 14 s later and
+  called a tool. A fresh Claude Code agent told only to follow the server's
+  instructions armed `vkr_mcp --watch` with its Monitor tool and received
+  another agent's batch, claim and release and an undo as they happened;
+  without `CLAUDE_CODE_GIT_BASH_PATH` the same agent had no Monitor tool.
+  `watch_check.py` passed 4/4: undo and redo for 3.4 s gave two edit lines
+  5.0 s apart, and the watcher left 0.54 s after its stdout closed. Codex
+  0.160.1 could not connect. The subscription suite passed again, 12/12.

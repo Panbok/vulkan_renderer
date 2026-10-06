@@ -10,8 +10,10 @@
  * request's author unless a call names its own. The change feed is the
  * resource `vkr://editor/changes`. `subscriptions/listen` pushes its updates
  * and tool-list changes from a listener thread with its own editor
- * connection, while the main thread answers requests in order. Logs go to
- * stderr. */
+ * connection, while the main thread answers requests in order. `--watch`
+ * speaks no MCP: it prints a line per other author's feed event for a
+ * client's background monitor, for clients that never subscribe. Logs go
+ * to stderr. */
 
 #include "containers/str.h"
 #include "core/vkr_threads.h"
@@ -20,12 +22,14 @@
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_local_socket.h"
+#include "platform/vkr_platform.h"
 #include "vkr_bakery_json.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #include <fcntl.h>
@@ -59,37 +63,41 @@
 #define MCP_NOTIFY_GAP_MS 500
 /* The pause between attempts to reach an editor that is not running. */
 #define MCP_RECONNECT_MS 1000
+/* Events one watch read prints at most, and the least time between two of
+   its lines for edits without an event, in seconds. */
+#define MCP_WATCH_LIMIT 32
+#define MCP_WATCH_EDIT_SECONDS 5.0
+/* Claude Code cuts a server's instructions after this many characters. */
+#define MCP_INSTRUCTIONS_MAX 2048u
 
-static const char *s_instructions =
-    "Tools drive the open VKR editor. Units are meters with Y up; rotations "
-    "are degrees XYZ. Start with vkr_editor_status and vkr_scene_describe "
-    "(page it with root or region). Plan a layout as data, then send it as "
-    "one vkr_batch: its writes apply as one undo step, $k names the entity "
+/* The instructions name the watch command between these two parts, with
+   this executable's path and socket. */
+static const char *s_instructions_head =
+    "Tools drive the open VKR editor. Units are meters, Y up; rotations are "
+    "degrees XYZ. Start with vkr_editor_status and vkr_scene_describe (page "
+    "it with root or region). Plan a layout as data and send it as one "
+    "vkr_batch: its writes apply as one undo step, $k names the entity "
     "operation k created, and dry_run checks it first. Each write becomes a "
-    "pending change the designer accepts or rejects, so pass 'agent' (your "
-    "name) and a 'label', and report what you changed. Working beside "
-    "other agents, claim your region first (vkr_claims_set); writes into "
-    "another agent's claim are refused. Read vkr_changes_feed with the last "
-    "'next' you saw to learn what others changed; 'wait' answers once "
-    "something changes. A client with subscriptions/listen can subscribe "
-    "to the resource " MCP_FEED_URI " instead: a notification arrives, at "
-    "most twice a second, when the feed or an edit moves it, and you then "
-    "read the feed from your 'next'. Prefer blockout shapes, "
-    "snapping and vkr_entity_place (on, inside, against) to computed "
-    "corners. Pass settle true on a write "
-    "to get each entity's world bounds and build status once it rebuilt. "
-    "Collision and geometry reads (raycast, reachable, bounds, level_lint, "
-    "level_map, capture) wait for rebuilds by default, so they never see a "
-    "stale scene. Verify with numbers before pictures: vkr_query_raycast and "
-    "vkr_terrain_sample for heights and openings, vkr_query_reachable for "
-    "routes, vkr_level_map for a text floor plan (rows run +z down the "
-    "page, +x across, as a top capture shows), vkr_level_lint in regions "
-    "of 76 m or less for full detail. Use vkr_view_capture (view top with "
-    "grid_labels, or eye and target) to judge the look: pass max_width (768 "
-    "is plenty), put several views in one sheet with 'views', and pass "
-    "'marks' (world points, with labels) to see where they land and "
-    "whether walls hide them. Undo "
-    "takes only "
+    "pending change the designer reviews, so pass 'agent' (your name) and a "
+    "'label', and report what you changed. Beside other agents, claim your "
+    "region first (vkr_claims_set); writes into another agent's claim are "
+    "refused. To hear of others' changes without asking, run ";
+static const char *s_instructions_tail =
+    " in a background monitor (Claude Code's Monitor tool with timeout_ms "
+    "1800000, armed again when it ends): it prints a line per other "
+    "author's batch, review or claim. Without one, read vkr_changes_feed "
+    "from your last 'next'; 'wait' answers once something changes. Prefer "
+    "blockout shapes, snapping and vkr_entity_place (on, inside, against) "
+    "to computed corners. Pass settle true on a write to get each entity's "
+    "world bounds once rebuilt; collision and geometry reads wait for "
+    "rebuilds by default. Verify with numbers before pictures: "
+    "vkr_query_raycast and vkr_terrain_sample for heights and openings, "
+    "vkr_query_reachable for routes, vkr_level_map for a text floor plan "
+    "(rows run +z down the page, +x across), vkr_level_lint in regions of "
+    "76 m or less. Then judge the look with vkr_view_capture (view top with "
+    "grid_labels, or eye and target): pass max_width (768 is plenty), "
+    "several 'views' in one sheet, and 'marks' (world points with labels) "
+    "to see where they land and whether walls hide them. Undo takes only "
     "your own batches; reject your change with vkr_changes_reject instead "
     "of undoing other work.";
 
@@ -151,6 +159,8 @@ typedef struct McpState {
   Arena *sync_arena;
   VkrAllocator sync_allocator;
   McpListener listener;
+  /* `server/discover`'s instructions with the watch command filled in. */
+  char instructions[4096];
 } McpState;
 
 /* Guards stdout, so the main thread's responses and the listener's
@@ -495,27 +505,40 @@ typedef struct McpFeedPosition {
   int64_t world;
 } McpFeedPosition;
 
-/* Reads the feed's position: at once before it is `known`, else once the
-   editor has something newer than `seen` or the wait ends. A wake from the
-   main thread interrupts it. */
-static McpRead mcp_listener_read(McpListener *listener, bool8_t known,
-                                 McpFeedPosition seen, McpFeedPosition *out,
-                                 char *error, uint64_t capacity) {
-  Arena *arena = listener->arena;
-  McpEditor *editor = &listener->editor;
+/* One `changes.feed` read of the listener or the watcher. */
+typedef struct McpFeedRead {
+  /* Events after this sequence, at most `limit` of them. */
+  int64_t after;
+  int64_t limit;
+  /* Without `seen` the read answers at once. With it, the read waits in
+     the editor until an event follows `after`, a revision differs from
+     `seen`'s, or `wait_seconds` end. */
+  const McpFeedPosition *seen;
+  float64_t wait_seconds;
+} McpFeedRead;
+
+/* Reads the change feed; a readable `wake` socket interrupts the read. On
+   success `out` holds the newest sequence and revisions and `out_result`,
+   when given, the editor's answer in the arena. */
+static McpRead mcp_feed_read(McpEditor *editor, Arena *arena,
+                             VkrLocalSocket wake, McpFeedRead request,
+                             McpFeedPosition *out,
+                             const VkrBakeryJson **out_result, char *error,
+                             uint64_t capacity) {
   VkrBakeryJson *args = vkr_bakery_json_object(arena);
   vkr_bakery_json_set(arena, args, "after",
-                      vkr_bakery_json_int(arena, seen.latest));
-  vkr_bakery_json_set(arena, args, "limit", vkr_bakery_json_int(arena, 1));
-  if (known) {
+                      vkr_bakery_json_int(arena, request.after));
+  vkr_bakery_json_set(arena, args, "limit",
+                      vkr_bakery_json_int(arena, request.limit));
+  if (request.seen) {
     VkrBakeryJson *revisions = vkr_bakery_json_object(arena);
     vkr_bakery_json_set(arena, revisions, "scene",
-                        vkr_bakery_json_int(arena, seen.scene));
+                        vkr_bakery_json_int(arena, request.seen->scene));
     vkr_bakery_json_set(arena, revisions, "world",
-                        vkr_bakery_json_int(arena, seen.world));
+                        vkr_bakery_json_int(arena, request.seen->world));
     vkr_bakery_json_set(arena, args, "revisions", revisions);
     vkr_bakery_json_set(arena, args, "wait",
-                        vkr_bakery_json_int(arena, MCP_LISTEN_WAIT_SECONDS));
+                        vkr_bakery_json_float(arena, request.wait_seconds));
   }
 
   String8 text = {0};
@@ -525,8 +548,7 @@ static McpRead mcp_listener_read(McpListener *listener, bool8_t known,
     snprintf(error, capacity, "the editor closed the connection");
     return MCP_READ_FAILED;
   }
-  const McpRead read =
-      mcp_editor_read_line(editor, arena, listener->wake[1], &line);
+  const McpRead read = mcp_editor_read_line(editor, arena, wake, &line);
   if (read != MCP_READ_LINE) {
     snprintf(error, capacity, "the editor closed the connection");
     return read;
@@ -544,6 +566,9 @@ static McpRead mcp_listener_read(McpListener *listener, bool8_t known,
     mcp_editor_error(response, "the editor did not read its change feed", error,
                      capacity);
     return MCP_READ_FAILED;
+  }
+  if (out_result) {
+    *out_result = result;
   }
   return MCP_READ_LINE;
 }
@@ -596,7 +621,12 @@ static void *mcp_listen(void *argument) {
     McpFeedPosition now = {0};
     char error[256];
     const McpRead read =
-        mcp_listener_read(listener, known, seen, &now, error, sizeof(error));
+        mcp_feed_read(editor, listener->arena, listener->wake[1],
+                      (McpFeedRead){.after = seen.latest,
+                                    .limit = 1,
+                                    .seen = known ? &seen : NULL,
+                                    .wait_seconds = MCP_LISTEN_WAIT_SECONDS},
+                      &now, NULL, error, sizeof(error));
     if (read == MCP_READ_WOKEN) {
       /* The last subscription closed or stdin did: drop the parked read
          and look again. */
@@ -686,10 +716,285 @@ static void mcp_listener_stop(McpState *state) {
 }
 
 // =============================================================================
+// Watch
+// =============================================================================
+
+/* Wall-clock seconds, to space the watcher's edit lines. */
+static float64_t mcp_seconds(void) {
+  struct timespec now = {0};
+  (void)timespec_get(&now, TIME_UTC);
+  return (float64_t)now.tv_sec + (float64_t)now.tv_nsec * 1e-9;
+}
+
+/* Prints one watch line; false once stdout closed, as when the monitor that
+   reads it ends. */
+static bool8_t mcp_watch_print(const char *format, ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  vfprintf(stdout, format, arguments);
+  va_end(arguments);
+  fputc('\n', stdout);
+  return fflush(stdout) == 0 && !ferror(stdout);
+}
+
+/* Appends formatted text to the terminated `line`, cut at its capacity. */
+static void mcp_append(char *line, uint64_t capacity, const char *format, ...) {
+  const uint64_t length = strlen(line);
+  if (length + 1u >= capacity) {
+    return;
+  }
+  va_list arguments;
+  va_start(arguments, format);
+  vsnprintf(line + length, capacity - length, format, arguments);
+  va_end(arguments);
+}
+
+/* Copies `text` for one line: control characters become spaces, so another
+   author's label cannot start a line of its own. */
+static void mcp_line_text(String8 text, char *out, uint64_t capacity) {
+  const uint64_t length = Min(text.length, capacity - 1u);
+  for (uint64_t i = 0; i < length; ++i) {
+    const uint8_t c = text.str[i];
+    out[i] = c < 0x20u || c == 0x7fu ? ' ' : (char)c;
+  }
+  out[length] = '\0';
+}
+
+static float64_t mcp_json_number(const VkrBakeryJson *value) {
+  if (!value) {
+    return 0.0;
+  }
+  return value->type == VKR_BAKERY_JSON_INT ? (float64_t)value->integer
+                                            : value->number;
+}
+
+/* One feed event as a line, such as `#12 beta applied "west wing" (change
+   3) in primary: Crate, Wall within (1100, 0, 1200)..(1102, 2, 1202)`. */
+static void mcp_watch_event(const VkrBakeryJson *event, char *line,
+                            uint64_t capacity) {
+  int64_t sequence = 0;
+  int64_t change = 0;
+  int64_t claim = 0;
+  String8 author = {0};
+  String8 kind = {0};
+  String8 label = {0};
+  String8 container = {0};
+  char text[96];
+  (void)vkr_bakery_json_get_int(event, "seq", &sequence);
+  (void)vkr_bakery_json_get_int(event, "change", &change);
+  (void)vkr_bakery_json_get_int(event, "claim", &claim);
+  (void)vkr_bakery_json_get_string(event, "author", &author);
+  (void)vkr_bakery_json_get_string(event, "kind", &kind);
+  (void)vkr_bakery_json_get_string(event, "label", &label);
+  (void)vkr_bakery_json_get_string(event, "container", &container);
+
+  line[0] = '\0';
+  mcp_line_text(author, text, sizeof(text));
+  mcp_append(line, capacity, "#%lld %s ", (long long)sequence, text);
+  mcp_line_text(kind, text, sizeof(text));
+  mcp_append(line, capacity, "%s", text);
+  if (label.length) {
+    mcp_line_text(label, text, sizeof(text));
+    mcp_append(line, capacity, " \"%s\"", text);
+  }
+  if (change) {
+    mcp_append(line, capacity, " (change %lld)", (long long)change);
+  }
+  if (claim) {
+    mcp_append(line, capacity, " (claim %lld)", (long long)claim);
+  }
+  if (container.length) {
+    mcp_line_text(container, text, sizeof(text));
+    mcp_append(line, capacity, " in %s", text);
+  }
+
+  /* The first three objects by name; the editor sends 16 at most. */
+  const VkrBakeryJson *entities = vkr_bakery_json_get(event, "entities");
+  if (entities && entities->type == VKR_BAKERY_JSON_ARRAY && entities->count) {
+    uint32_t index = 0;
+    mcp_append(line, capacity, ":");
+    for (const VkrBakeryJson *entity = entities->first; entity && index < 3u;
+         entity = entity->next, ++index) {
+      String8 name = {0};
+      if (!vkr_bakery_json_get_string(entity, "name", &name) &&
+          !vkr_bakery_json_get_string(entity, "id", &name)) {
+        continue;
+      }
+      mcp_line_text(name, text, sizeof(text));
+      mcp_append(line, capacity, "%s %s", index ? "," : "", text);
+    }
+    if (entities->count > 3u) {
+      mcp_append(line, capacity, " and %u more", entities->count - 3u);
+    }
+  }
+  const VkrBakeryJson *bounds = vkr_bakery_json_get(event, "bounds");
+  const VkrBakeryJson *lo = vkr_bakery_json_get(bounds, "min");
+  const VkrBakeryJson *hi = vkr_bakery_json_get(bounds, "max");
+  if (lo && hi && lo->count == 3u && hi->count == 3u) {
+    mcp_append(line, capacity, " within (%.6g, %.6g, %.6g)..(%.6g, %.6g, %.6g)",
+               mcp_json_number(vkr_bakery_json_at(lo, 0)),
+               mcp_json_number(vkr_bakery_json_at(lo, 1)),
+               mcp_json_number(vkr_bakery_json_at(lo, 2)),
+               mcp_json_number(vkr_bakery_json_at(hi, 0)),
+               mcp_json_number(vkr_bakery_json_at(hi, 1)),
+               mcp_json_number(vkr_bakery_json_at(hi, 2)));
+  }
+}
+
+/* `--watch`: prints a line for each change-feed event of another author
+   and, at most every MCP_WATCH_EDIT_SECONDS, one when the scene changed
+   without an event (the designer's edit, an undo or a redo). A client's
+   background monitor reads it, so news reaches an agent that does not ask;
+   Claude Code's Monitor tool turns each line into a message. It reads with
+   waits parked in the editor, as the listener does, on the main thread,
+   and runs until stdout closes. */
+static int mcp_watch(McpState *state) {
+  McpListener *watch = &state->listener;
+  McpEditor *editor = &watch->editor;
+  *editor = (McpEditor){
+      .socket_path = state->socket_path,
+      .socket = VKR_LOCAL_SOCKET_INVALID,
+  };
+  watch->arena = arena_create(MB(64), KB(64));
+  if (!watch->arena || !vkr_local_socket_pair(watch->wake)) {
+    mcp_log("the watcher could not start");
+    return 1;
+  }
+
+  /* The feed position the last read found; nothing before the first. */
+  bool8_t known = false_v;
+  McpFeedPosition seen = {0};
+  int64_t next = 0;
+  /* The editor stopped answering since the last read. */
+  bool8_t lost = false_v;
+  /* An edit without an event waits for the quiet time to end. */
+  bool8_t edit_pending = false_v;
+  float64_t edit_quiet_until = 0.0;
+  bool8_t open = true_v;
+  char line[1024];
+  while (open) {
+    arena_clear(watch->arena, ARENA_MEMORY_TAG_STRUCT);
+    if (editor->socket == VKR_LOCAL_SOCKET_INVALID &&
+        !mcp_editor_connect(editor)) {
+      if (!lost) {
+        open = mcp_watch_print("the editor does not answer at %s; waiting "
+                               "for it",
+                               state->socket_path);
+        lost = true_v;
+      }
+      (void)mcp_listener_sleep(watch, MCP_RECONNECT_MS);
+      continue;
+    }
+
+    /* The first read and the first after a lost editor answer at once. */
+    const float64_t wait = edit_pending
+                               ? Max(edit_quiet_until - mcp_seconds(), 0.05)
+                               : (float64_t)MCP_LISTEN_WAIT_SECONDS;
+    McpFeedPosition now = {0};
+    const VkrBakeryJson *result = NULL;
+    char error[256];
+    if (mcp_feed_read(editor, watch->arena, VKR_LOCAL_SOCKET_INVALID,
+                      (McpFeedRead){.after = next,
+                                    .limit = MCP_WATCH_LIMIT,
+                                    .seen = known && !lost ? &seen : NULL,
+                                    .wait_seconds = wait},
+                      &now, &result, error, sizeof(error)) != MCP_READ_LINE) {
+      mcp_editor_close(editor);
+      if (!lost) {
+        open = mcp_watch_print("the editor stopped answering (%s); waiting "
+                               "for it",
+                               error);
+        lost = true_v;
+      }
+      (void)mcp_listener_sleep(watch, MCP_RECONNECT_MS);
+      continue;
+    }
+
+    if (!known || (lost && now.latest < next)) {
+      /* A first read, or a restarted editor whose feed began again: watch
+         from its newest event. */
+      open = mcp_watch_print(
+          "%s the change feed from event %lld (scene revision %lld, world "
+          "revision %lld): a line for each other author's batch, review or "
+          "claim, and for edits without an event at most every %.0f s",
+          known ? "the editor restarted; watching" : "watching",
+          (long long)now.latest, (long long)now.scene, (long long)now.world,
+          MCP_WATCH_EDIT_SECONDS);
+      known = true_v;
+      lost = false_v;
+      next = now.latest;
+      seen = now;
+      continue;
+    }
+    if (lost) {
+      open = mcp_watch_print("the editor answers again");
+      lost = false_v;
+    }
+
+    bool8_t printed = false_v;
+    bool8_t missed = false_v;
+    if (vkr_bakery_json_get_bool(result, "missed", &missed) && missed) {
+      open = open && mcp_watch_print("events after #%lld left the editor's "
+                                     "ring unread; read vkr_changes_feed",
+                                     (long long)next);
+      printed = true_v;
+    }
+    const VkrBakeryJson *events = vkr_bakery_json_get(result, "events");
+    const uint32_t event_count =
+        events && events->type == VKR_BAKERY_JSON_ARRAY ? events->count : 0u;
+    for (const VkrBakeryJson *event = event_count ? events->first : NULL; event;
+         event = event->next) {
+      /* An agent's own work is no news to it. */
+      String8 author = {0};
+      (void)vkr_bakery_json_get_string(event, "author", &author);
+      if (state->agent[0] && vkr_string8_equals_cstr(&author, state->agent)) {
+        continue;
+      }
+      mcp_watch_event(event, line, sizeof(line));
+      open = open && mcp_watch_print("%s", line);
+      printed = true_v;
+    }
+    (void)vkr_bakery_json_get_int(result, "next", &next);
+
+    /* Batches move a revision too; only a move without an event is an
+       edit the feed does not name. */
+    const bool8_t moved = now.scene != seen.scene || now.world != seen.world;
+    seen = now;
+    if (moved && event_count == 0u) {
+      edit_pending = true_v;
+    }
+    const float64_t time_now = mcp_seconds();
+    if (edit_pending && time_now >= edit_quiet_until) {
+      open =
+          open && mcp_watch_print("the scene changed without a feed event (the "
+                                  "designer's edit, or an undo or redo): scene "
+                                  "revision %lld, world revision %lld",
+                                  (long long)seen.scene, (long long)seen.world);
+      edit_pending = false_v;
+      edit_quiet_until = time_now + MCP_WATCH_EDIT_SECONDS;
+      printed = true_v;
+    }
+    /* A designer's drag moves a revision every frame: let changes gather
+       before reading again. */
+    if (printed || moved) {
+      (void)mcp_listener_sleep(watch, MCP_NOTIFY_GAP_MS);
+    }
+  }
+
+  mcp_editor_close(editor);
+  free(editor->pending);
+  vkr_local_socket_close(watch->wake[0]);
+  vkr_local_socket_close(watch->wake[1]);
+  arena_destroy(watch->arena);
+  return 0;
+}
+
+// =============================================================================
 // Methods
 // =============================================================================
 
-static void mcp_discover(Arena *arena, const VkrBakeryJson *id) {
+static void mcp_discover(McpState *state, Arena *arena,
+                         const VkrBakeryJson *id) {
   VkrBakeryJson *result = mcp_result(arena);
   VkrBakeryJson *versions = vkr_bakery_json_array(arena);
   vkr_bakery_json_append(versions, vkr_bakery_json_cstr(arena, MCP_VERSION));
@@ -705,7 +1010,7 @@ static void mcp_discover(Arena *arena, const VkrBakeryJson *id) {
   vkr_bakery_json_set(arena, capabilities, "resources", resources);
   vkr_bakery_json_set(arena, result, "capabilities", capabilities);
   vkr_bakery_json_set(arena, result, "instructions",
-                      vkr_bakery_json_cstr(arena, s_instructions));
+                      vkr_bakery_json_cstr(arena, state->instructions));
   mcp_cache(arena, result, 3600000);
   mcp_send_result(arena, id, result);
 }
@@ -1266,7 +1571,7 @@ static void mcp_handle(McpState *state, Arena *arena, String8 line) {
     return;
   }
   if (vkr_string8_equals_cstr(&method, "server/discover")) {
-    mcp_discover(arena, id);
+    mcp_discover(state, arena, id);
   } else if (vkr_string8_equals_cstr(&method, "tools/list")) {
     mcp_tools_list(state, arena, id);
   } else if (vkr_string8_equals_cstr(&method, "tools/call")) {
@@ -1297,8 +1602,40 @@ static void mcp_default_socket(char *out, uint64_t capacity) {
   }
 }
 
+/* Fills in the instructions with the watch command for this executable,
+   socket and author, with '/' separators so every shell runs it. */
+static void mcp_instructions(McpState *state) {
+  char executable[1024];
+  char socket[512];
+  if (!vkr_platform_executable_path(executable, sizeof(executable))) {
+    snprintf(executable, sizeof(executable), "vkr_mcp");
+  }
+  snprintf(socket, sizeof(socket), "%s", state->socket_path);
+  for (char *c = executable; *c; ++c) {
+    if (*c == '\\') {
+      *c = '/';
+    }
+  }
+  for (char *c = socket; *c; ++c) {
+    if (*c == '\\') {
+      *c = '/';
+    }
+  }
+  const int length = snprintf(state->instructions, sizeof(state->instructions),
+                              "%s`\"%s\" --watch --socket \"%s\" --agent %s`%s",
+                              s_instructions_head, executable, socket,
+                              state->agent[0] ? state->agent : "YOUR_NAME",
+                              s_instructions_tail);
+  if (length > (int)MCP_INSTRUCTIONS_MAX) {
+    mcp_log("the instructions take %d characters; Claude Code reads only the "
+            "first %u",
+            length, MCP_INSTRUCTIONS_MAX);
+  }
+}
+
 int main(int argc, char **argv) {
   McpState state = {0};
+  bool8_t watch = false_v;
 #if defined(_WIN32)
   /* JSON-RPC lines end in a bare line feed; text mode would add returns. */
   (void)_setmode(_fileno(stdin), _O_BINARY);
@@ -1311,11 +1648,16 @@ int main(int argc, char **argv) {
       socket = argv[++i];
     } else if (strcmp(argv[i], "--agent") == 0 && i + 1 < argc) {
       agent = argv[++i];
+    } else if (strcmp(argv[i], "--watch") == 0) {
+      watch = true_v;
     } else if (strcmp(argv[i], "--help") == 0) {
-      printf("Usage: vkr_mcp [--socket <path>] [--agent <name>]\n"
+      printf("Usage: vkr_mcp [--socket <path>] [--agent <name>] [--watch]\n"
              "MCP %s server over stdio for the VKR editor's agent channel.\n"
              "--agent (or VKR_AGENT_NAME) names the author of every request "
-             "unless a call names its own.\n",
+             "unless a call names its own.\n"
+             "--watch speaks no MCP: it prints a line for each change-feed "
+             "event of an author other than --agent, for a background "
+             "monitor, until stdout closes.\n",
              MCP_VERSION);
       return 0;
     }
@@ -1345,6 +1687,12 @@ int main(int argc, char **argv) {
     mcp_log("out of memory");
     return 1;
   }
+  int code = 0;
+  if (watch) {
+    code = mcp_watch(&state);
+    goto cleanup;
+  }
+  mcp_instructions(&state);
   mcp_log("serving MCP %s; editor socket %s", MCP_VERSION, state.socket_path);
   uint64_t capacity = 65536u;
   char *line = malloc(capacity);
@@ -1383,11 +1731,13 @@ int main(int argc, char **argv) {
   }
   mcp_listener_stop(&state);
   free(line);
+
+cleanup:
   free(state.editor.pending);
   free(state.ops_text);
   mcp_editor_close(&state.editor);
   (void)vkr_mutex_destroy(&state.sync_allocator, &s_output_mutex);
   arena_destroy(state.sync_arena);
   arena_destroy(arena);
-  return 0;
+  return code;
 }
