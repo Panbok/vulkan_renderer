@@ -231,8 +231,13 @@ ms without and 3.09 ms with the decal fixture, and 2.79 and 2.54 ms with
 local shadows ranked by distance (`VKR_LOCAL_SHADOW_FEEDBACK=0`,
 `sha256:ec68bc2242c96bf4d3eb6cb03725377051921b7c4d9fe74bb9f7e84d3c5f7789`,
 `sha256:1e03f7ec922c4b28a074a14486c17e437d6bfe5f3eb1838ab80aaacc294587a3`).
-The reports show no difference in shadow work volume, so the cause is
-unknown; light ranking by measured contribution does not explain it.
+Decals do not cause that difference: in single runs of the same view,
+`Shadow.LocalMask` takes 3.54 ms in `bistro.scene.json` and 3.09 to 3.10 ms
+with the fixture's six decal entities enabled, disabled, or replaced by six
+empty entities. Adding empty entities also moves sun-shadow edges and
+changes lighting near the street lamps in `direct_diffuse`, with depth
+identical, so shadows follow a scene's entity count; that is not a decal
+defect and is not investigated here.
 
 ## Consequences
 
