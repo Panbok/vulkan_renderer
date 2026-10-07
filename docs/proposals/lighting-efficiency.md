@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-06
+updated: 2026-10-07
 authority: proposal
 ---
 # Lighting efficiency
@@ -133,6 +133,19 @@ In order of measured payoff on Vulkan:
 5. **Deferred for Bistro-class scenes: camera-space clustered culling.** It
    remains useful above the 128-light table or for scenes with short-range
    lights, but it does not pay off here.
+
+Compute tile lists that skip sky tiles, the compute form of a sky stencil, are
+not worth timing on Bistro. The twelve distinct views of the Vulkan Bistro
+snapshot camera at 1920x1080 average 3.5% sky-only 8x8 tiles and 0.4% mixed
+tiles. The most open view has 19.4% sky-only tiles, and five interior views
+have none. `GBuffer.Resolve` writes only defaults and sky motion in those
+tiles, and `Lighting.Deferred` must still draw the sky there. Bistro has no
+clearcoat, sheen or anisotropy material, so the layered lighting kernel never
+runs on it. The counts come from `visibility_ids` captures on 2026-10-07:
+RX 6700 XT, driver 26.6.3, dirty tree, `local-offscreen` profile, snapshot
+report
+`sha256:a03084e7d8cbef8f60f7bf35f36411d774f201257c36fe64f03da453ed48dcd7`.
+The temporary case used the camera keys of `smoke.bistro.vulkan.text.snapshot`.
 
 Longer term, stationary-light shadowing (baked static visibility, with runtime
 maps only for dynamic casters) or ray-traced many-light sampling would remove
