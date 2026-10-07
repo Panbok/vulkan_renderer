@@ -920,6 +920,56 @@ changes no more than the order drift. Reports: pass timings, HEAD then new,
 and a Metal API validation run of the baked view passed
 (`sha256:9bb38702be5677517c9bf99b4fc64a8f89aaadcd8c1f88f13fadd729aa90f9e8`).
 
+Ordering the camera view's alpha-tested draws near to far was measured the
+same way against that build (`08e6077d`) and not kept. Classify counted the
+draws of each alpha-tested bucket in 32 distance bins, three per doubling of
+the distance from the camera, and encode placed each draw after the nearer
+bins of its bucket. The baked orbit has 56 to 162 alpha-tested draws in view
+(112 at the median). Median / p95, the third pair with the new build first:
+
+| Case, metric | Before | Near to far |
+|---|---|---|
+| `tiled_bistro_baked_native`, `Tiled.Opaque` | 7.21 / 11.64, 7.18 / 11.73, 7.18 / 11.71 ms | 7.26 / 11.73, 7.27 / 11.80, 7.26 / 11.79 ms |
+| `tiled_bistro_baked_dynamic_native`, `Tiled.Opaque` | 9.41 / 17.17, 9.49 / 17.24, 9.58 / 17.10 ms | 9.45 / 17.26, 9.46 / 17.27, 9.45 / 17.30 ms |
+| `tiled_bistro_baked_native`, `gpu.submission` | 11.48 / 16.64, 11.23 / 16.11, 11.25 / 16.12, 11.19 / 16.03 ms | 11.21 / 16.02, 11.24 / 16.29, 11.23 / 16.17, 11.25 / 16.05 ms |
+
+The `gpu.submission` rows are two pairs in each order. Reversed to far to
+near, the same bins left `Tiled.Opaque` at 7.24 / 12.40 and 7.24 / 11.83 ms
+against 7.23 / 11.79 and 7.27 / 11.79 ms near to far, so on Bistro the order
+of the alpha-tested draws does not change their cost. Captures of the baked,
+dynamic-light and glass views stayed within the variation between runs of
+one build. A pass that lays the alpha-tested depth before their shading, so
+that shading tests `Equal` without discarding, was not built: the
+[anti-aliasing measurement](#anti-aliasing-measurement) already laid that
+depth before shading, where the depth test rejects hidden alpha-tested
+samples, and it cost 0.5 ms more. Reports, before then near to far:
+`sha256:b5a896418e0f83d8db760d69d0b9576af3cd48d74beab464f80fa663461c80e5`,
+`sha256:34d41ed76923fc9caf5ee603485f6915180c0fc50ad1911b5cdc28bf1cf227a2`,
+`sha256:ab27a6cbf9942cdbe82a03df503c067d156bfa1f154a10dbf593375a0ebd9b4d`,
+`sha256:da465eccdd11f803d522e2499a541d8e98e2d7693f4d09b0502afd4ddb06b800`,
+`sha256:46d07c732eb68b2a8ea9bda0568474a5ad82569a4ed83221a54a4c08edbd8bc1`,
+`sha256:42d5e9b73da5517e8366142852a50a174093b96b9d00aecc94c8e4750314bbd0`,
+`sha256:ff1f2c307dc7bd8c22f366cd8cb792539d9aaf6d45882f1f1b6f5f5f46cb873f`,
+`sha256:6ce66e0a7932a22301c78762ab646458de7c0c046833a6a8a52062a0082ec6e1`,
+`sha256:409ce9e02a31899ca744307e38bf1f9a3d849cdff5f7554cb3591b00614e2bed`,
+`sha256:79a26c7960ce70b88ebb914ebc5b09fb11a2ffd30899e390ef6e7b554a51ea49`;
+`sha256:4d75665cbba96de1fc495e58a11785c8f7fd386c341d8d0b2183427ab1bfde97`,
+`sha256:b88a103587b591c65ce6066da3d893ce78948280eb696c024f84c223d940f492`,
+`sha256:f16f48decedfa993171813f181524abfab719508acbb9b896c07b052e95b6bb1`,
+`sha256:8d0358e509c96a8edf1849f115769a3a4ae07ef145ce646128c165216f6a8150`,
+`sha256:c10d213e4be2f80f16129e2a3782f9f3b83ded33b9bcc4f419f8b7fdf99cf25b`,
+`sha256:2b58c0bf07ea3c08086984db3f70825c930ab82a7673d6c90b03184df68867d6`,
+`sha256:1ef5347834360fe8f8b9baf44d6e34ed43b0021df3cd356e67a047ca55c7312c`,
+`sha256:88b7890f413b16af2d7f2f67b192d65a78da48164585f5f735bd7860d09b8ac9`,
+`sha256:c45c6d8e7ff72a4662c12b2ef9605052c1cb896229042aa25061204be7c12343`,
+`sha256:f0cbd05ce4ab088e269b6c95f9ff13e8db8eddb59427fb000536569e51cd8c2c`;
+far to near
+`sha256:df0d77e75bf4c3dfc5982d57061a4454b156ff24b4823a03eca63e642cafa551`,
+`sha256:2e1617a3d20929ef6f68d677bfb4f7cc8e187da2f39eee954c957a5b318f22f4`
+against
+`sha256:f9fe3f1a8756121f109302d3e54d4cd5e2a33c17d2f9209b773151f7fe877ee0`,
+`sha256:d6897158653649b0e1087ebb7ae1e4146927879c73232d5b0b85bd302756b8df`.
+
 ## Consequences
 
 - Lighting, shadow, AA and screen-space work is implemented and validated once
@@ -948,6 +998,9 @@ and a Metal API validation run of the baked view passed
 - **A depth pre-pass before forward shading.** Removed 2026-10-07: with
   opaque variants that never discard it only drew the opaque geometry twice
   ([measurement](#depth-pre-pass-measurement)).
+- **Ordering alpha-tested draws near to far, or laying their depth before
+  their shading.** Not kept 2026-10-07: neither lowers Bistro's cost
+  ([measurement](#base-pass-measurement)).
 - **Fixed upscaling on M-series.** Rejected by the owner: native resolution
   is the target. Decision 12 lowers it only while frames miss the budget
   (revised by the owner, 2026-10-06).
