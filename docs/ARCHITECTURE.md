@@ -1351,7 +1351,15 @@ These are limits of current code or retained acceptance, not scheduled promises:
   16 GiB host, and Apple ASan does not support leak detection.
 
 - Projected decals ([ADR-092](adr/092-projected-decals.md)) change base colour
-  only, and the editor draws no decal box outline.
+  only, and the editor draws no decal box outline. Project packaging does not
+  lower or package a material path inside a component, for decals and brush
+  faces alike. The desktop decal cost has local, non-authoritative
+  measurements only.
+- Bistro shadows depend on a scene's entity count. On the Vulkan street view,
+  adding six entities that draw nothing moves sun-shadow edges, changes
+  lighting near the street lamps and lowers `Shadow.LocalMask` by about
+  0.44 ms, with depth identical (ADR-092, Desktop evidence). The cause is
+  not investigated.
 
 - New viewport camera/grid controls, text sizing and inspection modes pass the
   Release editor build with both production shader compilers. Inspection modes

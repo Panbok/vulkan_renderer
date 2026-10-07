@@ -239,6 +239,10 @@ changes lighting near the street lamps in `direct_diffuse`, with depth
 identical, so shadows follow a scene's entity count; that is not a decal
 defect and is not investigated here.
 
+No authoritative desktop comparison exists: every run above used a tree with
+other sessions' uncommitted changes. One needs clean builds of this change
+and of its parent, `741eaac6`, measured with `performance-windowed-gpu`.
+
 ## Consequences
 
 - A decal changes a surface's albedo before the lightmap, sun, local lights
@@ -279,7 +283,8 @@ defect and is not investigated here.
 ## Revisit when
 
 - Decals need normal, roughness or emissive channels, an atlas rectangle, or
-  a receive-decals flag on meshes.
+  a receive-decals flag on meshes; [Decal channels and
+  receivers](../proposals/decal-channels-and-receivers.md) holds a design.
 - A scene keeps more than 64 decals near the camera.
 - Scenes built from smaller meshes leave most of a view to draws that touch
   no decal: then a decal culling view (see Alternatives considered) pays.
