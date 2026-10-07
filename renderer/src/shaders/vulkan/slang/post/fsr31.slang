@@ -51,7 +51,7 @@ struct VkrVkFsr31StabilizePush
 [numthreads(8, 8, 1)]
 void vk_fsr31_prepare(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkFsr31PrepareRoot *root = g_fsr31_push.root;
+    VkrVkFsr31PrepareRoot root = vkr_vk_uniform_root(*g_fsr31_push.root);
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.extent))
         return;
@@ -88,7 +88,7 @@ void vk_fsr31_prepare(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_fsr31_stabilize(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkFsr31StabilizeRoot *root = g_fsr31_stabilize_push.root;
+    VkrVkFsr31StabilizeRoot root = vkr_vk_uniform_root(*g_fsr31_stabilize_push.root);
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.output_extent))
         return;

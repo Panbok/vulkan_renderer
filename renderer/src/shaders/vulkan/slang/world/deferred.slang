@@ -822,7 +822,7 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void vk_temporal_transform(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkTemporalTransformRoot *root = g_temporal_transform_push.root;
+    VkrVkTemporalTransformRoot root = vkr_vk_uniform_root(*g_temporal_transform_push.root);
     if (thread_id.x >= root.instance_count)
         return;
     VkrVulkanInstance instance = root.instances[thread_id.x];
@@ -1034,7 +1034,7 @@ bool vkr_vk_finite_nonzero(float3 value)
 
 // `marker` is the documented resolve-debug alpha: 0 for an unwritten background
 // pixel and -1 for a rejected row, matching the Metal channel contract.
-void vkr_vk_resolve_defaults(VkrVkResolveRoot *root, uint2 pixel, float marker)
+void vkr_vk_resolve_defaults(VkrVkResolveRoot root, uint2 pixel, float marker)
 {
     g_storage_2d[root.albedo_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_2d[root.specular_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -1461,7 +1461,7 @@ bool vkr_vk_finish_surface_normal(VkrVkSurfaceSource source,
 [numthreads(8, 8, 1)]
 void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkResolveRoot *root = g_resolve_push.root;
+    VkrVkResolveRoot root = vkr_vk_uniform_root(*g_resolve_push.root);
     if (any(thread_id.xy >= root.extent))
         return;
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
@@ -1692,7 +1692,7 @@ float3 vkr_vk_deferred_homogeneous(float4 value)
 
 // The deferred lighting path owns the background: a fallback colour, a
 // uniform radiance, or the camera-dependent atmosphere.
-float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
+float3 vkr_vk_deferred_sky(VkrVkLightingRoot root, uint2 pixel)
 {
     if (root.sky_mode == VKR_SKY_MODE_NONE)
         return float3(0.02f, 0.02f, 0.03f) * root.frame.pre_exposure;
@@ -1773,7 +1773,7 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
     return radiance + disc;
 }
 
-float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot *root, uint2 pixel,
+float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot root, uint2 pixel,
                                        uint visible_index, float3 normal,
                                        float roughness)
 {
@@ -1795,7 +1795,7 @@ float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot *root, uint2 pixel,
     return vkr_ggx_filter_roughness(roughness, normal_variance);
 }
 
-float3 vk_local_shadow_mask_world(VkrVkLocalShadowMaskRoot *root, float2 ndc,
+float3 vk_local_shadow_mask_world(VkrVkLocalShadowMaskRoot root, float2 ndc,
                                   float depth)
 {
     return vkr_vk_deferred_homogeneous(
@@ -1805,7 +1805,7 @@ float3 vk_local_shadow_mask_world(VkrVkLocalShadowMaskRoot *root, float2 ndc,
 // Contact visibility toward one light: marches the depth buffer from `origin`
 // along `direction` and stops at the first sample whose camera ray passes
 // behind a nearby surface. The march leaves the screen without occlusion.
-float vk_local_contact_shadow(VkrVkLocalShadowMaskRoot *root, float3 origin,
+float vk_local_contact_shadow(VkrVkLocalShadowMaskRoot root, float3 origin,
                               float3 direction, float march_length,
                               float noise)
 {
@@ -1850,7 +1850,7 @@ float vk_local_contact_shadow(VkrVkLocalShadowMaskRoot *root, float3 origin,
 // kernel's occupancy.
 void vk_local_shadow_mask_impl<let ContactShadows : bool>(uint3 thread_id)
 {
-    VkrVkLocalShadowMaskRoot *root = g_local_shadow_mask_push.root;
+    VkrVkLocalShadowMaskRoot root = vkr_vk_uniform_root(*g_local_shadow_mask_push.root);
     if (any(thread_id.xy >= root.extent))
         return;
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
@@ -1964,7 +1964,7 @@ groupshared uint g_deferred_tile_layered;
 
 // A pixel with no clearcoat, sheen or anisotropy G-buffer data shades
 // identically in the base kernel, which compiles those layers out.
-bool vk_deferred_pixel_layered(VkrVkLightingRoot *root, uint2 pixel)
+bool vk_deferred_pixel_layered(VkrVkLightingRoot root, uint2 pixel)
 {
     if (any(pixel >= root.extent) ||
         g_storage_uint2_2d[root.vbuffer_texture][pixel].x == 0u)
@@ -1979,7 +1979,7 @@ bool vk_deferred_pixel_layered(VkrVkLightingRoot *root, uint2 pixel)
 
 // Both lighting kernels classify the same 8x8 group, so each tile is shaded
 // by exactly one of them. Every invocation reaches both barriers.
-bool vk_deferred_tile_layered(VkrVkLightingRoot *root, uint2 pixel,
+bool vk_deferred_tile_layered(VkrVkLightingRoot root, uint2 pixel,
                               uint group_index)
 {
     if (group_index == 0u)
@@ -1995,7 +1995,7 @@ bool vk_deferred_tile_layered(VkrVkLightingRoot *root, uint2 pixel,
 // without them the kernel needs fewer registers.
 void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
 {
-    VkrVkLightingRoot *root = g_lighting_push.root;
+    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
     if (any(thread_id.xy >= root.extent))
         return;
     VkrVulkanPacketFrameRoot *frame = root.frame;
@@ -2292,7 +2292,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
 void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID,
                           uint group_index : SV_GroupIndex)
 {
-    VkrVkLightingRoot *root = g_lighting_push.root;
+    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
     if (root.layered_tiles != 0u &&
         vk_deferred_tile_layered(root, thread_id.xy, group_index))
         return;
@@ -2304,7 +2304,7 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID,
 void vk_deferred_lighting_layered(uint3 thread_id : SV_DispatchThreadID,
                                   uint group_index : SV_GroupIndex)
 {
-    VkrVkLightingRoot *root = g_lighting_push.root;
+    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
     if (!vk_deferred_tile_layered(root, thread_id.xy, group_index))
         return;
     vk_deferred_shade<true>(thread_id);
@@ -2325,7 +2325,7 @@ struct VkrVkTemporalHistorySample
 // Metadata remains on the raw jittered grid. Color is reconstructed onto
 // the canonical grid, so each color tap validates its own metadata footprint.
 bool vkr_vk_temporal_coverage_support(
-    VkrVkTemporalResolveRoot *root, uint2 pixel, uint2 previous_pixel, float2 reference_motion,
+    VkrVkTemporalResolveRoot root, uint2 pixel, uint2 previous_pixel, float2 reference_motion,
     uint2 identity, uint surface_token, float previous_depth)
 {
     if (identity.x != 0u && surface_token == 0u)
@@ -2370,7 +2370,7 @@ bool vkr_vk_temporal_coverage_support(
 }
 
 VkrVkTemporalHistorySample vkr_vk_temporal_history_sample(
-    VkrVkTemporalResolveRoot *root, float2 history_uv, uint2 identity,
+    VkrVkTemporalResolveRoot root, float2 history_uv, uint2 identity,
     uint surface_token, float expected_depth, bool check_depth,
     uint2 current_pixel, float2 reference_motion, bool allow_coverage)
 {
@@ -2480,7 +2480,8 @@ VkrVkTemporalHistorySample vkr_vk_temporal_history_sample(
 [numthreads(8, 8, 1)]
 void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkTemporalResolveRoot *root = g_temporal_resolve_push.root;
+    VkrVkTemporalResolveRoot root =
+        vkr_vk_uniform_root(*g_temporal_resolve_push.root);
     if (any(thread_id.xy >= root.extent))
         return;
 
@@ -2690,7 +2691,7 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_shadow_moments(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkShadowMomentsRoot *root = g_shadow_moments_push.root;
+    VkrVkShadowMomentsRoot root = vkr_vk_uniform_root(*g_shadow_moments_push.root);
     if (any(thread_id.xy >= uint2(root.moments_size, root.moments_size)))
         return;
     int2 origin = int2(thread_id.xy) * 2 - 1;
@@ -2716,7 +2717,7 @@ void vk_shadow_moments(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_hzb_build(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkHzbRoot *root = g_hzb_push.root;
+    VkrVkHzbRoot root = vkr_vk_uniform_root(*g_hzb_push.root);
     if (any(thread_id.xy >= root.destination_extent))
         return;
     if (root.source_is_depth == 2u)
@@ -2759,7 +2760,7 @@ float vkr_vk_ssr_positive_depth(VkrSsrParams params, uint2 pixel,
     return vkr_ssr_valid_depth(result) ? result : 0.0f;
 }
 
-uint2 vkr_vk_ssr_identity(VkrVkSsrTemporalRoot *root, uint visible_index)
+uint2 vkr_vk_ssr_identity(VkrVkSsrTemporalRoot root, uint visible_index)
 {
     if (visible_index == 0u)
         return uint2(0u, 0u);
@@ -2772,7 +2773,7 @@ uint2 vkr_vk_ssr_identity(VkrVkSsrTemporalRoot *root, uint visible_index)
 [numthreads(8, 8, 1)]
 void vk_ssr_depth_base(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsrDepthBaseRoot *root = g_ssr_depth_base_push.root;
+    VkrVkSsrDepthBaseRoot root = vkr_vk_uniform_root(*g_ssr_depth_base_push.root);
     uint2 cell = thread_id.xy;
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
     uint2 depth_extent = max(source_extent / 2u, uint2(1u));
@@ -2804,7 +2805,7 @@ void vk_ssr_depth_base(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_ssr_depth_mip(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsrDepthMipRoot *root = g_ssr_depth_mip_push.root;
+    VkrVkSsrDepthMipRoot root = vkr_vk_uniform_root(*g_ssr_depth_mip_push.root);
     uint2 cell = thread_id.xy;
     if (any(cell >= root.destination_extent)) return;
     uint2 begin = uint2(vkr_ssr_reduction_child_begin(cell.x),
@@ -2896,7 +2897,7 @@ float vkr_vk_ssr_base_filter_roughness(uint normal_texture,
         base_roughness, 0.25f * (dot(dx, dx) + dot(dy, dy)));
 }
 
-float3 vkr_vk_ssr_trace_color(VkrVkSsrTraceRoot *root, float2 hit_uv,
+float3 vkr_vk_ssr_trace_color(VkrVkSsrTraceRoot root, float2 hit_uv,
                                float roughness)
 {
     uint count = vkr_ssr_hit_filter_tap_count(roughness);
@@ -2912,7 +2913,7 @@ float3 vkr_vk_ssr_trace_color(VkrVkSsrTraceRoot *root, float2 hit_uv,
 [numthreads(8, 8, 1)]
 void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsrTraceRoot *root = g_ssr_trace_push.root;
+    VkrVkSsrTraceRoot root = vkr_vk_uniform_root(*g_ssr_trace_push.root);
     uint2 cell = thread_id.xy;
     uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
@@ -3012,7 +3013,7 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsrTemporalRoot *root = g_ssr_temporal_push.root;
+    VkrVkSsrTemporalRoot root = vkr_vk_uniform_root(*g_ssr_temporal_push.root);
     uint2 pixel = thread_id.xy;
     uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
@@ -3246,7 +3247,7 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsrCompositeRoot *root = g_ssr_composite_push.root;
+    VkrVkSsrCompositeRoot root = vkr_vk_uniform_root(*g_ssr_composite_push.root);
     uint2 pixel = thread_id.xy;
     uint2 extent = uint2(root.params.source_width, root.params.source_height);
     if (any(pixel >= extent)) return;
@@ -3374,7 +3375,7 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(16, 16, 1)]
 void vk_sdsm_reduce(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSdsmRoot *root = g_sdsm_push.root;
+    VkrVkSdsmRoot root = vkr_vk_uniform_root(*g_sdsm_push.root);
     bool occupied = false;
     float depth = 0.0f;
     if (all(thread_id.xy < root.extent))
@@ -3405,7 +3406,7 @@ void vk_sdsm_reduce(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(1, 1, 1)]
 void vk_picking_resolve(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkPickingRoot *root = g_picking_push.root;
+    VkrVkPickingRoot root = vkr_vk_uniform_root(*g_picking_push.root);
     uint2 opaque_encoded = g_storage_uint2_2d[root.opaque_vbuffer][root.pixel];
     uint2 transmission_encoded =
         root.use_transmission != 0u
@@ -3443,7 +3444,7 @@ groupshared uint g_transmission_compact_group_bases[2];
 [numthreads(1, 1, 1)]
 void vk_transmission_compact_clear(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkTransmissionCompactRoot *root = g_transmission_compact_push.root;
+    VkrVkTransmissionCompactRoot root = vkr_vk_uniform_root(*g_transmission_compact_push.root);
     root.indirect_arguments[6] = 0u;
     root.indirect_arguments[7] = 0u;
 }
@@ -3453,7 +3454,7 @@ void vk_transmission_compact_clear(uint3 thread_id : SV_DispatchThreadID)
 void vk_transmission_compact(uint3 thread_id : SV_DispatchThreadID,
                              uint group_index : SV_GroupIndex)
 {
-    VkrVkTransmissionCompactRoot *root = g_transmission_compact_push.root;
+    VkrVkTransmissionCompactRoot root = vkr_vk_uniform_root(*g_transmission_compact_push.root);
     bool in_extent = all(thread_id.xy < root.extent);
     if (vkr_transmission_compact_copies_source(root.layer) && in_extent)
         g_storage_2d[root.destination_texture][thread_id.xy] =
@@ -3548,7 +3549,7 @@ void vk_transmission_compact(uint3 thread_id : SV_DispatchThreadID,
 [numthreads(1, 1, 1)]
 void vk_transmission_compact_finalize(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkTransmissionCompactRoot *root = g_transmission_compact_push.root;
+    VkrVkTransmissionCompactRoot root = vkr_vk_uniform_root(*g_transmission_compact_push.root);
     uint total = 0u;
     for (uint partition = 0u; partition < 2u; ++partition)
         total += min(root.indirect_arguments[6u + partition], root.capacity);
@@ -3563,7 +3564,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                                     bool diagnostic_enabled,
                                     uint temporal_mode)
 {
-    VkrVkTransmissionRoot *root = g_transmission_push.root;
+    VkrVkTransmissionRoot root = vkr_vk_uniform_root(*g_transmission_push.root);
     uint2 pixel = thread_id.xy;
     if (root.compact_enabled != 0u)
     {
@@ -4117,7 +4118,7 @@ void vkr_vk_transmission_shade_partitioned_impl(uint3 thread_id,
                                                 bool diagnostic_enabled,
                                                 uint temporal_mode)
 {
-    VkrVkTransmissionRoot *root = g_transmission_push.root;
+    VkrVkTransmissionRoot root = vkr_vk_uniform_root(*g_transmission_push.root);
     uint compact_index = thread_id.x;
     uint thin_factor_count = min(root.compact_counts[0], root.pixel_capacity);
     if (compact_index < thin_factor_count)
@@ -4178,7 +4179,7 @@ groupshared uint g_transmission_group_coverage;
 void vk_transmission_coverage(uint3 thread_id : SV_DispatchThreadID,
                               uint3 group_thread_id : SV_GroupThreadID)
 {
-    VkrVkTransmissionCoverageRoot *root = g_transmission_coverage_push.root;
+    VkrVkTransmissionCoverageRoot root = vkr_vk_uniform_root(*g_transmission_coverage_push.root);
     if (all(group_thread_id == 0u))
         g_transmission_group_coverage = 0u;
     GroupMemoryBarrierWithGroupSync();

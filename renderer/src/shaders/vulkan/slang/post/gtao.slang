@@ -25,7 +25,7 @@ float2 vkr_vk_gtao_uv(float2 pixel, uint2 extent)
     return (pixel + 0.5f) / float2(extent);
 }
 
-float vkr_vk_gtao_sample(VkrVkGtaoRoot *root, uint texture_index, float2 uv,
+float vkr_vk_gtao_sample(VkrVkGtaoRoot root, uint texture_index, float2 uv,
                          float mip)
 {
     return g_textures[NonUniformResourceIndex(texture_index)]
@@ -34,14 +34,14 @@ float vkr_vk_gtao_sample(VkrVkGtaoRoot *root, uint texture_index, float2 uv,
         .r;
 }
 
-void vkr_vk_gtao_store(VkrVkGtaoRoot *root, uint texture_index, uint2 pixel,
+void vkr_vk_gtao_store(VkrVkGtaoRoot root, uint texture_index, uint2 pixel,
                        float value)
 {
     g_storage_2d[NonUniformResourceIndex(texture_index)][pixel] =
         float4(value, 0.0f, 0.0f, 1.0f);
 }
 
-void vkr_vk_gtao_store_tuple(VkrVkGtaoRoot *root, uint texture_index,
+void vkr_vk_gtao_store_tuple(VkrVkGtaoRoot root, uint texture_index,
                              uint2 pixel, float4 value)
 {
     g_storage_2d[NonUniformResourceIndex(texture_index)][pixel] = value;
@@ -51,7 +51,7 @@ void vkr_vk_gtao_store_tuple(VkrVkGtaoRoot *root, uint texture_index,
 [numthreads(8, 8, 1)]
 void vk_gtao_depth_prefilter(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkGtaoRoot *root = g_gtao_push.root;
+    VkrVkGtaoRoot root = vkr_vk_uniform_root(*g_gtao_push.root);
     if (any(thread_id.xy >= root.destination_extent))
         return;
     float2 uv = vkr_vk_gtao_uv(float2(thread_id.xy), root.destination_extent);
@@ -66,7 +66,7 @@ void vk_gtao_depth_prefilter(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_gtao_depth_mip(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkGtaoRoot *root = g_gtao_push.root;
+    VkrVkGtaoRoot root = vkr_vk_uniform_root(*g_gtao_push.root);
     if (any(thread_id.xy >= root.destination_extent))
         return;
     float2 source_pixel = float2(thread_id.xy * 2u);
@@ -90,7 +90,7 @@ void vk_gtao_depth_mip(uint3 thread_id : SV_DispatchThreadID)
                       vkr_gtao_depth_mip_filter(root.params, d0, d1, d2, d3));
 }
 
-float vkr_vk_gtao_view_depth(VkrVkGtaoRoot *root, float2 uv, float mip)
+float vkr_vk_gtao_view_depth(VkrVkGtaoRoot root, float2 uv, float mip)
 {
     return vkr_vk_gtao_sample(root, root.source_texture, uv, mip);
 }
@@ -99,7 +99,7 @@ float vkr_vk_gtao_view_depth(VkrVkGtaoRoot *root, float2 uv, float mip)
 [numthreads(8, 8, 1)]
 void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkGtaoRoot *root = g_gtao_push.root;
+    VkrVkGtaoRoot root = vkr_vk_uniform_root(*g_gtao_push.root);
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.destination_extent))
         return;
@@ -233,7 +233,7 @@ void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
 // Denoise inputs share the viewport extent. A clamped texel load equals the
 // former clamp-to-edge point sample at the texel center. Root descriptor
 // indices are dynamically uniform, so they carry no NonUniform decoration.
-float4 vkr_vk_gtao_denoise_load(VkrVkGtaoRoot *root, uint texture_index,
+float4 vkr_vk_gtao_denoise_load(VkrVkGtaoRoot root, uint texture_index,
                                 int2 pixel)
 {
     int2 clamped = clamp(pixel, int2(0), int2(root.destination_extent) - 1);
@@ -249,7 +249,7 @@ float vkr_vk_gtao_edge_weight(float edge0, float edge1, float beta)
 [numthreads(8, 8, 1)]
 void vk_gtao_denoise(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkGtaoRoot *root = g_gtao_push.root;
+    VkrVkGtaoRoot root = vkr_vk_uniform_root(*g_gtao_push.root);
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.destination_extent))
         return;

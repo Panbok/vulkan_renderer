@@ -532,4 +532,27 @@ VkrVulkanPacketDrawRoot* vkr_vulkan_packet_draw_root()
     return (VkrVulkanPacketDrawRoot*)g_push.root;
 }
 
+struct VkrVkRootWords<let WordCount : int>
+{
+    uint words[WordCount];
+};
+
+// Returns a root that every invocation reads from one address as wave-uniform
+// values. Read through its pointer, the AMD compiler reloads each root field
+// with a vector memory load at every use, including inside loops; one
+// broadcast copy keeps the fields in scalar registers. Fields the caller never
+// reads are dead after the copy and cost nothing.
+T vkr_vk_uniform_root<T>(T value)
+{
+    static_assert(sizeof(T) % 4 == 0, "a root is made of 32-bit words");
+    VkrVkRootWords<sizeof(T) / 4> root =
+        reinterpret<VkrVkRootWords<sizeof(T) / 4>>(value);
+    [ForceUnroll]
+    for (int i = 0; i < sizeof(T) / 4; ++i)
+    {
+        root.words[i] = WaveReadLaneFirst(root.words[i]);
+    }
+    return reinterpret<T>(root);
+}
+
 static const float vkr_pi = 3.14159265359f;

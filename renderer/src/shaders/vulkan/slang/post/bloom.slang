@@ -30,7 +30,7 @@ struct VkrVkBloomPush
 
 [[vk::push_constant]] ConstantBuffer<VkrVkBloomPush> g_bloom_push;
 
-float3 vkr_bloom_tap(VkrVkBloomRoot *root, uint texture_index, float2 uv)
+float3 vkr_bloom_tap(VkrVkBloomRoot root, uint texture_index, float2 uv)
 {
     return vkr_bloom_sanitize(
         root.params,
@@ -48,7 +48,7 @@ struct VkrBloomTaps13
     float3 a, b, c, d, e, f, g, h, i, j, k, l, m;
 };
 
-VkrBloomTaps13 vkr_bloom_gather13(VkrVkBloomRoot *root, uint texture_index,
+VkrBloomTaps13 vkr_bloom_gather13(VkrVkBloomRoot root, uint texture_index,
                                   float2 uv, float2 texel)
 {
     VkrBloomTaps13 taps;
@@ -102,7 +102,7 @@ float3 vkr_bloom_combine13_karis(VkrBloomParams params,
 // Four bilinear taps, each covering a 2x2 source footprint, so the filter is a
 // 4x4 box for a quarter of the sample cost. Retained as a measured alternative
 // to the thirteen-tap form rather than as a fallback.
-float3 vkr_bloom_combine_box4(VkrVkBloomRoot *root, uint texture_index,
+float3 vkr_bloom_combine_box4(VkrVkBloomRoot root, uint texture_index,
                               float2 uv, float2 texel)
 {
     return (vkr_bloom_tap(root, texture_index, uv + float2(-1.0f, -1.0f) * texel) +
@@ -114,7 +114,7 @@ float3 vkr_bloom_combine_box4(VkrVkBloomRoot *root, uint texture_index,
 
 // Nine-tap tent. The upsample filter must be wider than the destination texel
 // or the chain reconstructs as visible squares at every level boundary.
-float3 vkr_bloom_tent9(VkrVkBloomRoot *root, uint texture_index, float2 uv,
+float3 vkr_bloom_tent9(VkrVkBloomRoot root, uint texture_index, float2 uv,
                        float2 texel)
 {
     float3 sum =
@@ -134,12 +134,12 @@ float3 vkr_bloom_tent9(VkrVkBloomRoot *root, uint texture_index, float2 uv,
 // True for the destination texels this dispatch actually owns. Extents are odd
 // as often as not once the chain has halved a few times, so the tail group of
 // every dispatch is partially out of range.
-bool vkr_bloom_in_range(VkrVkBloomRoot *root, uint2 pixel)
+bool vkr_bloom_in_range(VkrVkBloomRoot root, uint2 pixel)
 {
     return all(pixel < root.destination_extent);
 }
 
-float2 vkr_bloom_destination_uv(VkrVkBloomRoot *root, uint2 pixel)
+float2 vkr_bloom_destination_uv(VkrVkBloomRoot root, uint2 pixel)
 {
     return (float2(pixel) + 0.5f) / float2(root.destination_extent);
 }
@@ -148,7 +148,7 @@ float2 vkr_bloom_destination_uv(VkrVkBloomRoot *root, uint2 pixel)
 [numthreads(8, 8, 1)]
 void vk_bloom_prefilter(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkBloomRoot *root = g_bloom_push.root;
+    VkrVkBloomRoot root = vkr_vk_uniform_root(*g_bloom_push.root);
     if (!vkr_bloom_in_range(root, thread_id.xy))
         return;
     float2 uv = vkr_bloom_destination_uv(root, thread_id.xy);
@@ -167,7 +167,7 @@ void vk_bloom_prefilter(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_bloom_downsample_tent13(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkBloomRoot *root = g_bloom_push.root;
+    VkrVkBloomRoot root = vkr_vk_uniform_root(*g_bloom_push.root);
     if (!vkr_bloom_in_range(root, thread_id.xy))
         return;
     float2 uv = vkr_bloom_destination_uv(root, thread_id.xy);
@@ -182,7 +182,7 @@ void vk_bloom_downsample_tent13(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_bloom_downsample_box4(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkBloomRoot *root = g_bloom_push.root;
+    VkrVkBloomRoot root = vkr_vk_uniform_root(*g_bloom_push.root);
     if (!vkr_bloom_in_range(root, thread_id.xy))
         return;
     float2 uv = vkr_bloom_destination_uv(root, thread_id.xy);
@@ -197,7 +197,7 @@ void vk_bloom_downsample_box4(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_bloom_upsample(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkBloomRoot *root = g_bloom_push.root;
+    VkrVkBloomRoot root = vkr_vk_uniform_root(*g_bloom_push.root);
     if (!vkr_bloom_in_range(root, thread_id.xy))
         return;
     float2 uv = vkr_bloom_destination_uv(root, thread_id.xy);
@@ -217,7 +217,7 @@ void vk_bloom_upsample(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_bloom_combine(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkBloomRoot *root = g_bloom_push.root;
+    VkrVkBloomRoot root = vkr_vk_uniform_root(*g_bloom_push.root);
     if (!vkr_bloom_in_range(root, thread_id.xy))
         return;
     float2 uv = vkr_bloom_destination_uv(root, thread_id.xy);

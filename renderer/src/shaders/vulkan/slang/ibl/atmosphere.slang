@@ -17,7 +17,7 @@ struct VkrVulkanAtmospherePush {
 };
 [[vk::push_constant]] ConstantBuffer<VkrVulkanAtmospherePush> g_atmosphere_push;
 
-float3 vk_atmosphere_transmittance(VkrVulkanAtmosphereRoot *root,
+float3 vk_atmosphere_transmittance(VkrVulkanAtmosphereRoot root,
                                    float3 position, float3 direction) {
   bool ground = false;
   float distance =
@@ -58,7 +58,7 @@ float3 vk_atmosphere_lookup_multiple(uint texture, uint sampler,
       .rgb;
 }
 
-float3 vk_atmosphere_trans_sample(VkrVulkanAtmosphereRoot *root, float3 p,
+float3 vk_atmosphere_trans_sample(VkrVulkanAtmosphereRoot root, float3 p,
                                   float3 d) {
   return vk_atmosphere_lookup_transmittance(root.transmittance_sample,
                                             root.sampler, root.params, p, d);
@@ -170,7 +170,7 @@ float3 vk_atmosphere_scattered_radiance(uint transmittance,
 }
 [shader("compute")][numthreads(8, 8, 1)] void
 atmosphere_transmittance_compute(uint3 id : SV_DispatchThreadID) {
-  VkrVulkanAtmosphereRoot *root = g_atmosphere_push.root;
+  VkrVulkanAtmosphereRoot root = vkr_vk_uniform_root(*g_atmosphere_push.root);
   if (any(id.xy >= root.extent))
     return;
   float radius, mu;
@@ -185,7 +185,7 @@ groupshared float3 vk_multi_l[64];
 [shader("compute")][numthreads(1, 1, 64)] void
 atmosphere_multiple_scattering_compute(uint3 gid : SV_GroupID,
                                        uint lane : SV_GroupIndex) {
-  VkrVulkanAtmosphereRoot *root = g_atmosphere_push.root;
+  VkrVulkanAtmosphereRoot root = vkr_vk_uniform_root(*g_atmosphere_push.root);
   if (any(gid.xy >= root.extent))
     return;
   float2 uv = (float2(gid.xy) + .5f) / float2(root.extent);
@@ -243,7 +243,7 @@ atmosphere_multiple_scattering_compute(uint3 gid : SV_GroupID,
   }
 }[shader("compute")][numthreads(
     8, 8, 1)] void atmosphere_source_compute(uint3 id : SV_DispatchThreadID) {
-  VkrVulkanAtmosphereRoot *root = g_atmosphere_push.root;
+  VkrVulkanAtmosphereRoot root = vkr_vk_uniform_root(*g_atmosphere_push.root);
   if (id.x >= root.face_size || id.y >= root.face_size || id.z >= 6)
     return;
   float3 o = float3(0, root.params.planet.x + root.params.planet.z, 0),
@@ -283,7 +283,7 @@ struct VkrVulkanSkyBuildPush {
 // light's azimuth; a light without irradiance leaves its table black.
 [shader("compute")][numthreads(8, 8, 1)] void
 sky_view_compute(uint3 id : SV_DispatchThreadID) {
-  VkrVulkanSkyBuildRoot *root = g_sky_build_push.root;
+  VkrVulkanSkyBuildRoot root = vkr_vk_uniform_root(*g_sky_build_push.root);
   if (id.x >= VKR_ATMOSPHERE_SKY_VIEW_WIDTH * VKR_ATMOSPHERE_SKY_VIEW_TABLES ||
       id.y >= VKR_ATMOSPHERE_SKY_VIEW_HEIGHT)
     return;
@@ -324,7 +324,7 @@ sky_view_compute(uint3 id : SV_DispatchThreadID) {
 // in-scatter and mean transmittance at every slice depth.
 [shader("compute")][numthreads(8, 8, 1)] void
 aerial_perspective_compute(uint3 id : SV_DispatchThreadID) {
-  VkrVulkanSkyBuildRoot *root = g_sky_build_push.root;
+  VkrVulkanSkyBuildRoot root = vkr_vk_uniform_root(*g_sky_build_push.root);
   if (any(id.xy >= uint2(VKR_ATMOSPHERE_AERIAL_SIZE)))
     return;
   VkrVulkanSky *sky = root.sky;

@@ -100,7 +100,7 @@ float vkr_vk_ssgi_positive_depth(VkrSsrParams screen, uint2 pixel,
     return vkr_ssr_valid_depth(-view.z) ? -view.z : 0.0f;
 }
 
-uint2 vkr_vk_ssgi_identity(VkrVkSsgiTemporalRoot* root, uint2 receiver_pixel)
+uint2 vkr_vk_ssgi_identity(VkrVkSsgiTemporalRoot root, uint2 receiver_pixel)
 {
     uint encoded = g_uint2_textures[root.vbuffer_texture]
                        .Load(int3(receiver_pixel, 0)).x;
@@ -126,7 +126,7 @@ float3 vkr_vk_ssgi_view_normal(VkrSsgiParams params, uint normal_texture,
 [numthreads(8, 8, 1)]
 void ssgi_depth_base_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsgiDepthBaseRoot* root = g_ssgi_depth_base_push.root;
+    VkrVkSsgiDepthBaseRoot root = vkr_vk_uniform_root(*g_ssgi_depth_base_push.root);
     uint2 pixel = thread_id.xy;
     uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
     if (any(pixel >= trace_extent))
@@ -163,7 +163,7 @@ void ssgi_depth_base_compute(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ssgi_depth_mip_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsgiDepthMipRoot* root = g_ssgi_depth_mip_push.root;
+    VkrVkSsgiDepthMipRoot root = vkr_vk_uniform_root(*g_ssgi_depth_mip_push.root);
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.destination_extent))
         return;
@@ -188,7 +188,7 @@ void ssgi_depth_mip_compute(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ssgi_trace_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsgiTraceRoot* root = g_ssgi_trace_push.root;
+    VkrVkSsgiTraceRoot root = vkr_vk_uniform_root(*g_ssgi_trace_push.root);
     uint2 pixel = thread_id.xy;
     uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
     if (any(pixel >= trace_extent))
@@ -263,7 +263,7 @@ void ssgi_trace_compute(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ssgi_temporal_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsgiTemporalRoot* root = g_ssgi_temporal_push.root;
+    VkrVkSsgiTemporalRoot root = vkr_vk_uniform_root(*g_ssgi_temporal_push.root);
     uint2 pixel = thread_id.xy;
     uint2 trace_extent = uint2(root.params.trace_width, root.params.trace_height);
     if (any(pixel >= trace_extent))
@@ -404,7 +404,7 @@ bool vkr_vk_ssgi_volume_valid(VkrVulkanPacketFrameRoot* frame, float3 world)
         g_textures[frame.diffuse_volume_texture].Load(int3(7, int(cell.row), 0)).y > 0.0f;
 }
 
-float vkr_vk_ssgi_filtered_roughness(VkrVkSsgiCompositeRoot* root, uint2 pixel,
+float vkr_vk_ssgi_filtered_roughness(VkrVkSsgiCompositeRoot root, uint2 pixel,
                                      uint visible, float3 normal, float roughness,
                                      uint2 extent)
 {
@@ -426,7 +426,7 @@ float vkr_vk_ssgi_filtered_roughness(VkrVkSsgiCompositeRoot* root, uint2 pixel,
 [numthreads(8, 8, 1)]
 void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSsgiCompositeRoot* root = g_ssgi_composite_push.root;
+    VkrVkSsgiCompositeRoot root = vkr_vk_uniform_root(*g_ssgi_composite_push.root);
     uint2 pixel = thread_id.xy;
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
     if (any(pixel >= source_extent) ||

@@ -144,7 +144,7 @@ VkrFroxelSample vkr_vk_froxel_sample_integrated(
 [numthreads(8, 8, 4)]
 void froxel_inject_compute(uint3 cell : SV_DispatchThreadID)
 {
-    VkrVkFroxelInjectRoot* root = g_froxel_inject_push.root;
+    VkrVkFroxelInjectRoot root = vkr_vk_uniform_root(*g_froxel_inject_push.root);
     VkrFroxelFogParams params = root.params[0];
     if (any(cell >= root.extent) || !vkr_froxel_enabled(params))
         return;
@@ -170,7 +170,7 @@ void froxel_inject_compute(uint3 cell : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void froxel_integrate_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkFroxelIntegrateRoot* root = g_froxel_integrate_push.root;
+    VkrVkFroxelIntegrateRoot root = vkr_vk_uniform_root(*g_froxel_integrate_push.root);
     VkrFroxelFogParams params = root.params[0];
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.extent.xy) || !vkr_froxel_enabled(params))
@@ -201,7 +201,7 @@ void froxel_integrate_compute(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void froxel_apply_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkFroxelApplyRoot* root = g_froxel_apply_push.root;
+    VkrVkFroxelApplyRoot root = vkr_vk_uniform_root(*g_froxel_apply_push.root);
     VkrFroxelFogParams params = root.params[0];
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.extent) || !vkr_froxel_enabled(params))

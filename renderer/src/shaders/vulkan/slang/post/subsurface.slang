@@ -26,14 +26,14 @@ struct VkrVkSubsurfacePush {
 };
 [[vk::push_constant]] ConstantBuffer<VkrVkSubsurfacePush> g_subsurface_push;
 
-float3 vkr_vk_subsurface_world(VkrVkSubsurfaceRoot *root, uint2 pixel,
+float3 vkr_vk_subsurface_world(VkrVkSubsurfaceRoot root, uint2 pixel,
                                float depth) {
   float2 ndc =
       vkr_vk_resolve_ndc(float2(pixel) + 0.5f, root.params.dimensions.xy);
   float4 world = mul(root.inverse_view_projection, float4(ndc, depth, 1.0f));
   return world.xyz / max(abs(world.w), 1e-7f) * sign(world.w);
 }
-float vkr_vk_subsurface_roughness(VkrVkSubsurfaceRoot *root, uint2 pixel,
+float vkr_vk_subsurface_roughness(VkrVkSubsurfaceRoot root, uint2 pixel,
                                   uint visible, float3 normal,
                                   float roughness) {
   uint2 limit = root.params.dimensions.xy - 1u;
@@ -62,7 +62,7 @@ float vkr_vk_subsurface_roughness(VkrVkSubsurfaceRoot *root, uint2 pixel,
   return vkr_ggx_filter_roughness(roughness,
                                   0.25f * (dot(dx, dx) + dot(dy, dy)));
 }
-float3 vkr_vk_subsurface_receiver(VkrVkSubsurfaceRoot *root, uint2 pixel,
+float3 vkr_vk_subsurface_receiver(VkrVkSubsurfaceRoot root, uint2 pixel,
                                   uint visible, float3 world, float3 normal) {
   float3 view = normalize(root.frame.view_position.xyz - world);
   float4 specular =
@@ -96,7 +96,7 @@ float3 vkr_vk_subsurface_receiver(VkrVkSubsurfaceRoot *root, uint2 pixel,
 }
 [shader("compute")][numthreads(8, 8, 1)] void
 vk_subsurface_gather(uint3 thread_id : SV_DispatchThreadID) {
-  VkrVkSubsurfaceRoot *root = g_subsurface_push.root;
+  VkrVkSubsurfaceRoot root = vkr_vk_uniform_root(*g_subsurface_push.root);
   uint2 pixel = thread_id.xy;
   if (any(pixel >= root.params.dimensions.xy))
     return;

@@ -42,7 +42,7 @@ void vk_exposure_clear(uint3 thread_id : SV_DispatchThreadID)
 void vk_exposure_histogram(uint3 thread_id : SV_DispatchThreadID,
                            uint group_index : SV_GroupIndex)
 {
-    VkrVkExposureRoot *root = g_exposure_push.root;
+    VkrVkExposureRoot root = vkr_vk_uniform_root(*g_exposure_push.root);
     g_exposure_bins[group_index] = 0u;
     GroupMemoryBarrierWithGroupSync();
 
@@ -82,7 +82,7 @@ groupshared uint g_exposure_high_bin[VKR_EXPOSURE_HISTOGRAM_BINS];
 [numthreads(VKR_EXPOSURE_HISTOGRAM_BINS, 1, 1)]
 void vk_exposure_resolve(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkExposureRoot *root = g_exposure_push.root;
+    VkrVkExposureRoot root = vkr_vk_uniform_root(*g_exposure_push.root);
     uint bin = thread_id.x;
     float count = float(root.histogram->bins[bin]);
     g_exposure_prefix[bin] = count;

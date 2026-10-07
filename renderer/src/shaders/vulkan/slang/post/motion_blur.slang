@@ -35,7 +35,7 @@ struct VkrVkMotionBlurRawExtents {
 };
 
 VkrVkMotionBlurRawExtents
-vkr_vk_motion_blur_raw_extents(VkrVkMotionBlurRoot *root) {
+vkr_vk_motion_blur_raw_extents(VkrVkMotionBlurRoot root) {
   VkrVkMotionBlurRawExtents extents;
   extents.velocity = vkr_vk_motion_blur_extent(root.source1);
   extents.depth = vkr_vk_motion_blur_extent(root.source2);
@@ -43,7 +43,7 @@ vkr_vk_motion_blur_raw_extents(VkrVkMotionBlurRoot *root) {
   return extents;
 }
 
-bool vkr_vk_motion_blur_eligible(VkrVkMotionBlurRoot *root,
+bool vkr_vk_motion_blur_eligible(VkrVkMotionBlurRoot root,
                                  VkrVkMotionBlurRawExtents extents,
                                  float2 output_uv) {
   float2 raw_uv = output_uv * root.params.depth_uv.xy + root.params.depth_uv.zw;
@@ -61,7 +61,7 @@ bool vkr_vk_motion_blur_eligible(VkrVkMotionBlurRoot *root,
     }
   return true;
 }
-float3 vkr_vk_motion_blur_metadata(VkrVkMotionBlurRoot *root,
+float3 vkr_vk_motion_blur_metadata(VkrVkMotionBlurRoot root,
                                    VkrVkMotionBlurRawExtents extents,
                                    float2 output_uv) {
   float2 raw_uv = output_uv * root.params.depth_uv.xy + root.params.depth_uv.zw;
@@ -76,7 +76,7 @@ float3 vkr_vk_motion_blur_metadata(VkrVkMotionBlurRoot *root,
 [shader("compute")][numthreads(16, 16, 1)] void
 vk_motion_blur_tile_max(uint3 local_id : SV_GroupThreadID,
                         uint3 group_id : SV_GroupID) {
-  VkrVkMotionBlurRoot *root = g_motion_blur_push.root;
+  VkrVkMotionBlurRoot root = vkr_vk_uniform_root(*g_motion_blur_push.root);
   uint2 local_pixel = local_id.xy;
   uint2 tile = group_id.xy;
   uint lane = local_pixel.y * 16u + local_pixel.x;
@@ -111,7 +111,7 @@ vk_motion_blur_tile_max(uint3 local_id : SV_GroupThreadID,
 }[shader("compute")]
  [numthreads(8, 8, 1)] void vk_motion_blur_neighbor_max(
      uint3 thread_id : SV_DispatchThreadID) {
-  VkrVkMotionBlurRoot *root = g_motion_blur_push.root;
+  VkrVkMotionBlurRoot root = vkr_vk_uniform_root(*g_motion_blur_push.root);
   uint2 pixel = thread_id.xy;
   if (!all(pixel < root.params.dimensions.zw))
     return;
@@ -130,7 +130,7 @@ vk_motion_blur_tile_max(uint3 local_id : SV_GroupThreadID,
 }
 [shader("compute")][numthreads(8, 8, 1)] void
 vk_motion_blur_reconstruct(uint3 thread_id : SV_DispatchThreadID) {
-  VkrVkMotionBlurRoot *root = g_motion_blur_push.root;
+  VkrVkMotionBlurRoot root = vkr_vk_uniform_root(*g_motion_blur_push.root);
   uint2 pixel = thread_id.xy;
   if (!all(pixel < root.params.dimensions.xy))
     return;

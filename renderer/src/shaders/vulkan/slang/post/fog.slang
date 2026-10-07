@@ -26,7 +26,7 @@ float3 vkr_vk_fog_homogeneous(float4 value)
     return value.xyz / max(abs(value.w), 1e-7f) * sign(value.w);
 }
 
-float3 vkr_vk_fog_world_position(VkrVulkanFogRoot *root, uint2 pixel,
+float3 vkr_vk_fog_world_position(VkrVulkanFogRoot root, uint2 pixel,
                                  float device_depth)
 {
     float2 ndc = (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
@@ -38,7 +38,7 @@ float3 vkr_vk_fog_world_position(VkrVulkanFogRoot *root, uint2 pixel,
 [numthreads(8, 8, 1)]
 void fog_apply_compute(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVulkanFogRoot *root = g_fog_push.root;
+    VkrVulkanFogRoot root = vkr_vk_uniform_root(*g_fog_push.root);
     uint2 pixel = thread_id.xy;
     if (any(pixel >= root.extent))
         return;

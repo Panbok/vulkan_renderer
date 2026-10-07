@@ -29,7 +29,7 @@ struct VkrSkinningPush
 [numthreads(64, 1, 1)]
 void vk_skinning(uint3 dispatch_id : SV_DispatchThreadID)
 {
-    VkrSkinningRoot *root = g_skinning_push.root;
+    VkrSkinningRoot root = vkr_vk_uniform_root(*g_skinning_push.root);
     uint index = dispatch_id.x;
     if (index >= root.vertex_count)
     {

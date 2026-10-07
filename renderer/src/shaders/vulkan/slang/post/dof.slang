@@ -14,7 +14,7 @@ struct VkrVkDofPush {
   uint2 reserved;
 };
 [[vk::push_constant]] ConstantBuffer<VkrVkDofPush> g_dof_push;
-float4 vkr_vk_dof_load(VkrVkDofRoot *root, uint index, uint2 pixel) {
+float4 vkr_vk_dof_load(VkrVkDofRoot root, uint index, uint2 pixel) {
   uint texture_index = index == 0u   ? root.source0
                        : index == 1u ? root.source1
                        : index == 2u ? root.source2
@@ -23,7 +23,7 @@ float4 vkr_vk_dof_load(VkrVkDofRoot *root, uint index, uint2 pixel) {
   return g_textures[NonUniformResourceIndex(texture_index)].Load(
       int3(pixel, 0));
 }
-float4 vkr_vk_dof_nearest(VkrVkDofRoot *root, float2 uv) {
+float4 vkr_vk_dof_nearest(VkrVkDofRoot root, float2 uv) {
   uint width, height;
   g_textures[NonUniformResourceIndex(root.source0)].GetDimensions(width,
                                                                   height);
@@ -35,7 +35,7 @@ float4 vkr_vk_dof_nearest(VkrVkDofRoot *root, float2 uv) {
 // A half-resolution footprint has separate color coverage for each hemisphere
 // of the lens. Keeping the layers apart prevents silhouette color
 // contamination.
-float3 vkr_vk_dof_metadata(VkrVkDofRoot *root, uint source_index, float2 uv) {
+float3 vkr_vk_dof_metadata(VkrVkDofRoot root, uint source_index, float2 uv) {
   int2 base = int2(floor(uv * float2(root.params.dimensions.xy) - 0.5f));
   float near_radius = 0.0f;
   float far_radius = 0.0f;
@@ -56,7 +56,7 @@ float3 vkr_vk_dof_metadata(VkrVkDofRoot *root, uint source_index, float2 uv) {
 
 [shader("compute")][numthreads(8, 8, 1)] void
 vk_dof_coc(uint3 thread_id : SV_DispatchThreadID) {
-  VkrVkDofRoot *root = g_dof_push.root;
+  VkrVkDofRoot root = vkr_vk_uniform_root(*g_dof_push.root);
   uint2 pixel = thread_id.xy;
   if (!all(pixel < root.params.dimensions.xy))
     return;
@@ -72,7 +72,7 @@ vk_dof_coc(uint3 thread_id : SV_DispatchThreadID) {
 }[shader("compute")]
  [numthreads(8, 8, 1)] void vk_dof_dilate_horizontal(
      uint3 thread_id : SV_DispatchThreadID) {
-  VkrVkDofRoot *root = g_dof_push.root;
+  VkrVkDofRoot root = vkr_vk_uniform_root(*g_dof_push.root);
   uint2 pixel = thread_id.xy;
   if (!all(pixel < root.params.dimensions.zw))
     return;
@@ -94,7 +94,7 @@ vk_dof_coc(uint3 thread_id : SV_DispatchThreadID) {
 }
 [shader("compute")][numthreads(8, 8, 1)] void
 vk_dof_dilate_vertical(uint3 thread_id : SV_DispatchThreadID) {
-  VkrVkDofRoot *root = g_dof_push.root;
+  VkrVkDofRoot root = vkr_vk_uniform_root(*g_dof_push.root);
   uint2 pixel = thread_id.xy;
   if (!all(pixel < root.params.dimensions.zw))
     return;
@@ -114,7 +114,7 @@ vk_dof_dilate_vertical(uint3 thread_id : SV_DispatchThreadID) {
       float4(near_radius, near_depth, 0.0f, 0.0f);
 }[shader("compute")][numthreads(
     8, 8, 1)] void vk_dof_prefilter(uint3 thread_id : SV_DispatchThreadID) {
-  VkrVkDofRoot *root = g_dof_push.root;
+  VkrVkDofRoot root = vkr_vk_uniform_root(*g_dof_push.root);
   uint2 pixel = thread_id.xy;
   if (!all(pixel < root.params.dimensions.zw))
     return;
@@ -149,7 +149,7 @@ vk_dof_dilate_vertical(uint3 thread_id : SV_DispatchThreadID) {
 }
 [shader("compute")][numthreads(8, 8, 1)] void
 vk_dof_gather(uint3 thread_id : SV_DispatchThreadID) {
-  VkrVkDofRoot *root = g_dof_push.root;
+  VkrVkDofRoot root = vkr_vk_uniform_root(*g_dof_push.root);
   uint2 pixel = thread_id.xy;
   if (!all(pixel < root.params.dimensions.zw))
     return;
@@ -197,7 +197,7 @@ vk_dof_gather(uint3 thread_id : SV_DispatchThreadID) {
   g_storage_2d[NonUniformResourceIndex(root.destination1)][pixel] = far_sum;
 }[shader("compute")][numthreads(
     8, 8, 1)] void vk_dof_composite(uint3 thread_id : SV_DispatchThreadID) {
-  VkrVkDofRoot *root = g_dof_push.root;
+  VkrVkDofRoot root = vkr_vk_uniform_root(*g_dof_push.root);
   uint2 pixel = thread_id.xy;
   if (!all(pixel < root.params.dimensions.xy))
     return;

@@ -284,6 +284,31 @@ production shader compilation; shaders are not hot-reloaded. Native driver
 pipeline caches/Metal archives are private to each implementation. There is no
 frontend shader manifest or named-uniform pipeline system.
 
+Vulkan compute entries read their dispatch root once with
+`vkr_vk_uniform_root` (`common/resources.slangh`). It copies the root by value
+and broadcasts each 32-bit word with `WaveReadLaneFirst`, so the fields stay in
+scalar registers; helpers receive the root by value. Read through its
+physical-storage pointer, the AMD compiler reloaded every root field with a
+vector memory load at each use, including inside loops (driver ISA from
+`VK_KHR_pipeline_executable_properties`, RX 6700 XT, driver 26.6.3). Slang's
+`ConstBufferPointer` and `Ptr<T, Access.Read>` emit no `NonWritable`
+decoration and do not change that code. Vertex and fragment entries keep
+pointer reads: the same broadcast in the visibility vertex shader made
+`VBuffer.Opaque` about 4% slower. On the Bistro orbit at 2560×1440 with TAA
+(Release, local and non-authoritative, one run each, 2026-10-07), the GPU pass
+sum fell from 16.68 to 14.98 ms and `Temporal.Resolve` from 3.41 to 2.03 ms
+(reports `sha256:00023a09a58cd98c5837493ac487c4e06f1b0cf6765441329773129325b97c5e`,
+`sha256:f3abae63cd90c291b3d24d909967556e73ff24445187acdc1547ac875b1a7ae5`).
+With GTAO, SSR, SSGI, bloom, depth of field and motion blur also on, it fell
+from 35.52 to 29.83 ms; `SSR.Temporal` fell from 3.85 to 2.45 ms
+(`sha256:b9c00e110fb02548e29bb7a753f3f740a14b5d569d9f95a2c031698e0994ce1b`,
+`sha256:3d69e50a27b6b8afa2fda4717e81c36c662f566c87730528e92d9508502f75c3`).
+Without SSR, moving-camera TAA captures of the old and new builds differ no
+more than two runs of one build do. With SSR, the trace rounds differently:
+its first captured frame differs in 69 pixels by at most 1.1e-4, and the SSR
+and TAA histories spread that to about 1,000 final pixels by frame 30, 15 of
+them above 2/255, within the harness capture thresholds.
+
 The split between public `VkrFrameInput` and private `VkrPreparedFrame` changes
 CPU preparation ownership, not the native root layouts or shader-visible instance
 records. Moving scene/assets to application owners and preparing all pass families

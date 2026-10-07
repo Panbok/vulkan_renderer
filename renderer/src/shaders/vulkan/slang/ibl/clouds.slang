@@ -77,7 +77,7 @@ float vk_cloud_shape(VkrVulkanSky *sky, VkrCloudParams clouds,
 [numthreads(8, 8, 1)]
 void cloud_shadow_compute(uint3 id : SV_DispatchThreadID)
 {
-    VkrVulkanSkyBuildRoot *root = g_sky_build_push.root;
+    VkrVulkanSkyBuildRoot root = vkr_vk_uniform_root(*g_sky_build_push.root);
     if (any(id.xy >= uint2(VKR_CLOUD_SHADOW_SIZE)))
         return;
     VkrVulkanSky *sky = root.sky;
@@ -270,7 +270,7 @@ float4 vk_cloud_march(VkrVulkanSky *sky, VkrVulkanPacketFrameRoot *frame,
 [numthreads(8, 8, 1)]
 void cloud_trace_compute(uint3 id : SV_DispatchThreadID)
 {
-    VkrVulkanCloudTraceRoot *root = g_cloud_trace_push.root;
+    VkrVulkanCloudTraceRoot root = vkr_vk_uniform_root(*g_cloud_trace_push.root);
     uint2 texel = id.xy;
     if (any(texel >= root.extent))
         return;
@@ -363,7 +363,7 @@ struct VkrVulkanCloudSkyLightPush
 [numthreads(8, 8, 1)]
 void cloud_sky_light_compute(uint3 id : SV_DispatchThreadID)
 {
-    VkrVulkanCloudSkyLightRoot *root = g_cloud_sky_light_push.root;
+    VkrVulkanCloudSkyLightRoot root = vkr_vk_uniform_root(*g_cloud_sky_light_push.root);
     uint extent = root.face_size;
     if (any(id.xy >= uint2(extent)) || id.z >= 6u)
         return;
@@ -382,7 +382,7 @@ void cloud_sky_light_compute(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void cloud_sky_light_sh(uint3 group_thread : SV_GroupThreadID)
 {
-    VkrVulkanCloudSkyLightRoot *root = g_cloud_sky_light_push.root;
+    VkrVulkanCloudSkyLightRoot root = vkr_vk_uniform_root(*g_cloud_sky_light_push.root);
     vk_sh_project(group_thread.x, root.face_size, root.source_texture,
                   root.source_mip, root.radiance, true,
                   float3(root.window_band_0, root.window_band_1,
@@ -400,7 +400,7 @@ groupshared float4 g_cloud_sky_light_tile[VKR_CLOUD_SKY_LIGHT_TILE *
 void cloud_sky_light_mips(uint3 group_thread : SV_GroupThreadID,
                           uint3 group : SV_GroupID)
 {
-    VkrVulkanCloudSkyLightRoot *root = g_cloud_sky_light_push.root;
+    VkrVulkanCloudSkyLightRoot root = vkr_vk_uniform_root(*g_cloud_sky_light_push.root);
     uint face_size = root.face_size;
     uint face = group.z;
     uint2 texel = group_thread.xy;
