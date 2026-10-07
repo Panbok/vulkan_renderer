@@ -1130,7 +1130,7 @@ authored Henyey-Greenstein anisotropy; a sky-lit medium adds the sky light's
 average radiance. Production Vulkan SPIR-V and host compilation checks pass;
 native Vulkan froxel output is not recorded.
 
-Directional shadows default to four cascades with snapping, fit hysteresis,
+Directional shadows default to four 2048² cascades with snapping, fit hysteresis,
 per-target-image reuse and shared PCF/bias units. The nearest two cascades add
 eight-sample PCSS blocker search and at most sixteen filter samples, with an
 authored 0.53-degree sun diameter by default. Farther cascades retain PCF,

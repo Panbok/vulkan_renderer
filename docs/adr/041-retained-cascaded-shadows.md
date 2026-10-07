@@ -21,7 +21,9 @@ geometric containment proof and valid retained image contents.
 
 ## Decision
 
-Use cascaded directional depth maps with four cascades by default. CPU fitting
+Use cascaded directional depth maps with four cascades of 2048² by default.
+Every preset uses that size (`VKR_SHADOW_MAP_SIZE_DEFAULT`); the harness keeps
+1024 and 4096 as experiment sizes. CPU fitting
 owns light-space orientation/anchor, texel snapping, fit hysteresis and optional
 scene-bounds Z fitting clipped against each final cascade XY rectangle.
 
@@ -177,7 +179,13 @@ Rendering every cascade is the safe forced-update control. Retaining allocation
 without content validity is insufficient. Two-phase visibility was declined in
 ADR-032; SDSM is not the default quality policy. SDSM moves resolution but not
 raster or sampling work, and each fit change invalidates a retained cascade,
-so it does not lower current shadow cost.
+so it does not lower current shadow cost; the Vulkan Bistro study below
+confirms this.
+
+4096² cascades were rejected: in Bistro they cost 0.4 ms more cascade work per
+orbit frame and 905 MiB more GPU memory than 2048², for differences that are
+hard to see at 2x zoom. 1024² cascades were rejected because they visibly blur
+thin near shadows. See [Cascade map size evidence](#cascade-map-size-evidence).
 
 Full-resolution EVSM for every cascade was rejected: with mips, `RGBA32F` at
 2048² costs 85 MiB per cascade per target image, beyond the 16 GB Mac floor
@@ -258,6 +266,58 @@ elevation, `VKR_SHADOW_EVSM=1` against the setting off gave these results:
 These results made far-cascade EVSM the desktop default on 2026-10-07. In
 Bistro the setting costs no measurable frame time, and its visible effect is
 small.
+
+## Cascade map size evidence
+
+On native Vulkan (Release, RX 6700 XT, 2026-10-07, dirty tree, one binary for
+every run, non-authoritative), far-cascade EVSM on, Bistro's authored sun at
+35 degrees elevation, the cascade side was set through the case's
+`renderer.shadow_map_size` to 1024, 2048 and 4096, each with SDSM off and on
+(`renderer.shadow_sdsm`). Captures ran under `local-offscreen`, the timing of
+`shadow_bistro_far_cascade_perf` under `local-offscreen-perf-audit-gpu`, and the
+timing of `bistro_shadow_orbit` under `local-windowed-gpu`. Each timing run had
+two children of 300 frames.
+
+Quality, as final-color pixels that differ by more than 2 of 255 from 4096²
+with the same fitting:
+
+| View | 1024² | 2048² |
+|---|---|---|
+| `shadow_bistro_plaza_near_capture`: sunlit paving in cascade 0 | 3.65% (maximum 67) | 1.18% (maximum 46) |
+| `shadow_bistro_far_cascade_capture`: distant facades | 1.12% (maximum 49) | 0.44% (maximum 38) |
+| Street view of `bistro_shadow_quality_lambda080`, near street in shadow | at most 2 of 255 | at most 1 of 255 |
+
+In the plaza, 1024² widens and softens the bollard shadows and loses the
+shadows of facade relief. 2048² and 4096² are hard to tell apart at 2x zoom.
+
+Cost in the orbit, where cascades redraw as the camera moves:
+
+| Side | Redraws of cascades 0/1/2/3 in 600 frames | Cascade and moments GPU time per frame | `Lighting.Deferred` p50 | Frame p50 / p95 | Live GPU memory |
+|---|---|---|---|---|---|
+| 1024 | 72 / 0 / 12 / 24 | 0.041 ms | 1.310 ms | 4.51 / 6.72 ms | 5290 MiB |
+| 2048 | 146 / 0 / 42 / 60 | 0.125 ms | 1.335 ms | 4.72 / 6.93 ms | 5453 MiB |
+| 4096 | 270 / 12 / 84 / 126 | 0.532 ms | 1.439 ms | 5.23 / 7.57 ms | 6358 MiB |
+
+The reuse guard band is a texel count, so it covers half the distance at each
+doubling of the side. A larger map therefore redraws more often as well as
+costing more per redraw. With a static camera no cascade redraws, and
+`Lighting.Deferred` in the far street view took 1.716, 1.753 and 1.852 ms p50.
+The memory includes the case's three target images.
+
+SDSM did not pay for itself (ADR-033). At 2048² in the orbit it raised the
+redraws to 196 / 66 / 36 / 54 and the cascade, moments and `SDSM.Reduce` time
+to 0.190 ms per frame, and the frame p95 to 7.25 ms. At 4096² the frame p95
+rose to 9.26 ms. `SDSM.Reduce` took 0.027 ms every frame. Against fixed splits
+it changed 1.07% of plaza pixels and 1.14% of far-street pixels by more than 2
+of 255 with no visible gain in the crops. The SDSM orbit at 1024² redrew
+different cascades in its two children, so the harness marked it incomplete
+for a work-volume mismatch.
+
+Report digests (prefixes): orbit at 1024, 2048 and 4096 with fixed splits
+`sha256:3e12b5c79922`, `sha256:425eb1e72c5a` and `sha256:8476cf0963a8`; with
+SDSM `sha256:68d09855617a` (incomplete), `sha256:a830cfddfe18` and
+`sha256:5d37452a303f`. Plaza captures with fixed splits
+`sha256:70ce061372e0`, `sha256:1e7a37f46cb8` and `sha256:7f359d236056`.
 
 ## Retained-cascade culling evidence
 

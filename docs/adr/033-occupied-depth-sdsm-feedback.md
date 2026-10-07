@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-07
 authority: adr
 ---
 
@@ -40,8 +40,22 @@ second-phase camera visibility proof.
 
 Completed delayed feedback can concentrate resolution but adds reduction and
 cascade work. The original measurement, on the Metal desktop implementation
-removed on 2026-10-06, retained fixed defaults; it does not establish Vulkan
-device cost.
+removed on 2026-10-06, retained fixed defaults.
+
+On native Vulkan (Release, RX 6700 XT, 2026-10-07, non-authoritative), Bistro
+at 2048² cascades kept fixed splits as the default as well.
+
+- `SDSM.Reduce` took 0.027 ms every frame.
+- In `bistro_shadow_orbit`, the cascades redrew more often, and the cascade,
+  moments and reduction work rose from 0.125 to 0.190 ms per frame. The frame
+  p95 rose from 6.93 to 7.25 ms.
+- The plaza and far-street captures changed in about 1% of pixels with no
+  visible gain.
+- At 1024², the two children of the SDSM orbit redrew different cascades, so
+  the shadow work is not repeatable between runs.
+
+[ADR-041](041-retained-cascaded-shadows.md#cascade-map-size-evidence) records
+the configuration and report digests.
 
 ## Alternatives considered
 
@@ -51,7 +65,9 @@ can fit the wrong view.
 
 ## Revisit when
 
-A representative quality/cost comparison justifies enabling it by default.
+A representative quality/cost comparison justifies enabling it by default,
+for example a scene whose views end well short of the 200 m shadow distance
+and show visibly sharper shadows with SDSM.
 
 ## Implementation
 

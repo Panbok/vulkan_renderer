@@ -3,7 +3,11 @@
 #include "math/mat.h"
 
 #define VKR_SHADOW_CASCADE_COUNT_MAX 8
-#define VKR_SHADOW_MAP_SIZE_DEFAULT 4096
+/** Side of every directional cascade in every preset. In a Bistro orbit,
+ * 4096 took 0.4 ms more cascade work per frame and 905 MiB more GPU memory
+ * (three target images) than 2048 for little visible gain; 1024 blurred
+ * thin near shadows (ADR-041). */
+#define VKR_SHADOW_MAP_SIZE_DEFAULT 2048
 #define VKR_SHADOW_TARGET_IMAGE_COUNT_MAX 8
 #define VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT 4096
 /** First cascade that optional far-cascade EVSM filters; matches the shader

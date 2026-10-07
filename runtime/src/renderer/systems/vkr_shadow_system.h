@@ -274,7 +274,7 @@ typedef struct VkrShadowConfig {
 /**
  * @brief High-quality CSM preset (recommended on modern GPUs).
  *
- * Four cascades at 2048.
+ * Four cascades at VKR_SHADOW_MAP_SIZE_DEFAULT (2048).
  *
  * `cascade_split_lambda` stays at 0.80 deliberately. Lowering it trades near
  * texel density for far density and is a named quality experiment with its own
@@ -302,7 +302,7 @@ typedef struct VkrShadowConfig {
       .local_shadow_soft = true_v,                                             \
       .far_cascade_evsm = true_v,                                              \
       .cascade_count = 4,                                                      \
-      .shadow_map_size = 2048,                                                 \
+      .shadow_map_size = VKR_SHADOW_MAP_SIZE_DEFAULT,                          \
       .cascade_split_lambda = 0.80f,                                           \
       .max_shadow_distance = 200.0f,                                           \
       .cascade_guard_band_texels = 32.0f,                                      \
@@ -352,7 +352,7 @@ typedef struct VkrShadowConfig {
       .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
       .local_shadow_soft = true_v,                                             \
       .cascade_count = 3,                                                      \
-      .shadow_map_size = 2048,                                                 \
+      .shadow_map_size = VKR_SHADOW_MAP_SIZE_DEFAULT,                          \
       .cascade_split_lambda = 0.75f,                                           \
       .max_shadow_distance = 120.0f,                                           \
       .cascade_guard_band_texels = 128.0f,                                     \
