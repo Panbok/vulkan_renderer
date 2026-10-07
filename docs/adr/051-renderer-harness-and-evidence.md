@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-07
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -194,13 +194,20 @@ Any other file, or a `.vkt` without a source hash, hashes its bytes. Outside a
 managed workspace the child applies the scene's editor overrides,
 `<scene>.editor.json`, after the scene resolves, as the application runtime
 does, and fails the repetition when they do not load; the closure includes that
-file when it exists, so overrides change the digest. `VKR_SHADOW_EVSM=1`
-enables far-cascade EVSM (ADR-041) in every child, like `VKR_SSR_QUALITY`, and
-adds `renderer.shadow_evsm` to the workload fingerprint only when set. A change of
+file when it exists, so overrides change the digest. A change of
 block encoder on one host therefore shows in the pixel comparison rather than in
 the fingerprint. Introducing this identity on 2026-10-03 changed every workload
 fingerprint once, so each accepted generation needs one re-acceptance on the
 host that produced it.
+
+A child draws far-cascade EVSM (ADR-041) when its case's shadow preset does:
+High and Ultra cases do, Balanced cases do not. `VKR_SHADOW_EVSM` overrides the
+preset in every child, like `VKR_SSR_QUALITY`: `1` turns EVSM on and `0` turns
+it off. The workload fingerprint adds `renderer.shadow_evsm` only when the case
+draws EVSM, which needs the desktop pipeline and more than two cascades
+([`vkr_harness_fingerprint.c`](../../tools/harness/vkr_harness_fingerprint.c)).
+Turning EVSM on by default on 2026-10-07 therefore changed the fingerprint of
+every desktop High and Ultra case once.
 
 ## Metal crash diagnostics
 

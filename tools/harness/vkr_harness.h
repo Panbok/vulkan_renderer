@@ -795,9 +795,12 @@ bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
 /** Whether the case's frames use the display-linear post target (ADR-043). */
 bool8_t
 vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest);
-/** Whether VKR_SHADOW_EVSM=1 enables far-cascade EVSM for every child; the
- * workload fingerprint records it only when enabled. */
-bool8_t vkr_harness_shadow_evsm_enabled(void);
+/** Whether a case's children draw far-cascade EVSM: the shadow preset's
+ * value unless VKR_SHADOW_EVSM is "1" or "0", and never on the tiled pipeline
+ * or without a far cascade. The workload fingerprint records it only when on.
+ */
+bool8_t
+vkr_harness_shadow_evsm_enabled(const VkrHarnessRendererConfig *renderer);
 bool8_t vkr_harness_case_fingerprints(
     const char *repo_root, VkrHarnessTool tool,
     const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,

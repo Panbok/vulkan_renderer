@@ -300,6 +300,7 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
       .texture_resolution =
           backend == VKR_RENDERER_BACKEND_TYPE_METAL ? 1u : 2u,
       .soft_shadows = true_v,
+      .filtered_far_shadows = true_v,
       .local_shadows = true_v,
       .ambient_occlusion = true_v,
       .screen_space_reflections = true_v,
@@ -330,6 +331,7 @@ graphics_preset_gates(const VkrGraphicsSettings *base,
   out.anti_aliasing = true_v;
   out.shadow_quality = epic ? 3u : high ? 2u : 1u;
   out.soft_shadows = medium;
+  out.filtered_far_shadows = high;
   out.local_shadows = medium;
   out.contact_shadows = epic;
   out.ambient_occlusion = medium;
@@ -361,6 +363,7 @@ vkr_graphics_settings_preset(const VkrGraphicsSettings *settings) {
     if (gates.anti_aliasing == settings->anti_aliasing &&
         gates.shadow_quality == settings->shadow_quality &&
         gates.soft_shadows == settings->soft_shadows &&
+        gates.filtered_far_shadows == settings->filtered_far_shadows &&
         gates.local_shadows == settings->local_shadows &&
         gates.contact_shadows == settings->contact_shadows &&
         gates.ambient_occlusion == settings->ambient_occlusion &&

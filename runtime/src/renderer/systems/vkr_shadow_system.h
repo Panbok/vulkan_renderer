@@ -195,7 +195,8 @@ typedef struct VkrShadowConfig {
   bool8_t local_shadow_soft;
   /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE also keep filtered
    * exponential variance moments that deferred lighting samples instead of
-   * PCF (the Filtered far shadows setting). Opt-in; off in every preset. */
+   * PCF (the Filtered far shadows setting). On in High and Ultra, off in
+   * Balanced; the tiled pipeline clears it every frame (ADR-087). */
   bool8_t far_cascade_evsm;
   uint32_t cascade_count;
   uint32_t shadow_map_size;
@@ -290,6 +291,8 @@ typedef struct VkrShadowConfig {
  *
  * SDSM remains opt-in; the rewrite specification records the measured Metal
  * gate that rejected it as a default.
+ *
+ * Cascades 2 and 3 take far-cascade EVSM (ADR-041) on the desktop pipeline.
  */
 #define VKR_SHADOW_CONFIG_HIGH                                                 \
   ((VkrShadowConfig){                                                          \
@@ -297,6 +300,7 @@ typedef struct VkrShadowConfig {
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,              \
       .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
       .local_shadow_soft = true_v,                                             \
+      .far_cascade_evsm = true_v,                                              \
       .cascade_count = 4,                                                      \
       .shadow_map_size = 2048,                                                 \
       .cascade_split_lambda = 0.80f,                                           \

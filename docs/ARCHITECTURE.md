@@ -1134,9 +1134,9 @@ Directional shadows default to four cascades with snapping, fit hysteresis,
 per-target-image reuse and shared PCF/bias units. The nearest two cascades add
 eight-sample PCSS blocker search and at most sixteen filter samples, with an
 authored 0.53-degree sun diameter by default. Farther cascades retain PCF,
-or, with the opt-in **Filtered far shadows** setting, take one bilinear fetch
-of exponential variance moments that a half-resolution pass rebuilds when the
-cascade redraws.
+or, with the **Filtered far shadows** setting that the High and Epic presets
+turn on for the desktop pipeline, take one bilinear fetch of exponential
+variance moments that a half-resolution pass rebuilds when the cascade redraws.
 Static reuse requires guard
 containment, matching generations, valid retained layers and a match with the
 common submitted fit; stale physical copies redraw that fit once. A retained

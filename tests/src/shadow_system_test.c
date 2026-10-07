@@ -1095,6 +1095,7 @@ test_retained_history_reuses_per_image_and_commits_only_on_submit(void) {
   const VkrRetainedShadowToken valid = {
       .resource_generation = 3u,
       .valid_layer_mask = cascade_mask(&system),
+      .moments_valid_cascade_mask = cascade_mask(&system),
   };
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
@@ -1136,6 +1137,7 @@ test_reused_cascade_publishes_its_rendered_receiver_data(void) {
   const VkrRetainedShadowToken valid = {
       .resource_generation = 3u,
       .valid_layer_mask = cascade_mask(&system),
+      .moments_valid_cascade_mask = cascade_mask(&system),
   };
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
@@ -1185,6 +1187,7 @@ test_retained_history_guard_contains_small_motion_not_large_motion(void) {
   const VkrRetainedShadowToken valid = {
       .resource_generation = 3u,
       .valid_layer_mask = cascade_mask(&system),
+      .moments_valid_cascade_mask = cascade_mask(&system),
   };
 
   camera.position.x += 0.1f;
@@ -1227,6 +1230,7 @@ vkr_internal void test_dynamic_overlap_and_publication_fail_closed(void) {
   const VkrRetainedShadowToken valid = {
       .resource_generation = 3u,
       .valid_layer_mask = cascade_mask(&system),
+      .moments_valid_cascade_mask = cascade_mask(&system),
   };
   update_for_reuse(&system, &camera);
 
@@ -1292,6 +1296,7 @@ test_retained_history_signatures_and_invalidation_fail_closed(void) {
   VkrRetainedShadowToken token = {
       .resource_generation = 3u,
       .valid_layer_mask = cascade_mask(&system),
+      .moments_valid_cascade_mask = cascade_mask(&system),
   };
 
   token.valid_layer_mask &= ~UINT32_C(1);
@@ -1300,6 +1305,19 @@ test_retained_history_signatures_and_invalidation_fail_closed(void) {
   assert(frame.cascade_render_mask == UINT32_C(1));
   vkr_shadow_system_discard_frame(&system);
   token.valid_layer_mask = cascade_mask(&system);
+
+  /* Valid depth alone does not make a far-cascade EVSM layer reusable;
+     its moments must be valid too. Nearer cascades need no moments. */
+  assert(config.far_cascade_evsm);
+  token.moments_valid_cascade_mask = UINT32_C(1)
+                                     << VKR_SHADOW_EVSM_FIRST_CASCADE;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask ==
+         (cascade_mask(&system) &
+          ~((UINT32_C(2) << VKR_SHADOW_EVSM_FIRST_CASCADE) - 1u)));
+  vkr_shadow_system_discard_frame(&system);
+  token.moments_valid_cascade_mask = cascade_mask(&system);
 
   payload.static_generation++;
   vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
@@ -1412,6 +1430,7 @@ vkr_internal void test_moving_light_keeps_cascades_within_tolerance(void) {
   const VkrRetainedShadowToken token = {
       .resource_generation = 3u,
       .valid_layer_mask = cascade_mask(&system),
+      .moments_valid_cascade_mask = cascade_mask(&system),
   };
   const Vec3 base = vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f));
   VkrShadowFrameData frame = {0};
@@ -1481,6 +1500,7 @@ test_stale_dynamic_contents_render_once_after_caster_leaves(void) {
   const VkrRetainedShadowToken token = {
       .resource_generation = 3u,
       .valid_layer_mask = cascade_mask(&system),
+      .moments_valid_cascade_mask = cascade_mask(&system),
   };
   vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
@@ -1516,6 +1536,7 @@ vkr_internal void test_proactive_refresh_is_bounded_to_reusable_cascades(void) {
   const VkrRetainedShadowToken token = {
       .resource_generation = 3u,
       .valid_layer_mask = cascade_mask(&system),
+      .moments_valid_cascade_mask = cascade_mask(&system),
   };
   VkrShadowFrameData frame = {0};
   vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,

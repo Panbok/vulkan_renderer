@@ -1,4 +1,5 @@
 #include "core/vkr_subsystem_plan.h"
+#include "renderer/systems/vkr_shadow_system.h"
 #include "vkr_harness.h"
 
 vkr_internal int32_t vkr_harness_fingerprint_field_compare(const void *a,
@@ -126,11 +127,27 @@ vkr_internal bool8_t vkr_harness_camera_fields(
   return true_v;
 }
 
-bool8_t vkr_harness_shadow_evsm_enabled(void) {
+bool8_t
+vkr_harness_shadow_evsm_enabled(const VkrHarnessRendererConfig *renderer) {
+  /* The tiled pipeline renders no moments (ADR-087), and moments need a
+     cascade from VKR_SHADOW_EVSM_FIRST_CASCADE. */
+  if (renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED ||
+      renderer->shadow_cascades <= VKR_SHADOW_EVSM_FIRST_CASCADE) {
+    return false_v;
+  }
   /* A cold process option every child inherits, like VKR_SSR_QUALITY, so the
-     stored case and capture-summary layouts stay unchanged. */
+     stored case and capture-summary layouts stay unchanged. "1" and "0"
+     override the preset. */
   const char *evsm = getenv("VKR_SHADOW_EVSM");
-  return evsm && string_equals(evsm, "1");
+  if (evsm && (string_equals(evsm, "1") || string_equals(evsm, "0"))) {
+    return string_equals(evsm, "1");
+  }
+  /* Ultra takes High's value. */
+  const VkrShadowConfig preset =
+      string_equals(renderer->shadow_preset, "balanced")
+          ? VKR_SHADOW_CONFIG_BALANCED
+          : VKR_SHADOW_CONFIG_DEFAULT;
+  return preset.far_cascade_evsm;
 }
 
 bool8_t
@@ -179,7 +196,7 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
       renderer->shadow_split_lambda, renderer->shadow_map_size,
       renderer->shadow_pcf_early_out, renderer->shadow_sdsm);
   /* Off keeps the identity cases had before far-cascade EVSM existed. */
-  if (vkr_harness_shadow_evsm_enabled())
+  if (vkr_harness_shadow_evsm_enabled(renderer))
     ADD("renderer.shadow_evsm", "%u", 1u);
   ADD("renderer.render_mode", "%s", renderer->render_mode);
   ADD("renderer.display_transform", "%s", renderer->display_transform);

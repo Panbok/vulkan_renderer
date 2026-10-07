@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-07
 authority: adr
 ---
 
@@ -119,12 +119,15 @@ runtime converts degrees once per frame. Changing this value changes receiver
 sampling and temporal radiance validity without invalidating retained depth maps.
 
 
-### Optional far-cascade EVSM
+### Far-cascade EVSM
 
-The **Filtered far shadows** setting (`VkrShadowConfig.far_cascade_evsm`, off
-in every preset; `VKR_SHADOW_EVSM=1` for harness children) gives cascades from
-`VKR_SHADOW_EVSM_FIRST_CASCADE` (2) exponential variance moments. The shadow
-payload's `evsm_enabled` requires more cascades than that. The graph's
+The **Filtered far shadows** setting (`VkrShadowConfig.far_cascade_evsm`) gives
+cascades from `VKR_SHADOW_EVSM_FIRST_CASCADE` (2) exponential variance moments.
+The shadow payload's `evsm_enabled` requires more cascades than that. The High
+and Ultra shadow presets and the High and Epic graphics presets turn it on; the
+Balanced shadow preset and the Low and Medium graphics presets leave it off.
+Harness children follow their case's shadow preset unless `VKR_SHADOW_EVSM` is
+`1` or `0` ([ADR-051](051-renderer-harness-and-evidence.md)). The graph's
 `shadow_moments` image is `R32G32B32A32_SFLOAT` at half the depth map's side,
 one layer per filtered cascade, with no mip chain, retained per target image
 like `shadow_map`. `Shadow.Moments.${i}` runs only for a filtered cascade that
@@ -228,8 +231,33 @@ and an unchanged frame. With a temporary diagnostic forcing every cascade to
 redraw, `Shadow.Moments.0` and `.1` each took 0.25 ms per redraw against
 1.8–2.1 ms per cascade raster, which was unchanged. The moments add 32 MiB per
 target image at the High preset's 2048² maps. The Vulkan shader-ABI reflection
-test checks both roots against the compiled SPIR-V; native Vulkan execution is
-not yet recorded.
+test checks both roots against the compiled SPIR-V.
+
+On native Vulkan (Release, RX 6700 XT, 2026-10-07, dirty tree, one binary for
+both arms, non-authoritative), with Bistro's authored sun at 35 degrees
+elevation, `VKR_SHADOW_EVSM=1` against the setting off gave these results:
+
+- `shadow_bistro_far_cascade_capture` under `local-offscreen` changed 0.33% of
+  pixels by more than 2 of 255 (maximum 51), all on distant facades in cascades
+  2 and 3. Of those pixels, 95% became brighter, at the edges of thin facade
+  details. The capture shows no acne or visible light bleeding.
+- In the street view of `bistro_shadow_quality_lambda080`, where cascades 2 and
+  3 cover only the plaza and tree seen through an arch, final color changed by
+  at most 1 of 255. The `shadow_debug_*` channels cannot show the difference:
+  they filter every cascade with PCF.
+- `shadow_bistro_far_cascade_perf` under `local-offscreen-perf-audit-gpu` (two
+  children of 300 frames, static camera, so no cascade or moments redraw)
+  measured `Lighting.Deferred` at 1.767 ms against 1.776 ms p50 (standard
+  deviation 0.033 ms).
+- `bistro_shadow_orbit` under `local-windowed-gpu` (two children of 300 frames)
+  measured `Shadow.Moments.0` at 0.078 ms and `.1` at 0.072 ms p50 per redraw,
+  in 42 and 60 of 600 frames. Cascade raster time and draw counts did not
+  change, and `Lighting.Deferred` measured 1.343 ms against 1.345 ms p50. Live
+  GPU memory rose by 96 MiB, 32 MiB for each of the case's three target images.
+
+These results made far-cascade EVSM the desktop default on 2026-10-07. In
+Bistro the setting costs no measurable frame time, and its visible effect is
+small.
 
 ## Retained-cascade culling evidence
 
@@ -263,10 +291,11 @@ Native Vulkan execution is not yet recorded.
 ## Revisit when
 
 A focused scene exposes containment, bias, transition or distance artifacts, or
-matched quality/cost evidence justifies changing defaults. Make far-cascade
-EVSM a default only after grazing-angle captures show a quality gain over PCF,
-bleeding is inspected at overlapping casters, and native Vulkan captures
-confirm both.
+matched quality/cost evidence justifies changing defaults. The two Bistro views
+that support the far-cascade EVSM default put few sunlit receivers behind
+overlapping casters in cascades 2 and 3, so EVSM light bleeding is mostly
+untested. Turn the default off, or compare four-moment shadow maps, when a
+scene shows that bleeding.
 
 ## Implementation
 

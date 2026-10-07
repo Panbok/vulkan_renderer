@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "id": "local.bistro.shadow.far_cascade_capture",
+  "id": "local.bistro.shadow.far_cascade_perf",
   "suite": "local",
-  "description": "Bistro long street view, 1280x720, High shadows without TAA: final color covering every directional cascade, for far-cascade filtering comparisons (run with VKR_SHADOW_EVSM=0 and unset).",
+  "description": "Bistro long street view, 1280x720, High shadows without TAA: GPU pass timing over every directional cascade, for far-cascade filtering costs (run with VKR_SHADOW_EVSM=0 and unset).",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 1,
   "resolution": [
@@ -14,12 +14,12 @@
   "present": "none",
   "cache": "isolated_warm",
   "fixed_delta": 0.016666667,
-  "repetitions": 1,
+  "repetitions": 2,
   "repetition_timeout_ms": 1200000,
   "asset_ready_timeout_ms": 900000,
   "frames": {
     "warmup": 120,
-    "measure": 1
+    "measure": 300
   },
   "renderer": {
     "backend": "vulkan",
@@ -79,19 +79,5 @@
       "max": 0
     }
   ],
-  "target_image_count": 3,
-  "captures": [
-    {
-      "at_frame": 0,
-      "channels": [
-        "final_color"
-      ]
-    }
-  ],
-  "compare": {
-    "max_pixel_delta": 1.0,
-    "max_mean_absolute_error": 0.0005,
-    "max_failed_pixel_ratio": 2e-05,
-    "emit_diff": true
-  }
+  "target_image_count": 3
 }
