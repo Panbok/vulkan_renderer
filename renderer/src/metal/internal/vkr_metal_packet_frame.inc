@@ -215,6 +215,7 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
   frame_root->fog = upload->fog_gpu;
   frame_root->sky = upload->sky_gpu;
   frame_root->lightmap = upload->lightmap_gpu;
+  frame_root->decals = upload->decals_gpu;
   frame_root->terrain_materials =
       vkr_metal_material_table_device_terrain_gpu_address(renderer->materials);
   frame_root->transmission_materials =
@@ -1964,6 +1965,30 @@ vkr_metal_packet_tiled_probe_variant(const VkrPreparedFrame *packet) {
   return 0u;
 }
 
+/* Whether the camera sees a decal's box, so the frame takes the tiled
+   shading variants with decals (ADR-092). Conservative: a decal counts when
+   the sphere around its bounds meets the view frustum. */
+vkr_internal uint32_t
+vkr_metal_packet_tiled_decal_variant(const VkrPreparedFrame *packet) {
+  const VkrWorldPassPayload *world = packet->input.world;
+  if (!world || world->decal_count == 0u) {
+    return 0u;
+  }
+  const VkrFrustum frustum = vkr_frustum_from_view_projection(
+      packet->input.globals.view, packet->input.globals.projection);
+  for (uint32_t i = 0u; i < world->decal_count; ++i) {
+    const VkrDecal *decal = &world->decals[i];
+    const Vec3 centre =
+        vec3_scale(vec3_add(decal->bounds_min, decal->bounds_max), 0.5f);
+    const float32_t radius =
+        0.5f * vec3_length(vec3_sub(decal->bounds_max, decal->bounds_min));
+    if (vkr_frustum_test_sphere(&frustum, centre, radius)) {
+      return 1u;
+    }
+  }
+  return 0u;
+}
+
 /* Prepares the tiled pipeline's opaque pass (ADR-087): the camera's culled
    opaque draws, the clear sky's root, and multisampled targets in place of
    the pass's graph colour and depth, which they resolve into. Depth resolves
@@ -1976,10 +2001,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   const VkrMetalTiledLighting lighting =
       vkr_metal_packet_tiled_lighting(packet);
   const uint32_t probes = vkr_metal_packet_tiled_probe_variant(packet);
+  const uint32_t decals = vkr_metal_packet_tiled_decal_variant(packet);
   if (!vkr_metal_packet_prepare_gpu_draws(
           renderer, pass, prepared,
-          renderer->tiled_coverage_pipelines[probes][lighting],
-          renderer->tiled_forward_pipelines[probes][lighting])) {
+          renderer->tiled_coverage_pipelines[decals][probes][lighting],
+          renderer->tiled_forward_pipelines[decals][probes][lighting])) {
     return false_v;
   }
   VkrMetalPacketIndirectPass draws = prepared->indirect;

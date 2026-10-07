@@ -649,6 +649,8 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_ANIMATION;
   if (type == &vkr_scene_player_start_type)
     return VKR_UI_ICON_PERSON_WALK;
+  if (type == &vkr_scene_decal_type)
+    return VKR_UI_ICON_TEXTURE;
   if (type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type)
     return VKR_UI_ICON_SHAPES;
   if (type == &vkr_scene_trigger_type)
@@ -699,6 +701,8 @@ static const EditorObjectKind s_object_kinds[] = {
     {"cube", "Cube", VKR_UI_ICON_SHAPES, &vkr_scene_shape_type, false_v,
      "Basic"},
     {"text", "Text", VKR_UI_ICON_TEXT, &vkr_scene_text_type, false_v, "Basic"},
+    {"decal", "Decal", VKR_UI_ICON_TEXTURE, &vkr_scene_decal_type, false_v,
+     "Basic"},
     {"point_light", "Point Light", VKR_UI_ICON_POINT_LIGHT,
      &vkr_scene_point_light_type, false_v, "Lights"},
     {"spot_light", "Spot Light", VKR_UI_ICON_SPOT_LIGHT,

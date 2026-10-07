@@ -190,6 +190,31 @@ typedef struct ScenePlayerStart {
   bool8_t enabled;
 } ScenePlayerStart;
 
+#define SCENE_DECAL_MATERIAL_CAPACITY 256u
+
+/**
+ * A `decal` component (ADR-092): the entity's world transform places a box
+ * whose inside is [-0.5, 0.5] on each axis. The decal projects along the
+ * box's -Y onto the surfaces facing its +Y and lays its material's base
+ * colour over theirs before lighting. Only the tiled pipeline draws decals.
+ */
+typedef struct SceneDecal {
+  /** A .mt material file; empty uses VKR_SCENE_DECAL_DEFAULT_MATERIAL. */
+  char material[SCENE_DECAL_MATERIAL_CAPACITY];
+  float32_t opacity;
+  /** Radians between a surface's normal and the box's +Y at which the decal
+   * starts to fade and at which it is gone. */
+  float32_t fade_angle_start;
+  float32_t fade_angle_end;
+  /** Share of the box's half depth over which it fades toward its near and
+   * far faces. */
+  float32_t depth_fade;
+  /** Overlapping decals draw in ascending order, the highest on top; equal
+   * orders keep the order their components were added in. */
+  int32_t sort_order;
+  bool8_t enabled;
+} SceneDecal;
+
 /* How a brush takes part in the level (ADR-084): solid renders and collides,
  * visual only renders, clip only collides, and trigger is a sensor volume. Clip
  * and trigger brushes draw only while the editor edits the scene. */
@@ -1112,6 +1137,9 @@ typedef struct VkrScene {
   VkrSceneBrushes *brushes;
   /** Terrain state, created with the first terrain (vkr_scene_terrain.h). */
   struct s_VkrSceneTerrains *terrains;
+  /** Decal material bindings, created with the first decal
+   * (vkr_scene_decal.h). */
+  struct s_VkrSceneDecals *decals;
   /** Population state, created with the first spline mesh or scatter
       (vkr_scene_population.h). */
   struct s_VkrScenePopulation *population;

@@ -22,6 +22,7 @@
 #include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_scene_decal.h"
 #include "renderer/systems/vkr_scene_frame.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_skybox_system.h"
@@ -234,6 +235,8 @@ typedef struct VkrStandardSceneRuntime {
   bool8_t shadow_fit_invalidate_requested;
   VkrGizmoSystem gizmo_system;
   VkrLightingSystem lighting_system;
+  /* This frame's decals, collected with its world payload (ADR-092). */
+  VkrSceneDecalFrame decal_frame;
   VkrShadowSystem shadow_system;
   VkrUiSystem ui_system;
   /* Editor selection whose meshes are outlined over the Scene image; the

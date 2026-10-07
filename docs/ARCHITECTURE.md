@@ -507,7 +507,8 @@ persistent lifetime. The renderer owns neither resource-loader registration nor 
 
 `VkrWorld` owns archetype ECS state and queries. `VkrScene` adds hierarchy,
 transforms, resource references, punctual and rectangle lights, environment/probes,
-one scene-owned baked diffuse-volume binding, analytic fog, text and render IDs.
+one scene-owned baked diffuse-volume binding, analytic fog, text, projected
+decals and render IDs.
 glTF nodes retain local matrices, names and source identities; source geometry is
 shared across node instances, with decal variants where world-offset corrections
 differ. Cooked mesh v17 and v18 retain the same source hierarchy. Source fingerprints
@@ -740,7 +741,11 @@ dynamic lights. `Tiled.Atmosphere` lays the clouds, aerial perspective and
 analytic height fog over the resolved image, and `Tiled.Blend` draws glass
 with the blended surfaces, back to front; glass volumes refract and rough
 glass blurs through a half-resolution copy of the image, taken only on frames
-with either in view. It
+with either in view. Projected decals lay their materials' base colour over
+the opaque surfaces in their boxes before lighting, in shading variants that
+frames without a decal in view do not take
+([ADR-092](adr/092-projected-decals.md)); the desktop pipeline does not draw
+them yet. It
 draws the 16 dynamic lights nearest the camera, 4 of them shadowed with a
 four-comparison tent each, and no FXAA, screen-space effects or temporal
 history. Its
@@ -1343,6 +1348,10 @@ These are limits of current code or retained acceptance, not scheduled promises:
   The Windows `WM_DROPFILES` path has not been built or run. ASan/LSan
   evidence for unloading an additive Bistro scene is unavailable on this
   16 GiB host, and Apple ASan does not support leak detection.
+
+- Projected decals ([ADR-092](adr/092-projected-decals.md)) change base colour
+  only and draw only on the tiled pipeline; Vulkan ignores decal components,
+  and the editor draws no decal box outline.
 
 - New viewport camera/grid controls, text sizing and inspection modes pass the
   Release editor build with both production shader compilers. Inspection modes

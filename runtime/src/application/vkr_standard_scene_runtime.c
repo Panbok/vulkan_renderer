@@ -1002,6 +1002,26 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
   }
   draw->world_payload.caster_publication_generation =
       application->assets.caster_publication_generation;
+  /* Only the tiled pipeline draws decals (ADR-092); their textures join this
+     frame's residency demand. */
+  if (!draw->scene_stopped &&
+      application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
+    VkrSceneDecalFrame *decals = &application->decal_frame;
+    vkr_scene_decal_frame_begin(decals);
+    vkr_scene_decal_frame_append(
+        decals, vkr_standard_scene_runtime_render_scene(application),
+        application->globals.view_position);
+    for (uint32_t i = 0; i < application->additive_count; ++i) {
+      vkr_scene_decal_frame_append(decals, application->additive_scenes[i],
+                                   application->globals.view_position);
+    }
+    vkr_scene_decal_frame_finish(decals, &application->assets.material_system);
+    if (decals->count > 0u) {
+      draw->world_payload.decals = decals->decals;
+      draw->world_payload.decal_count = decals->count;
+      draw->world_payload.decal_grid = &decals->grid;
+    }
+  }
   vkr_material_system_refresh_texture_stream_demand(
       &application->assets.material_system);
   application->visibility_stats = visibility_stats;
@@ -1881,8 +1901,8 @@ vkr_standard_scene_runtime_scratch_copy(VkrAllocator *scratch,
 
 /* With a render thread the renderer reads the packet while the next frame is
    built. Copies what that work may change or free: animation palettes and
-   bind poses, world text geometry, the lights, the UI draw list and the
-   capture request. Returns false_v when scratch is exhausted. */
+   bind poses, world text geometry, the decals, the lights, the UI draw list
+   and the capture request. Returns false_v when scratch is exhausted. */
 vkr_internal bool8_t
 vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
   VkrStandardSceneRuntimeDrawContext *draw = &frame->draw;
@@ -1934,6 +1954,17 @@ vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
       }
     }
     world->text_draws = text_draws;
+  }
+
+  if (world->decal_count) {
+    world->decals = vkr_standard_scene_runtime_scratch_copy(
+        scratch, world->decals,
+        (uint64_t)world->decal_count * sizeof(*world->decals));
+    world->decal_grid = vkr_standard_scene_runtime_scratch_copy(
+        scratch, world->decal_grid, sizeof(*world->decal_grid));
+    if (!world->decals || !world->decal_grid) {
+      return false_v;
+    }
   }
 
   VkrFrameLighting *lighting = &draw->frame_lighting;

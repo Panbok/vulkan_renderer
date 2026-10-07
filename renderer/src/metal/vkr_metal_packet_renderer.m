@@ -349,6 +349,8 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t diffuse_volume_params_gpu;
   /* This frame's VkrMetalPacketLightmap, written for every frame. */
   uint64_t lightmap_gpu;
+  /* This frame's VkrMetalPacketDecals; zero without decals (ADR-092). */
+  uint64_t decals_gpu;
   uint64_t ltc_gpu;
   uint64_t sheen_gpu;
   uint64_t fog_gpu;
@@ -565,6 +567,15 @@ typedef enum VkrMetalTiledLighting {
    camera sees no probe volume take the variant without it. */
 #define VKR_METAL_TILED_PROBE_VARIANT_COUNT 2u
 
+/* Each opaque shading variant without and with decals (ADR-092), for the same
+   reason: frames whose camera sees no decal box take the variant without
+   them. Blended surfaces take no decals. */
+#define VKR_METAL_TILED_DECAL_VARIANT_COUNT 2u
+
+/* The depth fade scale of a decal without depth fade: every point inside its
+   box keeps full weight. */
+#define VKR_METAL_DECAL_HARD_EDGE_SCALE 1.0e6f
+
 struct VkrMetalPacketRenderer {
   VkrPixelReadbackResult picking_result;
   uint64_t picking_submit_value;
@@ -662,12 +673,14 @@ struct VkrMetalPacketRenderer {
      targets that resolve into the graph's colour and depth, and the cloud
      draw over the resolved image. Opaque draws, which never discard, and
      alpha-tested draws, which write the samples their alpha covers; without
-     and with reflection probes, by shading variant. */
+     and with decals and reflection probes, by shading variant. */
   id<MTLRenderPipelineState>
-      tiled_forward_pipelines[VKR_METAL_TILED_PROBE_VARIANT_COUNT]
+      tiled_forward_pipelines[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+                             [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                              [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState>
-      tiled_coverage_pipelines[VKR_METAL_TILED_PROBE_VARIANT_COUNT]
+      tiled_coverage_pipelines[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+                              [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                               [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState> tiled_sky_pipeline;
   /* Tone-mapped multisample resolve at the end of the opaque pass. */

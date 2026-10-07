@@ -245,6 +245,7 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
                   "terrain_materials", 552),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, transmission_materials,
                   "transmission_materials", 560),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, decals, "decals", 568),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_sky_fields[] = {
@@ -418,6 +419,21 @@ vkr_global const VkrMetalPacketAbiField vkr_lightmap_fields[] = {
                   "active_layer_count", 28),
     VKR_ABI_FIELD(VkrMetalPacketLightmap, active_layers, "active_layers", 32),
     VKR_ABI_FIELD(VkrMetalPacketLightmap, active_weights, "active_weights", 64),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_decals_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketDecals, rows, "rows", 0),
+    VKR_ABI_FIELD(VkrMetalPacketDecals, masks, "masks", 8),
+    VKR_ABI_FIELD(VkrMetalPacketDecals, grid_origin_cell_size,
+                  "grid_origin_cell_size", 16),
+    VKR_ABI_FIELD(VkrMetalPacketDecals, grid_dimensions_count,
+                  "grid_dimensions_count", 32),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_decal_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketDecal, world_to_box, "world_to_box", 0),
+    VKR_ABI_FIELD(VkrMetalPacketDecal, fade, "fade", 48),
+    VKR_ABI_FIELD(VkrMetalPacketDecal, material_index, "material_index", 64),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_tiled_sky_root_fields[] = {
@@ -798,6 +814,12 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_LIGHTMAP] =
             VKR_ABI_RECORD(VkrMetalPacketLightmap, "VkrMetalPacketLightmap", 96,
                            16, vkr_lightmap_fields),
+        [VKR_METAL_PACKET_ABI_DECALS] =
+            VKR_ABI_RECORD(VkrMetalPacketDecals, "VkrMetalPacketDecals", 48, 16,
+                           vkr_decals_fields),
+        [VKR_METAL_PACKET_ABI_DECAL] =
+            VKR_ABI_RECORD(VkrMetalPacketDecal, "VkrMetalPacketDecal", 80, 16,
+                           vkr_decal_fields),
         [VKR_METAL_PACKET_ABI_TILED_SKY_ROOT] =
             VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 128,
                            16, vkr_tiled_sky_root_fields),

@@ -133,20 +133,6 @@ vkr_internal uint32_t point_light_grid_index(const VkrPointLightGrid *grid,
   return x + grid->dimensions[0] * (y + grid->dimensions[1] * z);
 }
 
-vkr_internal uint32_t point_light_grid_dimension(float32_t extent,
-                                                 float32_t cell_size) {
-  return Max((uint32_t)ceilf(Max(extent, 0.0f) / cell_size), 1u);
-}
-
-vkr_internal uint64_t point_light_grid_dimensions_for_size(
-    Vec3 extent, float32_t cell_size, uint32_t dimensions[3]) {
-  dimensions[0] = point_light_grid_dimension(extent.x, cell_size);
-  dimensions[1] = point_light_grid_dimension(extent.y, cell_size);
-  dimensions[2] = point_light_grid_dimension(extent.z, cell_size);
-  return (uint64_t)dimensions[0] * (uint64_t)dimensions[1] *
-         (uint64_t)dimensions[2];
-}
-
 vkr_internal bool8_t point_light_intersects_grid_cell(
     const VkrPointLightGrid *grid, const VkrPointLight *light, uint32_t x,
     uint32_t y, uint32_t z) {
@@ -506,46 +492,18 @@ void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system) {
   }
 
   const Vec3 extent = vec3_sub(bounds_max, bounds_min);
-  float32_t cell_size = VKR_POINT_LIGHT_GRID_MIN_CELL_SIZE;
+  float32_t cell_size = 0.0f;
   uint32_t dimensions[3] = {0};
-  uint64_t cell_count =
-      point_light_grid_dimensions_for_size(extent, cell_size, dimensions);
-  if (cell_count > VKR_POINT_LIGHT_GRID_MAX_CELLS) {
-    // Assigned by the first growth step, which always runs.
-    float32_t rejected_size;
-    do {
-      rejected_size = cell_size;
-      cell_size *= 1.25f;
-      cell_count =
-          point_light_grid_dimensions_for_size(extent, cell_size, dimensions);
-    } while (cell_count > VKR_POINT_LIGHT_GRID_MAX_CELLS);
-
-    // The coarse growth step only brackets the answer. Bisection chooses the
-    // densest representable grid so a quantization jump cannot leave a large
-    // part of the fixed uniform budget unused.
-    for (uint32_t iteration = 0u; iteration < 16u; ++iteration) {
-      const float32_t candidate_size = (rejected_size + cell_size) * 0.5f;
-      uint32_t candidate_dimensions[3];
-      const uint64_t candidate_count = point_light_grid_dimensions_for_size(
-          extent, candidate_size, candidate_dimensions);
-      if (candidate_count > VKR_POINT_LIGHT_GRID_MAX_CELLS) {
-        rejected_size = candidate_size;
-      } else {
-        cell_size = candidate_size;
-        dimensions[0] = candidate_dimensions[0];
-        dimensions[1] = candidate_dimensions[1];
-        dimensions[2] = candidate_dimensions[2];
-        cell_count = candidate_count;
-      }
-    }
-  }
+  const uint32_t cell_count = vkr_world_grid_fit(
+      extent, VKR_POINT_LIGHT_GRID_MIN_CELL_SIZE,
+      VKR_POINT_LIGHT_GRID_MAX_CELLS, &cell_size, dimensions);
 
   grid->origin = bounds_min;
   grid->cell_size = cell_size;
   grid->dimensions[0] = dimensions[0];
   grid->dimensions[1] = dimensions[1];
   grid->dimensions[2] = dimensions[2];
-  grid->cell_count = (uint32_t)cell_count;
+  grid->cell_count = cell_count;
 
   for (uint32_t i = 0; i < system->point_light_count; ++i) {
     const VkrPointLight *light = &system->point_lights[i];

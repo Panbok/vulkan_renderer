@@ -175,6 +175,24 @@ struct alignas(16) VkrMetalPacketLightmap {
   float active_weights[8];
 };
 
+// Mirrors VkrMetalPacketDecal in vkr_metal_packet_abi.h (ADR-092).
+struct alignas(16) VkrMetalPacketDecal {
+  float4 world_to_box[3];
+  // Angle fade scale and bias, depth fade scale, opacity.
+  float4 fade;
+  uint material_index;
+  uint reserved[3];
+};
+
+// Mirrors VkrMetalPacketDecals in vkr_metal_packet_abi.h (ADR-092): one
+// uint2 of decal rows per grid cell; the last dimension lane is the count.
+struct alignas(16) VkrMetalPacketDecals {
+  device const VkrMetalPacketDecal *rows;
+  device const uint2 *masks;
+  float4 grid_origin_cell_size;
+  uint4 grid_dimensions_count;
+};
+
 struct alignas(16) VkrMetalPacketSheen {
   texture2d<float, access::sample> directional_albedo_texture;
   texture2d<float, access::sample> ltc_matrix_texture;
@@ -301,6 +319,8 @@ struct VkrMetalPacketFrameRoot {
   constant VkrMetalPacketLightmap *lightmap;
   device VkrMetalPacketTerrainMaterial *terrain_materials;
   device VkrMetalPacketTransmissionMaterial *transmission_materials;
+  // Zero without decals, whose frames take variants that never read it.
+  constant VkrMetalPacketDecals *decals;
 };
 
 struct VkrGpuGeometryRow {
@@ -593,6 +613,10 @@ static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
               "Metal transmission material row ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketFrameRoot) == 576,
               "Metal packet frame root ABI must remain 576 bytes");
+static_assert(sizeof(VkrMetalPacketDecal) == 80,
+              "Metal decal row ABI must remain 80 bytes");
+static_assert(sizeof(VkrMetalPacketDecals) == 48,
+              "Metal decal record ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,

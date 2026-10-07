@@ -516,6 +516,33 @@ vkr_internal VkrRendererError vkr_frame_input_validate_world(
         "packet.world.text_draw_count", out_validation_error);
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
+    error = vkr_renderer_validate_packet_array(
+        world->decals, world->decal_count, VKR_MAX_FRAME_DECALS,
+        "packet.world.decals", "packet.world.decal_count",
+        out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE) {
+      return error;
+    }
+    for (uint32_t i = 0u; i < world->decal_count; ++i) {
+      if (!vkr_decal_valid(&world->decals[i])) {
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.world.decals",
+                          "needs a finite, invertible box with ordered fades");
+      }
+    }
+    if (world->decal_count > 0u &&
+        (!world->decal_grid ||
+         world->decal_grid->cell_count > VKR_DECAL_GRID_MAX_CELLS ||
+         world->decal_grid->cell_count == 0u ||
+         !(world->decal_grid->cell_size > 0.0f) ||
+         (uint64_t)world->decal_grid->dimensions[0] *
+                 world->decal_grid->dimensions[1] *
+                 world->decal_grid->dimensions[2] !=
+             world->decal_grid->cell_count)) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.decal_grid",
+                        "must place every decal within its cell capacity");
+    }
   }
   return VKR_RENDERER_ERROR_NONE;
 }

@@ -176,7 +176,9 @@ pipeline rather than a backend mechanism.
    2026-10-06, both on the set with visibility). A terrain material blends its
    four layers by the vertex colour's weights as the G-buffer resolve does
    ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), reading the
-   material table's terrain rows through the frame root. Blended surfaces,
+   material table's terrain rows through the frame root. Projected decals
+   then cover the base colour of opaque, alpha-tested and terrain surfaces
+   ([ADR-092](092-projected-decals.md)). Blended surfaces,
    drawn after `Tiled.Atmosphere`, apply aerial perspective and fog to their
    own light only. Reflection probes give one environment per surface: the
    camera view's encode kernel assigns each draw the frame probe whose

@@ -1806,6 +1806,111 @@ const VkrTypeDesc vkr_scene_player_start_type = {
     .defaults = player_start_defaults,
 };
 
+/* ---- Decals (ADR-092) ---- */
+
+static const VkrPropertyDesc s_decal_properties[] = {
+    {.name = "enabled",
+     .label = "Enabled",
+     .offset = TYPE_OFFSET(SceneDecal, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "material",
+     .label = "Material file",
+     .tooltip = "Its base colour texture times its tint, weighted by alpha, "
+                "covers the surfaces in the box; empty uses the dev decal "
+                "material",
+     .offset = TYPE_OFFSET(SceneDecal, material),
+     .capacity = sizeof(((SceneDecal *)0)->material),
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "opacity",
+     .label = "Opacity",
+     .offset = TYPE_OFFSET(SceneDecal, opacity),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 0.0f,
+     .max = 1.0f,
+     .step = 0.01f},
+    {.name = "fade_angle_start",
+     .label = "Fade start angle",
+     .tooltip = "Angle between a surface's normal and the box's +Y where "
+                "the decal starts to fade",
+     .unit = "deg",
+     .offset = TYPE_OFFSET(SceneDecal, fade_angle_start),
+     .kind = VKR_PROPERTY_ANGLE,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 0.0f,
+     .max = 180.0f,
+     .step = 0.5f},
+    {.name = "fade_angle_end",
+     .label = "Fade end angle",
+     .tooltip = "Angle where the decal is gone; above the start angle",
+     .unit = "deg",
+     .offset = TYPE_OFFSET(SceneDecal, fade_angle_end),
+     .kind = VKR_PROPERTY_ANGLE,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 0.0f,
+     .max = 180.0f,
+     .step = 0.5f},
+    {.name = "depth_fade",
+     .label = "Depth fade",
+     .tooltip = "Share of the box's half depth over which the decal fades "
+                "toward its near and far faces",
+     .offset = TYPE_OFFSET(SceneDecal, depth_fade),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 0.0f,
+     .max = 1.0f,
+     .step = 0.01f},
+    {.name = "sort_order",
+     .label = "Sort order",
+     .tooltip = "Overlapping decals draw in ascending order, the highest on "
+                "top",
+     .offset = TYPE_OFFSET(SceneDecal, sort_order),
+     .kind = VKR_PROPERTY_I32,
+     .min = -1000.0f,
+     .max = 1000.0f,
+     .step = 1.0f},
+};
+
+static void decal_defaults(void *value) {
+  SceneDecal *decal = value;
+  MemZero(decal, sizeof(*decal));
+  decal->enabled = true_v;
+  decal->opacity = 1.0f;
+  decal->fade_angle_start = vkr_to_radians(60.0f);
+  decal->fade_angle_end = vkr_to_radians(80.0f);
+  decal->depth_fade = 0.25f;
+}
+
+static bool8_t decal_validate(const void *value, char *error,
+                              uint32_t capacity) {
+  const SceneDecal *decal = value;
+  if (!(decal->opacity >= 0.0f && decal->opacity <= 1.0f) ||
+      !(decal->depth_fade >= 0.0f && decal->depth_fade <= 1.0f)) {
+    snprintf(error, capacity, "Opacity and depth fade lie in [0, 1].");
+    return false_v;
+  }
+  if (!(decal->fade_angle_start >= 0.0f &&
+        decal->fade_angle_start < decal->fade_angle_end &&
+        decal->fade_angle_end <= VKR_PI)) {
+    snprintf(error, capacity,
+             "The fade angles lie in [0, 180] degrees, start below end.");
+    return false_v;
+  }
+  return true_v;
+}
+
+const VkrTypeDesc vkr_scene_decal_type = {
+    .name = "decal",
+    .label = "Decal",
+    .category = "Geometry",
+    .properties = s_decal_properties,
+    .property_count = ArrayCount(s_decal_properties),
+    .size = sizeof(SceneDecal),
+    .align = AlignOf(SceneDecal),
+    .defaults = decal_defaults,
+    .validate = decal_validate,
+};
+
 /* ---- Brushes ---- */
 
 _Static_assert(sizeof(SceneBrushRole) == sizeof(uint32_t),
@@ -3163,6 +3268,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_text_type,
     &vkr_scene_animation_type,
     &vkr_scene_player_start_type,
+    &vkr_scene_decal_type,
     &vkr_scene_brush_type,
     &vkr_scene_brush_face_type,
     &vkr_scene_trigger_type,
@@ -3244,7 +3350,8 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_animation_settings_type ||
          type == &vkr_scene_time_of_day_type || type == &vkr_scene_shape_type ||
          type == &vkr_scene_text_type || type == &vkr_scene_player_start_type ||
-         type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
+         type == &vkr_scene_decal_type || type == &vkr_scene_brush_type ||
+         type == &vkr_scene_brush_face_type ||
          type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
          type == &vkr_scene_timer_type || type == &vkr_scene_counter_type ||
          type == &vkr_scene_mover_type ||

@@ -2195,6 +2195,11 @@ typedef struct VkrMetalPacketUploadPlan {
   uint64_t sheen_offset;
   uint64_t fog_offset;
   uint64_t sky_offset;
+  uint32_t decal_count;
+  uint64_t decals_offset;
+  uint64_t decal_rows_offset;
+  uint64_t decal_masks_offset;
+  uint64_t decal_masks_bytes;
   uint64_t cloud_sky_light_offset;
   uint64_t cloud_sky_light_bytes;
   /* GPU-driven draw setup. */
@@ -2495,9 +2500,27 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
              renderer->gpu_draw_icb_view_group_size - 1u) /
                 renderer->gpu_draw_icb_view_group_size
           : 0u;
+  /* The frame's decals and their grid (ADR-092). */
+  const VkrWorldPassPayload *world = packet->input.world;
+  plan->decal_count = world ? world->decal_count : 0u;
+  plan->decals_offset =
+      vkr_metal_packet_align_up(plan->sky_offset + sizeof(VkrMetalPacketSky),
+                                AlignOf(VkrMetalPacketDecals));
+  const uint64_t decals_bytes =
+      plan->decal_count > 0u ? sizeof(VkrMetalPacketDecals) : 0u;
+  plan->decal_rows_offset = vkr_metal_packet_align_up(
+      plan->decals_offset + decals_bytes, AlignOf(VkrMetalPacketDecal));
+  const uint64_t decal_rows_bytes =
+      (uint64_t)plan->decal_count * sizeof(VkrMetalPacketDecal);
+  plan->decal_masks_offset = vkr_metal_packet_align_up(
+      plan->decal_rows_offset + decal_rows_bytes, AlignOf(VkrDecalMask));
+  plan->decal_masks_bytes =
+      plan->decal_count > 0u
+          ? (uint64_t)world->decal_grid->cell_count * sizeof(VkrDecalMask)
+          : 0u;
   /* The cloud-lit sky light's cloud chain, written and read on the GPU. */
   plan->cloud_sky_light_offset = vkr_metal_packet_align_up(
-      plan->sky_offset + sizeof(VkrMetalPacketSky), 16u);
+      plan->decal_masks_offset + plan->decal_masks_bytes, 16u);
   plan->cloud_sky_light_bytes =
       renderer->prepared_frame.clouds_enabled
           ? VKR_CLOUD_SKY_LIGHT_TEXELS * 4u * sizeof(float32_t)
@@ -2849,6 +2872,60 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
   };
   upload->sheen_gpu = gpu + plan->sheen_offset;
   return true_v;
+}
+
+/* Writes the frame's decal record, rows and grid cells (ADR-092). A decal
+   whose material has not published keeps its row with no opacity, so the
+   grid's row indices still hold. */
+vkr_internal void vkr_metal_packet_write_upload_decals(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketFrameUpload *upload, const VkrMetalPacketUploadPlan *plan) {
+  if (plan->decal_count == 0u) {
+    return;
+  }
+  uint8_t *cpu = upload->addresses.cpu_address;
+  uint64_t gpu = upload->addresses.gpu_address;
+  const VkrWorldPassPayload *world = packet->input.world;
+  const VkrDecalGrid *grid = world->decal_grid;
+  const uint64_t pending_submit = renderer->submit_value + 1u;
+  VkrMetalPacketDecal *rows =
+      (VkrMetalPacketDecal *)(cpu + plan->decal_rows_offset);
+  for (uint32_t i = 0u; i < plan->decal_count; ++i) {
+    const VkrDecal *decal = &world->decals[i];
+    VkrMetalPacketMaterial *material =
+        vkr_metal_packet_resolve_material(renderer, decal->material);
+    /* The second row is the gradient of the box's Y, normal to the planes
+       the decal projects onto; dividing by its length turns the shader's
+       dot product with a unit normal into the angle's cosine. */
+    const Vec4 up = mat4_row(decal->world_to_box, 1);
+    const float32_t up_length = vec3_length(vec3_new(up.x, up.y, up.z));
+    const float32_t fade_range = decal->fade_cos_start - decal->fade_cos_end;
+    rows[i] = (VkrMetalPacketDecal){
+        .world_to_box = {mat4_row(decal->world_to_box, 0), up,
+                         mat4_row(decal->world_to_box, 2)},
+        .fade = {1.0f / (up_length * fade_range),
+                 -decal->fade_cos_end / fade_range,
+                 decal->depth_fade > 0.0f ? 2.0f / decal->depth_fade
+                                          : VKR_METAL_DECAL_HARD_EDGE_SCALE,
+                 material ? decal->opacity : 0.0f},
+        .material_index = material ? material->row_index : 0u,
+    };
+    if (material) {
+      material->last_use_submit_value = pending_submit;
+    }
+  }
+  MemCopy(cpu + plan->decal_masks_offset, grid->masks, plan->decal_masks_bytes);
+  VkrMetalPacketDecals *record =
+      (VkrMetalPacketDecals *)(cpu + plan->decals_offset);
+  *record = (VkrMetalPacketDecals){
+      .rows = gpu + plan->decal_rows_offset,
+      .masks = gpu + plan->decal_masks_offset,
+      .grid_origin_cell_size = {grid->origin.x, grid->origin.y, grid->origin.z,
+                                grid->cell_size},
+      .grid_dimensions_count = {grid->dimensions[0], grid->dimensions[1],
+                                grid->dimensions[2], plan->decal_count},
+  };
+  upload->decals_gpu = gpu + plan->decals_offset;
 }
 
 /* Writes the frame's lightmap record and, on the tiled pipeline, the set's
@@ -3208,6 +3285,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (!vkr_metal_packet_write_upload_lights(renderer, packet, upload, &plan)) {
     return false_v;
   }
+  vkr_metal_packet_write_upload_decals(renderer, packet, upload, &plan);
   if (!vkr_metal_packet_write_upload_environment(renderer, packet, upload,
                                                  &plan)) {
     return false_v;

@@ -5,6 +5,7 @@
 
 #include "vkr_scene_system.h"
 #include "renderer/systems/vkr_scene_brush.h"
+#include "renderer/systems/vkr_scene_decal.h"
 #include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_population.h"
@@ -2014,6 +2015,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
 
   vkr_scene_physics_shutdown(scene);
   vkr_scene_brush_shutdown(scene);
+  vkr_scene_decal_shutdown(scene);
   vkr_scene_population_shutdown(scene);
   vkr_scene_terrain_shutdown(scene);
   vkr_scene_partition_shutdown(scene);
@@ -2970,6 +2972,7 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
   vkr_scene_brush_entity_destroying(scene, entity);
   vkr_scene_terrain_entity_destroying(scene, entity);
   vkr_scene_population_entity_destroying(scene, entity);
+  vkr_scene_decal_entity_destroying(scene, entity);
   /* Generated shape meshes and text slots belong to the entity. */
   scene_shape_release(scene, entity);
   scene_text_release(scene, entity);
@@ -4610,6 +4613,8 @@ vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
     scene_text_rebuild(scene, entity);
   } else if (type == &vkr_scene_animation_type) {
     vkr_scene_animation_settings_changed(scene, entity);
+  } else if (type == &vkr_scene_decal_type) {
+    vkr_scene_decal_changed(scene, entity);
   }
 }
 

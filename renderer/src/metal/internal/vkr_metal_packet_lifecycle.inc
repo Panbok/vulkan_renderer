@@ -751,8 +751,11 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
        ++probes) {
     for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
-      [renderer->tiled_forward_pipelines[probes][i] release];
-      [renderer->tiled_coverage_pipelines[probes][i] release];
+      for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
+           ++decals) {
+        [renderer->tiled_forward_pipelines[decals][probes][i] release];
+        [renderer->tiled_coverage_pipelines[decals][probes][i] release];
+      }
       [renderer->tiled_blend_pipelines[probes][i] release];
     }
   }

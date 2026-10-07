@@ -127,3 +127,12 @@ typedef struct VkrPointLightGrid {
   uint32_t max_lights_per_cell;
   uint32_t global_light_count;
 } VkrPointLightGrid;
+
+/** Sizes a uniform world-space grid of cubic cells over a box of `extent`:
+ * the densest one whose cells are at least `min_cell_size` wide and number at
+ * most `max_cells`. Writes the cell size and the cells along each axis, at
+ * least one, and returns the cell count. The point-light and decal grids
+ * share it. */
+uint32_t vkr_world_grid_fit(Vec3 extent, float32_t min_cell_size,
+                            uint32_t max_cells, float32_t *out_cell_size,
+                            uint32_t out_dimensions[3]);

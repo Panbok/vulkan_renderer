@@ -294,6 +294,72 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
   return surface;
 }
 
+// The frame's decals over a surface's base colour, before lighting
+// (ADR-092). A decal's box projects along its -Y onto the surfaces facing its
+// +Y. Seen from its +Y with its -Z up, its texture reads upright: u runs along
+// +X and, as VKR images keep their bottom row at v = 0, v along -Z. Its
+// material's base colour times its
+// tint covers the surface by the texture's alpha, the decal's opacity, the
+// fade by the angle between `normal` and the box's +Y and the fade toward
+// the box's near and far faces; later decals lie on top. The SIMD group
+// iterates the union of its lanes' cell masks, so each decal row loads once
+// for the group; a lane outside a decal's box skips it, and a lane inside it
+// has it in its own cell. The decal's UV gradients come from the world
+// position's derivatives, taken before the loop, so its samples stay defined
+// in the lanes' divergent branches.
+static float3 vkr_metal_tiled_decals(constant VkrMetalPacketFrameRoot *frame,
+                                     float3 world_position, float3 normal,
+                                     float3 base) {
+  constant VkrMetalPacketDecals &decals = *frame->decals;
+  const float3 world_dx = dfdx(world_position);
+  const float3 world_dy = dfdy(world_position);
+  const uint3 dimensions = decals.grid_dimensions_count.xyz;
+  const int3 cell =
+      int3(floor((world_position - decals.grid_origin_cell_size.xyz) /
+                 decals.grid_origin_cell_size.w));
+  uint2 mask = uint2(0u);
+  if (all(cell >= 0) && all(uint3(cell) < dimensions)) {
+    mask = decals.masks[uint(cell.x) +
+                        dimensions.x *
+                            (uint(cell.y) + dimensions.y * uint(cell.z))];
+  }
+  const float4 position = float4(world_position, 1.0f);
+  for (uint word = 0u; word < 2u; ++word) {
+    uint remaining = simd_or(mask[word]);
+    while (remaining != 0u) {
+      const uint index = word * 32u + ctz(remaining);
+      remaining &= remaining - 1u;
+      const device VkrMetalPacketDecal &decal = decals.rows[index];
+      const float3 box = float3(dot(decal.world_to_box[0], position),
+                                dot(decal.world_to_box[1], position),
+                                dot(decal.world_to_box[2], position));
+      if (any(abs(box) > 0.5f))
+        continue;
+      const float weight =
+          decal.fade.w *
+          saturate(dot(normal, decal.world_to_box[1].xyz) * decal.fade.x +
+                   decal.fade.y) *
+          saturate((0.5f - abs(box.y)) * decal.fade.z);
+      if (weight <= 0.0f)
+        continue;
+      const float2 uv_dx = float2(dot(decal.world_to_box[0].xyz, world_dx),
+                                  -dot(decal.world_to_box[2].xyz, world_dx));
+      const float2 uv_dy = float2(dot(decal.world_to_box[0].xyz, world_dy),
+                                  -dot(decal.world_to_box[2].xyz, world_dy));
+      const device VkrMetalPacketMaterial &material =
+          frame->materials[decal.material_index];
+      const float4 colour =
+          material.base_color_texture.sample(material.base_color_sampler,
+                                             float2(box.x + 0.5f,
+                                                    0.5f - box.z),
+                                             gradient2d(uv_dx, uv_dy)) *
+          material.tint;
+      base = mix(base, colour.rgb, saturate(colour.a * weight));
+    }
+  }
+  return base;
+}
+
 // The media between the camera and a blended surface, as the desktop
 // pipeline's Fog.Apply lays them over its lit image: aerial perspective, the
 // farther medium, then analytic height fog. Blended surfaces draw after the
@@ -619,8 +685,10 @@ static bool vkr_metal_tiled_inspect(
 // alpha sharpened about the material's cut-off to a transition about one
 // pixel wide; alpha to coverage turns it into the samples they cover, so their
 // edges resolve like geometry edges (ADR-087). Fragments that cover no
-// sample discard before the other material textures and shading.
-template <VkrMetalTiledLighting Lighting, bool Coverage, bool Probes>
+// sample discard before the other material textures and shading. With Decals,
+// the frame's decals cover the surface's base colour before lighting.
+template <VkrMetalTiledLighting Lighting, bool Coverage, bool Probes,
+          bool Decals>
 static float4
 vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
                         constant VkrMetalPacketDrawRoot *root,
@@ -641,6 +709,12 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
   }
   VkrMetalTiledSurface surface = vkr_metal_tiled_surface(
       input, frame, material, visible.material_index, base);
+  if (Decals) {
+    surface.base.rgb = vkr_metal_tiled_decals(
+        frame, input.world_position,
+        normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f),
+        surface.base.rgb);
+  }
   if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
     float3 inspected;
     if (vkr_metal_tiled_inspect(input, frame, material, surface, barycentric,
@@ -659,7 +733,7 @@ fragment float4 vkr_metal_tiled_forward_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, false>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, false, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -667,7 +741,7 @@ fragment float4 vkr_metal_tiled_forward_punctual_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, false>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, false, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -675,7 +749,7 @@ fragment float4 vkr_metal_tiled_forward_shadowed_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, false>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, false, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -683,7 +757,7 @@ fragment float4 vkr_metal_tiled_forward_all_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, false>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, false, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -692,7 +766,7 @@ fragment float4 vkr_metal_tiled_forward_inspect_fragment(
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]],
     float3 barycentric [[barycentric_coord]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_INSPECT, false, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_INSPECT, false, true, true>(
       input, root, front_facing, barycentric);
 }
 
@@ -700,7 +774,7 @@ fragment float4 vkr_metal_tiled_forward_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, false>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, false, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -708,7 +782,7 @@ fragment float4 vkr_metal_tiled_forward_punctual_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, false>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, false, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -716,7 +790,7 @@ fragment float4 vkr_metal_tiled_forward_shadowed_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, false>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, false, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -724,7 +798,7 @@ fragment float4 vkr_metal_tiled_forward_all_coverage_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, false>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, false, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -733,7 +807,7 @@ fragment float4 vkr_metal_tiled_forward_inspect_coverage_fragment(
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]],
     float3 barycentric [[barycentric_coord]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_INSPECT, true, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_INSPECT, true, true, true>(
       input, root, front_facing, barycentric);
 }
 
@@ -745,7 +819,7 @@ fragment float4 vkr_metal_tiled_forward_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, true, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -753,7 +827,7 @@ fragment float4 vkr_metal_tiled_forward_punctual_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, true, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -761,7 +835,7 @@ fragment float4 vkr_metal_tiled_forward_shadowed_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, true, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -769,7 +843,7 @@ fragment float4 vkr_metal_tiled_forward_all_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, true, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -777,7 +851,7 @@ fragment float4 vkr_metal_tiled_forward_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, true, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -785,7 +859,7 @@ fragment float4 vkr_metal_tiled_forward_punctual_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, true, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -793,7 +867,7 @@ fragment float4 vkr_metal_tiled_forward_shadowed_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, true, false>(
       input, root, front_facing, float3(0.0f));
 }
 
@@ -801,7 +875,140 @@ fragment float4 vkr_metal_tiled_forward_all_coverage_probes_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, true>(
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, true, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+// The same variants for frames whose camera sees a decal box (ADR-092);
+// decal shading costs the opaque pass registers on every pixel, so frames
+// without a visible decal keep the variants above. The inspection variants
+// always shade decals.
+
+fragment float4 vkr_metal_tiled_forward_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_punctual_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_shadowed_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_all_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_coverage_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_punctual_coverage_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_shadowed_coverage_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_all_coverage_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, false, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_punctual_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, false, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_shadowed_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, false, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_all_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, false, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_coverage_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE, true, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_punctual_coverage_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL, true, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_shadowed_coverage_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED, true, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_all_coverage_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL, true, true, true>(
       input, root, front_facing, float3(0.0f));
 }
 

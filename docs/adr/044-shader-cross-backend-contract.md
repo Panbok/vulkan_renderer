@@ -96,6 +96,11 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     bytes. Both are pinned in
     `vkr_metal_packet_abi.c` and checked against reflection at pipeline
     creation.
+  - The frame root carries `decals` at byte 568, its former tail padding:
+    the address of a 48-byte `VkrMetalPacketDecals` with 80-byte
+    `VkrMetalPacketDecal` rows and the decal grid's cell masks, or zero on
+    frames without decals. MSL reads the rows; the Slang mirror keeps their
+    address ([ADR-092](092-projected-decals.md)).
   - The prepared instance row carries the lightmap slot in
     `normal_column2.w`; every shader on both backends reads only its xyz.
   - The Metal sky background helpers, `vkr_metal_packet_sky_clear`,
@@ -132,7 +137,9 @@ on Metal. It shares kernels and host records with the desktop pipeline:
 - **Metal evidence.** Pipeline creation validates the new layouts. The
   Bistro street view (`tiled_bistro_capture`), the café windows
   (`tiled_bistro_glass`) and a lightmap-baked Bistro
-  (`tiled_bistro_baked_capture`) render. The tiled lighting variants render
+  (`tiled_bistro_baked_capture`) render; the baked street view with
+  projected decals (`tiled_bistro_decals_capture`) renders, also with Metal
+  API validation. The tiled lighting variants render
   Bistro with no dynamic lights, unshadowed and shadowed point and spot
   lights, and a rectangle light; a night view compares the single-tap local
   shadow with the former filter (ADR-087,
@@ -616,6 +623,7 @@ domain under the [evidence rules](#evidence-rules).
 | Geometry LOD and terrain geomorph | Shared | `shared/lod_kernel.slangh`, `terrain_kernel.slangh`, `gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal`, `metal/msl/world/tiled.metal`, `metal/slang/world/default.slang` | `vulkan/slang/world/deferred.slang`, `common/vertex.slangh` |
 | Terrain layer blend | Shared | `shared/terrain_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
 | Tiled forward, atmosphere and blend | Tiled | shared material, light, fog, atmosphere and transmission kernels below | `metal/msl/world/tiled.metal`, `lighting.metalh`, `metal/msl/shadow/sampling.metalh` | — |
+| Projected decals | Tiled | — | `metal/msl/world/tiled.metal` | — |
 | Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |
 | Material/light math | Shared | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/tiled.metal`, `lighting.metalh` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Clearcoat, sheen, anisotropy, thin-sheet diffuse transmission | Desktop | `shared/clearcoat_kernel.slangh`, `sheen_kernel.slangh`, `anisotropy_kernel.slangh` | — | `vulkan/slang/world/default.slang`, `deferred.slang` |

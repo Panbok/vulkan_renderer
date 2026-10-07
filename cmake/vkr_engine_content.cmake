@@ -79,6 +79,7 @@ set(VKR_REPOSITORY_TEXTURES
     "assets/textures/cobblestone_SPEC.png"
     "assets/textures/defaultwhite.jpg"
     "assets/textures/logo_white.png"
+    "assets/textures/test512.png|color-srgb"
     "assets/textures/transparency-test-diffuse-texture.png"
     "tests/fixtures/rendering/anisotropy/direction_y.png|data-mask"
     "tests/fixtures/rendering/clearcoat/base_normal_plus_x.png|normal-rg"

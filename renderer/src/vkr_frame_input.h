@@ -8,6 +8,7 @@
 #include "vkr_atmosphere.h"
 #include "vkr_bloom.h"
 #include "vkr_buffer.h"
+#include "vkr_decal.h"
 #include "vkr_dof.h"
 #include "vkr_exposure.h"
 #include "vkr_fog.h"
@@ -328,6 +329,11 @@ typedef struct VkrWorldPassPayload {
   uint32_t instance_count;
   const VkrPreparedTextDraw *text_draws;
   uint32_t text_draw_count;
+  /** Projected decals in compositing order, the last on top, and their
+   * world-space lookup; only the tiled pipeline draws them (ADR-092). */
+  const VkrDecal *decals;
+  uint32_t decal_count;
+  const VkrDecalGrid *decal_grid;
 
   /**
    * Shadow-caster mobility partition and the generations that describe it.

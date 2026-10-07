@@ -8,6 +8,7 @@
 #include "atomic_test.h"
 #include "bloom_test.h"
 #include "debug_overlay_test.h"
+#include "decal_tests.h"
 #include "dmemory_test.h"
 #include "editor_viewport_test.h"
 #include "entity_test.h"

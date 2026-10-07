@@ -98,6 +98,15 @@ struct VkrMetalPacketLightmap {
     float4 active_weights[2];
 };
 
+// Mirrors VkrMetalPacketDecals in vkr_metal_packet_abi.h (ADR-092). Only MSL
+// reads the decal rows, so they stay an address here.
+struct VkrMetalPacketDecals {
+    uint64_t rows;
+    uint64_t masks;
+    float4 grid_origin_cell_size;
+    uint4 grid_dimensions_count;
+};
+
 struct VkrMetalPacketSheen {
     uint64_t directional_albedo_texture;
     uint64_t ltc_matrix_texture;
@@ -228,6 +237,7 @@ struct VkrMetalPacketFrameRoot
     VkrMetalPacketLightmap* lightmap;
     uint64_t terrain_materials;
     uint64_t transmission_materials;
+    VkrMetalPacketDecals* decals;
 };
 
 #include "../../../shared/gpu_draw.slangh"

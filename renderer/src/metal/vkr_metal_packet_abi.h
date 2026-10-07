@@ -56,6 +56,33 @@ _Static_assert(sizeof(VkrMetalPacketLightmap) == 96u,
 _Static_assert(VKR_LIGHTMAP_MAX_ACTIVE_LAYERS <= 8u,
                "Metal lightmap record holds at most eight active layers");
 
+/** One projected decal (ADR-092); mirrors VkrMetalPacketDecal in
+    common/draw.metalh. `world_to_box` holds the first three rows of the
+    decal's world-to-box map. `fade` holds the angle fade's scale and bias
+    over the dot product of the surface's unit normal with the second row,
+    the depth fade's scale over the distance to the box's near and far
+    faces, and the opacity. `material_index` is the material table row whose
+    base colour the decal lays. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketDecal {
+  Vec4 world_to_box[3];
+  Vec4 fade;
+  uint32_t material_index;
+  uint32_t reserved[3];
+} VkrMetalPacketDecal;
+_Static_assert(sizeof(VkrMetalPacketDecal) == 80u, "Metal decal row ABI drift");
+
+/** The frame's decals and their grid (ADR-092); mirrors VkrMetalPacketDecals
+    in common/draw.metalh and draw.slangh. `masks` holds one uint2 of decal
+    rows per grid cell; the last dimension lane is the decal count. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketDecals {
+  uint64_t rows;
+  uint64_t masks;
+  Vec4 grid_origin_cell_size;
+  uint32_t grid_dimensions_count[4];
+} VkrMetalPacketDecals;
+_Static_assert(sizeof(VkrMetalPacketDecals) == 48u,
+               "Metal decal record ABI drift");
+
 /** The tiled pipeline's sky draws (ADR-087); mirrors VkrMetalTiledSkyRoot in
     world/tiled.metal. `depth_texture_id` is the resolved depth the cloud
     draw reads, zero for the clear sky. */
@@ -221,6 +248,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   /** The material table's transmission rows (transmission and thickness
       textures), which the tiled pipeline's glass reads by material index. */
   uint64_t transmission_materials;
+  /** The frame's VkrMetalPacketDecals; zero without decals, whose frames
+      take shading variants that never read it (ADR-092). */
+  uint64_t decals;
 } VkrMetalPacketFrameRoot;
 
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, dfg_texture_id) == 472u,
@@ -252,6 +282,8 @@ _Static_assert(offsetof(VkrMetalPacketFrameRoot, terrain_materials) == 552u,
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, transmission_materials) ==
                    560u,
                "Metal transmission material rows offset drift");
+_Static_assert(offsetof(VkrMetalPacketFrameRoot, decals) == 568u,
+               "Metal decal record offset drift");
 _Static_assert(sizeof(VkrMetalPacketFrameRoot) == 576u,
                "Metal frame root ABI size drift");
 
@@ -702,6 +734,8 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_IBL_PROBE,
   VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME,
   VKR_METAL_PACKET_ABI_LIGHTMAP,
+  VKR_METAL_PACKET_ABI_DECALS,
+  VKR_METAL_PACKET_ABI_DECAL,
   VKR_METAL_PACKET_ABI_LTC,
   VKR_METAL_PACKET_ABI_SHEEN,
   VKR_METAL_PACKET_ABI_ANISOTROPY,
