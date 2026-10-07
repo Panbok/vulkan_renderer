@@ -6906,7 +6906,9 @@ vkr_internal void vkr_sample_runtime_log_device_information(
   state->anisotropy_supported = bitset8_is_set(
       &device_information.sampler_filters, VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);
   state->max_sampler_anisotropy = device_information.max_sampler_anisotropy;
-  state->filter_mode_index = 3; // Bilinear default (index in FILTER_MODES)
+  // Trilinear (index in FILTER_MODES): the sampler textures load with, so the
+  // reported, saved and cycled mode matches what scenes sample.
+  state->filter_mode_index = 4;
 
   log_info("Texture filtering controls: F4=prev, F5=next (start: %s)",
            FILTER_MODES[state->filter_mode_index].label);
