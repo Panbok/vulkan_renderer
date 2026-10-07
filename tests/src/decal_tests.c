@@ -3,6 +3,9 @@
 #include "math/mat.h"
 #include "math/vkr_math.h"
 #include "vkr_decal.h"
+#include "vkr_renderer_internal.h"
+
+#include <string.h>
 
 /* A box from its three edge vectors and centre: column i is the image of the
    box's unit edge along axis i. */
@@ -121,11 +124,44 @@ static bool32_t test_decal_grid_separates_decals_and_holds_full_table(void) {
   return true_v;
 }
 
+/* The desktop resolve and the tiled shader index decal rows by grid bit
+   without a bound, so a packet whose grid names a row beyond its table must
+   not pass validation. */
+static bool32_t test_decal_packet_rejects_grid_bits_beyond_table(void) {
+  printf("  Running test_decal_packet_rejects_grid_bits_beyond_table...\n");
+  static VkrDecalGrid grid;
+  const VkrDecal decals[2] = {
+      decal_test_decal(mat4_translate(vec3_new(0.0f, 0.0f, 0.0f))),
+      decal_test_decal(mat4_translate(vec3_new(5.0f, 0.0f, 0.0f))),
+  };
+  vkr_decal_grid_build(decals, ArrayCount(decals), &grid);
+  const VkrWorldPassPayload world = {
+      .decals = decals, .decal_count = 2u, .decal_grid = &grid};
+  const VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
+      .world = &world,
+  };
+  VkrValidationError validation = {0};
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_NONE);
+
+  grid.masks[grid.cell_count - 1u].words[1] |= 1u;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.world.decal_grid") == 0);
+  printf("  test_decal_packet_rejects_grid_bits_beyond_table PASSED\n");
+  return true_v;
+}
+
 bool32_t run_decal_tests(void) {
   printf("--- Running Decal tests... ---\n");
   bool32_t passed = true_v;
   passed &= test_decal_box_maps_back_and_is_found();
   passed &= test_decal_grid_separates_decals_and_holds_full_table();
+  passed &= test_decal_packet_rejects_grid_bits_beyond_table();
   printf("--- Decal tests completed. ---\n");
   return passed;
 }

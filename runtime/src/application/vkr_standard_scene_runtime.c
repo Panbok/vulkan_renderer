@@ -1002,10 +1002,9 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
   }
   draw->world_payload.caster_publication_generation =
       application->assets.caster_publication_generation;
-  /* Only the tiled pipeline draws decals (ADR-092); their textures join this
-     frame's residency demand. */
-  if (!draw->scene_stopped &&
-      application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
+  /* Both pipelines draw decals (ADR-092); their textures join this frame's
+     residency demand. */
+  if (!draw->scene_stopped) {
     VkrSceneDecalFrame *decals = &application->decal_frame;
     vkr_scene_decal_frame_begin(decals);
     vkr_scene_decal_frame_append(

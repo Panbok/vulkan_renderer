@@ -144,6 +144,13 @@ struct VkrVkResolveRoot
     uint anisotropy_texture;
     float pre_exposure;
     float4x4 sky_reprojection;
+    // The frame's decals (ADR-092): rows in compositing order and the world
+    // grid's uint2 cell masks. dimensions_count.w is the decal count; zero
+    // leaves both addresses unused.
+    VkrVulkanDecalRow *decals;
+    uint2 *decal_masks;
+    float4 decal_grid_origin_cell_size;
+    uint4 decal_grid_dimensions_count;
 };
 
 #ifndef VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
@@ -1086,6 +1093,9 @@ struct VkrVkSurfaceSource
     float pre_exposure;
     // Null where no terrain material reaches, as in transmission.
     VkrVulkanTerrainMaterial *terrain_materials;
+    // Nonzero when the frame has decals: the surface then carries its world
+    // position and that position's screen derivatives (ADR-092).
+    uint project_decals;
 };
 
 bool vkr_vk_reject_surface(VkrVkSurfaceSource source)
@@ -1117,6 +1127,10 @@ struct VkrVkSurface
     float2 uv;
     float2 uv_dx;
     float2 uv_dy;
+    // Set only when the source projects decals.
+    float3 world_position;
+    float3 world_dx;
+    float3 world_dy;
     uint material_index;
     uint instance_index;
     uint normal_mapped;
@@ -1273,6 +1287,18 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
             perspective, perspective_dx, perspective_dy);
         return true;
     }
+    if (source.project_decals != 0u)
+    {
+        surface.world_position = wa.xyz * perspective.x +
+                                 wb.xyz * perspective.y +
+                                 wc.xyz * perspective.z;
+        surface.world_dx = wa.xyz * perspective_dx.x +
+                           wb.xyz * perspective_dx.y +
+                           wc.xyz * perspective_dx.z;
+        surface.world_dy = wa.xyz * perspective_dy.x +
+                           wb.xyz * perspective_dy.y +
+                           wc.xyz * perspective_dy.z;
+    }
     float2 uv = a.texcoord * perspective.x + b.texcoord * perspective.y +
                 c.texcoord * perspective.z;
     float2 uv_dx = a.texcoord * perspective_dx.x +
@@ -1421,6 +1447,72 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
     return true;
 }
 
+// The frame's decals over a resolved surface's base colour, before lighting
+// (ADR-092), with the tiled pipeline's rules. A decal's box projects along its
+// -Y onto the surfaces facing its +Y. Seen from its +Y with its -Z up, its
+// texture reads upright: u runs along +X and, as VKR images keep their bottom
+// row at v = 0, v along -Z. Its material's base colour times its tint covers
+// the surface by the texture's alpha, the decal's opacity, the fade by the
+// angle between `normal` and the box's +Y and the fade toward the box's near
+// and far faces; later decals lie on top. The wave iterates the union of its
+// lanes' cell masks, so each decal row loads once for the wave; a lane outside
+// a decal's box skips it, and a lane inside it has it in its own cell.
+float3 vkr_vk_apply_decals(VkrVkResolveRoot root, float3 world_position,
+                           float3 world_dx, float3 world_dy, float3 normal,
+                           float3 base)
+{
+    float4 grid = root.decal_grid_origin_cell_size;
+    uint3 dimensions = root.decal_grid_dimensions_count.xyz;
+    int3 cell = int3(floor((world_position - grid.xyz) / grid.w));
+    uint2 mask = uint2(0u);
+    if (all(cell >= 0) && cell.x < int(dimensions.x) &&
+        cell.y < int(dimensions.y) && cell.z < int(dimensions.z))
+    {
+        mask = root.decal_masks[uint(cell.x) +
+                                dimensions.x * (uint(cell.y) +
+                                                dimensions.y * uint(cell.z))];
+    }
+    float4 position = float4(world_position, 1.0f);
+    [unroll]
+    for (uint word = 0u; word < 2u; ++word)
+    {
+        uint remaining = WaveActiveBitOr(mask[word]);
+        while (remaining != 0u)
+        {
+            uint index = word * 32u + firstbitlow(remaining);
+            remaining &= remaining - 1u;
+            VkrVulkanDecalRow decal = root.decals[index];
+            float3 box = float3(dot(decal.world_to_box[0], position),
+                                dot(decal.world_to_box[1], position),
+                                dot(decal.world_to_box[2], position));
+            if (any(abs(box) > 0.5f))
+                continue;
+            float weight =
+                decal.fade.w *
+                saturate(dot(normal, decal.world_to_box[1].xyz) *
+                             decal.fade.x +
+                         decal.fade.y) *
+                saturate((0.5f - abs(box.y)) * decal.fade.z);
+            if (weight <= 0.0f)
+                continue;
+            float2 uv_dx = float2(dot(decal.world_to_box[0].xyz, world_dx),
+                                  -dot(decal.world_to_box[2].xyz, world_dx));
+            float2 uv_dy = float2(dot(decal.world_to_box[0].xyz, world_dy),
+                                  -dot(decal.world_to_box[2].xyz, world_dy));
+            VkrVulkanMaterial material = root.materials[decal.material_index];
+            float4 colour =
+                g_textures[NonUniformResourceIndex(material.base_color_texture)]
+                    .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                    material.base_color_sampler)],
+                                float2(box.x + 0.5f, 0.5f - box.z), uv_dx,
+                                uv_dy) *
+                material.tint;
+            base = lerp(base, colour.rgb, saturate(colour.a * weight));
+        }
+    }
+    return base;
+}
+
 bool vkr_vk_finish_surface_normal(VkrVkSurfaceSource source,
                                   float3 transformed_normal,
                                   float3 transformed_tangent,
@@ -1488,7 +1580,7 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         root.compaction_state, root.view_projection, root.extent,
         root.visible_capacity, root.geometry_count,  root.material_count,
         root.instance_count, root.render_mode, root.pre_exposure,
-        root.terrain_materials,
+        root.terrain_materials, root.decal_grid_dimensions_count.w,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, thread_id.xy, surface))
@@ -1553,6 +1645,14 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
     }
     g_storage_float2_2d[root.motion_texture][thread_id.xy] = motion;
     g_storage_float2_2d[root.validity_texture][thread_id.xy] = validity;
+    // Decals change the base colour the lighting views see; the neutral
+    // inspection views keep their neutral base.
+    if (root.decal_grid_dimensions_count.w != 0u && !neutral_lighting)
+    {
+        surface.base.rgb = vkr_vk_apply_decals(
+            root, surface.world_position, surface.world_dx, surface.world_dy,
+            surface.geometric_normal, surface.base.rgb);
+    }
     // One material row serves F0 and every optional layer below.
     VkrVulkanMaterial material = root.materials[surface.material_index];
     float3 f0 = lerp(neutral_lighting ? float3(0.04f)
@@ -3600,7 +3700,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         root.compaction_state, root.view_projection, root.extent,
         root.visible_capacity, root.geometry_count,  root.material_count,
         root.instance_count, root.frame.render_mode, root.frame.pre_exposure,
-        nullptr,
+        nullptr, 0u,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, pixel, surface))

@@ -351,7 +351,9 @@ parity runs. Shaders transform tangents with the model's linear part and normals
 the prepared columns. No per-pixel matrix inverse is required.
 
 The Vulkan G-buffer root appends the sky reprojection matrix at byte 352 and
-has a 416-byte size. The G-buffer owns sky motion for every temporal consumer;
+then the decal rows, grid masks, grid origin and cell size, and grid
+dimensions with the decal count at bytes 416, 424, 432 and 448 (ADR-092), for
+a 464-byte size. The G-buffer owns sky motion for every temporal consumer;
 portable resolve carries no duplicate reprojection matrix. The Vulkan temporal
 resolve root carries current and previous pixel jitter at bytes 128 and 136
 of its 144 bytes for canonical color reconstruction and raw metadata
@@ -629,7 +631,7 @@ domain under the [evidence rules](#evidence-rules).
 | Geometry LOD and terrain geomorph | Shared | `shared/lod_kernel.slangh`, `terrain_kernel.slangh`, `gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal`, `metal/msl/world/tiled.metal`, `metal/slang/world/default.slang` | `vulkan/slang/world/deferred.slang`, `common/vertex.slangh` |
 | Terrain layer blend | Shared | `shared/terrain_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
 | Tiled forward, atmosphere and blend | Tiled | shared material, light, fog, atmosphere and transmission kernels below | `metal/msl/world/tiled.metal`, `lighting.metalh`, `metal/msl/shadow/sampling.metalh` | — |
-| Projected decals | Tiled | — | `metal/msl/world/tiled.metal` | — |
+| Projected decals | Shared semantics, one implementation per backend | — | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
 | Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |
 | Material/light math | Shared | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/tiled.metal`, `lighting.metalh` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Clearcoat, sheen, anisotropy, thin-sheet diffuse transmission | Desktop | `shared/clearcoat_kernel.slangh`, `sheen_kernel.slangh`, `anisotropy_kernel.slangh` | — | `vulkan/slang/world/default.slang`, `deferred.slang` |

@@ -8,13 +8,12 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The tiled pipeline draws projected decals: a `decal`
+Accepted (partial). Both pipelines draw projected decals: a `decal`
 component's box lays its material's base colour over the opaque surfaces
-inside it before lighting. The desktop pipeline ignores decal components
-until it applies them in its G-buffer resolve (owner decision, 2026-10-07).
-Decals change base colour only; normal, roughness, metalness, occlusion and
-emissive decals are future work. The editor shows a decal's icon but no box
-outline.
+inside it before lighting, in the tiled pipeline's forward shader and in the
+desktop pipeline's G-buffer resolve. Decals change base colour only; normal,
+roughness, metalness, occlusion and emissive decals are future work. The
+editor shows a decal's icon but no box outline.
 
 ## Context
 
@@ -97,11 +96,27 @@ it lights them, so the surface's own material model shades the result.
    same shader code as before decals. The editor's inspection variants
    always shade decals. The tiled pipeline creates 50 shading pipeline
    states instead of 30.
-6. **Desktop.** Vulkan does not apply decals yet. The desktop G-buffer
-   resolve would apply them between `vkr_vk_resolve_surface` and
-   `vkr_vk_finish_surface_normal` in
-   [`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang),
-   with the same box, fade and compositing rules.
+6. **Desktop.** The runtime collects decals for both pipelines. Vulkan
+   uploads each frame's rows as 80-byte `VkrVulkanDecalRow`s, packed as the
+   tiled pipeline packs its rows, with the grid's masks; a decal whose
+   material has not published keeps its row with zero opacity, so grid bits
+   still name table rows. The G-buffer resolve root grows from 416 to 464
+   bytes with the rows, masks, grid origin and cell size, and grid
+   dimensions with the decal count at bytes 416, 424, 432 and 448.
+   `vk_gbuffer_resolve` in
+   [`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang)
+   applies the decals after `vkr_vk_finish_surface_normal`, whose
+   face-signed geometric normal the angle fade uses, with the tiled
+   pipeline's box, fade and compositing rules. It interpolates the world
+   position and its screen derivatives from the barycentric derivatives
+   only on frames with decals, iterates the union of its wave's cell masks
+   and writes the decal-covered base colour before the metallic fold, so
+   deferred lighting, GTAO, SSR and SSGI see it while the visibility id,
+   motion and emission stay the surface's. The editor's neutral inspection
+   views keep their neutral base colour. Frame validation rejects a grid
+   bit that names a row beyond the table, since both shaders index rows by
+   grid bit without a bound, and the temporal content signature includes
+   the decal rows and materials.
 
 ### Bistro evidence
 
@@ -159,6 +174,36 @@ cost: the lightmap-baked orbit (`tiled_bistro_baked_native`,
 `sha256:184fdd69c00e6473b71315629e672b57b1c549b835048e498457a3e12f5c5d8e`,
 `sha256:9f9d6a00092ff1ef9f87cb0fb304b60a90e31b3e5ea4a89a3cd6c323f2294359`).
 
+### Desktop evidence
+
+Release, Windows, RX 6700 XT, AMD driver 26.6.3, 2026-10-07, on the Bistro
+street view at 1920×1080 without TAA, `local-offscreen`, dirty tree. The
+fixture `bistro_decals_local` adds the tiled fixture's four street decals
+and two wall decals to `bistro.scene.json`; the cases are
+`decals_bistro_street_capture` and `decals_bistro_street_baseline_capture`.
+Against the scene without decals, depth is byte-identical, `gbuffer_normal`
+and `gbuffer_specular` are identical, and `gbuffer_diffuse` differs in 2.32%
+of its pixels, all inside x 592 to 1705, y 617 to 1079, the decals'
+footprints (`sha256:270f36c20eb0a07e9abcf2d89fca29ed31efa20960e49ac862e28ce4b373494e`,
+`sha256:ca5c4ced371280a6fb5ef6cdf990bba7d4db07fbbb4041d257811941c4278039`).
+The Debug build's Vulkan validation, with synchronization validation,
+reports no message for the decal case
+(`sha256:62bf5048bb0f82cfb2be58be539a712c078812de61237ec9b5e9abaa2c8ac201`).
+
+Cost, local and non-authoritative (`local-offscreen-gpu-repeated`, five
+children of 300 measured frames, `decals_bistro_street_baseline_timing` and
+`decals_bistro_street_timing`): `GBuffer.Resolve` takes 0.563 ms p50 without
+decals and 0.588 ms with the six
+(`sha256:bc9e9146d5d3e27f0dd89cf3ec988211fc7defd7989a5271b852ec16fefd6203`,
+`sha256:7c73a60450875fb23a9270645f187c0c1e98c56b8a5627a6c2dec9c7b945e4b9`).
+Every other pass matches within its spread except `Shadow.LocalMask`: 3.53
+ms without and 3.09 ms with the decal fixture, and 2.79 and 2.54 ms with
+local shadows ranked by distance (`VKR_LOCAL_SHADOW_FEEDBACK=0`,
+`sha256:ec68bc2242c96bf4d3eb6cb03725377051921b7c4d9fe74bb9f7e84d3c5f7789`,
+`sha256:1e03f7ec922c4b28a074a14486c17e437d6bfe5f3eb1838ab80aaacc294587a3`).
+The reports show no difference in shadow work volume, so the cause is
+unknown; light ranking by measured contribution does not explain it.
+
 ## Consequences
 
 - A decal changes a surface's albedo before the lightmap, sun, local lights
@@ -196,7 +241,6 @@ cost: the lightmap-baked orbit (`tiled_bistro_baked_native`,
 
 - Decals need normal, roughness or emissive channels, an atlas rectangle, or
   a receive-decals flag on meshes.
-- The desktop pipeline applies decals.
 - A scene keeps more than 64 decals near the camera.
 - A decal-heavy view misses the budget: then give decal-touching draws their
   own draw buckets so only their pixels take the decal variant.

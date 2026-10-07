@@ -639,6 +639,26 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalTransformRoot {
   uint32_t reserved;
 } VkrVulkanTemporalTransformRoot;
 
+/** One projected decal (ADR-092) for the G-buffer resolve; packed as the
+    tiled pipeline packs VkrMetalPacketDecal. `world_to_box` holds the first
+    three rows of the decal's world-to-box map. `fade` holds the angle fade's
+    scale and bias over the dot product of a unit surface normal with the
+    second row, the depth fade's scale over the distance to the box's near
+    and far faces, and the opacity, zero while the material is unpublished.
+    `material_index` is the material row whose base colour the decal lays. */
+/** Depth fade scale of a decal without a depth fade: the fade reaches one a
+    millionth of the half depth inside the box's near and far faces, as on
+    the tiled pipeline. */
+#define VKR_VULKAN_DECAL_HARD_EDGE_SCALE 1.0e6f
+
+typedef struct VKR_SIMD_ALIGN VkrVulkanDecalRow {
+  Vec4 world_to_box[3];
+  Vec4 fade;
+  uint32_t material_index;
+  uint32_t reserved[3];
+} VkrVulkanDecalRow;
+_Static_assert(sizeof(VkrVulkanDecalRow) == 80u, "Vulkan decal row ABI drift");
+
 typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint64_t geometry_rows;
   uint64_t visible_rows;
@@ -675,6 +695,12 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint32_t anisotropy_texture;
   float32_t pre_exposure;
   Mat4 sky_reprojection;
+  /** The frame's decal rows and grid masks (ADR-092); unused when the count
+      in `decal_grid_dimensions_count[3]` is zero. */
+  uint64_t decals;
+  uint64_t decal_masks;
+  Vec4 decal_grid_origin_cell_size;
+  uint32_t decal_grid_dimensions_count[4];
 } VkrVulkanResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
@@ -1793,8 +1819,14 @@ _Static_assert(
     "Local shadow transmission sampling ABI drift");
 _Static_assert(sizeof(VkrVulkanTemporalTransformRoot) == 32u,
                "Temporal transform-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanResolveRoot) == 416u,
+_Static_assert(sizeof(VkrVulkanResolveRoot) == 464u,
                "Deferred resolve-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanResolveRoot, decals) == 416u &&
+                   offsetof(VkrVulkanResolveRoot,
+                            decal_grid_origin_cell_size) == 432u &&
+                   offsetof(VkrVulkanResolveRoot,
+                            decal_grid_dimensions_count) == 448u,
+               "Deferred resolve-root decal ABI drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, vertices) == 40u,
                "Deferred resolve-root vertex address ABI drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, view_projection) == 64u,
@@ -2457,6 +2489,10 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t gpu_world_epoch;
   uint64_t point_light_data;
   uint64_t point_light_masks;
+  /** This frame's decal rows and grid masks (ADR-092), zero without decals. */
+  uint64_t decals;
+  uint64_t decal_masks;
+  uint32_t decal_count;
   uint64_t shadow_cascades;
   uint64_t local_shadow_views;
   uint64_t local_shadow_transmission;

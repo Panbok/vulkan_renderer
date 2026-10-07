@@ -63,6 +63,9 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     uint32_t destination_first, VkrVulkanCandidateCopyRange *out_range,
     uint32_t *out_packed_count, uint32_t *out_omitted_count);
 
+vkr_internal VkrVulkanPublishedMaterial *
+vkr_vk_resolve_material(VkrVulkanRenderer *renderer, VkrMaterialHandle handle);
+
 vkr_internal uint64_t vkr_vk_hash_bytes(uint64_t hash, const void *bytes,
                                         uint64_t size) {
   const uint8_t *data = bytes;
@@ -405,11 +408,59 @@ vkr_internal bool8_t vkr_vk_upload_sky(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Rows and grid masks of the frame's decals (ADR-092), packed as the tiled
+   pipeline packs its rows. A decal whose material has not published keeps
+   its row with zero opacity, so the grid's bits still name table rows. */
+vkr_internal bool8_t vkr_vk_upload_decals(VkrVulkanRenderer *renderer,
+                                          VkrVulkanFrameSlot *slot,
+                                          const VkrWorldPassPayload *world) {
+  if (!world || world->decal_count == 0u) {
+    return true_v;
+  }
+  VkrVulkanDecalRow *rows = vkr_vk_frame_upload_allocate(
+      slot, (uint64_t)world->decal_count * sizeof(*rows),
+      _Alignof(VkrVulkanDecalRow), &slot->decals, NULL);
+  const uint64_t mask_bytes =
+      (uint64_t)world->decal_grid->cell_count * sizeof(VkrDecalMask);
+  void *masks = vkr_vk_frame_upload_allocate(
+      slot, mask_bytes, _Alignof(VkrDecalMask), &slot->decal_masks, NULL);
+  if (!rows || !masks) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < world->decal_count; ++i) {
+    const VkrDecal *decal = &world->decals[i];
+    const VkrVulkanPublishedMaterial *material =
+        vkr_vk_resolve_material(renderer, decal->material);
+    /* The second row is the gradient of the box's Y, normal to the planes
+       the decal projects onto; dividing by its length turns the shader's dot
+       product with a unit normal into the angle's cosine. */
+    const Vec4 up = mat4_row(decal->world_to_box, 1);
+    const float32_t up_length = vec3_length(vec3_new(up.x, up.y, up.z));
+    const float32_t fade_range = decal->fade_cos_start - decal->fade_cos_end;
+    rows[i] = (VkrVulkanDecalRow){
+        .world_to_box = {mat4_row(decal->world_to_box, 0), up,
+                         mat4_row(decal->world_to_box, 2)},
+        .fade = {1.0f / (up_length * fade_range),
+                 -decal->fade_cos_end / fade_range,
+                 decal->depth_fade > 0.0f ? 2.0f / decal->depth_fade
+                                          : VKR_VULKAN_DECAL_HARD_EDGE_SCALE,
+                 material ? decal->opacity : 0.0f},
+        .material_index = material ? material->slot.index : 0u,
+    };
+  }
+  MemCopy(masks, world->decal_grid->masks, mask_bytes);
+  slot->decal_count = world->decal_count;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_vk_upload_packet_tables(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrPreparedFrame *packet) {
   slot->point_light_data = 0u;
   slot->point_light_masks = 0u;
+  slot->decals = 0u;
+  slot->decal_masks = 0u;
+  slot->decal_count = 0u;
   slot->shadow_cascades = 0u;
   slot->local_shadow_views = 0u;
   slot->local_shadow_transmission = 0u;
@@ -544,6 +595,9 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
       MemCopy(masks, lighting->point_light_grid->masks, mask_bytes);
     }
   }
+
+  if (!vkr_vk_upload_decals(renderer, slot, packet->input.world))
+    return false_v;
 
   if (packet->input.shadow && packet->input.shadow->cascade_count) {
     const uint64_t cascade_bytes =
@@ -743,6 +797,8 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       sizeof(VkrVulkanLocalShadowTransmission) +
       (uint64_t)VKR_MAX_SCENE_RECTANGLE_LIGHTS *
           sizeof(VkrGpuRectangleLightRow) +
+      (uint64_t)VKR_MAX_FRAME_DECALS * sizeof(VkrVulkanDecalRow) +
+      (uint64_t)VKR_DECAL_GRID_MAX_CELLS * sizeof(VkrDecalMask) +
       256u; // Alignment between the fixed packet tables below.
   uint64_t candidate_bytes = 0u;
   uint64_t draw_bytes = 0u;

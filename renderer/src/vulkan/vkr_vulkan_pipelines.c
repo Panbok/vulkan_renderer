@@ -743,6 +743,19 @@ vkr_vk_validate_terrain_material_abi(VkrVulkanRenderer *renderer) {
       offsetof(VkrVulkanResolveRoot, terrain_materials), &terrain);
   valid &= terrain && vkr_vk_reflected_struct_size(terrain) ==
                           sizeof(VkrVulkanTerrainMaterialGpuRow);
+  static const VkrVulkanReflectedField decal_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanDecalRow, world_to_box),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanDecalRow, fade),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanDecalRow, material_index),
+  };
+  SpvReflectBlockVariable *decals = NULL;
+  valid &= vkr_vk_reflect_member_offset(
+      root, "decals", offsetof(VkrVulkanResolveRoot, decals), &decals);
+  valid &= decals &&
+           vkr_vk_reflected_struct_size(decals) == sizeof(VkrVulkanDecalRow);
+  for (uint32_t i = 0u; valid && i < ArrayCount(decal_fields); ++i)
+    valid &= vkr_vk_reflect_member_offset(decals, decal_fields[i].name,
+                                          decal_fields[i].offset, NULL);
   for (uint32_t i = 0u; valid && i < ArrayCount(terrain_fields); ++i)
     valid &= vkr_vk_reflect_member_offset(terrain, terrain_fields[i].name,
                                           terrain_fields[i].offset, NULL);
@@ -1316,6 +1329,12 @@ vkr_global const VkrVulkanReflectedField s_vk_resolve_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, anisotropy_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, pre_exposure),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, sky_reprojection),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, decals),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, decal_masks),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot,
+                               decal_grid_origin_cell_size),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot,
+                               decal_grid_dimensions_count),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_temporal_resolve_fields[] = {

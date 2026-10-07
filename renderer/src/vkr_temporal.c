@@ -83,6 +83,23 @@ temporal_scene_candidates(VkrTemporalSceneSignature *signature,
   }
 }
 
+/* Decal rows and their materials are content (ADR-092); the grid follows
+   from the rows. */
+vkr_internal void temporal_scene_decals(VkrTemporalSceneSignature *signature,
+                                        const VkrDecal *decals,
+                                        uint32_t count) {
+  temporal_scene_lane(signature, count);
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrDecal *decal = &decals[i];
+    temporal_scene_matrix(signature, decal->world_to_box);
+    temporal_scene_pair(signature, decal->material.id,
+                        decal->material.generation);
+    temporal_scene_floats(signature, decal->opacity, decal->depth_fade);
+    temporal_scene_floats(signature, decal->fade_cos_start,
+                          decal->fade_cos_end);
+  }
+}
+
 /* The published atmosphere generation and its authored settings are content.
    The camera altitude that selects the sky-view lookup is not. */
 vkr_internal void temporal_scene_sky(VkrTemporalSceneSignature *signature,
@@ -214,6 +231,7 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
                               world->gpu_candidate_count);
     temporal_scene_candidates(&signature, world->transmission_gpu_candidates,
                               world->transmission_gpu_candidate_count);
+    temporal_scene_decals(&signature, world->decals, world->decal_count);
     temporal_scene_pair(&signature, world->gpu_camera_opaque_candidate_count,
                         world->gpu_shadow_candidate_count);
     temporal_scene_lane(&signature, world->instance_count);

@@ -745,8 +745,8 @@ glass blurs through a half-resolution copy of the image, taken only on frames
 with either in view. Projected decals lay their materials' base colour over
 the opaque surfaces in their boxes before lighting, in shading variants that
 frames without a decal in view do not take
-([ADR-092](adr/092-projected-decals.md)); the desktop pipeline does not draw
-them yet. It
+([ADR-092](adr/092-projected-decals.md)); the desktop pipeline's G-buffer
+resolve applies the same decals. It
 draws the 16 dynamic lights nearest the camera, 4 of them shadowed with a
 four-comparison tent each, and no FXAA, screen-space effects or temporal
 history. Its
@@ -1351,8 +1351,7 @@ These are limits of current code or retained acceptance, not scheduled promises:
   16 GiB host, and Apple ASan does not support leak detection.
 
 - Projected decals ([ADR-092](adr/092-projected-decals.md)) change base colour
-  only and draw only on the tiled pipeline; Vulkan ignores decal components,
-  and the editor draws no decal box outline.
+  only, and the editor draws no decal box outline.
 
 - New viewport camera/grid controls, text sizing and inspection modes pass the
   Release editor build with both production shader compilers. Inspection modes

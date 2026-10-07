@@ -1380,7 +1380,7 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       slot->motion_blur_interval_scale =
           (float32_t)(packet->motion_blur_delta_seconds / elapsed);
   }
-  const VkrVulkanResolveRoot root = {
+  VkrVulkanResolveRoot root = {
       .geometry_rows = slot->gpu_geometry_rows,
       .visible_rows = visible->buffer.address,
       .vertices = renderer->geometry_megabuffer.vertices.address,
@@ -1431,7 +1431,18 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                     slot->temporal_previous_view_projection,
                                     packet->input.globals.view_position)
                               : mat4_identity(),
+      .decals = slot->decals,
+      .decal_masks = slot->decal_masks,
   };
+  if (slot->decal_count) {
+    const VkrDecalGrid *grid = packet->input.world->decal_grid;
+    root.decal_grid_origin_cell_size =
+        (Vec4){grid->origin.x, grid->origin.y, grid->origin.z, grid->cell_size};
+    root.decal_grid_dimensions_count[0] = grid->dimensions[0];
+    root.decal_grid_dimensions_count[1] = grid->dimensions[1];
+    root.decal_grid_dimensions_count[2] = grid->dimensions[2];
+    root.decal_grid_dimensions_count[3] = slot->decal_count;
+  }
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanResolveRoot),
                                  &prepared->root_address))

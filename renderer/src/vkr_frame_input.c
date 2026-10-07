@@ -543,6 +543,26 @@ vkr_internal VkrRendererError vkr_frame_input_validate_world(
                         "packet.world.decal_grid",
                         "must place every decal within its cell capacity");
     }
+    /* Shaders index the decal rows by grid bit without a bound. */
+    for (uint32_t cell = 0u;
+         world->decal_count > 0u && cell < world->decal_grid->cell_count;
+         ++cell) {
+      for (uint32_t word = 0u; word < VKR_DECAL_GRID_MASK_WORDS; ++word) {
+        /* The bits of this word that name table rows. */
+        const uint32_t first = word * 32u;
+        uint32_t named = 0u;
+        if (world->decal_count >= first + 32u) {
+          named = UINT32_MAX;
+        } else if (world->decal_count > first) {
+          named = (1u << (world->decal_count - first)) - 1u;
+        }
+        if (world->decal_grid->masks[cell].words[word] & ~named) {
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.world.decal_grid",
+                            "names a decal beyond the table");
+        }
+      }
+    }
   }
   return VKR_RENDERER_ERROR_NONE;
 }

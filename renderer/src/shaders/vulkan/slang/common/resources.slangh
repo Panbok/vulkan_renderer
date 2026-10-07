@@ -151,6 +151,18 @@ struct VkrGpuRectangleLightRow
     float4 color;
 };
 
+// One projected decal (ADR-092); mirrors VkrVulkanDecalRow in
+// vkr_vulkan_internal.h, packed as the tiled pipeline packs its rows.
+struct VkrVulkanDecalRow
+{
+    float4 world_to_box[3];
+    // x, y: angle fade scale and bias over dot(unit normal, world_to_box[1]);
+    // z: depth fade scale; w: opacity.
+    float4 fade;
+    uint material_index;
+    uint3 reserved;
+};
+
 struct VkrVulkanLtc
 {
     VkrGpuRectangleLightRow* lights;

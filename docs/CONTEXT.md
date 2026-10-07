@@ -53,7 +53,7 @@ below are starting points for checking a definition, not alternate API specs.
 
 | Term | Meaning in VKR | Owner |
 |---|---|---|
-| Projected decal | A `decal` component's box: on the tiled pipeline it lays its material's base colour over the opaque surfaces it holds before lighting. A mesh decal is imported geometry pushed off its surface by `vkr_decal_normal_offset_meters` and drawn as an ordinary surface. | [ADR-092](adr/092-projected-decals.md), [vkr_scene_decal.h](../runtime/src/renderer/systems/vkr_scene_decal.h) |
+| Projected decal | A `decal` component's box: it lays its material's base colour over the opaque surfaces it holds before lighting, in the tiled pipeline's forward shader and the desktop pipeline's G-buffer resolve. A mesh decal is imported geometry pushed off its surface by `vkr_decal_normal_offset_meters` and drawn as an ordinary surface. | [ADR-092](adr/092-projected-decals.md), [vkr_scene_decal.h](../runtime/src/renderer/systems/vkr_scene_decal.h) |
 | Geometry megabuffer | Shared vertex/index GPU storage addressed by geometry rows and draw records. | [vkr_gpu_abi.h](../renderer/src/vkr_gpu_abi.h) |
 | Candidate / visible draw | A potential world draw emitted by extraction / a GPU row surviving visibility selection. | [vkr_gpu_abi.h](../renderer/src/vkr_gpu_abi.h) |
 | Visibility buffer | Rasterized primitive/draw identity used to recover geometry and materials in later resolve work. | [ADR-028](adr/028-gpu-driven-deferred-visibility-buffer.md) |
