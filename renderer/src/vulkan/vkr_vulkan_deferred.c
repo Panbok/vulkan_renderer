@@ -4845,10 +4845,26 @@ void vkr_vk_record_prepared_compute(VkrVulkanRenderer *renderer,
 void vkr_vk_record_prepared_raster(VkrVulkanRenderer *renderer,
                                    VkCommandBuffer command,
                                    const VkrVulkanPreparedRaster *prepared) {
+  /* Every opaque bucket, mirrored or not, draws before any cutout bucket, so
+     alpha tests reject against all opaque depth, and opaque and cutout
+     pipelines each bind once. */
+  static const uint32_t bucket_order[] = {
+      VKR_WORLD_DRAW_STATE_OPAQUE_BACK,
+      VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED,
+      VKR_WORLD_DRAW_STATE_OPAQUE_BACK_MIRRORED,
+      VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED_MIRRORED,
+      VKR_WORLD_DRAW_STATE_CUTOUT_BACK,
+      VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED,
+      VKR_WORLD_DRAW_STATE_CUTOUT_BACK_MIRRORED,
+      VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED_MIRRORED,
+  };
+  _Static_assert(ArrayCount(bucket_order) == VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
+                 "every visibility bucket draws exactly once");
+
   vkCmdBindIndexBuffer(command, prepared->indices, 0u, VK_INDEX_TYPE_UINT32);
   VkPipeline bound = VK_NULL_HANDLE;
-  for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-       ++bucket) {
+  for (uint32_t i = 0u; i < ArrayCount(bucket_order); ++i) {
+    const uint32_t bucket = bucket_order[i];
     if (prepared->pipelines[bucket] != bound) {
       bound = prepared->pipelines[bucket];
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
