@@ -262,10 +262,13 @@ SSR is not planned for the tiled pipeline (owner decision, 2026-10-06).
 Mirror-like surfaces get [planar reflections](planar-reflections.md) per
 surface instead; other glossy surfaces use the probes of item 1.
 
-Also open: the opaque pass on the widest views, the dynamic-light tier at
-its 0.65 floor (17.1 to 17.5 ms p95 before the cooked mesh levels), the
-remaining material layers (clearcoat, sheen, anisotropy and diffuse
-transmission), and the specular highlights of static lights. The refraction
+Also open: the opaque pass on the widest views (half-precision vertex
+outputs and a near-to-far order of the alpha-tested draws did not lower it,
+[ADR-087](../adr/087-gpu-class-graphics-pipelines.md#base-pass-measurement)),
+the dynamic-light tier at its 0.65 floor (17.1 to 17.5 ms p95 before the
+cooked mesh levels), the remaining material layers (clearcoat, sheen,
+anisotropy and diffuse transmission), and the specular highlights of static
+lights. The refraction
 copy's base level reads the full-resolution image (0.3 ms at 2560×1440 on
 frames with a glass volume or rough glass in view), which writing the copy
 from tile memory during the atmosphere draw would avoid.

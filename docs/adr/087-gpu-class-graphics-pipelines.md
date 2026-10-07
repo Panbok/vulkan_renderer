@@ -970,6 +970,37 @@ against
 `sha256:f9fe3f1a8756121f109302d3e54d4cd5e2a33c17d2f9209b773151f7fe877ee0`,
 `sha256:d6897158653649b0e1087ebb7ae1e4146927879c73232d5b0b85bd302756b8df`.
 
+Carrying the forward vertex's colour, normal and tangent at half precision,
+which shrinks its outputs from 96 to 74 bytes, was measured the same way
+and not kept. It tested whether vertex outputs limit the widest views,
+which are bound by geometry (drawing half of every index range lowered
+their `Tiled.Opaque` p95 by about 4 ms, see the
+[tiled pipeline proposal](../proposals/tiled-pipeline.md)): a tile-based GPU
+writes each vertex's outputs to memory and reads them back for every tile. `Tiled.Opaque` median / p95 on the baked orbit took
+7.27 / 11.95, 7.21 / 11.75 and 7.18 / 11.71 ms before and 7.56 / 11.89,
+7.50 / 11.83 and 7.29 / 11.84 ms with half outputs, the last pair with the
+new build first; the dynamic-light orbit 9.55 / 17.18, 9.52 / 17.07 and
+9.40 / 17.05 against 9.50 / 17.05, 9.57 / 17.15 and 9.47 / 17.08 ms. The
+`gpu.submission` series varied from 11.1 to 12.5 ms median in both builds
+and shows no difference. Half normals also moved 7 isolated pixels of the
+glass view by more than 2 of 255 (at most 15). Output size therefore does
+not limit the forward pass on the M1 Pro. Reports, before then half:
+`sha256:b28e9fa08dc39bdf6d946970d105fee722e3d5a47c1d353f8bdd185f37a78205`,
+`sha256:60b48c628bebecaf5dea193f6f6deb91fe4009e1b8d46300bb6003e2cfdbb70c`,
+`sha256:382c306a4c87483227a4354806ba180184f95b8506f822e9587b530dc7107d86`,
+`sha256:f308e3c3446148842d63f1f5d28a54f9a8d5bafbf47e969f4d7d3be4e074c0a6`,
+`sha256:fdb3ede9b8847ee246f02b663e66a37c5d44bf0de421c686cbe540631d1ab04a`,
+`sha256:881b7d4439853e185c34999147723a54aad5ad21e3f8c2f2850577f1b4bf29fe`;
+`sha256:6754b97f28884adce0bab3716223378c69cb96feb0b4466174fea30c2e97a754`,
+`sha256:6b4c0b4b893e9cf2273d3e0b4591cfc1af3d71f767c660acc6d398dec3067f3d`,
+`sha256:f18363046d69e57f8b935c54b3d52face1ac616408ddae534498ddec9d01ff31`,
+`sha256:170e29227e38c83718a65e9f699df543027dc16ced82dcd48b859ae996766c92`,
+`sha256:5880dde2bddfc2f09bc731c68439c1fabcc7e07ac332c85cb346a9b6032c218e`,
+`sha256:b1175eeeae1166519252f5c349f8af1fa902d540ed26fde2dc0ec6642405c412`;
+glass captures
+`sha256:eab44f68831ad8c89595942ae3d57d64841bae39ab44a0573a696f0e146e2a9f`,
+`sha256:d0331a66931e7a4c7a097db4bfeb1191da0859243d0290341ca5566949cb4564`.
+
 ## Consequences
 
 - Lighting, shadow, AA and screen-space work is implemented and validated once
@@ -998,9 +1029,9 @@ against
 - **A depth pre-pass before forward shading.** Removed 2026-10-07: with
   opaque variants that never discard it only drew the opaque geometry twice
   ([measurement](#depth-pre-pass-measurement)).
-- **Ordering alpha-tested draws near to far, or laying their depth before
-  their shading.** Not kept 2026-10-07: neither lowers Bistro's cost
-  ([measurement](#base-pass-measurement)).
+- **Ordering alpha-tested draws near to far, laying their depth before
+  their shading, or half-precision vertex outputs.** Not kept 2026-10-07:
+  none lowers Bistro's cost ([measurement](#base-pass-measurement)).
 - **Fixed upscaling on M-series.** Rejected by the owner: native resolution
   is the target. Decision 12 lowers it only while frames miss the budget
   (revised by the owner, 2026-10-06).
