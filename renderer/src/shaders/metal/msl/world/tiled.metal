@@ -234,18 +234,29 @@ struct VkrMetalTiledSurface {
   float occlusion;
 };
 
+// A forward-drawn surface's base colour and alpha: its texture times the
+// material's tint and, except on terrain, the vertex colour. Alpha-tested
+// draws read it alone first, so fragments that cover no sample discard
+// before the surface's other textures.
+static float4
+vkr_metal_tiled_base(thread const VkrMetalTiledVertexOutput &input,
+                     const device VkrMetalPacketMaterial &material) {
+  const bool terrain = (material.flags & 2048u) != 0u;
+  return material.base_color_texture.sample(material.base_color_sampler,
+                                            input.texcoord) *
+         material.tint * (terrain ? float4(1.0f) : input.color);
+}
+
 static VkrMetalTiledSurface
 vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
                         constant VkrMetalPacketFrameRoot *frame,
                         const device VkrMetalPacketMaterial &material,
-                        uint material_index) {
+                        uint material_index, float4 base) {
   // A draw's material decides `terrain`, so the samples under it keep their
   // implicit derivatives.
   const bool terrain = (material.flags & 2048u) != 0u;
   VkrMetalTiledSurface surface;
-  surface.base = material.base_color_texture.sample(
-                     material.base_color_sampler, input.texcoord) *
-                 material.tint * (terrain ? float4(1.0f) : input.color);
+  surface.base = base;
   surface.normal_mapped = terrain || (material.flags & 1u) != 0u;
   surface.tangent_normal = float3(0.0f, 0.0f, 1.0f);
   surface.metallic = saturate(material.material_surface.x);
@@ -607,8 +618,8 @@ static bool vkr_metal_tiled_inspect(
 // removal keeps its fast path. With Coverage, alpha-tested draws return their
 // alpha sharpened about the material's cut-off to a transition about one
 // pixel wide; alpha to coverage turns it into the samples they cover, so their
-// edges resolve like geometry edges (ADR-087). Fully uncovered fragments
-// discard before shading.
+// edges resolve like geometry edges (ADR-087). Fragments that cover no
+// sample discard before the other material textures and shading.
 template <VkrMetalTiledLighting Lighting, bool Coverage, bool Probes>
 static float4
 vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
@@ -619,16 +630,17 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
       root->visible_rows[input.visible_row_index];
   const device VkrMetalPacketMaterial &material =
       frame->materials[visible.material_index];
-  VkrMetalTiledSurface surface =
-      vkr_metal_tiled_surface(input, frame, material, visible.material_index);
+  const float4 base = vkr_metal_tiled_base(input, material);
   float coverage = 1.0f;
   if (Coverage && material.alpha_mode == 1u) {
-    coverage = saturate((surface.base.a - material.material_alpha.x) /
-                            max(fwidth(surface.base.a), 1e-4f) +
+    coverage = saturate((base.a - material.material_alpha.x) /
+                            max(fwidth(base.a), 1e-4f) +
                         0.5f);
     if (coverage <= 0.0f)
       discard_fragment();
   }
+  VkrMetalTiledSurface surface = vkr_metal_tiled_surface(
+      input, frame, material, visible.material_index, base);
   if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
     float3 inspected;
     if (vkr_metal_tiled_inspect(input, frame, material, surface, barycentric,
@@ -866,7 +878,8 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   const device VkrMetalPacketMaterial &material =
       frame->materials[visible.material_index];
   VkrMetalTiledSurface surface =
-      vkr_metal_tiled_surface(input, frame, material, visible.material_index);
+      vkr_metal_tiled_surface(input, frame, material, visible.material_index,
+                              vkr_metal_tiled_base(input, material));
   float transmission = saturate(material.material_alpha.y);
   float alpha = transmission > 0.0f ? 1.0f : surface.base.a;
   if (alpha <= 1e-4f)

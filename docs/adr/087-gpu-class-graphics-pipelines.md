@@ -126,7 +126,9 @@ pipeline rather than a backend mechanism.
    fast path; alpha-tested draws shade after them
    with their alpha sharpened about the material's cut-off to a transition
    about one pixel wide and turned into covered samples (alpha to coverage).
-   Before the resolve, a tile kernel (`vkr_metal_tiled_resolve_tile`, one
+   An alpha-tested fragment reads its base colour first and discards when it
+   covers no sample, before its other textures
+   ([measurement](#base-pass-measurement)). Before the resolve, a tile kernel (`vkr_metal_tiled_resolve_tile`, one
    thread per pixel of the pass's fixed 32×16 tiles) replaces each pixel's
    samples with their average weighted by
    1 / (1 + largest channel), so edges against bright surfaces resolve as
@@ -862,6 +864,61 @@ the median, with `gpu.submission` at 11.74 / 16.30 and 11.69 / 16.19 ms
 `sha256:e871dc11d2ef85da0699b12de1b5b6456c96de2e11db7d266d30d5105940095a`).
 With one pipeline per opaque surface no pass depends on two compilations of
 a position agreeing, so it was not kept.
+
+### Base pass measurement
+
+Release, M1 Pro, 2026-10-07: HEAD `cc35eb0e`, copied with its shader
+catalog, alternating with the build whose alpha-tested fragments test their
+coverage after the base colour sample and before the ORM and normal samples
+(`vkr_metal_tiled_base` in
+[`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)).
+Two pairs ran HEAD first and one pair the new build first, because the
+second run of a pair measured up to 0.3 ms slower in either build.
+`Tiled.Opaque` median / p95 (`local-windowed-gpu-single`), the pair with the
+new build first last:
+
+| Case | HEAD | Discard before the other textures |
+|---|---|---|
+| `tiled_bistro_baked_native` | 7.32 / 11.66, 7.32 / 11.68, 7.47 / 12.23 ms | 7.18 / 11.67, 7.18 / 11.66, 7.30 / 11.69 ms |
+| `tiled_bistro_baked_dynamic_native` | 9.50 / 17.15, 9.45 / 17.28, 9.53 / 17.24 ms | 9.56 / 17.32, 9.44 / 17.05, 9.30 / 17.11 ms |
+
+The baked orbit's median falls 0.14 to 0.17 ms in either order; the
+dynamic-light orbit shows no change beyond the order drift. `gpu.submission`
+(`local-windowed-gpu-submission-single`, `tiled_bistro_baked_native`) took
+11.42 / 16.07 and 11.39 / 16.38 ms at HEAD and 11.66 / 17.08 and 11.54 /
+16.43 ms with HEAD first, and 11.24 / 15.93 and 11.50 / 16.88 ms against
+11.22 / 16.08 and 11.21 / 15.91 ms with the new build first: the frame
+changes no more than the order drift. Reports: pass timings, HEAD then new,
+`sha256:df029057bbd08c418eb718d0e730a40bb930c549c3536e4d61b82cf2d0958dcb`,
+`sha256:b854c38c198f3d811eaa3ed0be54b329d52f75f8c6648a93f2cf61c843462fb0`,
+`sha256:d224b47fe7d7f07fcc0109c74f460ee6522d0c37048564c0face669a418e7c81`,
+`sha256:3fae3cfc53efff69428c7043592352c3062e67bd19fe66073eb1384ecbf4ded8`,
+`sha256:4c1b0069a950191d7618cae240b974381f6a9c0f5ad358e85759b86676af0907`,
+`sha256:9f78d4acac20c8937baf8d9c155649b243392c02019fcf5a74e2bfaba9ec43c3`;
+`sha256:8783f223abaeb00c791043b8c9544d3227092c797328dfb17e951e4e377d5940`,
+`sha256:25af433798c60517a4c0d388773647173659d898a77d6d56b07e31639a0201e1`,
+`sha256:f1651c01723fb64b1422494103536062a5dcfbe7827ac05d4c33bc52e620eafa`,
+`sha256:64f6aa25f6d052470e40478efe900818265779ffced271bee4faa4a8f79bdf72`,
+`sha256:fde603268c3ecb4db7b5f674f49798f67321e8c6346050818febdc1ebda8101b`,
+`sha256:67721a4b81137494c10adec4a79b90d1a45eec90bb369a21d6073cb3aa5c05ec`;
+`gpu.submission`, HEAD then new,
+`sha256:790a320c8c45aa2e38c5d7ba7ba3e15a71dcb614c458b9d070fcb928dfcdecf2`,
+`sha256:2702dcfc98119b6cb7e7c4a5893cc6596edf2e88e5adefdbce4adc5694c33b29`,
+`sha256:eb4a661facb3d24ee8aefc12b9bef31c785234d5d71d3281c3c2725284a856e6`,
+`sha256:30b2bf09da38ff63230d8c0517abab8e51b2c3036d36eae6742fe62e5acc6402`;
+`sha256:4c3c1ffccab938334323de4acd2750770946454290e44b275274c967a06a6cb0`,
+`sha256:6ffbc24ab7f991fc7732e51df60ac90defbe9cf5f7a5fdb275e8f32687255b25`,
+`sha256:3793e6931870205cc9ab1a869b311ff6ef91944ab2232ceba175d30639dc2ccc`,
+`sha256:1be9ef210424d60f1e1d75eba978cf3bbd468f7f2299feb1e75490cc65f339d2`.
+`tiled_bistro_baked_capture` and `tiled_bistro_baked_dynamic_capture`
+(`local-offscreen`) differ from HEAD in at most 2 pixels by more than 2 of
+255, within the variation between two runs of one build
+(`sha256:696a051fc9242eb3fd0874335b660f2c8beb26154ec6287473ea79861e623065`,
+`sha256:cd2e0cc02b6162af9c06b5948dc071147a8169f094d3358af9bb9db4dac9f3cf`,
+`sha256:047ac0a373f961067666b7cc7dfca69ef91b23cda6554856c700b65a43367caf`,
+`sha256:e03f1079d20b0f520f18c2d4e4f6879fc450e7c0ef31fc10d919c2f6e07ef737`),
+and a Metal API validation run of the baked view passed
+(`sha256:9bb38702be5677517c9bf99b4fc64a8f89aaadcd8c1f88f13fadd729aa90f9e8`).
 
 ## Consequences
 
