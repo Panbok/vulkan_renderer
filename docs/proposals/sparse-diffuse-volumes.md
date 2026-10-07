@@ -19,7 +19,8 @@ is implemented.
 A probe grid holds indirect light only. It does not reduce the cost of static
 lamps: their shadows in `Shadow.LocalMask` and their shading in
 `Lighting.Deferred` stay as they are. Baking lamp light on the desktop
-pipeline is a separate question.
+pipeline is the subject of
+[Baked static lamps on the desktop pipeline](desktop-baked-lamps.md).
 
 ## Baseline
 
@@ -158,6 +159,10 @@ composed atlas in place. The graph orders the pass before the frame's
 readers; the reads of earlier frames precede it in queue order. This removes
 the CPU composition, the upload of the whole texture and the new texture
 handle at each composition. Both backends run the same pass.
+
+[Baked static lamps on the desktop pipeline](desktop-baked-lamps.md#moving-receivers)
+adds the static lamps' direct light to the lamp layers and composes the
+sun-key part and the lamp part separately.
 
 ### Bake
 
