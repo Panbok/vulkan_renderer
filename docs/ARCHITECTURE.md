@@ -738,7 +738,8 @@ shades the culled opaque draws forward in one four-sample render pass
 resolved on chip, with baked lightmaps for static
 diffuse light; a scene without a lightmap set draws its static lights as
 dynamic lights. `Tiled.Atmosphere` lays the clouds, aerial perspective and
-analytic height fog over the resolved image, and `Tiled.Blend` draws glass
+analytic height fog over the resolved image, splitting pixels that mix sky
+and surface samples between their media, and `Tiled.Blend` draws glass
 with the blended surfaces, back to front; glass volumes refract and rough
 glass blurs through a half-resolution copy of the image, taken only on frames
 with either in view. Projected decals lay their materials' base colour over

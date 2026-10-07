@@ -55,11 +55,14 @@ vkr_metal_packet_post_sample(texture2d<float, access::sample> source,
                 VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR)) != 0u) {
     return hdr;
   }
+  // The scene's alpha may carry the tiled opaque pass's surface share
+  // (vkr_metal_tiled_resolve_tile); the image it presents is opaque.
+  hdr.a = 1.0;
   if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM) != 0u) {
-    // The combine pass stored its sum in RGBA16F with an opaque alpha.
+    // The combine pass stored its sum in RGBA16F.
     float3 bloomed = hdr.rgb + bloom.texture.sample(source_sampler, uv).rgb *
                                    bloom.intensity;
-    hdr = float4(float3(half3(bloomed)), 1.0);
+    hdr.rgb = float3(half3(bloomed));
   }
   float3 color = vkr_color_grade(max(hdr.rgb * exposure, 0.0), grading);
   float3 display_linear =

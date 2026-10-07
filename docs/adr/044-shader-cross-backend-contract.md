@@ -101,6 +101,12 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     `VkrMetalPacketDecal` rows and the decal grid's cell masks, or zero on
     frames without decals. MSL reads the rows; the Slang mirror keeps their
     address ([ADR-092](092-projected-decals.md)).
+  - The tiled resolve kernel leaves in the resolved colour's alpha the share
+    of each pixel's resolve weight that surfaces hold, as the sky writes
+    alpha zero. The atmosphere draw reads it through programmable blending
+    to split pixels mixing sky and surfaces and writes alpha one, and the
+    Metal tonemap presents alpha one (ADR-087, decision 6). No Vulkan shader
+    reads it.
   - The prepared instance row carries the lightmap slot in
     `normal_column2.w`; every shader on both backends reads only its xyz.
   - The Metal sky background helpers, `vkr_metal_packet_sky_clear`,

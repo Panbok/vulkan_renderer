@@ -133,7 +133,7 @@ and without them (`tiled_bistro_street_static_native`):
 | Measurement | Without decals | With decals |
 |---|---|---|
 | `Tiled.Opaque` median / p95, `local-windowed-gpu-single` | 8.25 / 8.34, 8.23 / 8.32 ms | 8.77 / 8.85, 8.75 / 8.82 ms |
-| `gpu.submission` median / p95, `local-windowed-gpu-submission-single`, 10 m boxes | 11.61 / 11.74, 11.56 / 11.71 ms | 12.15 / 12.22, 12.15 / 12.25 ms |
+| `gpu.submission` median / p95, `local-windowed-gpu-submission-single`, 10 m boxes, before the sky edge split (ADR-087) | 11.61 / 11.74, 11.56 / 11.71 ms | 12.15 / 12.22, 12.15 / 12.25 ms |
 
 (`sha256:63ec11919b4a2a134b503098181152b2d186a6c6097b4b01fee20eb06bc0e95e`,
 `sha256:03c826c48d2f89ab71419464d2bbe7e0d983c9353ce8f9d4bb77d35aca8827c6`,

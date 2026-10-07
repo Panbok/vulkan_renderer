@@ -108,94 +108,138 @@ vertex VkrMetalTiledSkyOutput vkr_metal_tiled_sky_vertex(uint vertex_id
   return output;
 }
 
-// The clear sky behind the opaque surfaces; the discs too unless the
-// atmosphere draw lays them over the clouds. Indirect-diffuse capture keeps it
-// black, as deferred lighting does.
+// The clear sky at `pixel`; the discs too unless the atmosphere draw lays
+// them over the clouds. The sky draw writes it and the atmosphere draw
+// recomputes it to split edge pixels, so both take it from here.
+static float3
+vkr_metal_tiled_sky_background(constant VkrMetalTiledSkyRoot &root,
+                               uint2 pixel) {
+  float3 disc;
+  float3 radiance = vkr_metal_packet_sky_clear(
+      root.frame, root.sky_view, root.inverse_view_projection, root.extent,
+      root.sky_mode, root.sky_radiance, pixel, disc);
+  return radiance + (root.clouds_enabled != 0u ? 0.0f : disc);
+}
+
+// The clear sky behind the opaque surfaces. Its alpha is zero, the surfaces'
+// one, so the resolve can record the share of each pixel that is surface.
+// Indirect-diffuse capture keeps it black, as deferred lighting does.
 fragment float4 vkr_metal_tiled_sky_fragment(
     VkrMetalTiledSkyOutput input [[stage_in]],
     constant VkrMetalTiledSkyRoot &root [[buffer(1)]]) {
   if (root.frame->render_mode == 9u || root.frame->render_mode == 12u)
-    return float4(0.0f, 0.0f, 0.0f, 1.0f);
-  float3 disc;
-  float3 radiance = vkr_metal_packet_sky_clear(
-      root.frame, root.sky_view, root.inverse_view_projection, root.extent,
-      root.sky_mode, root.sky_radiance, uint2(input.position.xy), disc);
-  return float4(radiance + (root.clouds_enabled != 0u ? 0.0f : disc), 1.0f);
+    return float4(0.0f);
+  return float4(vkr_metal_tiled_sky_background(root, uint2(input.position.xy)),
+                0.0f);
 }
 
 // The media over the resolved opaque image, as the desktop pipeline's
-// Fog.Apply lays them over its lit image, blended as vkr_cloud_composite does:
-// destination times the light it keeps plus the light the media add. Sky
-// pixels take the cloud layer with the discs it lets through, then the fog;
-// surfaces take aerial perspective, the farther medium, then the fog. Drawing
-// them here rather than in the forward shading keeps their sampling out of
-// the opaque pass, whose registers every pixel pays for. A pixel's resolved
-// depth is its nearest sample's, so edge pixels take the nearer surface's
-// media, as Fog.Apply does.
+// Fog.Apply lays them over its lit image: destination times the light it
+// keeps plus the light the media add. Sky pixels take the cloud layer with the
+// discs it lets through, then the fog; surfaces take aerial perspective, the
+// farther medium, then the fog. Drawing them here rather than in the forward
+// shading keeps their sampling out of the opaque pass, whose registers every
+// pixel pays for. The destination's alpha, read through programmable
+// blending, is the share of the pixel's resolve weight that surfaces hold
+// (vkr_metal_tiled_resolve_tile). An edge pixel mixing sky and surface
+// samples splits into its clear sky, recomputed here, and the rest, and each
+// part takes its own media; the resolved depth is the nearest surface's.
+// The light a medium adds and the share of the light behind it it keeps.
+struct VkrMetalTiledMedia {
+  float3 added;
+  float kept;
+};
+
+static VkrMetalTiledMedia
+vkr_metal_tiled_sky_media(constant VkrMetalTiledSkyRoot &root, uint2 pixel) {
+  constant VkrMetalPacketFrameRoot *frame = root.frame;
+  VkrMetalTiledMedia media = {float3(0.0f), 1.0f};
+  const float3 direction = vkr_metal_packet_sky_direction(
+      frame, root.inverse_view_projection, root.extent, float2(pixel) + 0.5);
+  if (root.clouds_enabled != 0u) {
+    constant VkrMetalPacketSky &sky = *frame->sky;
+    float3 disc = float3(0.0f);
+    if (!vkr_sky_view_hits_ground(sky.params.atmosphere, direction.y))
+      disc = vkr_metal_packet_sky_discs(
+          sky, direction,
+          vkr_metal_packet_sky_view_transmittance(sky, direction));
+    float2 uv = (float2(pixel) + 0.5) / float2(root.extent);
+    float4 cloud = sky.cloud_radiance.sample(vkr_metal_packet_sky_sampler, uv);
+    media.added = cloud.rgb + disc * vkr_cloud_disc_visibility(cloud.a);
+    media.kept = saturate(cloud.a);
+  }
+  // Fog lies in front of the clouds and the sky behind them, so it scales
+  // both what the clouds add and the sky they keep.
+  if (frame->fog->color_density.w > 0.0f) {
+    VkrFogSample sample =
+        vkr_fog_sky_sample(*frame->fog, frame->view_position.xyz, direction);
+    media.added = vkr_fog_apply_sample(
+        media.added,
+        vkr_fog_inscatter(*frame->fog, vkr_metal_packet_fog_lighting(frame),
+                          vkr_fog_direction(direction)),
+        sample);
+    media.kept *= sample.transmittance;
+  }
+  return media;
+}
+
+static VkrMetalTiledMedia
+vkr_metal_tiled_surface_media(constant VkrMetalTiledSkyRoot &root, uint2 pixel,
+                              float depth) {
+  constant VkrMetalPacketFrameRoot *frame = root.frame;
+  VkrMetalTiledMedia media = {float3(0.0f), 1.0f};
+  float4 world_h =
+      root.inverse_view_projection *
+      float4(vkr_metal_packet_resolve_ndc(float2(pixel) + 0.5, root.extent),
+             depth, 1.0f);
+  float3 world = world_h.xyz / max(abs(world_h.w), 1e-7f) * sign(world_h.w);
+  if (vkr_metal_packet_aerial_enabled(frame)) {
+    VkrMetalPacketAerialSample aerial = vkr_metal_packet_aerial_sample(
+        frame->sky, frame->sky->aerial_perspective, world);
+    media.kept = 1.0f - aerial.weight * (1.0f - saturate(aerial.packed.a));
+    media.added = aerial.packed.rgb * aerial.weight;
+  }
+  if (frame->fog->color_density.w > 0.0f) {
+    VkrFogSample sample =
+        vkr_fog_surface_sample(*frame->fog, frame->view_position.xyz, world);
+    media.added = vkr_fog_apply_sample(
+        media.added,
+        vkr_fog_inscatter(
+            *frame->fog, vkr_metal_packet_fog_lighting(frame),
+            vkr_fog_direction(world - frame->view_position.xyz)),
+        sample);
+    media.kept *= sample.transmittance;
+  }
+  return media;
+}
+
 fragment float4 vkr_metal_tiled_atmosphere_fragment(
     VkrMetalTiledSkyOutput input [[stage_in]],
-    constant VkrMetalTiledSkyRoot &root [[buffer(1)]]) {
+    constant VkrMetalTiledSkyRoot &root [[buffer(1)]],
+    float4 destination [[color(0)]]) {
   constant VkrMetalPacketFrameRoot *frame = root.frame;
   uint2 pixel = uint2(input.position.xy);
   if (frame->render_mode == 9u || frame->render_mode == 12u)
     discard_fragment();
   const float depth = root.depth.read(pixel);
-  const bool fog = frame->fog->color_density.w > 0.0f;
-  float3 added = float3(0.0f);
-  float kept = 1.0f;
-  float3 direction;
-  if (depth >= 1.0f) {
-    direction = vkr_metal_packet_sky_direction(
-        frame, root.inverse_view_projection, root.extent, float2(pixel) + 0.5);
-    if (root.clouds_enabled != 0u) {
-      constant VkrMetalPacketSky &sky = *frame->sky;
-      float3 disc = float3(0.0f);
-      if (!vkr_sky_view_hits_ground(sky.params.atmosphere, direction.y))
-        disc = vkr_metal_packet_sky_discs(
-            sky, direction,
-            vkr_metal_packet_sky_view_transmittance(sky, direction));
-      float2 uv = (float2(pixel) + 0.5) / float2(root.extent);
-      float4 cloud = sky.cloud_radiance.sample(vkr_metal_packet_sky_sampler, uv);
-      added = cloud.rgb + disc * vkr_cloud_disc_visibility(cloud.a);
-      kept = saturate(cloud.a);
-    }
-    // Fog lies in front of the clouds and the sky behind them, so it scales
-    // both what the clouds add and the sky they keep.
-    if (fog) {
-      VkrFogSample sample =
-          vkr_fog_sky_sample(*frame->fog, frame->view_position.xyz, direction);
-      added = vkr_fog_apply_sample(
-          added,
-          vkr_fog_inscatter(*frame->fog, vkr_metal_packet_fog_lighting(frame),
-                            vkr_fog_direction(direction)),
-          sample);
-      kept *= sample.transmittance;
-    }
-  } else {
-    float4 world_h = root.inverse_view_projection *
-                     float4(vkr_metal_packet_resolve_ndc(float2(pixel) + 0.5,
-                                                         root.extent),
-                            depth, 1.0f);
-    float3 world = world_h.xyz / max(abs(world_h.w), 1e-7f) * sign(world_h.w);
-    if (vkr_metal_packet_aerial_enabled(frame)) {
-      VkrMetalPacketAerialSample aerial = vkr_metal_packet_aerial_sample(
-          frame->sky, frame->sky->aerial_perspective, world);
-      kept = 1.0f - aerial.weight * (1.0f - saturate(aerial.packed.a));
-      added = aerial.packed.rgb * aerial.weight;
-    }
-    if (fog) {
-      VkrFogSample sample = vkr_fog_surface_sample(
-          *frame->fog, frame->view_position.xyz, world);
-      added = vkr_fog_apply_sample(
-          added,
-          vkr_fog_inscatter(*frame->fog, vkr_metal_packet_fog_lighting(frame),
-                            vkr_fog_direction(world -
-                                              frame->view_position.xyz)),
-          sample);
-      kept *= sample.transmittance;
-    }
+  const float surface = depth >= 1.0f ? 0.0f : saturate(destination.a);
+  if (surface <= 0.0f) {
+    const VkrMetalTiledMedia sky = vkr_metal_tiled_sky_media(root, pixel);
+    return float4(destination.rgb * sky.kept + sky.added, 1.0f);
   }
-  return float4(added, kept);
+  const VkrMetalTiledMedia near =
+      vkr_metal_tiled_surface_media(root, pixel, depth);
+  if (surface >= 1.0f)
+    return float4(destination.rgb * near.kept + near.added, 1.0f);
+  // The resolve averaged the sky's samples, all one clear-sky colour, with
+  // the surfaces' by weight, so the surfaces' part is what remains.
+  const VkrMetalTiledMedia sky = vkr_metal_tiled_sky_media(root, pixel);
+  const float3 clear_sky = vkr_metal_tiled_sky_background(root, pixel);
+  const float3 surfaces =
+      max(destination.rgb - (1.0f - surface) * clear_sky, 0.0f);
+  return float4(surfaces * near.kept + surface * near.added +
+                    (1.0f - surface) * (clear_sky * sky.kept + sky.added),
+                1.0f);
 }
 
 // Irradiance of a lightmapped surface at `uv` on `page`, the frame's active
@@ -1016,7 +1060,10 @@ fragment float4 vkr_metal_tiled_forward_all_coverage_probes_decals_fragment(
 // averages scene-linear samples, so a bright sample dominates its pixel and
 // edges against light sources keep their steps. This tile kernel replaces a
 // pixel's samples with their average weighted by 1 / (1 + largest channel),
-// a tone-mapped resolve, and the pass's resolve then stores that value.
+// a tone-mapped resolve, and the pass's resolve then stores that value. Its
+// alpha is the share of that weight surfaces hold, since surfaces write alpha
+// one and the sky zero; the atmosphere draw splits edge pixels by it, and it
+// leaves the atmosphere draw as one.
 struct VkrMetalTiledResolvePixel {
   half4 color [[color(0)]];
 };
@@ -1031,7 +1078,7 @@ kernel void vkr_metal_tiled_resolve_tile(
     float4 color = float4(
         block.read(coord, sample, imageblock_data_rate::sample).color);
     float weight = 1.0f / (1.0f + max(color.r, max(color.g, color.b)));
-    sum += color * weight;
+    sum += float4(color.rgb, saturate(color.a)) * weight;
     weight_sum += weight;
   }
   VkrMetalTiledResolvePixel pixel;

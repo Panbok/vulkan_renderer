@@ -119,8 +119,14 @@ pipeline rather than a backend mechanism.
    lets through over the resolved sky pixels, and aerial perspective and
    analytic height fog over every pixel, as the desktop pipeline's
    `Fog.Apply` lays them; it runs while clouds, aerial perspective or fog
-   are on. A pixel takes its nearest sample's depth, so edge pixels mixing
-   sky and surface samples miss the clouds and take the surface's media.
+   are on. A pixel takes its nearest sample's depth. The sky writes alpha
+   zero and surfaces one, so the resolve leaves in alpha the share of a
+   pixel's resolve weight that surfaces hold; `Tiled.Atmosphere` reads it
+   through programmable blending, splits a pixel mixing sky and surface
+   samples into its clear sky, which it recomputes, and the surfaces' part,
+   and lays the clouds and sky fog over the first and the surface's media
+   over the second (see [Sky edge measurement](#sky-edge-measurement)). It
+   writes alpha one, and the tonemap presents alpha one.
    Opaque draws shade first and lay their own depth, with
    fragment variants that never discard, so hidden-surface removal keeps its
    fast path; alpha-tested draws shade after them
@@ -1002,6 +1008,35 @@ not limit the forward pass on the M1 Pro. Reports, before then half:
 glass captures
 `sha256:eab44f68831ad8c89595942ae3d57d64841bae39ab44a0573a696f0e146e2a9f`,
 `sha256:d0331a66931e7a4c7a097db4bfeb1191da0859243d0290341ca5566949cb4564`.
+
+### Sky edge measurement
+
+Release, M1 Pro, 2026-10-07, on the lightmap-baked Bistro street view
+(`tiled_bistro_baked_capture`, `local-offscreen`, 1280×720). Before the
+split, pixels where a roof met a cloud took the clear sky's colour: one at
+the roof's edge read (39, 75, 108) between the cloud's (109, 124, 137) and
+the roof's (10, 20, 27), a dark blue outline along silhouettes against
+clouds. After it the pixel reads (95, 111, 124); 299 pixels change by more
+than 2 of 255, all along silhouettes against the sky
+(`sha256:4ad06ae73a5f86ef00a56504a4a3142f74cb27ff533661f468d674ec187f89ef`,
+`sha256:20d17b6103972fd679a8b11a2bc953b6a24446c4100eddac523d6ebc998d66d0`).
+The atmosphere draw on the native static street view
+(`tiled_bistro_street_static_native`, `local-windowed-gpu-single`, local,
+300 frames) took 0.39 ms median before and 0.53 ms after; a diagnostic
+build that read the alpha through programmable blending without the split
+took 0.42 to 0.44 ms, so the split's code costs about 0.1 ms and
+programmable blending about 0.04 ms
+(`sha256:e377b76351f654151a44387854cce5affa55beaea1a6fa976f61affabe97119b`,
+`sha256:63ec11919b4a2a134b503098181152b2d186a6c6097b4b01fee20eb06bc0e95e`,
+`sha256:337e5c3322768709cb7a33ad112b383cf6b2261763542b05efe1929386065653`).
+
+`HZB.BuildBase` builds the next frame's occlusion pyramid from the same
+nearest-sample depth, so an object seen only through partly covered pixels
+can be culled and stays culled. Treating partly-sky pixels as far was
+rejected: once such an object draws, those pixels hold no sky, so it is
+culled again the next frame and flickers. A conservative pyramid needs each
+edge pixel's farthest sample, which costs the opaque pass another
+multisampled target.
 
 ## Consequences
 

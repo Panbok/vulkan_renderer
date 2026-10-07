@@ -712,10 +712,10 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
 }
 
 /* Creates the tiled pipeline's raster pipelines (ADR-087): forward shading
-   and the clear sky, multisampled; the cloud draw over the resolved image,
-   which adds cloud radiance to the destination scaled by the cloud's
-   transmittance (vkr_cloud_composite); and the blend pass's glass, blended
-   surfaces and world text. */
+   and the clear sky, multisampled; the atmosphere draw over the resolved
+   image, which reads the destination and lays the clouds, aerial perspective
+   and fog over it as vkr_cloud_composite composes; and the blend pass's
+   glass, blended surfaces and world text. */
 vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
     id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
@@ -929,14 +929,11 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
   [options release];
   descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
   descriptor.rasterSampleCount = 1;
+  /* The fragment reads the destination through programmable blending and
+     writes the composed pixel, so it splits edge pixels by the surface share
+     the resolve left in alpha. */
   descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
-  descriptor.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
-  descriptor.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
-  descriptor.colorAttachments[0].destinationRGBBlendFactor =
-      MTLBlendFactorSourceAlpha;
-  descriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;
-  descriptor.colorAttachments[0].destinationAlphaBlendFactor =
-      MTLBlendFactorOne;
+  descriptor.colorAttachments[0].blendingState = MTL4BlendStateDisabled;
   NSError *error = nil;
   renderer->tiled_atmosphere_pipeline = [renderer->compiler
       newRenderPipelineStateWithDescriptor:descriptor
