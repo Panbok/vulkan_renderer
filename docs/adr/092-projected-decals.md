@@ -174,6 +174,36 @@ cost: the lightmap-baked orbit (`tiled_bistro_baked_native`,
 `sha256:184fdd69c00e6473b71315629e672b57b1c549b835048e498457a3e12f5c5d8e`,
 `sha256:9f9d6a00092ff1ef9f87cb0fb304b60a90e31b3e5ea4a89a3cd6c323f2294359`).
 
+A Metal System Trace with GPU counters of the two static views (60 warm-up
+and 40 measured frames, `local-windowed-gpu-single`) shows the variant
+lowering the opaque pass's fragment occupancy from 26.1% to 24.7% while every
+limiter and utilization falls by a few percent: the same work spread over a
+longer pass, as when the shader needs more registers. The trace reports no
+compiler spill for the renderer and no shader profiler rows, so it gives no
+register count.
+
+Two ways to lower the cost were built and measured on the same views, and
+neither paid:
+
+- A Metal-only decal culling view after the shadow views kept the camera
+  draws whose bounding sphere may reach a decal's box, so only they took the
+  decal variant. `Tiled.Opaque` took 8.75 / 8.86 and 8.73 / 8.80 ms with the
+  decals and 8.22 / 8.34 and 8.24 / 9.02 ms without them, the same 0.5 ms
+  (`sha256:cd48ef3eb7784e1ffd3ec5708916c8cc5b62d08ff0a6e5465f850f306bb1b525`,
+  `sha256:7011f2ac6ee94e8eb90ed2ff0241e31e875a648b13dc5ef28b692e7c67adff09`,
+  `sha256:3f8a8ed983b45777b461b07227e19c62ccd1bdc8dc7ff423122092e5855663dc`,
+  `sha256:d66344dd90416baca0ebbd8529a159622c0a70896a47d49137ae48435982a63a`).
+  Bistro's street and facades are a few large meshes whose bounds reach any
+  street decal, so those draws covered about 80% of the street view.
+- Computing the decals as a layer before the surface's other material
+  inputs, `base × kept + added` applied after them, so fewer values are live
+  around the decal loop, took 8.86 / 8.93 and 8.88 / 8.94 ms against 8.78 /
+  8.85 and 8.79 / 8.85 ms for the shipped order
+  (`sha256:5a6f3863c11e082e3c7cf8cd3c20f09667f2613c40832fb1304f48a90aea1dec`,
+  `sha256:486d3154d18ec3b25c9c098b9db7f78b0bbaeac7317abbf1364b6e8c95a1d64b`,
+  `sha256:23bdf3832f3289666912d9ffdeb94e21573da1a63a35810bbf3a0fc8cef3e755`,
+  `sha256:c21f4254a0bfd004fa271973e2bfb111f4bfa6038b617e739b8d0c8bf98f402d`).
+
 ### Desktop evidence
 
 Release, Windows, RX 6700 XT, AMD driver 26.6.3, 2026-10-07, on the Bistro
@@ -210,9 +240,9 @@ unknown; light ranking by measured contribution does not explain it.
   and environment light it, so baked and dynamic lighting both show it.
 - A frame with any decal in view pays about 0.5 ms of `Tiled.Opaque` on
   Bistro at native resolution on the M1 Pro, about half the margin the
-  baked orbit leaves under the 16.7 ms budget (ADR-087). Only draws that
-  touch a decal would pay if the culling pass sorted them into buckets of
-  their own; the draw buckets are a shared GPU ABI, so that is future work.
+  baked orbit leaves under the 16.7 ms budget (ADR-087). Giving only the
+  draws that may touch a decal the variant did not lower it on Bistro,
+  whose large meshes reach the decals (see Bistro evidence).
 - A decal box lays its texture on every opaque surface inside it that faces
   its +Y within the fade angles, including moving and skinned meshes that
   pass through it.
@@ -236,11 +266,17 @@ unknown; light ranking by measured contribution does not explain it.
   64-bit decal mask.
 - **Branch on a decal count instead of a variant.** Unused decal code would
   still cost the opaque pass registers on frames without decals.
+- **A decal culling view.** A second camera culling view for the draws whose
+  bounds may reach a decal limits the variant to them without changing the
+  shared draw buckets, but on Bistro those draws cover most of a street view
+  and it saved nothing (see Bistro evidence).
 
 ## Revisit when
 
 - Decals need normal, roughness or emissive channels, an atlas rectangle, or
   a receive-decals flag on meshes.
 - A scene keeps more than 64 decals near the camera.
-- A decal-heavy view misses the budget: then give decal-touching draws their
-  own draw buckets so only their pixels take the decal variant.
+- Scenes built from smaller meshes leave most of a view to draws that touch
+  no decal: then a decal culling view (see Alternatives considered) pays.
+- A shader profile gives the forward variants' register counts, which would
+  show which code holds the opaque pass near 26% fragment occupancy.

@@ -271,7 +271,11 @@ anisotropy and diffuse transmission), and the specular highlights of static
 lights. The refraction
 copy's base level reads the full-resolution image (0.3 ms at 2560×1440 on
 frames with a glass volume or rough glass in view), which writing the copy
-from tile memory during the atmosphere draw would avoid.
+from tile memory during the atmosphere draw would avoid. The opaque pass runs at
+about 26% fragment occupancy on the Bistro street view, and any added
+shading code, such as the decal variant, lowers it further
+([ADR-092](../adr/092-projected-decals.md#bistro-evidence)); register counts
+per variant from an Xcode GPU capture would show what to trim.
 
 ## Acceptance evidence
 
