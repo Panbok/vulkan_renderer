@@ -4215,6 +4215,16 @@ static bool8_t project_job_failed(VkrEditorProjects *projects,
       projects->cmd_bake_succeeded = false_v;
       snprintf(projects->cmd_bake_result, sizeof(projects->cmd_bake_result),
                "%s", projects->message);
+      /* No one presses Back for a script: the scene the bake closed reopens,
+         and the Cmd hold reports the failure once it has. */
+      projects->job_id = 0;
+      projects->operation[0] = '\0';
+      projects->view = PROJECT_VIEW_EDITOR;
+      if (projects->active_scene < projects->project->scene_count) {
+        projects->pending_scene = projects->active_scene;
+        project_start_job(projects, editor, frame, false_v);
+      }
+      return true_v;
     }
   } else if (projects->creating_project) {
     snprintf(projects->message, sizeof(projects->message),
