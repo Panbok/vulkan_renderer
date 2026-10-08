@@ -103,6 +103,9 @@ typedef struct VkrSampleViewState {
   bool8_t grid_labels;
   /* The grid stays visible through opaque geometry instead of behind it. */
   bool8_t grid_through_geometry;
+  /* Every brush face shows its surface's greybox look, art-owned materials
+     too (vkr_surface.h). */
+  bool8_t greybox_view;
 } VkrSampleViewState;
 
 /* The free-camera speeds, in world units per second, that the Scene's speed

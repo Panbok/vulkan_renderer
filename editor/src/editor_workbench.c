@@ -42,7 +42,7 @@ static const struct {
 };
 
 static const char *const s_scene_tools[VKR_EDITOR_SCENE_TOOL_COUNT] = {
-    "none", "brush_draw", "clip", "terrain", "stairs", "corridor"};
+    "none", "brush_draw", "clip", "terrain", "stairs", "corridor", "measure"};
 static const char *const s_snap_targets[VKR_EDITOR_SNAP_COUNT] = {
     "free", "surface", "grid"};
 

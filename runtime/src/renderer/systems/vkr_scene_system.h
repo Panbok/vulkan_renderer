@@ -23,6 +23,7 @@
 #include "core/vkr_entity.h"
 #include "core/vkr_type_desc.h"
 #include "level/vkr_blockout.h"
+#include "level/vkr_surface.h"
 #include "math/mat.h"
 #include "math/vec.h"
 #include "math/vkr_quat.h"
@@ -247,7 +248,12 @@ typedef struct SceneBrushSettings {
 typedef struct SceneBrushFace {
   Vec3 normal;
   float32_t distance;
-  /* Material file; empty uses the dev grid material. */
+  /* What the face is made of, and a level-design accent; the face shows
+     their greybox look until the art pass gives it a material
+     (vkr_surface.h). */
+  VkrSurface surface;
+  VkrSurfaceMark mark;
+  /* Art-owned material file; empty shows the greybox look. */
   char material[SCENE_BRUSH_MATERIAL_CAPACITY];
   /* Repeats added after scaling, meters per repeat and rotation (radians)
      of the projected texture. */

@@ -2,11 +2,13 @@
 
 #include "level/vkr_blockout.h"
 #include "level/vkr_brush.h"
+#include "level/vkr_surface.h"
 
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static bool8_t brush_test_near(float32_t a, float32_t b, float32_t tolerance) {
   return fabsf(a - b) <= tolerance;
@@ -861,6 +863,75 @@ static void brush_test_coplanar(VkrBrushGeometry *geometry) {
   assert(found == 0u);
 }
 
+/* Surface tags (vkr_surface.h): orientations, which look a face shows,
+   the retired dev palette's replacements, and that every greybox look the
+   table names is on disk, so a tag cannot point at a missing file. */
+static void brush_test_surfaces(void) {
+  assert(vkr_surface_orientation(1.0f) == VKR_SURFACE_FLOOR);
+  assert(vkr_surface_orientation(0.71f) == VKR_SURFACE_FLOOR);
+  assert(vkr_surface_orientation(0.69f) == VKR_SURFACE_WALL);
+  assert(vkr_surface_orientation(-0.69f) == VKR_SURFACE_WALL);
+  assert(vkr_surface_orientation(-1.0f) == VKR_SURFACE_CEILING);
+
+  assert(strcmp(vkr_surface_face_material(
+                    VKR_SURFACE_WOOD, VKR_SURFACE_MARK_NONE, "", 0.0f, false_v),
+                "assets/materials/greybox/wood_wall.mt") == 0);
+  assert(strcmp(vkr_surface_face_material(VKR_SURFACE_WOOD,
+                                          VKR_SURFACE_MARK_HAZARD, NULL, 1.0f,
+                                          false_v),
+                "assets/materials/greybox/mark_hazard_floor.mt") == 0);
+  const char *art = "assets/materials/bistro/wall.mt";
+  assert(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
+                                   art, 0.0f, false_v) == art);
+  assert(
+      strcmp(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
+                                       art, -1.0f, true_v),
+             "assets/materials/greybox/brick_ceiling.mt") == 0);
+
+  VkrSurface surface = VKR_SURFACE_COUNT;
+  VkrSurfaceMark mark = VKR_SURFACE_MARK_COUNT;
+  assert(vkr_surface_from_legacy_material("assets/materials/dev/dev_metal.mt",
+                                          &surface, &mark));
+  assert(surface == VKR_SURFACE_METAL && mark == VKR_SURFACE_MARK_NONE);
+  assert(vkr_surface_from_legacy_material("assets/materials/dev/dev_dark.mt",
+                                          &surface, &mark));
+  assert(surface == VKR_SURFACE_NONE && mark == VKR_SURFACE_MARK_DARK);
+  assert(vkr_surface_from_legacy_material("assets/materials/dev/dev_ceiling.mt",
+                                          &surface, &mark));
+  assert(surface == VKR_SURFACE_NONE && mark == VKR_SURFACE_MARK_NONE);
+  assert(!vkr_surface_from_legacy_material("assets/materials/dev/dev_decal.mt",
+                                           &surface, &mark));
+  assert(!vkr_surface_from_legacy_material("assets/materials/dev/dev_.mt",
+                                           &surface, &mark));
+  assert(!vkr_surface_from_legacy_material("", &surface, &mark));
+
+  for (uint32_t side = 0; side < VKR_SURFACE_ORIENTATION_COUNT; ++side) {
+    for (uint32_t tag = 0; tag < VKR_SURFACE_COUNT; ++tag) {
+      FILE *file = fopen(
+          vkr_surface_greybox_material((VkrSurface)tag, VKR_SURFACE_MARK_NONE,
+                                       (VkrSurfaceOrientation)side),
+          "rb");
+      assert(file);
+      fclose(file);
+    }
+    for (uint32_t m = 1; m < VKR_SURFACE_MARK_COUNT; ++m) {
+      FILE *file = fopen(
+          vkr_surface_greybox_material(VKR_SURFACE_NONE, (VkrSurfaceMark)m,
+                                       (VkrSurfaceOrientation)side),
+          "rb");
+      assert(file);
+      fclose(file);
+    }
+  }
+  const char *const roles[] = {VKR_SURFACE_CLIP_MATERIAL,
+                               VKR_SURFACE_TRIGGER_MATERIAL};
+  for (uint32_t i = 0; i < ArrayCount(roles); ++i) {
+    FILE *file = fopen(roles[i], "rb");
+    assert(file);
+    fclose(file);
+  }
+}
+
 bool32_t run_brush_tests(void) {
   printf("--- Brush Tests ---\n");
   VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
@@ -873,6 +944,7 @@ bool32_t run_brush_tests(void) {
   brush_test_lightmap(geometry);
   brush_test_blockout(geometry);
   brush_test_coplanar(geometry);
+  brush_test_surfaces();
   free(geometry);
   printf("--- Brush Tests Completed ---\n");
   return true_v;

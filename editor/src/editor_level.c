@@ -2421,40 +2421,52 @@ static void palette_op(VkrEditorUi *editor, const char *op, const char *key,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
-/* The swatch of material file `path`, the Grid one for an empty path, or
-   VKR_EDITOR_BRUSH_MATERIAL_COUNT for a material no swatch paints. */
-static uint32_t palette_material_index(const char *path) {
-  if (!path[0]) {
-    return 0u;
-  }
-  for (uint32_t i = 0; i < VKR_EDITOR_BRUSH_MATERIAL_COUNT; ++i) {
-    if (strcmp(path, vkr_editor_brush_materials[i].path) == 0) {
-      return i;
-    }
-  }
-  return VKR_EDITOR_BRUSH_MATERIAL_COUNT;
-}
-
-/* The swatch every face of `brush` shows, or VKR_EDITOR_BRUSH_MATERIAL_COUNT
-   when they differ. */
-static uint32_t palette_brush_material(const VkrScene *scene,
-                                       VkrEntityId brush) {
+/* The surface tag every face of `brush` shows, and its mark, each
+   VKR_SURFACE_COUNT or VKR_SURFACE_MARK_COUNT when the faces differ. */
+static void palette_brush_look(const VkrScene *scene, VkrEntityId brush,
+                               uint32_t *out_surface, uint32_t *out_mark) {
   VkrEntityId faces[VKR_BRUSH_FACE_MAX];
   const uint32_t count =
       Min(vkr_scene_brush_faces(scene, brush, faces, ArrayCount(faces)),
           (uint32_t)ArrayCount(faces));
-  uint32_t shared = VKR_EDITOR_BRUSH_MATERIAL_COUNT;
+  *out_surface = VKR_SURFACE_COUNT;
+  *out_mark = VKR_SURFACE_MARK_COUNT;
   for (uint32_t i = 0; i < count; ++i) {
     const SceneBrushFace *face =
         vkr_scene_get_typed(scene, faces[i], &vkr_scene_brush_face_type);
-    const uint32_t index = face ? palette_material_index(face->material)
-                                : VKR_EDITOR_BRUSH_MATERIAL_COUNT;
-    if (i > 0u && index != shared) {
-      return VKR_EDITOR_BRUSH_MATERIAL_COUNT;
-    }
-    shared = index;
+    const uint32_t surface = face ? (uint32_t)face->surface : VKR_SURFACE_COUNT;
+    const uint32_t mark = face ? (uint32_t)face->mark : VKR_SURFACE_MARK_COUNT;
+    *out_surface =
+        i == 0u || surface == *out_surface ? surface : VKR_SURFACE_COUNT;
+    *out_mark = i == 0u || mark == *out_mark ? mark : VKR_SURFACE_MARK_COUNT;
   }
-  return shared;
+}
+
+/* Gives the selected face, else every face of the selected brush, the
+   surface or mark `key` names; new brushes take it from the palette. */
+static void palette_paint(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                          const SceneBrushFace *face, VkrEntityId brush,
+                          const char *key, const char *name) {
+  if (face) {
+    VkrSceneEditRequest request = {.action = VKR_SCENE_EDIT_APPLY,
+                                   .entity = frame->selected_entity};
+    request.values.fields = VKR_SCENE_EDIT_COMPONENT;
+    request.values.component_type = &vkr_scene_brush_face_type;
+    SceneBrushFace *value = (SceneBrushFace *)request.values.component;
+    *value = *face;
+    if (strcmp(key, "surface") == 0) {
+      (void)vkr_surface_find(name, &value->surface);
+    } else {
+      (void)vkr_surface_mark_find(name, &value->mark);
+    }
+    *frame->scene_edit = request;
+    return;
+  }
+  if (brush.u64) {
+    char extra[64];
+    snprintf(extra, sizeof(extra), ",\"%s\":\"%s\"", key, name);
+    palette_op(editor, "brush.set_surface", "brush", brush, extra);
+  }
 }
 
 void vkr_editor_level_palette_build(VkrEditorUi *editor,
@@ -2762,50 +2774,67 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
   vkr_editor_palette_command(&palette, string8_lit("palette.delete"), "Delete",
                              VKR_UI_ICON_TRASH, CMD_DELETE, false_v);
 
-  /* A swatch paints the selected face alone, else every face of the
-     selected brush, and new brushes take it; without a selection it only
-     picks the material of new brushes. It shows the selection's material,
-     or the new brushes' one. */
-  vkr_editor_palette_heading(&palette, string8_lit("palette.materials"),
-                             string8_lit("MATERIAL"));
-  const uint32_t shown = face        ? palette_material_index(face->material)
-                         : brush.u64 ? palette_brush_material(scene, brush)
-                                     : editor->brush_material;
-  for (uint32_t i = 0; i < VKR_EDITOR_BRUSH_MATERIAL_COUNT; ++i) {
-    const VkrEditorBrushMaterial *swatch = &vkr_editor_brush_materials[i];
+  /* A surface or mark paints the selected face alone, else every face of
+     the selected brush, and new brushes take it; without a selection it
+     only picks the look of new brushes. Each shows the selection's value,
+     or the new brushes' one. Faces show the fixed greybox look of their
+     surface and mark until the art pass gives them a material. */
+  uint32_t shown_surface = (uint32_t)editor->brush_surface;
+  uint32_t shown_mark = (uint32_t)editor->brush_mark;
+  if (face) {
+    shown_surface = (uint32_t)face->surface;
+    shown_mark = (uint32_t)face->mark;
+  } else if (brush.u64) {
+    palette_brush_look(scene, brush, &shown_surface, &shown_mark);
+  }
+  const String8 paint_tip =
+      face        ? string8_lit("Paint the selected face; new brushes take it "
+                                       "too")
+      : brush.u64 ? string8_lit("Paint every face of the selected brush; new "
+                                "brushes take it too")
+                  : string8_lit("New brushes take it; select a brush or face "
+                                "to paint it");
+  vkr_editor_palette_heading(&palette, string8_lit("palette.surfaces"),
+                             string8_lit("SURFACE"));
+  for (uint32_t i = 0; i < VKR_SURFACE_COUNT; ++i) {
     (void)vkr_ui_push_id_u64(ui, i);
     const bool8_t clicked = vkr_editor_palette_button(
-        &palette, string8_lit("palette.swatch"), swatch->label,
-        VKR_UI_ICON_MATERIAL,
-        face        ? string8_lit("Paint the selected face; new brushes "
-                                         "take this material too")
-        : brush.u64 ? string8_lit("Paint every face of the selected brush; "
-                                  "new brushes take this material too")
-                    : string8_lit("New brushes take this material; select a "
-                                  "brush or face to paint it"),
-        shown == i, brush.u64 && !face && !ops);
+        &palette, string8_lit("palette.surface"), vkr_surface_labels[i],
+        VKR_UI_ICON_MATERIAL, paint_tip, shown_surface == i,
+        brush.u64 && !face && !ops);
     (void)vkr_ui_pop_id(ui);
-    if (!clicked) {
-      continue;
+    if (clicked) {
+      editor->brush_surface = (VkrSurface)i;
+      palette_paint(editor, frame, face, brush, "surface",
+                    vkr_surface_names[i]);
     }
-    editor->brush_material = i;
-    if (!brush.u64) {
-      continue;
+  }
+  vkr_editor_palette_heading(&palette, string8_lit("palette.marks"),
+                             string8_lit("MARK"));
+  for (uint32_t i = 0; i < VKR_SURFACE_MARK_COUNT; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    const bool8_t clicked = vkr_editor_palette_button(
+        &palette, string8_lit("palette.mark"), vkr_surface_mark_labels[i],
+        i == VKR_SURFACE_MARK_HAZARD ? VKR_UI_ICON_WARNING_FILL
+                                     : VKR_UI_ICON_MATERIAL,
+        paint_tip, shown_mark == i, brush.u64 && !face && !ops);
+    (void)vkr_ui_pop_id(ui);
+    if (clicked) {
+      editor->brush_mark = (VkrSurfaceMark)i;
+      palette_paint(editor, frame, face, brush, "mark",
+                    vkr_surface_mark_names[i]);
     }
-    if (face) {
-      VkrSceneEditRequest request = {.action = VKR_SCENE_EDIT_APPLY,
-                                     .entity = frame->selected_entity};
-      request.values.fields = VKR_SCENE_EDIT_COMPONENT;
-      request.values.component_type = &vkr_scene_brush_face_type;
-      SceneBrushFace *value = (SceneBrushFace *)request.values.component;
-      *value = *face;
-      snprintf(value->material, sizeof(value->material), "%s", swatch->path);
-      *frame->scene_edit = request;
-    } else {
-      char extra[96];
-      snprintf(extra, sizeof(extra), ",\"material\":\"%s\"", swatch->path);
-      palette_op(editor, "brush.set_material", "brush", brush, extra);
-    }
+  }
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.greybox"), "Greybox view",
+          VKR_UI_ICON_EYE,
+          string8_lit("Show every face in its surface's greybox look, over "
+                      "any material the art pass gave it"),
+          frame->view_state.greybox_view, !frame->view_request)) {
+    VkrSampleViewState next = frame->view_state;
+    next.greybox_view = !next.greybox_view;
+    *frame->view_request =
+        (VkrSampleViewRequest){.value = next, .apply = true_v};
   }
 
   vkr_editor_palette_heading(&palette, string8_lit("palette.snap"),
@@ -2867,5 +2896,23 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
   vkr_editor_palette_command(&palette, string8_lit("palette.checks"),
                              "Level checks", VKR_UI_ICON_PERSON_WALK,
                              CMD_LEVEL_CHECKS, false_v);
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.measure"), "Measure",
+          VKR_UI_ICON_RULER,
+          string8_lit("Click two points to read their distance, run, rise "
+                      "and slope; Shift snaps to the grid"),
+          running == VKR_EDITOR_SCENE_TOOL_MEASURE, false_v)) {
+    vkr_editor_scene_tool_set(editor, running == VKR_EDITOR_SCENE_TOOL_MEASURE
+                                          ? VKR_EDITOR_SCENE_TOOL_NONE
+                                          : VKR_EDITOR_SCENE_TOOL_MEASURE);
+  }
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.scale_figure"), "Scale figure",
+          VKR_UI_ICON_PERSON_WALK,
+          string8_lit("Show the player's capsule at the pointer, with its "
+                      "eye, crouch and step heights"),
+          editor->scale_figure, false_v)) {
+    editor->scale_figure = !editor->scale_figure;
+  }
   vkr_editor_palette_end(&palette);
 }

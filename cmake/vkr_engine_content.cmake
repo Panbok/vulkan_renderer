@@ -8,6 +8,21 @@
 # VKR_ENGINE_FILES every file they reach. Changing this set changes every
 # package.
 include("${CMAKE_CURRENT_LIST_DIR}/vkr_mannequin_content.cmake")
+# The greybox looks of surface tags, marks and brush roles
+# (runtime/src/level/vkr_surface.h), one material per tag or mark and face
+# orientation, written by tools/gen_greybox.py; a level built in the level
+# toolkit names them all.
+set(VKR_GREYBOX_MATERIALS
+    assets/materials/greybox/role_clip.mt
+    assets/materials/greybox/role_trigger.mt)
+foreach(_vkr_look IN ITEMS none concrete metal wood tile plaster brick rock
+                           dirt grass glass fabric water emissive mark_hazard
+                           mark_orange mark_blue mark_red mark_green mark_dark)
+  foreach(_vkr_side IN ITEMS floor wall ceiling)
+    list(APPEND VKR_GREYBOX_MATERIALS
+         "assets/materials/greybox/${_vkr_look}_${_vkr_side}.mt")
+  endforeach()
+endforeach()
 set(VKR_ENGINE_INCLUDE
     assets/render_graphs/main.rendergraph.json
     assets/render_graphs/tiled.rendergraph.json
@@ -23,26 +38,9 @@ set(VKR_ENGINE_INCLUDE
     assets/fonts/UbuntuMono-R.ttf.license.md
     assets/fonts/UbuntuMono-Bold.ttf.license.md
     assets/fonts/Inter-OFL.txt
-    # Dev grid materials brush faces use by default and every material of
-    # the editor's brush palette (editor_viewport.c), since a level built
-    # from the palette names them all (docs/proposals/level-design-toolkit.md).
-    assets/materials/dev/dev_grid.mt
-    assets/materials/dev/dev_floor.mt
-    assets/materials/dev/dev_wall.mt
-    assets/materials/dev/dev_orange.mt
-    assets/materials/dev/dev_blue.mt
-    assets/materials/dev/dev_trigger.mt
-    assets/materials/dev/dev_clip.mt
+    # The decal a new decal component projects (vkr_scene_decal.h).
     assets/materials/dev/dev_decal.mt
-    assets/materials/dev/dev_concrete.mt
-    assets/materials/dev/dev_metal.mt
-    assets/materials/dev/dev_dark.mt
-    assets/materials/dev/dev_tile.mt
-    assets/materials/dev/dev_wood.mt
-    assets/materials/dev/dev_hazard.mt
-    assets/materials/dev/dev_red.mt
-    assets/materials/dev/dev_green.mt
-    assets/materials/dev/dev_light.mt
+    ${VKR_GREYBOX_MATERIALS}
     ${VKR_MANNEQUIN_INCLUDE})
 set(VKR_ENGINE_FILES
     ${VKR_ENGINE_INCLUDE}
@@ -51,6 +49,10 @@ set(VKR_ENGINE_FILES
     assets/textures/UbuntuMono21px_0.png.vkt
     assets/textures/dev/dev_grid.png
     assets/textures/dev/dev_grid.png.vkt
+    assets/textures/greybox/greybox_grid.png
+    assets/textures/greybox/greybox_grid.png.vkt
+    assets/textures/greybox/greybox_hazard.png
+    assets/textures/greybox/greybox_hazard.png.vkt
     assets/fonts/NotoSansCJK-Regular.ttc
     ${VKR_MANNEQUIN_FILES})
 
@@ -77,6 +79,8 @@ set(VKR_TEXT_FONT_FILES
 set(VKR_ENGINE_TEXTURES
     "assets/textures/UbuntuMono21px_0.png|color-srgb"
     "assets/textures/dev/dev_grid.png|color-srgb"
+    "assets/textures/greybox/greybox_grid.png|color-srgb"
+    "assets/textures/greybox/greybox_hazard.png|color-srgb"
     ${VKR_MANNEQUIN_TEXTURES})
 set(VKR_ENGINE_TEXTURE_PAIRS
     ${VKR_MANNEQUIN_TEXTURE_PAIRS})

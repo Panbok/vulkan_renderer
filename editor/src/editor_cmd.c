@@ -326,15 +326,15 @@ static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg);
 static bool8_t cmd_run_brush_draw(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
   /* value 0 switches drawing, 1 the clip tool, 2 terrain sculpting, 3 the
-     stairs tool and 4 the corridor tool. One tool holds the Scene mouse at
-     a time. */
+     stairs tool, 4 the corridor tool and 5 the measure tool. One tool holds
+     the Scene mouse at a time. */
   static const VkrEditorSceneTool tools[] = {
       VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW, VKR_EDITOR_SCENE_TOOL_CLIP,
-      VKR_EDITOR_SCENE_TOOL_TERRAIN, VKR_EDITOR_SCENE_TOOL_STAIRS,
-      VKR_EDITOR_SCENE_TOOL_CORRIDOR};
-  static const char *const names[] = {"Brush drawing", "Brush clipping",
+      VKR_EDITOR_SCENE_TOOL_TERRAIN,    VKR_EDITOR_SCENE_TOOL_STAIRS,
+      VKR_EDITOR_SCENE_TOOL_CORRIDOR,   VKR_EDITOR_SCENE_TOOL_MEASURE};
+  static const char *const names[] = {"Brush drawing",     "Brush clipping",
                                       "Terrain sculpting", "Stairs tool",
-                                      "Corridor tool"};
+                                      "Corridor tool",     "Measure tool"};
   const VkrEditorSceneTool tool = tools[def->value];
   bool8_t next = false_v;
   if (!cmd_switch(ctx, cmd_split(arg, NULL),
@@ -664,6 +664,12 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
     else if (def->value == 2u) {
       if (!cmd_switch(ctx, word, next.grid_labels, &next.grid_labels))
         return false_v;
+    } else if (def->value == 3u) {
+      if (!cmd_switch(ctx, word, next.greybox_view, &next.greybox_view)) {
+        return false_v;
+      }
+      snprintf(ctx->message, sizeof(ctx->message), "Greybox view %s",
+               next.greybox_view ? "on" : "off");
     } else if (!cmd_switch(ctx, word, next.grid_enabled, &next.grid_enabled))
       return false_v;
   } else {
@@ -2231,6 +2237,10 @@ static const CmdDef cmd_defs[] = {
     {"brush.corridor_tool", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Build a corridor between two grid clicks", cmd_run_brush_draw, CMD_COUNT,
      4u},
+    {"measure.tool", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Measure distance, run, rise and slope between two clicks in the Scene; "
+     "Shift snaps to the grid",
+     cmd_run_brush_draw, CMD_COUNT, 5u},
     {"partition.load", CMD_ARG_TEXT, "<x0> <z0> [<x1> <z1>]",
      "Load and pin world partition cells for editing", cmd_run_partition,
      CMD_COUNT, 0u},
@@ -2247,6 +2257,10 @@ static const CmdDef cmd_defs[] = {
     {"grid.labels", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Show or hide the grid's cell numbers and letters", cmd_run_view,
      CMD_COUNT, 2u},
+    {"view.greybox", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Show every brush face in its surface's greybox look, over any "
+     "material",
+     cmd_run_view, CMD_COUNT, 3u},
     {"grid.spacing", CMD_ARG_NUMBER, "<units>",
      "Set the grid cell size and show the grid", cmd_run_view, CMD_COUNT, 1u},
     {"grid.height", CMD_ARG_NUMBER, "<y>",

@@ -1964,10 +1964,26 @@ static const VkrPropertyDesc s_brush_face_properties[] = {
      .offset = TYPE_OFFSET(SceneBrushFace, distance),
      .kind = VKR_PROPERTY_F32,
      .step = 0.0625f},
+    {.name = "surface",
+     .label = "Surface",
+     .group = "Surface",
+     .tooltip = "What the face is made of; it shows the surface's fixed "
+                "greybox look until the art pass gives it a material",
+     .names = vkr_surface_names,
+     .labels = vkr_surface_labels,
+     .offset = TYPE_OFFSET(SceneBrushFace, surface),
+     .kind = VKR_PROPERTY_ENUM},
+    {.name = "mark",
+     .label = "Mark",
+     .tooltip = "A level-design accent that replaces the surface's greybox "
+                "tone: hazard stripes or a wayfinding colour",
+     .names = vkr_surface_mark_names,
+     .labels = vkr_surface_mark_labels,
+     .offset = TYPE_OFFSET(SceneBrushFace, mark),
+     .kind = VKR_PROPERTY_ENUM},
     {.name = "material",
      .label = "Material file",
-     .group = "Surface",
-     .tooltip = "Empty uses the dev grid material",
+     .tooltip = "Art-owned material; empty shows the greybox look",
      .offset = TYPE_OFFSET(SceneBrushFace, material),
      .capacity = sizeof(((SceneBrushFace *)0)->material),
      .kind = VKR_PROPERTY_STRING},
@@ -2006,6 +2022,16 @@ static void brush_face_defaults(void *value) {
   };
 }
 
+/* Older documents name a retired dev palette material where the face now
+   stores its surface and mark. */
+static void brush_face_migrate(void *value) {
+  SceneBrushFace *face = value;
+  if (vkr_surface_from_legacy_material(face->material, &face->surface,
+                                       &face->mark)) {
+    face->material[0] = '\0';
+  }
+}
+
 static bool8_t brush_face_validate(const void *value, char *error,
                                    uint32_t capacity) {
   const SceneBrushFace *face = value;
@@ -2027,6 +2053,7 @@ const VkrTypeDesc vkr_scene_brush_face_type = {
     .size = sizeof(SceneBrushFace),
     .align = _Alignof(SceneBrushFace),
     .defaults = brush_face_defaults,
+    .migrate = brush_face_migrate,
     .validate = brush_face_validate,
 };
 
@@ -2093,6 +2120,22 @@ static void terrain_defaults(void *value) {
       (SceneTerrain){.texture_size = 4.0f, .stream_radius = 512.0f};
 }
 
+/* Older documents name retired dev palette materials as layers; each takes
+   the floor greybox look of the surface and mark that replaced it. */
+static void terrain_migrate(void *value) {
+  SceneTerrain *terrain = value;
+  char *const layers[] = {terrain->layer0, terrain->layer1, terrain->layer2,
+                          terrain->layer3};
+  for (uint32_t i = 0; i < ArrayCount(layers); ++i) {
+    VkrSurface surface = VKR_SURFACE_NONE;
+    VkrSurfaceMark mark = VKR_SURFACE_MARK_NONE;
+    if (vkr_surface_from_legacy_material(layers[i], &surface, &mark)) {
+      snprintf(layers[i], SCENE_TERRAIN_MATERIAL_CAPACITY, "%s",
+               vkr_surface_greybox_material(surface, mark, VKR_SURFACE_FLOOR));
+    }
+  }
+}
+
 const VkrTypeDesc vkr_scene_terrain_type = {
     .name = "terrain",
     .label = "Terrain",
@@ -2102,6 +2145,7 @@ const VkrTypeDesc vkr_scene_terrain_type = {
     .size = sizeof(SceneTerrain),
     .align = _Alignof(SceneTerrain),
     .defaults = terrain_defaults,
+    .migrate = terrain_migrate,
 };
 
 // =============================================================================
@@ -3035,8 +3079,9 @@ enum {
   BLOCKOUT_THICKNESS,
   BLOCKOUT_LEFT,
   BLOCKOUT_CEILING,
-  BLOCKOUT_MATERIAL,
-  BLOCKOUT_FLOOR_MATERIAL,
+  BLOCKOUT_SURFACE,
+  BLOCKOUT_FLOOR_SURFACE,
+  BLOCKOUT_MARK,
   BLOCKOUT_POINT_COUNT,
   BLOCKOUT_OPENING_COUNT,
   BLOCKOUT_POINT_FIRST,
@@ -3136,19 +3181,29 @@ static const VkrPropertyDesc s_blockout_properties[] = {
                           .label = "Ceiling",
                           .offset = TYPE_OFFSET(SceneBlockout, ceiling),
                           .kind = VKR_PROPERTY_BOOL},
-    [BLOCKOUT_MATERIAL] = {.name = "material",
-                           .label = "Material",
-                           .tooltip = "Material file of the steps or the "
-                                      "walls; empty uses the dev grid",
-                           .offset = TYPE_OFFSET(SceneBlockout, material),
-                           .capacity = SCENE_BLOCKOUT_MATERIAL_CAPACITY,
-                           .kind = VKR_PROPERTY_STRING},
-    [BLOCKOUT_FLOOR_MATERIAL] = {.name = "floor_material",
-                                 .label = "Floor material",
-                                 .offset =
-                                     TYPE_OFFSET(SceneBlockout, floor_material),
-                                 .capacity = SCENE_BLOCKOUT_MATERIAL_CAPACITY,
-                                 .kind = VKR_PROPERTY_STRING},
+    [BLOCKOUT_SURFACE] = {.name = "surface",
+                          .label = "Surface",
+                          .tooltip = "Surface tag of the steps or the walls, "
+                                     "and of a corridor floor without its own",
+                          .names = vkr_surface_names,
+                          .labels = vkr_surface_labels,
+                          .offset = TYPE_OFFSET(SceneBlockout, surface),
+                          .kind = VKR_PROPERTY_ENUM},
+    [BLOCKOUT_FLOOR_SURFACE] = {.name = "floor_surface",
+                                .label = "Floor surface",
+                                .tooltip = "None takes the walls' surface",
+                                .names = vkr_surface_names,
+                                .labels = vkr_surface_labels,
+                                .offset =
+                                    TYPE_OFFSET(SceneBlockout, floor_surface),
+                                .kind = VKR_PROPERTY_ENUM},
+    [BLOCKOUT_MARK] = {.name = "mark",
+                       .label = "Mark",
+                       .tooltip = "Level-design accent of every piece",
+                       .names = vkr_surface_mark_names,
+                       .labels = vkr_surface_mark_labels,
+                       .offset = TYPE_OFFSET(SceneBlockout, mark),
+                       .kind = VKR_PROPERTY_ENUM},
     [BLOCKOUT_POINT_COUNT] = {.name = "point_count",
                               .label = "Points",
                               .offset = TYPE_OFFSET(SceneBlockout, point_count),
@@ -3434,6 +3489,10 @@ static const VkrPropertyDesc s_blockout_properties[] = {
                .kind = VKR_PROPERTY_VEC4},
 };
 
+/* Material files shapes named before surface tags replaced them. */
+static const char *const s_blockout_retired[] = {"material", "floor_material",
+                                                 NULL};
+
 static void blockout_defaults(void *value) {
   *(SceneBlockout *)value = (SceneBlockout){
       .shape = SCENE_BLOCKOUT_STAIRS,
@@ -3481,7 +3540,7 @@ static VkrPropertyState blockout_state(const void *value, uint32_t property,
     shown = stairs && kind != SCENE_STAIRS_STRAIGHT;
     break;
   case BLOCKOUT_CEILING:
-  case BLOCKOUT_FLOOR_MATERIAL:
+  case BLOCKOUT_FLOOR_SURFACE:
     shown = !stairs;
     break;
   default:
@@ -3501,6 +3560,7 @@ const VkrTypeDesc vkr_scene_blockout_type = {
     .property_count = ArrayCount(s_blockout_properties),
     .size = sizeof(SceneBlockout),
     .align = _Alignof(SceneBlockout),
+    .retired = s_blockout_retired,
     .defaults = blockout_defaults,
     .state = blockout_state,
 };

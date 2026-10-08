@@ -76,7 +76,8 @@ if(VKR_BUILD_TOOLS)
         project/vkr_project_scene.c
         project/vkr_project_util.c
         # World partition proxies rebuild brushes from cell documents.
-        ${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_brush.c)
+        ${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_brush.c
+        ${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_surface.c)
     # The archive writer compresses chunks with the zstd libktx carries.
     target_include_directories(vkr_bakery PRIVATE "${CMAKE_SOURCE_DIR}/tools"
         "${CMAKE_SOURCE_DIR}/runtime/src"

@@ -22,6 +22,10 @@
 
 /* Terrains one scene holds. */
 #define VKR_SCENE_TERRAIN_MAX 8u
+/* Material of a terrain without a first layer: the untagged floor greybox
+   look (vkr_surface.h). */
+#define VKR_SCENE_TERRAIN_DEFAULT_MATERIAL                                     \
+  "assets/materials/greybox/none_floor.mt"
 /* Tiles per side of the largest terrain. */
 #define VKR_SCENE_TERRAIN_TILES_MAX                                            \
   (VKR_HEIGHTFIELD_CELLS_MAX / VKR_HEIGHTFIELD_TILE_CELLS)

@@ -6,6 +6,7 @@
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
 #include "level/vkr_brush.h"
+#include "level/vkr_surface.h"
 #include "math/mat.h"
 #include "math/vkr_quat.h"
 #include "meshoptimizer.h"
@@ -2843,8 +2844,6 @@ int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv) {
 /* Records one cell document may hold, as the editor bounds them. */
 #define VKR_PROXY_RECORDS_MAX 1024u
 #define VKR_PROXY_MATERIALS_MAX 64u
-/* The material a brush face without one draws, as the editor's. */
-#define VKR_PROXY_DEFAULT_MATERIAL "assets/materials/dev/dev_grid.mt"
 
 typedef struct VkrProxyRecord {
   int64_t id;
@@ -3004,22 +3003,45 @@ vkr_internal bool8_t vkr_proxy_brush(VkrBake *bake, VkrProxyMesh *mesh,
     if (polygon.count < 3u) {
       continue;
     }
-    String8 path = {0};
-    float32_t uv_scale[2] = {1.0f, 1.0f};
-    (void)vkr_proxy_floats(vkr_bakery_json_get(faces[f], "uv_scale"), uv_scale,
-                           2u);
-    const char *material = VKR_PROXY_DEFAULT_MATERIAL;
-    if (vkr_bakery_json_get_string(faces[f], "material", &path) &&
-        path.length) {
-      material = vkr_bake_printf(bake, "%.*s", (int)path.length, path.str);
-    }
-    const uint32_t index = vkr_proxy_material(
-        bake, mesh, material, vec2_new(uv_scale[0], uv_scale[1]));
     Vec3 corners[VKR_BRUSH_POLYGON_MAX];
     for (uint32_t i = 0u; i < polygon.count; ++i) {
       corners[i] = vec3_sub(
           mat4_mul_vec3(world, geometry->vertices[polygon.first + i]), origin);
     }
+    /* The face's art-owned material, or its surface's greybox look with
+       the greybox repeat, as the runtime picks it (vkr_scene_brush.c). */
+    const Vec3 normal = vec3_normalize(vec3_cross(
+        vec3_sub(corners[1], corners[0]), vec3_sub(corners[2], corners[0])));
+    float32_t uv_scale[2] = {1.0f, 1.0f};
+    (void)vkr_proxy_floats(vkr_bakery_json_get(faces[f], "uv_scale"), uv_scale,
+                           2u);
+    String8 text = {0};
+    const char *material = "";
+    if (vkr_bakery_json_get_string(faces[f], "material", &text) &&
+        text.length) {
+      material = vkr_bake_printf(bake, "%.*s", (int)text.length, text.str);
+    }
+    VkrSurface surface = VKR_SURFACE_NONE;
+    VkrSurfaceMark mark = VKR_SURFACE_MARK_NONE;
+    if (vkr_bakery_json_get_string(faces[f], "surface", &text)) {
+      (void)vkr_surface_find(
+          vkr_bake_printf(bake, "%.*s", (int)text.length, text.str), &surface);
+    }
+    if (vkr_bakery_json_get_string(faces[f], "mark", &text)) {
+      (void)vkr_surface_mark_find(
+          vkr_bake_printf(bake, "%.*s", (int)text.length, text.str), &mark);
+    }
+    if (vkr_surface_from_legacy_material(material, &surface, &mark)) {
+      material = "";
+    }
+    const char *look =
+        vkr_surface_face_material(surface, mark, material, normal.y, false_v);
+    if (look != material) {
+      uv_scale[0] = VKR_SURFACE_GREYBOX_REPEAT;
+      uv_scale[1] = VKR_SURFACE_GREYBOX_REPEAT;
+    }
+    const uint32_t index = vkr_proxy_material(
+        bake, mesh, look, vec2_new(uv_scale[0], uv_scale[1]));
     for (uint32_t i = 1u; i + 1u < polygon.count; ++i) {
       VKR_BAKE_TRY(vkr_proxy_triangle(bake, mesh, corners[0], corners[i],
                                       corners[i + 1u], index));

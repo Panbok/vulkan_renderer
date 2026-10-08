@@ -863,6 +863,9 @@ bool8_t vkr_type_read_json(VkrJsonReader *reader, const VkrTypeDesc *type,
     return type_fail(error, capacity, "%s requires version %u", type->name,
                      type->version);
   }
+  if (type->migrate) {
+    type->migrate(candidate);
+  }
   if (!vkr_type_validate(type, candidate, error, capacity)) {
     reader->pos = start;
     return false_v;

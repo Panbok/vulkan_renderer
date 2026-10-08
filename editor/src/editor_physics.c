@@ -157,16 +157,12 @@ static void physics_shape(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
 }
 
-/* A capsule standing on `foot`, as the player's character will, with a
- * line toward the start's -Z facing. */
-static void physics_player_start(VkrEditorUi *editor,
-                                 const VkrSampleUiFrame *frame,
-                                 VkrEntityId entity, uint32_t capacity) {
-  const VkrPhysicsCharacterDesc character = vkr_physics_character_default();
-  const float32_t radius = character.radius;
-  const float32_t half = character.half_height;
-  const Vec3 center = {0.0f, half + radius, 0.0f};
-  const Vec4 color = {0.35f, 0.68f, 1.0f, 1.0f};
+/* An upright capsule of `radius` whose cylinder reaches `half` above and
+   below `center`: four sides, the two arcs over its ends and the rings
+   where they meet the cylinder. */
+static void physics_capsule(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                            VkrEntityId entity, Vec3 center, float32_t radius,
+                            float32_t half, Vec4 color, uint32_t capacity) {
   for (uint32_t side = 0; side < 4; ++side) {
     const float32_t angle = (float32_t)side * 1.57079632679f;
     const Vec3 edge = {radius * cosf(angle), 0.0f, radius * sinf(angle)};
@@ -197,6 +193,19 @@ static void physics_player_start(VkrEditorUi *editor,
                    capacity);
     }
   }
+}
+
+/* A capsule standing on `foot`, as the player's character will, with a
+ * line toward the start's -Z facing. */
+static void physics_player_start(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 VkrEntityId entity, uint32_t capacity) {
+  const VkrPhysicsCharacterDesc character = vkr_physics_character_default();
+  const float32_t radius = character.radius;
+  const float32_t half = character.half_height;
+  const Vec3 center = {0.0f, half + radius, 0.0f};
+  const Vec4 color = {0.35f, 0.68f, 1.0f, 1.0f};
+  physics_capsule(editor, frame, entity, center, radius, half, color, capacity);
   /* Facing: the player looks along the start's -Z. */
   const Vec3 eye = {0.0f, half * 2.0f + radius * 0.6f, 0.0f};
   const Vec3 tip = vec3_add(eye, vec3_new(0.0f, 0.0f, -0.8f));
@@ -745,6 +754,307 @@ static void physics_path_preview(VkrEditorUi *editor,
                  color, capacity);
 }
 
+/* The FPS sample's standing eye height (scripts/fps/src/fps_player.c); the
+   physics character defines none. */
+#define PHYSICS_EYE_HEIGHT 1.6f
+/* How far height ticks reach past the scale figure's sides. */
+#define PHYSICS_TICK_REACH 0.2f
+
+/* A horizontal ring of `radius` around `center`. */
+static void physics_ring(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                         Vec3 center, float32_t radius, Vec4 color,
+                         uint32_t capacity) {
+  for (uint32_t segment = 0; segment < 24u; ++segment) {
+    const float32_t a = (float32_t)segment * (6.28318530718f / 24.0f);
+    const float32_t b = (float32_t)(segment + 1u) * (6.28318530718f / 24.0f);
+    physics_line(
+        editor, frame, VKR_ENTITY_ID_INVALID,
+        vec3_add(center, vec3_new(radius * cosf(a), 0.0f, radius * sinf(a))),
+        vec3_add(center, vec3_new(radius * cosf(b), 0.0f, radius * sinf(b))),
+        color, capacity);
+  }
+}
+
+/* A horizontal cross at `at`, `reach` out along X and Z. */
+static void physics_cross(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                          Vec3 at, float32_t reach, Vec4 color,
+                          uint32_t capacity) {
+  physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+               vec3_add(at, vec3_new(-reach, 0.0f, 0.0f)),
+               vec3_add(at, vec3_new(reach, 0.0f, 0.0f)), color, capacity);
+  physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+               vec3_add(at, vec3_new(0.0f, 0.0f, -reach)),
+               vec3_add(at, vec3_new(0.0f, 0.0f, reach)), color, capacity);
+}
+
+/* The scale figure: the player's capsule standing on the surface under the
+   pointer, a ring at its crouched height, a tick at its eye height and one
+   at the highest step it climbs. */
+static void physics_scale_figure(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 uint32_t capacity) {
+  const VkrEditorLevelCapsule capsule = vkr_editor_level_capsule_default();
+  const Vec3 foot = editor->scale_figure_at;
+  const float32_t radius = capsule.radius;
+  const float32_t half = Max(0.0f, capsule.height * 0.5f - radius);
+  const Vec4 body = {0.95f, 0.85f, 0.45f, 1.0f};
+  const Vec4 crouch = {0.95f, 0.85f, 0.45f, 0.55f};
+  const Vec4 eye = {0.45f, 0.8f, 1.0f, 1.0f};
+  const Vec4 step = {0.45f, 0.95f, 0.55f, 1.0f};
+  physics_capsule(editor, frame, VKR_ENTITY_ID_INVALID,
+                  vec3_add(foot, vec3_new(0.0f, radius + half, 0.0f)), radius,
+                  half, body, capacity);
+  if (capsule.crouch_height > 0.0f) {
+    physics_ring(editor, frame,
+                 vec3_add(foot, vec3_new(0.0f, capsule.crouch_height, 0.0f)),
+                 radius, crouch, capacity);
+  }
+  const float32_t eye_height = Min(PHYSICS_EYE_HEIGHT, capsule.height);
+  physics_cross(editor, frame, vec3_add(foot, vec3_new(0.0f, eye_height, 0.0f)),
+                radius + PHYSICS_TICK_REACH, eye, capacity);
+  physics_cross(editor, frame,
+                vec3_add(foot, vec3_new(0.0f, capsule.step_up, 0.0f)),
+                radius + PHYSICS_TICK_REACH, step, capacity);
+}
+
+/* The measure tool's second point: the clicked one, else the pointer's
+   while the first is down; false before a first click. */
+static bool8_t physics_measure_end(const VkrEditorUi *editor, Vec3 *out) {
+  if (!editor->measure_tool || !editor->measure_count) {
+    return false_v;
+  }
+  if (editor->measure_count >= 2u) {
+    *out = editor->measure_points[1];
+    return true_v;
+  }
+  *out = editor->measure_hover;
+  return editor->measure_hover_valid;
+}
+
+/* The measured line, a cross at each end, and its run and rise as the
+   legs of a right triangle. */
+static void physics_measure_lines(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame,
+                                  uint32_t capacity) {
+  if (!editor->measure_tool || !editor->measure_count) {
+    return;
+  }
+  const Vec4 line = {1.0f, 0.85f, 0.2f, 1.0f};
+  const Vec4 legs = {1.0f, 0.85f, 0.2f, 0.45f};
+  const Vec3 a = editor->measure_points[0];
+  physics_cross(editor, frame, a, 0.1f, line, capacity);
+  Vec3 b = {0};
+  if (!physics_measure_end(editor, &b)) {
+    return;
+  }
+  physics_cross(editor, frame, b, 0.1f, line, capacity);
+  physics_line(editor, frame, VKR_ENTITY_ID_INVALID, a, b, line, capacity);
+  const Vec3 corner = vec3_new(b.x, a.y, b.z);
+  if (vec3_length(vec3_sub(corner, a)) > 1.0e-3f &&
+      fabsf(b.y - a.y) > 1.0e-3f) {
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, a, corner, legs,
+                 capacity);
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, corner, b, legs,
+                 capacity);
+  }
+}
+
+/* `value` with at most three decimals and no trailing zeros. */
+static void physics_metres(char *out, uint64_t size, float32_t value) {
+  snprintf(out, size, "%.3f", (double)value);
+  char *dot = strchr(out, '.');
+  if (!dot) {
+    return;
+  }
+  char *end = out + strlen(out);
+  while (end > dot + 1 && end[-1] == '0') {
+    *--end = '\0';
+  }
+  if (end == dot + 1) {
+    *dot = '\0';
+  }
+  if (strcmp(out, "-0") == 0) {
+    snprintf(out, size, "0");
+  }
+}
+
+/* A size label just above world point `anchor`; the projection places it. */
+static void physics_measure_label(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame, Vec3 anchor,
+                                  const char *text) {
+  if (editor->measure_label_count >= VKR_EDITOR_MEASURE_LABEL_MAX) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t font_size = 12.0f;
+  const Vec2 measured =
+      vkr_editor_text_size(ui, VKR_FONT_HANDLE_INVALID, text, font_size);
+  const Vec2 size = {ceilf(measured.x) + 14.0f, ceilf(measured.y) + 6.0f};
+  VkrUiWidgetConfig label =
+      physics_widget(100000.0f, 100000.0f, size.x, size.y);
+  label.style.padding_pt = (VkrUiEdges){3, 7, 3, 7};
+  label.style.font_size_pt = font_size;
+  label.style.text_color = theme->text;
+  label.style.background_color = vkr_ui_color_alpha(theme->overlay, 0.85f);
+  label.style.corner_radius_pt = (Vec4){3, 3, 3, 3};
+  const uint32_t index = editor->measure_label_count++;
+  (void)vkr_ui_push_id_u64(ui, index);
+  vkr_ui_label(ui, string8_lit("size"),
+               string8_create_from_cstr((const uint8_t *)text, strlen(text)),
+               &label);
+  editor->measure_labels[index] = (VkrEditorMeasureLabel){
+      .widget =
+          vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("size")),
+      .anchor = anchor,
+      .size_pt = size,
+  };
+  (void)vkr_ui_pop_id(ui);
+}
+
+/* Labels box `lo`-`hi` with its width, depth and height at its top
+   center. */
+static void physics_box_label(VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame, Vec3 lo, Vec3 hi) {
+  char width[24];
+  char depth[24];
+  char height[24];
+  physics_metres(width, sizeof(width), hi.x - lo.x);
+  physics_metres(depth, sizeof(depth), hi.z - lo.z);
+  physics_metres(height, sizeof(height), hi.y - lo.y);
+  char text[96];
+  snprintf(text, sizeof(text), "%s \xc3\x97 %s \xc3\x97 %s m", width, depth,
+           height);
+  physics_measure_label(
+      editor, frame, vec3_new((lo.x + hi.x) * 0.5f, hi.y, (lo.z + hi.z) * 0.5f),
+      text);
+}
+
+/* The world box around brush `entity`, or around the pieces of blockout
+   shape `entity`, laid out in frame memory; false when it does not build. */
+static bool8_t physics_solid_box(const VkrSampleUiFrame *frame,
+                                 const VkrScene *scene, VkrEntityId entity,
+                                 VkrBrushGeometry *scratch, Vec3 *out_lo,
+                                 Vec3 *out_hi) {
+  if (vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type)) {
+    VkrEntityId faces[VKR_BRUSH_FACE_MAX];
+    if (!vkr_editor_brush_build(scene, entity, scratch, faces)) {
+      return false_v;
+    }
+    *out_lo = scratch->min;
+    *out_hi = scratch->max;
+    return true_v;
+  }
+  const SceneBlockout *shape =
+      vkr_scene_get_typed(scene, entity, &vkr_scene_blockout_type);
+  const SceneTransform *transform =
+      shape ? vkr_entity_get_component(scene->world, entity,
+                                       scene->comp_transform)
+            : NULL;
+  if (!transform) {
+    return false_v;
+  }
+  const uint32_t capacity = vkr_blockout_piece_capacity(shape);
+  VkrBlockoutPiece *pieces = vkr_allocator_alloc(
+      frame->ui->frame_allocator, (uint64_t)capacity * sizeof(*pieces),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  char error[8];
+  const uint32_t count = pieces ? vkr_blockout_layout(shape, pieces, capacity,
+                                                      error, sizeof(error))
+                                : 0u;
+  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  for (uint32_t i = 0; i < count; ++i) {
+    for (uint32_t p = 0; p < pieces[i].point_count; ++p) {
+      const Vec3 point = mat4_mul_vec3(transform->world, pieces[i].points[p]);
+      lo = vec3_new(Min(lo.x, point.x), Min(lo.y, point.y), Min(lo.z, point.z));
+      hi = vec3_new(Max(hi.x, point.x), Max(hi.y, point.y), Max(hi.z, point.z));
+    }
+  }
+  *out_lo = lo;
+  *out_hi = hi;
+  return count > 0u;
+}
+
+/* Whether `entity` is a brush or a blockout shape, whose size the Scene
+   labels while it is selected. */
+static bool8_t physics_measurable(const VkrSampleUiFrame *frame,
+                                  VkrEntityId entity) {
+  const VkrScene *scene = vkr_editor_entity_scene(frame, entity);
+  return scene && vkr_scene_entity_alive(scene, entity) &&
+         (vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) ||
+          vkr_scene_get_typed(scene, entity, &vkr_scene_blockout_type));
+}
+
+/* How many measurement aids draw this build: the measure tool's line, the
+   scale figure and the selected brushes' and shapes' sizes. */
+static uint32_t physics_measure_count(const VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame) {
+  uint32_t count = (editor->measure_tool && editor->measure_count ? 1u : 0u) +
+                   (editor->scale_figure_valid ? 1u : 0u);
+  if (frame->scripts_running) {
+    return count;
+  }
+  VkrEntityId selection[1u + VKR_EDITOR_SELECTION_MAX];
+  const uint32_t selected = vkr_editor_selection_list(
+      editor, frame, selection, (uint32_t)ArrayCount(selection));
+  for (uint32_t i = 0; i < selected; ++i) {
+    count += physics_measurable(frame, selection[i]) ? 1u : 0u;
+  }
+  return count;
+}
+
+/* Size labels: each selected brush or shape, the box being drawn and the
+   measurement, which reads its distance, horizontal run, rise and slope. */
+static void physics_measure_labels(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame) {
+  if (!frame->scripts_running) {
+    VkrEntityId selection[1u + VKR_EDITOR_SELECTION_MAX];
+    const uint32_t selected = vkr_editor_selection_list(
+        editor, frame, selection, (uint32_t)ArrayCount(selection));
+    VkrBrushGeometry *scratch = NULL;
+    for (uint32_t i = 0; i < selected; ++i) {
+      if (!physics_measurable(frame, selection[i])) {
+        continue;
+      }
+      if (!scratch) {
+        scratch =
+            vkr_allocator_alloc(frame->ui->frame_allocator, sizeof(*scratch),
+                                VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+      }
+      Vec3 lo = {0};
+      Vec3 hi = {0};
+      if (scratch &&
+          physics_solid_box(frame, vkr_editor_entity_scene(frame, selection[i]),
+                            selection[i], scratch, &lo, &hi)) {
+        physics_box_label(editor, frame, lo, hi);
+      }
+    }
+  }
+  if (editor->brush_draw && (editor->brush_dragging || editor->brush_raising)) {
+    Vec3 lo = {0};
+    Vec3 hi = {0};
+    vkr_editor_brush_draft_box(editor, &lo, &hi);
+    physics_box_label(editor, frame, lo, hi);
+  }
+  Vec3 b = {0};
+  if (!physics_measure_end(editor, &b)) {
+    return;
+  }
+  const Vec3 a = editor->measure_points[0];
+  const Vec3 delta = vec3_sub(b, a);
+  const float32_t run = sqrtf(delta.x * delta.x + delta.z * delta.z);
+  const float32_t slope = run > 1.0e-6f || fabsf(delta.y) > 1.0e-6f
+                              ? atan2f(delta.y, run) * (180.0f / 3.14159265f)
+                              : 0.0f;
+  char text[96];
+  snprintf(text, sizeof(text),
+           "%.2f m \xc2\xb7 run %.2f \xc2\xb7 rise %.2f \xc2\xb7 %.1f\xc2\xb0",
+           (double)vec3_length(delta), (double)run, (double)delta.y,
+           (double)slope);
+  physics_measure_label(editor, frame, vec3_scale(vec3_add(a, b), 0.5f), text);
+}
+
 static void physics_level_tools(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 uint32_t capacity) {
@@ -899,6 +1209,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   editor->physics_line_count = 0;
   editor->physics_lines = NULL;
   editor->physics_lines_truncated = false_v;
+  editor->measure_label_count = 0u;
   editor->physics_scene_generation = frame->scene_generation;
   if ((!frame->scene && !frame->world) || !frame->mapping_valid ||
       frame->scene_rendering_stopped) {
@@ -931,7 +1242,8 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
            ? 0u
            : physics_io_lines(editor, frame, 0u, false_v) +
                  physics_mover_lines(editor, frame, 0u, false_v)) +
-      physics_population_lines(editor, frame, 0u, false_v);
+      physics_population_lines(editor, frame, 0u, false_v) +
+      physics_measure_count(editor, frame);
   /* Brushes collide through their hulls, which the collision display draws
      too. */
   const bool8_t hulls = frame->scene && frame->view_state.collision_display;
@@ -958,6 +1270,12 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   if (!vkr_ui_panel_begin(ui, string8_lit("physics.overlay"), &panel)) {
     return;
   }
+  /* Size labels first, so the lines' share of the nodes leaves them out. */
+  if (changes && ui->frame_node_count + PHYSICS_RESERVED_NODES +
+                         VKR_EDITOR_MEASURE_LABEL_MAX <
+                     ui->frame_node_capacity) {
+    physics_measure_labels(editor, frame);
+  }
   const uint32_t available =
       ui->frame_node_count + PHYSICS_RESERVED_NODES < ui->frame_node_capacity
           ? ui->frame_node_capacity - ui->frame_node_count -
@@ -982,6 +1300,10 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       physics_brush_draft(editor, frame, capacity);
     }
     physics_level_tools(editor, frame, capacity);
+    physics_measure_lines(editor, frame, capacity);
+    if (editor->scale_figure_valid) {
+      physics_scale_figure(editor, frame, capacity);
+    }
     if (!frame->scripts_running) {
       (void)physics_io_lines(editor, frame, capacity, true_v);
       (void)physics_mover_lines(editor, frame, capacity, true_v);
@@ -1073,7 +1395,7 @@ void vkr_editor_physics_project(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   if ((!frame->scene && !frame->world) || frame->scene_rendering_stopped ||
       editor->physics_scene_generation != frame->scene_generation ||
-      !editor->physics_line_count) {
+      (!editor->physics_line_count && !editor->measure_label_count)) {
     return;
   }
   const Vec4 image = frame->mapping.image_rect_px;
@@ -1081,6 +1403,26 @@ void vkr_editor_physics_project(VkrEditorUi *editor,
   (void)vkr_ui_widget_set_rect(frame->ui, editor->physics_panel,
                                (VkrUiRect){image.x / scale, image.y / scale,
                                            image.z / scale, image.w / scale});
+  /* Size labels center just above their anchors, kept inside the Scene
+     while the anchor is in view. */
+  const Vec2 view = {image.z / scale, image.w / scale};
+  for (uint32_t i = 0; i < editor->measure_label_count; ++i) {
+    const VkrEditorMeasureLabel *label = &editor->measure_labels[i];
+    const Vec4 clip = mat4_mul_vec4(frame->view_projection,
+                                    vec3_to_vec4(label->anchor, 1.0f));
+    VkrUiRect rect = {100000.0f, 100000.0f, label->size_pt.x, label->size_pt.y};
+    if (clip.w > 1.0e-6f && clip.z >= 0.0f && clip.z <= clip.w) {
+      const Vec2 at = {view.x * (clip.x / clip.w * 0.5f + 0.5f),
+                       view.y * (clip.y / clip.w * 0.5f + 0.5f)};
+      if (at.x >= 0.0f && at.y >= 0.0f && at.x <= view.x && at.y <= view.y) {
+        rect.x = vkr_clamp_f32(at.x - rect.width * 0.5f, 0.0f,
+                               Max(0.0f, view.x - rect.width));
+        rect.y = vkr_clamp_f32(at.y - rect.height - 6.0f, 0.0f,
+                               Max(0.0f, view.y - rect.height));
+      }
+    }
+    (void)vkr_ui_widget_set_rect(frame->ui, label->widget, rect);
+  }
   for (uint32_t i = 0; i < editor->physics_line_count; ++i) {
     const VkrEditorPhysicsLine *line = &editor->physics_lines[i];
     const VkrScene *scene =

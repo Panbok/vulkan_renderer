@@ -377,8 +377,9 @@ reports "Git Bash not found" for one outside the standard places until
 
 A brush is an entity with a `brush` component (`role`: solid, visual, clip
 or trigger) whose direct children carry `brush_face`: an outward `normal` and
-`distance` in the brush's space, a `material` file, and texture `uv_offset`,
-`uv_scale` (meters per repeat), `uv_rotation` and `uv_world`
+`distance` in the brush's space, a `surface` tag and a `mark`, an art-owned
+`material` file, and texture `uv_offset`, `uv_scale` (meters per repeat),
+`uv_rotation` and `uv_world`
 ([vkr_scene_types.c](../../runtime/src/renderer/systems/vkr_scene_types.c)).
 Faces are entities because a component value holds at most 1,024 bytes and
 descriptors have no arrays. The journal refuses transform edits of a face,
@@ -409,11 +410,42 @@ rebuild makes one generated mesh with one submesh per face material (16 at
 most), attached as the entity's runtime shape through
 `vkr_scene_attach_generated_mesh`, so transform sync, picking, visibility and
 the Show filter follow the shape path. Materials load once per scene and
-path; an empty path uses `assets/materials/dev/dev_grid.mt`, one of sixteen
-dev grid materials shipped as engine content: grid, floor, wall, orange,
-blue, clip and trigger, and concrete, metal, dark, tile, wood, hazard, red,
-green and an emissive light panel (`dev_light`), all tints of the one grid
-texture. Clip and trigger brushes draw only
+path.
+
+#### Surface tags and greybox looks
+
+A face's `surface` tag names what it is made of: none, concrete, metal,
+wood, tile, plaster, brick, rock, dirt, grass, glass, fabric, water or
+emissive. Its `mark` is a level-design accent: hazard stripes, or orange,
+blue, red, green or dark for wayfinding. A face shows its art-owned
+`material` when it has one; otherwise it shows the greybox look of its tag
+and mark ([vkr_surface.h](../../runtime/src/level/vkr_surface.h)). Designers
+cannot change a greybox look: it is engine content under
+`assets/materials/greybox/`, one material per tag or mark and face
+orientation, written by [gen_greybox.py](../../tools/gen_greybox.py). A face
+whose world normal leans more than about 45 degrees up is a floor, down a
+ceiling, otherwise a wall; walls darken the tone by 18% and ceilings by 36%,
+so the three read apart unlit. A mark replaces the tag's tone. Every greybox
+look projects one metric grid in world space, 4 m per repeat with 25 cm
+lines, 1 m lines and a 4 m border, whatever the face's own UV settings. Clip
+and trigger brushes always show their role's look. The `emissive` look
+glows, and the lightmap bake treats it as an emitter. The scene's greybox
+view (`vkr_scene_brush_set_greybox_view`, the editor's `greybox_view` view
+state, `view.greybox`) shows every face's greybox look, art-owned materials
+too, and rebuilds the scene's brushes when it changes. Bakery's
+world-partition proxies and the lightmap bake resolve each face's look the
+same way.
+
+Documents written before tags name retired dev palette materials
+(`assets/materials/dev/dev_<name>.mt`). The `migrate` hook of the
+`brush_face` and `terrain` types (`VkrTypeDesc.migrate`, run after every
+JSON read) rewrites them: grid, floor, wall, ceiling, clip and trigger
+become no tag; concrete, metal, wood and tile become their tags; light
+becomes `emissive`; hazard, orange, blue, red, green and dark become marks.
+A terrain layer takes the floor look of its replacement. Blockout shapes
+drop their old `material` and `floor_material` keys.
+
+Clip and trigger brushes draw only
 while `VkrScene.editor_volumes` is set, which the editor runtime sets while
 it edits and clears during Play; games leave it off.
 
@@ -431,9 +463,10 @@ Operations `brush.box`, `brush.wedge`, `brush.cylinder` (each optionally
 turned by `rotation`: a box or wedge about its center, a cylinder about the
 center of its base, so `[0, 0, -90]` lays it along +X), `brush.planes` (4 to
 64 parent-space planes, each a `normal` with a `distance` or a `point` and
-optionally a `material`; a failure names `planes[i]`), `brush.hull` (the
-convex hull of 4 to 128 grid-snapped points), `brush.stairs`,
-`brush.set_material` (faces by `top`, `bottom`, `sides`, `+x`, `-x`, `+z`,
+optionally a `surface` and `mark`; a failure names `planes[i]`),
+`brush.hull` (the convex hull of 4 to 128 grid-snapped points),
+`brush.stairs`, `brush.set_surface` (the surface, the mark or both of one
+`face`, or of a brush's faces by `top`, `bottom`, `sides`, `+x`, `-x`, `+z`,
 `-z`), `blockout.room` (floor, ceiling and four walls around an interior box,
 named after the room, such as `<room>/Floor` and `<room>/Wall South +Z`, so
 two rooms' parts never share a name),
@@ -449,8 +482,10 @@ Stairs and corridors are editable blockout shapes: an entity with a
 builds the way it builds a brush. The layout in
 [vkr_blockout.c](../../runtime/src/level/vkr_blockout.c) turns the settings
 into convex pieces, each the hull of its points. One generated mesh holds
-them, in chunks of 512 pieces with a submesh per chunk and material (floors
-take the floor material), textured in world space and without a lightmap.
+them, in chunks of 512 pieces with a submesh per chunk and look: floor
+pieces show the floor look of `floor_surface` (or `surface` when it is none),
+the others the wall look of `surface`, all with the shape's `mark`, the
+greybox grid in world space and no lightmap.
 The shape owns one static body whose triangle mesh holds every piece's faces.
 A shape has no child entities, so a change of its settings is one undo
 entry at any size, and a document stores only the component. The component
@@ -465,7 +500,7 @@ holds the shape and the following settings:
   radius or the shape's;
 - up to 8 wall openings, each a wall (stretch and side), a span along it
   and a span above its floor;
-- the materials.
+- the surface, floor surface and mark.
 
 `blockout.create` adds one, `blockout.build` (or `component.set` of
 `blockout`) sets its settings, refused when they would not lay out, and
@@ -533,8 +568,13 @@ brush's floor is its top when it is one.
 Every operation snaps
 corners to `grid` (1/16 m unless set; 0 turns snapping off) and validates the
 solid before submission. `scene.describe` and `entity.get` summarise a
-brush's role, face count, build status and materials and list faces only with
-`faces`. `view.camera` places the perspective camera, and `view.capture`
+brush's role, face count, build status, surfaces, marks and art-owned
+materials and list faces only with `faces`. Brush and blockout operations
+take `surface` and `mark` (rooms and corridors also `floor_surface`) and
+reject `material`: art-owned materials are set by `face.set_material`, which
+takes a face or a brush with face selectors and an empty `material` to clear
+it. `query.measure` gives the distance, horizontal run, rise and slope
+between two points, or an entity's world size. `view.camera` places the perspective camera, and `view.capture`
 accepts `eye` and `target`.
 
 In the editor, the Create menu's Level group adds Brush Box, Brush Wedge,
@@ -555,8 +595,9 @@ steps and the release creates it. Its depth along the view is the selected
 object's, so walls drawn from the front match a floor drawn from the top;
 without a selection it is 1 m from the surface under the pointer in Top or
 Bottom, or from the depth a side view is framed on. A new box, wedge,
-cylinder or stairs takes the palette's role and, when solid or visual, its
-last Material swatch.
+cylinder or stairs takes the palette's role and its last Surface and Mark
+picks. The palette's SURFACE and MARK rows paint the selected face, else
+every face of the selected brush.
 
 The stairs tool places stairs in the palette's kind and turn with a drag
 from where they start toward where they go, on a surface with Surface
@@ -651,7 +692,8 @@ on the list's empty space makes it a root again.
 ### Brush editing
 
 Editing operations replace brushes in one journal group, keeping each
-derived face's material and texture settings from the face it copies
+derived face's surface, mark, material and texture settings from the face it
+copies
 ([vkr_brush.c](../../runtime/src/level/vkr_brush.c), `VkrBrushPiece`). An
 operation that replaces a brush keeps it as its first piece: the faces that
 piece keeps take their new planes, its new planes become new faces and the
@@ -666,7 +708,7 @@ connections and the references to it. Further pieces are new brushes:
 | `brush.hollow` | Replaces a brush with walls of `thickness` around its inside |
 | `brush.carve` | Subtracts a `cutter` from `target`, or from every brush it touches, as non-overlapping convex pieces, at most one per cutter face; deletes the cutter unless `keep_cutter`. Planes that stop bounding a face leave as the cut proceeds, so a cylinder carves out of a cylinder; a piece that would need more than 64 faces refuses the operation and changes nothing |
 | `brush.merge` | Joins 2 to 8 brushes into one when their union is convex: the merged solid's volume must equal the sum of theirs |
-| `brush.patch` | Pulls a rectangle of a face's grid (`min` and `max` as `[u, v]` world meters along the face's grid axes, `vkr_brush_grid_axes`: on a floor u is +X and v is -Z) out by `distance`, or pushes it in when negative. A rectangle off the face fails with the face's u and v ranges and axes. Pulled, it joins the brush when the union stays convex (a whole face stretches the brush) and is a new brush otherwise; pushed, it carves a recess or a hole. Every new face copies the face's material |
+| `brush.patch` | Pulls a rectangle of a face's grid (`min` and `max` as `[u, v]` world meters along the face's grid axes, `vkr_brush_grid_axes`: on a floor u is +X and v is -Z) out by `distance`, or pushes it in when negative. A rectangle off the face fails with the face's u and v ranges and axes. Pulled, it joins the brush when the union stays convex (a whole face stretches the brush) and is a new brush otherwise; pushed, it carves a recess or a hole. Every new face copies the face's surface, mark and material |
 | `brush.reshape` | Moves brush corners at `points` by the world `delta`: a corner, an edge's two ends, or with `split` {`point`, `normal`} a grid line's ends after cutting the brush along that plane. A piece whose moved corners stay on its hull becomes that hull. A piece a moved corner dents becomes the solid bounded by its faces through the moved corners (a face no longer flat bends along the line between the unmoved corners beside the moved ones), cut along its face planes until every part is convex: at most eight pieces in one batch, the brush keeping the first. Refused when the dent needs more pieces or a face folds through another |
 
 Carving keeps no boolean tree: pieces are ordinary brushes. Operations work
@@ -1073,9 +1115,9 @@ factors and every map. Layers 1 to 3 supply their base color, metallic,
 roughness, normal scale and occlusion strength, and their base color, normal
 and ORM maps into nine texture slots of their own
 (`VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR` onward), which stream like any
-material's. An unnamed layer 0 is the dev grid and an unnamed later layer plain
-white; `terrain.create` names the dev grid, floor, orange and blue materials by
-default. Each backend publishes the extra layers in a cold terrain segment of
+material's. An unnamed layer 0 is the untagged floor greybox look and an
+unnamed later layer plain white; `terrain.create` names the floor greybox
+looks of no tag, grass, dirt and rock by default. Each backend publishes the extra layers in a cold terrain segment of
 its material table, beside the transmission segment, and flags the common row.
 The desktop G-buffer resolve
 ([deferred.slang](../../renderer/src/shaders/vulkan/slang/world/deferred.slang))

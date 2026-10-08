@@ -31,6 +31,7 @@
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
@@ -4942,8 +4943,9 @@ vkr_internal void vkr_standard_scene_runtime_poll_upload_wait_stats(
   }
 }
 
-/* The Show filter reaches every loaded container, including ones loaded
-   after it changed; an unchanged filter costs one compare per scene. */
+/* The Show filter and the greybox view reach every loaded container,
+   including ones loaded after they changed; unchanged ones cost one compare
+   per scene. */
 static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
   const uint32_t hidden = state->view_state.hidden_kinds;
   /* Clip and trigger brushes draw while the editor edits, not during Play
@@ -4959,6 +4961,7 @@ static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
     scenes[2u + i] = vkr_scene_handle_get_scene(state->additive_handles[i]);
   }
   for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    vkr_scene_brush_set_greybox_view(scenes[i], state->view_state.greybox_view);
     vkr_scene_set_editor_hidden_kinds(scenes[i], hidden);
     vkr_scene_set_editor_volumes(scenes[i], volumes);
     (void)vkr_scene_set_editor_hidden(scenes[i], state->hidden.entities,

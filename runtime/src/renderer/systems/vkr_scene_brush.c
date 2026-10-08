@@ -2,6 +2,7 @@
 
 #include "core/logger.h"
 #include "level/vkr_brush.h"
+#include "level/vkr_surface.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
@@ -106,6 +107,8 @@ struct s_VkrSceneBrushes {
   /* Scratch for one rebuild; the scene rebuilds on one thread. */
   VkrBrushGeometry *geometry;
   uint32_t serial;
+  /* Every face shows its greybox look, art-owned materials too. */
+  bool8_t greybox_view;
 };
 
 // =============================================================================
@@ -434,9 +437,6 @@ void vkr_scene_brush_entity_destroying(VkrScene *scene, VkrEntityId entity) {
 static VkrMaterialHandle brush_material(VkrScene *scene, VkrSceneBrushes *state,
                                         const char *path, bool8_t *out_owned) {
   struct VkrRenderAssets *assets = scene->assets;
-  if (!path[0]) {
-    path = VKR_SCENE_BRUSH_DEFAULT_MATERIAL;
-  }
   for (uint32_t i = 0; i < state->material_count; ++i) {
     if (strcmp(state->materials[i].path, path) == 0) {
       *out_owned = state->materials[i].owned;
@@ -454,6 +454,32 @@ static VkrMaterialHandle brush_material(VkrScene *scene, VkrSceneBrushes *state,
   }
   *out_owned = entry.owned;
   return entry.handle;
+}
+
+/* UVs of every greybox look: its metric grid in world space, unturned, one
+   repeat per VKR_SURFACE_GREYBOX_REPEAT meters. */
+static const SceneBrushFace s_greybox_uv = {
+    .uv_scale = {VKR_SURFACE_GREYBOX_REPEAT, VKR_SURFACE_GREYBOX_REPEAT},
+    .uv_world = true_v,
+};
+
+/* The material a face of a `role` brush draws, facing `normal_y` in world
+   space; `*out_greybox` is true for a greybox look, which projects with
+   s_greybox_uv instead of the face's UVs. Clip and trigger brushes always
+   show their role's look. */
+static const char *brush_face_look(const VkrSceneBrushes *state,
+                                   SceneBrushRole role,
+                                   const SceneBrushFace *face,
+                                   float32_t normal_y, bool8_t *out_greybox) {
+  if (role == SCENE_BRUSH_ROLE_CLIP || role == SCENE_BRUSH_ROLE_TRIGGER) {
+    *out_greybox = true_v;
+    return role == SCENE_BRUSH_ROLE_CLIP ? VKR_SURFACE_CLIP_MATERIAL
+                                         : VKR_SURFACE_TRIGGER_MATERIAL;
+  }
+  const char *path = vkr_surface_face_material(
+      face->surface, face->mark, face->material, normal_y, state->greybox_view);
+  *out_greybox = path != face->material;
+  return path;
 }
 
 // =============================================================================
@@ -594,18 +620,25 @@ static bool8_t brush_publish_mesh(VkrScene *scene, VkrSceneBrushes *state,
 
 /* Builds the brush's mesh, one submesh per distinct face material. */
 static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
-                                BrushRecord *record,
+                                BrushRecord *record, SceneBrushRole role,
                                 const SceneBrushFace *const *faces,
                                 const Mat4 *world) {
   struct VkrRenderAssets *assets = scene->assets;
   const VkrBrushGeometry *geometry = state->geometry;
   const Mat4 world_inverse = mat4_inverse_affine(*world);
-  /* Group faces by material file. */
+  /* Group faces by the material each shows; greybox looks project their
+     own UVs. */
   const char *group_paths[BRUSH_MATERIAL_GROUPS];
   uint32_t group_count = 0u;
   uint32_t face_group[VKR_BRUSH_FACE_MAX];
+  const SceneBrushFace *face_uvs[VKR_BRUSH_FACE_MAX];
   for (uint32_t face = 0; face < geometry->face_count; ++face) {
-    const char *path = faces[face]->material;
+    const Vec3 normal =
+        brush_normal_to_world(&world_inverse, geometry->normals[face]);
+    bool8_t greybox = false_v;
+    const char *path =
+        brush_face_look(state, role, faces[face], normal.y, &greybox);
+    face_uvs[face] = greybox ? &s_greybox_uv : faces[face];
     uint32_t group = 0u;
     while (group < group_count && strcmp(group_paths[group], path) != 0) {
       group++;
@@ -663,7 +696,7 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
     uint32_t index_count = 0u;
     for (uint32_t face = 0; face < geometry->face_count; ++face) {
       if (face_group[face] == group) {
-        brush_write_face(geometry, face, faces[face], world, &world_inverse,
+        brush_write_face(geometry, face, face_uvs[face], world, &world_inverse,
                          lightmap, vertices, lightmap_uvs, &vertex_count,
                          indices, &index_count);
       }
@@ -899,10 +932,11 @@ static bool8_t brush_shape_collision(VkrScene *scene, BrushRecord *record,
 }
 
 /* Builds a blockout shape (ADR-084) from its settings: its pieces' mesh in
-   chunks of pieces, a submesh per chunk and material (floors take the floor
-   material), and one static body whose triangle mesh holds every piece.
-   Pieces texture in world space, so neighbours line up; shapes take no
-   lightmap. */
+   chunks of pieces, a submesh per chunk and look (floor pieces take the
+   floor look of the floor surface, the others the wall look of the
+   surface), and one static body whose triangle mesh holds every piece.
+   Pieces project the greybox grid in world space, so neighbours line up;
+   shapes take no lightmap. */
 static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
                                 BrushRecord *record, const SceneBlockout *shape,
                                 const Mat4 *world) {
@@ -926,13 +960,15 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
     return;
   }
 
-  SceneBrushFace faces[2];
-  vkr_type_defaults(&vkr_scene_brush_face_type, &faces[0]);
-  faces[0].uv_world = true_v;
-  faces[1] = faces[0];
-  snprintf(faces[0].material, sizeof(faces[0].material), "%s", shape->material);
-  snprintf(faces[1].material, sizeof(faces[1].material), "%s",
-           shape->floor_material[0] ? shape->floor_material : shape->material);
+  const VkrSurface floor_surface = shape->floor_surface != VKR_SURFACE_NONE
+                                       ? shape->floor_surface
+                                       : shape->surface;
+  const char *looks[2] = {
+      vkr_surface_greybox_material(shape->surface, shape->mark,
+                                   VKR_SURFACE_WALL),
+      vkr_surface_greybox_material(floor_surface, shape->mark,
+                                   VKR_SURFACE_FLOOR),
+  };
   const Mat4 world_inverse = mat4_inverse_affine(*world);
   VkrSubMeshDesc submeshes[BRUSH_MATERIAL_GROUPS];
   uint32_t submesh_count = 0u;
@@ -984,7 +1020,7 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
         }
         const VkrBrushGeometry *geometry = state->geometry;
         for (uint32_t f = 0; f < geometry->face_count; ++f) {
-          brush_write_face(geometry, f, &faces[material], world, &world_inverse,
+          brush_write_face(geometry, f, &s_greybox_uv, world, &world_inverse,
                            NULL, vertices, NULL, &vertex_count, indices,
                            &index_count);
         }
@@ -1023,7 +1059,7 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
       }
       bool8_t owned = false_v;
       const VkrMaterialHandle handle_material =
-          brush_material(scene, state, faces[material].material, &owned);
+          brush_material(scene, state, looks[material], &owned);
       submeshes[submesh_count++] = (VkrSubMeshDesc){
           .geometry = handle,
           .material = handle_material,
@@ -1129,7 +1165,7 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
     }
     return;
   }
-  if (!brush_build_mesh(scene, state, record, faces, &world)) {
+  if (!brush_build_mesh(scene, state, record, settings.role, faces, &world)) {
     brush_clear(scene, state, record);
     snprintf(record->status, sizeof(record->status), "the mesh failed");
     return;
@@ -1418,6 +1454,30 @@ void vkr_scene_brush_shutdown(VkrScene *scene) {
   vkr_allocator_free(scene->alloc, state, sizeof(*state),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   scene->brushes = NULL;
+}
+
+void vkr_scene_brush_set_greybox_view(VkrScene *scene, bool8_t on) {
+  if (!scene || (!on && !scene->brushes)) {
+    return;
+  }
+  VkrSceneBrushes *state = brush_state(scene, true_v);
+  if (!state || state->greybox_view == on) {
+    return;
+  }
+  state->greybox_view = on;
+  /* Only brushes show art-owned materials; shapes always show their
+     greybox looks. */
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    BrushRecord *record = &state->records[i];
+    if (vkr_scene_get_typed(scene, record->entity, &vkr_scene_brush_type)) {
+      record->dirty = true_v;
+      record->settle = BRUSH_SETTLE_UPDATES;
+    }
+  }
+}
+
+bool8_t vkr_scene_brush_greybox_view(const VkrScene *scene) {
+  return scene && scene->brushes && scene->brushes->greybox_view;
 }
 
 const char *vkr_scene_brush_status(const VkrScene *scene, VkrEntityId brush) {

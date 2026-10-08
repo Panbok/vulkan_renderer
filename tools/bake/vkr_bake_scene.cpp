@@ -7,6 +7,7 @@ extern "C" {
 #include "core/vkr_json.h"
 #include "level/vkr_blockout.h"
 #include "level/vkr_brush.h"
+#include "level/vkr_surface.h"
 }
 
 #include <algorithm>
@@ -32,13 +33,11 @@ constexpr uint32_t k_max_mover_depth = 64u;
 
 enum class ShapeKind : uint8_t { None, Cube, Unsupported };
 
-/* The material a brush face without one draws, as at runtime. */
-constexpr const char *k_brush_default_material =
-    "assets/materials/dev/dev_grid.mt";
-
-/* A brush face's material and texture placement, with the runtime's
-   brush_face defaults. */
+/* A brush face's surface tag, mark, art-owned material and texture
+   placement, with the runtime's brush_face defaults. */
 struct BrushFaceStyle {
+  uint32_t surface = VKR_SURFACE_NONE;
+  uint32_t mark = VKR_SURFACE_MARK_NONE;
   std::string material;
   Vec2 uv_offset = {0.0f, 0.0f};
   Vec2 uv_scale = {1.0f, 1.0f};
@@ -633,8 +632,13 @@ bool parse_document_id(const VkrJsonReader *entity, EntityImport *out) {
   return true;
 }
 
+/* The index of a JSON string field's value in `names`, or `out` unchanged
+   when the field is absent; false for another name. */
+bool read_optional_enum(const VkrJsonReader *object, const char *field,
+                        const char *const *names, uint32_t *out);
+
 /* `brush` and `brush_face` components (ADR-084): a brush's role, and one
-   face plane with its material and texture placement. */
+   face plane with its surface, mark, material and texture placement. */
 bool parse_brush(const VkrJsonReader *entity, EntityImport *out) {
   VkrJsonReader reader = {};
   if (find_block(entity, "brush", &reader) && !parse_null(&reader)) {
@@ -664,6 +668,22 @@ bool parse_brush_face(const VkrJsonReader *entity, EntityImport *out) {
       return false;
     }
     (void)read_string(&object, "material", &out->face.material);
+    if (!read_optional_enum(&object, "surface", vkr_surface_names,
+                            &out->face.surface) ||
+        !read_optional_enum(&object, "mark", vkr_surface_mark_names,
+                            &out->face.mark)) {
+      return false;
+    }
+    /* Older documents name a retired dev material, as the runtime reads
+       them (brush_face_migrate). */
+    VkrSurface surface = VKR_SURFACE_NONE;
+    VkrSurfaceMark mark = VKR_SURFACE_MARK_NONE;
+    if (vkr_surface_from_legacy_material(out->face.material.c_str(), &surface,
+                                         &mark)) {
+      out->face.surface = (uint32_t)surface;
+      out->face.mark = (uint32_t)mark;
+      out->face.material.clear();
+    }
     out->brush_face = true;
   }
   return true;
@@ -718,20 +738,6 @@ bool read_optional_count(const VkrJsonReader *object, const char *field,
   return true;
 }
 
-bool read_optional_text(const VkrJsonReader *object, const char *field,
-                        char *out, uint32_t capacity) {
-  std::string text;
-  if (!read_string(object, field, &text)) {
-    return true;
-  }
-  if (text.size() >= capacity) {
-    return false;
-  }
-  std::copy(text.begin(), text.end(), out);
-  out[text.size()] = '\0';
-  return true;
-}
-
 /* A `blockout` component (ADR-084) read into its settings with the runtime
    type's defaults. The runtime loader validates ranges, and
    vkr_blockout_layout rejects a shape it cannot lay out. */
@@ -762,6 +768,9 @@ bool parse_blockout(const VkrJsonReader *entity, EntityImport *out) {
   }
   uint32_t shape_kind = (uint32_t)shape->shape;
   uint32_t stairs_kind = (uint32_t)shape->stairs;
+  uint32_t surface = VKR_SURFACE_NONE;
+  uint32_t floor_surface = VKR_SURFACE_NONE;
+  uint32_t mark = VKR_SURFACE_MARK_NONE;
   if (!read_optional_enum(&object, "shape", k_blockout_shape_names,
                           &shape_kind) ||
       !read_optional_enum(&object, "stairs", k_stairs_kind_names,
@@ -775,10 +784,10 @@ bool parse_blockout(const VkrJsonReader *entity, EntityImport *out) {
       !read_optional_float(&object, "thickness", &shape->thickness) ||
       !read_optional_bool(&object, "left", &shape->left) ||
       !read_optional_bool(&object, "ceiling", &shape->ceiling) ||
-      !read_optional_text(&object, "material", shape->material,
-                          SCENE_BLOCKOUT_MATERIAL_CAPACITY) ||
-      !read_optional_text(&object, "floor_material", shape->floor_material,
-                          SCENE_BLOCKOUT_MATERIAL_CAPACITY) ||
+      !read_optional_enum(&object, "surface", vkr_surface_names, &surface) ||
+      !read_optional_enum(&object, "floor_surface", vkr_surface_names,
+                          &floor_surface) ||
+      !read_optional_enum(&object, "mark", vkr_surface_mark_names, &mark) ||
       !read_optional_count(&object, "point_count", SCENE_BLOCKOUT_POINT_MAX,
                            &shape->point_count) ||
       !read_optional_count(&object, "opening_count", SCENE_BLOCKOUT_OPENING_MAX,
@@ -787,6 +796,9 @@ bool parse_blockout(const VkrJsonReader *entity, EntityImport *out) {
   }
   shape->shape = (SceneBlockoutShape)shape_kind;
   shape->stairs = (SceneStairsKind)stairs_kind;
+  shape->surface = (VkrSurface)surface;
+  shape->floor_surface = (VkrSurface)floor_surface;
+  shape->mark = (VkrSurfaceMark)mark;
   for (uint32_t i = 0u; i < SCENE_BLOCKOUT_POINT_MAX; ++i) {
     const std::string point = "point_" + std::to_string(i);
     const std::string corner = "corner_" + std::to_string(i);
@@ -1369,13 +1381,22 @@ struct AppendFailure {
   std::string reason;
 };
 
-/* The scene material of brush material `path`, the dev grid when it is
-   empty; each path loads once per scene. */
-bool brush_material(VkrBakeScene *scene, const std::string &material,
+/* The UVs of every greybox look, as the runtime projects them
+   (s_greybox_uv): the metric grid in world space, one repeat per
+   VKR_SURFACE_GREYBOX_REPEAT meters. */
+BrushFaceStyle greybox_style(const char *material) {
+  BrushFaceStyle style;
+  style.material = material;
+  style.uv_scale =
+      vec2_new(VKR_SURFACE_GREYBOX_REPEAT, VKR_SURFACE_GREYBOX_REPEAT);
+  return style;
+}
+
+/* The scene material of brush material `path`; each path loads once per
+   scene. */
+bool brush_material(VkrBakeScene *scene, const std::string &path,
                     std::map<std::string, uint32_t> *materials,
                     uint32_t *out_index, AppendFailure *out_failure) {
-  const std::string path =
-      material.empty() ? std::string(k_brush_default_material) : material;
   const auto cached = materials->find(path);
   if (cached != materials->end()) {
     *out_index = cached->second;
@@ -1454,9 +1475,10 @@ bool append_brush_polygon(VkrBakeScene *scene, const VkrBrushGeometry *geometry,
 }
 
 /* A solid or visual brush built from its brush_face children, as the
-   runtime builds its mesh: one triangle fan per face in the face material
-   (the dev grid when it names none), texture UVs from the face placement and
-   lightmap UVs from the shared brush layout. The brush is one lightmap
+   runtime builds its mesh: one triangle fan per face in its art-owned
+   material with UVs from the face placement, or in its surface's greybox
+   look with the greybox UVs, and lightmap UVs from the shared brush
+   layout. The brush is one lightmap
    instance. A brush that does not build is left out, as the editor reports
    it. */
 bool append_brush(VkrBakeScene *scene,
@@ -1487,7 +1509,18 @@ bool append_brush(VkrBakeScene *scene,
     return false;
   }
   for (uint32_t f = 0u; f < geometry->face_count; ++f) {
-    const BrushFaceStyle &style = entities[faces[f]].face;
+    const BrushFaceStyle &face = entities[faces[f]].face;
+    const Vec3 local_normal = geometry->normals[f];
+    const Vec4 normal =
+        mat4_mul_vec4(normal_world, vec4_new(local_normal.x, local_normal.y,
+                                             local_normal.z, 0.0f));
+    const Vec3 world_normal =
+        vec3_normalize(vec3_new(normal.x, normal.y, normal.z));
+    const char *look = vkr_surface_face_material(
+        (VkrSurface)face.surface, (VkrSurfaceMark)face.mark,
+        face.material.c_str(), world_normal.y, false_v);
+    const BrushFaceStyle style =
+        look == face.material.c_str() ? face : greybox_style(look);
     uint32_t material_index = 0u;
     if (!brush_material(scene, style.material, materials, &material_index,
                         out_failure)) {
@@ -1519,7 +1552,8 @@ bool append_brush(VkrBakeScene *scene,
 
 /* A blockout shape (ADR-084) built as the runtime builds it
    (brush_rebuild_shape): each laid-out piece is the brush of its hull, in the
-   shape's material, floors in the floor material, textured in world space.
+   wall look of the shape's surface, floors in the floor look of its floor
+   surface, with the greybox UVs.
    Shapes take no lightmap at runtime, so their faces occlude and bounce
    light without becoming a lightmap instance. A shape that does not lay out,
    or a piece that does not build, is left out as the runtime leaves it. */
@@ -1540,10 +1574,15 @@ bool append_blockout(VkrBakeScene *scene, const SceneBlockout &shape,
     out_failure->reason = "its world transform is singular";
     return false;
   }
-  BrushFaceStyle styles[2];
-  styles[0].material = shape.material;
-  styles[1].material =
-      shape.floor_material[0] ? shape.floor_material : shape.material;
+  const VkrSurface floor_surface = shape.floor_surface != VKR_SURFACE_NONE
+                                       ? shape.floor_surface
+                                       : shape.surface;
+  const BrushFaceStyle styles[2] = {
+      greybox_style(vkr_surface_greybox_material(shape.surface, shape.mark,
+                                                 VKR_SURFACE_WALL)),
+      greybox_style(vkr_surface_greybox_material(floor_surface, shape.mark,
+                                                 VKR_SURFACE_FLOOR)),
+  };
   uint32_t material_indices[2] = {};
   for (uint32_t i = 0u; i < 2u; ++i) {
     if (!brush_material(scene, styles[i].material, materials,

@@ -46,8 +46,9 @@ point, spot and model lights without `casts_shadow` unshadowed, so lamps lit
 the far side of walls; volumes and lightmaps baked before then need a rebake,
 which `--check` does not report. The bake scene loader builds every
 solid or visual brush from its `brush_face` children as the runtime does
-([ADR-084](084-agent-channel-and-level-design-toolkit.md)), with the face
-material or the dev grid, and keeps each entity's document id. It builds
+([ADR-084](084-agent-channel-and-level-design-toolkit.md)), with each
+face's art-owned material or its surface's greybox look, and keeps each
+entity's document id. It builds
 each blockout shape's pieces as the runtime does, as geometry without a
 lightmap (ADR-088). Since 2026-10-08 it leaves out every brush and blockout
 shape that a `mover` on the entity or an ancestor moves, as the runtime's

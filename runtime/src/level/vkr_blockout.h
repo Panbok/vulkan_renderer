@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "level/vkr_surface.h"
 #include "math/vec.h"
 
 /* Blockout shapes (ADR-084): editable stairs and corridors that their
@@ -12,7 +13,6 @@
 /* An editable blockout shape's settings, the `blockout` component. */
 #define SCENE_BLOCKOUT_POINT_MAX 16u
 #define SCENE_BLOCKOUT_OPENING_MAX 8u
-#define SCENE_BLOCKOUT_MATERIAL_CAPACITY 160u
 
 typedef enum SceneBlockoutShape {
   SCENE_BLOCKOUT_STAIRS = 0,
@@ -68,8 +68,11 @@ typedef struct SceneBlockout {
   uint32_t opening_count;
   uint32_t walls[SCENE_BLOCKOUT_OPENING_MAX];
   Vec4 openings[SCENE_BLOCKOUT_OPENING_MAX];
-  char material[SCENE_BLOCKOUT_MATERIAL_CAPACITY];
-  char floor_material[SCENE_BLOCKOUT_MATERIAL_CAPACITY];
+  /* The surface tag of the steps or the walls, of a corridor's floor when
+     `floor_surface` is none, and the mark of every piece (vkr_surface.h). */
+  VkrSurface surface;
+  VkrSurface floor_surface;
+  VkrSurfaceMark mark;
 } SceneBlockout;
 
 /* Corners one piece's hull has at most. */

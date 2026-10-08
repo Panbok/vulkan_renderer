@@ -636,6 +636,71 @@ static void test_scene_tags(VkrAllocator *allocator) {
   printf("  test_scene_tags PASSED\n");
 }
 
+/* Brush faces, blockout shapes and terrains written before surface tags
+   name retired dev palette materials; reading them gives the surface and
+   mark that replaced each one, and new documents round-trip both. */
+static void test_surface_documents(VkrAllocator *allocator) {
+  char error[160];
+  SceneBrushFace face;
+  vkr_type_defaults(&vkr_scene_brush_face_type, &face);
+  assert(vkr_type_read_json_document(
+      string8_lit("{\"normal\":[0,1,0],\"distance\":0.5,\"material\":"
+                  "\"assets/materials/dev/dev_orange.mt\"}"),
+      &vkr_scene_brush_face_type, &face, allocator, error, sizeof(error)));
+  assert(face.surface == VKR_SURFACE_NONE);
+  assert(face.mark == VKR_SURFACE_MARK_ORANGE);
+  assert(face.material[0] == '\0');
+  assert(vkr_type_read_json_document(
+      string8_lit("{\"normal\":[0,1,0],\"distance\":0.5,\"material\":"
+                  "\"assets/materials/dev/dev_light.mt\"}"),
+      &vkr_scene_brush_face_type, &face, allocator, error, sizeof(error)));
+  assert(face.surface == VKR_SURFACE_EMISSIVE);
+  assert(face.mark == VKR_SURFACE_MARK_NONE);
+  assert(face.material[0] == '\0');
+
+  /* Another material stays art-owned beside the face's surface. */
+  assert(vkr_type_read_json_document(
+      string8_lit("{\"normal\":[0,1,0],\"distance\":0.5,\"surface\":"
+                  "\"brick\",\"mark\":\"hazard\",\"material\":"
+                  "\"assets/materials/bistro/wall.mt\"}"),
+      &vkr_scene_brush_face_type, &face, allocator, error, sizeof(error)));
+  assert(face.surface == VKR_SURFACE_BRICK);
+  assert(face.mark == VKR_SURFACE_MARK_HAZARD);
+  assert(strcmp(face.material, "assets/materials/bistro/wall.mt") == 0);
+  assert(!vkr_type_read_json_document(
+      string8_lit("{\"normal\":[0,1,0],\"distance\":0.5,\"surface\":"
+                  "\"marble\"}"),
+      &vkr_scene_brush_face_type, &face, allocator, error, sizeof(error)));
+
+  /* Shapes drop the material keys they had; surfaces replace them. */
+  SceneBlockout shape;
+  vkr_type_defaults(&vkr_scene_blockout_type, &shape);
+  assert(vkr_type_read_json_document(
+      string8_lit("{\"shape\":\"Corridor\",\"material\":"
+                  "\"assets/materials/dev/dev_wall.mt\",\"floor_material\":"
+                  "\"assets/materials/dev/dev_floor.mt\",\"surface\":"
+                  "\"concrete\",\"floor_surface\":\"tile\",\"mark\":"
+                  "\"blue\"}"),
+      &vkr_scene_blockout_type, &shape, allocator, error, sizeof(error)));
+  assert(shape.surface == VKR_SURFACE_CONCRETE);
+  assert(shape.floor_surface == VKR_SURFACE_TILE);
+  assert(shape.mark == VKR_SURFACE_MARK_BLUE);
+
+  /* Terrain layers take the floor greybox look of their replacement. */
+  SceneTerrain terrain;
+  vkr_type_defaults(&vkr_scene_terrain_type, &terrain);
+  assert(vkr_type_read_json_document(
+      string8_lit("{\"layer0\":\"assets/materials/dev/dev_grid.mt\","
+                  "\"layer1\":\"assets/materials/dev/dev_orange.mt\","
+                  "\"layer2\":\"assets/materials/rock.mt\"}"),
+      &vkr_scene_terrain_type, &terrain, allocator, error, sizeof(error)));
+  assert(strcmp(terrain.layer0, "assets/materials/greybox/none_floor.mt") == 0);
+  assert(strcmp(terrain.layer1,
+                "assets/materials/greybox/mark_orange_floor.mt") == 0);
+  assert(strcmp(terrain.layer2, "assets/materials/rock.mt") == 0);
+  printf("  test_surface_documents PASSED\n");
+}
+
 bool32_t run_type_desc_tests(void) {
   printf("--- Starting Type Descriptor Tests ---\n");
   VkrDMemory memory;
@@ -649,6 +714,7 @@ bool32_t run_type_desc_tests(void) {
   test_light_types();
   test_type_migrate(&allocator);
   test_scene_tags(&allocator);
+  test_surface_documents(&allocator);
   vkr_dmemory_destroy(&memory);
   printf("--- Type Descriptor Tests completed. ---\n");
   return true_v;

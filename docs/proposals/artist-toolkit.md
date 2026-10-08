@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-08
+updated: 2026-10-09
 authority: proposal
 ---
 # Artist toolkit
@@ -9,7 +9,8 @@ The artist toolkit follows the level design toolkit
 ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)). The level
 toolkit designs and structures a level. The artist toolkit gives the
 finished layout its look: materials, lighting, sky, fog, post-processing and
-set dressing. This proposal covers five parts:
+set dressing. Part 1 is implemented and recorded in ADR-084; this proposal
+keeps its remaining scope and the other parts:
 
 1. Surface tags and fixed greybox looks with measurement aids in the level
    toolkit.
@@ -33,6 +34,16 @@ The owner settled these on 2026-10-08.
 | Material authoring | A node graph editor | Only a fixed parametric material with layers |
 | Where artists work | A separate workbench tab ([ADR-089](../adr/089-editor-workbenches.md)) | Windows inside the Level Design workbench |
 | Agent use | Agents create, edit, compile, preview and assign materials through operations, with batches, review and undo as in ADR-084 | Agents that edit material files on disk |
+| Vertex offset (2026-10-09) | None in Custom graphs at first: it makes static shadow caches stale, changes culling bounds and needs motion vectors per draw. A later separate output with its own budget, once foliage needs it | A vertex-offset output now |
+| Custom code node (2026-10-09) | None: raw shader text defeats the cost estimate, the tiled fallbacks and agent safety | A custom-code node |
+| Layered Standard (2026-10-09) | A flag branch first, as terrain does; a layered variant axis, which doubles the 50 Metal shading states, only if Phase 3 measures a cost on draws without layers | A variant axis from the start |
+| Undo for documents (2026-10-09) | The edit journal extends to asset documents, so review, rollback and agent-scoped undo apply to materials | Local snapshot undo, as in the Script editor |
+| Over budget (2026-10-09) | The editor warns; packaging fails | Failing in the editor, which blocks experiments |
+| Environment presets (2026-10-09) | Applied by copy, as component presets are; World inheritance shares values across levels | Presets by reference |
+| Theme scope (2026-10-09) | The scene and the container; world-partition cells may add regions later | Per-region themes now |
+| Desktop resolve of Custom graphs (2026-10-09) | Per-graph classification and indirect dispatch | One kernel that switches on the graph id and holds the largest graph's registers for every pixel |
+| Shader cost (2026-10-09) | Register and instruction counts from the offline compilers where they exist, node estimates otherwise | Estimates only |
+| Delivery (2026-10-09) | Phase by phase to `main`, each after its own evidence | One branch merged at the end |
 
 ## Goals and limits
 
@@ -209,77 +220,28 @@ Renderer
 
 ## Part 1: Surface tags and greybox looks
 
-### Surface tags
+Implemented on 2026-10-09 and recorded in
+[ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md#surface-tags-and-greybox-looks):
+the tags none to emissive and the marks hazard, orange, blue, red, green and
+dark on brush faces and blockout shapes, the fixed greybox looks per tag or
+mark and face orientation with the 4 m metric grid, the art-owned face
+`material`, the greybox view, `brush.set_surface`, `face.set_material`,
+`query.measure`, `view.greybox`, the Level Design palette's Surface and
+Mark rows, its measurement aids, and the migration of documents that name
+retired dev materials. `level.lint`'s `too_narrow` and `low_ceiling` issues
+and the Level checks window are the clearance hints.
 
-A surface tag names what a surface is made of: `concrete`, `metal`, `wood`,
-`tile`, `plaster`, `brick`, `rock`, `dirt`, `grass`, `glass`, `fabric`,
-`water`, `emissive`. The engine ships this set. A project can add tags in
-project settings, and each added tag picks one of the fixed greybox tones.
+Remaining here:
 
-The tag is the shared vocabulary of the level and its art:
-
-- the level designer picks a tag on a brush face;
-- the art pass binds the tag to a material (Part 4);
-- later systems read the same tag for footstep sounds, impact effects and
-  physics friction.
-
-A material instance also declares a `surface=` tag. This gives imported
-meshes the same vocabulary as brushes.
-
-### Fixed greybox looks
-
-The engine owns the greybox look of each tag. Designers cannot edit it, and
-projects cannot replace it. The look has four inputs, all fixed:
-
-| Input | Source | Purpose |
-|---|---|---|
-| Tone | One colour per tag from a fixed palette | Tells concrete from metal at a glance |
-| Orientation shade | Face normal: floor, wall or ceiling | Shows the floor and wall difference with no painting; replaces the Floor and Wall swatches |
-| Metric grid | World-aligned texture: 1 m cells, 25 cm lines, a stronger line every 4 m | Shows scale on every surface |
-| Mark | Optional per face: hazard stripes, guidance orange, guidance blue | Wayfinding and danger readability; the art pass ignores marks |
-
-Roles keep their fixed looks: clip and trigger brushes always show their
-role material, and the `material` argument no longer overrides them.
-
-The greybox looks are engine content under `assets/materials/greybox/`. They
-replace the 16 palette entries of
-[editor_viewport.c](../../editor/src/editor_viewport.c). The Level Design
-palette shows tags and marks instead of materials.
-
-### Measurement aids
-
-| Aid | Behavior | Operation |
-|---|---|---|
-| Dimension labels | Width, depth and height in metres on the selected brush and on the brush being drawn | — |
-| Measure tool | Two clicks give distance, height difference and slope angle; Shift snaps to the grid | `query.measure` |
-| Player-scale reference | A ghost capsule at the cursor, with eye height, step height and jump reach from the player settings that level checks use | — |
-| Metric grid | On every greybox face, from the fixed look | — |
-| Clearance hints | Openings narrower than the capsule and ceilings lower than its height show a hint colour while editing; level checks stay the authority | `level.lint` reports the same openings |
-
-### Greybox view
-
-Any workbench can show the whole level in its greybox looks. Bound
-materials and face overrides then draw as their tags' greybox looks. A
-designer uses this view to check readability after the art pass, and an
-artist uses it to see the level designer's intent. The operation is
-`view.greybox`.
-
-### Data and migration
-
-A brush face keeps its `material` field, which becomes art-owned, and gains
-`surface` (a tag id) and `mark`. The face draws the first that applies:
-
-1. the greybox look when the greybox view is on;
-2. the face's art-owned `material`;
-3. the scene's binding for its tag (Part 4);
-4. the greybox look of its tag.
-
-A migration maps the dev material paths in saved scenes to tags and marks.
-Grid maps to no tag; Concrete, Metal, Tile and Wood map to their tags; Floor
-and Wall map to no tag, because orientation shading replaces them; Hazard,
-Orange and Blue map to marks; Light maps to `emissive`. Red, Green and Dark
-map to no tag. The Black Mesa test level and the level toolkit's tests are
-the migration's check.
+- **Project tags.** A project adds tags in its settings, each with one of
+  the fixed greybox tones. They come with themes in Phase 3, which keep
+  project data.
+- **Tags on meshes.** A material instance declares `surface=`, so imported
+  meshes share the brushes' vocabulary (Phase 2).
+- **Bindings in the look order.** Phase 3 inserts the scene's theme binding
+  between a face's art-owned material and its greybox look.
+- **Physical uses.** Footstep sounds, impact effects and friction read the
+  tag; no phase of this proposal schedules them.
 
 ## Part 2: Material graphs
 
@@ -354,7 +316,7 @@ choices 1 and 2 give the reasons.
 Each node declares its texture samples and an ALU weight. The compiler sums
 them per output, and the editor shows them on each node and on the output
 node. The offline compiler's reports replace the estimates when they become
-available (open choice 9). Each graph shows a cost line:
+available (settled 2026-10-09). Each graph shows a cost line:
 
 ```text
 Standard · 9 samples · 3 layers · +0 pipelines
@@ -374,7 +336,7 @@ for it.
 | Tier | When | New shaders | Pipelines |
 |---|---|---|---|
 | Instance | A `.mt` that only sets parameters and textures of a graph | None | None |
-| Standard | Every node is in the Standard set, the layer count is four or fewer, and the domain's outputs map to the material row | None: lowers to row data | None, or the layered variants of open choice 3 |
+| Standard | Every node is in the Standard set, the layer count is four or fewer, and the domain's outputs map to the material row | None: lowers to row data | None, or the layered variants the settled layering decision allows |
 | Custom | Any node outside the Standard set, or more than four layers | One surface function per graph | Per graph: see the pipeline table below |
 
 ### Standard tier
@@ -553,7 +515,7 @@ Art workbench to judge a material away from the level. Thumbnails keep using
 Graph and instance edits go through a document journal. It has the group,
 rollback and revert semantics of the scene journal, so agent batches, review
 in the Agent changes window and agent-scoped undo work the same on materials
-as on scenes (open choice 4).
+as on scenes (settled 2026-10-09).
 
 ## Part 6: The art pass on levels
 
@@ -662,13 +624,13 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 | Family | Operations | Writes |
 |---|---|---|
 | `surface.*` | `list`, `define`, `theme.create`, `theme.bind`, `theme.select` | Project and scene |
-| `brush.*` | `set_surface`, `set_mark` (replace `set_material` in the level toolkit) | Scene |
-| `face.*` | `set_material`, `clear_material` (art-owned overrides) | Scene |
+| `brush.*` | `set_surface` (implemented; it sets the surface, the mark or both) | Scene |
+| `face.*` | `set_material` (implemented; an empty `material` clears the override) | Scene |
 | `material.*` | `create`, `instance`, `describe`, `patch`, `set_param`, `assign`, `compile`, `cost`, `preview` | Documents and scene |
 | `look.*` | `volume` (intent: a look volume from a box and overrides) | Scene |
 | `env.*` | `describe`, `preset.save`, `preset.apply` | Scene |
 | `lighting.*` | `bake` with settings, `time` | Scene and bake jobs |
-| Reads | `query.measure`, `query.luminance`, `art.lint`, `view.greybox`, `view.capture` with a `mode` | — |
+| Reads | `query.luminance`, `art.lint`, `view.capture` with a `mode`; `query.measure` and `view.greybox` are implemented | — |
 
 The operations that matter most for agents:
 
@@ -703,50 +665,15 @@ Each phase is usable on its own and keeps the rules of Goals and limits.
 
 | Phase | Delivers | Acceptance evidence |
 |---|---|---|
-| 1. Surface tags and greybox | Tags, fixed greybox looks, marks, orientation shading, measurement aids, greybox view, `brush.set_surface`, migration of dev material paths | CPU tests: face surface round trip and the migration table. The Black Mesa test level loads with tags. A Bistro capture shows no change. Level toolkit tests pass |
+| 1. Surface tags and greybox | Implemented (ADR-084) | Recorded in ADR-084 |
 | 2. Graph documents and the Art workbench | `.mtg`, `.mtf`, `.mt` with `graph=`, the node canvas, the Art workbench, document journal, Standard lowering of today's material model, material picker and drop, `material.*` operations | A CPU test lowers every Bistro `.mt` through the built-in Standard graph to byte-identical material rows. A Release Metal snapshot of Bistro is unchanged |
 | 3. Layered Standard and the art pass | Layer blend with mask sources, `world_size`, themes and bindings, face overrides, `art.lint` | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
 | 4. Custom graphs | Code generation, the project shader library, Metal per-graph variants, Vulkan classification and per-graph resolve, the budget, pipeline creation at scene and cell load, the late-draw fallback and `pipelines_late` | `pipelines_late` is zero over the Bistro glide camera with 8 Custom graphs assigned. Cold and warm pipeline creation time per graph on the M1 Pro. A Custom graph that reproduces a Standard material gives an equal snapshot. Vulkan native checks wait for a Windows host |
 | 5. Lighting and look | Environment panel and presets, look volumes, light gizmos and list, probe and volume creation, bake settings, time scrubber, artist view modes, `query.luminance` | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |
 | 6. Dressing | Decal tool and outline, scatter painting | Captures on Bistro; scatter stays within the 4,096-copy bound |
 
-Phase 1 can ship before the other phases. It removes the paintable materials
-from the level toolkit at once.
-
-## Open choices
-
-Each choice has a recommendation; the owner decides.
-
-1. **Vertex offset in Custom graphs.** Recommend none in the first version.
-   A vertex offset makes static shadow caches stale, changes culling bounds
-   and needs motion vectors per draw. Add it later as a separate output
-   with its own budget, once foliage needs it.
-2. **Custom code node.** Recommend none. Raw shader text defeats the cost
-   estimate, the tiled fallbacks and agent safety, and it is the main source
-   of shaders that work on only one backend.
-3. **Layered Standard as a flag branch or a variant axis.** Recommend a flag
-   branch first, as terrain does today. Add a layered variant axis only if
-   Phase 3 measures a register or time cost on draws without layers. That
-   axis would double the 50 Metal shading states.
-4. **Undo for documents.** Recommend extending the edit journal to asset
-   documents, so review, rollback and agent-scoped undo apply to materials.
-   The alternative is local snapshot undo, as in the Script editor. It is
-   simpler, but agents would lose batch review.
-5. **Over-budget behavior.** Recommend that the editor warns and that
-   packaging fails. Failing in the editor would block experiments.
-6. **Environment presets by copy or by reference.** Recommend copy. It
-   matches component presets, and the scene stays self-contained. By
-   reference, one preset change would update many levels, but the World's
-   inheritance already gives that.
-7. **Theme scope.** Recommend the scene and the container. Per-region themes
-   can later come from world-partition cells.
-8. **Desktop resolve for Custom graphs.** Recommend per-graph classification
-   and indirect dispatch. One kernel that switches on the graph id would hold
-   the registers of the largest graph for every pixel.
-9. **Real shader cost.** Recommend reading register and instruction counts
-   from the offline compilers when they are available, and keeping the node
-   estimates otherwise. ADR-092 already names a shader profile of the
-   forward variants as a revisit trigger.
+Phase 1 shipped before the other phases and removed the paintable materials
+from the level toolkit.
 
 ## Risks
 

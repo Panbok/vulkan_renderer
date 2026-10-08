@@ -47,8 +47,15 @@ sets the order of work and the checks that prove a level.
   find tagged pieces with `scene.describe` `tags`.
 - With `parent`, corners, points and planes are in the parent's space:
   subtract the parent's position from world coordinates first.
-- Pick materials from the brush palette, `assets/materials/dev/dev_<name>.mt`
-  (`ls` the folder); `dev_light` glows, for ceiling panels.
+- Give each brush a `surface` (concrete, metal, wood, tile, plaster, brick,
+  rock, dirt, grass, glass, fabric, water, emissive) and, for accents and
+  wayfinding, a `mark` (hazard, orange, blue, red, green, dark); change them
+  with `brush.set_surface`. Faces show fixed greybox looks with a metric
+  grid (25 cm, 1 m, 4 m lines); `emissive` glows, for ceiling panels.
+  Never pass `material`: materials belong to the art pass
+  (`face.set_material`).
+- Measure with `query.measure`: `from` and `to` give distance, run, rise and
+  slope; an `entity` gives its size.
 - Detail breaks routes: props in a walkway, a seat (0.45 m is above a step)
   or a railing across a ladder top. Keep walkways 1 m wide and rerun every
   route query after each detail pass.
@@ -121,7 +128,7 @@ sets the order of work and the checks that prove a level.
   in and out, light through walls from unshadowed lamps, and a slow frame.
   Make a light `dynamic` only when it moves or switches, and give it
   `casts_shadow`.
-- Place a lamp 0.5 m below its `dev_light` panel, outside every brush, its
+- Place a lamp 0.5 m below its `emissive` panel, outside every brush, its
   `range` within its room. A lamp just under a panel lights the panel's
   underside, a bright path the bake finds by chance: blotches.
 

@@ -173,6 +173,9 @@ typedef struct VkrTypeDesc {
   const char *const *retired;
   /** Fill a value with the type's defaults. Optional; zero otherwise. */
   void (*defaults)(void *value);
+  /** Rewrite what older documents stored into the current form, after a
+   * read and before validation. Optional. */
+  void (*migrate)(void *value);
   /** Cross-property rules after per-property checks. Optional. */
   bool8_t (*validate)(const void *value, char *error, uint32_t capacity);
   /** Enforce dependent values after an interactive edit. Optional. */

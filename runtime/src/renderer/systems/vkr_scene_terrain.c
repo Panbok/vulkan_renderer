@@ -1312,7 +1312,7 @@ static VkrMaterialHandle terrain_material_create(VkrScene *scene,
     }
   }
   const char *layers[VKR_MATERIAL_TERRAIN_LAYERS] = {
-      terrain->layer0[0] ? terrain->layer0 : VKR_SCENE_BRUSH_DEFAULT_MATERIAL,
+      terrain->layer0[0] ? terrain->layer0 : VKR_SCENE_TERRAIN_DEFAULT_MATERIAL,
       terrain->layer1, terrain->layer2, terrain->layer3};
   String8 paths[VKR_MATERIAL_TERRAIN_LAYERS];
   for (uint32_t i = 0; i < VKR_MATERIAL_TERRAIN_LAYERS; ++i) {

@@ -167,6 +167,18 @@ typedef struct VkrEditorLabelSights {
 
 typedef struct VkrEditorPhysicsLine VkrEditorPhysicsLine;
 
+/* A size label of the Scene overlay (editor_physics.c): the dimensions of a
+   selected or drawn brush, or the measure tool's reading. The build sizes
+   it; the projection centers it just above `anchor`. */
+typedef struct VkrEditorMeasureLabel {
+  VkrUiId widget;
+  Vec3 anchor;
+  Vec2 size_pt;
+} VkrEditorMeasureLabel;
+
+/* The selection's labels, the drawn box's and the measurement's. */
+#define VKR_EDITOR_MEASURE_LABEL_MAX 20u
+
 #define VKR_EDITOR_GRID_LINE_CAPACITY 192u
 
 typedef struct VkrEditorGridLine {
@@ -242,6 +254,8 @@ typedef enum VkrEditorSceneTool {
      end. */
   VKR_EDITOR_SCENE_TOOL_STAIRS,
   VKR_EDITOR_SCENE_TOOL_CORRIDOR,
+  /* Two clicks on surfaces: the distance between them. */
+  VKR_EDITOR_SCENE_TOOL_MEASURE,
   VKR_EDITOR_SCENE_TOOL_COUNT,
 } VkrEditorSceneTool;
 
@@ -581,6 +595,22 @@ typedef struct VkrEditorUi {
   uint32_t path_count;
   Vec3 path_points[16];
   Vec3 path_current;
+  /* The measure tool: up to two clicked points, and the surface point
+     under the pointer, which ends the line while one point is down. A
+     third click starts over; leaving the tool clears it. */
+  bool8_t measure_tool;
+  uint32_t measure_count;
+  Vec3 measure_points[2];
+  Vec3 measure_hover;
+  bool8_t measure_hover_valid;
+  /* The scale figure, for this session: the player's capsule standing on
+     the surface under the pointer while it rests over the Scene. */
+  bool8_t scale_figure;
+  bool8_t scale_figure_valid;
+  Vec3 scale_figure_at;
+  /* Frame-scratch size labels of the Scene overlay. */
+  VkrEditorMeasureLabel measure_labels[VKR_EDITOR_MEASURE_LABEL_MAX];
+  uint32_t measure_label_count;
   /* The palette's stairs kind (SceneStairsKind), which way turning
      stairs turn, and whether corridors curve through their points. */
   uint32_t stairs_kind;
@@ -600,9 +630,9 @@ typedef struct VkrEditorUi {
   /* The role (index into vkr_editor_brush_roles) of the next brush the
      Create path, box drawing or the stairs tool makes. */
   uint32_t brush_role;
-  /* Its material, an index into vkr_editor_brush_materials: the palette's
-     last swatch. */
-  uint32_t brush_material;
+  /* Its surface tag and mark (vkr_surface.h): the palette's last picks. */
+  VkrSurface brush_surface;
+  VkrSurfaceMark brush_mark;
   uint32_t terrain_mode;
   float32_t terrain_radius;
   float32_t terrain_strength;

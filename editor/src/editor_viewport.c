@@ -90,6 +90,8 @@ typedef enum ViewShowTarget {
   /* Collision shapes: `value` is the display mode the row selects. */
   VIEW_SHOW_COLLISION,
   VIEW_SHOW_PHYSICS,
+  /* The player's capsule at the pointer (scale_figure). */
+  VIEW_SHOW_SCALE_FIGURE,
 } ViewShowTarget;
 
 static const struct {
@@ -123,6 +125,7 @@ static const struct {
     {"Collision of the selection", VIEW_SHOW_COLLISION, 1},
     {"Collision of all bodies", VIEW_SHOW_COLLISION, 2},
     {"Physics simulation", VIEW_SHOW_PHYSICS, 0},
+    {"Scale figure", VIEW_SHOW_SCALE_FIGURE, 0},
 };
 
 static const char *const view_snap_targets[VKR_EDITOR_SNAP_COUNT] = {
@@ -183,8 +186,8 @@ static void view_speed_text(float32_t speed, char text[24]) {
   snprintf(text, 24, "%.3g", (double)speed);
 }
 
-static Vec2 view_text_size(const VkrUiSystem *ui, VkrFontHandle font_handle,
-                           const char *text, float32_t size) {
+Vec2 vkr_editor_text_size(const VkrUiSystem *ui, VkrFontHandle font_handle,
+                          const char *text, float32_t size) {
   VkrFont *font = vkr_font_system_get_by_handle(ui->fonts, font_handle);
   if (!font) {
     font = vkr_font_system_get_by_handle(ui->fonts, ui->default_font);
@@ -288,8 +291,8 @@ static float32_t view_chip_width(const VkrUiSystem *ui, const char *text,
       VIEW_CHIP_PAD_PT * 2.0f + VIEW_CHIP_ICON_PT + 6.0f + VIEW_CHIP_CARET_PT;
   if (compact)
     return frame;
-  return ceilf(view_text_size(ui, VKR_FONT_HANDLE_INVALID, text,
-                              vkr_ui_theme()->font_body)
+  return ceilf(vkr_editor_text_size(ui, VKR_FONT_HANDLE_INVALID, text,
+                                    vkr_ui_theme()->font_body)
                    .x) +
          frame + 6.0f;
 }
@@ -372,14 +375,21 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
                i ? "  (orthographic)" : "");
     }
     break;
-  case VIEW_POPUP_RENDER:
+  case VIEW_POPUP_RENDER: {
     for (uint32_t i = 0; i < ArrayCount(view_render_modes); ++i) {
       ViewRow *row = &rows[count++];
       *row =
           (ViewRow){.checked = state->render_mode == view_render_modes[i].mode};
       snprintf(row->text, sizeof(row->text), "%s", view_render_modes[i].name);
     }
+    /* Brush faces in their surfaces' greybox looks, over any material. */
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text), "Level design");
+    ViewRow *greybox = &rows[count++];
+    *greybox = (ViewRow){.checked = state->greybox_view};
+    snprintf(greybox->text, sizeof(greybox->text), "Greybox");
     break;
+  }
   case VIEW_POPUP_GRID:
     for (uint32_t i = 0; i < ArrayCount(view_grid_rows); ++i) {
       ViewRow *row = &rows[count++];
@@ -474,6 +484,9 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
         row->checked =
             frame->scene && !vkr_scene_physics_is_disabled(frame->scene);
         row->disabled = !frame->scene;
+        break;
+      case VIEW_SHOW_SCALE_FIGURE:
+        row->checked = editor->scale_figure;
         break;
       }
     }
@@ -643,8 +656,8 @@ static void view_popup_layout(VkrEditorUi *editor,
     height += view_row_height(&rows[i]);
     if (rows[i].kind == VIEW_ROW_OPTION) {
       const float32_t text =
-          ceilf(view_text_size(frame->ui, VKR_FONT_HANDLE_INVALID, rows[i].text,
-                               vkr_ui_theme()->font_body)
+          ceilf(vkr_editor_text_size(frame->ui, VKR_FONT_HANDLE_INVALID,
+                                     rows[i].text, vkr_ui_theme()->font_body)
                     .x);
       width = Max(width, text + 10.0f + 16.0f + 14.0f + 12.0f);
     }
@@ -1008,39 +1021,24 @@ static void viewport_brush_draw(VkrEditorUi *editor,
 const char *const vkr_editor_brush_roles[] = {"solid", "visual", "clip",
                                               "trigger", NULL};
 
-const VkrEditorBrushMaterial
-    vkr_editor_brush_materials[VKR_EDITOR_BRUSH_MATERIAL_COUNT] = {
-        {"Grid", VKR_SCENE_BRUSH_DEFAULT_MATERIAL},
-        {"Floor", "assets/materials/dev/dev_floor.mt"},
-        {"Wall", "assets/materials/dev/dev_wall.mt"},
-        {"Orange", "assets/materials/dev/dev_orange.mt"},
-        {"Blue", "assets/materials/dev/dev_blue.mt"},
-        {"Clip", "assets/materials/dev/dev_clip.mt"},
-        {"Trigger", "assets/materials/dev/dev_trigger.mt"},
-        {"Concrete", "assets/materials/dev/dev_concrete.mt"},
-        {"Metal", "assets/materials/dev/dev_metal.mt"},
-        {"Dark", "assets/materials/dev/dev_dark.mt"},
-        {"Tile", "assets/materials/dev/dev_tile.mt"},
-        {"Wood", "assets/materials/dev/dev_wood.mt"},
-        {"Hazard", "assets/materials/dev/dev_hazard.mt"},
-        {"Red", "assets/materials/dev/dev_red.mt"},
-        {"Green", "assets/materials/dev/dev_green.mt"},
-        {"Light", "assets/materials/dev/dev_light.mt"},
-};
-
 void vkr_editor_brush_style(const VkrEditorUi *editor, char *out,
                             uint64_t size) {
   const uint32_t role = editor->brush_role;
-  const uint32_t material = editor->brush_material;
-  /* The default material is what a brush without one shows. */
-  if (role > 1u || material == 0u ||
-      material >= VKR_EDITOR_BRUSH_MATERIAL_COUNT) {
-    snprintf(out, size, "\"role\":\"%s\"", vkr_editor_brush_roles[role]);
-    return;
+  int written =
+      snprintf(out, size, "\"role\":\"%s\"", vkr_editor_brush_roles[role]);
+  if (editor->brush_surface != VKR_SURFACE_NONE &&
+      (uint32_t)editor->brush_surface < VKR_SURFACE_COUNT && written > 0 &&
+      (uint64_t)written < size) {
+    written +=
+        snprintf(out + written, size - (uint64_t)written, ",\"surface\":\"%s\"",
+                 vkr_surface_names[editor->brush_surface]);
   }
-  snprintf(out, size, "\"role\":\"%s\",\"material\":\"%s\"",
-           vkr_editor_brush_roles[role],
-           vkr_editor_brush_materials[material].path);
+  if (editor->brush_mark != VKR_SURFACE_MARK_NONE &&
+      (uint32_t)editor->brush_mark < VKR_SURFACE_MARK_COUNT && written > 0 &&
+      (uint64_t)written < size) {
+    (void)snprintf(out + written, size - (uint64_t)written, ",\"mark\":\"%s\"",
+                   vkr_surface_mark_names[editor->brush_mark]);
+  }
 }
 
 VkrEditorSceneTool vkr_editor_scene_tool(const VkrEditorUi *editor) {
@@ -1052,6 +1050,9 @@ VkrEditorSceneTool vkr_editor_scene_tool(const VkrEditorUi *editor) {
   }
   if (editor->terrain_tool) {
     return VKR_EDITOR_SCENE_TOOL_TERRAIN;
+  }
+  if (editor->measure_tool) {
+    return VKR_EDITOR_SCENE_TOOL_MEASURE;
   }
   return editor->path_tool;
 }
@@ -1075,6 +1076,9 @@ void vkr_editor_scene_tool_set(VkrEditorUi *editor, VkrEditorSceneTool tool) {
                           ? tool
                           : VKR_EDITOR_SCENE_TOOL_NONE;
   editor->path_count = 0u;
+  editor->measure_tool = tool == VKR_EDITOR_SCENE_TOOL_MEASURE;
+  editor->measure_count = 0u;
+  editor->measure_hover_valid = false_v;
 }
 
 /* The `container` argument of an operation that creates in the container
@@ -1096,8 +1100,8 @@ static bool8_t viewport_target(const VkrSampleUiFrame *frame, char *out,
 }
 
 /* Creates the box the brush tool outlined through brush.box, in the
-   container new objects go to, with the palette's brush role and
-   material. */
+   container new objects go to, with the palette's brush role, surface
+   and mark. */
 void vkr_editor_brush_draft_box(const VkrEditorUi *editor, Vec3 *out_lo,
                                 Vec3 *out_hi) {
   const Vec3 a = editor->brush_draw_start;
@@ -1444,7 +1448,7 @@ static void viewport_face_tools(VkrEditorUi *editor,
       editor->cmd_active || editor->menu != VKR_EDITOR_MENU_NONE ||
       (editor->brush_draw &&
        (editor->brush_dragging || editor->brush_raising)) ||
-      editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE) {
+      editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE || editor->measure_tool) {
     editor->face_dragging = false_v;
     editor->face_handle_hot = -1;
     vkr_editor_brush_grid_update(editor, frame, NULL, VKR_ENTITY_ID_INVALID,
@@ -1707,12 +1711,8 @@ static void viewport_path_tool(VkrEditorUi *editor,
         editor, editor->path_points[0], editor->path_current, direction, &yaw);
     char style[160];
     vkr_editor_brush_style(editor, style, sizeof(style));
-    if (editor->brush_material > 0u &&
-        editor->brush_material < VKR_EDITOR_BRUSH_MATERIAL_COUNT &&
-        editor->brush_role <= 1u) {
-      snprintf(shape.material, sizeof(shape.material), "%s",
-               vkr_editor_brush_materials[editor->brush_material].path);
-    }
+    shape.surface = editor->brush_surface;
+    shape.mark = editor->brush_mark;
     char values[4096];
     if (!vkr_editor_ops_component_text(&vkr_scene_blockout_type, &shape, values,
                                        sizeof(values))) {
@@ -1791,6 +1791,125 @@ static void viewport_path_tool(VkrEditorUi *editor,
   editor->path_count = 0u;
 }
 
+/* The surface point under window pixel `pixel`: the nearest solid the ray
+   meets, as brush drawing finds it, else the grid plane. With `snap` each
+   coordinate moves to the nearest grid step. `out_normal`, when given,
+   receives the surface's normal, straight up on the grid plane. */
+static bool8_t viewport_surface_point(const VkrSampleUiFrame *frame, Vec2 pixel,
+                                      bool8_t snap, Vec3 *out,
+                                      Vec3 *out_normal) {
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  VkrPhysicsRayHit hit = {0};
+  Vec3 point = {0};
+  Vec3 normal = vec3_new(0.0f, 1.0f, 0.0f);
+  if (viewport_ray(frame, pixel, &origin, &direction) &&
+      place_raycast_frame(frame, origin, vec3_scale(direction, 1000.0f),
+                          &hit)) {
+    point = vec3_new(hit.position[0], hit.position[1], hit.position[2]);
+    normal = vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
+  } else if (!brush_plane_point(frame, pixel, frame->view_state.grid_height,
+                                false_v, &point)) {
+    return false_v;
+  }
+  if (snap) {
+    const float32_t cell = frame->view_state.grid_spacing > 0.0f
+                               ? frame->view_state.grid_spacing
+                               : 1.0f;
+    for (uint32_t a = 0; a < 3u; ++a) {
+      point.elements[a] = roundf(point.elements[a] / cell) * cell;
+    }
+  }
+  *out = point;
+  if (out_normal) {
+    *out_normal = normal;
+  }
+  return true_v;
+}
+
+/* The measure tool: a click sets the first point on the surface under the
+   pointer, the next click the second, and a third starts over; Shift snaps
+   each point to the grid. The Scene overlay draws the line and its
+   reading (editor_physics.c). Escape clears the measurement, then turns
+   the tool off. */
+static void viewport_measure_tool(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  editor->measure_hover_valid = false_v;
+  if (!editor->measure_tool || frame->scene_rendering_stopped ||
+      frame->mouse_captured) {
+    return;
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  (void)vkr_ui_input_layer_register(
+      ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
+      (VkrUiRect){image.x, image.y, image.z, image.w});
+  if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
+    if (editor->measure_count) {
+      editor->measure_count = 0u;
+    } else {
+      vkr_editor_scene_tool_set(editor, VKR_EDITOR_SCENE_TOOL_NONE);
+    }
+    return;
+  }
+  if (!editor->scene_pointer_free) {
+    return;
+  }
+  const bool8_t shift = input_is_key_down(frame->input, KEY_SHIFT) ||
+                        input_is_key_down(frame->input, KEY_LSHIFT) ||
+                        input_is_key_down(frame->input, KEY_RSHIFT);
+  const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
+  Vec3 point = {0};
+  if (!viewport_surface_point(frame, mouse, shift, &point, NULL)) {
+    return;
+  }
+  editor->measure_hover = point;
+  editor->measure_hover_valid = true_v;
+  if (!ui->mouse_pressed || editor->menu != VKR_EDITOR_MENU_NONE) {
+    return;
+  }
+  if (editor->measure_count == 1u) {
+    editor->measure_points[1] = point;
+    editor->measure_count = 2u;
+    return;
+  }
+  editor->measure_points[0] = point;
+  editor->measure_count = 1u;
+}
+
+/* The scale figure stands on the surface under the pointer while it rests
+   over the Scene, and hides while a button is held, as during a gizmo or
+   face drag, or while the camera flies. On a wall it stands a radius out
+   from the wall. */
+static void viewport_scale_figure(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame) {
+  editor->scale_figure_valid = false_v;
+  if (!editor->scale_figure || !editor->scene_pointer_free ||
+      frame->scene_rendering_stopped || editor->face_dragging ||
+      input_is_button_down(frame->input, BUTTON_LEFT) ||
+      input_is_button_down(frame->input, BUTTON_RIGHT) ||
+      input_is_button_down(frame->input, BUTTON_MIDDLE)) {
+    return;
+  }
+  const Vec2 mouse = {(float32_t)frame->ui->mouse_x,
+                      (float32_t)frame->ui->mouse_y};
+  Vec3 point = {0};
+  Vec3 normal = {0};
+  if (!viewport_surface_point(frame, mouse, false_v, &point, &normal)) {
+    return;
+  }
+  if (normal.y < 0.5f) {
+    const Vec3 out = vec3_new(normal.x, 0.0f, normal.z);
+    const float32_t length = vec3_length(out);
+    if (length > 1.0e-3f) {
+      const float32_t radius = vkr_editor_level_capsule_default().radius;
+      point = vec3_add(point, vec3_scale(out, radius / length));
+    }
+  }
+  editor->scale_figure_at = point;
+  editor->scale_figure_valid = true_v;
+}
+
 /* One line under the Scene's centre that says what the running tool does
    with the next click. */
 static void viewport_tool_hint(const VkrEditorUi *editor,
@@ -1824,6 +1943,15 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
                       : "Release where the stairs end. Esc cancels.")
                : "Drag from where the stairs start toward where they go, or "
                  "click to place them facing away. Esc stops.";
+    break;
+  case VKR_EDITOR_SCENE_TOOL_MEASURE:
+    hint = editor->measure_count == 1u
+               ? "Click the second point; Shift snaps it to the grid. Esc "
+                 "cancels."
+           : editor->measure_count
+               ? "Click to start a new measurement. Esc clears it."
+               : "Click a surface to measure from; Shift snaps to the grid. "
+                 "Esc stops.";
     break;
   case VKR_EDITOR_SCENE_TOOL_CORRIDOR:
     hint = editor->path_count >= 2u
@@ -1929,6 +2057,8 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
 
   viewport_clip_tool(editor, frame);
   viewport_path_tool(editor, frame);
+  viewport_measure_tool(editor, frame);
+  viewport_scale_figure(editor, frame);
   /* Face handles find the one under the pointer before drawing reads it, so
      a press on a handle drags the face instead of starting a box. */
   viewport_face_tools(editor, frame);
@@ -2027,6 +2157,9 @@ static void view_show_activate(VkrEditorUi *editor,
   case VIEW_SHOW_PHYSICS:
     *frame->transport_action = VKR_SAMPLE_TRANSPORT_TOGGLE_PHYSICS;
     break;
+  case VIEW_SHOW_SCALE_FIGURE:
+    editor->scale_figure = !editor->scale_figure;
+    break;
   case VIEW_SHOW_HEADER:
   case VIEW_SHOW_ICON_DISTANCE:
   case VIEW_SHOW_ICON_DISTANCE_SLIDER:
@@ -2068,8 +2201,15 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
     next->camera_view = (VkrSampleCameraView)index;
     return false_v;
   case VIEW_POPUP_RENDER:
-    next->render_mode = view_render_modes[index].mode;
-    return false_v;
+    /* Rows: the render modes, then a header and the greybox view. */
+    if (index < ArrayCount(view_render_modes)) {
+      next->render_mode = view_render_modes[index].mode;
+      return false_v;
+    }
+    if (index == ArrayCount(view_render_modes) + 1u) {
+      next->greybox_view = !next->greybox_view;
+    }
+    return true_v;
   case VIEW_POPUP_GRID:
     if (index == 0) {
       next->grid_enabled = !next->grid_enabled;
@@ -2612,7 +2752,8 @@ static Vec2 grid_label_size(const VkrEditorUi *editor, const VkrUiSystem *ui,
                             uint32_t ordinal, bool8_t number) {
   char text[24];
   grid_label_text(text, Max(1u, ordinal), number);
-  const Vec2 measured = view_text_size(ui, editor->heading_font, text, 10);
+  const Vec2 measured =
+      vkr_editor_text_size(ui, editor->heading_font, text, 10);
   return (Vec2){ceilf(measured.x) + 8, ceilf(measured.y) + 4};
 }
 
