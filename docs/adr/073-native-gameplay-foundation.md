@@ -148,7 +148,11 @@ character step (`vkr_physics_character_step`) moves a grounded character
 against a moving body as if the body stood still, then carries it through
 the body's motion over the coming world step, turned about the body's
 center of mass and moved by its velocities, which a kinematic target set
-earlier in the same tick already holds (ADR-084). The player keeps its
+earlier in the same tick already holds (ADR-084). After each world step
+scene physics drives every kinematic body toward the target it reached, so
+a body that gets no new target, as a mover at rest, carries nothing the
+next tick; keeping the arriving step's velocity had carried a player one
+more tick of travel along a tram that had stopped. The player keeps its
 offset on a deck exactly while the deck sets off, rides, climbs, descends,
 turns and stops; stepping against the deck's pose before the step had
 floated it a tick's descent above a lowering lift, and reading last tick's
@@ -175,8 +179,10 @@ floor turning 90 degrees a second carries a player a quarter turn round and
 turns its yaw by -pi/2, within 1 mm and 1e-3 rad; that a player's offset on
 a tram deck at 8 m/s changes less than 1 mm in any tick and, drawn at half
 ticks, stays within 1 mm of the drawn deck; that it stays grounded within
-5 mm of a 1.5 m/s lift deck up and down; and that a jump on the tram lands
-within 2 cm of its takeoff point on the deck. After native physics it consumes a reserved shot fact and applies a
+5 mm of a 1.5 m/s lift deck up and down; that a jump on the tram lands
+within 2 cm of its takeoff point on the deck; and that on a looping 8 m/s
+tram mover the IO router steps, out and back with each leg ending mid-tick,
+running or single-stepped, its offset changes less than 1 mm in any tick. After native physics it consumes a reserved shot fact and applies a
 hit impulse. Motor and animation failures retain their specific diagnostic.
 One pending shot slot is sufficient for the example's six-tick fire
 interval. This is a single-player client, not the proposed multi-shooter damage

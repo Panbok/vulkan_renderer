@@ -926,9 +926,11 @@ instead of a cell, at most 32 hulls; the hulls stay in world space at rest
 and the body's kinematic target is the mover's motion from rest, its
 carriers' included, a turn and then a world offset
 (`vkr_scene_physics_generated_move` turns about the pivot in the body's
-rebased frame). Setting a target while the clock runs drives the body at
-once, so a character stepped later in the same tick, before the world step,
-rides this tick's motion: the character step carries a grounded character
+rebased frame). Setting a target while the clock runs, or during a single
+step, drives the body at once, so a character stepped later in the same
+tick, before the world step, rides this tick's motion, and after the step
+the body is driven toward the target it reached, so it rests until a new
+one: the character step carries a grounded character
 with its moving ground (ADR-073). A trigger brush under a
 mover owns a kinematic sensor that the same motion moves
 (`vkr_scene_brush_mover_move`), so a trigger riding a lift moves with it
