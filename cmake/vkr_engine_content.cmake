@@ -23,8 +23,9 @@ set(VKR_ENGINE_INCLUDE
     assets/fonts/UbuntuMono-R.ttf.license.md
     assets/fonts/UbuntuMono-Bold.ttf.license.md
     assets/fonts/Inter-OFL.txt
-    # Dev grid materials brush faces use by default
-    # (docs/proposals/level-design-toolkit.md).
+    # Dev grid materials brush faces use by default and every material of
+    # the editor's brush palette (editor_viewport.c), since a level built
+    # from the palette names them all (docs/proposals/level-design-toolkit.md).
     assets/materials/dev/dev_grid.mt
     assets/materials/dev/dev_floor.mt
     assets/materials/dev/dev_wall.mt
@@ -32,6 +33,16 @@ set(VKR_ENGINE_INCLUDE
     assets/materials/dev/dev_blue.mt
     assets/materials/dev/dev_trigger.mt
     assets/materials/dev/dev_clip.mt
+    assets/materials/dev/dev_decal.mt
+    assets/materials/dev/dev_concrete.mt
+    assets/materials/dev/dev_metal.mt
+    assets/materials/dev/dev_dark.mt
+    assets/materials/dev/dev_tile.mt
+    assets/materials/dev/dev_wood.mt
+    assets/materials/dev/dev_hazard.mt
+    assets/materials/dev/dev_red.mt
+    assets/materials/dev/dev_green.mt
+    assets/materials/dev/dev_light.mt
     ${VKR_MANNEQUIN_INCLUDE})
 set(VKR_ENGINE_FILES
     ${VKR_ENGINE_INCLUDE}
