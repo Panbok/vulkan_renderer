@@ -63,6 +63,13 @@ padding, shelf-packed tallest first; a brush whose atlas would pass 1,024
 texels halves its density. The bake and the runtime compute the same UVs
 from the same planes, so brushes need no cooked lightmap data.
 
+A blockout shape (stairs, corridors; ADR-084) has no lightmap at runtime, so
+the bake builds its pieces from `vkr_blockout_layout` and `vkr_brush_hull`
+as occluding and bouncing geometry without a lightmap instance; the diffuse
+volume lights it. A brush under a `mover` still bakes as a static brush at
+its saved pose: it occludes and takes a lightmap there, which is stale once
+the mover moves.
+
 ### Layout
 
 [`vkr_bake_lightmap.h`](../../tools/bake/vkr_bake_lightmap.h) gives every

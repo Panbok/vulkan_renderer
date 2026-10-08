@@ -513,8 +513,8 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
   VkrBakeScene scene(allocator);
   VkrBakeSceneError error;
   if (!vkr_bake_scene_load(&scene, options.scene, &error)) {
-    std::fprintf(stderr, "Scene preparation failed (error %u): %s\n",
-                 (unsigned)error, options.scene);
+    std::fprintf(stderr, "Scene preparation failed (error %u): %s: %s\n",
+                 (unsigned)error, options.scene, scene.diagnostic.c_str());
     return 1;
   }
   // Resolve aliases before any output can replace a source used by the bake.

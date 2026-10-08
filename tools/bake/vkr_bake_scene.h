@@ -107,12 +107,16 @@ struct VkrBakeScene {
   VkrSubsurfaceProfile subsurface_profiles[VKR_SUBSURFACE_PROFILE_COUNT] = {};
   uint32_t subsurface_profile_count = 0u;
   VkrBakeTextureStore *texture_store = nullptr;
+  /* Why the last load failed: the step and, when one is at fault, the entity
+     (index, name and id) and its block or file. Empty after a load succeeds. */
+  std::string diagnostic;
 };
 
 /*
  * Fully prepares `scene`: all paths are read, geometry is flattened to world
  * space, and all material texture dependencies are resident in texture_store.
- * It never starts workers. On failure it leaves `scene` empty and releasable.
+ * It never starts workers. On failure it leaves `scene` empty and releasable,
+ * with `scene->diagnostic` naming the cause.
  * A scene without geometry loads with no triangles; the caller decides
  * whether it can bake one.
  */

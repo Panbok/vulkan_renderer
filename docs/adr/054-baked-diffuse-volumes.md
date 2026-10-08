@@ -47,7 +47,13 @@ the far side of walls; volumes and lightmaps baked before then need a rebake,
 which `--check` does not report. The bake scene loader builds every
 solid or visual brush from its `brush_face` children as the runtime does
 ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), with the face
-material or the dev grid, and keeps each entity's document id. It reads the
+material or the dev grid, and keeps each entity's document id. It builds
+each blockout shape's pieces as the runtime does, as geometry without a
+lightmap (ADR-088). It finds an entity block by key at the entity's root or
+in its `components` object, never inside another block, so a blockout's
+`shape` field is not a `shape` block; components the bake does not read are
+ignored. A failed load prints the entity (index, name, id) and the block or
+file at fault after `Scene preparation failed`. It reads the
 `atmosphere`, `environment` and `subsurface` blocks at the top level of the
 document only; when the scene has no `atmosphere` or `environment` block of
 its own, the effective scene takes the component of the scene's own entities

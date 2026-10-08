@@ -4,11 +4,13 @@ extern "C" {
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
 #include "core/vkr_hash.h"
+#include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 }
 #include "bake/vkr_bake_lightmap.h"
 #include "bake/vkr_bake_material.h"
 #include "bake/vkr_bake_mesh_decode.h"
+#include "bake/vkr_bake_scene.h"
 #include "mesh_cooked_tests.h"
 
 #include <assert.h>
@@ -17,6 +19,7 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 
+#include <string>
 #include <vector>
 
 /* Packing, texel rasterization and the cooked-mesh path into them (ADR-087).
@@ -24,7 +27,8 @@ extern "C" {
  * a texel's world position lies on the surface its UVs came from, and every
  * texel is claimed once. Page composition keeps each rectangle's fill inside
  * it, the page encoding keeps HDR values above one, and a lightmap set file
- * round-trips while a corrupted payload or malformed table is rejected. */
+ * round-trips while a corrupted payload or malformed table is rejected. A
+ * scene's blockout stairs load as bake geometry. */
 
 namespace {
 
@@ -599,6 +603,74 @@ void test_bake_material_accepts_roughness_bound() {
   remove(path);
 }
 
+void write_text_file(const char *path, const char *text) {
+  FILE *file = fopen(path, "wb");
+  assert(file);
+  fputs(text, file);
+  fclose(file);
+}
+
+/* A level's blockout stairs (ADR-084) are bake geometry: a `blockout`
+   component whose own "shape" field names the shape kind loads, and its four
+   steps become four 1 x 0.25 x 0.5 boxes (48 triangles) inside the stairs'
+   world box, with no lightmap instance since shapes take none. A malformed
+   brush face fails the load with a diagnostic naming its entity. */
+void test_bake_scene_builds_blockout_stairs() {
+  FilePath directory = {};
+  directory.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp");
+  directory.type = FILE_PATH_TYPE_ABSOLUTE;
+  assert(file_create_directory(&directory));
+  const char *material = PROJECT_SOURCE_DIR "tests/tmp/bake_scene_stairs.mt";
+  const char *path = PROJECT_SOURCE_DIR "tests/tmp/bake_scene_stairs.json";
+  write_text_file(material, "type=pbr\nbase_color=0.5,0.5,0.5,1\n");
+  const std::string stairs =
+      std::string("{\"version\": 2, \"entities\": [{\"id\": "
+                  "\"5620aaab-efb9-4e0e-b03d-ca02384458b2\", \"name\": "
+                  "\"stairs\", \"parent\": null, \"transform\": {\"pos\": "
+                  "[10, 0, 0], \"rot\": [0, 0, 0, 1], \"scale\": [1, 1, 1]}, "
+                  "\"components\": {\"blockout\": {\"shape\": \"Stairs\", "
+                  "\"stairs\": \"Straight\", \"height\": 1, \"width\": 1, "
+                  "\"length\": 2, \"step_height\": 0.25, \"thickness\": 0, "
+                  "\"material\": \"") +
+      material + "\"}}}]}";
+  write_text_file(path, stairs.c_str());
+
+  Arena *arena = arena_create(MB(4), MB(4));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  {
+    VkrBakeScene scene(&allocator);
+    VkrBakeSceneError error = VkrBakeSceneError::None;
+    assert(vkr_bake_scene_load(&scene, path, &error));
+    assert(error == VkrBakeSceneError::None && scene.diagnostic.empty());
+    assert(scene.triangles.size() == 48u);
+    assert(scene.lightmap_instances.empty());
+    for (const VkrBakeTriangle &triangle : scene.triangles) {
+      for (const VkrBakeVertex &vertex : triangle.vertex) {
+        assert(vertex.position.x >= 9.5f - 1.0e-4f &&
+               vertex.position.x <= 10.5f + 1.0e-4f);
+        assert(vertex.position.y >= -1.0e-4f &&
+               vertex.position.y <= 1.0f + 1.0e-4f);
+        assert(vertex.position.z >= -1.0e-4f &&
+               vertex.position.z <= 2.0f + 1.0e-4f);
+      }
+    }
+
+    write_text_file(path, "{\"version\": 2, \"entities\": [{\"name\": "
+                          "\"bad_face\", \"parent\": null, \"components\": "
+                          "{\"brush_face\": {\"distance\": 1}}}]}");
+    assert(!vkr_bake_scene_load(&scene, path, &error));
+    assert(error == VkrBakeSceneError::Parse);
+    assert(scene.diagnostic.find("bad_face") != std::string::npos);
+    assert(scene.triangles.empty());
+  }
+  arena_destroy(arena);
+  remove(path);
+  remove(material);
+  printf("  test_bake_scene_builds_blockout_stairs PASSED\n");
+}
+
 } // namespace
 
 bool32_t run_lightmap_bake_tests(void) {
@@ -614,6 +686,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_diffuse_volume_layers_round_trip();
   test_lightmap_denoise_stays_on_surfaces();
   test_bake_material_accepts_roughness_bound();
+  test_bake_scene_builds_blockout_stairs();
   printf("--- Lightmap Bake Tests Completed ---\n");
   return true_v;
 }

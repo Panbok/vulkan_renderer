@@ -1088,11 +1088,14 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
   VkrBakeScene scene(allocator);
   VkrBakeSceneError scene_error;
   if (!vkr_bake_scene_load(&scene, options.scene, &scene_error)) {
-    std::fprintf(stderr, "Scene preparation failed (error %u): %s\n",
-                 (unsigned)scene_error, options.scene);
+    std::fprintf(stderr, "Scene preparation failed (error %u): %s: %s\n",
+                 (unsigned)scene_error, options.scene,
+                 scene.diagnostic.c_str());
     return 1;
   }
   if (scene.triangles.size() > VKR_BAKE_BVH_MAX_TRIANGLES) {
+    std::fprintf(stderr, "The scene has %zu triangles; a bake holds %u\n",
+                 scene.triangles.size(), VKR_BAKE_BVH_MAX_TRIANGLES);
     return 1;
   }
   VkrBakeBvh bvh = {};
