@@ -119,6 +119,9 @@ struct VkrEditorScenePanels {
   bool8_t container_collapsed[TREE_CONTAINER_COUNT];
   bool8_t rebuild;
   char search[192];
+  /* The shown containers' world revisions when a "#tag" search last built
+     the tree: a tag edit changes values, not structure. */
+  uint64_t tags_revision;
   float32_t hierarchy_scroll;
   /* Cooking marks follow the cooking revisions and the tree they were
      computed for, and refresh while cooking as models finish loading. */
@@ -148,6 +151,12 @@ struct VkrEditorScenePanels {
   char bone_filter[64];
   char error[128];
   bool8_t changed;
+  /* The Tags field (ADR-084), read from the selection's tags; it applies
+     when Enter is pressed or the field loses focus. */
+  char tags[SCENE_TAGS_CAPACITY];
+  bool8_t tags_changed;
+  /* The draft applies once no other Inspector edit is sent that build. */
+  bool8_t tags_apply;
   float32_t inspector_scroll;
   /* Measured content height of the previous Inspector build, in points. */
   float32_t inspector_height;
@@ -304,6 +313,56 @@ static bool8_t tree_type_matches(const VkrScene *scene, VkrEntityId entity,
   return false_v;
 }
 
+/* A search starting with '#' finds objects by their tags (ADR-084): each of
+   its words must begin one of the object's tags, in any case, so "#lab
+   #chair" finds a chair tagged #labs. */
+static bool8_t tree_tags_match(const VkrScene *scene, VkrEntityId entity,
+                               const char *search) {
+  const SceneTags *tags =
+      vkr_scene_get_typed(scene, entity, &vkr_scene_tags_type);
+  if (!tags) {
+    return false_v;
+  }
+  const char *at = search;
+  while (*at) {
+    if (*at == ' ' || *at == ',') {
+      ++at;
+      continue;
+    }
+    uint64_t length = 0u;
+    while (at[length] && at[length] != ' ' && at[length] != ',') {
+      ++length;
+    }
+    bool8_t found = false_v;
+    uint32_t cursor = 0u;
+    String8 tag = {0};
+    while (!found && vkr_scene_tags_next(tags, &cursor, &tag)) {
+      found = tag.length >= length;
+      for (uint64_t i = 0; found && i < length; ++i) {
+        found = tag.str[i] == tolower((unsigned char)at[i]);
+      }
+    }
+    if (!found) {
+      return false_v;
+    }
+    at += length;
+  }
+  return true_v;
+}
+
+/* Sum of the shown containers' world revisions, which every component value
+   edit, tags included, advances. */
+static uint64_t tree_world_revision(const VkrSampleUiFrame *frame) {
+  uint64_t revision = (frame->scene ? frame->scene->world_revision : 0u) +
+                      (frame->world ? frame->world->world_revision : 0u);
+  for (uint32_t i = 0u; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (frame->additive[i]) {
+      revision += frame->additive[i]->world_revision;
+    }
+  }
+  return revision;
+}
+
 static bool8_t rebuild_tree(VkrEditorScenePanels *p,
                             const VkrSampleUiFrame *frame) {
   TreeContainer containers[TREE_CONTAINER_COUNT];
@@ -401,8 +460,10 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
           vkr_entity_get_component(s->world, id, s->comp_transform);
       n->parent =
           tr && tr->parent.u64 ? base + 1u + tr->parent.parts.index : base;
-      n->match = contains(vkr_scene_get_name(s, id), p->search) ||
-                 tree_type_matches(s, id, p->search);
+      n->match = p->search[0] == '#'
+                     ? tree_tags_match(s, id, p->search)
+                     : contains(vkr_scene_get_name(s, id), p->search) ||
+                           tree_type_matches(s, id, p->search);
     }
     for (uint32_t i = slots; i-- > 0;) {
       const uint32_t index = base + 1u + i;
@@ -519,6 +580,7 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
     if (frame->additive[i])
       p->additive_structure_revision += frame->additive[i]->structure_revision;
   }
+  p->tags_revision = tree_world_revision(frame);
   p->rebuild = false_v;
   return true_v;
 }
@@ -674,6 +736,8 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_PENCIL_LINE;
   if (type == &vkr_scene_scatter_type)
     return VKR_UI_ICON_TREE;
+  if (type == &vkr_scene_tags_type)
+    return VKR_UI_ICON_TAG;
   if (vkr_scene_world_type_registered(type))
     return VKR_UI_ICON_CODE;
   return VKR_UI_ICON_LIGHT;
@@ -1373,10 +1437,12 @@ VkrUiIcon vkr_editor_entity_icon(const VkrScene *scene, VkrEntityId entity,
     return VKR_UI_ICON_TEXT;
   if (vkr_entity_get_component(world, entity, scene->comp_shape))
     return VKR_UI_ICON_SHAPES;
-  /* Scripts are tags on an object, shown beside it, never its icon. */
+  /* Scripts are tags on an object, shown beside it, never its icon; tags
+     only sort it. */
   const VkrTypeDesc *world_type = NULL;
   for (uint32_t i = 0; (world_type = vkr_scene_world_type(i)); ++i) {
     if (!vkr_scene_world_type_registered(world_type) &&
+        world_type != &vkr_scene_tags_type &&
         vkr_scene_get_typed(scene, entity, world_type)) {
       *out_color = (Vec4){0.62f, 0.78f, 0.98f, 1.0f};
       return vkr_editor_world_type_icon(world_type);
@@ -1630,6 +1696,7 @@ static String8 hierarchy_type_label(const VkrScene *scene, VkrEntityId entity,
   const VkrTypeDesc *type = NULL;
   for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
     if (!vkr_scene_world_type_registered(type) &&
+        type != &vkr_scene_tags_type &&
         vkr_scene_get_typed(scene, entity, type))
       return string8_create_from_cstr((const uint8_t *)type->label,
                                       strlen(type->label));
@@ -1787,7 +1854,8 @@ static void hierarchy_toolbar(VkrEditorUi *editor,
     p->rebuild |= vkr_editor_search_field(
         ui, string8_lit("hierarchy.search"), &search, placement,
         string8_lit("Search"),
-        string8_lit("Search scene nodes (matches keep their ancestors)"),
+        string8_lit("Search scene nodes by name or type, or by tags as "
+                    "#labs #chair (matches keep their ancestors)"),
         VKR_FONT_HANDLE_INVALID);
     VkrUiWidgetConfig add = vkr_editor_icon_button_config(
         1u, 0u, VKR_UI_ICON_PLUS_CIRCLE,
@@ -2530,6 +2598,7 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       (frame->world &&
        p->world_structure_revision != frame->world->structure_revision) ||
       tree_additive_changed(p, frame) ||
+      (p->search[0] == '#' && p->tags_revision != tree_world_revision(frame)) ||
       frame->selected_entity.u64 != p->revealed.u64) {
     if (!rebuild_tree(p, frame))
       return;
@@ -2810,6 +2879,18 @@ static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
     MemCopy(p->long_name, full_name.str, full_name.length);
     p->long_name[full_name.length] = 0;
   }
+  /* An unapplied Tags draft of the same object outlives another edit, as
+     the name edit its Enter also applied. */
+  const bool8_t keep_tags = p->tags_changed &&
+                            p->inspecting.u64 == f->selected_entity.u64 &&
+                            p->inspector_generation == f->scene_generation;
+  if (!keep_tags) {
+    const SceneTags *tags =
+        vkr_scene_get_typed(f->scene, f->selected_entity, &vkr_scene_tags_type);
+    snprintf(p->tags, sizeof(p->tags), "%s", tags ? tags->text : "");
+    p->tags_changed = false_v;
+    p->tags_apply = false_v;
+  }
   p->original_values = p->values;
   p->inspector_generation = f->scene_generation;
   p->inspecting = f->selected_entity;
@@ -2862,7 +2943,7 @@ static void inspector_clear_focus(VkrUiSystem *ui) {
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.scroll"));
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.fields"));
   const char *labels[] = {"name",  "visibility", "inherit", "apply", "revert",
-                          "frame", "undo",       "redo",    "save"};
+                          "frame", "undo",       "redo",    "save",  "tags"};
   for (uint32_t i = 0; i < ArrayCount(labels); ++i) {
     VkrUiId id = vkr_ui_id_stack_widget_label(
         &ui->id_stack, string8_create((uint8_t *)labels[i], strlen(labels[i])));
@@ -3914,8 +3995,10 @@ static bool8_t inspector_header(VkrEditorScenePanels *p,
   const VkrTypeDesc *world_type = NULL;
   for (uint32_t i = 0; !world_kind && (world_type = vkr_scene_world_type(i));
        ++i) {
-    /* The Script row names scripts; the kind is what the object is. */
+    /* The Script and Tags rows name scripts and tags; the kind is what the
+       object is. */
     if (!vkr_scene_world_type_registered(world_type) &&
+        world_type != &vkr_scene_tags_type &&
         vkr_scene_get_typed(f->scene, f->selected_entity, world_type))
       world_kind = world_type->label;
   }
@@ -4196,7 +4279,9 @@ static bool8_t inspector_world_sections(VkrEditorScenePanels *p,
   for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
     const void *current =
         vkr_scene_get_typed(f->scene, f->selected_entity, type);
-    if (!current || i >= ArrayCount(p->world_collapsed)) {
+    /* The Tags row edits tags. */
+    if (!current || i >= ArrayCount(p->world_collapsed) ||
+        type == &vkr_scene_tags_type) {
       continue;
     }
     (void)vkr_ui_push_id_u64(ui, 0x3b7d0000u + i);
@@ -4329,6 +4414,81 @@ static void inspector_script_row(VkrEditorUi *editor, VkrEditorScenePanels *p,
     (void)vkr_editor_code_open(editor->code, editor, source);
   }
   *y += 32.0f;
+}
+
+/* Tags (ADR-084): the selection's tags in one field, as "#labs #chair".
+   Returns whether the field has focus. */
+static bool8_t inspector_tags_row(VkrEditorScenePanels *p,
+                                  const VkrSampleUiFrame *f, float32_t w,
+                                  float32_t *y) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = f->ui;
+  const float32_t label_w = vkr_editor_details_label_width(w);
+  VkrUiWidgetConfig label =
+      widget_at(INSPECTOR_PAD_PT, *y + 4.0f, label_w - 4.0f, 26.0f);
+  label.placement.align = VKR_UI_ALIGN_START;
+  label.style.font_size_pt = theme->font_body;
+  label.style.text_color = theme->text_secondary;
+  label.style.padding_pt = (VkrUiEdges){5, 2, 5, 2};
+  vkr_ui_label(ui, string8_lit("tags.label"), string8_lit("Tags"), &label);
+  const float32_t field_x = INSPECTOR_PAD_PT + label_w;
+  const float32_t field_w = Max(40.0f, w - field_x - INSPECTOR_PAD_PT);
+  VkrUiWidgetConfig field = widget_at(field_x, *y + 4.0f, field_w, 26.0f);
+  vkr_editor_field_style(&field);
+  field.style.font_size_pt = theme->font_body;
+  field.style.padding_pt = (VkrUiEdges){4, 7, 4, 7};
+  field.tooltip = string8_lit("Tags to find this object by, such as #labs "
+                              "#chair; search the Outliner with #chair "
+                              "(Enter applies, Escape reverts)");
+  VkrUiTextEditBuffer text = {(uint8_t *)p->tags, (uint32_t)strlen(p->tags),
+                              sizeof(p->tags)};
+  p->tags_changed |= vkr_ui_text_field(ui, string8_lit("tags"), &text, &field);
+  const bool8_t focused =
+      ui->focused_id ==
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("tags"));
+  if (!p->tags[0] && !focused) {
+    VkrUiWidgetConfig hint =
+        vkr_editor_text_config(theme->font_body, theme->text_disabled);
+    hint.placement = field.placement;
+    hint.placement.align = VKR_UI_ALIGN_START;
+    hint.style.min_size_pt = hint.style.max_size_pt = (Vec2){field_w, 26.0f};
+    hint.style.padding_pt = (VkrUiEdges){4, 7, 4, 7};
+    vkr_ui_label(ui, string8_lit("tags.hint"), string8_lit("#area #kind"),
+                 &hint);
+  }
+  *y += 32.0f;
+  return focused;
+}
+
+/* The request that gives the selection the Tags field's tags: an add, a set
+   or, for no tags, a removal of its tags component. False when the text is
+   invalid, with the reason in the Inspector error, or changes nothing. */
+static bool8_t inspector_tags_request(VkrEditorScenePanels *p,
+                                      const VkrSampleUiFrame *f,
+                                      VkrSceneEditRequest *out) {
+  SceneTags tags;
+  if (!vkr_scene_tags_parse(
+          string8_create_from_cstr((const uint8_t *)p->tags, strlen(p->tags)),
+          &tags, p->error, sizeof(p->error))) {
+    return false_v;
+  }
+  p->error[0] = 0;
+  const SceneTags *current =
+      vkr_scene_get_typed(f->scene, f->selected_entity, &vkr_scene_tags_type);
+  snprintf(p->tags, sizeof(p->tags), "%s", tags.text);
+  if (current ? strcmp(current->text, tags.text) == 0 : !tags.text[0]) {
+    return false_v;
+  }
+  *out = (VkrSceneEditRequest){.entity = f->selected_entity};
+  out->values.component_type = &vkr_scene_tags_type;
+  if (!tags.text[0]) {
+    out->action = VKR_SCENE_EDIT_REMOVE_COMPONENT;
+    return true_v;
+  }
+  MemCopy(out->values.component, &tags, sizeof(tags));
+  out->action = current ? VKR_SCENE_EDIT_APPLY : VKR_SCENE_EDIT_ADD_COMPONENT;
+  out->values.fields = current ? VKR_SCENE_EDIT_COMPONENT : 0u;
+  return true_v;
 }
 
 /* Opens the list of live component types the selection can take. */
@@ -4541,6 +4701,12 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
   p->physics_dragging = false_v;
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.fields"));
   field_focus |= inspector_header(p, f, w, &y, heading);
+  /* World entities such as fog or the sky have no placement, and parts
+     (brush faces, connections) follow their owner. */
+  const bool8_t part = vkr_scene_entity_is_part(f->scene, f->selected_entity);
+  /* A part is found through its owner, which carries the tags. */
+  const bool8_t tags_focus = !part && inspector_tags_row(p, f, w, &y);
+  field_focus |= tags_focus;
   if (p->error[0]) {
     c = widget_at(INSPECTOR_PAD_PT, y, w - INSPECTOR_PAD_PT * 2, 36);
     c.style.background_color = vkr_ui_color_alpha(theme->error, 0.14f);
@@ -4559,9 +4725,6 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
     y += 42;
   }
   vkr_editor_details_error(&p->details, ui, w, &y);
-  /* World entities such as fog or the sky have no placement, and parts
-     (brush faces, connections) follow their owner. */
-  const bool8_t part = vkr_scene_entity_is_part(f->scene, f->selected_entity);
   if (tr && !part)
     field_focus |=
         inspector_transform_section(p, f, w, &y, heading, tr, &component_edit);
@@ -4655,24 +4818,40 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
     return;
   }
 
-  /* Name, visibility and physics drafts: Escape reverts; Enter or leaving
-   * the field commits; toggles apply at once. */
+  /* Name, tags, visibility and physics drafts: Escape reverts; Enter or
+   * leaving the field commits; toggles apply at once. */
   if (field_focus && pressed(f->input, KEY_ESCAPE)) {
+    p->tags_changed = false_v;
     inspector_read(p, f);
     return;
   }
+  if (p->tags_changed && (!tags_focus || pressed(f->input, KEY_ENTER))) {
+    p->tags_apply = true_v;
+  }
   const bool8_t commit = p->changed && !p->physics_dragging &&
                          (!field_focus || pressed(f->input, KEY_ENTER));
+  bool8_t requested = false_v;
   if (commit) {
     VkrSceneEditValues values;
     if (inspector_parse(p, &values)) {
-      if (values.fields)
+      if (values.fields) {
         *f->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_APPLY,
                                                .entity = f->selected_entity,
                                                .values = values};
-      else
+        requested = true_v;
+      } else {
         inspector_read(p, f);
+      }
       p->changed = false_v;
+    }
+  }
+  /* One request per build: tags wait a build behind a name edit. */
+  if (p->tags_apply && !requested) {
+    p->tags_apply = false_v;
+    p->tags_changed = false_v;
+    VkrSceneEditRequest request;
+    if (inspector_tags_request(p, f, &request)) {
+      *f->scene_edit = request;
     }
   }
 }

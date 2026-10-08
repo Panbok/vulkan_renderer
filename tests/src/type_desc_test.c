@@ -552,6 +552,90 @@ static void test_type_migrate(VkrAllocator *allocator) {
       &read, allocator, error, sizeof(error)));
 }
 
+static bool8_t test_tags_parse(const char *text, SceneTags *out) {
+  char error[128] = {0};
+  const bool8_t ok = vkr_scene_tags_parse(
+      string8_create_from_cstr((const uint8_t *)text, strlen(text)), out, error,
+      sizeof(error));
+  /* A refusal always says why. */
+  assert(ok || error[0]);
+  return ok;
+}
+
+/* Tags (ADR-084): typed text becomes one canonical form, over-limit or
+   malformed text is refused instead of cut, and documents hold only the
+   canonical form, so a filter can compare tags byte for byte. */
+static void test_scene_tags(VkrAllocator *allocator) {
+  printf("  Running test_scene_tags...\n");
+  SceneTags tags;
+  assert(test_tags_parse("Labs, #CHAIR  #labs\tchair_2 a-b", &tags));
+  assert(strcmp(tags.text, "#labs #chair #chair_2 #a-b") == 0);
+  assert(vkr_scene_tags_has(&tags, string8_lit("#chair")));
+  assert(!vkr_scene_tags_has(&tags, string8_lit("#chai")));
+  assert(!vkr_scene_tags_has(&tags, string8_lit("chair")));
+  assert(test_tags_parse("  ", &tags) && tags.text[0] == '\0');
+
+  /* A refusal leaves the previous value. */
+  assert(test_tags_parse("#kept", &tags));
+  static const char *const refused[] = {
+      "#",                                  /* no name */
+      "#lab#s",                             /* '#' inside */
+      "#caf\xc3\xa9",                       /* outside a-z */
+      "#a.b",                               /* punctuation */
+      "#abcdefghijklmnopqrstuvwxyz0123456", /* 33 characters */
+  };
+  for (uint32_t i = 0; i < ArrayCount(refused); ++i) {
+    assert(!test_tags_parse(refused[i], &tags));
+    assert(strcmp(tags.text, "#kept") == 0);
+  }
+  assert(test_tags_parse("#abcdefghijklmnopqrstuvwxyz012345", &tags));
+
+  /* Sixteen tags fit, repeats do not count, a seventeenth is refused. */
+  char many[256] = {0};
+  for (uint32_t i = 0; i < 16u; ++i) {
+    snprintf(many + strlen(many), sizeof(many) - strlen(many), "#t%u ", i);
+  }
+  snprintf(many + strlen(many), sizeof(many) - strlen(many), "#t3 T7");
+  assert(test_tags_parse(many, &tags));
+  assert(strncmp(tags.text, "#t0 #t1 ", 8u) == 0);
+  snprintf(many + strlen(many), sizeof(many) - strlen(many), " #t16");
+  assert(!test_tags_parse(many, &tags));
+
+  /* Sixteen tags of the longest length fit the stored capacity. */
+  char longest[SCENE_TAGS_CAPACITY * 2u] = {0};
+  for (uint32_t i = 0; i < 16u; ++i) {
+    snprintf(longest + strlen(longest), sizeof(longest) - strlen(longest),
+             "#%02uabcdefghijklmnopqrstuvwxyz0123 ", i);
+  }
+  assert(test_tags_parse(longest, &tags));
+  assert(strlen(tags.text) == 16u * 34u - 1u);
+
+  /* Documents hold canonical text only. */
+  char error[128];
+  SceneTags read = {0};
+  assert(vkr_type_read_json_document(string8_lit("{\"tags\":\"#labs #chair\"}"),
+                                     &vkr_scene_tags_type, &read, allocator,
+                                     error, sizeof(error)));
+  assert(strcmp(read.text, "#labs #chair") == 0);
+  static const char *const noncanonical[] = {
+      "{\"tags\":\"#Labs\"}",         /* uppercase */
+      "{\"tags\":\"labs\"}",          /* no '#' */
+      "{\"tags\":\"#labs  #chair\"}", /* two spaces */
+      "{\"tags\":\"#labs #labs\"}",   /* repeat */
+      "{\"tags\":\" #labs\"}",        /* leading space */
+      "{\"tags\":\"#labs,#chair\"}",  /* comma */
+  };
+  for (uint32_t i = 0; i < ArrayCount(noncanonical); ++i) {
+    error[0] = 0;
+    assert(!vkr_type_read_json_document(
+        string8_create_from_cstr((const uint8_t *)noncanonical[i],
+                                 strlen(noncanonical[i])),
+        &vkr_scene_tags_type, &read, allocator, error, sizeof(error)));
+    assert(error[0] && strcmp(read.text, "#labs #chair") == 0);
+  }
+  printf("  test_scene_tags PASSED\n");
+}
+
 bool32_t run_type_desc_tests(void) {
   printf("--- Starting Type Descriptor Tests ---\n");
   VkrDMemory memory;
@@ -564,6 +648,7 @@ bool32_t run_type_desc_tests(void) {
   test_graphics_preferences_type();
   test_light_types();
   test_type_migrate(&allocator);
+  test_scene_tags(&allocator);
   vkr_dmemory_destroy(&memory);
   printf("--- Type Descriptor Tests completed. ---\n");
   return true_v;

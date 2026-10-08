@@ -448,6 +448,19 @@ typedef struct SceneIoConnection {
   uint32_t limit;
 } SceneIoConnection;
 
+/* Tags that sort an entity into categories a designer or agent finds it by
+ * later, as "#labs #chair" (ADR-084). Stored canonical: each tag is '#' and 1
+ * to SCENE_TAG_LENGTH_MAX characters of [a-z0-9_-], tags are separated by
+ * one space, none repeats and at most SCENE_TAG_COUNT_MAX are kept, so the
+ * capacity always holds the longest canonical text. */
+#define SCENE_TAG_COUNT_MAX 16u
+#define SCENE_TAG_LENGTH_MAX 32u
+#define SCENE_TAGS_CAPACITY (SCENE_TAG_COUNT_MAX * (SCENE_TAG_LENGTH_MAX + 2u))
+
+typedef struct SceneTags {
+  char text[SCENE_TAGS_CAPACITY];
+} SceneTags;
+
 /**
  * Authored shape values (ADR-076), a typed component. Setting it rebuilds
  * the entity's generated geometry and mesh; removing it releases them.

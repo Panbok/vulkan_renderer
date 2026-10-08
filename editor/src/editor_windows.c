@@ -2520,9 +2520,10 @@ static uint32_t editor_context_component_items(VkrEditorUi *editor,
   for (uint32_t i = 0; (type = vkr_scene_world_type(i)) &&
                        eligible_count < ArrayCount(eligible);
        ++i) {
+    /* Details' Tags row adds and removes tags. */
     if (vkr_scene_world_type_live(type) &&
         !vkr_scene_world_type_registered(type) &&
-        vkr_scene_type_allowed(scene, type) &&
+        type != &vkr_scene_tags_type && vkr_scene_type_allowed(scene, type) &&
         !vkr_scene_get_typed(scene, editor->context_entity, type)) {
       eligible[eligible_count++] = i;
     }

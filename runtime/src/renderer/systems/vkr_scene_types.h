@@ -62,6 +62,9 @@ extern const VkrTypeDesc vkr_scene_timer_type;
 extern const VkrTypeDesc vkr_scene_counter_type;
 extern const VkrTypeDesc vkr_scene_mover_type;
 extern const VkrTypeDesc vkr_scene_io_connection_type;
+/** Tags (ADR-084): categories an object is found by; validation accepts
+    only canonical text (SceneTags). */
+extern const VkrTypeDesc vkr_scene_tags_type;
 /** Read-only SceneMeshInfo rows; not a component type. */
 extern const VkrTypeDesc vkr_scene_mesh_info_type;
 
@@ -70,6 +73,21 @@ extern const VkrTypeDesc vkr_scene_mesh_info_type;
 const char *vkr_scene_text_font_name(uint32_t font);
 
 ScenePostProcess vkr_scene_post_process_defaults(void);
+
+/** Canonical tags from typed text: words split at spaces, tabs, line breaks
+ * or commas, each lowercased and given a '#' when it lacks one, repeats
+ * dropped, in first-seen order; empty text gives no tags. Fails, writing why
+ * to `error` when set and leaving `out` unchanged, for a word with a
+ * character outside [a-z0-9_-] after its '#', a '#' alone, a tag longer than
+ * SCENE_TAG_LENGTH_MAX or more than SCENE_TAG_COUNT_MAX tags. */
+bool8_t vkr_scene_tags_parse(String8 text, SceneTags *out, char *error,
+                             uint32_t capacity);
+/** Whether canonical `tags` hold the canonical tag `tag`, '#' included. */
+bool8_t vkr_scene_tags_has(const SceneTags *tags, String8 tag);
+/** The tag after `*cursor` (start at zero), borrowed from `tags`; false
+ * past the last. */
+bool8_t vkr_scene_tags_next(const SceneTags *tags, uint32_t *cursor,
+                            String8 *out);
 
 /** World component types by index, stored and edited generically; NULL past
  * the end. */

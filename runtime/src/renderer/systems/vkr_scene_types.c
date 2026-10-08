@@ -2749,6 +2749,166 @@ const VkrTypeDesc vkr_scene_io_connection_type = {
 };
 
 // =============================================================================
+// Tags (ADR-084)
+// =============================================================================
+
+static bool8_t tags_separator(uint8_t c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',';
+}
+
+static bool8_t tags_character(uint8_t c) {
+  return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' ||
+         c == '-';
+}
+
+bool8_t vkr_scene_tags_next(const SceneTags *tags, uint32_t *cursor,
+                            String8 *out) {
+  uint32_t at = *cursor;
+  while (at < SCENE_TAGS_CAPACITY && tags->text[at] == ' ') {
+    ++at;
+  }
+  if (at >= SCENE_TAGS_CAPACITY || !tags->text[at]) {
+    *cursor = at;
+    return false_v;
+  }
+  uint32_t end = at;
+  while (end < SCENE_TAGS_CAPACITY && tags->text[end] &&
+         tags->text[end] != ' ') {
+    ++end;
+  }
+  *out = string8_create((uint8_t *)&tags->text[at], end - at);
+  *cursor = end;
+  return true_v;
+}
+
+bool8_t vkr_scene_tags_has(const SceneTags *tags, String8 tag) {
+  uint32_t cursor = 0u;
+  String8 held = {0};
+  while (vkr_scene_tags_next(tags, &cursor, &held)) {
+    if (held.length == tag.length &&
+        MemCompare(held.str, tag.str, tag.length) == 0) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_scene_tags_parse(String8 text, SceneTags *out, char *error,
+                             uint32_t capacity) {
+  SceneTags tags = {0};
+  uint32_t length = 0u;
+  uint32_t count = 0u;
+  uint64_t at = 0u;
+  while (at < text.length) {
+    if (tags_separator(text.str[at])) {
+      ++at;
+      continue;
+    }
+    uint64_t end = at;
+    while (end < text.length && !tags_separator(text.str[end])) {
+      ++end;
+    }
+    const String8 word = string8_create(text.str + at, end - at);
+    const uint64_t start = text.str[at] == '#' ? at + 1u : at;
+    const uint64_t name_length = end - start;
+    if (!name_length) {
+      if (error) {
+        snprintf(error, capacity, "A tag needs a name after '#'");
+      }
+      return false_v;
+    }
+    if (name_length > SCENE_TAG_LENGTH_MAX) {
+      if (error) {
+        snprintf(error, capacity, "Tag '%.*s' is longer than %u characters",
+                 (int)word.length, word.str, SCENE_TAG_LENGTH_MAX);
+      }
+      return false_v;
+    }
+    char tag[SCENE_TAG_LENGTH_MAX + 1u];
+    tag[0] = '#';
+    for (uint64_t i = 0; i < name_length; ++i) {
+      uint8_t c = text.str[start + i];
+      if (c >= 'A' && c <= 'Z') {
+        c = (uint8_t)(c - 'A' + 'a');
+      }
+      if (!tags_character(c)) {
+        if (error) {
+          snprintf(error, capacity,
+                   "Tag '%.*s' may hold only a-z, 0-9, _ and - after its '#'",
+                   (int)word.length, word.str);
+        }
+        return false_v;
+      }
+      tag[1u + i] = (char)c;
+    }
+    const String8 canonical =
+        string8_create((uint8_t *)tag, (uint64_t)name_length + 1u);
+    at = end;
+    if (vkr_scene_tags_has(&tags, canonical)) {
+      continue;
+    }
+    if (count == SCENE_TAG_COUNT_MAX) {
+      if (error) {
+        snprintf(error, capacity, "An object holds at most %u tags",
+                 SCENE_TAG_COUNT_MAX);
+      }
+      return false_v;
+    }
+    if (length) {
+      tags.text[length++] = ' ';
+    }
+    MemCopy(&tags.text[length], canonical.str, canonical.length);
+    length += (uint32_t)canonical.length;
+    ++count;
+  }
+  *out = tags;
+  return true_v;
+}
+
+/* Stored tags are canonical, so every reader compares them byte for byte. */
+static bool8_t tags_validate(const void *value, char *error,
+                             uint32_t capacity) {
+  const SceneTags *tags = value;
+  SceneTags canonical;
+  if (!vkr_scene_tags_parse(
+          string8_create_from_cstr((const uint8_t *)tags->text,
+                                   strlen(tags->text)),
+          &canonical, error, capacity)) {
+    return false_v;
+  }
+  if (strcmp(canonical.text, tags->text) != 0) {
+    if (error) {
+      snprintf(error, capacity,
+               "Tags are stored lowercase with a '#', one space apart and "
+               "without repeats, as \"%s\"",
+               canonical.text);
+    }
+    return false_v;
+  }
+  return true_v;
+}
+
+static const VkrPropertyDesc s_tags_properties[] = {
+    {.name = "tags",
+     .label = "Tags",
+     .tooltip = "Categories to find this object by, as #labs #chair",
+     .offset = TYPE_OFFSET(SceneTags, text),
+     .capacity = SCENE_TAGS_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+};
+
+const VkrTypeDesc vkr_scene_tags_type = {
+    .name = "tags",
+    .label = "Tags",
+    .category = "Level",
+    .properties = s_tags_properties,
+    .property_count = ArrayCount(s_tags_properties),
+    .size = sizeof(SceneTags),
+    .align = _Alignof(SceneTags),
+    .validate = tags_validate,
+};
+
+// =============================================================================
 // World partition (ADR-086)
 // =============================================================================
 
@@ -3382,6 +3542,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_free_placement_type,
     &vkr_scene_blockout_type,
     &vkr_scene_mover_type,
+    &vkr_scene_tags_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -3459,5 +3620,5 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_world_partition_type ||
          type == &vkr_scene_always_loaded_type ||
          type == &vkr_scene_free_placement_type ||
-         type == &vkr_scene_blockout_type;
+         type == &vkr_scene_blockout_type || type == &vkr_scene_tags_type;
 }

@@ -1347,6 +1347,228 @@ static void ops_op_result(OpsBatch *batch, const OpsRef *ref) {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Tags (ADR-084)
+// -----------------------------------------------------------------------------
+
+/* Canonical tags from one tag argument: a string of tags or an array of
+   strings. False with an error when malformed or over a limit. */
+static bool8_t ops_tags_arg(OpsContext *ctx, const VkrBakeryJson *value,
+                            const char *key, SceneTags *out) {
+  String8 text = {0};
+  if (value->type == VKR_BAKERY_JSON_STRING) {
+    text = value->string;
+  } else if (value->type == VKR_BAKERY_JSON_ARRAY) {
+    uint64_t length = 1u;
+    for (const VkrBakeryJson *part = value->first; part; part = part->next) {
+      if (part->type != VKR_BAKERY_JSON_STRING) {
+        return ops_fail(ctx, OPS_INVALID, "'%s' holds only strings", key);
+      }
+      length += part->string.length + 1u;
+    }
+    uint8_t *joined =
+        arena_alloc(ops_arena(ctx), length, ARENA_MEMORY_TAG_STRING);
+    if (!joined) {
+      return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    }
+    for (const VkrBakeryJson *part = value->first; part; part = part->next) {
+      MemCopy(joined + text.length, part->string.str, part->string.length);
+      text.length += part->string.length;
+      joined[text.length++] = ' ';
+    }
+    text.str = joined;
+  } else {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'%s' is a string of tags or an array of tags", key);
+  }
+  char error[160] = {0};
+  if (!vkr_scene_tags_parse(text, out, error, sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "'%s': %s", key, error);
+  }
+  return true_v;
+}
+
+static VkrBakeryJson *ops_tags_json(OpsContext *ctx, const SceneTags *tags) {
+  VkrBakeryJson *array = vkr_bakery_json_array(ops_arena(ctx));
+  uint32_t cursor = 0u;
+  String8 tag = {0};
+  while (tags && vkr_scene_tags_next(tags, &cursor, &tag)) {
+    vkr_bakery_json_append(array, ops_string(ctx, tag));
+  }
+  return array;
+}
+
+/* The tags `ref` holds after the batch's earlier edits: its creation's or
+   the scene's, then each later tags edit of the batch. Returns the batch
+   values that hold them, or NULL when the scene holds them or none do. */
+static VkrSceneEditValues *ops_tags_view(OpsContext *ctx, const OpsBatch *batch,
+                                         const OpsRef *ref, SceneTags *out,
+                                         bool8_t *present) {
+  VkrSceneEditValues *holder = NULL;
+  MemZero(out, sizeof(*out));
+  *present = false_v;
+  uint32_t first = 0u;
+  if (ref->item >= 0) {
+    VkrSceneEditValues *made = &ctx->ops->items[ref->item].request.values;
+    if ((made->fields & VKR_SCENE_EDIT_COMPONENT) &&
+        made->component_type == &vkr_scene_tags_type) {
+      MemCopy(out, made->component, sizeof(*out));
+      *present = true_v;
+      holder = made;
+    }
+    first = (uint32_t)ref->item + 1u;
+  } else {
+    const SceneTags *held =
+        vkr_scene_get_typed(ops_scene(ctx->frame, ref->container), ref->entity,
+                            &vkr_scene_tags_type);
+    if (held) {
+      *out = *held;
+      *present = true_v;
+    }
+  }
+  for (uint32_t i = first; batch && i < batch->count; ++i) {
+    VkrSampleEditBatchItem *item = &ctx->ops->items[i];
+    VkrSceneEditValues *values = &item->request.values;
+    if (!ops_item_names(item, ref) ||
+        values->component_type != &vkr_scene_tags_type) {
+      continue;
+    }
+    const VkrSceneEditAction action = item->request.action;
+    if (action == VKR_SCENE_EDIT_ADD_COMPONENT ||
+        (action == VKR_SCENE_EDIT_APPLY &&
+         (values->fields & VKR_SCENE_EDIT_COMPONENT))) {
+      MemCopy(out, values->component, sizeof(*out));
+      *present = true_v;
+      holder = values;
+    } else if (action == VKR_SCENE_EDIT_REMOVE_COMPONENT) {
+      MemZero(out, sizeof(*out));
+      *present = false_v;
+      holder = NULL;
+    }
+  }
+  return holder;
+}
+
+/* Gives `ref` exactly `tags`: rewrites the batch edit that already holds
+   its tags, or adds, sets or removes its tags component. No tags remove
+   it. */
+static bool8_t ops_tags_write(OpsContext *ctx, OpsBatch *batch,
+                              const OpsRef *ref, const SceneTags *tags) {
+  SceneTags current;
+  bool8_t present = false_v;
+  VkrSceneEditValues *holder =
+      ops_tags_view(ctx, batch, ref, &current, &present);
+  const bool8_t empty = !tags->text[0];
+  if (present ? !empty && strcmp(current.text, tags->text) == 0 : empty) {
+    return true_v;
+  }
+  if (holder && !empty) {
+    MemCopy(holder->component, tags, sizeof(*tags));
+    return true_v;
+  }
+  /* A creation without a component of its own carries the tags itself. */
+  if (ref->item >= 0) {
+    VkrSceneEditValues *made = &ctx->ops->items[ref->item].request.values;
+    if (!empty && !(made->fields & VKR_SCENE_EDIT_COMPONENT)) {
+      made->fields |= VKR_SCENE_EDIT_COMPONENT;
+      made->component_type = &vkr_scene_tags_type;
+      MemCopy(made->component, tags, sizeof(*tags));
+      return true_v;
+    }
+    if (empty && holder == made) {
+      made->fields &= ~(uint32_t)VKR_SCENE_EDIT_COMPONENT;
+      made->component_type = NULL;
+      return true_v;
+    }
+  }
+  const VkrSceneEditAction action = empty     ? VKR_SCENE_EDIT_REMOVE_COMPONENT
+                                    : present ? VKR_SCENE_EDIT_APPLY
+                                              : VKR_SCENE_EDIT_ADD_COMPONENT;
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, ref->container, action);
+  if (!item) {
+    return false_v;
+  }
+  ops_item_target(item, ref);
+  item->request.values.component_type = &vkr_scene_tags_type;
+  if (!empty) {
+    MemCopy(item->request.values.component, tags, sizeof(*tags));
+  }
+  if (action == VKR_SCENE_EDIT_APPLY) {
+    item->request.values.fields = VKR_SCENE_EDIT_COMPONENT;
+  }
+  return true_v;
+}
+
+static bool8_t ops_tags_given(const VkrBakeryJson *args) {
+  return vkr_bakery_json_get(args, "tags") ||
+         vkr_bakery_json_get(args, "tags_add") ||
+         vkr_bakery_json_get(args, "tags_remove");
+}
+
+/* An operation's `tags` (the whole set), then `tags_add` and `tags_remove`,
+   over the tags `ref` holds after the batch's earlier edits. */
+static bool8_t ops_tags_args(OpsContext *ctx, const VkrBakeryJson *args,
+                             OpsBatch *batch, const OpsRef *ref) {
+  if (!ops_tags_given(args)) {
+    return true_v;
+  }
+  if (ref->item < 0 &&
+      vkr_scene_entity_is_part(ops_scene(ctx->frame, ref->container),
+                               ref->entity)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "A brush face or connection belongs to its owner; tag "
+                    "the owner");
+  }
+  SceneTags tags;
+  bool8_t present = false_v;
+  (void)ops_tags_view(ctx, batch, ref, &tags, &present);
+  const VkrBakeryJson *replace = vkr_bakery_json_get(args, "tags");
+  const VkrBakeryJson *add = vkr_bakery_json_get(args, "tags_add");
+  const VkrBakeryJson *remove = vkr_bakery_json_get(args, "tags_remove");
+  if (replace && !ops_tags_arg(ctx, replace, "tags", &tags)) {
+    return false_v;
+  }
+  if (add) {
+    SceneTags added;
+    if (!ops_tags_arg(ctx, add, "tags_add", &added)) {
+      return false_v;
+    }
+    /* Parsing both again drops repeats and applies the count limit. */
+    char joined[2u * SCENE_TAGS_CAPACITY];
+    const int32_t length =
+        snprintf(joined, sizeof(joined), "%s %s", tags.text, added.text);
+    char error[160] = {0};
+    if (!vkr_scene_tags_parse(
+            string8_create((uint8_t *)joined, (uint64_t)Max(length, 0)), &tags,
+            error, sizeof(error))) {
+      return ops_fail(ctx, OPS_INVALID, "'tags_add': %s", error);
+    }
+  }
+  if (remove) {
+    SceneTags removed;
+    if (!ops_tags_arg(ctx, remove, "tags_remove", &removed)) {
+      return false_v;
+    }
+    SceneTags kept = {0};
+    uint32_t length = 0u;
+    uint32_t cursor = 0u;
+    String8 tag = {0};
+    while (vkr_scene_tags_next(&tags, &cursor, &tag)) {
+      if (vkr_scene_tags_has(&removed, tag)) {
+        continue;
+      }
+      if (length) {
+        kept.text[length++] = ' ';
+      }
+      MemCopy(&kept.text[length], tag.str, tag.length);
+      length += (uint32_t)tag.length;
+    }
+    tags = kept;
+  }
+  return ops_tags_write(ctx, batch, ref, &tags);
+}
+
 static bool8_t ops_validate_values(OpsContext *ctx,
                                    const VkrSceneEditValues *values) {
   if ((values->fields & VKR_SCENE_EDIT_COMPONENT) && values->component_type) {
@@ -1395,7 +1617,8 @@ static bool8_t ops_read_pose(OpsContext *ctx, const VkrBakeryJson *args,
   return true_v;
 }
 
-/* entity.create: a new entity with a pose and optionally one component. */
+/* entity.create: a new entity with a pose and optionally one component and
+   tags. */
 static bool8_t ops_build_create(OpsContext *ctx, const VkrBakeryJson *args,
                                 OpsBatch *batch) {
   OpsRef parent = {.item = -1};
@@ -1456,12 +1679,16 @@ static bool8_t ops_build_create(OpsContext *ctx, const VkrBakeryJson *args,
       values->fields |= VKR_SCENE_EDIT_COMPONENT;
     }
   }
-  batch->op_item[batch->op_count] = batch->count - 1u;
-  return ops_validate_values(ctx, values);
+  const OpsRef created = {.item = (int32_t)(batch->count - 1u),
+                          .container = container};
+  batch->op_item[batch->op_count] = (uint32_t)created.item;
+  /* Tags may add an edit, which can move the batch's items. */
+  return ops_validate_values(ctx, values) &&
+         ops_tags_args(ctx, args, batch, &created);
 }
 
-/* entity.set: name, pose or visibility of one entity. A batch creation takes
-   the change into its own values. */
+/* entity.set: name, pose, visibility or tags of one entity. A batch creation
+   takes the change into its own values. */
 static bool8_t ops_build_set(OpsContext *ctx, const VkrBakeryJson *args,
                              OpsBatch *batch) {
   OpsRef ref;
@@ -1484,10 +1711,10 @@ static bool8_t ops_build_set(OpsContext *ctx, const VkrBakeryJson *args,
     values.visibility.inherit_parent = true_v;
     values.fields |= VKR_SCENE_EDIT_VISIBILITY;
   }
-  if (!values.fields) {
+  if (!values.fields && !ops_tags_given(args)) {
     return ops_fail(ctx, OPS_INVALID,
-                    "entity.set needs name, position, rotation, scale or "
-                    "visible");
+                    "entity.set needs name, position, rotation, scale, "
+                    "visible, tags, tags_add or tags_remove");
   }
   if ((values.fields & VKR_SCENE_EDIT_TRANSFORM) && ref.item < 0 &&
       vkr_scene_get_typed(ops_scene(ctx->frame, ref.container), ref.entity,
@@ -1496,24 +1723,29 @@ static bool8_t ops_build_set(OpsContext *ctx, const VkrBakeryJson *args,
                     "A brush face moves with its brush; set its plane with "
                     "component.set brush_face");
   }
-  if (!ops_validate_values(ctx, &values)) {
-    return false_v;
-  }
   if (ref.item >= 0) {
-    values.fields |= created_fields;
-    ctx->ops->items[ref.item].request.values = values;
     batch->op_item[batch->op_count] = (uint32_t)ref.item;
-    return true_v;
+  } else {
+    batch->op_target[batch->op_count] = ref.entity;
   }
-  VkrSampleEditBatchItem *item =
-      ops_batch_add(ctx, batch, ref.container, VKR_SCENE_EDIT_APPLY);
-  if (!item) {
-    return false_v;
+  if (values.fields) {
+    if (!ops_validate_values(ctx, &values)) {
+      return false_v;
+    }
+    if (ref.item >= 0) {
+      values.fields |= created_fields;
+      ctx->ops->items[ref.item].request.values = values;
+    } else {
+      VkrSampleEditBatchItem *item =
+          ops_batch_add(ctx, batch, ref.container, VKR_SCENE_EDIT_APPLY);
+      if (!item) {
+        return false_v;
+      }
+      ops_item_target(item, &ref);
+      item->request.values = values;
+    }
   }
-  ops_item_target(item, &ref);
-  item->request.values = values;
-  batch->op_target[batch->op_count] = ref.entity;
-  return true_v;
+  return ops_tags_args(ctx, args, batch, &ref);
 }
 
 /* Appends deletes for `entity` and, with `recursive`, its descendants first. */
@@ -5210,31 +5442,85 @@ static bool8_t ops_under(const VkrScene *scene, VkrEntityId entity,
   return false_v;
 }
 
+/* The entities a read lists: those of one container, optionally under
+   `root`, overlapping a world `region` and carrying every tag of `tags`. */
+typedef struct OpsSelection {
+  uint16_t container;
+  OpsRef root;
+  bool8_t region;
+  Vec3 region_min;
+  Vec3 region_max;
+  SceneTags tags;
+} OpsSelection;
+
+static bool8_t ops_selection_read(OpsContext *ctx, const VkrBakeryJson *args,
+                                  OpsSelection *out) {
+  MemZero(out, sizeof(*out));
+  out->root.item = -1;
+  const VkrBakeryJson *root_value = vkr_bakery_json_get(args, "root");
+  if (root_value) {
+    if (!ops_ref(ctx, NULL, root_value, "root", &out->root)) {
+      return false_v;
+    }
+    out->container = out->root.container;
+  } else if (!ops_arg_container(ctx, args, &out->container)) {
+    return false_v;
+  }
+  const VkrBakeryJson *region = vkr_bakery_json_get(args, "region");
+  if (region && (region->type != VKR_BAKERY_JSON_OBJECT ||
+                 !ops_arg_vec3(ctx, region, "min", &out->region_min, NULL) ||
+                 !ops_arg_vec3(ctx, region, "max", &out->region_max, NULL))) {
+    return ctx->call->error_code
+               ? false_v
+               : ops_fail(ctx, OPS_INVALID,
+                          "'region' is {\"min\": [..], \"max\": [..]}");
+  }
+  out->region = region != NULL;
+  const VkrBakeryJson *tags = vkr_bakery_json_get(args, "tags");
+  return !tags || ops_tags_arg(ctx, tags, "tags", &out->tags);
+}
+
+/* Whether the selection holds `entity`, with its world bounds when it has
+   them. */
+static bool8_t ops_selection_has(const VkrScene *scene,
+                                 const OpsSelection *selection,
+                                 VkrEntityId entity, Vec3 *lo, Vec3 *hi,
+                                 bool8_t *bounded) {
+  if (selection->root.entity.u64 &&
+      !ops_under(scene, entity, selection->root.entity)) {
+    return false_v;
+  }
+  if (selection->tags.text[0]) {
+    const SceneTags *held =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_tags_type);
+    uint32_t cursor = 0u;
+    String8 tag = {0};
+    while (vkr_scene_tags_next(&selection->tags, &cursor, &tag)) {
+      if (!held || !vkr_scene_tags_has(held, tag)) {
+        return false_v;
+      }
+    }
+  }
+  *bounded = ops_world_bounds(scene, entity, lo, hi);
+  if (selection->region) {
+    const SceneTransform *transform = ops_transform(scene, entity);
+    const Vec3 at = transform ? mat4_position(transform->world) : vec3_zero();
+    return *bounded ? ops_in_box(*lo, *hi, selection->region_min,
+                                 selection->region_max)
+                    : ops_in_box(at, at, selection->region_min,
+                                 selection->region_max);
+  }
+  return true_v;
+}
+
 static VkrEditorOpStatus ops_run_describe(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
   Arena *arena = ops_arena(ctx);
-  uint16_t container = 0u;
-  OpsRef root = {.item = -1};
-  const VkrBakeryJson *root_value = vkr_bakery_json_get(args, "root");
-  if (root_value) {
-    if (!ops_ref(ctx, NULL, root_value, "root", &root)) {
-      return VKR_EDITOR_OP_DONE;
-    }
-    container = root.container;
-  } else if (!ops_arg_container(ctx, args, &container)) {
+  OpsSelection selection;
+  if (!ops_selection_read(ctx, args, &selection)) {
     return VKR_EDITOR_OP_DONE;
   }
-  Vec3 box_min = {0};
-  Vec3 box_max = {0};
-  const VkrBakeryJson *region = vkr_bakery_json_get(args, "region");
-  if (region && (region->type != VKR_BAKERY_JSON_OBJECT ||
-                 !ops_arg_vec3(ctx, region, "min", &box_min, NULL) ||
-                 !ops_arg_vec3(ctx, region, "max", &box_max, NULL))) {
-    if (!ctx->call->error_code) {
-      ops_fail(ctx, OPS_INVALID, "'region' is {\"min\": [..], \"max\": [..]}");
-    }
-    return VKR_EDITOR_OP_DONE;
-  }
+  const uint16_t container = selection.container;
   float64_t offset_value = 0.0;
   float64_t limit_value = OPS_DESCRIBE_DEFAULT;
   (void)ops_arg_number(args, "offset", &offset_value);
@@ -5250,20 +5536,14 @@ static VkrEditorOpStatus ops_run_describe(OpsContext *ctx) {
   for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
     const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
     if (!vkr_scene_entity_alive(scene, entity) ||
-        (root.entity.u64 && !ops_under(scene, entity, root.entity)) ||
         (!faces && vkr_scene_entity_is_part(scene, entity))) {
       continue;
     }
     Vec3 lo = {0};
     Vec3 hi = {0};
-    const bool8_t bounded = ops_world_bounds(scene, entity, &lo, &hi);
-    const SceneTransform *transform = ops_transform(scene, entity);
-    if (region) {
-      const Vec3 at = transform ? mat4_position(transform->world) : vec3_zero();
-      if (!(bounded ? ops_in_box(lo, hi, box_min, box_max)
-                    : ops_in_box(at, at, box_min, box_max))) {
-        continue;
-      }
+    bool8_t bounded = false_v;
+    if (!ops_selection_has(scene, &selection, entity, &lo, &hi, &bounded)) {
+      continue;
     }
     if (matched++ < offset || matched > offset + limit) {
       continue;
@@ -5276,6 +5556,11 @@ static VkrEditorOpStatus ops_run_describe(OpsContext *ctx) {
     ops_set(ctx, row, "parent", ops_id(ctx, ops_parent(scene, entity)));
     ops_set(ctx, row, "components",
             ops_component_names(ctx, scene, entity, &values));
+    const SceneTags *tags =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_tags_type);
+    if (tags && tags->text[0]) {
+      ops_set(ctx, row, "tags", ops_tags_json(ctx, tags));
+    }
     if (values.fields & VKR_SCENE_EDIT_TRANSFORM) {
       float32_t euler[3];
       vkr_property_quat_euler(values.rotation, euler);
@@ -5422,9 +5707,115 @@ static VkrEditorOpStatus ops_run_get(OpsContext *ctx) {
     }
   }
   ops_set(ctx, result, "components", components);
+  ops_set(ctx, result, "tags",
+          ops_tags_json(ctx, vkr_scene_get_typed(scene, ref.entity,
+                                                 &vkr_scene_tags_type)));
   if (vkr_scene_get_typed(scene, ref.entity, &vkr_scene_brush_type)) {
     ops_set(ctx, result, "brush", ops_brush_summary(ctx, scene, ref.entity));
   }
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+static int ops_tag_compare(const void *a, const void *b) {
+  const String8 *left = a;
+  const String8 *right = b;
+  const int order =
+      MemCompare(left->str, right->str, Min(left->length, right->length));
+  return order
+             ? order
+             : (left->length > right->length) - (left->length < right->length);
+}
+
+/* One tag and the entities carrying it, for tag.list. */
+typedef struct OpsTagCount {
+  String8 tag;
+  uint32_t count;
+} OpsTagCount;
+
+static int ops_tag_count_compare(const void *a, const void *b) {
+  const OpsTagCount *left = a;
+  const OpsTagCount *right = b;
+  if (left->count != right->count) {
+    return left->count > right->count ? -1 : 1;
+  }
+  return ops_tag_compare(&left->tag, &right->tag);
+}
+
+/* tag.list: every tag the selected entities carry, most used first. */
+static VkrEditorOpStatus ops_run_tag_list(OpsContext *ctx) {
+  Arena *arena = ops_arena(ctx);
+  OpsSelection selection;
+  if (!ops_selection_read(ctx, ctx->call->args, &selection)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, selection.container);
+  const uint32_t tagged =
+      vkr_scene_find_typed(scene, &vkr_scene_tags_type, NULL, 0u);
+  const uint64_t capacity = (uint64_t)tagged * SCENE_TAG_COUNT_MAX;
+  String8 *held = capacity ? arena_alloc(arena, capacity * sizeof(*held),
+                                         ARENA_MEMORY_TAG_ARRAY)
+                           : NULL;
+  if (capacity && !held) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  uint64_t count = 0u;
+  for (uint32_t i = 0; capacity && i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    const SceneTags *tags =
+        vkr_scene_entity_alive(scene, entity)
+            ? vkr_scene_get_typed(scene, entity, &vkr_scene_tags_type)
+            : NULL;
+    Vec3 lo = {0};
+    Vec3 hi = {0};
+    bool8_t bounded = false_v;
+    if (!tags ||
+        !ops_selection_has(scene, &selection, entity, &lo, &hi, &bounded)) {
+      continue;
+    }
+    uint32_t cursor = 0u;
+    String8 tag = {0};
+    while (count < capacity && vkr_scene_tags_next(tags, &cursor, &tag)) {
+      held[count++] = tag;
+    }
+  }
+  /* Sorted, equal tags are neighbours: one entry per run. */
+  if (count) {
+    qsort(held, count, sizeof(*held), ops_tag_compare);
+  }
+  OpsTagCount *counts = count ? arena_alloc(arena, count * sizeof(*counts),
+                                            ARENA_MEMORY_TAG_ARRAY)
+                              : NULL;
+  if (count && !counts) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  uint64_t distinct = 0u;
+  for (uint64_t i = 0; i < count; ++i) {
+    if (distinct &&
+        ops_tag_compare(&counts[distinct - 1u].tag, &held[i]) == 0) {
+      counts[distinct - 1u].count++;
+    } else {
+      counts[distinct++] = (OpsTagCount){.tag = held[i], .count = 1u};
+    }
+  }
+  if (distinct) {
+    qsort(counts, distinct, sizeof(*counts), ops_tag_count_compare);
+  }
+  VkrBakeryJson *list = vkr_bakery_json_array(arena);
+  for (uint64_t i = 0; i < distinct; ++i) {
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    ops_set(ctx, entry, "tag", ops_string(ctx, counts[i].tag));
+    ops_set(ctx, entry, "count", vkr_bakery_json_int(arena, counts[i].count));
+    vkr_bakery_json_append(list, entry);
+  }
+  char slot[16];
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "container",
+          vkr_bakery_json_cstr(arena, ops_container_name(selection.container,
+                                                         slot, sizeof(slot))));
+  ops_set(ctx, result, "tags", list);
   ctx->call->result = result;
   return VKR_EDITOR_OP_DONE;
 }
@@ -8984,6 +9375,15 @@ static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
 #define OPS_VALUES_SCHEMA                                                      \
   "{\"type\":\"object\",\"description\":\"Property values by descriptor "      \
   "name, as scene documents store them\"}"
+#define OPS_TAGS_SCHEMA                                                        \
+  "{\"oneOf\":[{\"type\":\"string\"},{\"type\":\"array\",\"items\":{"          \
+  "\"type\":\"string\"}}],\"description\":\"Tags such as #labs #chair, as "    \
+  "one string or an array; lowercased, with '#' added\"}"
+#define OPS_TAGS_REGION_SCHEMA                                                 \
+  "\"container\":" OPS_CONTAINER_SCHEMA ",\"root\":" OPS_ENTITY_SCHEMA         \
+  ",\"region\":{\"type\":\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA  \
+  ",\"max\":" OPS_VEC3_SCHEMA                                                  \
+  "},\"required\":[\"min\",\"max\"]},\"tags\":" OPS_TAGS_SCHEMA
 
 #define OPS_CAPTURE_VIEW_SCHEMA                                                \
   "{\"type\":\"string\",\"enum\":[\"current\",\"perspective\",\"top\","        \
@@ -9013,12 +9413,10 @@ static const OpsDef s_ops[] = {
      "\"string\"}},\"required\":[\"workbench\"]}",
      ops_run_workbench_switch, NULL},
     {"scene.describe",
-     "Entities of one scene with id, name, parent, components, local pose and "
-     "world bounds. Page with offset and limit (at most 500).",
-     "{\"type\":\"object\",\"properties\":{\"container\":" OPS_CONTAINER_SCHEMA
-     ",\"root\":" OPS_ENTITY_SCHEMA
-     ",\"region\":{\"type\":\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
-     ",\"max\":" OPS_VEC3_SCHEMA "},\"required\":[\"min\",\"max\"]},"
+     "Entities of one scene with id, name, parent, components, tags, local "
+     "pose and world bounds; 'tags' keeps those carrying every tag named. "
+     "Page with offset and limit (at most 500).",
+     "{\"type\":\"object\",\"properties\":{" OPS_TAGS_REGION_SCHEMA ","
      "\"offset\":{\"type\":\"integer\",\"minimum\":0},"
      "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500},"
      "\"faces\":{\"type\":\"boolean\",\"description\":\"Also list brush "
@@ -9026,27 +9424,37 @@ static const OpsDef s_ops[] = {
      "summarise\"}," OPS_SETTLE_OFF_SCHEMA "}}",
      ops_run_describe, NULL, OPS_QUICK},
     {"entity.get",
-     "One entity: pose, children, bounds and every component's values.",
+     "One entity: pose, children, bounds, tags and every component's values.",
      "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
      "," OPS_SETTLE_OFF_SCHEMA "},\"required\":[\"entity\"]}",
      ops_run_get, NULL, OPS_QUICK},
+    {"tag.list",
+     "Each tag the entities of one scene carry, with how many carry it, most "
+     "used first; root, region and tags narrow the entities as in "
+     "scene.describe.",
+     "{\"type\":\"object\",\"properties\":{" OPS_TAGS_REGION_SCHEMA "}}",
+     ops_run_tag_list, NULL, OPS_QUICK},
     {"entity.create",
-     "Create an entity with a name, pose (rotation in degrees XYZ) and "
-     "optionally one component.",
+     "Create an entity with a name, pose (rotation in degrees XYZ), "
+     "optionally one component, and tags.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},"
      "\"parent\":" OPS_ENTITY_SCHEMA ",\"container\":" OPS_CONTAINER_SCHEMA
      ",\"position\":" OPS_VEC3_SCHEMA ",\"rotation\":" OPS_VEC3_SCHEMA
      ",\"scale\":" OPS_VEC3_SCHEMA
      ",\"component\":{\"type\":\"object\",\"properties\":{\"type\":{\"type\":"
      "\"string\"},\"values\":" OPS_VALUES_SCHEMA
-     "},\"required\":[\"type\"]}," OPS_REVIEW_SCHEMA "}}",
+     "},\"required\":[\"type\"]},\"tags\":" OPS_TAGS_SCHEMA
+     "," OPS_REVIEW_SCHEMA "}}",
      NULL, ops_build_create},
-    {"entity.set", "Change an entity's name, pose or visibility.",
+    {"entity.set",
+     "Change an entity's name, pose, visibility or tags: 'tags' replaces its "
+     "tags (empty removes them), then 'tags_add' and 'tags_remove' apply.",
      "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
      ",\"name\":{\"type\":\"string\"},\"position\":" OPS_VEC3_SCHEMA
      ",\"rotation\":" OPS_VEC3_SCHEMA ",\"scale\":" OPS_VEC3_SCHEMA
-     ",\"visible\":{\"type\":\"boolean\"}," OPS_REVIEW_SCHEMA
-     "},\"required\":[\"entity\"]}",
+     ",\"visible\":{\"type\":\"boolean\"},\"tags\":" OPS_TAGS_SCHEMA
+     ",\"tags_add\":" OPS_TAGS_SCHEMA ",\"tags_remove\":" OPS_TAGS_SCHEMA
+     "," OPS_REVIEW_SCHEMA "},\"required\":[\"entity\"]}",
      NULL, ops_build_set},
     {"entity.delete",
      "Delete an entity; recursive also deletes its descendants first.",

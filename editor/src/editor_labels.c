@@ -45,14 +45,14 @@ typedef struct EditorLabelBuild {
    Scripts are tags on an object and never give it an icon of their own. */
 /* Shapes, brushes and animated meshes are visible geometry, and connections,
    terrain and spline pieces belong to an owner with its own icon: none needs
-   one. */
+   one. Tags only sort an object. */
 static bool8_t editor_label_iconless(const VkrTypeDesc *type) {
   return type == &vkr_scene_shape_type || type == &vkr_scene_animation_type ||
          type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
          type == &vkr_scene_io_connection_type ||
          type == &vkr_scene_terrain_type ||
          type == &vkr_scene_spline_point_type ||
-         type == &vkr_scene_spline_mesh_type ||
+         type == &vkr_scene_spline_mesh_type || type == &vkr_scene_tags_type ||
          vkr_scene_world_type_registered(type);
 }
 
