@@ -6512,6 +6512,9 @@ static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
     if (issues[i].other.u64) {
       ops_set(ctx, issue, "other", ops_entity(ctx, scene, issues[i].other));
     }
+    if (issues[i].kind == VKR_EDITOR_LEVEL_Z_FIGHT) {
+      ops_set(ctx, issue, "normal", ops_vec3(ctx, issues[i].normal));
+    }
     char problem[160];
     if (issues[i].kind == VKR_EDITOR_LEVEL_BROKEN_CONNECTION &&
         vkr_io_connection_problem(scene, issues[i].other, problem,
@@ -9611,7 +9614,8 @@ static const OpsDef s_ops[] = {
      "brushes that did not build, IO connections that will not route, "
      "z_fight: drawn faces of two brushes or blockout pieces that share a "
      "plane and face the same way, so they flicker ('entity' and 'other', "
-     "'value' the shared square meters), and mover_timing: a looping mover "
+     "'value' the shared square meters, 'normal' the way they face), and "
+     "mover_timing: a looping mover "
      "with no stay, or a door its arrival opens that is still open when it "
      "leaves ('value' the seconds). 'kinds' reports only the named kinds; "
      "'found' above the issues returned means 'limit' cut the list.",

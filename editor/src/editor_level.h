@@ -64,6 +64,9 @@ typedef struct VkrEditorLevelIssue {
   /* Step height, slope degrees, headroom, gap width, area or seconds, by
      kind. */
   float32_t value;
+  /* A z_fight's shared plane, the way `entity`'s face looks; zero for
+     other kinds. */
+  Vec3 normal;
 } VkrEditorLevelIssue;
 
 typedef struct VkrEditorLevelStats {

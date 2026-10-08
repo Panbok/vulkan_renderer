@@ -1262,6 +1262,7 @@ static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
     level_issue(issues, VKR_EDITOR_LEVEL_Z_FIGHT, at, entity, fight->area);
     if (issues->count > index) {
       issues->items[index].other = set.solids[fight->owner_b].entity;
+      issues->items[index].normal = fight->normal;
     }
   }
 
