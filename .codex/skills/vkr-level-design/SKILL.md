@@ -32,7 +32,8 @@ sets the order of work and the checks that prove a level.
 - Prefer intent operations: `blockout.room`, `blockout.corridor`,
   `brush.stairs`, `blockout.doorway`, `brush.snap` and `entity.place`
   (`on`, `inside`, `against`). Use raw `brush.box` corners for simple
-  pieces only.
+  pieces only. A turned piece takes `rotation`; a shape no primitive makes
+  is one `brush.planes` or `brush.hull`, not `entity.create` faces.
 - Send one `batch` with a `label` per unit, such as a room and its doors.
   A batch holds 2,048 edits and a box brush costs 7 (the brush and its six
   faces). Send a large batch with `dry_run` first.

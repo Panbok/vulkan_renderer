@@ -416,7 +416,12 @@ destroys them, and snapshots, documents, the journal and Reset never see
 them. The first generated body creates a scene's physics state when the
 scene had none.
 
-Operations `brush.box`, `brush.wedge`, `brush.cylinder`, `brush.stairs`,
+Operations `brush.box`, `brush.wedge`, `brush.cylinder` (each optionally
+turned by `rotation`: a box or wedge about its center, a cylinder about the
+center of its base, so `[0, 0, -90]` lays it along +X), `brush.planes` (4 to
+64 parent-space planes, each a `normal` with a `distance` or a `point` and
+optionally a `material`; a failure names `planes[i]`), `brush.hull` (the
+convex hull of 4 to 128 grid-snapped points), `brush.stairs`,
 `brush.set_material` (faces by `top`, `bottom`, `sides`, `+x`, `-x`, `+z`,
 `-z`), `blockout.room` (floor, ceiling and four walls around an interior box,
 named after the room, such as `<room>/Floor` and `<room>/Wall South +Z`, so

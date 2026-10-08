@@ -1926,6 +1926,10 @@ static bool8_t ops_brush_add(OpsContext *ctx, OpsBatch *batch,
     return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
   }
   const VkrBrushError error = vkr_brush_build(planes, count, geometry, &failed);
+  if (error != VKR_BRUSH_OK && failed != UINT32_MAX) {
+    return ops_fail(ctx, OPS_INVALID, "Brush '%s': %s (plane %u, from 0)", name,
+                    vkr_brush_error_text(error), failed);
+  }
   if (error != VKR_BRUSH_OK) {
     return ops_fail(ctx, OPS_INVALID, "Brush '%s': %s", name,
                     vkr_brush_error_text(error));
@@ -2006,6 +2010,20 @@ static bool8_t ops_arg_box(OpsContext *ctx, const VkrBakeryJson *args,
   return true_v;
 }
 
+/* 'rotation' in degrees XYZ, identity when absent. */
+static bool8_t ops_arg_rotation(OpsContext *ctx, const VkrBakeryJson *args,
+                                VkrQuat *out) {
+  Vec3 degrees = {0};
+  bool8_t has_rotation = false_v;
+  if (!ops_arg_vec3(ctx, args, "rotation", &degrees, &has_rotation)) {
+    return false_v;
+  }
+  const float32_t euler[3] = {degrees.x, degrees.y, degrees.z};
+  *out =
+      has_rotation ? vkr_property_quat_from_euler(euler) : vkr_quat_identity();
+  return true_v;
+}
+
 /* A box brush between parent-space corners, its origin at the center. */
 static bool8_t ops_box_add(OpsContext *ctx, OpsBatch *batch,
                            const OpsBrushArgs *brush, int32_t parent_item,
@@ -2027,10 +2045,20 @@ static bool8_t ops_build_brush_box(OpsContext *ctx, const VkrBakeryJson *args,
   OpsBrushArgs brush;
   Vec3 min = {0};
   Vec3 max = {0};
-  uint32_t item = 0u;
+  VkrQuat rotation = vkr_quat_identity();
   if (!ops_brush_args(ctx, args, batch, "Brush", &brush) ||
       !ops_arg_box(ctx, args, brush.grid, &min, &max) ||
-      !ops_box_add(ctx, batch, &brush, -1, brush.name, min, max, NULL, &item)) {
+      !ops_arg_rotation(ctx, args, &rotation)) {
+    return false_v;
+  }
+  /* A turned box turns about its center. */
+  const Vec3 center = vec3_scale(vec3_add(min, max), 0.5f);
+  VkrBrushPlane planes[6];
+  const uint32_t count = vkr_brush_box_planes(vec3_sub(min, center),
+                                              vec3_sub(max, center), planes);
+  uint32_t item = 0u;
+  if (!ops_brush_add(ctx, batch, &brush, -1, brush.name, center, rotation,
+                     planes, count, NULL, &item)) {
     return false_v;
   }
   batch->op_item[batch->op_count] = item;
@@ -2042,8 +2070,10 @@ static bool8_t ops_build_brush_wedge(OpsContext *ctx, const VkrBakeryJson *args,
   OpsBrushArgs brush;
   Vec3 min = {0};
   Vec3 max = {0};
+  VkrQuat rotation = vkr_quat_identity();
   if (!ops_brush_args(ctx, args, batch, "Wedge", &brush) ||
-      !ops_arg_box(ctx, args, brush.grid, &min, &max)) {
+      !ops_arg_box(ctx, args, brush.grid, &min, &max) ||
+      !ops_arg_rotation(ctx, args, &rotation)) {
     return false_v;
   }
   uint32_t slope = 0u;
@@ -2066,8 +2096,8 @@ static bool8_t ops_build_brush_wedge(OpsContext *ctx, const VkrBakeryJson *args,
   const uint32_t count = vkr_brush_wedge_planes(
       vec3_sub(min, center), vec3_sub(max, center), slope, planes);
   uint32_t item = 0u;
-  if (!ops_brush_add(ctx, batch, &brush, -1, brush.name, center,
-                     vkr_quat_identity(), planes, count, NULL, &item)) {
+  if (!ops_brush_add(ctx, batch, &brush, -1, brush.name, center, rotation,
+                     planes, count, NULL, &item)) {
     return false_v;
   }
   batch->op_item[batch->op_count] = item;
@@ -2080,8 +2110,10 @@ static bool8_t ops_build_brush_cylinder(OpsContext *ctx,
   OpsBrushArgs brush;
   Vec3 center = {0};
   bool8_t has_center = false_v;
+  VkrQuat rotation = vkr_quat_identity();
   if (!ops_brush_args(ctx, args, batch, "Cylinder", &brush) ||
-      !ops_arg_vec3(ctx, args, "center", &center, &has_center)) {
+      !ops_arg_vec3(ctx, args, "center", &center, &has_center) ||
+      !ops_arg_rotation(ctx, args, &rotation)) {
     return false_v;
   }
   float64_t radius = 0.0;
@@ -2101,8 +2133,148 @@ static bool8_t ops_build_brush_cylinder(OpsContext *ctx,
       vec3_zero(), (float32_t)radius, ops_snap((float32_t)height, brush.grid),
       (uint32_t)sides, planes);
   uint32_t item = 0u;
+  if (!ops_brush_add(ctx, batch, &brush, -1, brush.name, center, rotation,
+                     planes, count, NULL, &item)) {
+    return false_v;
+  }
+  batch->op_item[batch->op_count] = item;
+  return true_v;
+}
+
+static uint32_t ops_arg_points(OpsContext *ctx, const VkrBakeryJson *args,
+                               const char *key, Vec3 *out, uint32_t min_count,
+                               uint32_t max_count);
+
+/* brush.planes: a brush bounded by parent-space planes, its origin at the
+   center of its box. */
+static bool8_t ops_build_brush_planes(OpsContext *ctx,
+                                      const VkrBakeryJson *args,
+                                      OpsBatch *batch) {
+  OpsBrushArgs brush;
+  if (!ops_brush_args(ctx, args, batch, "Brush", &brush)) {
+    return false_v;
+  }
+  const VkrBakeryJson *list = vkr_bakery_json_get(args, "planes");
+  if (!list || list->type != VKR_BAKERY_JSON_ARRAY ||
+      list->count < VKR_BRUSH_FACE_MIN || list->count > VKR_BRUSH_FACE_MAX) {
+    return ops_fail(ctx, OPS_INVALID, "'planes' is %u to %u planes",
+                    VKR_BRUSH_FACE_MIN, VKR_BRUSH_FACE_MAX);
+  }
+  VkrBrushPlane *planes =
+      arena_alloc(ops_arena(ctx), VKR_BRUSH_FACE_MAX * sizeof(*planes),
+                  ARENA_MEMORY_TAG_STRUCT);
+  char(*names)[SCENE_BRUSH_MATERIAL_CAPACITY] =
+      arena_alloc(ops_arena(ctx), VKR_BRUSH_FACE_MAX * sizeof(*names),
+                  ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushGeometry *geometry =
+      arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  if (!planes || !names || !geometry) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+
+  /* Each plane: an outward normal and a distance or a point on it. */
+  const char *materials[VKR_BRUSH_FACE_MAX];
+  uint32_t count = 0u;
+  for (const VkrBakeryJson *entry = list->first; entry; entry = entry->next) {
+    Vec3 normal = {0};
+    Vec3 point = {0};
+    bool8_t has_normal = false_v;
+    bool8_t has_point = false_v;
+    float64_t distance = 0.0;
+    if (entry->type != VKR_BAKERY_JSON_OBJECT ||
+        !ops_arg_vec3(ctx, entry, "normal", &normal, &has_normal) ||
+        !ops_arg_vec3(ctx, entry, "point", &point, &has_point)) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "planes[%u] is {normal, distance or point, material}",
+                      count);
+    }
+    const bool8_t has_distance = ops_arg_number(entry, "distance", &distance);
+    const float32_t length = vec3_length(normal);
+    if (!has_normal || has_point == has_distance || !(length > 1.0e-6f) ||
+        !isfinite(distance)) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "planes[%u] needs a nonzero outward 'normal' and either "
+                      "'distance' (normal . p <= distance inside) or a "
+                      "'point' on the plane",
+                      count);
+    }
+    normal = vec3_scale(normal, 1.0f / length);
+    names[count][0] = '\0';
+    if (!ops_arg_string(ctx, entry, "material", names[count],
+                        sizeof(names[count]))) {
+      return false_v;
+    }
+    materials[count] = names[count][0] ? names[count] : brush.material;
+    planes[count] = (VkrBrushPlane){
+        normal, has_point ? vec3_dot(normal, point)
+                          : (float32_t)(distance / (float64_t)length)};
+    count++;
+  }
+
+  /* Move the origin to the solid's center so the pivot sits on it. */
+  uint32_t failed = UINT32_MAX;
+  const VkrBrushError error = vkr_brush_build(planes, count, geometry, &failed);
+  if (error != VKR_BRUSH_OK) {
+    return failed != UINT32_MAX
+               ? ops_fail(ctx, OPS_INVALID, "Brush '%s': %s (planes[%u])",
+                          brush.name, vkr_brush_error_text(error), failed)
+               : ops_fail(ctx, OPS_INVALID, "Brush '%s': %s", brush.name,
+                          vkr_brush_error_text(error));
+  }
+  const Vec3 center = vec3_scale(vec3_add(geometry->min, geometry->max), 0.5f);
+  for (uint32_t i = 0; i < count; ++i) {
+    planes[i].distance -= vec3_dot(planes[i].normal, center);
+  }
+  uint32_t item = 0u;
   if (!ops_brush_add(ctx, batch, &brush, -1, brush.name, center,
-                     vkr_quat_identity(), planes, count, NULL, &item)) {
+                     vkr_quat_identity(), planes, count, materials, &item)) {
+    return false_v;
+  }
+  batch->op_item[batch->op_count] = item;
+  return true_v;
+}
+
+/* brush.hull: the convex hull of parent-space points, snapped to the grid,
+   its origin at the center of their box. */
+static bool8_t ops_build_brush_hull(OpsContext *ctx, const VkrBakeryJson *args,
+                                    OpsBatch *batch) {
+  OpsBrushArgs brush;
+  Vec3 points[VKR_BRUSH_HULL_POINT_MAX];
+  if (!ops_brush_args(ctx, args, batch, "Brush", &brush)) {
+    return false_v;
+  }
+  const uint32_t count =
+      ops_arg_points(ctx, args, "points", points, 4u, VKR_BRUSH_HULL_POINT_MAX);
+  if (!count) {
+    return false_v;
+  }
+  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  for (uint32_t i = 0; i < count; ++i) {
+    points[i] = ops_snap3(points[i], brush.grid);
+    lo = vec3_new(Min(lo.x, points[i].x), Min(lo.y, points[i].y),
+                  Min(lo.z, points[i].z));
+    hi = vec3_new(Max(hi.x, points[i].x), Max(hi.y, points[i].y),
+                  Max(hi.z, points[i].z));
+  }
+
+  /* The hull is computed about the center, where float steps are small. */
+  const Vec3 center = vec3_scale(vec3_add(lo, hi), 0.5f);
+  for (uint32_t i = 0; i < count; ++i) {
+    points[i] = vec3_sub(points[i], center);
+  }
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  const uint32_t plane_count =
+      vkr_brush_hull(points, count, planes, VKR_BRUSH_FACE_MAX);
+  if (!plane_count) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "The points span no volume after snapping to the %.4g m "
+                    "grid, or their hull needs more than %u faces",
+                    (float64_t)brush.grid, VKR_BRUSH_FACE_MAX);
+  }
+  uint32_t item = 0u;
+  if (!ops_brush_add(ctx, batch, &brush, -1, brush.name, center,
+                     vkr_quat_identity(), planes, plane_count, NULL, &item)) {
     return false_v;
   }
   batch->op_item[batch->op_count] = item;
@@ -2115,10 +2287,6 @@ static VkrQuat ops_yaw_toward(Vec3 direction) {
   const float32_t yaw = atan2f(direction.x, direction.z);
   return vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), yaw);
 }
-
-static uint32_t ops_arg_points(OpsContext *ctx, const VkrBakeryJson *args,
-                               const char *key, Vec3 *out, uint32_t min_count,
-                               uint32_t max_count);
 
 /* Adds layout `pieces` as brushes under batch item `group`, or under
    `brush->parent` when it is negative; each brush sits at its piece's
@@ -8830,29 +8998,58 @@ static const OpsDef s_ops[] = {
      NULL, ops_build_component_remove},
     {"brush.box",
      "Create a box brush between two corners, snapped to 'grid' (default "
-     "1/16 m). Role solid renders and collides, visual only renders, clip "
-     "only collides, trigger is a sensor volume.",
+     "1/16 m), turned by 'rotation' (degrees XYZ) about its center. Role "
+     "solid renders and collides, visual only renders, clip only collides, "
+     "trigger is a sensor volume.",
      "{\"type\":\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
-     ",\"max\":" OPS_VEC3_SCHEMA "," OPS_BRUSH_SCHEMA "," OPS_REVIEW_SCHEMA
+     ",\"max\":" OPS_VEC3_SCHEMA ",\"rotation\":" OPS_VEC3_SCHEMA
+     "," OPS_BRUSH_SCHEMA "," OPS_REVIEW_SCHEMA
      "},\"required\":[\"min\",\"max\"]}",
      NULL, ops_build_brush_box},
     {"brush.wedge",
      "Create a wedge brush in a box: its top slopes down to the floor at the "
-     "side 'slope' names (+x, -x, +z or -z).",
+     "side 'slope' names (+x, -x, +z or -z); 'rotation' (degrees XYZ) turns "
+     "it about the box's center.",
      "{\"type\":\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
-     ",\"max\":" OPS_VEC3_SCHEMA ",\"slope\":{\"type\":\"string\",\"enum\":"
+     ",\"max\":" OPS_VEC3_SCHEMA ",\"rotation\":" OPS_VEC3_SCHEMA
+     ",\"slope\":{\"type\":\"string\",\"enum\":"
      "[\"+x\",\"-x\",\"+z\",\"-z\"]}," OPS_BRUSH_SCHEMA "," OPS_REVIEW_SCHEMA
      "},\"required\":[\"min\",\"max\"]}",
      NULL, ops_build_brush_wedge},
     {"brush.cylinder",
      "Create a vertical prism brush standing on 'center' with corners on "
-     "a circle of 'radius'.",
+     "a circle of 'radius'. 'rotation' (degrees XYZ) turns it about 'center': "
+     "[0, 0, -90] lays its axis along +X, [90, 0, 0] along +Z.",
      "{\"type\":\"object\",\"properties\":{\"center\":" OPS_VEC3_SCHEMA
      ",\"radius\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
      "\"height\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"sides\":"
-     "{\"type\":\"integer\",\"minimum\":3,\"maximum\":32}," OPS_BRUSH_SCHEMA
-     "," OPS_REVIEW_SCHEMA "},\"required\":[\"center\",\"radius\",\"height\"]}",
+     "{\"type\":\"integer\",\"minimum\":3,\"maximum\":32},"
+     "\"rotation\":" OPS_VEC3_SCHEMA "," OPS_BRUSH_SCHEMA "," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"center\",\"radius\",\"height\"]}",
      NULL, ops_build_brush_cylinder},
+    {"brush.planes",
+     "Create a convex brush bounded by 4 to 64 planes in its parent's space "
+     "(world space at the root). Each plane has an outward 'normal' and "
+     "either 'distance' (inside where normal . p <= distance) or a 'point' "
+     "on it, and optionally its face's 'material'. Every plane must touch "
+     "the solid; a failure names planes[i]. The brush's origin goes to the "
+     "center of its box.",
+     "{\"type\":\"object\",\"properties\":{\"planes\":{\"type\":"
+     "\"array\",\"minItems\":4,\"maxItems\":64,\"items\":{\"type\":"
+     "\"object\",\"properties\":{\"normal\":" OPS_VEC3_SCHEMA
+     ",\"distance\":{\"type\":\"number\"},\"point\":" OPS_VEC3_SCHEMA
+     ",\"material\":{\"type\":\"string\"}},\"required\":[\"normal\"]}}"
+     "," OPS_BRUSH_SCHEMA "," OPS_REVIEW_SCHEMA "},\"required\":[\"planes\"]}",
+     NULL, ops_build_brush_planes},
+    {"brush.hull",
+     "Create the convex brush around 4 to 128 points in its parent's space "
+     "(world space at the root), snapped to 'grid' (default 1/16 m; 0 keeps "
+     "them). Points inside the hull are ignored. The brush's origin goes to "
+     "the center of their box.",
+     "{\"type\":\"object\",\"properties\":{\"points\":{\"type\":"
+     "\"array\",\"minItems\":4,\"maxItems\":128,\"items\":" OPS_VEC3_SCHEMA
+     "}," OPS_BRUSH_SCHEMA "," OPS_REVIEW_SCHEMA "},\"required\":[\"points\"]}",
+     NULL, ops_build_brush_hull},
     {"brush.stairs",
      "Create editable stairs (a blockout shape): 'from' is the bottom front "
      "center (a spiral's pole), 'to' the top back center (its height is the "
