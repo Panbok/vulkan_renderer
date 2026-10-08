@@ -6273,6 +6273,9 @@ static bool8_t ops_arg_capsule(OpsContext *ctx, const VkrBakeryJson *args,
   if (ops_arg_number(args, "height", &value)) {
     out->height = (float32_t)value;
   }
+  if (ops_arg_number(args, "crouch_height", &value)) {
+    out->crouch_height = (float32_t)value;
+  }
   if (ops_arg_number(args, "step_up", &value)) {
     out->step_up = (float32_t)value;
   }
@@ -6280,11 +6283,13 @@ static bool8_t ops_arg_capsule(OpsContext *ctx, const VkrBakeryJson *args,
     out->max_slope_radians = (float32_t)value * 0.01745329252f;
   }
   if (!(out->radius > 0.05f) || !(out->height > 2.0f * out->radius) ||
-      !(out->step_up >= 0.0f) || !(out->max_slope_radians > 0.0f) ||
+      !(out->crouch_height >= 0.0f) || !(out->step_up >= 0.0f) ||
+      !(out->max_slope_radians > 0.0f) ||
       out->max_slope_radians >= 1.5707963f) {
     return ops_fail(ctx, OPS_INVALID,
                     "The capsule needs radius > 0.05, height > 2 radius, "
-                    "step_up >= 0 and max_slope (degrees) between 0 and 90");
+                    "crouch_height >= 0 (0 cannot crouch), step_up >= 0 and "
+                    "max_slope (degrees) between 0 and 90");
   }
   return true_v;
 }
@@ -6603,7 +6608,8 @@ static VkrEditorOpStatus ops_run_map(OpsContext *ctx) {
   ops_set(ctx, result, "legend",
           vkr_bakery_json_cstr(
               arena, "'.' walkable; ',' walkable, out of reach of the start; "
-                     "'S' start; '#' too close to a wall; 'n' gap too "
+                     "'c' passable crouched; ';' passable crouched, out of "
+                     "reach; 'S' start; '#' too close to a wall; 'n' gap too "
                      "narrow; '_' ceiling too low; '/' too steep; '-' no "
                      "floor"));
   ops_set(ctx, result, "walkable", vkr_bakery_json_int(arena, stats.walkable));
@@ -6679,6 +6685,14 @@ static VkrEditorOpStatus ops_run_reachable(OpsContext *ctx) {
   if (reached) {
     ops_set(ctx, ctx->call->result, "length", ops_number(ctx, length));
     ops_set(ctx, ctx->call->result, "path", points);
+    /* What the route asks of the player beyond walking. */
+    if (route.crouch) {
+      ops_set(ctx, ctx->call->result, "crouch", vkr_bakery_json_bool(arena, 1));
+    }
+    if (route.ladders) {
+      ops_set(ctx, ctx->call->result, "ladders",
+              vkr_bakery_json_int(arena, route.ladders));
+    }
     return VKR_EDITOR_OP_DONE;
   }
   /* Where the way stops: the ends' floors, and the route to the reached
@@ -8945,6 +8959,8 @@ static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
   "meters; 0 turns snapping off\"}"
 #define OPS_CAPSULE_SCHEMA                                                     \
   "\"radius\":{\"type\":\"number\"},\"height\":{\"type\":\"number\"},"         \
+  "\"crouch_height\":{\"type\":\"number\",\"description\":\"0 cannot "         \
+  "crouch\"},"                                                                 \
   "\"step_up\":{\"type\":\"number\"},\"max_slope\":{\"type\":\"number\","      \
   "\"description\":\"Degrees\"}"
 #define OPS_SIDE_SCHEMA                                                        \
@@ -9574,10 +9590,10 @@ static const OpsDef s_ops[] = {
      ops_run_raycast, NULL, OPS_QUICK | OPS_SETTLES},
     {"level.lint",
      "Check a region's walkable floor against the player capsule: steps too "
-     "high, slopes too steep, low ceilings, gaps too narrow, edges into the "
-     "void, areas the start (or the Player Start) cannot reach, overlapping "
-     "solid brushes, brushes that did not build and IO connections that "
-     "will not route.",
+     "high, slopes too steep, low ceilings, passages only a crouched capsule "
+     "fits (crouch_only), gaps too narrow, edges into the void, areas the "
+     "start (or the Player Start) cannot reach, overlapping solid brushes, "
+     "brushes that did not build and IO connections that will not route.",
      "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
      "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
      ",\"max\":" OPS_VEC3_SCHEMA
@@ -9605,7 +9621,9 @@ static const OpsDef s_ops[] = {
      ops_run_map, NULL, OPS_SETTLES},
     {"query.reachable",
      "Whether the player capsule can walk from one floor point to another, "
-     "with the route.",
+     "standing or crouched and up or down ladders, with the route; 'crouch' "
+     "says it passes floor only a crouched capsule fits and 'ladders' how "
+     "many ladders it climbs.",
      "{\"type\":\"object\",\"properties\":{\"from\":" OPS_VEC3_SCHEMA
      ",\"to\":" OPS_VEC3_SCHEMA ",\"container\":" OPS_CONTAINER_SCHEMA
      "," OPS_CAPSULE_SCHEMA "," OPS_SETTLE_SCHEMA

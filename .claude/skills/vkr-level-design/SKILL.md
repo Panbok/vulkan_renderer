@@ -49,9 +49,12 @@ Put the checks in the same `level_run.py` plan as the writes, each with
 
 1. Numbers: `query.raycast` (its `collider` names the brush hit),
    `terrain.sample` and `query.bounds` against the spec.
-2. Routes: `query.reachable` for every path the spec requires.
+2. Routes: `query.reachable` for every path the spec requires; it answers
+   `crouch` when a route needs crouching and `ladders` when it climbs any
+   (a ladder is a trigger brush with `fps_ladder`).
 3. `level.map` for each storey, the region's top below its ceilings and at
-   most 200 cells a side: `#` walls, `n` gaps too narrow, `,` out of reach.
+   most 200 cells a side: `#` walls, `n` gaps too narrow, `,` out of reach,
+   `c` passable crouched.
 4. `level.lint` in tiles of 76 m or less (0.3 m cells); expect no issue of
    a kind the spec forbids.
 5. One `view.capture` sheet (`views`, `max_width` 768) with labelled

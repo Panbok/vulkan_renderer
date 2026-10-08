@@ -22,6 +22,9 @@ typedef uint64_t VkrPhysicsBody;
 typedef uint64_t VkrPhysicsCharacter;
 #define VKR_PHYSICS_CHARACTER_INVALID UINT64_C(0)
 
+/* Share of the standing cylinder half height a crouched capsule keeps. */
+#define VKR_PHYSICS_CROUCH_HEIGHT_SHARE 0.4f
+
 typedef struct VkrPhysicsCharacterDesc {
   uint64_t entity_id;
   float32_t foot_position[3];

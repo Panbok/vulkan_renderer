@@ -710,23 +710,35 @@ so they undo like agent work.
 [editor_level.c](../../editor/src/editor_level.c) samples a region on a grid
 of capsule-radius cells (at most 65,536) with physics raycasts. Each cell
 keeps every floor a downward ray finds from start heights one capsule height
-apart, so floors under roofs count. A floor is walkable when its slope is
-within `max_slope_radians`, a capsule's height fits above it and side rays
-find no wall closer than the radius. Neighbouring floors connect when the step
-up is within `step_up`, a drop is at most 4 m, and nothing blocks the way at
-knee height. Only collision counts; geometry without collision is invisible
-to the checks. The capsule defaults to `vkr_physics_character_default`
-(radius 0.3 m, height 1.8 m, `step_up` 0.35 m, 45°) and each request may
-override it.
+apart, so floors under roofs count; a ray that starts inside a solid
+starts again 0.25 m lower, so the floor under a slab thinner than the
+capsule is found. A floor is walkable when its slope is within
+`max_slope_radians`, a capsule's height fits above it and side rays find no
+wall closer than the radius; it is passable crouched when only the crouched
+capsule (`crouch_height`) fits, under a ceiling or beside its edge.
+Neighbouring passable floors connect when the step up is within `step_up`, a
+drop is at most 4 m, and nothing blocks the way at knee height. The floors
+at the foot and the top of each ladder connect both ways: a trigger brush
+carrying the FPS module's `fps_ladder` joins the passable floor nearest its
+foot, within 1 m and the capsule radius of its box, to the highest one
+between a step above its foot and its top. Only collision counts; geometry
+without collision is invisible to the checks. The capsule defaults to
+`vkr_physics_character_default` (radius 0.3 m, height 1.8 m, crouched
+1.08 m through `VKR_PHYSICS_CROUCH_HEIGHT_SHARE`, `step_up` 0.35 m, 45°)
+and each request may override it; `crouch_height` 0 cannot crouch.
 
 `level.lint` reports steps too high, slopes too steep, ceilings lower than the
-capsule, gaps narrower than its diameter, walkable edges with no floor within
+crouched capsule, passages only the crouched capsule fits (`crouch_only`,
+with the headroom), gaps narrower than its diameter, walkable edges with no
+floor within
 4 m below, walkable areas the `start` (or the first enabled Player Start)
 cannot reach, overlapping solid brushes and brushes that did not build. Each
 issue names its position, the entity at fault and the step height, slope,
 headroom or gap; issues of one kind on one entity within 8 m merge.
 `query.reachable` flood-fills from `from` and returns whether `to` is
-reachable with one route and its length. A failed route answers whether
+reachable with one route and its length: standing first, then crouched,
+so `crouch` says only that a route needs crouching, and `ladders` counts the
+ladders it climbs. A failed route answers whether
 each end stands on a walkable floor (`from_floor`, `to_floor`), the reached
 floor nearest `to` (`closest`), the distance left (`gap`) and the route to
 it, so an agent sees where the way stops. Each column is cast 1.3 cm and
@@ -752,8 +764,9 @@ loads meanwhile fails it.
 exactly than a picture ([editor_level.c](../../editor/src/editor_level.c),
 `vkr_editor_level_job_map`). Its rows run from the region's minimum z to its
 maximum, each character a cell along +x, as a top capture shows them. A cell
-shows its highest walkable floor, else its highest floor: `.` walkable and,
-with a start, reached from it, `,` walkable but out of reach, `S` the start,
+shows its highest walkable floor, else its highest crouch floor, else its
+highest floor: `.` walkable and, with a start, reached from it, `,` walkable
+but out of reach, `c` and `;` passable crouched, reached or not, `S` the start,
 `#` too close to a wall, `n` a gap narrower than the capsule, `_` a ceiling
 too low, `/` too steep and `-` no floor. `cell` sets the cell edge (by
 default 96 cells along the longer side) and a map holds at most 200 a side;

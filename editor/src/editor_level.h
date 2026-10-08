@@ -7,9 +7,11 @@
  * is sampled on a grid of capsule-radius cells with physics raycasts: every
  * floor a downward ray finds from start heights one capsule height apart, so
  * rooms under roofs count. A floor is walkable when its slope is within the
- * limit and the capsule fits on it. Neighbouring floors connect when the step
- * up is within `step_up`, a drop is at most VKR_EDITOR_LEVEL_DROP_MAX, and
- * nothing blocks the way at knee height. Only collision counts: geometry
+ * limit and the capsule fits on it, standing or crouched. Neighbouring
+ * floors connect when the step up is within `step_up`, a drop is at most
+ * VKR_EDITOR_LEVEL_DROP_MAX, and nothing blocks the way at knee height; the
+ * floors at the foot and the top of a ladder (a trigger brush with the FPS
+ * module's `fps_ladder`) connect too. Only collision counts: geometry
  * without collision is invisible to the checks. */
 
 #define VKR_EDITOR_LEVEL_DROP_MAX 4.0f
@@ -20,6 +22,9 @@
 typedef struct VkrEditorLevelCapsule {
   float32_t radius;
   float32_t height;
+  /* The crouched capsule's height; floors only it fits on are passable
+     crouched. Zero cannot crouch. */
+  float32_t crouch_height;
   float32_t step_up;
   float32_t max_slope_radians;
 } VkrEditorLevelCapsule;
@@ -36,6 +41,8 @@ typedef enum VkrEditorLevelIssueKind {
   /* An IO connection whose source lies in the region and that will not
      route (ADR-084). */
   VKR_EDITOR_LEVEL_BROKEN_CONNECTION,
+  /* Floor beside walkable floor that only a crouched capsule passes. */
+  VKR_EDITOR_LEVEL_CROUCH_ONLY,
   VKR_EDITOR_LEVEL_ISSUE_COUNT,
 } VkrEditorLevelIssueKind;
 
@@ -105,6 +112,10 @@ typedef struct VkrEditorLevelRoute {
   bool8_t to_found;
   Vec3 closest;
   float32_t gap;
+  /* The route passes floor only a crouched capsule fits, and climbs this
+     many ladders. */
+  bool8_t crouch;
+  uint32_t ladders;
 } VkrEditorLevelRoute;
 
 /* Whether the capsule walks from `from` to `to`; the route to `to`, or when

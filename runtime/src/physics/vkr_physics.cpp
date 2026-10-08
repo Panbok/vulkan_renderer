@@ -554,8 +554,8 @@ vkr_physics_character_create(VkrPhysicsWorld *world,
     // offset changes.
     JPH::RefConst<JPH::Shape> standing_shape =
         new JPH::CapsuleShape(desc->half_height, desc->radius);
-    JPH::RefConst<JPH::Shape> crouched_shape =
-        new JPH::CapsuleShape(desc->half_height * 0.4f, desc->radius);
+    JPH::RefConst<JPH::Shape> crouched_shape = new JPH::CapsuleShape(
+        desc->half_height * VKR_PHYSICS_CROUCH_HEIGHT_SHARE, desc->radius);
     settings.mShape = standing_shape;
     settings.mShapeOffset = JPH::Vec3(0, desc->half_height + desc->radius, 0);
     settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -desc->radius);
@@ -639,7 +639,8 @@ vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
     if (crouch != slot->crouched) {
       const JPH::Vec3 previous_offset = slot->character->GetShapeOffset();
       const float32_t half_height =
-          slot->desc.half_height * (crouch ? 0.4f : 1.0f);
+          slot->desc.half_height *
+          (crouch ? VKR_PHYSICS_CROUCH_HEIGHT_SHARE : 1.0f);
       slot->character->SetShapeOffset(
           JPH::Vec3(0, half_height + slot->desc.radius, 0));
       const JPH::Shape *shape = crouch ? slot->crouched_shape.GetPtr()

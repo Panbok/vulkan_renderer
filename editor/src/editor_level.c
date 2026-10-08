@@ -24,6 +24,9 @@
 #define LEVEL_SAMPLE_SKEW_Z 0.0073f
 /* A gap the walk steps over is at most this share of the capsule's width. */
 #define LEVEL_GAP_SHARE 0.75f
+/* How far a column's next ray starts below one that started inside a solid,
+   so the floor under a slab thinner than the capsule is still found. */
+#define LEVEL_INSIDE_STEP 0.25f
 /* Issues of one kind closer than this merge into one. */
 #define LEVEL_MERGE_DISTANCE 1.0f
 
@@ -35,6 +38,8 @@ typedef enum LevelState {
   LEVEL_NARROW,
   /* Too close to a wall for the capsule's center; normal beside walls. */
   LEVEL_WALL,
+  /* Only a crouched capsule fits; passable crouched. */
+  LEVEL_CROUCH,
 } LevelState;
 
 typedef struct LevelNode {
@@ -48,6 +53,8 @@ typedef struct LevelNode {
   int32_t parent;
   uint8_t state;
   bool8_t visited;
+  /* The walk reached it up or down a ladder from its parent. */
+  bool8_t ladder;
 } LevelNode;
 
 typedef struct LevelGrid {
@@ -60,6 +67,11 @@ typedef struct LevelGrid {
   uint32_t nz;
   LevelNode *nodes;
   uint8_t *layers;
+  /* Node index pairs a ladder joins, both ways (level_ladders). */
+  int32_t *links;
+  uint32_t link_count;
+  /* The walk keeps to floor a standing capsule fits. */
+  bool8_t standing_only;
 } LevelGrid;
 
 VkrEditorLevelCapsule vkr_editor_level_capsule_default(void) {
@@ -67,6 +79,9 @@ VkrEditorLevelCapsule vkr_editor_level_capsule_default(void) {
   return (VkrEditorLevelCapsule){
       .radius = desc.radius,
       .height = 2.0f * (desc.half_height + desc.radius),
+      .crouch_height =
+          2.0f *
+          (desc.half_height * VKR_PHYSICS_CROUCH_HEIGHT_SHARE + desc.radius),
       .step_up = desc.step_up,
       .max_slope_radians = desc.max_slope_radians,
   };
@@ -74,9 +89,9 @@ VkrEditorLevelCapsule vkr_editor_level_capsule_default(void) {
 
 const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind) {
   static const char *const names[VKR_EDITOR_LEVEL_ISSUE_COUNT] = {
-      "step_too_high", "too_steep",     "low_ceiling",
-      "too_narrow",    "void_edge",     "unreachable",
-      "overlap",       "invalid_brush", "broken_connection"};
+      "step_too_high",     "too_steep",   "low_ceiling", "too_narrow",
+      "void_edge",         "unreachable", "overlap",     "invalid_brush",
+      "broken_connection", "crouch_only"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? names[kind] : "unknown";
 }
 
@@ -143,8 +158,12 @@ static void level_sample_cell(LevelGrid *grid, uint32_t x, uint32_t z) {
        start -= capsule->height) {
     VkrPhysicsRayHit hit = {0};
     if (!level_ray(grid->scene, vec3_new(px, start, pz),
-                   vec3_new(0.0f, -depth, 0.0f), &hit) ||
-        hit.fraction <= 0.0f) {
+                   vec3_new(0.0f, -depth, 0.0f), &hit)) {
+      continue;
+    }
+    if (hit.fraction <= 0.0f) {
+      /* The ray started inside a solid: the next starts a little lower. */
+      start += capsule->height - LEVEL_INSIDE_STEP;
       continue;
     }
     const Vec3 point =
@@ -181,11 +200,32 @@ static void level_sample_cell(LevelGrid *grid, uint32_t x, uint32_t z) {
       continue;
     }
     /* Something too close: a ceiling straight above, walls on opposite
-       sides closer than the capsule is wide, or only a nearby wall. */
+       sides closer than the capsule is wide, or only a nearby wall. What
+       blocks only the standing capsule's upper part lets a crouched one
+       pass, under a ceiling or beside the edge of one. */
+    const float32_t crouch = capsule->crouch_height;
+    const bool8_t crouch_fits =
+        crouch > 2.0f * capsule->radius && crouch < capsule->height &&
+        !level_blocked(grid->scene,
+                       vec3_add(point, vec3_new(0.0f, crouch * 0.5f, 0.0f)),
+                       r) &&
+        !level_blocked(
+            grid->scene,
+            vec3_add(point, vec3_new(0.0f, crouch - capsule->radius, 0.0f)), r);
     VkrPhysicsRayHit up = {0};
-    if (level_ray(grid->scene, vec3_add(point, vec3_new(0.0f, 0.05f, 0.0f)),
+    const bool8_t ceiling =
+        level_ray(grid->scene, vec3_add(point, vec3_new(0.0f, 0.05f, 0.0f)),
                   vec3_new(0.0f, capsule->height, 0.0f), &up) &&
-        up.fraction > 0.0f) {
+        up.fraction > 0.0f;
+    if (crouch_fits) {
+      node->state = LEVEL_CROUCH;
+      node->headroom =
+          ceiling ? up.fraction * capsule->height + 0.05f : capsule->height;
+      node->blocker = (VkrEntityId){
+          .u64 = up.collider_entity_id ? up.collider_entity_id : up.entity_id};
+      continue;
+    }
+    if (ceiling) {
       node->state = LEVEL_LOW;
       node->headroom = up.fraction * capsule->height + 0.05f;
       node->blocker = (VkrEntityId){
@@ -311,10 +351,17 @@ void vkr_editor_level_job_end(VkrEditorLevelJob *job) {
   free(job);
 }
 
+/* Whether a capsule stands or crouches on `node`. */
+static bool8_t level_passable(const LevelNode *node) {
+  return node->state == LEVEL_WALKABLE || node->state == LEVEL_CROUCH;
+}
+
 /* Whether a capsule walks from node `a` to node `b` of the next cell. */
 static bool8_t level_step(LevelGrid *grid, const LevelNode *a,
                           const LevelNode *b) {
-  if (a->state != LEVEL_WALKABLE || b->state != LEVEL_WALKABLE) {
+  if (!level_passable(a) || !level_passable(b) ||
+      (grid->standing_only &&
+       (a->state != LEVEL_WALKABLE || b->state != LEVEL_WALKABLE))) {
     return false_v;
   }
   const float32_t rise = b->position.y - a->position.y;
@@ -372,8 +419,106 @@ static uint32_t level_walk(LevelGrid *grid, int32_t start, int32_t *queue) {
         }
       }
     }
+    /* A ladder joins its foot and its top either way. */
+    for (uint32_t i = 0; i < grid->link_count; ++i) {
+      const int32_t *link = &grid->links[2u * i];
+      const int32_t other = link[0] == index   ? link[1]
+                            : link[1] == index ? link[0]
+                                               : -1;
+      if (other >= 0 && !grid->nodes[other].visited) {
+        grid->nodes[other].visited = true_v;
+        grid->nodes[other].parent = index;
+        grid->nodes[other].ladder = true_v;
+        queue[tail++] = other;
+      }
+    }
   }
   return tail;
+}
+
+/* The passable node within `margin` of [lo, hi] in x and z, with y in
+   [y_min, y_max], nearest its center in x and z, the highest first when
+   `highest`; -1 when none. */
+static int32_t level_ladder_end(const LevelGrid *grid, Vec3 lo, Vec3 hi,
+                                float32_t margin, float32_t y_min,
+                                float32_t y_max, bool8_t highest) {
+  const int32_t x0 =
+      (int32_t)floorf((lo.x - margin - grid->min.x) / grid->cell);
+  const int32_t x1 =
+      (int32_t)floorf((hi.x + margin - grid->min.x) / grid->cell);
+  const int32_t z0 =
+      (int32_t)floorf((lo.z - margin - grid->min.z) / grid->cell);
+  const int32_t z1 =
+      (int32_t)floorf((hi.z + margin - grid->min.z) / grid->cell);
+  const Vec2 center = {(lo.x + hi.x) * 0.5f, (lo.z + hi.z) * 0.5f};
+  int32_t best = -1;
+  float32_t best_y = 0.0f;
+  float32_t best_distance = INFINITY;
+  for (int32_t z = Max(z0, 0); z <= Min(z1, (int32_t)grid->nz - 1); ++z) {
+    for (int32_t x = Max(x0, 0); x <= Min(x1, (int32_t)grid->nx - 1); ++x) {
+      const uint8_t layers = grid->layers[(size_t)z * grid->nx + x];
+      for (uint32_t l = 0; l < layers; ++l) {
+        const LevelNode *node =
+            &grid->nodes[((size_t)z * grid->nx + x) * LEVEL_LAYER_MAX + l];
+        if (!level_passable(node) || node->position.y < y_min ||
+            node->position.y > y_max) {
+          continue;
+        }
+        const float32_t distance =
+            hypotf(node->position.x - center.x, node->position.z - center.y);
+        const bool8_t higher = highest && node->position.y > best_y + 0.05f;
+        const bool8_t level = !highest || node->position.y > best_y - 0.05f;
+        if (best < 0 || higher || (level && distance < best_distance)) {
+          best = (int32_t)(node - grid->nodes);
+          best_y = node->position.y;
+          best_distance = distance;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/* Joins the floor at each ladder's foot to the floor its top reaches: a
+   trigger brush with the FPS module's `fps_ladder`, reaching above the
+   floor it leads to. The caller frees `grid->links`. */
+static void level_ladders(LevelGrid *grid) {
+  grid->links = NULL;
+  grid->link_count = 0u;
+  static const String8 name = {(uint8_t *)"fps_ladder", 10u};
+  const VkrTypeDesc *type = vkr_scene_world_type_named(name);
+  VkrEntityId ladders[64];
+  const uint32_t found = type ? vkr_scene_find_typed(grid->scene, type, ladders,
+                                                     ArrayCount(ladders))
+                              : 0u;
+  const uint32_t count = Min(found, (uint32_t)ArrayCount(ladders));
+  VkrBrushGeometry *scratch = count ? malloc(sizeof(*scratch)) : NULL;
+  grid->links = scratch ? malloc(2u * count * sizeof(*grid->links)) : NULL;
+  if (!grid->links) {
+    free(scratch);
+    return;
+  }
+  const float32_t margin = grid->capsule->radius + 1.0f;
+  for (uint32_t i = 0; i < count; ++i) {
+    Vec3 lo = vec3_zero();
+    Vec3 hi = vec3_zero();
+    if (!vkr_editor_entity_world_box(grid->scene, ladders[i], scratch, &lo,
+                                     &hi)) {
+      continue;
+    }
+    const int32_t foot = level_ladder_end(
+        grid, lo, hi, margin, lo.y - grid->capsule->step_up - 0.1f,
+        lo.y + grid->capsule->step_up + 0.1f, false_v);
+    const int32_t top = level_ladder_end(grid, lo, hi, margin,
+                                         lo.y + grid->capsule->step_up + 0.5f,
+                                         hi.y + 0.1f, true_v);
+    if (foot >= 0 && top >= 0) {
+      grid->links[2u * grid->link_count] = foot;
+      grid->links[2u * grid->link_count + 1u] = top;
+      grid->link_count++;
+    }
+  }
+  free(scratch);
 }
 
 /* The walkable node nearest `point`, or -1. */
@@ -392,7 +537,7 @@ static int32_t level_nearest(const LevelGrid *grid, Vec3 point) {
         const LevelNode *node =
             &grid->nodes[((size_t)z * grid->nx + x) * LEVEL_LAYER_MAX + l];
         const float32_t distance = vec3_length(vec3_sub(node->position, point));
-        if (node->state == LEVEL_WALKABLE && distance < best_distance) {
+        if (level_passable(node) && distance < best_distance) {
           best = (int32_t)(node - grid->nodes);
           best_distance = distance;
         }
@@ -470,14 +615,16 @@ static void level_lint_floor(LevelGrid *grid, LevelIssues *issues) {
       const uint8_t layers = grid->layers[(size_t)z * grid->nx + x];
       for (uint32_t l = 0; l < layers; ++l) {
         const LevelNode *node = level_node(grid, x, z, l);
-        if ((node->state == LEVEL_LOW || node->state == LEVEL_NARROW) &&
+        if ((node->state == LEVEL_LOW || node->state == LEVEL_NARROW ||
+             node->state == LEVEL_CROUCH) &&
             level_near_walkable(grid, x, z, node)) {
-          level_issue(issues,
-                      node->state == LEVEL_LOW ? VKR_EDITOR_LEVEL_LOW_CEILING
-                                               : VKR_EDITOR_LEVEL_TOO_NARROW,
-                      node->position,
-                      node->blocker.u64 ? node->blocker : node->entity,
-                      node->headroom);
+          level_issue(
+              issues,
+              node->state == LEVEL_LOW      ? VKR_EDITOR_LEVEL_LOW_CEILING
+              : node->state == LEVEL_CROUCH ? VKR_EDITOR_LEVEL_CROUCH_ONLY
+                                            : VKR_EDITOR_LEVEL_TOO_NARROW,
+              node->position, node->blocker.u64 ? node->blocker : node->entity,
+              node->headroom);
         }
       }
     }
@@ -701,6 +848,7 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
   /* Physics queries take a mutable scene but change none of its state. */
   LevelGrid grid = job->grid;
   grid.scene = (VkrScene *)scene;
+  level_ladders(&grid);
   const size_t total = (size_t)grid.nx * grid.nz * LEVEL_LAYER_MAX;
   uint32_t walkable = 0u;
   uint32_t samples = 0u;
@@ -718,7 +866,7 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
     reachable = level_walk(&grid, origin, queue);
     /* Each walkable area the start cannot reach, once, with its size. */
     for (size_t i = 0; i < total; ++i) {
-      if (grid.nodes[i].state != LEVEL_WALKABLE || grid.nodes[i].visited) {
+      if (!level_passable(&grid.nodes[i]) || grid.nodes[i].visited) {
         continue;
       }
       const uint32_t area = level_walk(&grid, (int32_t)i, queue);
@@ -730,6 +878,7 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
     }
   }
   free(queue);
+  free(grid.links);
   if (stats) {
     *stats = (VkrEditorLevelStats){.cell = grid.cell,
                                    .samples = samples,
@@ -759,6 +908,7 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
   *route = (VkrEditorLevelRoute){0};
   LevelGrid grid = job->grid;
   grid.scene = (VkrScene *)scene;
+  level_ladders(&grid);
   const size_t total = (size_t)grid.nx * grid.nz * LEVEL_LAYER_MAX;
   int32_t *queue = malloc(total * sizeof(*queue));
   const int32_t start = level_nearest(&grid, from);
@@ -768,8 +918,20 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
   bool8_t reached = false_v;
   int32_t end = -1;
   if (queue && start >= 0) {
-    const uint32_t visited = level_walk(&grid, start, queue);
+    /* A standing route first, so `crouch` means one is needed. */
+    grid.standing_only = true_v;
+    uint32_t visited = level_walk(&grid, start, queue);
     reached = goal >= 0 && grid.nodes[goal].visited;
+    if (!reached) {
+      for (size_t i = 0; i < total; ++i) {
+        grid.nodes[i].visited = false_v;
+        grid.nodes[i].parent = -1;
+        grid.nodes[i].ladder = false_v;
+      }
+      grid.standing_only = false_v;
+      visited = level_walk(&grid, start, queue);
+      reached = goal >= 0 && grid.nodes[goal].visited;
+    }
     end = reached ? goal : start;
     /* A failed route ends at the reached floor nearest `to`, to show where
        the way stops. */
@@ -789,6 +951,8 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
     /* Walk back from the end, then reverse into start-to-end order. */
     uint32_t count = 0u;
     for (int32_t at = end; at >= 0; at = grid.nodes[at].parent) {
+      route->crouch |= grid.nodes[at].state == LEVEL_CROUCH;
+      route->ladders += grid.nodes[at].ladder ? 1u : 0u;
       if (grid.nodes[at].parent >= 0) {
         *length +=
             vec3_length(vec3_sub(grid.nodes[at].position,
@@ -806,6 +970,7 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
     *path_count = count;
   }
   free(queue);
+  free(grid.links);
   return reached;
 }
 
@@ -827,6 +992,7 @@ bool8_t vkr_editor_level_job_map(VkrEditorLevelJob *job, const VkrScene *scene,
   if (cells > capacity) {
     return false_v;
   }
+  level_ladders(&grid);
   const size_t total = cells * LEVEL_LAYER_MAX;
   int32_t *queue = start ? malloc(total * sizeof(*queue)) : NULL;
   const int32_t origin = queue ? level_nearest(&grid, *start) : -1;
@@ -835,24 +1001,28 @@ bool8_t vkr_editor_level_job_map(VkrEditorLevelJob *job, const VkrScene *scene,
     reachable = level_walk(&grid, origin, queue);
   }
   free(queue);
+  free(grid.links);
   uint32_t samples = 0u;
   uint32_t walkable = 0u;
   for (size_t c = 0; c < cells; ++c) {
-    /* The highest walkable floor of the cell, else its highest floor;
-       floors are found from the top down. */
+    /* The highest walkable floor of the cell, else its highest crouch
+       floor, else its highest floor; floors are found from the top down. */
     const LevelNode *shown = NULL;
     for (uint32_t l = 0; l < grid.layers[c]; ++l) {
       const LevelNode *node = &grid.nodes[c * LEVEL_LAYER_MAX + l];
       samples++;
       walkable += node->state == LEVEL_WALKABLE;
       if (!shown ||
-          (node->state == LEVEL_WALKABLE && shown->state != LEVEL_WALKABLE)) {
+          (node->state == LEVEL_WALKABLE && shown->state != LEVEL_WALKABLE) ||
+          (node->state == LEVEL_CROUCH && !level_passable(shown))) {
         shown = node;
       }
     }
     char mark = '-';
     if (shown && shown->state == LEVEL_WALKABLE) {
       mark = origin >= 0 && !shown->visited ? ',' : '.';
+    } else if (shown && shown->state == LEVEL_CROUCH) {
+      mark = origin >= 0 && !shown->visited ? ';' : 'c';
     } else if (shown && shown->state == LEVEL_STEEP) {
       mark = '/';
     } else if (shown && shown->state == LEVEL_LOW) {
@@ -1477,7 +1647,8 @@ static const char *level_issue_label(VkrEditorLevelIssueKind kind) {
   static const char *const labels[VKR_EDITOR_LEVEL_ISSUE_COUNT] = {
       "Step too high",   "Too steep",           "Low ceiling",
       "Gap too narrow",  "Edge into void",      "Unreachable area",
-      "Brushes overlap", "Brush did not build", "Connection does not route"};
+      "Brushes overlap", "Brush did not build", "Connection does not route",
+      "Crouch only"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? labels[kind] : "Issue";
 }
 
