@@ -210,6 +210,22 @@ bool vkr_bake_lightmap_rasterize_page(
           (uint32_t)std::min((float32_t)(rect.y + rect.height - 1u),
                              std::ceil(std::max({py[0], py[1], py[2]})));
       const float32_t inverse_area = 1.0f / area;
+      /* The barycentric weights change linearly across the page, so one
+         texel step moves the same world offset everywhere on the
+         triangle. */
+      const float32_t w0_dx = (py[1] - py[2]) * inverse_area;
+      const float32_t w0_dy = (px[2] - px[1]) * inverse_area;
+      const float32_t w1_dx = (py[2] - py[0]) * inverse_area;
+      const float32_t w1_dy = (px[0] - px[2]) * inverse_area;
+      const Vec3 edge_1 =
+          vec3_sub(triangle.vertex[1].position, triangle.vertex[0].position);
+      const Vec3 edge_2 =
+          vec3_sub(triangle.vertex[2].position, triangle.vertex[0].position);
+      /* position = p0 + w1 * edge_1 + w2 * edge_2, w2 = 1 - w0 - w1. */
+      const Vec3 step_x = vec3_add(vec3_scale(edge_1, w1_dx),
+                                   vec3_scale(edge_2, -w0_dx - w1_dx));
+      const Vec3 step_y = vec3_add(vec3_scale(edge_1, w1_dy),
+                                   vec3_scale(edge_2, -w0_dy - w1_dy));
       for (uint32_t y = min_y; y <= max_y; ++y) {
         for (uint32_t x = min_x; x <= max_x; ++x) {
           const float32_t cx = (float32_t)x + 0.5f;
@@ -238,6 +254,8 @@ bool vkr_bake_lightmap_rasterize_page(
               vec3_add(vec3_add(vec3_scale(triangle.vertex[0].normal, w0),
                                 vec3_scale(triangle.vertex[1].normal, w1)),
                        vec3_scale(triangle.vertex[2].normal, w2)));
+          texel.step_x = step_x;
+          texel.step_y = step_y;
           texel.triangle_index = t;
           texel.source_instance_index = instance;
           texels.push_back(texel);

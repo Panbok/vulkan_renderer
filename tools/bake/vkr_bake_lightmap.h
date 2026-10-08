@@ -57,6 +57,10 @@ struct VkrBakeLightmapTexel {
   Vec3 position = {};
   /* Interpolated shading normal, unit length. */
   Vec3 normal = {};
+  /* World offsets of one texel step along the page's x and y on the
+     texel's triangle: the texel's footprint on the surface. */
+  Vec3 step_x = {};
+  Vec3 step_y = {};
   uint32_t triangle_index = 0u;
   /* The lightmapped instance whose rectangle holds the texel. */
   uint32_t source_instance_index = 0u;

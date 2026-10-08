@@ -158,9 +158,18 @@ and sample index. Textured Bistro layers at 64 samples in one buffer per
 65,536 texels ran 7 s each and were ended for impacting interactivity, and so
 was a buffer of 65,536 texels at 8 samples while a browser drew on the same
 GPU. A gather returns a texel's direct and indirect light apart. Direct
-light at the texel (lamp groups only) is evaluated once per texel for
-point, spot and directional lights, which draw no random numbers, and at
-one point per sample for rectangle lights; indirect light is the
+light at the texel (lamp groups only) covers the texel's footprint, the
+world offsets of one texel step along the page's axes on its triangle
+(`VkrBakeLightmapTexel::step_x`, `step_y`). Point, spot and directional
+lights, which draw no random numbers, are evaluated once per texel as the
+mean over a 3×3 grid of the footprint's ninths; rectangle lights at one
+random footprint point per sample. A hard shadow edge crossing a texel
+then leaves its covered share, which bilinear filtering draws as a smooth
+edge; from the texel's center alone, every texel was lit or shadowed and
+the edge stepped by whole texels (12.5 cm at 8 texels per brush unit).
+A footprint point counts only when a ray from the texel's center to it,
+1 mm off the surface, meets nothing, so the part of a floor texel under a
+wall, or past a thin wall, takes no light from the far side. Indirect light is the
 cosine-weighted hemisphere integral of bounce light, emission and sky, with
 the variance of its luminance mean over the samples. An optional indirect
 clamp (`--indirect-clamp`, off by default) scales a sample brighter than

@@ -130,6 +130,12 @@ void test_rasterize_covers_a_quad_once() {
     assert(fabsf(texel.position.y - 3.0f * v) < 1.0e-5f);
     assert(fabsf(texel.position.z - 1.0f) < 1.0e-6f);
     assert(fabsf(texel.normal.z - 1.0f) < 1.0e-6f);
+    /* One texel of the 2 x 3 quad's 8 x 8 is 0.25 wide and 0.375 high, on
+       either triangle. */
+    assert(fabsf(texel.step_x.x - 0.25f) < 1.0e-5f);
+    assert(fabsf(texel.step_x.y) < 1.0e-5f && fabsf(texel.step_x.z) < 1.0e-5f);
+    assert(fabsf(texel.step_y.y - 0.375f) < 1.0e-5f);
+    assert(fabsf(texel.step_y.x) < 1.0e-5f && fabsf(texel.step_y.z) < 1.0e-5f);
     if (i > 0u) {
       const VkrBakeLightmapTexel &previous = texels[i - 1u];
       assert(previous.y < texel.y ||

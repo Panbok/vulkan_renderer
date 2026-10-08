@@ -639,10 +639,29 @@ static float luminance(float3 value) {
   return dot(value, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
+/* Whether `point`, on the texel's surface within its footprint, is the
+   surface the texel sees: nothing lies between the texel's center and it,
+   just off the surface. A point under a wall standing on the surface, or
+   past a thin wall, is not, so its light does not leak into the texel. */
+static bool footprint_reaches(thread const Scene &scene, float3 center,
+                              float3 normal, float3 point) {
+  float3 from = center + normal * 1.0e-3f;
+  float3 to = point + normal * 1.0e-3f;
+  float span = distance(from, to);
+  if (!(span > 1.0e-5f)) {
+    return true;
+  }
+  return !find_stop(scene, from, (to - from) / span, span, true).found;
+}
+
 /* One layer's gather at one texel, over a run of its samples. Each run adds
    its share of every mean; the first run starts them. Direct light from
    point, spot and directional lights is the same at every sample, so the
-   first run evaluates it once; rectangle lights take one point per sample. */
+   first run evaluates it once, as the mean over a 3x3 grid of points across
+   the texel's footprint, so a shadow edge crossing the texel leaves its
+   covered share instead of all or nothing; rectangle lights take one point
+   per sample, at a random point of the footprint. Footprint points the
+   texel's center does not reach on its surface are left out. */
 kernel void lightmap_gather(
     device const float4 *texel_positions [[buffer(0)]],
     device const float4 *texel_normals [[buffer(1)]],
@@ -662,6 +681,7 @@ kernel void lightmap_gather(
     device float4 *direct [[buffer(15)]],
     device float2 *moments [[buffer(16)]],
     device float *backface [[buffer(17)]],
+    device const float4 *texel_footprints [[buffer(18)]],
     texture2d_array<half> textures [[texture(0)]],
     texture2d<float> sky [[texture(1)]],
     texture2d<float> dfg [[texture(2)]],
@@ -687,6 +707,8 @@ kernel void lightmap_gather(
   uint texel = args.first_texel + id;
   float3 texel_normal = texel_normals[texel].xyz;
   float3 texel_position = texel_positions[texel].xyz;
+  float3 step_x = texel_footprints[2u * texel + 0u].xyz;
+  float3 step_y = texel_footprints[2u * texel + 1u].xyz;
   float3 origin = texel_position + texel_normal * 1.0e-3f;
   bool use_sky = (args.flags & 1u) != 0u;
   bool use_emission = (args.flags & 2u) != 0u;
@@ -702,9 +724,22 @@ kernel void lightmap_gather(
     /* These lights draw no random numbers. */
     Rng unused;
     unused.state = texel_seed;
-    direct_total = direct_irradiance(scene, lights, layer_lights, 0u,
-                                     args.rectangle_first, texel_position,
-                                     texel_normal, texel_normal, unused);
+    float points = 0.0f;
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        float3 point = texel_position + step_x * (float(x) / 3.0f) +
+                       step_y * (float(y) / 3.0f);
+        if ((x != 0 || y != 0) &&
+            !footprint_reaches(scene, texel_position, texel_normal, point)) {
+          continue;
+        }
+        direct_total += direct_irradiance(scene, lights, layer_lights, 0u,
+                                          args.rectangle_first, point,
+                                          texel_normal, texel_normal, unused);
+        points += 1.0f;
+      }
+    }
+    direct_total /= points;
   }
   bool texel_rectangles =
       texel_direct && args.rectangle_first < args.light_count;
@@ -722,11 +757,16 @@ kernel void lightmap_gather(
     Rng rng;
     rng.state = mix_seed(texel_seed ^ (s * 0x85ebca6bu));
     if (texel_rectangles) {
+      float3 point = texel_position + step_x * (rng.next() - 0.5f) +
+                     step_y * (rng.next() - 0.5f);
+      if (!footprint_reaches(scene, texel_position, texel_normal, point)) {
+        point = texel_position;
+      }
       direct_total += inverse_samples *
                       direct_irradiance(scene, lights, layer_lights,
                                         args.rectangle_first,
-                                        args.light_count, texel_position,
-                                        texel_normal, texel_normal, rng);
+                                        args.light_count, point, texel_normal,
+                                        texel_normal, rng);
     }
     float3 direction = cosine_direction(texel_normal, rng.next(), rng.next());
     float3 ray_origin = origin;
@@ -1323,14 +1363,34 @@ bool vkr_bake_metal_update_lighting(VkrBakeMetalContext *context,
 namespace {
 
 /* Texel positions and normals as float4 arrays. */
+/* Texel centers and normals, and when `out_footprints` is set the two
+   footprint steps of each texel. */
 bool upload_texels(id<MTLDevice> device,
                    const std::vector<VkrBakeLightmapTexel> &texels,
-                   id<MTLBuffer> *out_positions, id<MTLBuffer> *out_normals) {
+                   id<MTLBuffer> *out_positions, id<MTLBuffer> *out_normals,
+                   id<MTLBuffer> *out_footprints = nullptr) {
   const NSUInteger count = texels.size();
   *out_positions = shared_buffer(device, count * 4u * sizeof(float));
   *out_normals = shared_buffer(device, count * 4u * sizeof(float));
   if (!*out_positions || !*out_normals) {
     return false;
+  }
+  if (out_footprints) {
+    *out_footprints = shared_buffer(device, count * 8u * sizeof(float));
+    if (!*out_footprints) {
+      return false;
+    }
+    float *f = static_cast<float *>((*out_footprints).contents);
+    for (NSUInteger i = 0u; i < count; ++i) {
+      const VkrBakeLightmapTexel &texel = texels[i];
+      const Vec3 steps[2] = {texel.step_x, texel.step_y};
+      for (uint32_t k = 0u; k < 2u; ++k) {
+        f[8u * i + 4u * k + 0u] = steps[k].x;
+        f[8u * i + 4u * k + 1u] = steps[k].y;
+        f[8u * i + 4u * k + 2u] = steps[k].z;
+        f[8u * i + 4u * k + 3u] = 0.0f;
+      }
+    }
   }
   float *p = static_cast<float *>((*out_positions).contents);
   float *n = static_cast<float *>((*out_normals).contents);
@@ -1452,9 +1512,11 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
     id<MTLBuffer> backface =
         settings.backface ? shared_buffer(context->device, count * sizeof(float))
                           : moments;
+    id<MTLBuffer> footprints = nil;
     if (!indirect || !direct || !moments || !layer_lights || !occlusion ||
         !backface ||
-        !upload_texels(context->device, texels, &positions, &normals)) {
+        !upload_texels(context->device, texels, &positions, &normals,
+                       &footprints)) {
       return false;
     }
     /* Lights the texel evaluates once come first, then the rectangles it
@@ -1523,6 +1585,7 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
       [encoder setBuffer:direct offset:0u atIndex:15u];
       [encoder setBuffer:moments offset:0u atIndex:16u];
       [encoder setBuffer:backface offset:0u atIndex:17u];
+      [encoder setBuffer:footprints offset:0u atIndex:18u];
       [encoder setTexture:context->textures atIndex:0u];
       [encoder setTexture:context->sky atIndex:1u];
       [encoder setTexture:context->dfg atIndex:2u];
