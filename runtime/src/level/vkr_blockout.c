@@ -212,6 +212,21 @@ static uint32_t layout_stairs(const SceneBlockout *shape, VkrBlockoutPiece *out,
         piece->points[k] = at;
         piece->points[k + 12u] = vec3_new(at.x, h, at.z);
       }
+      /* A landing past the top step, a width deep along the way the stairs
+         turn, so the climb ends on a tread as wide as it is deep rather
+         than off the top step's narrow inner end. */
+      const Vec3 radial = layout_arc_around(vec3_zero(), side, sweep, 1.0f);
+      const Vec3 tangent = vec3_new(side * cosf(sweep), 0.0f, -sinf(sweep));
+      const Vec3 near_inner = vec3_scale(radial, Max(inner, 0.01f));
+      const Vec3 near_outer = vec3_scale(radial, outer);
+      const Vec3 corners[4] = {near_inner, near_outer,
+                               vec3_add(near_outer, vec3_scale(tangent, w)),
+                               vec3_add(near_inner, vec3_scale(tangent, w))};
+      const float32_t bottom = layout_step_bottom(h, step_slab);
+      const float32_t bottoms[4] = {bottom, bottom, bottom, bottom};
+      const float32_t tops[4] = {h, h, h, h};
+      layout_prism(&out[count++], VKR_BLOCKOUT_PIECE_LANDING, corners, bottoms,
+                   tops);
     }
     break;
   }

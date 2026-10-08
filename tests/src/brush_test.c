@@ -524,15 +524,15 @@ static void brush_test_blockout(VkrBrushGeometry *geometry) {
     }
   }
 
-  /* An 800 m spiral: 4000 steps and its pole, an even rise, and each step
-     clear above the one a full turn below it. */
+  /* An 800 m spiral: 4000 steps, its pole and a landing, an even rise, and
+     each step clear above the one a full turn below it. */
   SceneBlockout spiral =
       brush_test_shape(SCENE_BLOCKOUT_STAIRS, SCENE_STAIRS_SPIRAL);
   spiral.height = 800.0f;
   spiral.turn = 72000.0f;
   const uint32_t steps = 4000u;
   uint32_t count = brush_test_layout(&spiral, &pieces);
-  assert(count == steps + 1u);
+  assert(count == steps + 2u);
   const uint32_t per_turn = steps / 200u;
   for (uint32_t i = 0; i < steps; ++i) {
     Vec3 lo = {0};
@@ -548,6 +548,29 @@ static void brush_test_blockout(VkrBrushGeometry *geometry) {
     }
   }
   assert(pieces[steps].kind == VKR_BLOCKOUT_PIECE_POLE);
+  free(pieces);
+
+  /* A one-turn spiral ends on a landing level with its top whose near edge
+     is the top step's far edge, the radius at the full sweep. */
+  spiral.height = 3.0f;
+  spiral.turn = 360.0f;
+  count = brush_test_layout(&spiral, &pieces);
+  assert(count == 15u + 2u);
+  const VkrBlockoutPiece *top = &pieces[14];
+  const VkrBlockoutPiece *landing = &pieces[16];
+  assert(landing->kind == VKR_BLOCKOUT_PIECE_LANDING);
+  Vec3 landing_lo = {0};
+  Vec3 landing_hi = {0};
+  brush_test_piece_box(landing, &landing_lo, &landing_hi);
+  assert(brush_test_near(landing_hi.y, 3.0f, 1.0e-4f));
+  /* Corners 2 and 3 of the top step (its far edge, top face) are corners 1
+     and 0 of the landing. */
+  for (uint32_t k = 0; k < 2u; ++k) {
+    const Vec3 a = top->points[4u + 3u - k];
+    const Vec3 b = landing->points[4u + k];
+    assert(brush_test_near(a.x, b.x, 1.0e-4f) &&
+           brush_test_near(a.z, b.z, 1.0e-4f));
+  }
   free(pieces);
 
   /* More steps than the limit is refused. */

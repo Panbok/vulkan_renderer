@@ -2637,14 +2637,29 @@ static bool8_t ops_build_brush_stairs(OpsContext *ctx,
   shape.height = (float32_t)height;
   shape.thickness = (float32_t)thickness;
   shape.length = run;
+  VkrQuat yaw = ops_yaw_toward(run > 0.0f ? delta : vec3_new(0, 0, 1));
   if (shape.stairs == SCENE_STAIRS_SPIRAL) {
-    shape.radius = vkr_clamp_f32(run * 0.15f, 0.1f, 0.5f);
-    shape.width = Max(run - shape.radius, 0.25f);
+    /* 'to' is the rim where the climb ends: an asked width leaves the pole
+       the rest of the run, and the stairs turn so the top step's far edge
+       and the landing past it lie on the radius through 'to'. */
+    if (vkr_bakery_json_get(args, "width")) {
+      shape.radius = run - shape.width;
+      if (shape.radius < 0.1f) {
+        return ops_fail(ctx, OPS_INVALID,
+                        "A spiral's 'width' must leave a 0.1 m pole inside "
+                        "the rim 'to' sets; move 'to' out or narrow it");
+      }
+    } else {
+      shape.radius = vkr_clamp_f32(run * 0.15f, 0.1f, 0.5f);
+      shape.width = Max(run - shape.radius, 0.25f);
+    }
+    const float32_t side = shape.left ? -1.0f : 1.0f;
+    const float32_t exit = run > 0.0f ? atan2f(delta.x, delta.z) : 0.0f;
+    yaw = vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f),
+                                   exit - side * shape.turn * 0.0174532925f);
   }
   uint32_t group = 0u;
-  if (!ops_blockout_add(ctx, batch, &brush, &shape, from,
-                        ops_yaw_toward(run > 0.0f ? delta : vec3_new(0, 0, 1)),
-                        &group)) {
+  if (!ops_blockout_add(ctx, batch, &brush, &shape, from, yaw, &group)) {
     return false_v;
   }
   batch->op_item[batch->op_count] = group;
@@ -9133,12 +9148,14 @@ static const OpsDef s_ops[] = {
     {"brush.stairs",
      "Create editable stairs (a blockout shape): 'from' is the bottom front "
      "center (a spiral's pole), 'to' the top back center (its height is the "
-     "stairs' height unless 'height' is set; a spiral's rim); 'kind' "
-     "straight (default), l or u (two flights and a landing; the length from "
-     "'from' to 'to' includes the landing), curved or spiral ('sweep' "
-     "degrees; a spiral turns 22.5 degrees a step by default); 'turn' left "
-     "or right; steps at most step_height (default 0.1875 m) high, 4096 at "
-     "most, solid or 'thickness' thick slabs.",
+     "stairs' height unless 'height' is set; for a spiral the rim point "
+     "where the climb ends: the top step ends on the radius through it and "
+     "a landing 'width' deep follows); 'kind' straight (default), l or u "
+     "(two flights and a landing; the length from 'from' to 'to' includes "
+     "the landing), curved or spiral ('sweep' degrees; a spiral turns 22.5 "
+     "degrees a step by default; 'width' leaves the pole the rest of the "
+     "radius); 'turn' left or right; steps at most step_height (default "
+     "0.1875 m) high, 4096 at most, solid or 'thickness' thick slabs.",
      "{\"type\":\"object\",\"properties\":{\"from\":" OPS_VEC3_SCHEMA
      ",\"to\":" OPS_VEC3_SCHEMA ",\"width\":{\"type\":\"number\"},"
      "\"height\":{\"type\":\"number\"},\"kind\":{\"type\":\"string\","
