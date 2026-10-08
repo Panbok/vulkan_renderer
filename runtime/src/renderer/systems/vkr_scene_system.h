@@ -1133,6 +1133,13 @@ typedef struct VkrScene {
   /** Clip and trigger brushes draw only while this holds: the editor sets it
       while it edits the scene; games and Play leave it off. */
   bool8_t editor_volumes;
+  /** Editor Hide (ADR-084): objects the viewport neither draws nor picks,
+      with everything under them; with `editor_isolate`, the only objects it
+      draws. Sorted by id, never saved or journaled. */
+  VkrEntityId *editor_hidden;
+  uint32_t editor_hidden_count;
+  uint32_t editor_hidden_capacity;
+  bool8_t editor_isolate;
   /** Brush rebuild state, created with the first brush. */
   VkrSceneBrushes *brushes;
   /** Terrain state, created with the first terrain (vkr_scene_terrain.h). */
@@ -1713,6 +1720,17 @@ bool8_t vkr_scene_entity_visible(const VkrScene *scene, VkrEntityId entity);
 
 /** Set the editor Show filter; a change resyncs every renderable. */
 void vkr_scene_set_editor_hidden_kinds(VkrScene *scene, uint32_t hidden_kinds);
+/** Most objects the editor's hidden set holds. */
+#define VKR_SCENE_EDITOR_HIDDEN_MAX 256u
+/** Replace the editor's hidden objects, or with `isolate` the only ones
+    drawn, by id in any container; an empty set draws everything. A change
+    resyncs every renderable. */
+bool8_t vkr_scene_set_editor_hidden(VkrScene *scene,
+                                    const VkrEntityId *entities, uint32_t count,
+                                    bool8_t isolate);
+/** Whether the editor's hidden set leaves `entity` drawn: neither it nor an
+    object above it is hidden, or with isolate one of them is isolated. */
+bool8_t vkr_scene_editor_shown(const VkrScene *scene, VkrEntityId entity);
 
 // ============================================================================
 // Light Components

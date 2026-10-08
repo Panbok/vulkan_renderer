@@ -137,6 +137,9 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_SCRIPT_EDITOR] = {"Script editor", VKR_UI_ICON_CODE, false_v},
     [CMD_CHANGES] = {"Agent changes", VKR_UI_ICON_TERMINAL, false_v},
     [CMD_BRUSH_DRAW] = {"Draw brushes", VKR_UI_ICON_SHAPES, false_v},
+    [CMD_HIDE] = {"Hide selected", VKR_UI_ICON_EYE_SLASH, false_v},
+    [CMD_ISOLATE] = {"Hide unselected", VKR_UI_ICON_EYE, false_v},
+    [CMD_REVEAL] = {"Show all hidden", VKR_UI_ICON_EYE, false_v},
     [CMD_BRUSH_CLIP] = {"Clip brushes", VKR_UI_ICON_SHAPES, false_v},
     [CMD_LEVEL_CHECKS] = {"Level checks", VKR_UI_ICON_PERSON_WALK, false_v},
     [CMD_TERRAIN] = {"Terrain", VKR_UI_ICON_WAVES, false_v},
@@ -260,6 +263,10 @@ static const EditorKeyBinding s_keymap[] = {
     {CMD_DELETE, KEY_BACKSPACE, 0u},
 #endif
     {CMD_RENAME, KEY_F2, 0u},
+    /* Hide, isolate and show all, as Blender does. */
+    {CMD_HIDE, KEY_H, 0u},
+    {CMD_ISOLATE, KEY_H, VKR_INPUT_MOD_SHIFT},
+    {CMD_REVEAL, KEY_H, VKR_INPUT_MOD_ALT},
     {CMD_CAMERA, KEY_F, 0u, true_v},
     {CMD_CAMERA, KEY_F3, 0u, true_v},
     /* Level design. */
@@ -451,11 +458,15 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
   case CMD_UNDO:
   case CMD_REDO:
     return editor_can_undo(frame, command == CMD_REDO);
+  case CMD_REVEAL:
+    return editor->hidden_count > 0u;
   case CMD_FRAME:
   case CMD_DUPLICATE:
   case CMD_DELETE:
   case CMD_RENAME:
-  case CMD_SNAP: {
+  case CMD_SNAP:
+  case CMD_HIDE:
+  case CMD_ISOLATE: {
     const VkrScene *scene =
         vkr_editor_entity_scene(frame, frame->selected_entity);
     return scene && vkr_scene_entity_alive(scene, frame->selected_entity) &&
@@ -626,6 +637,13 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_CHANGES:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_CHANGES);
+    break;
+  case CMD_HIDE:
+  case CMD_ISOLATE:
+    vkr_editor_hide_selection(editor, frame, command == CMD_ISOLATE);
+    break;
+  case CMD_REVEAL:
+    vkr_editor_hide_reveal(editor);
     break;
   case CMD_BRUSH_DRAW:
   case CMD_BRUSH_CLIP: {
@@ -847,8 +865,16 @@ static const EditorMenuEntry s_file_menu[] = {
     {CMD_SAVE, true_v},
 };
 static const EditorMenuEntry s_edit_menu[] = {
-    {CMD_UNDO},   {CMD_REDO},          {CMD_DUPLICATE, true_v}, {CMD_RENAME},
-    {CMD_DELETE}, {CMD_FRAME, true_v}, {CMD_COMMANDS, true_v},
+    {CMD_UNDO},
+    {CMD_REDO},
+    {CMD_DUPLICATE, true_v},
+    {CMD_RENAME},
+    {CMD_DELETE},
+    {CMD_FRAME, true_v},
+    {CMD_HIDE, true_v},
+    {CMD_ISOLATE},
+    {CMD_REVEAL},
+    {CMD_COMMANDS, true_v},
 };
 static const EditorMenuEntry s_view_menu[] = {
     {CMD_HIERARCHY},
@@ -2224,6 +2250,8 @@ typedef enum EditorContextAction {
   CONTEXT_FRAME,
   CONTEXT_SNAP,
   CONTEXT_VISIBILITY,
+  CONTEXT_ISOLATE,
+  CONTEXT_REVEAL,
   CONTEXT_RENAME,
   CONTEXT_COPY_NAME,
   CONTEXT_TAB_CLOSE,
@@ -2591,7 +2619,8 @@ static uint32_t editor_context_entity_items(VkrEditorUi *editor,
       vkr_entity_get_component(scene->world, entity, scene->comp_visibility);
   const SceneTransform *transform =
       vkr_entity_get_component(scene->world, entity, scene->comp_transform);
-  const bool8_t hidden = visibility && !visibility->visible;
+  const bool8_t hidden = (visibility && !visibility->visible) ||
+                         !vkr_editor_hide_shown(editor, scene, entity);
   /* A model whose textures cook stays in place until they finish. */
   const bool8_t cooking =
       vkr_editor_scene_panels_cooking(editor->scene_panels, entity);
@@ -2618,7 +2647,16 @@ static uint32_t editor_context_entity_items(VkrEditorUi *editor,
       items, &count,
       (EditorContextItem){hidden ? "Show" : "Hide",
                           hidden ? VKR_UI_ICON_EYE : VKR_UI_ICON_EYE_SLASH,
-                          NULL, !visibility, CONTEXT_VISIBILITY});
+                          hidden ? NULL : "H", false_v, CONTEXT_VISIBILITY});
+  context_push(items, &count,
+               (EditorContextItem){"Isolate", VKR_UI_ICON_EYE, NULL, false_v,
+                                   CONTEXT_ISOLATE});
+  if (editor->hidden_count) {
+    context_push(items, &count,
+                 (EditorContextItem){"Show all hidden", VKR_UI_ICON_EYE,
+                                     EDITOR_SHORTCUT("\xe2\x8c\xa5H", "Alt+H"),
+                                     false_v, CONTEXT_REVEAL});
+  }
   context_push(items, &count,
                (EditorContextItem){"Rename", VKR_UI_ICON_RENAME, NULL,
                                    !renamable, CONTEXT_RENAME});
@@ -2966,7 +3004,13 @@ static void editor_context_run(VkrEditorUi *editor,
     break;
   }
   case CONTEXT_VISIBILITY:
-    vkr_editor_toggle_visibility(frame, editor->context_entity);
+    vkr_editor_hide_eye(editor, frame, editor->context_entity);
+    break;
+  case CONTEXT_ISOLATE:
+    vkr_editor_hide_isolate(editor, editor->context_entity);
+    break;
+  case CONTEXT_REVEAL:
+    vkr_editor_hide_reveal(editor);
     break;
   case CONTEXT_RENAME:
     /* Details edits the name of the selection. */

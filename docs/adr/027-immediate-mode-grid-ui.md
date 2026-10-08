@@ -281,8 +281,11 @@ Hierarchy caches scene structure and expanded/search-matching rows when their
 inputs change, then emits only its visible window. Display slots are bounded;
 selection uses generation-bearing entity IDs rather than row positions. Rows
 show a caret, a type icon and a visibility toggle; right-click opens Frame,
-Hide/Show, Rename, Copy name, Script and Add component submenus, Detach,
-Duplicate and Delete; a double-click frames the object and opens its script. A right click
+Hide/Show, Isolate, Show all hidden, Rename, Copy name, Script and Add
+component submenus, Detach, Duplicate and Delete; a double-click frames the
+object and opens its script. The toggle and Hide hide an object in the
+editor only (ADR-084), and Show reveals it, through its saved Visibility when
+that hides it. A right click
 in the Scene that neither moves the pointer nor flies the camera within
 0.45 s picks under the pointer, selects the object and opens the same menu,
 or the creation menu over empty space; a longer or moving right press flies

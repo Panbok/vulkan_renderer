@@ -1396,6 +1396,136 @@ void vkr_editor_toggle_visibility(const VkrSampleUiFrame *frame,
       .action = VKR_SCENE_EDIT_APPLY, .entity = entity, .values = values};
 }
 
+static int32_t hide_find(const VkrEditorUi *editor, VkrEntityId entity) {
+  for (uint32_t i = 0; i < editor->hidden_count; ++i) {
+    if (editor->hidden[i].u64 == entity.u64) {
+      return (int32_t)i;
+    }
+  }
+  return -1;
+}
+
+static void hide_add(VkrEditorUi *editor, VkrEntityId entity) {
+  if (hide_find(editor, entity) >= 0) {
+    return;
+  }
+  if (editor->hidden_count >= ArrayCount(editor->hidden)) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
+                     "At most 256 objects hide at once; hide their parent");
+    return;
+  }
+  editor->hidden[editor->hidden_count++] = entity;
+  editor->hidden_dirty = true_v;
+}
+
+static void hide_remove(VkrEditorUi *editor, VkrEntityId entity) {
+  const int32_t index = hide_find(editor, entity);
+  if (index >= 0) {
+    editor->hidden[index] = editor->hidden[--editor->hidden_count];
+    editor->hidden_dirty = true_v;
+  }
+}
+
+bool8_t vkr_editor_hide_shown(const VkrEditorUi *editor, const VkrScene *scene,
+                              VkrEntityId entity) {
+  if (!editor->hidden_count || !scene) {
+    return true_v;
+  }
+  for (uint32_t depth = 0; entity.u64 && depth < scene->world->dir.capacity;
+       ++depth) {
+    if (hide_find(editor, entity) >= 0) {
+      return editor->hidden_isolate;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return !editor->hidden_isolate;
+}
+
+void vkr_editor_hide_eye(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                         VkrEntityId entity) {
+  const VkrScene *scene = vkr_editor_entity_scene(frame, entity);
+  if (!scene || !vkr_scene_entity_alive(scene, entity)) {
+    return;
+  }
+  if (!vkr_editor_hide_shown(editor, scene, entity)) {
+    /* Show it: drop it and what hides it above it, or isolate it too. */
+    if (editor->hidden_isolate) {
+      hide_add(editor, entity);
+      return;
+    }
+    for (VkrEntityId at = entity; at.u64;) {
+      hide_remove(editor, at);
+      const SceneTransform *transform =
+          vkr_entity_get_component(scene->world, at, scene->comp_transform);
+      at = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+    }
+    return;
+  }
+  const SceneVisibility *visibility =
+      vkr_entity_get_component(scene->world, entity, scene->comp_visibility);
+  if (visibility && !visibility->visible) {
+    vkr_editor_toggle_visibility(frame, entity);
+  } else if (editor->hidden_isolate) {
+    hide_remove(editor, entity);
+  } else {
+    hide_add(editor, entity);
+  }
+}
+
+void vkr_editor_hide_selection(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame, bool8_t isolate) {
+  if (isolate || editor->hidden_isolate) {
+    editor->hidden_count = 0u;
+    editor->hidden_isolate = isolate;
+    editor->hidden_dirty = true_v;
+  }
+  if (frame->selected_entity.u64) {
+    hide_add(editor, frame->selected_entity);
+  }
+  for (uint32_t i = 0; i < editor->selection_extra_count; ++i) {
+    hide_add(editor, editor->selection_extra[i]);
+  }
+  editor->hidden_isolate = isolate && editor->hidden_count > 0u;
+}
+
+void vkr_editor_hide_isolate(VkrEditorUi *editor, VkrEntityId entity) {
+  editor->hidden[0] = entity;
+  editor->hidden_count = 1u;
+  editor->hidden_isolate = true_v;
+  editor->hidden_dirty = true_v;
+}
+
+void vkr_editor_hide_reveal(VkrEditorUi *editor) {
+  editor->hidden_dirty = editor->hidden_count > 0u || editor->hidden_isolate;
+  editor->hidden_count = 0u;
+  editor->hidden_isolate = false_v;
+}
+
+void vkr_editor_hide_publish(VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame) {
+  if (!editor->hidden_dirty || !frame->hide_request) {
+    return;
+  }
+  uint32_t kept = 0u;
+  for (uint32_t i = 0; i < editor->hidden_count; ++i) {
+    const VkrEntityId entity = editor->hidden[i];
+    if (vkr_scene_entity_alive(vkr_editor_entity_scene(frame, entity),
+                               entity)) {
+      editor->hidden[kept++] = entity;
+    }
+  }
+  editor->hidden_count = kept;
+  editor->hidden_isolate = editor->hidden_isolate && kept > 0u;
+  VkrSampleHideRequest *request = frame->hide_request;
+  request->apply = true_v;
+  request->isolate = editor->hidden_isolate;
+  request->count = kept;
+  MemCopy(request->entities, editor->hidden, kept * sizeof(VkrEntityId));
+  editor->hidden_dirty = false_v;
+}
+
 /* Container display name: "World", the project's name for its open or added
    scene, or the scene document's file stem. */
 static String8 hierarchy_container_name(VkrEditorUi *editor,
@@ -2030,7 +2160,10 @@ static bool8_t hierarchy_entity_row(
   const VkrScene *row_scene = tree_node_scene(frame, n);
   const SceneVisibility *visibility = vkr_entity_get_component(
       row_scene->world, n->entity, row_scene->comp_visibility);
-  const bool8_t hidden = visibility && !visibility->visible;
+  const bool8_t saved_hidden = visibility && !visibility->visible;
+  const bool8_t editor_hidden =
+      !vkr_editor_hide_shown(editor, row_scene, n->entity);
+  const bool8_t hidden = saved_hidden || editor_hidden;
   const bool8_t script_over =
       hierarchy_script_drop(editor, frame, node_id, n->entity, list);
   /* Full-width row: hover and selection fills. */
@@ -2080,12 +2213,16 @@ static bool8_t hierarchy_entity_row(
                                        row_hot || selected ? 0.9f : 0.4f);
   const Vec4 off = selected ? theme->text_on_accent : theme->text;
   if (visibility &&
-      hierarchy_toggle(ui, string8_lit("visibility"), 0, y,
-                       hidden ? VKR_UI_ICON_EYE_SLASH : VKR_UI_ICON_EYE,
-                       hidden ? off : idle,
-                       hidden ? string8_lit("Show in the Scene (undoable)")
-                              : string8_lit("Hide in the Scene (undoable)")))
-    vkr_editor_toggle_visibility(frame, n->entity);
+      hierarchy_toggle(
+          ui, string8_lit("visibility"), 0, y,
+          hidden ? VKR_UI_ICON_EYE_SLASH : VKR_UI_ICON_EYE, hidden ? off : idle,
+          editor_hidden  ? string8_lit("Show in the editor (H hides, "
+                                        "Alt+H shows all)")
+          : saved_hidden ? string8_lit("Show: its Visibility hides it in "
+                                       "the game too (undoable)")
+                         : string8_lit("Hide in the editor only; Details' "
+                                       "Visibility hides it in the game")))
+    vkr_editor_hide_eye(editor, frame, n->entity);
   const bool8_t inherited_icons = n->icons_off && !n->icons_hidden;
   Vec4 icons_color = n->icons_hidden ? off : idle;
   if (inherited_icons)

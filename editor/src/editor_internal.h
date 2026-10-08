@@ -81,6 +81,11 @@ typedef enum EditorCommand {
   CMD_DELETE,
   CMD_RENAME,
   CMD_SNAP,
+  /* Hide the selection, show only it, or show everything hidden, in the
+     editor only (ADR-084). */
+  CMD_HIDE,
+  CMD_ISOLATE,
+  CMD_REVEAL,
   /* Enter play, or leave it with a reset, as Unity's Play does. */
   CMD_PLAY,
   /* Workbench tabs by position, then the previous and next one. */
@@ -321,6 +326,25 @@ void vkr_editor_context_menu_build(VkrEditorUi *editor,
 /* Toggle an entity's own visibility through the undoable edit journal. */
 void vkr_editor_toggle_visibility(const VkrSampleUiFrame *frame,
                                   VkrEntityId entity);
+/* Hide and Isolate (ADR-084), never saved or undone. Whether the Scene draws
+   `entity` by them: neither it nor an object above it is hidden, or with
+   isolate one of them is isolated. */
+bool8_t vkr_editor_hide_shown(const VkrEditorUi *editor, const VkrScene *scene,
+                              VkrEntityId entity);
+/* The Outliner eye: an object hidden in the editor shows again; one its
+   Visibility hides shows through the undoable journal; a shown one hides
+   in the editor only. */
+void vkr_editor_hide_eye(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                         VkrEntityId entity);
+/* Hides the selection, or with `isolate` shows only it. */
+void vkr_editor_hide_selection(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame, bool8_t isolate);
+/* Shows only `entity`, and what is under it. */
+void vkr_editor_hide_isolate(VkrEditorUi *editor, VkrEntityId entity);
+void vkr_editor_hide_reveal(VkrEditorUi *editor);
+/* Sends a changed set to the runtime, without objects no longer alive. */
+void vkr_editor_hide_publish(VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame);
 
 void vkr_editor_commands_update(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame);

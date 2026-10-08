@@ -172,6 +172,8 @@ typedef struct State {
   InputState *input_state;
   bool8_t scene_keyboard_focus;
   VkrSampleViewState view_state;
+  /* The editor's last applied Hide or Isolate (VkrSampleHideRequest). */
+  VkrSampleHideRequest hidden;
   VkrCamera perspective_camera;
   bool8_t perspective_camera_saved;
   /* Reused application-owned event buffer; outside a session, draining
@@ -4940,15 +4942,19 @@ static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
      or in a game (ADR-084). */
   const bool8_t volumes = application->editor_viewport.enabled &&
                           !application->editor_viewport.simulation_running;
-  VkrScene *world = vkr_scene_handle_get_scene(state->world_handle);
-  vkr_scene_set_editor_hidden_kinds(application->active_scene, hidden);
-  vkr_scene_set_editor_volumes(application->active_scene, volumes);
-  vkr_scene_set_editor_hidden_kinds(world, hidden);
-  vkr_scene_set_editor_volumes(world, volumes);
+  /* The editor's hidden objects likewise apply only while it edits. */
+  const uint32_t hidden_count = volumes ? state->hidden.count : 0u;
+  VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX] = {
+      application->active_scene,
+      vkr_scene_handle_get_scene(state->world_handle)};
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
-    VkrScene *additive = vkr_scene_handle_get_scene(state->additive_handles[i]);
-    vkr_scene_set_editor_hidden_kinds(additive, hidden);
-    vkr_scene_set_editor_volumes(additive, volumes);
+    scenes[2u + i] = vkr_scene_handle_get_scene(state->additive_handles[i]);
+  }
+  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    vkr_scene_set_editor_hidden_kinds(scenes[i], hidden);
+    vkr_scene_set_editor_volumes(scenes[i], volumes);
+    (void)vkr_scene_set_editor_hidden(scenes[i], state->hidden.entities,
+                                      hidden_count, state->hidden.isolate);
   }
 }
 
@@ -5119,6 +5125,7 @@ typedef struct VkrSampleUiRequests {
   VkrGraphicsSettingsRequest graphics_request;
   VkrSampleTransportAction transport_action;
   VkrSampleViewRequest view_request;
+  VkrSampleHideRequest hide_request;
   VkrSamplePhysicsRequest physics_request;
   VkrSampleIoRequest io_request;
   VkrSceneEditRequest scene_edit;
@@ -5199,6 +5206,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .scripts = &state->scripts,
       .view_state = state->view_state,
       .view_request = &requests->view_request,
+      .hide_request = &requests->hide_request,
       .physics_request = &requests->physics_request,
       .io_request = &requests->io_request,
       .io_result = &state->io_result,
@@ -6559,6 +6567,11 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       sample_frame_box(camera, requests.view_request.frame_min,
                        requests.view_request.frame_max);
     }
+  }
+  if (requests.hide_request.apply) {
+    state->hidden = requests.hide_request;
+    state->hidden.count =
+        Min(state->hidden.count, (uint32_t)VKR_SCENE_EDITOR_HIDDEN_MAX);
   }
   sample_show_filter_apply(application);
   sample_grid_apply(application);

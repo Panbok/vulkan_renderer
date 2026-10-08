@@ -944,8 +944,10 @@ bool8_t vkr_editor_brush_pick(const VkrSampleUiFrame *frame, Vec3 origin,
     }
     for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
       const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+      /* What the editor hides cannot be picked. */
       if (!vkr_scene_entity_alive(scene, entity) ||
-          !vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type)) {
+          !vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) ||
+          !vkr_scene_editor_shown(scene, entity)) {
         continue;
       }
       float32_t distance = 0.0f;
@@ -1234,8 +1236,8 @@ typedef struct MagnetGather {
 static void magnet_gather_visit(void *context, const LevelSolid *solid) {
   MagnetGather *gather = context;
   VkrEditorMagnet *magnet = gather->magnet;
-  /* Triggers are not solids to line up with. */
-  if (solid->trigger ||
+  /* Triggers are not solids to line up with, nor what the editor hides. */
+  if (solid->trigger || !vkr_scene_editor_shown(gather->scene, solid->entity) ||
       (gather->exclude.u64 &&
        level_within(gather->scene, solid->entity, gather->exclude))) {
     return;

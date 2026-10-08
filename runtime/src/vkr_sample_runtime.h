@@ -105,6 +105,18 @@ typedef struct VkrSampleViewState {
   bool8_t grid_through_geometry;
 } VkrSampleViewState;
 
+/* The editor's Hide and Isolate (ADR-084): objects of any loaded container
+ * the Scene neither draws nor picks, with everything under them, or with
+ * `isolate` the only ones it draws. The runtime keeps the latest applied
+ * set and uses it while the editor edits; Play draws everything. Nothing
+ * saves or journals it. */
+typedef struct VkrSampleHideRequest {
+  bool8_t apply;
+  bool8_t isolate;
+  uint32_t count;
+  VkrEntityId entities[VKR_SCENE_EDITOR_HIDDEN_MAX];
+} VkrSampleHideRequest;
+
 typedef struct VkrSampleViewRequest {
   VkrSampleViewState value;
   bool8_t apply;
@@ -452,6 +464,7 @@ typedef struct VkrSampleUiFrame {
   const VkrScriptHost *scripts;
   VkrSampleViewState view_state;
   VkrSampleViewRequest *view_request;
+  VkrSampleHideRequest *hide_request;
   VkrSamplePhysicsRequest *physics_request;
   VkrSampleIoRequest *io_request;
   const VkrSampleIoResult *io_result;

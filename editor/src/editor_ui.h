@@ -585,6 +585,13 @@ typedef struct VkrEditorUi {
    * the other's strip so corner labels never collide. */
   Vec2 grid_reserved_pt;
   float32_t grid_spacing; /* Drawn world cell size; zero without a grid. */
+  /* Hide and Isolate (ADR-084), for this session only: objects the Scene
+     neither draws nor picks, or with `hidden_isolate` the only ones it
+     draws; sent to the runtime while `hidden_dirty`. */
+  VkrEntityId hidden[VKR_SCENE_EDITOR_HIDDEN_MAX];
+  uint32_t hidden_count;
+  bool8_t hidden_isolate;
+  bool8_t hidden_dirty;
   /* The view's grid step at the last build: drags the runtime applies after
      the build snap moves to it. */
   float32_t move_step;

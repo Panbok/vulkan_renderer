@@ -292,6 +292,7 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
   }
   vkr_editor_projects_scene_action(editor->ui.projects, &editor->ui, frame);
   vkr_editor_projects_build(editor->ui.projects, &editor->ui, frame);
+  vkr_editor_hide_publish(&editor->ui, frame);
   if (vkr_editor_projects_modal(editor->ui.projects) ||
       vkr_editor_projects_dialog_contains(editor->ui.projects,
                                           (float32_t)frame->ui->mouse_x,

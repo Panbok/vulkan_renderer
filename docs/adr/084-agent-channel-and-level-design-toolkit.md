@@ -597,6 +597,17 @@ and of shape pieces, gathered once when a move or a box starts
 ([editor_level.c](../../editor/src/editor_level.c)), so a slanted face snaps
 by its box.
 
+Hide (H, the Outliner eye, Cmd `hide`) hides the selection in the editor
+only, Shift+H (`isolate`) shows only it and Alt+H (`unhide`) shows
+everything again, as Blender does. A hidden object neither draws nor picks,
+with everything under it, and the magnet and Alt+click face picks skip it;
+its saved Visibility, the journal and the document never change, and Play
+draws everything. The editor keeps up to 256 objects for the session and
+sends them in a `VkrSampleHideRequest`; each container takes them with
+`vkr_scene_set_editor_hidden`, which resyncs renderables only when the set
+changes. Visibility in Details, and `entity.set visible`, still hide an
+object in the game.
+
 With Snap moves to the grid on (default; Cmd `view.snap_moves`), a gizmo or
 Select-tool move first puts the low corner of the object's world box on the
 view's grid step, or its origin when it has no box, and the magnet then

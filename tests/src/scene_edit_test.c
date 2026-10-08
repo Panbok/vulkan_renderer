@@ -434,6 +434,55 @@ static void edit_test_brush_faces(void) {
   vkr_dmemory_destroy(&memory);
 }
 
+/* The editor's Hide and Isolate: a hidden parent hides what is under it,
+   isolate draws only the isolated objects and what is under them, and the
+   runtime's per-frame apply of an unchanged set, in any order, resyncs
+   nothing. */
+static void edit_test_editor_hidden(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), MB(256), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 0, 8, &error));
+  const VkrEntityId room = edit_test_entity(&scene, 0, "room");
+  const VkrEntityId wall = edit_test_entity(&scene, 1, "wall");
+  const VkrEntityId crate = edit_test_entity(&scene, 2, "crate");
+  vkr_scene_set_parent(&scene, wall, room);
+  vkr_scene_update(&scene, 0.0);
+  scene.render_full_sync_needed = false_v;
+
+  const VkrEntityId hide_room[1] = {room};
+  assert(vkr_scene_set_editor_hidden(&scene, hide_room, 1u, false_v));
+  assert(scene.render_full_sync_needed);
+  assert(!vkr_scene_editor_shown(&scene, room) &&
+         !vkr_scene_editor_shown(&scene, wall) &&
+         vkr_scene_editor_shown(&scene, crate));
+
+  /* Ids rise with creation, so `crate, room` is out of order. */
+  const VkrEntityId in_order[2] = {room, crate};
+  assert(vkr_scene_set_editor_hidden(&scene, in_order, 2u, true_v));
+  scene.render_full_sync_needed = false_v;
+  const VkrEntityId reordered[2] = {crate, room};
+  assert(reordered[0].u64 > reordered[1].u64);
+  assert(vkr_scene_set_editor_hidden(&scene, reordered, 2u, true_v));
+  assert(!scene.render_full_sync_needed);
+  assert(vkr_scene_editor_shown(&scene, wall) &&
+         vkr_scene_editor_shown(&scene, crate));
+  const VkrEntityId wall_only[1] = {wall};
+  assert(vkr_scene_set_editor_hidden(&scene, wall_only, 1u, true_v));
+  assert(vkr_scene_editor_shown(&scene, wall) &&
+         !vkr_scene_editor_shown(&scene, room) &&
+         !vkr_scene_editor_shown(&scene, crate));
+
+  assert(vkr_scene_set_editor_hidden(&scene, NULL, 0u, true_v));
+  assert(vkr_scene_editor_shown(&scene, room) && !scene.editor_isolate);
+
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+}
+
 static void edit_test_created_file(const char *path, uint32_t count) {
   FILE *file = file_fopen(path, "wb");
   assert(file);
@@ -1404,6 +1453,7 @@ bool32_t run_scene_edit_tests(void) {
   edit_test_structure();
   edit_test_groups();
   edit_test_brush_faces();
+  edit_test_editor_hidden();
   edit_test_large();
   VkrDMemory partition_memory;
   assert(vkr_dmemory_create(MB(16), MB(64), &partition_memory));

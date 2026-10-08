@@ -1744,6 +1744,10 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
   scene->render_dirty_count = 0;
   scene->render_dirty_capacity = 0;
   scene->render_full_sync_needed = true; // Full sync on first frame
+  scene->editor_hidden = NULL;
+  scene->editor_hidden_count = 0;
+  scene->editor_hidden_capacity = 0;
+  scene->editor_isolate = false_v;
 
   scene_invalidate_queries(scene);
   scene->next_render_id = 1;
@@ -2004,6 +2008,15 @@ vkr_internal void scene_arrays_shutdown(VkrScene *scene) {
         scene->alloc, scene->render_dirty_entities,
         scene->render_dirty_capacity * sizeof(VkrEntityId),
         AlignOf(VkrEntityId), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (scene->editor_hidden) {
+    vkr_allocator_free_aligned(
+        scene->alloc, scene->editor_hidden,
+        scene->editor_hidden_capacity * sizeof(VkrEntityId),
+        AlignOf(VkrEntityId), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    scene->editor_hidden = NULL;
+    scene->editor_hidden_count = 0;
+    scene->editor_hidden_capacity = 0;
   }
 }
 
@@ -3825,10 +3838,81 @@ void vkr_scene_set_editor_hidden_kinds(VkrScene *scene, uint32_t hidden_kinds) {
   }
 }
 
+vkr_internal int scene_entity_id_compare(const void *a, const void *b) {
+  const uint64_t left = ((const VkrEntityId *)a)->u64;
+  const uint64_t right = ((const VkrEntityId *)b)->u64;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+bool8_t vkr_scene_set_editor_hidden(VkrScene *scene,
+                                    const VkrEntityId *entities, uint32_t count,
+                                    bool8_t isolate) {
+  if (!scene) {
+    return false_v;
+  }
+  isolate = isolate && count > 0u;
+  /* Unchanged sets cost one sorted compare, so callers may apply every
+     frame. */
+  bool8_t same =
+      scene->editor_hidden_count == count && scene->editor_isolate == isolate;
+  if (same && count) {
+    VkrEntityId sorted[VKR_SCENE_EDITOR_HIDDEN_MAX];
+    if (count > ArrayCount(sorted)) {
+      return false_v;
+    }
+    MemCopy(sorted, entities, count * sizeof(*sorted));
+    qsort(sorted, count, sizeof(*sorted), scene_entity_id_compare);
+    same =
+        MemCompare(sorted, scene->editor_hidden, count * sizeof(*sorted)) == 0;
+  }
+  if (same) {
+    return true_v;
+  }
+  if (count > VKR_SCENE_EDITOR_HIDDEN_MAX ||
+      !scene_grow_array(scene->alloc, (void **)&scene->editor_hidden,
+                        &scene->editor_hidden_capacity,
+                        scene->editor_hidden_count, count, 16u,
+                        sizeof(VkrEntityId), AlignOf(VkrEntityId), false_v)) {
+    return false_v;
+  }
+  if (count) {
+    MemCopy(scene->editor_hidden, entities, count * sizeof(VkrEntityId));
+    qsort(scene->editor_hidden, count, sizeof(VkrEntityId),
+          scene_entity_id_compare);
+  }
+  scene->editor_hidden_count = count;
+  scene->editor_isolate = isolate;
+  scene->render_full_sync_needed = true;
+  return true_v;
+}
+
+bool8_t vkr_scene_editor_shown(const VkrScene *scene, VkrEntityId entity) {
+  if (!scene || !scene->editor_hidden_count) {
+    return true_v;
+  }
+  /* The directory's capacity bounds the walk, as vkr_scene_entity_visible
+     bounds its own, so a parent cycle cannot loop. */
+  const uint32_t max_depth = scene->world->dir.capacity;
+  for (uint32_t depth = 0; entity.u64 && depth < max_depth; ++depth) {
+    if (bsearch(&entity, scene->editor_hidden, scene->editor_hidden_count,
+                sizeof(VkrEntityId), scene_entity_id_compare)) {
+      return scene->editor_isolate;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return !scene->editor_isolate;
+}
+
 /* The editor Show filter: whether a mesh renderer, or a shape, of `entity`
-   draws. An animation component marks an animated mesh. */
+   draws. An animation component marks an animated mesh. The editor's
+   hidden set applies first. */
 vkr_internal bool8_t scene_kind_shown(const VkrScene *scene, VkrEntityId entity,
                                       bool8_t shape) {
+  if (!vkr_scene_editor_shown(scene, entity)) {
+    return false_v;
+  }
   if (shape && !scene->editor_volumes) {
     const SceneBrushSettings *brush =
         vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type);
