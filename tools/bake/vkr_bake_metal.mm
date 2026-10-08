@@ -1102,8 +1102,12 @@ bool upload_lights(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
         {light.constant, light.linear, light.quadratic, light.radiance},
         {light.right.x, light.right.y, light.right.z, light.half_width},
         {light.up.x, light.up.y, light.up.z, light.half_height},
+        // cone.z asks the kernel for shadow rays. Every baked light is
+        // static and reaches the screen only through its bake, so it is
+        // shadowed whatever casts_shadow says about runtime shadow maps;
+        // an unshadowed lamp lit the far side of every wall.
         {std::cos(light.inner_cone_angle), std::cos(light.outer_cone_angle),
-         light.casts_shadow ? 1.0f : 0.0f, light.enabled ? 1.0f : 0.0f}};
+         1.0f, light.enabled ? 1.0f : 0.0f}};
   }
   return true;
 }

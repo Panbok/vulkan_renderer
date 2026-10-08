@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-06
+updated: 2026-10-08
 authority: adr
 ---
 
@@ -161,9 +161,8 @@ tints. It is a lightmap subset of the ADR-054 transport:
   color, instead of refracting it;
 - cutout and blended surfaces, the shadow walk, light falloff, cones,
   rectangle lights, the shading-normal side rules and Russian roulette follow
-  the CPU integrator; directional lights, the atmosphere's key light among
-  them, always cast shadows, as the runtime's sun does
-  ([ADR-054](054-baked-diffuse-volumes.md));
+  the CPU integrator; every baked light casts shadows, whatever its
+  `casts_shadow` ([ADR-054](054-baked-diffuse-volumes.md));
 - normal maps, clearcoat, sheen, subsurface and anisotropy are not modeled.
 
 ### Encoding

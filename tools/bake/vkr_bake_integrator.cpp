@@ -918,14 +918,15 @@ bool8_t direct_lighting(const VkrBakeIntegrator *integrator,
         !medium_cross(&shadow_media, surface, out_error))
       return false_v;
     Vec3 visibility = vec3_new(1, 1, 1);
-    if ((rectangle || light.casts_shadow) &&
-        !shadow_transmittance(integrator,
-                              add(surface->position,
-                                  mul(wi_world, integrator->settings.ray_epsilon)),
-                              wi_world,
-                              distance < k_ray_max ? distance - integrator->settings.ray_epsilon
-                                                   : k_ray_max,
-                              shadow_media, &visibility, out_error))
+    // Baked lights are static and always shadowed (vkr_bake_metal.mm).
+    if (!shadow_transmittance(
+            integrator,
+            add(surface->position,
+                mul(wi_world, integrator->settings.ray_epsilon)),
+            wi_world,
+            distance < k_ray_max ? distance - integrator->settings.ray_epsilon
+                                 : k_ray_max,
+            shadow_media, &visibility, out_error))
       return false_v;
     result = add(result,
                  mul(mul(mul(evaluation.f, light_radiance), visibility),
@@ -1261,8 +1262,8 @@ bool8_t subsurface_direct_irradiance(const VkrBakeIntegrator *integrator,
     if (cosine <= 0.0f || dot3(direction, entry->geometric_normal) <= 0.0f)
       continue;
     Vec3 visibility = vec3_new(1, 1, 1);
-    if ((rectangle || light.casts_shadow) &&
-        !shadow_transmittance(
+    // Baked lights are static and always shadowed (vkr_bake_metal.mm).
+    if (!shadow_transmittance(
             integrator,
             add(entry->position,
                 mul(direction, integrator->settings.ray_epsilon)),
