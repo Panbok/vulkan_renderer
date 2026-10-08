@@ -36,6 +36,9 @@ sets the order of work and the checks that prove a level.
 - Send one `batch` with a `label` per unit, such as a room and its doors.
   A batch holds 2,048 edits and a box brush costs 7 (the brush and its six
   faces). Send a large batch with `dry_run` first.
+- Later operations of a batch can edit, cut, place against or group what
+  earlier ones made, by name or `$k`. Room parts carry the room's name:
+  cut a door into `north/Store/Wall South +Z` in the room's own batch.
 - Give names your prefix (`north/Store`) so name references stay unique.
 
 ## Verify, cheapest first

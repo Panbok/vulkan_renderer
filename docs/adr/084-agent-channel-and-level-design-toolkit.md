@@ -104,7 +104,15 @@ thread during the editor's build.
 | `view.capture` | A PNG of the Scene or the whole window, optionally from another view, framed on an entity or box, with grid labels |
 
 An entity argument is `"<world>:<index>:<generation>"`, a unique exact name,
-or `"$k"` for the entity operation `k` of the same batch created. Component
+or `"$k"` for the entity operation `k` of the same batch created. A name
+also finds an object an earlier operation of the same batch created, and a
+name both the scene and the batch hold is ambiguous. Operations that read
+geometry or poses (`brush.*` edits, `blockout.doorway`, `entity.place`,
+`brush.snap`, `mover.create`, `entity.parent` with `snap`) read such an
+object from the batch: its creation, then the batch's later sets,
+reparents and deletions, and the faces the batch added or removed. A batch
+can therefore build a room, cut its doors and furnish it before anything
+applies. Component
 values read and write through `vkr_type_read_json_document` and
 `vkr_type_write_json`, so they use the same names, units and validation as
 scene documents; `set` keeps every property it does not name. Rotations are
@@ -410,7 +418,9 @@ scene had none.
 
 Operations `brush.box`, `brush.wedge`, `brush.cylinder`, `brush.stairs`,
 `brush.set_material` (faces by `top`, `bottom`, `sides`, `+x`, `-x`, `+z`,
-`-z`), `blockout.room` (floor, ceiling and four walls around an interior box),
+`-z`), `blockout.room` (floor, ceiling and four walls around an interior box,
+named after the room, such as `<room>/Floor` and `<room>/Wall South +Z`, so
+two rooms' parts never share a name),
 `blockout.corridor` and `blockout.doorway` (an unscaled axis-aligned box wall
 becomes up to three brushes around an opening, named after it with `left`,
 `right` and `lintel`) build ordinary brushes. Each operation's result names
@@ -596,7 +606,7 @@ connections and the references to it. Further pieces are new brushes:
 | `brush.hollow` | Replaces a brush with walls of `thickness` around its inside |
 | `brush.carve` | Subtracts a `cutter` from `target`, or from every brush it touches, as non-overlapping convex pieces, at most one per cutter face; deletes the cutter unless `keep_cutter`. Planes that stop bounding a face leave as the cut proceeds, so a cylinder carves out of a cylinder; a piece that would need more than 64 faces refuses the operation and changes nothing |
 | `brush.merge` | Joins 2 to 8 brushes into one when their union is convex: the merged solid's volume must equal the sum of theirs |
-| `brush.patch` | Pulls a rectangle of a face's grid (`min` and `max` as `[u, v]` on the face's grid axes) out by `distance`, or pushes it in when negative. Pulled, it joins the brush when the union stays convex (a whole face stretches the brush) and is a new brush otherwise; pushed, it carves a recess or a hole. Every new face copies the face's material |
+| `brush.patch` | Pulls a rectangle of a face's grid (`min` and `max` as `[u, v]` world meters along the face's grid axes, `vkr_brush_grid_axes`: on a floor u is +X and v is -Z) out by `distance`, or pushes it in when negative. A rectangle off the face fails with the face's u and v ranges and axes. Pulled, it joins the brush when the union stays convex (a whole face stretches the brush) and is a new brush otherwise; pushed, it carves a recess or a hole. Every new face copies the face's material |
 | `brush.reshape` | Moves brush corners at `points` by the world `delta`: a corner, an edge's two ends, or with `split` {`point`, `normal`} a grid line's ends after cutting the brush along that plane. A piece whose moved corners stay on its hull becomes that hull. A piece a moved corner dents becomes the solid bounded by its faces through the moved corners (a face no longer flat bends along the line between the unmoved corners beside the moved ones), cut along its face planes until every part is convex: at most eight pieces in one batch, the brush keeping the first. Refused when the dent needs more pieces or a face folds through another |
 
 Carving keeps no boolean tree: pieces are ordinary brushes. Operations work
