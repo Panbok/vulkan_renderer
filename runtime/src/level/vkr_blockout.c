@@ -202,15 +202,18 @@ static uint32_t layout_stairs(const SceneBlockout *shape, VkrBlockoutPiece *out,
                              Max(inner, 0.01f), outer, center, side,
                              spiral ? layout_arc_around : layout_arc_beside);
     if (spiral) {
-      /* The pole, twelve sides up to the top tread. */
+      /* The pole, twelve sides up to 4 mm below the top tread: level with
+         it, the pole's top shares the tread's and the landing's plane where
+         their chords cross it, and they flicker (ADR-084 z_fight). */
       VkrBlockoutPiece *piece = &out[count++];
       piece->kind = VKR_BLOCKOUT_PIECE_POLE;
       piece->point_count = 24u;
+      const float32_t pole_top = Max(h - 0.004f, 0.5f * h);
       for (uint32_t k = 0; k < 12u; ++k) {
         const float32_t a = 6.28318530718f * (float32_t)k / 12.0f;
         const Vec3 at = vec3_new(sinf(a) * inner, 0.0f, cosf(a) * inner);
         piece->points[k] = at;
-        piece->points[k + 12u] = vec3_new(at.x, h, at.z);
+        piece->points[k + 12u] = vec3_new(at.x, pole_top, at.z);
       }
       /* A landing past the top step, a width deep along the way the stairs
          turn, so the climb ends on a tread as wide as it is deep rather
@@ -222,7 +225,13 @@ static uint32_t layout_stairs(const SceneBlockout *shape, VkrBlockoutPiece *out,
       const Vec3 corners[4] = {near_inner, near_outer,
                                vec3_add(near_outer, vec3_scale(tangent, w)),
                                vec3_add(near_inner, vec3_scale(tangent, w))};
-      const float32_t bottom = layout_step_bottom(h, step_slab);
+      /* From three quarters of a turn the landing reaches back over the
+         lowest steps; solid to the floor it would fill their headroom, so
+         it floats as the steps of a longer spiral do. */
+      const float32_t landing_slab = sweep >= 4.71238898f && !(step_slab > 0.0f)
+                                         ? Max(rise, 0.15f)
+                                         : step_slab;
+      const float32_t bottom = layout_step_bottom(h, landing_slab);
       const float32_t bottoms[4] = {bottom, bottom, bottom, bottom};
       const float32_t tops[4] = {h, h, h, h};
       layout_prism(&out[count++], VKR_BLOCKOUT_PIECE_LANDING, corners, bottoms,

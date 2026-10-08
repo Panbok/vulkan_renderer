@@ -484,7 +484,10 @@ are:
   ending on a landing at the top that runs a width along the turn from the
   top step's far edge, so the climb leaves onto a tread as deep as it is
   wide. Past one turn its steps float, each at least a rise thick, so no
-  step buries the flight below it. `brush.stairs` turns a spiral 22.5
+  step buries the flight below it; from three quarters of a turn the
+  landing floats too, since it reaches back over the lowest steps. The pole
+  stops 4 mm below the top tread, so its top shares no plane with the top
+  step or the landing (`z_fight`). `brush.stairs` turns a spiral 22.5
   degrees a step, at least once, unless `sweep` says otherwise; its `to` is
   the rim where the climb ends (the top step ends on the radius through it)
   and an asked `width` leaves the pole the rest of that radius. The top had
@@ -780,8 +783,9 @@ distance and main axis and sweep along one axis, so each meets only faces
 near its plane and extent. A shared area counts in the region its middle
 lies in, and not when the point 1 cm in front of that middle lies inside
 another solid, as a face buried in a wall. The issue names both solids
-(`entity` and `other`; one blockout shape's pieces name it twice) and the
-shared area in square meters.
+(`entity` and `other`; one blockout shape's pieces name it twice), the
+shared area in square meters and the plane's `normal`, the way both faces
+look.
 
 A `mover_timing` issue breaks the rule that every vehicle keeps a fixed
 stay and departure. A looping mover in the region with no positive `wait`

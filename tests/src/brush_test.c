@@ -500,6 +500,63 @@ static void brush_test_piece_box(const VkrBlockoutPiece *piece, Vec3 *lo,
 /* Blockout layouts (ADR-084) fit the capacity they ask for, every piece is
    a convex solid, a spiral climbs hundreds of meters at an even pitch with
    no flight buried in the one below, and the step limit refuses more. */
+/* Coplanar overlaps among blockout pieces, each a hull brush as the level
+   checks build them (ADR-084 z_fight), but for faces down on the floor. */
+static uint32_t brush_test_pieces_fight(const VkrBlockoutPiece *pieces,
+                                        uint32_t count,
+                                        VkrBrushGeometry *geometry) {
+  enum { FACE_CAP = 1024, VERTEX_CAP = 8192 };
+  VkrBrushFaceRef *faces = malloc(FACE_CAP * sizeof(*faces));
+  Vec3 *vertices = malloc(VERTEX_CAP * sizeof(*vertices));
+  VkrBrushFaceSlot *slots =
+      malloc(FACE_CAP * VKR_BRUSH_FACE_SLOT_MAX * sizeof(*slots));
+  assert(faces && vertices && slots);
+  uint32_t face_count = 0u;
+  uint32_t vertex_count = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+    const uint32_t plane_count = vkr_brush_hull(
+        pieces[i].points, pieces[i].point_count, planes, VKR_BRUSH_FACE_MAX);
+    assert(plane_count >= 4u);
+    assert(vkr_brush_build(planes, plane_count, geometry, NULL) ==
+           VKR_BRUSH_OK);
+    for (uint32_t f = 0; f < geometry->face_count; ++f) {
+      const VkrBrushPolygon polygon = geometry->polygons[f];
+      /* A face down on the base rests on the floor, which hides it. */
+      if (geometry->normals[f].y < -0.99f &&
+          fabsf(geometry->vertices[polygon.first].y) < 1.0e-4f) {
+        continue;
+      }
+      assert(face_count < FACE_CAP &&
+             vertex_count + polygon.count <= VERTEX_CAP);
+      faces[face_count++] = (VkrBrushFaceRef){
+          .normal = geometry->normals[f],
+          .first = vertex_count,
+          .count = polygon.count,
+          .owner = i,
+      };
+      for (uint32_t k = 0; k < polygon.count; ++k) {
+        vertices[vertex_count++] = geometry->vertices[polygon.first + k];
+      }
+    }
+  }
+  VkrBrushFaceOverlap fight = {0};
+  const uint32_t found = vkr_brush_coplanar_overlaps(
+      faces, face_count, vertices, slots, 1.0e-4f, &fight, 1u);
+  if (found) {
+    printf("  pieces %u and %u fight over %g m2 at (%g, %g, %g), normal "
+           "(%g, %g, %g)\n",
+           fight.owner_a, fight.owner_b, (double)fight.area,
+           (double)fight.center.x, (double)fight.center.y,
+           (double)fight.center.z, (double)fight.normal.x,
+           (double)fight.normal.y, (double)fight.normal.z);
+  }
+  free(faces);
+  free(vertices);
+  free(slots);
+  return found;
+}
+
 static void brush_test_blockout(VkrBrushGeometry *geometry) {
   VkrBlockoutPiece *pieces = NULL;
   VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
@@ -571,6 +628,8 @@ static void brush_test_blockout(VkrBrushGeometry *geometry) {
     assert(brush_test_near(a.x, b.x, 1.0e-4f) &&
            brush_test_near(a.z, b.z, 1.0e-4f));
   }
+  /* Its pieces as the level checks build them share no drawn plane. */
+  assert(brush_test_pieces_fight(pieces, count, geometry) == 0u);
   free(pieces);
 
   /* More steps than the limit is refused. */
