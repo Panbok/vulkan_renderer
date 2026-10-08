@@ -1300,8 +1300,9 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
       vkr_bakery_json_get(job->request, "lightmap_settings");
   VkrBakeryJson *settings = requested ? vkr_bakery_json_clone(arena, requested)
                                       : vkr_bakery_json_object(arena);
-  static const char *const scalars[] = {"samples", "max_depth", "seed",
-                                        "page_size", "texels_per_unit"};
+  static const char *const scalars[] = {
+      "samples",         "max_depth",          "seed",          "page_size",
+      "texels_per_unit", "denoise_iterations", "indirect_clamp"};
   for (uint32_t i = 0u; i < ArrayCount(scalars); ++i) {
     const VkrBakeryJson *value = vkr_bakery_json_get(settings, scalars[i]);
     if (!value) {
@@ -1318,6 +1319,13 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
                                               vkr_project_strdup(job, flag)));
     VKR_PROJECT_TRY(vkr_project_argument_push(
         job, &arguments, vkr_project_argument(job, value)));
+  }
+  /* `denoise` is a JSON boolean; the bake takes 0 or 1. */
+  const VkrBakeryJson *denoise = vkr_bakery_json_get(settings, "denoise");
+  if (denoise) {
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--denoise"));
+    VKR_PROJECT_TRY(vkr_project_argument_push(
+        job, &arguments, vkr_project_truthy(denoise) ? "1" : "0"));
   }
   int32_t code = 0;
   VKR_PROJECT_TRY(vkr_project_run_bakery(

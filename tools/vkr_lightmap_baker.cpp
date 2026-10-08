@@ -37,9 +37,10 @@ extern "C" {
  * reports throughput. `--gpu trace` measures Metal ray throughput; `--gpu
  * gather` bakes the layer irradiance on Metal and checks it against the CPU
  * integrator, and counts each layer's outlier texels. `--output` bakes the
- * scene's lightmap set (VKLM) on Metal, rejecting outlier texels before
- * encoding, and `--manifest` writes the bake's source closure for
- * `vkr_bakery bake lightmap`; `--inspect` stops after the manifest.
+ * scene's lightmap set (VKLM) on Metal, filling texels buried in solids and
+ * denoising each layer's indirect light before encoding (ADR-088), and
+ * `--manifest` writes the bake's source closure for `vkr_bakery bake lightmap`;
+ * `--inspect` stops after the manifest.
  */
 
 namespace {
@@ -52,8 +53,19 @@ namespace {
 constexpr float32_t kOutlierRatio = 2.0f;
 constexpr uint32_t kOutlierMinNeighbors = 3u;
 constexpr float32_t kOutlierNeighborTexels = 4.0f;
-/* Smoothing passes (vkr_bake_lightmap_smooth) over a published layer. */
+/* Smoothing passes (vkr_bake_lightmap_smooth) over a published layer's
+   direct light, or over all of it without denoising. */
 constexpr uint32_t kSmoothPasses = 1u;
+/* A-trous passes (vkr_bake_lightmap_denoise) over a published layer's
+   indirect light: steps 1, 2, 4 and 8 texels. */
+constexpr uint32_t kDenoiseIterations = 4u;
+constexpr float32_t kDenoiseSigma = 4.0f;
+/* Russian roulette starts after the second bounce. */
+constexpr uint32_t kRussianRouletteDepth = 2u;
+/* A texel whose first-bounce rays hit the back of one-sided surfaces more
+   often than this lies inside a solid, such as floor under a wall, and takes
+   its same-surface neighbors' light instead of its own. */
+constexpr float32_t kBuriedBackfaceFraction = 0.5f;
 /* World distance within which a first bounce occludes for the ambient
    occlusion every layer's alpha carries (ADR-088). */
 constexpr float32_t kOcclusionRadius = 1.0f;
@@ -92,12 +104,30 @@ struct Options {
   /* astcenc effort for the layer pages, 0 (fastest) to 100. */
   float32_t astc_effort = 10.0f;
   uint32_t dilation_passes = 4u;
-  /* Outlier rejection ratio for published layers; zero keeps every texel. */
+  /* Outlier rejection ratio for published layers without denoising; zero
+     keeps every texel. */
   float32_t outlier_ratio = kOutlierRatio;
-  /* Smoothing passes over published layers after outlier rejection. */
+  /* Smoothing passes over published layers after outlier rejection: the
+     direct light when denoising, else all of it. */
   uint32_t smooth_passes = kSmoothPasses;
   /* Ambient occlusion radius in world units; zero writes alpha one. */
   float32_t ao_radius = kOcclusionRadius;
+  /* Whether published layers denoise their indirect light apart from the
+     direct light, and in how many a-trous passes. */
+  bool denoise = true;
+  uint32_t denoise_iterations = kDenoiseIterations;
+  /* Standard deviations of luminance noise within which a denoise tap
+     counts fully; zero weighs taps by geometry alone. */
+  float32_t denoise_sigma = kDenoiseSigma;
+  /* Largest luminance of one indirect sample; zero keeps every sample. */
+  float32_t indirect_clamp = 0.0f;
+  /* Russian roulette start depth; zero turns it off. */
+  uint32_t rr_start_depth = kRussianRouletteDepth;
+  /* Back-face fraction above which a texel is buried; zero keeps every
+     texel's own light. */
+  float32_t buried_backface = kBuriedBackfaceFraction;
+  /* Diagnostic CSV of every published texel's light before encoding. */
+  const char *dump_texels = nullptr;
 };
 
 void usage() {
@@ -110,7 +140,23 @@ void usage() {
       "[--check-texels <n>] [--check-samples <n>] "
       "[--check-transport <all|sky|sun|lamps>] [--astc-effort <0-100>] "
       "[--dilation <passes>] [--outlier-ratio <ratio, 0 off>] "
-      "[--smooth <passes>] [--ao-radius <world units, 0 off>]\n");
+      "[--smooth <passes>] [--ao-radius <world units, 0 off>] "
+      "[--denoise <0|1>] [--denoise-iterations <n>] "
+      "[--denoise-sigma <noise deviations, 0 geometry only>] "
+      "[--indirect-clamp <luminance, 0 off>] [--rr-start <depth, 0 off>] "
+      "[--buried-backface <fraction, 0 off>] [--dump-texels <csv>]\n");
+}
+
+/* Parses a finite non-negative float that fills `text`. */
+bool parse_nonnegative(const char *text, float32_t *out) {
+  char *end = nullptr;
+  const float32_t value = std::strtof(text, &end);
+  if (!end || end == text || *end != '\0' || !std::isfinite(value) ||
+      value < 0.0f) {
+    return false;
+  }
+  *out = value;
+  return true;
 }
 
 bool parse_u32(const char *text, uint32_t *out) {
@@ -198,6 +244,36 @@ bool parse(int argc, char **argv, Options *options) {
           (options->outlier_ratio != 0.0f && options->outlier_ratio < 1.0f)) {
         return false;
       }
+    } else if (std::strcmp(flag, "--denoise") == 0) {
+      uint32_t denoise = 0u;
+      if (!parse_u32(value, &denoise) || denoise > 1u) {
+        return false;
+      }
+      options->denoise = denoise != 0u;
+    } else if (std::strcmp(flag, "--denoise-iterations") == 0) {
+      if (!parse_u32(value, &options->denoise_iterations) ||
+          options->denoise_iterations > 8u) {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--denoise-sigma") == 0) {
+      if (!parse_nonnegative(value, &options->denoise_sigma)) {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--indirect-clamp") == 0) {
+      if (!parse_nonnegative(value, &options->indirect_clamp)) {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--rr-start") == 0) {
+      if (!parse_u32(value, &options->rr_start_depth)) {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--buried-backface") == 0) {
+      if (!parse_nonnegative(value, &options->buried_backface) ||
+          options->buried_backface > 1.0f) {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--dump-texels") == 0) {
+      options->dump_texels = value;
     } else if (std::strcmp(flag, "--check-transport") == 0) {
       if (std::strcmp(value, "all") == 0) {
         options->check_transport = CheckTransport::All;
@@ -366,6 +442,22 @@ int run_gpu_benchmark(const Options &options, VkrBakeScene &scene,
 
 float64_t luminance(Vec3 value) {
   return 0.2126 * value.x + 0.7152 * value.y + 0.0722 * value.z;
+}
+
+/* The Russian roulette start depth for the GPU gather and the CPU parity
+   integrator alike; a start beyond the last bounce turns it off. */
+uint32_t rr_start_depth(const Options &options) {
+  return options.rr_start_depth <= options.max_depth ? options.rr_start_depth
+                                                     : 0u;
+}
+
+/* A gathered layer's direct plus indirect light per texel. */
+std::vector<Vec3> gathered_total(const VkrBakeMetalGatherResult &result) {
+  std::vector<Vec3> total(result.indirect.size());
+  for (size_t i = 0u; i < total.size(); ++i) {
+    total[i] = vec3_add(result.direct[i], result.indirect[i]);
+  }
+  return total;
 }
 
 /*
@@ -546,7 +638,7 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
   VkrBakeMetalGatherSettings settings;
   settings.samples = options.samples;
   settings.max_depth = options.max_depth;
-  settings.rr_start_depth = options.max_depth >= 4u ? 4u : 0u;
+  settings.rr_start_depth = rr_start_depth(options);
   settings.seed = options.seed;
 
   struct NamedLayer {
@@ -577,13 +669,14 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
       return 1;
     }
     for (NamedLayer &named : layers) {
-      std::vector<Vec3> irradiance;
-      double seconds = 0.0;
+      VkrBakeMetalGatherResult gathered;
       if (!vkr_bake_metal_gather(gpu, texels, *named.layer, settings,
-                                 &irradiance, nullptr, &seconds)) {
+                                 &gathered)) {
         vkr_bake_metal_destroy(gpu);
         return 1;
       }
+      std::vector<Vec3> irradiance = gathered_total(gathered);
+      const double seconds = gathered.gpu_seconds;
       /* Counted, not replaced: the parity check compares raw transport. */
       const VkrBakeLightmapOutliers outliers =
           vkr_bake_lightmap_reject_outliers(
@@ -651,13 +744,13 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
           (uint32_t)check_lights.size();
       check_integrator.settings.environment_radiance = nullptr;
     }
-    std::vector<Vec3> gpu_values;
-    double seconds = 0.0;
+    VkrBakeMetalGatherResult check_gathered;
     if (!vkr_bake_metal_gather(gpu, subset, check_layer, check_settings,
-                               &gpu_values, nullptr, &seconds)) {
+                               &check_gathered)) {
       vkr_bake_metal_destroy(gpu);
       return 1;
     }
+    const std::vector<Vec3> gpu_values = gathered_total(check_gathered);
     const auto cpu_start = std::chrono::steady_clock::now();
     std::vector<Vec3> cpu_values;
     std::vector<float64_t> variance;
@@ -708,15 +801,17 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
        their texel direct term carry every light, the sky and emission once. */
     VkrBakeMetalLayer lamps_bounce = lamps;
     lamps_bounce.texel_direct = false;
-    std::vector<Vec3> sun_values;
-    std::vector<Vec3> lamp_values;
+    VkrBakeMetalGatherResult sun_gathered;
+    VkrBakeMetalGatherResult lamp_gathered;
     if (!vkr_bake_metal_gather(gpu, subset, sun_key, check_settings,
-                               &sun_values, nullptr, &seconds) ||
+                               &sun_gathered) ||
         !vkr_bake_metal_gather(gpu, subset, lamps_bounce, check_settings,
-                               &lamp_values, nullptr, &seconds)) {
+                               &lamp_gathered)) {
       vkr_bake_metal_destroy(gpu);
       return 1;
     }
+    const std::vector<Vec3> sun_values = gathered_total(sun_gathered);
+    const std::vector<Vec3> lamp_values = gathered_total(lamp_gathered);
     float64_t layer_sum = 0.0;
     for (size_t i = 0u; i < check; ++i) {
       layer_sum += luminance(sun_values[i]) + luminance(lamp_values[i]);
@@ -833,6 +928,85 @@ BakeLayer metal_layer(const VkrBakeLayerPlan &plan) {
   layer.transport.texel_direct = plan.record.kind == VKR_LIGHT_LAYER_LAMP_GROUP;
   layer.sun_key = plan.sun_key;
   return layer;
+}
+
+/*
+ * Turns a gathered layer into the light its page publishes. Buried texels
+ * take their same-surface neighbors' light first. With denoising, the a-trous
+ * filter removes the indirect light's noise, while the direct light, exact
+ * but point-sampled per texel, only gets the smoothing passes; then the two
+ * are added. Its noise-scaled luminance weights spread a lone high-energy
+ * path over its neighbors, so outlier rejection, which discarded 4.5% of the
+ * synthetic room's floor indirect light without lowering its noise, does not
+ * run. Without denoising, outlier rejection and smoothing work on the sum.
+ * `gathered` keeps the processed direct and indirect light.
+ */
+bool finish_layer(const Options &options, uint32_t page_size,
+                  const std::vector<VkrBakeLightmapTexel> &texels,
+                  const VkrBakeLightmapNeighbors &neighbors,
+                  const std::vector<uint8_t> &valid,
+                  const VkrBakeLightmapFill &fill,
+                  VkrBakeMetalGatherResult *gathered,
+                  std::vector<Vec3> *out_irradiance,
+                  VkrBakeLightmapOutliers *out_outliers) {
+  vkr_bake_lightmap_apply_fill(fill, &gathered->direct);
+  vkr_bake_lightmap_apply_fill(fill, &gathered->indirect);
+  vkr_bake_lightmap_apply_fill(fill, &gathered->indirect_variance);
+  if (!options.denoise) {
+    *out_irradiance = gathered_total(*gathered);
+    if (options.outlier_ratio > 0.0f) {
+      *out_outliers = vkr_bake_lightmap_reject_outliers(
+          neighbors, options.outlier_ratio, kOutlierMinNeighbors, true,
+          out_irradiance);
+    }
+    return vkr_bake_lightmap_smooth(neighbors, texels, options.smooth_passes,
+                                    out_irradiance);
+  }
+  VkrBakeLightmapDenoiseSettings denoise;
+  denoise.iterations = options.denoise_iterations;
+  denoise.texels_per_unit = options.texels_per_unit;
+  denoise.threads = options.threads;
+  if (options.denoise_sigma > 0.0f) {
+    denoise.luminance_sigma = options.denoise_sigma;
+  }
+  if (!vkr_bake_lightmap_denoise(
+          page_size, texels, &valid,
+          options.denoise_sigma > 0.0f ? &gathered->indirect_variance : nullptr,
+          denoise, &gathered->indirect) ||
+      !vkr_bake_lightmap_smooth(neighbors, texels, options.smooth_passes,
+                                &gathered->direct)) {
+    return false;
+  }
+  *out_irradiance = gathered_total(*gathered);
+  return true;
+}
+
+/* Appends a published layer's texels to the diagnostic CSV. */
+bool dump_layer(std::ofstream *dump, uint32_t page, uint32_t layer,
+                const std::vector<VkrBakeLightmapTexel> &texels,
+                const std::vector<uint8_t> &valid,
+                const VkrBakeMetalGatherResult &gathered,
+                const std::vector<Vec3> &irradiance) {
+  char line[512];
+  for (size_t i = 0u; i < texels.size(); ++i) {
+    const VkrBakeLightmapTexel &texel = texels[i];
+    const Vec3 direct = gathered.direct[i];
+    const Vec3 indirect = gathered.indirect[i];
+    const Vec3 total = irradiance[i];
+    const int length = std::snprintf(
+        line, sizeof(line),
+        "%u,%u,%u,%u,%.6g,%.6g,%.6g,%.4g,%.4g,%.4g,%u,%.6g,%.6g,%.6g,%.6g,"
+        "%.6g,%.6g,%.6g,%.6g,%.6g\n",
+        page, layer, texel.x, texel.y, texel.position.x, texel.position.y,
+        texel.position.z, texel.normal.x, texel.normal.y, texel.normal.z,
+        (unsigned)valid[i], direct.x, direct.y, direct.z, indirect.x,
+        indirect.y, indirect.z, total.x, total.y, total.z);
+    if (length <= 0 || (size_t)length >= sizeof(line)) {
+      return false;
+    }
+    dump->write(line, length);
+  }
+  return (bool)*dump;
 }
 
 /*
@@ -956,17 +1130,26 @@ int bake_set(const Options &options, VkrBakeScene &scene,
   VkrBakeMetalGatherSettings settings;
   settings.samples = options.samples;
   settings.max_depth = options.max_depth;
-  settings.rr_start_depth = options.max_depth >= 4u ? 4u : 0u;
+  settings.rr_start_depth = rr_start_depth(options);
   settings.seed = options.seed;
   settings.occlusion_radius = options.ao_radius;
+  settings.indirect_clamp = options.indirect_clamp;
   const uint32_t threads =
       options.threads ? options.threads
                       : std::max(1u, std::thread::hardware_concurrency());
+  std::ofstream dump;
+  if (options.dump_texels) {
+    dump.open(vkr_filesystem_native_utf8_path(options.dump_texels),
+              std::ios::binary | std::ios::trunc);
+    dump << "page,layer,x,y,px,py,pz,nx,ny,nz,valid,direct_r,direct_g,"
+            "direct_b,indirect_r,indirect_g,indirect_b,r,g,b\n";
+  }
 
   uint32_t payload_crc = VKR_CRC32_INITIAL;
-  bool ok = true;
+  bool ok = !options.dump_texels || (bool)dump;
   double gpu_seconds = 0.0;
   double encode_seconds = 0.0;
+  double cleanup_seconds = 0.0;
   std::vector<float32_t> rgba;
   std::vector<uint8_t> blocks;
   for (uint32_t page = 0u; ok && page < layout.page_count; ++page) {
@@ -978,11 +1161,15 @@ int bake_set(const Options &options, VkrBakeScene &scene,
          vkr_bake_lightmap_neighbors(
              layout.page_size, texels,
              kOutlierNeighborTexels / options.texels_per_unit, &neighbors);
-    /* The page's ambient occlusion comes from its first layer's first-bounce
-       rays and goes into every layer's alpha, so whichever layers a frame
-       weighs carry it (ADR-088). */
+    /* The page's ambient occlusion and buried texels come from its first
+       layer's first-bounce rays; occlusion goes into every layer's alpha, so
+       whichever layers a frame weighs carry it (ADR-088), and every layer
+       fills the same buried texels. */
     std::vector<float32_t> occlusion;
+    std::vector<uint8_t> valid(texels.size(), 1u);
+    VkrBakeLightmapFill fill;
     const bool bake_occlusion = options.ao_radius > 0.0f;
+    const bool find_buried = options.buried_backface > 0.0f;
     for (uint32_t l = 0u; ok && l < layers.size(); ++l) {
       if (layers[l].sun_key >= 0) {
         vkr_bake_scene_use_atmosphere(
@@ -992,13 +1179,31 @@ int bake_set(const Options &options, VkrBakeScene &scene,
           break;
         }
       }
-      std::vector<Vec3> irradiance;
-      double seconds = 0.0;
-      ok = vkr_bake_metal_gather(
-          gpu, texels, layers[l].transport, settings, &irradiance,
-          bake_occlusion && l == 0u ? &occlusion : nullptr, &seconds);
-      gpu_seconds += seconds;
+      settings.occlusion = bake_occlusion && l == 0u;
+      settings.backface = find_buried && l == 0u;
+      VkrBakeMetalGatherResult gathered;
+      ok = vkr_bake_metal_gather(gpu, texels, layers[l].transport, settings,
+                                 &gathered);
+      gpu_seconds += gathered.gpu_seconds;
+      if (ok && l == 0u) {
+        uint64_t buried = 0u;
+        for (size_t i = 0u; find_buried && i < texels.size(); ++i) {
+          if (gathered.backface[i] > options.buried_backface) {
+            valid[i] = 0u;
+            ++buried;
+          }
+        }
+        ok = vkr_bake_lightmap_plan_fill(neighbors, valid, &fill);
+        if (ok && find_buried) {
+          std::printf("buried page=%u/%u texels=%llu filled=%zu "
+                      "unfilled=%llu\n",
+                      page + 1u, layout.page_count, (unsigned long long)buried,
+                      fill.texels.size(), (unsigned long long)fill.unfilled);
+        }
+      }
       if (ok && bake_occlusion && l == 0u) {
+        occlusion = std::move(gathered.occlusion);
+        vkr_bake_lightmap_apply_fill(fill, &occlusion);
         std::vector<Vec3> smoothed(occlusion.size());
         for (size_t i = 0u; i < occlusion.size(); ++i) {
           smoothed[i] = vec3_new(occlusion[i], occlusion[i], occlusion[i]);
@@ -1009,17 +1214,12 @@ int bake_set(const Options &options, VkrBakeScene &scene,
           occlusion[i] = smoothed[i].x;
         }
       }
-      /* Lone high-energy paths stay visible at any practical sample count;
-         they take their neighbors' mean, and the remaining noise is smoothed
-         along each surface, before the page is composed. */
-      const VkrBakeLightmapOutliers outliers =
-          ok && options.outlier_ratio > 0.0f
-              ? vkr_bake_lightmap_reject_outliers(
-                    neighbors, options.outlier_ratio, kOutlierMinNeighbors,
-                    true, &irradiance)
-              : VkrBakeLightmapOutliers{};
-      ok = ok && vkr_bake_lightmap_smooth(neighbors, texels,
-                                          options.smooth_passes, &irradiance);
+      const auto cleanup_start = std::chrono::steady_clock::now();
+      std::vector<Vec3> irradiance;
+      VkrBakeLightmapOutliers outliers = {};
+      ok = ok && finish_layer(options, layout.page_size, texels, neighbors,
+                              valid, fill, &gathered, &irradiance, &outliers);
+      cleanup_seconds += seconds_since(cleanup_start);
       const auto encode_start = std::chrono::steady_clock::now();
       ok = ok &&
            vkr_bake_lightmap_compose_page(layout, page, texels, irradiance,
@@ -1035,6 +1235,9 @@ int bake_set(const Options &options, VkrBakeScene &scene,
           vkr_crc32_update(payload_crc, blocks.data(), (uint64_t)blocks.size());
       stream.write((const char *)blocks.data(), (std::streamsize)blocks.size());
       ok = (bool)stream;
+      if (ok && options.dump_texels) {
+        ok = dump_layer(&dump, page, l, texels, valid, gathered, irradiance);
+      }
       float64_t luminance_sum = 0.0;
       for (const Vec3 &value : irradiance) {
         luminance_sum += luminance(value);
@@ -1049,7 +1252,7 @@ int bake_set(const Options &options, VkrBakeScene &scene,
           record.kind == VKR_LIGHT_LAYER_SUN_KEY
               ? std::to_string(record.index).c_str()
               : record.name,
-          texels.size(), seconds,
+          texels.size(), gathered.gpu_seconds,
           texels.empty() ? 0.0 : luminance_sum / texels.size(),
           (unsigned long long)outliers.texels, outliers.energy_fraction);
       std::fflush(stdout);
@@ -1077,9 +1280,10 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     return 1;
   }
   std::printf("saved=%s bytes=%llu pages=%u layers=%zu instances=%zu "
-              "gpu_s=%.2f encode_s=%.2f\n",
+              "gpu_s=%.2f cleanup_s=%.2f encode_s=%.2f\n",
               options.output, (unsigned long long)file_size, layout.page_count,
-              layers.size(), instances.size(), gpu_seconds, encode_seconds);
+              layers.size(), instances.size(), gpu_seconds, cleanup_seconds,
+              encode_seconds);
   return 0;
 }
 
@@ -1155,7 +1359,7 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
           : nullptr;
   settings.environment_user = &scene;
   settings.max_depth = options.max_depth;
-  settings.rr_start_depth = options.max_depth >= 4u ? 4u : 0u;
+  settings.rr_start_depth = rr_start_depth(options);
   settings.max_transparent_layers = VKR_BAKE_INTEGRATOR_MAX_TRANSPARENT_LAYERS;
   settings.ray_epsilon = 0.00001f;
   VkrBakeIntegrator integrator = {};

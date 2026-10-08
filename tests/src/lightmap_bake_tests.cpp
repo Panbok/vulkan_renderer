@@ -577,6 +577,220 @@ void test_lightmap_denoise_stays_on_surfaces() {
   printf("  test_lightmap_denoise_stays_on_surfaces PASSED\n");
 }
 
+/* Deterministic noise in [-1, 1] per texel. */
+float32_t texel_noise(uint32_t x, uint32_t y) {
+  uint32_t h = x * 0x9e3779b9u ^ (y + 0x7f4a7c15u) * 0x85ebca6bu;
+  h ^= h >> 16;
+  h *= 0x7feb352du;
+  h ^= h >> 15;
+  return (float32_t)(h >> 8) * (2.0f / 16777216.0f) - 1.0f;
+}
+
+float32_t mean_and_deviation(const std::vector<Vec3> &values,
+                             const std::vector<size_t> &indices,
+                             float32_t *out_deviation) {
+  float64_t sum = 0.0;
+  for (size_t i : indices) {
+    sum += values[i].x;
+  }
+  const float64_t mean = sum / (float64_t)indices.size();
+  float64_t squares = 0.0;
+  for (size_t i : indices) {
+    squares += (values[i].x - mean) * (values[i].x - mean);
+  }
+  *out_deviation = (float32_t)sqrt(squares / (float64_t)indices.size());
+  return (float32_t)mean;
+}
+
+/* The indirect-light denoiser averages noise out on a flat surface, keeps a
+   floor and the wall it meets apart where their normals differ, does not
+   mix in a chart of the same instance that the atlas packed next to the
+   floor but that lies elsewhere in the world, and keeps the energy of rare
+   bright texels instead of rejecting them from their darker neighbors. */
+void test_lightmap_denoise_atrous_keeps_edges() {
+  printf("  test_lightmap_denoise_atrous_keeps_edges...\n");
+  /* Columns 0-13: a floor (normal +y) lit 1 +- 0.5; columns 14-23: the
+     wall it meets at x = 1.75 (normal -x) lit 10 +- 5; columns 24-31: a
+     second floor chart of the same instance 5 units away, lit 50. Eight
+     texels per unit. */
+  const uint32_t size = 32u;
+  std::vector<VkrBakeLightmapTexel> texels;
+  std::vector<Vec3> values;
+  std::vector<float32_t> variance;
+  std::vector<size_t> floor_inside;
+  std::vector<size_t> floor_edge;
+  std::vector<size_t> wall_edge;
+  for (uint32_t y = 0u; y < size; ++y) {
+    for (uint32_t x = 0u; x < size; ++x) {
+      VkrBakeLightmapTexel texel;
+      texel.x = x;
+      texel.y = y;
+      const float32_t z = 0.125f * (float32_t)y + 0.0625f;
+      float32_t light = 0.0f;
+      float32_t amplitude = 0.0f;
+      if (x < 14u) {
+        texel.position = vec3_new(0.125f * (float32_t)x + 0.0625f, 0.0f, z);
+        texel.normal = vec3_new(0.0f, 1.0f, 0.0f);
+        light = 1.0f;
+        amplitude = 0.5f;
+        if (x >= 4u && x < 10u && y >= 8u && y < 24u) {
+          floor_inside.push_back(texels.size());
+        }
+        if (x == 13u && y >= 4u && y < 28u) {
+          floor_edge.push_back(texels.size());
+        }
+      } else if (x < 24u) {
+        texel.position =
+            vec3_new(1.75f, 0.125f * (float32_t)(x - 14u) + 0.0625f, z);
+        texel.normal = vec3_new(-1.0f, 0.0f, 0.0f);
+        light = 10.0f;
+        amplitude = 5.0f;
+        if (x == 14u && y >= 4u && y < 28u) {
+          wall_edge.push_back(texels.size());
+        }
+      } else {
+        texel.position =
+            vec3_new(5.0f + 0.125f * (float32_t)(x - 24u), 0.0f, z);
+        texel.normal = vec3_new(0.0f, 1.0f, 0.0f);
+        light = 50.0f;
+      }
+      const float32_t value = light + amplitude * texel_noise(x, y);
+      texels.push_back(texel);
+      values.push_back(vec3_new(value, value, value));
+      /* Uniform noise of amplitude a has variance a^2 / 3; this is the
+         variance of the texel's mean, as the gather reports it. */
+      variance.push_back(amplitude * amplitude / 3.0f);
+    }
+  }
+  float32_t noisy_deviation = 0.0f;
+  const float32_t noisy_mean =
+      mean_and_deviation(values, floor_inside, &noisy_deviation);
+  assert(noisy_deviation > 0.2f);
+
+  VkrBakeLightmapDenoiseSettings settings;
+  settings.iterations = 4u;
+  settings.texels_per_unit = 8.0f;
+  settings.threads = 2u;
+  /* Geometry alone and with luminance weights. */
+  for (uint32_t mode = 0u; mode < 2u; ++mode) {
+    std::vector<Vec3> result = values;
+    assert(vkr_bake_lightmap_denoise(size, texels, nullptr,
+                                     mode == 0u ? nullptr : &variance, settings,
+                                     &result));
+    float32_t deviation = 0.0f;
+    const float32_t mean = mean_and_deviation(result, floor_inside, &deviation);
+    assert(deviation < noisy_deviation / 4.0f);
+    assert(fabsf(mean - noisy_mean) < 0.05f);
+    /* A floor texel beside the wall keeps floor light, and a wall texel
+       beside the floor keeps wall light. */
+    for (size_t i : floor_edge) {
+      assert(result[i].x < 1.6f);
+    }
+    for (size_t i : wall_edge) {
+      assert(result[i].x > 7.0f);
+    }
+    /* The far chart neither leaks into the wall beside it on the page nor
+       takes its light. */
+    for (size_t i = 0u; i < texels.size(); ++i) {
+      if (texels[i].x == 23u) {
+        assert(result[i].x < 16.0f);
+      }
+      if (texels[i].x == 24u) {
+        assert(fabsf(result[i].x - 50.0f) < 1.0e-3f);
+      }
+    }
+  }
+
+  /* A flat 16x16 patch where every 16th texel caught one bright path among
+     64 samples (mean 17 instead of 1): such a texel reports a variance of
+     its mean near 16^2, the others near zero. The mean keeps 85% of the
+     energy (89.5% measured); a tolerance from the center's noise alone,
+     which turns the bright texels away from their dark neighbors, kept
+     75%. */
+  std::vector<VkrBakeLightmapTexel> patch;
+  std::vector<Vec3> patch_values;
+  std::vector<float32_t> patch_variance;
+  std::vector<size_t> all;
+  for (uint32_t y = 0u; y < 16u; ++y) {
+    for (uint32_t x = 0u; x < 16u; ++x) {
+      VkrBakeLightmapTexel texel;
+      texel.x = x;
+      texel.y = y;
+      texel.position =
+          vec3_new(0.125f * (float32_t)x, 0.0f, 0.125f * (float32_t)y);
+      texel.normal = vec3_new(0.0f, 1.0f, 0.0f);
+      const bool bright = (x % 4u == 1u) && (y % 4u == 2u);
+      const float32_t value = bright ? 17.0f : 1.0f;
+      all.push_back(patch.size());
+      patch.push_back(texel);
+      patch_values.push_back(vec3_new(value, value, value));
+      patch_variance.push_back(bright ? 256.0f : 0.001f);
+    }
+  }
+  float32_t unused = 0.0f;
+  const float32_t energy = mean_and_deviation(patch_values, all, &unused);
+  assert(vkr_bake_lightmap_denoise(16u, patch, nullptr, &patch_variance,
+                                   settings, &patch_values));
+  const float32_t kept = mean_and_deviation(patch_values, all, &unused);
+  assert(kept > 0.85f * energy && kept < 1.05f * energy);
+  printf("  test_lightmap_denoise_atrous_keeps_edges PASSED\n");
+}
+
+/* Texels buried in a solid take their light from the valid texels of the
+   same surface ring by ring, so a dark strip under a wall disappears; a
+   texel with no valid texel on its surface keeps its value. */
+void test_lightmap_fill_buried_texels() {
+  printf("  test_lightmap_fill_buried_texels...\n");
+  /* An 8x8 floor whose columns 3-5 lie under a wall, lit 2 to its left and
+     4 to its right, and one lone wall texel at (7, 7) that is buried too. */
+  std::vector<VkrBakeLightmapTexel> texels;
+  std::vector<Vec3> values;
+  std::vector<float32_t> occlusion;
+  std::vector<uint8_t> valid;
+  for (uint32_t y = 0u; y < 8u; ++y) {
+    for (uint32_t x = 0u; x < 8u; ++x) {
+      VkrBakeLightmapTexel texel;
+      texel.x = x;
+      texel.y = y;
+      texel.position =
+          vec3_new(0.125f * (float32_t)x, 0.0f, 0.125f * (float32_t)y);
+      texel.normal = vec3_new(0.0f, 1.0f, 0.0f);
+      const bool lone = x == 7u && y == 7u;
+      if (lone) {
+        texel.position = vec3_new(4.0f, 1.0f, 0.0f);
+        texel.normal = vec3_new(1.0f, 0.0f, 0.0f);
+      }
+      const bool buried = lone || (x >= 3u && x <= 5u);
+      const float32_t light = buried ? 0.0f : (x < 3u ? 2.0f : 4.0f);
+      texels.push_back(texel);
+      values.push_back(vec3_new(light, light, light));
+      occlusion.push_back(buried ? 0.0f : 1.0f);
+      valid.push_back(buried ? 0u : 1u);
+    }
+  }
+  VkrBakeLightmapNeighbors neighbors;
+  assert(vkr_bake_lightmap_neighbors(8u, texels, 0.5f, &neighbors));
+  VkrBakeLightmapFill fill;
+  assert(vkr_bake_lightmap_plan_fill(neighbors, valid, &fill));
+  assert(fill.texels.size() == 24u);
+  assert(fill.unfilled == 1u);
+  vkr_bake_lightmap_apply_fill(fill, &values);
+  vkr_bake_lightmap_apply_fill(fill, &occlusion);
+  for (size_t i = 0u; i < texels.size(); ++i) {
+    const uint32_t x = texels[i].x;
+    const uint32_t y = texels[i].y;
+    if (x == 7u && y == 7u) {
+      assert(values[i].x == 0.0f && occlusion[i] == 0.0f);
+      continue;
+    }
+    /* The strip's edges copy their side; its middle averages both. */
+    const float32_t expected = x <= 3u ? 2.0f : (x >= 5u ? 4.0f : 3.0f);
+    assert(fabsf(values[i].x - expected) < 1.0e-5f);
+    assert(fabsf(occlusion[i] - 1.0f) < 1.0e-6f);
+  }
+  printf("  test_lightmap_fill_buried_texels PASSED\n");
+}
+
 /* The bake reads the material files the glTF importer writes, including the
    roughness bound it records where it folds the factor into a texture; the
    loader rejects keys it does not know. */
@@ -762,6 +976,8 @@ bool32_t run_lightmap_bake_tests(void) {
   test_light_layer_sun_weights();
   test_diffuse_volume_layers_round_trip();
   test_lightmap_denoise_stays_on_surfaces();
+  test_lightmap_denoise_atrous_keeps_edges();
+  test_lightmap_fill_buried_texels();
   test_bake_material_accepts_roughness_bound();
   test_bake_scene_builds_blockout_stairs();
   test_bake_scene_leaves_out_moving_brushes();

@@ -1429,6 +1429,11 @@ typedef struct VkrBakeLightmap {
   int64_t seed;
   int64_t page_size;
   float64_t texels_per_unit;
+  /* Indirect-light denoising (ADR-088): on or off, its a-trous passes, and
+     the largest luminance one indirect sample keeps (zero keeps all). */
+  int64_t denoise;
+  int64_t denoise_iterations;
+  float64_t indirect_clamp;
 } VkrBakeLightmap;
 
 vkr_internal bool8_t vkr_bake_lightmap_validate(VkrBake *bake,
@@ -1452,6 +1457,15 @@ vkr_internal bool8_t vkr_bake_lightmap_validate(VkrBake *bake,
     return vkr_bake_fail(bake, "--texels-per-unit must be finite and in "
                                "(0, 1024]");
   }
+  if (args->denoise < 0 || args->denoise > 1 || args->denoise_iterations < 0 ||
+      args->denoise_iterations > 8) {
+    return vkr_bake_fail(bake, "--denoise must be 0 or 1 and "
+                               "--denoise-iterations 0..8");
+  }
+  if (!isfinite(args->indirect_clamp) || args->indirect_clamp < 0.0) {
+    return vkr_bake_fail(bake, "--indirect-clamp must be finite and not "
+                               "negative");
+  }
   return true_v;
 }
 
@@ -1473,6 +1487,13 @@ vkr_internal void vkr_bake_lightmap_arguments(VkrBake *bake,
   vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->page_size));
   vkr_bake_push(out, "--texels-per-unit");
   vkr_bake_push(out, vkr_bake_printf(bake, "%.9g", args->texels_per_unit));
+  vkr_bake_push(out, "--denoise");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->denoise));
+  vkr_bake_push(out, "--denoise-iterations");
+  vkr_bake_push(
+      out, vkr_bake_printf(bake, "%lld", (long long)args->denoise_iterations));
+  vkr_bake_push(out, "--indirect-clamp");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%.9g", args->indirect_clamp));
 }
 
 vkr_internal VkrBakeryJson *
@@ -1489,6 +1510,12 @@ vkr_bake_lightmap_recipe(VkrBake *bake, const VkrBakeLightmap *args) {
                       vkr_bakery_json_int(arena, args->page_size));
   vkr_bakery_json_set(arena, recipe, "texels_per_unit",
                       vkr_bakery_json_float(arena, args->texels_per_unit));
+  vkr_bakery_json_set(arena, recipe, "denoise",
+                      vkr_bakery_json_int(arena, args->denoise));
+  vkr_bakery_json_set(arena, recipe, "denoise_iterations",
+                      vkr_bakery_json_int(arena, args->denoise_iterations));
+  vkr_bakery_json_set(arena, recipe, "indirect_clamp",
+                      vkr_bakery_json_float(arena, args->indirect_clamp));
   return recipe;
 }
 
@@ -1677,7 +1704,10 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
                           .max_depth = 4,
                           .seed = 1,
                           .page_size = 4096,
-                          .texels_per_unit = 8.0};
+                          .texels_per_unit = 8.0,
+                          .denoise = 1,
+                          .denoise_iterations = 4,
+                          .indirect_clamp = 0.0};
   for (int i = 1; i < argc; ++i) {
     const char *flag = argv[i];
     bool8_t ok = true_v;
@@ -1703,6 +1733,12 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
       ok = vkr_bake_parse_integer(argv, argc, &i, &args.page_size);
     } else if (!strcmp(flag, "--texels-per-unit")) {
       ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.texels_per_unit);
+    } else if (!strcmp(flag, "--denoise")) {
+      ok = vkr_bake_parse_integer(argv, argc, &i, &args.denoise);
+    } else if (!strcmp(flag, "--denoise-iterations")) {
+      ok = vkr_bake_parse_integer(argv, argc, &i, &args.denoise_iterations);
+    } else if (!strcmp(flag, "--indirect-clamp")) {
+      ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.indirect_clamp);
     } else {
       ok = false_v;
     }

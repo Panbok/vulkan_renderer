@@ -36,15 +36,11 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
                            const std::vector<VkrBakeLightmapTexel> &texels,
                            const VkrBakeMetalLayer &layer,
                            const VkrBakeMetalGatherSettings &settings,
-                           std::vector<Vec3> *out_irradiance,
-                           std::vector<float32_t> *out_occlusion,
-                           double *out_gpu_seconds) {
+                           VkrBakeMetalGatherResult *out_result) {
   (void)context;
   (void)texels;
   (void)layer;
   (void)settings;
-  (void)out_irradiance;
-  (void)out_occlusion;
-  (void)out_gpu_seconds;
+  (void)out_result;
   return false;
 }

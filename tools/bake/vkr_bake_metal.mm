@@ -129,6 +129,8 @@ struct GpuMaterial {
   /* Texture layers, -1 when absent: x base color, y emission,
      z metallic-roughness, w transmission. */
   int4 layers;
+  /* x 1 when double-sided: both sides are front faces. */
+  float4 surface;
 };
 
 struct GpuLight {
@@ -156,7 +158,11 @@ struct GatherArgs {
   uint max_depth;
   uint rr_start_depth;
   uint light_count;
-  /* bit 0 sky, bit 1 emission, bit 2 texel direct, bit 3 occlusion. */
+  /* Layer lights from this index on are rectangles, sampled once per
+     sample; the lights before it are evaluated once per texel. */
+  uint rectangle_first;
+  /* bit 0 sky, bit 1 emission, bit 2 texel direct, bit 3 occlusion, bit 4
+     back-face fraction. */
   uint flags;
   /* First triangle of each geometry in the acceleration structure's index
      buffer: opaque triangles, then cutout and blended ones. */
@@ -164,6 +170,8 @@ struct GatherArgs {
   /* World distance within which a first hit occludes, falling off linearly
      to it. */
   float occlusion_radius;
+  /* Largest luminance of one indirect sample; zero keeps every sample. */
+  float indirect_clamp;
 };
 
 struct Scene {
@@ -192,6 +200,7 @@ struct Material {
   bool shadow_layer;
   float3 dielectric_specular;
   float roughness;
+  bool double_sided;
 };
 
 static Material material_at(thread const Scene &scene, uint triangle,
@@ -241,6 +250,7 @@ static Material material_at(thread const Scene &scene, uint triangle,
   material.mode = uint(source.misc.z);
   material.shadow_layer = source.misc.w != 0.0f;
   material.dielectric_specular = source.specular.xyz;
+  material.double_sided = source.surface.x != 0.0f;
   return material;
 }
 
@@ -264,6 +274,9 @@ static bool passes(thread const Material &material, thread Rng &rng) {
 
 struct Hit {
   bool found;
+  /* The ray reached the back of a one-sided surface: the side its
+     interpolated normal points away from. */
+  bool back_face;
   float3 position;
   float3 geometric;
   float3 normal;
@@ -352,11 +365,13 @@ static Stop find_stop(thread const Scene &scene, float3 origin,
 }
 
 /* Closest surface the ray stops at, skipping passed-through surfaces. The
-   geometric normal faces the ray origin and the shading normal its side. */
+   geometric normal faces the ray origin and the shading normal its side;
+   back_face records which side of the surface the ray reached. */
 static Hit trace_surface(thread const Scene &scene, float3 origin,
                          float3 direction, thread Rng &rng) {
   Hit result;
   result.found = false;
+  result.back_face = false;
   for (uint skip = 0u; skip < kMaxSkips; ++skip) {
     Stop stop = find_stop(scene, origin, direction, INFINITY, false);
     if (!stop.found) {
@@ -381,6 +396,8 @@ static Hit trace_surface(thread const Scene &scene, float3 origin,
     float3 normal = normalize(corner(scene.normals, triangle, 0u) * w0 +
                               corner(scene.normals, triangle, 1u) * bary.x +
                               corner(scene.normals, triangle, 2u) * bary.y);
+    result.back_face =
+        !material.double_sided && dot(normal, direction) > 0.0f;
     if (dot(normal, geometric) < 0.0f) {
       normal = -normal;
     }
@@ -577,17 +594,18 @@ static float3 leave_surface(float3 position, float3 geometric,
   return position + geometric * (side * 1.0e-3f);
 }
 
-/* Direct irradiance from the layer's lights at a point with this normal. As
-   in the CPU integrator, a light above the shading normal counts even when it
-   is below the geometric surface; its shadow ray leaves on the light's side. */
+/* Direct irradiance from the layer lights [first_light, end_light) at a
+   point with this normal. As in the CPU integrator, a light above the shading
+   normal counts even when it is below the geometric surface; its shadow ray
+   leaves on the light's side. */
 static float3 direct_irradiance(thread const Scene &scene,
                                 device const GpuLight *lights,
                                 device const uint *layer_lights,
-                                uint light_count, float3 position,
-                                float3 normal, float3 geometric,
-                                thread Rng &rng) {
+                                uint first_light, uint end_light,
+                                float3 position, float3 normal,
+                                float3 geometric, thread Rng &rng) {
   float3 result = float3(0.0f);
-  for (uint i = 0u; i < light_count; ++i) {
+  for (uint i = first_light; i < end_light; ++i) {
     GpuLight light = lights[layer_lights[i]];
     LightSample sample = sample_light(light, position, rng);
     if (!sample.valid) {
@@ -617,10 +635,18 @@ static float3 sky_radiance(texture2d<float> sky, sampler sky_sampler,
   return sky.sample(sky_sampler, float2(u, v), level(0.0f)).xyz;
 }
 
+static float luminance(float3 value) {
+  return dot(value, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+/* One layer's gather at one texel, over a run of its samples. Each run adds
+   its share of every mean; the first run starts them. Direct light from
+   point, spot and directional lights is the same at every sample, so the
+   first run evaluates it once; rectangle lights take one point per sample. */
 kernel void lightmap_gather(
     device const float4 *texel_positions [[buffer(0)]],
     device const float4 *texel_normals [[buffer(1)]],
-    device float4 *irradiance [[buffer(2)]],
+    device float4 *indirect [[buffer(2)]],
     constant GatherArgs &args [[buffer(3)]],
     primitive_acceleration_structure as [[buffer(4)]],
     device const float *positions [[buffer(5)]],
@@ -633,6 +659,9 @@ kernel void lightmap_gather(
     device const uint *layer_lights [[buffer(12)]],
     device const uint *as_indices [[buffer(13)]],
     device float *occlusion [[buffer(14)]],
+    device float4 *direct [[buffer(15)]],
+    device float2 *moments [[buffer(16)]],
+    device float *backface [[buffer(17)]],
     texture2d_array<half> textures [[texture(0)]],
     texture2d<float> sky [[texture(1)]],
     texture2d<float> dfg [[texture(2)]],
@@ -663,20 +692,41 @@ kernel void lightmap_gather(
   bool use_emission = (args.flags & 2u) != 0u;
   bool texel_direct = (args.flags & 4u) != 0u;
   bool use_occlusion = (args.flags & 8u) != 0u;
+  bool use_backface = (args.flags & 16u) != 0u;
+  bool first_run = args.first_sample == 0u;
   uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
-  float3 total = float3(0.0f);
+  float inverse_samples = 1.0f / float(args.samples);
+
+  float3 direct_total = float3(0.0f);
+  if (texel_direct && first_run && args.rectangle_first > 0u) {
+    /* These lights draw no random numbers. */
+    Rng unused;
+    unused.state = texel_seed;
+    direct_total = direct_irradiance(scene, lights, layer_lights, 0u,
+                                     args.rectangle_first, texel_position,
+                                     texel_normal, texel_normal, unused);
+  }
+  bool texel_rectangles =
+      texel_direct && args.rectangle_first < args.light_count;
+
+  float3 indirect_total = float3(0.0f);
+  float luminance_sum = 0.0f;
+  float luminance_squared_sum = 0.0f;
   /* Ambient occlusion from each sample's first bounce: a hit within the
      radius occludes by its distance and its opacity; glass lets the rest
      through. */
   float occluded = 0.0f;
+  float backface_hits = 0.0f;
   for (uint s = args.first_sample;
        s < args.first_sample + args.sample_count; ++s) {
     Rng rng;
     rng.state = mix_seed(texel_seed ^ (s * 0x85ebca6bu));
-    if (texel_direct) {
-      total += direct_irradiance(scene, lights, layer_lights,
-                                 args.light_count, texel_position,
-                                 texel_normal, texel_normal, rng);
+    if (texel_rectangles) {
+      direct_total += inverse_samples *
+                      direct_irradiance(scene, lights, layer_lights,
+                                        args.rectangle_first,
+                                        args.light_count, texel_position,
+                                        texel_normal, texel_normal, rng);
     }
     float3 direction = cosine_direction(texel_normal, rng.next(), rng.next());
     float3 ray_origin = origin;
@@ -684,12 +734,17 @@ kernel void lightmap_gather(
     float3 radiance = float3(0.0f);
     for (uint depth = 0u; depth < args.max_depth; ++depth) {
       Hit hit = trace_surface(scene, ray_origin, direction, rng);
-      if (use_occlusion && depth == 0u && hit.found) {
-        float opacity = 1.0f - (1.0f - saturate(hit.material.metallic)) *
-                                   saturate(hit.material.transmission);
-        occluded += opacity *
-                    saturate(1.0f - distance(hit.position, ray_origin) /
-                                        args.occlusion_radius);
+      if (depth == 0u && hit.found) {
+        if (use_occlusion) {
+          float opacity = 1.0f - (1.0f - saturate(hit.material.metallic)) *
+                                     saturate(hit.material.transmission);
+          occluded += opacity *
+                      saturate(1.0f - distance(hit.position, ray_origin) /
+                                          args.occlusion_radius);
+        }
+        if (use_backface && hit.back_face) {
+          backface_hits += 1.0f;
+        }
       }
       if (!hit.found) {
         if (use_sky) {
@@ -712,7 +767,7 @@ kernel void lightmap_gather(
       float3 albedo = bounce_albedo(hit.material,
                                     dot(hit.normal, -direction), dfg);
       radiance += throughput * albedo * (1.0f / kPi) *
-                  direct_irradiance(scene, lights, layer_lights,
+                  direct_irradiance(scene, lights, layer_lights, 0u,
                                     args.light_count, hit.position,
                                     hit.normal, hit.geometric, rng);
       throughput *= albedo;
@@ -730,19 +785,34 @@ kernel void lightmap_gather(
       }
     }
     /* Cosine-weighted sampling: irradiance is pi times mean radiance. */
-    total += kPi * radiance;
+    float3 sample_irradiance = kPi * radiance;
+    float sample_luminance = luminance(sample_irradiance);
+    if (args.indirect_clamp > 0.0f &&
+        sample_luminance > args.indirect_clamp) {
+      sample_irradiance *= args.indirect_clamp / sample_luminance;
+      sample_luminance = args.indirect_clamp;
+    }
+    indirect_total += sample_irradiance;
+    luminance_sum += sample_luminance;
+    luminance_squared_sum += sample_luminance * sample_luminance;
   }
-  /* Each run of samples adds its share of the mean; the first run starts
-     it. */
-  float3 share = total / float(args.samples);
-  irradiance[texel] = args.first_sample == 0u
-                          ? float4(share, 1.0f)
-                          : irradiance[texel] + float4(share, 0.0f);
+
+  float3 indirect_share = indirect_total * inverse_samples;
+  float2 moment_share =
+      float2(luminance_sum, luminance_squared_sum) * inverse_samples;
+  indirect[texel] = first_run ? float4(indirect_share, 1.0f)
+                              : indirect[texel] + float4(indirect_share, 0.0f);
+  direct[texel] = first_run ? float4(direct_total, 1.0f)
+                            : direct[texel] + float4(direct_total, 0.0f);
+  moments[texel] = first_run ? moment_share : moments[texel] + moment_share;
   if (use_occlusion) {
-    float visibility = (float(args.sample_count) - occluded) /
-                       float(args.samples);
-    occlusion[texel] = args.first_sample == 0u ? visibility
-                                               : occlusion[texel] + visibility;
+    float visibility =
+        (float(args.sample_count) - occluded) * inverse_samples;
+    occlusion[texel] = first_run ? visibility : occlusion[texel] + visibility;
+  }
+  if (use_backface) {
+    float share = backface_hits * inverse_samples;
+    backface[texel] = first_run ? share : backface[texel] + share;
   }
 }
 )METAL";
@@ -764,10 +834,13 @@ struct GatherArgs {
   uint32_t max_depth;
   uint32_t rr_start_depth;
   uint32_t light_count;
+  uint32_t rectangle_first;
   uint32_t flags;
   uint32_t geometry_first[2];
   float occlusion_radius;
+  float indirect_clamp;
 };
+static_assert(sizeof(GatherArgs) == 60u, "GatherArgs matches the kernel");
 
 struct GpuMaterial {
   float base_color[4];
@@ -775,7 +848,9 @@ struct GpuMaterial {
   float misc[4];
   float specular[4];
   int32_t layers[4];
+  float surface[4];
 };
+static_assert(sizeof(GpuMaterial) == 96u, "GpuMaterial matches the kernel");
 
 struct GpuLight {
   float position_kind[4];
@@ -1030,7 +1105,8 @@ bool upload_materials(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
          layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_EMISSIVE]),
          layer_for(
              material.textures[VKR_BAKE_MATERIAL_TEXTURE_METALLIC_ROUGHNESS]),
-         layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_TRANSMISSION])}};
+         layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_TRANSMISSION])},
+        {material.double_sided ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f}};
   }
 
   const NSUInteger layers = std::max<size_t>(layer_refs.size(), 1u);
@@ -1340,44 +1416,66 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
                            const std::vector<VkrBakeLightmapTexel> &texels,
                            const VkrBakeMetalLayer &layer,
                            const VkrBakeMetalGatherSettings &settings,
-                           std::vector<Vec3> *out_irradiance,
-                           std::vector<float32_t> *out_occlusion,
-                           double *out_gpu_seconds) {
+                           VkrBakeMetalGatherResult *out_result) {
   @autoreleasepool {
-    if (!context || !out_irradiance || !out_gpu_seconds ||
-        settings.samples == 0u || settings.max_depth == 0u ||
-        (out_occlusion && !(settings.occlusion_radius > 0.0f))) {
+    if (!context || !out_result || settings.samples == 0u ||
+        settings.max_depth == 0u ||
+        (settings.occlusion && !(settings.occlusion_radius > 0.0f)) ||
+        !(settings.indirect_clamp >= 0.0f)) {
       return false;
     }
     const NSUInteger count = texels.size();
-    out_irradiance->assign(count, vec3_zero());
-    if (out_occlusion) {
-      out_occlusion->assign(count, 1.0f);
-    }
-    *out_gpu_seconds = 0.0;
+    VkrBakeMetalGatherResult &result = *out_result;
+    result.direct.assign(count, vec3_zero());
+    result.indirect.assign(count, vec3_zero());
+    result.indirect_variance.assign(count, 0.0f);
+    result.occlusion.assign(settings.occlusion ? count : 0u, 1.0f);
+    result.backface.assign(settings.backface ? count : 0u, 0.0f);
+    result.gpu_seconds = 0.0;
     if (count == 0u) {
       return true;
     }
     id<MTLBuffer> positions = nil;
     id<MTLBuffer> normals = nil;
-    id<MTLBuffer> result =
+    id<MTLBuffer> indirect =
         shared_buffer(context->device, count * 4u * sizeof(float));
+    id<MTLBuffer> direct =
+        shared_buffer(context->device, count * 4u * sizeof(float));
+    id<MTLBuffer> moments =
+        shared_buffer(context->device, count * 2u * sizeof(float));
     id<MTLBuffer> layer_lights =
         shared_buffer(context->device, layer.lights.size() * sizeof(uint32_t));
+    /* A buffer the gather does not fill is bound to a placeholder. */
     id<MTLBuffer> occlusion =
-        out_occlusion ? shared_buffer(context->device, count * sizeof(float))
-                      : result;
-    if (!result || !layer_lights || !occlusion ||
+        settings.occlusion ? shared_buffer(context->device, count * sizeof(float))
+                           : moments;
+    id<MTLBuffer> backface =
+        settings.backface ? shared_buffer(context->device, count * sizeof(float))
+                          : moments;
+    if (!indirect || !direct || !moments || !layer_lights || !occlusion ||
+        !backface ||
         !upload_texels(context->device, texels, &positions, &normals)) {
       return false;
     }
-    if (!layer.lights.empty()) {
-      std::memcpy(layer_lights.contents, layer.lights.data(),
-                  layer.lights.size() * sizeof(uint32_t));
+    /* Lights the texel evaluates once come first, then the rectangles it
+       samples per sample. */
+    const GpuLight *gpu_lights =
+        static_cast<const GpuLight *>(context->lights.contents);
+    std::vector<uint32_t> ordered = layer.lights;
+    const auto rectangles = std::stable_partition(
+        ordered.begin(), ordered.end(), [&](uint32_t light) {
+          return (uint32_t)gpu_lights[light].position_kind[3] !=
+                 (uint32_t)VkrBakeSceneLightKind::Rectangle;
+        });
+    const uint32_t rectangle_first = (uint32_t)(rectangles - ordered.begin());
+    if (!ordered.empty()) {
+      std::memcpy(layer_lights.contents, ordered.data(),
+                  ordered.size() * sizeof(uint32_t));
     }
     const uint32_t flags = (layer.sky ? 1u : 0u) | (layer.emission ? 2u : 0u) |
                            (layer.texel_direct ? 4u : 0u) |
-                           (out_occlusion ? 8u : 0u);
+                           (settings.occlusion ? 8u : 0u) |
+                           (settings.backface ? 16u : 0u);
     const NSUInteger width = context->gather.threadExecutionWidth;
     /* Each batch of texels takes its samples in runs of
        kSamplesPerDispatch, a command buffer each. */
@@ -1399,15 +1497,17 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
           settings.max_depth,
           settings.rr_start_depth,
           (uint32_t)layer.lights.size(),
+          rectangle_first,
           flags,
           {context->geometry_first[0], context->geometry_first[1]},
-          settings.occlusion_radius};
+          settings.occlusion_radius,
+          settings.indirect_clamp};
       id<MTLCommandBuffer> command = [context->queue commandBuffer];
       id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
       [encoder setComputePipelineState:context->gather];
       [encoder setBuffer:positions offset:0u atIndex:0u];
       [encoder setBuffer:normals offset:0u atIndex:1u];
-      [encoder setBuffer:result offset:0u atIndex:2u];
+      [encoder setBuffer:indirect offset:0u atIndex:2u];
       [encoder setBytes:&args length:sizeof(args) atIndex:3u];
       [encoder setAccelerationStructure:context->scene atBufferIndex:4u];
       [encoder setBuffer:context->positions offset:0u atIndex:5u];
@@ -1420,6 +1520,9 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
       [encoder setBuffer:layer_lights offset:0u atIndex:12u];
       [encoder setBuffer:context->as_indices offset:0u atIndex:13u];
       [encoder setBuffer:occlusion offset:0u atIndex:14u];
+      [encoder setBuffer:direct offset:0u atIndex:15u];
+      [encoder setBuffer:moments offset:0u atIndex:16u];
+      [encoder setBuffer:backface offset:0u atIndex:17u];
       [encoder setTexture:context->textures atIndex:0u];
       [encoder setTexture:context->sky atIndex:1u];
       [encoder setTexture:context->dfg atIndex:2u];
@@ -1427,19 +1530,36 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
       [encoder dispatchThreads:MTLSizeMake(args.texel_count, 1u, 1u)
           threadsPerThreadgroup:MTLSizeMake(width, 1u, 1u)];
       [encoder endEncoding];
-      if (!finish(command, out_gpu_seconds)) {
+      if (!finish(command, &result.gpu_seconds)) {
         return false;
       }
     }
-    const float *values = static_cast<const float *>(result.contents);
+    const float *indirect_values = static_cast<const float *>(indirect.contents);
+    const float *direct_values = static_cast<const float *>(direct.contents);
+    const float *moment_values = static_cast<const float *>(moments.contents);
     for (NSUInteger i = 0u; i < count; ++i) {
-      (*out_irradiance)[i] =
-          vec3_new(values[4u * i], values[4u * i + 1u], values[4u * i + 2u]);
+      result.indirect[i] =
+          vec3_new(indirect_values[4u * i], indirect_values[4u * i + 1u],
+                   indirect_values[4u * i + 2u]);
+      result.direct[i] =
+          vec3_new(direct_values[4u * i], direct_values[4u * i + 1u],
+                   direct_values[4u * i + 2u]);
+      /* The variance of a mean of n samples is the sample variance over n. */
+      const float mean = moment_values[2u * i];
+      const float mean_square = moment_values[2u * i + 1u];
+      result.indirect_variance[i] =
+          std::fmax(mean_square - mean * mean, 0.0f) / (float)settings.samples;
     }
-    if (out_occlusion) {
+    if (settings.occlusion) {
       const float *visibility = static_cast<const float *>(occlusion.contents);
       for (NSUInteger i = 0u; i < count; ++i) {
-        (*out_occlusion)[i] = std::clamp(visibility[i], 0.0f, 1.0f);
+        result.occlusion[i] = std::clamp(visibility[i], 0.0f, 1.0f);
+      }
+    }
+    if (settings.backface) {
+      const float *share = static_cast<const float *>(backface.contents);
+      for (NSUInteger i = 0u; i < count; ++i) {
+        result.backface[i] = std::clamp(share[i], 0.0f, 1.0f);
       }
     }
     return true;

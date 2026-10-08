@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cmath>
 #include <new>
+#include <system_error>
 #include <thread>
 
 namespace {
@@ -238,6 +239,7 @@ bool vkr_bake_lightmap_rasterize_page(
                                 vec3_scale(triangle.vertex[1].normal, w1)),
                        vec3_scale(triangle.vertex[2].normal, w2)));
           texel.triangle_index = t;
+          texel.source_instance_index = instance;
           texels.push_back(texel);
         }
       }
@@ -372,6 +374,356 @@ bool vkr_bake_lightmap_smooth(const VkrBakeLightmapNeighbors &neighbors,
     }
     return true;
   } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+bool vkr_bake_lightmap_plan_fill(const VkrBakeLightmapNeighbors &neighbors,
+                                 const std::vector<uint8_t> &valid,
+                                 VkrBakeLightmapFill *out_fill) {
+  if (!out_fill || neighbors.first.size() != valid.size() + 1u) {
+    return false;
+  }
+  try {
+    VkrBakeLightmapFill fill;
+    /* The ring that gave each texel its value: zero for a valid texel. */
+    std::vector<uint32_t> ring(valid.size(), UINT32_MAX);
+    std::vector<uint32_t> pending;
+    for (size_t i = 0u; i < valid.size(); ++i) {
+      if (valid[i]) {
+        ring[i] = 0u;
+      } else {
+        pending.push_back((uint32_t)i);
+      }
+    }
+    fill.first.push_back(0u);
+    std::vector<uint32_t> still_pending;
+    for (uint32_t current = 1u; !pending.empty(); ++current) {
+      still_pending.clear();
+      for (uint32_t i : pending) {
+        const size_t sources_before = fill.sources.size();
+        for (uint32_t n = neighbors.first[i]; n < neighbors.first[i + 1u];
+             ++n) {
+          const uint32_t j = neighbors.indices[n];
+          if (ring[j] < current) {
+            fill.sources.push_back(j);
+          }
+        }
+        if (fill.sources.size() == sources_before) {
+          still_pending.push_back(i);
+          continue;
+        }
+        ring[i] = current;
+        fill.texels.push_back(i);
+        fill.first.push_back((uint32_t)fill.sources.size());
+      }
+      if (still_pending.size() == pending.size()) {
+        break;
+      }
+      pending.swap(still_pending);
+    }
+    fill.unfilled = pending.size();
+    *out_fill = std::move(fill);
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+namespace {
+
+template <typename Value, typename Add, typename Scale>
+void apply_fill(const VkrBakeLightmapFill &fill, std::vector<Value> *values,
+                Value zero, Add add, Scale scale) {
+  for (size_t k = 0u; k < fill.texels.size(); ++k) {
+    Value sum = zero;
+    for (uint32_t n = fill.first[k]; n < fill.first[k + 1u]; ++n) {
+      sum = add(sum, (*values)[fill.sources[n]]);
+    }
+    (*values)[fill.texels[k]] =
+        scale(sum, 1.0f / (float32_t)(fill.first[k + 1u] - fill.first[k]));
+  }
+}
+
+} // namespace
+
+void vkr_bake_lightmap_apply_fill(const VkrBakeLightmapFill &fill,
+                                  std::vector<Vec3> *values) {
+  apply_fill(fill, values, vec3_zero(), vec3_add, vec3_scale);
+}
+
+void vkr_bake_lightmap_apply_fill(const VkrBakeLightmapFill &fill,
+                                  std::vector<float32_t> *values) {
+  apply_fill(
+      fill, values, 0.0f, [](float32_t a, float32_t b) { return a + b; },
+      [](float32_t a, float32_t s) { return a * s; });
+}
+
+namespace {
+
+/* Normals closer than about 37 degrees face the same way, as
+   vkr_bake_lightmap_neighbors counts them. */
+constexpr float32_t kSameSurfaceCosine = 0.8f;
+/* A tap's world distance may exceed the one its page offset implies by this
+   factor plus kSeamSlackTexels texel spacings before it counts as across a
+   seam. */
+constexpr float32_t kSeamDistanceFactor = 1.5f;
+constexpr float32_t kSeamSlackTexels = 0.5f;
+/* B3-spline weights of the 5-tap a-trous kernel. */
+constexpr float32_t kAtrousWeights[3] = {3.0f / 8.0f, 1.0f / 4.0f,
+                                         1.0f / 16.0f};
+constexpr float32_t kVarianceWeights[2] = {1.0f / 2.0f, 1.0f / 4.0f};
+
+/* Runs work(begin, end) over [0, count) on `threads` workers. */
+template <typename Work>
+void parallel_for(size_t count, uint32_t threads, Work work) {
+  const size_t workers =
+      std::max<size_t>(1u, std::min<size_t>(threads, (count + 4095u) / 4096u));
+  if (workers == 1u) {
+    work((size_t)0u, count);
+    return;
+  }
+  std::vector<std::thread> pool;
+  pool.reserve(workers);
+  for (size_t w = 0u; w < workers; ++w) {
+    const size_t begin = count * w / workers;
+    const size_t end = count * (w + 1u) / workers;
+    pool.emplace_back([&work, begin, end] { work(begin, end); });
+  }
+  for (std::thread &thread : pool) {
+    thread.join();
+  }
+}
+
+struct DenoisePage {
+  const std::vector<VkrBakeLightmapTexel> *texels;
+  const std::vector<uint8_t> *valid;
+  /* Texel index per page texel, UINT32_MAX where none. */
+  std::vector<uint32_t> at;
+  /* Each texel's world distance to its same-surface edge neighbors. */
+  std::vector<float32_t> spacing;
+  int64_t size;
+};
+
+/* The texel at page offset (dx, dy) * step from texel i that may contribute
+   to it, or UINT32_MAX; *out_cosine is their normals' cosine and
+   *out_plane its distance from texel i's tangent plane. */
+uint32_t denoise_tap(const DenoisePage &page, uint32_t i, int32_t dx,
+                     int32_t dy, int32_t step, float32_t *out_cosine,
+                     float32_t *out_plane) {
+  const VkrBakeLightmapTexel &center = (*page.texels)[i];
+  const int64_t x = (int64_t)center.x + (int64_t)dx * step;
+  const int64_t y = (int64_t)center.y + (int64_t)dy * step;
+  if (x < 0 || y < 0 || x >= page.size || y >= page.size) {
+    return UINT32_MAX;
+  }
+  const uint32_t j = page.at[(size_t)y * (size_t)page.size + (size_t)x];
+  if (j == UINT32_MAX || (page.valid && !(*page.valid)[j])) {
+    return UINT32_MAX;
+  }
+  const VkrBakeLightmapTexel &tap = (*page.texels)[j];
+  if (tap.source_instance_index != center.source_instance_index) {
+    return UINT32_MAX;
+  }
+  const float32_t cosine = vec3_dot(tap.normal, center.normal);
+  if (cosine < kSameSurfaceCosine) {
+    return UINT32_MAX;
+  }
+  const Vec3 delta = vec3_sub(tap.position, center.position);
+  const float32_t offset =
+      (float32_t)step * std::sqrt((float32_t)(dx * dx + dy * dy));
+  const float32_t spacing = page.spacing[i];
+  const float32_t limit =
+      (kSeamDistanceFactor * offset + kSeamSlackTexels) * spacing;
+  if (vec3_dot(delta, delta) > limit * limit) {
+    return UINT32_MAX;
+  }
+  *out_cosine = cosine;
+  *out_plane = std::fabs(vec3_dot(delta, center.normal));
+  return j;
+}
+
+} // namespace
+
+bool vkr_bake_lightmap_denoise(uint32_t page_size,
+                               const std::vector<VkrBakeLightmapTexel> &texels,
+                               const std::vector<uint8_t> *valid,
+                               const std::vector<float32_t> *variance,
+                               const VkrBakeLightmapDenoiseSettings &settings,
+                               std::vector<Vec3> *values) {
+  if (!values || values->size() != texels.size() || page_size == 0u ||
+      texels.size() >= UINT32_MAX ||
+      (valid && valid->size() != texels.size()) ||
+      (variance && variance->size() != texels.size()) ||
+      !std::isfinite(settings.texels_per_unit) ||
+      !(settings.texels_per_unit > 0.0f) ||
+      !std::isfinite(settings.luminance_sigma) ||
+      !(settings.luminance_sigma > 0.0f) || settings.iterations > 16u) {
+    return false;
+  }
+  const uint32_t threads =
+      settings.threads ? settings.threads
+                       : std::max(1u, std::thread::hardware_concurrency());
+  try {
+    const size_t count = texels.size();
+    DenoisePage page;
+    page.texels = &texels;
+    page.valid = valid;
+    page.size = page_size;
+    page.at.assign((size_t)page_size * page_size, UINT32_MAX);
+    for (size_t i = 0u; i < count; ++i) {
+      page.at[(size_t)texels[i].y * page_size + texels[i].x] = (uint32_t)i;
+    }
+
+    /* A texel's spacing is the mean distance to its same-instance,
+       same-facing edge neighbors no farther than twice the nearest, so a
+       neighbor across a seam does not stretch it. */
+    page.spacing.assign(count, 1.0f / settings.texels_per_unit);
+    static const int32_t kEdges[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    for (size_t i = 0u; i < count; ++i) {
+      const VkrBakeLightmapTexel &texel = texels[i];
+      float32_t distances[4];
+      uint32_t found = 0u;
+      float32_t nearest = INFINITY;
+      for (const int32_t *edge : kEdges) {
+        const int64_t x = (int64_t)texel.x + edge[0];
+        const int64_t y = (int64_t)texel.y + edge[1];
+        if (x < 0 || y < 0 || x >= page.size || y >= page.size) {
+          continue;
+        }
+        const uint32_t j = page.at[(size_t)y * page_size + (size_t)x];
+        if (j == UINT32_MAX ||
+            texels[j].source_instance_index != texel.source_instance_index ||
+            vec3_dot(texels[j].normal, texel.normal) < kSameSurfaceCosine) {
+          continue;
+        }
+        const float32_t distance =
+            vec3_length(vec3_sub(texels[j].position, texel.position));
+        if (distance > 0.0f && std::isfinite(distance)) {
+          distances[found++] = distance;
+          nearest = std::min(nearest, distance);
+        }
+      }
+      float32_t sum = 0.0f;
+      uint32_t used = 0u;
+      for (uint32_t k = 0u; k < found; ++k) {
+        if (distances[k] <= 2.0f * nearest) {
+          sum += distances[k];
+          ++used;
+        }
+      }
+      if (used != 0u) {
+        page.spacing[i] = sum / (float32_t)used;
+      }
+    }
+
+    std::vector<float32_t> current_variance;
+    if (variance) {
+      current_variance = *variance;
+    }
+    std::vector<float32_t> filtered_variance(variance ? count : 0u);
+    std::vector<float32_t> next_variance(variance ? count : 0u);
+    std::vector<Vec3> source;
+    for (uint32_t iteration = 0u; iteration < settings.iterations;
+         ++iteration) {
+      const int32_t step = 1 << iteration;
+      source = *values;
+      /* The center's variance for its luminance weight, smoothed over its
+         3x3 same-surface neighbors so one sample's luck does not decide. */
+      if (variance) {
+        parallel_for(count, threads, [&](size_t begin, size_t end) {
+          for (size_t i = begin; i < end; ++i) {
+            float32_t sum = 0.0f;
+            float32_t weight = 0.0f;
+            for (int32_t dy = -1; dy <= 1; ++dy) {
+              for (int32_t dx = -1; dx <= 1; ++dx) {
+                float32_t cosine = 1.0f;
+                float32_t plane = 0.0f;
+                const uint32_t j = dx == 0 && dy == 0
+                                       ? (uint32_t)i
+                                       : denoise_tap(page, (uint32_t)i, dx, dy,
+                                                     1, &cosine, &plane);
+                if (j == UINT32_MAX) {
+                  continue;
+                }
+                const float32_t w = kVarianceWeights[std::abs(dx)] *
+                                    kVarianceWeights[std::abs(dy)];
+                sum += w * current_variance[j];
+                weight += w;
+              }
+            }
+            filtered_variance[i] = sum / weight;
+          }
+        });
+      }
+      parallel_for(count, threads, [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+          const float32_t center_luminance = (float32_t)luminance(source[i]);
+          const float32_t spacing = page.spacing[i];
+          Vec3 sum = vec3_zero();
+          float32_t weight = 0.0f;
+          float32_t variance_sum = 0.0f;
+          for (int32_t dy = -2; dy <= 2; ++dy) {
+            for (int32_t dx = -2; dx <= 2; ++dx) {
+              float32_t cosine = 1.0f;
+              float32_t plane = 0.0f;
+              uint32_t j = UINT32_MAX;
+              if (dx == 0 && dy == 0) {
+                if (!valid || (*valid)[i]) {
+                  j = (uint32_t)i;
+                }
+              } else {
+                j = denoise_tap(page, (uint32_t)i, dx, dy, step, &cosine,
+                                &plane);
+              }
+              if (j == UINT32_MAX) {
+                continue;
+              }
+              float32_t w =
+                  kAtrousWeights[std::abs(dx)] * kAtrousWeights[std::abs(dy)];
+              if (j != i) {
+                const float32_t c2 = cosine * cosine;
+                const float32_t c4 = c2 * c2;
+                const float32_t c8 = c4 * c4;
+                w *= c8 * c8 * std::exp(-plane / spacing);
+                if (variance) {
+                  /* Both texels' noise widens the tolerance, so a tap that
+                     caught a rare bright path counts at a texel that did
+                     not; a one-sided tolerance darkens the result. */
+                  const float32_t difference = std::fabs(
+                      (float32_t)luminance(source[j]) - center_luminance);
+                  const float32_t sigma = settings.luminance_sigma *
+                                              std::sqrt(filtered_variance[i] +
+                                                        filtered_variance[j]) +
+                                          1.0e-10f;
+                  w *= std::exp(-difference / sigma);
+                }
+              }
+              sum = vec3_add(sum, vec3_scale(source[j], w));
+              weight += w;
+              if (variance) {
+                variance_sum += w * w * current_variance[j];
+              }
+            }
+          }
+          if (weight > 0.0f) {
+            (*values)[i] = vec3_scale(sum, 1.0f / weight);
+            if (variance) {
+              next_variance[i] = variance_sum / (weight * weight);
+            }
+          } else if (variance) {
+            next_variance[i] = current_variance[i];
+          }
+        }
+      });
+      if (variance) {
+        current_variance.swap(next_variance);
+      }
+    }
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  } catch (const std::system_error &) {
     return false;
   }
 }

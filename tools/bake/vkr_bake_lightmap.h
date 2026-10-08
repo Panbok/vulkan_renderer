@@ -58,6 +58,8 @@ struct VkrBakeLightmapTexel {
   /* Interpolated shading normal, unit length. */
   Vec3 normal = {};
   uint32_t triangle_index = 0u;
+  /* The lightmapped instance whose rectangle holds the texel. */
+  uint32_t source_instance_index = 0u;
 };
 
 /*
@@ -156,6 +158,68 @@ vkr_bake_lightmap_reject_outliers(const VkrBakeLightmapNeighbors &neighbors,
 bool vkr_bake_lightmap_smooth(const VkrBakeLightmapNeighbors &neighbors,
                               const std::vector<VkrBakeLightmapTexel> &texels,
                               uint32_t passes, std::vector<Vec3> *values);
+
+/*
+ * How a page's invalid texels, such as floor texels buried under a wall, take
+ * their values from valid texels of the same surface: in rings, each texel
+ * of `texels` in order takes the mean of its sources, its same-surface
+ * neighbors that are valid or filled in an earlier ring. Invalid texels no
+ * ring reaches (a surface buried whole) are counted in `unfilled` and keep
+ * their values.
+ */
+struct VkrBakeLightmapFill {
+  std::vector<uint32_t> texels;
+  /* Sources of texels[k] are sources[first[k], first[k + 1]). */
+  std::vector<uint32_t> first;
+  std::vector<uint32_t> sources;
+  uint64_t unfilled = 0u;
+};
+
+/* Plans the fill of the texels whose `valid` entry is zero, one entry per
+   texel of the neighbors' page. */
+bool vkr_bake_lightmap_plan_fill(const VkrBakeLightmapNeighbors &neighbors,
+                                 const std::vector<uint8_t> &valid,
+                                 VkrBakeLightmapFill *out_fill);
+
+void vkr_bake_lightmap_apply_fill(const VkrBakeLightmapFill &fill,
+                                  std::vector<Vec3> *values);
+
+void vkr_bake_lightmap_apply_fill(const VkrBakeLightmapFill &fill,
+                                  std::vector<float32_t> *values);
+
+/*
+ * Edge-aware a-trous denoising of a layer's indirect light (ADR-088). Each
+ * of `iterations` passes takes a 5x5 B3-spline tap pattern on the page at a
+ * step that doubles per pass (1, 2, 4, 8, ...). A tap counts only when it is
+ * a covered texel of the same instance whose normal lies within about 37
+ * degrees of the center's, whose world position lies within 1.5 times the
+ * distance its page offset implies at the center's texel spacing plus half a
+ * texel (so a chart seam or an unrelated chart next to it in the atlas is not
+ * mixed in), and that is valid when `valid` is given. Taps are weighted by
+ * the normal cosine to the 16th power, by their distance from the center's
+ * tangent plane, and, when `variance` is given, by their luminance
+ * difference over `luminance_sigma` standard deviations of the center's
+ * 3x3-filtered variance, so a real gradient survives while noise averages
+ * out. Variance is propagated through the passes. `values` and `variance`
+ * hold one entry per texel.
+ */
+struct VkrBakeLightmapDenoiseSettings {
+  uint32_t iterations = 4u;
+  /* World density the page was packed at, for texels without a same-surface
+     edge neighbor to measure their spacing from. */
+  float32_t texels_per_unit = 8.0f;
+  float32_t luminance_sigma = 4.0f;
+  /* Worker threads; zero uses the hardware concurrency. The result does not
+     depend on it. */
+  uint32_t threads = 0u;
+};
+
+bool vkr_bake_lightmap_denoise(uint32_t page_size,
+                               const std::vector<VkrBakeLightmapTexel> &texels,
+                               const std::vector<uint8_t> *valid,
+                               const std::vector<float32_t> *variance,
+                               const VkrBakeLightmapDenoiseSettings &settings,
+                               std::vector<Vec3> *values);
 
 /*
  * Encodes a composed page to ASTC 4x4 blocks in the HDR RGB, LDR alpha

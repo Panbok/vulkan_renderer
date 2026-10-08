@@ -47,11 +47,37 @@ struct VkrBakeMetalGatherSettings {
   uint32_t samples = 16u;
   uint32_t max_depth = 4u;
   /* Zero disables Russian roulette; otherwise it starts at this depth. */
-  uint32_t rr_start_depth = 4u;
+  uint32_t rr_start_depth = 2u;
   uint32_t seed = 1u;
   /* World distance within which a first hit occludes, for gathers that
      return ambient occlusion. */
   float occlusion_radius = 0.0f;
+  /* Largest luminance one gathered sample may carry; a brighter sample is
+     scaled down to it, which removes that energy (biased dark). Zero keeps
+     every sample. */
+  float indirect_clamp = 0.0f;
+  /* Whether the gather returns ambient occlusion (needs a positive
+     occlusion_radius) and the back-face fraction of first hits. */
+  bool occlusion = false;
+  bool backface = false;
+};
+
+/* One layer's gathered light per texel. Direct is the layer lights'
+   irradiance at the texel when texel_direct is set: point, spot and
+   directional lights are evaluated once per texel, rectangle lights take one
+   point per sample. Indirect is the cosine-weighted hemisphere integral of
+   incoming radiance (bounce light, emission and sky), and
+   indirect_variance the variance of its luminance mean over the samples. */
+struct VkrBakeMetalGatherResult {
+  std::vector<Vec3> direct;
+  std::vector<Vec3> indirect;
+  std::vector<float32_t> indirect_variance;
+  /* Ambient visibility in [0, 1], when settings.occlusion. */
+  std::vector<float32_t> occlusion;
+  /* Share of first-bounce rays in [0, 1] that hit the back of a one-sided
+     surface, when settings.backface: near one for a texel inside a solid. */
+  std::vector<float32_t> backface;
+  double gpu_seconds = 0.0;
 };
 
 /* Whether this host can run Metal ray-traced bakes. */
@@ -77,16 +103,12 @@ bool vkr_bake_metal_trace_benchmark(
     uint32_t seed, std::vector<float32_t> *out_hit_fraction,
     double *out_gpu_seconds);
 
-/* Gathers one layer's irradiance at every texel: the cosine-weighted
- * hemisphere integral of incoming radiance, plus the layer lights' direct
- * irradiance when texel_direct is set. Writes one RGB value per texel and
- * reports the GPU time in seconds. With `out_occlusion`, also writes each
- * texel's ambient visibility in [0, 1] from the same first-bounce rays, which
- * needs a positive settings.occlusion_radius. */
+/* Gathers one layer's light at every texel into `out_result` (see
+ * VkrBakeMetalGatherResult) and reports the GPU time in seconds. Occlusion
+ * and back-face fractions come from the same first-bounce rays as the
+ * indirect light. */
 bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
                            const std::vector<VkrBakeLightmapTexel> &texels,
                            const VkrBakeMetalLayer &layer,
                            const VkrBakeMetalGatherSettings &settings,
-                           std::vector<Vec3> *out_irradiance,
-                           std::vector<float32_t> *out_occlusion,
-                           double *out_gpu_seconds);
+                           VkrBakeMetalGatherResult *out_result);

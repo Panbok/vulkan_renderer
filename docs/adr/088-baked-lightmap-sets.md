@@ -15,7 +15,10 @@ the tiled pipeline's forward shader
 implemented. The toolkit test level and a lightmap-UV Bistro fixture render
 with their sets on the tiled pipeline, in the editor too; Bistro bakes
 without visible noise at 16 samples once outlier texels are rejected and
-each layer is smoothed (see Evidence). The desktop pipeline lights static
+each layer is smoothed (see Evidence). Since 2026-10-08 the bake denoises
+indirect light apart from the exact direct light and fills texels buried
+inside solids; a level-scale check of that change is pending. The desktop
+pipeline lights static
 and dynamic lights alike. The bake needs
 Metal ray tracing.
 
@@ -154,12 +157,26 @@ under the system watchdog. Each sample's random sequence follows its texel
 and sample index. Textured Bistro layers at 64 samples in one buffer per
 65,536 texels ran 7 s each and were ended for impacting interactivity, and so
 was a buffer of 65,536 texels at 8 samples while a browser drew on the same
-GPU. The first layer's gather of each page also returns each texel's ambient
+GPU. A gather returns a texel's direct and indirect light apart. Direct
+light at the texel (lamp groups only) is evaluated once per texel for
+point, spot and directional lights, which draw no random numbers, and at
+one point per sample for rectangle lights; indirect light is the
+cosine-weighted hemisphere integral of bounce light, emission and sky, with
+the variance of its luminance mean over the samples. An optional indirect
+clamp (`--indirect-clamp`, off by default) scales a sample brighter than
+the given luminance down to it; that removes energy, and on the synthetic
+room below a clamp of 30 darkened the floor's indirect light by 36%, because
+the lamp-lit undersides of emissive panels are real bright paths. The first
+layer's gather of each page also returns each texel's ambient
 visibility from the same first-bounce rays: one minus the mean occlusion of
 its samples, where a first hit within the occlusion radius occludes by its
 opacity (one minus its glass fraction) times one minus its distance over the
 radius. The radius is one world unit (`--ao-radius` of the lightmap baker,
-0 turning it off). The acceleration structure
+0 turning it off). The same rays return each texel's back-face fraction:
+the share whose first hit lies on the side of a one-sided surface its
+interpolated normal points away from (a double-sided material has no back).
+A texel inside a solid, such as floor under a wall or a wall face below the
+floor, sees almost only back faces. The acceleration structure
 holds two geometries: opaque triangles, and cutout triangles whose lowest
 alpha can fall below their cutoff. Rays test those as candidates in one
 traversal; blended and tinting surfaces stop the traversal and are resolved
@@ -176,26 +193,64 @@ tints. It is a lightmap subset of the ADR-054 transport:
 - cutout and blended surfaces, the shadow walk, light falloff, cones,
   rectangle lights, the shading-normal side rules and Russian roulette follow
   the CPU integrator; every baked light casts shadows, whatever its
-  `casts_shadow` ([ADR-054](054-baked-diffuse-volumes.md));
+  `casts_shadow` ([ADR-054](054-baked-diffuse-volumes.md)); Russian roulette
+  starts after the second bounce (`--rr-start`, 0 off; before 2026-10-08 it
+  started after the fourth, the last at the default depth, so it never ran),
+  for the GPU gather and the CPU parity integrator alike;
 - normal maps, clearcoat, sheen, subsurface and anisotropy are not modeled.
 
 ### Encoding
 
-Before a page is composed, the bake rejects outlier texels
+Before a page is composed, each layer is cleaned up in this order:
+
+1. **Buried texels.** A texel whose back-face fraction in the page's first
+   layer exceeds one half (`--buried-backface`, 0 off) is invalid in every
+   layer. In rings, each invalid texel takes the mean light, ambient
+   visibility and noise estimate of its same-surface neighbors that are
+   valid or filled in an earlier ring (`vkr_bake_lightmap_plan_fill`).
+   Same-surface neighbors are the covered texels among the eight around a
+   texel on the page that lie within four texels of it in world space and
+   face within about 37 degrees of its normal. A texel no ring reaches, on a
+   surface buried whole, keeps its own light. Floor under a wall therefore
+   continues the floor beside it, and bilinear filtering no longer pulls a
+   dark or light strip out from wall bases and door sills.
+2. **Indirect denoising** (on by default; `--denoise 0` turns it off). The
+   indirect light passes an edge-aware a-trous filter
+   (`vkr_bake_lightmap_denoise`): four passes (`--denoise-iterations`) of a
+   5×5 B3-spline tap pattern at steps of 1, 2, 4 and 8 texels. A tap counts
+   only when it is a covered, valid texel of the same instance, faces within
+   about 37 degrees of the center, and lies in world space within 1.5 times
+   the distance its page offset implies at the center's texel spacing plus
+   half a texel, so a chart seam or another chart packed beside it does not
+   mix in. Taps are weighted by the normal cosine to the 16th power, by
+   their distance from the center's tangent plane, and by their luminance
+   difference over four (`--denoise-sigma`, 0 for geometry alone) standard
+   deviations of the two texels' noise, from the gather's variance smoothed
+   over 3×3 same-surface neighbors and carried through the passes. Counting
+   both texels' noise lets a texel that caught a rare bright path share it
+   with a neighbor that did not; with the center's noise alone the floor of
+   the room below came out 7.7% dark instead of 3.5%.
+3. **Direct light** gets the smoothing passes (`--smooth <passes>`, one by
+   default): each texel takes the mean of itself and its same-surface
+   neighbors, weighted 4 for the texel, 2 for edge and 1 for corner
+   neighbors (`vkr_bake_lightmap_smooth`). It blurs the point-sampled direct
+   light, including shadow edges, by about a texel. Direct and indirect
+   light are then added.
+
+Outlier rejection does not run with denoising: the luminance weights spread
+a lone high-energy path over its neighbors, and on the room below rejection
+removed 4.5% of the floor's indirect light without lowering its noise.
+Without denoising, the bake still rejects outlier texels from the sum of
+direct and indirect light
 ([`vkr_bake_lightmap_reject_outliers`](../../tools/bake/vkr_bake_lightmap.h)):
-a texel with at least three same-surface neighbors, the covered texels among
-the eight around it on the page that lie within four texels of it in world
-space and face within about 37 degrees of its normal, whose luminance exceeds
-twice the brightest of them takes their mean. Rare high-energy paths
-otherwise remain as speckles at any practical sample count, and a rejected
-texel's own light is lost, about 1% of a layer. One smoothing pass then
-gives each texel the mean of itself and its same-surface neighbors, weighted
-4 for the texel, 2 for edge and 1 for corner neighbors
-(`vkr_bake_lightmap_smooth`), which blurs irradiance by about a texel and
-never across a chart seam. `--outlier-ratio` (0 turns rejection off) and
-`--smooth <passes>` set them; `--gpu gather` counts each layer's outliers
-without replacing or smoothing anything, so its parity check still compares
-raw transport.
+a texel with at least three same-surface neighbors whose luminance exceeds
+twice the brightest of them (`--outlier-ratio`, 0 off) takes their mean, and
+the smoothing passes then run on the sum, as every bake did before
+2026-10-08. `--gpu gather` counts each layer's outliers without replacing,
+filling, denoising or smoothing anything, so its parity check still compares
+raw transport. `--dump-texels <csv>` writes every published texel's
+position, normal, validity and direct, indirect and total light before
+encoding.
 
 Each layer page is composed in float RGBA: covered texels take their value,
 up to four rings of empty texels take the mean of their filled 8-neighbors
@@ -238,12 +293,15 @@ view into the caller's bytes.
 `lightmap-baker` tool bakes into a temporary file, the result is decoded and
 the closure re-checked before the file is renamed into place with a
 `.bake.json` provenance sidecar; `--check` reports `current` or `stale`. It
-accepts `--samples` (64), `--max-depth` (4), `--seed`, `--page-size` (4096) and
-`--texels-per-unit` (8), and exits 4 without publishing when no model carries
-lightmap UVs.
+accepts `--samples` (64), `--max-depth` (4), `--seed`, `--page-size` (4096),
+`--texels-per-unit` (8), `--denoise` (1), `--denoise-iterations` (4) and
+`--indirect-clamp` (0), records them in the sidecar's recipe, and exits 4
+without publishing when no model carries lightmap UVs.
 
 A managed `bake_scene` request with `bakes.lightmap` and optional
-`lightmap_settings` bakes the effective runtime scene into
+`lightmap_settings` (`samples`, `max_depth`, `seed`, `page_size`,
+`texels_per_unit`, `denoise_iterations`, `indirect_clamp` and the boolean
+`denoise`) bakes the effective runtime scene into
 `builds/<uuid>/lightmaps.vklm`, records an asset of kind and role `lightmap`,
 and sets the scene's `lightmaps` block to that asset
 ([`vkr_project_bake.c`](../../tools/bakery/project/vkr_project_bake.c)).
@@ -488,11 +546,53 @@ texels per meter with deferred textures:
   (`sha256:77a108b3ab6558f3d540f252939712011a301a6c642f3f0585cfb9e59a96ca5f`).
   The fixture uses that set.
 
+- Indirect denoising, buried texels and Russian roulette, 2026-10-08, on a
+  synthetic closed room (8 × 3 × 8 m of box brushes sized by their faces,
+  one 0.25 m interior wall sunk 0.05 m into the floor, four point lamps each
+  0.13 m under a 0.6 m emissive panel; 38,280 texels on one 512 page,
+  default lamp group only). With `--denoise 0 --rr-start 4
+  --buried-backface 0` the new baker reproduces the previous one: identical
+  set bytes on a scaled-brush variant of the room, 37 differing bytes of
+  262,912 on this one, from summing the direct term once instead of per
+  sample. Noise is the per-texel standard deviation of published luminance
+  between seeds 1 and 2 over the mean, on the 3,035 open-floor texels; bias
+  is against a 1,024-sample bake without any cleanup (whose own noise is
+  0.13):
+
+  | 64 samples | Noise | Indirect noise | Floor mean | Under wall / beside |
+  |---|---|---|---|---|
+  | Previous (rejection, one smoothing pass) | 0.195 | 0.680 | -2.8% | 0.27 |
+  | Denoised, default | 0.035 | 0.046 | -3.5% | 1.03 |
+  | Denoised, geometry weights only | 0.022 | 0.029 | -1.8% | 1.02 |
+  | Denoised with outlier rejection | 0.036 | 0.048 | -6.9% | 1.03 |
+
+  The floor beside the interior wall reads 2.07 previously, 2.64 denoised
+  and 2.81 with geometry weights alone, against 2.56 in the reference: the
+  luminance weights keep the contact darkening that geometry weights blur
+  away. 2,265 texels were buried, 2,135 filled and 130 (on faces buried
+  whole) kept. Raw transport at 64 samples has noise 0.527 with Russian
+  roulette after the fourth bounce and 0.569 after the second; after
+  denoising both give 0.035. At 256 samples, on a GPU shared with an
+  editor, the gather took 0.90 and 1.02 s previously, 0.75 and 0.68 s with
+  roulette after the second bounce and 0.77 and 0.87 s after the fourth;
+  denoising took 0.01 to 0.02 s of CPU. The room's four lamps make the
+  per-sample texel direct term cheap; on a level with many lamps the texel
+  term evaluated once saves more. `run_lightmap_bake_tests` covers the
+  denoiser (noise on a flat patch falls more than fourfold, a floor and the
+  wall it meets stay apart, a far chart packed beside the wall stays apart,
+  rare bright texels keep 89.5% of their energy where the center-only
+  tolerance kept 75%) and the buried fill
+  (ring order, both sides of a three-texel strip, a surface buried whole).
+
 Unavailable: a Windows or Vulkan host.
 
 ## Revisit when
 
-Smoothing visibly softens light detail a level needs at its texel density,
+Smoothing or indirect denoising visibly softens light detail a level needs
+at its texel density, a level's emissive surfaces leave noise the denoiser
+cannot remove (they are found only by chance; sampling them as lights would
+cut it at the source), buried-texel detection marks open surfaces whose
+geometry is one-sided by mistake,
 outlier rejection removes real single-texel light such as a beam through a
 small opening, a level needs more than four baked groups, the spread
 specular lobe's sun bias shows against the art-level contract, or the CPU
