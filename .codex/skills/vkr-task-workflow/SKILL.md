@@ -38,7 +38,7 @@ Use a subagent for an independent bounded investigation, implementation slice,
 or review that can proceed alongside useful local work. Work locally when the
 next action depends on the answer, the task is small, or transferring context
 would cost more than doing it. Do not spawn a duplicate investigation.
-You may spawn without asking when these criteria hold. Run at most 3
+You may spawn without asking when these criteria hold. Run at most 6
 subagents at once; at most one may build, cook, or use the GPU.
 
 Give each child the objective, exact owned paths, relevant constraints, evidence
