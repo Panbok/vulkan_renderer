@@ -20,6 +20,7 @@ VKR_COMPONENT_DEFINE(FpsPlayerSettings, fps_player, "FPS player",
                      FPS_PLAYER_FIELDS)
 VKR_COMPONENT_DEFINE(FpsWeaponBinding, fps_weapon, "FPS weapon",
                      FPS_WEAPON_FIELDS)
+VKR_COMPONENT_DEFINE(FpsLadder, fps_ladder, "FPS ladder", FPS_LADDER_FIELDS)
 
 // =============================================================================
 // Module data
@@ -362,8 +363,8 @@ static void fps_late_update(VkrCtx *ctx, FpsModule *module, float32_t dt) {
   if (state) {
     vkr_hud(ctx,
             "Ammo %u / %u%s  Hits %llu\nWASD move | Shift walk | Mouse "
-            "fire/look\nR reload | Space jump | Ctrl crouch | V camera\nTab "
-            "mouse | Backspace reset",
+            "fire/look\nR reload | Space jump | Ctrl crouch | E use | V "
+            "camera\nTab mouse | Backspace reset",
             state->weapon.magazine_rounds, state->reserve_rounds,
             state->weapon.reloading ? "  Reloading" : "",
             (unsigned long long)player->hits);
@@ -372,8 +373,8 @@ static void fps_late_update(VkrCtx *ctx, FpsModule *module, float32_t dt) {
 
 VKR_MODULE(fps, FpsModule,
            VKR_EXPORT_COMPONENT(fps_player) VKR_EXPORT_COMPONENT(fps_weapon)
-               VKR_EXPORT_BEHAVIOR(fps_door),
-           .scope = VKR_SCOPE_WORLD, .data_version = 3, .start = fps_start,
+               VKR_EXPORT_COMPONENT(fps_ladder) VKR_EXPORT_BEHAVIOR(fps_door),
+           .scope = VKR_SCOPE_WORLD, .data_version = 4, .start = fps_start,
            .stop = fps_stop, .update = fps_update,
            .late_update = fps_late_update, .fixed_update = fps_fixed_update,
            .late_fixed_update = fps_late_fixed_update, .input = fps_input)

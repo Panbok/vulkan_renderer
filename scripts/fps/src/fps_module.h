@@ -11,6 +11,15 @@
 
 VKR_COMPONENT_DECLARE(FpsWeaponBinding, fps_weapon, FPS_WEAPON_FIELDS)
 
+/* Authored `fps_ladder`: on a trigger brush in front of a climbable wall,
+   reaching above the floor it leads to; the player climbs it while it faces
+   it (fps_player.c). */
+#define FPS_LADDER_FIELDS                                                      \
+  VKR_FIELD(F32, climb_speed, "Climb speed", 2.5f, .unit = "m/s", .min = 0.1f, \
+            .max = 20.0f)
+
+VKR_COMPONENT_DECLARE(FpsLadder, fps_ladder, FPS_LADDER_FIELDS)
+
 /* `door`: a sliding door that entity IO opens and closes (fps_door.c). */
 #define FPS_DOOR_FIELDS                                                        \
   VKR_FIELD(VEC3, offset, "Open offset", vec3_new(0.0f, 2.5f, 0.0f),           \

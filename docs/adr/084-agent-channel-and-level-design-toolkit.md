@@ -829,7 +829,10 @@ brush carries the button, naming the player as activator. It fires
 `on_pressed` with the activator and then takes no press for `wait` seconds,
 or for the session with a negative wait; while `locked` a press fires
 `on_refused` instead. A door that opens on use carries a button whose
-`on_pressed` reaches its mover.
+`on_pressed` reaches its mover. A ladder is a trigger brush in front of a
+climbable face carrying the FPS module's `fps_ladder` and reaching above the
+floor it leads to; the FPS player climbs it while it faces it
+([ADR-073](073-native-gameplay-foundation.md)).
 
 A `mover` moves its entity and everything under it between its saved pose
 and an open pose `distance` meters along `direction` in its own space, as

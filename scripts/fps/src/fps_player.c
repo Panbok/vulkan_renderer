@@ -1,4 +1,5 @@
 #include "fps_player.h"
+#include "fps_module.h"
 #include <math.h>
 #include <stdio.h>
 
@@ -6,6 +7,12 @@
 #define PLAYER_LOOK_SCALE 0.0025f
 /* How far the use key reaches from the eye, in metres. */
 #define PLAYER_USE_REACH 2.0f
+/* How far ahead of the chest a ladder is found, and how far down the view
+   looks before forward climbs down. */
+#define PLAYER_LADDER_REACH 0.6f
+#define PLAYER_LADDER_DOWN_PITCH -0.5f
+/* Speed a jump pushes off a ladder with, away and up. */
+#define PLAYER_LADDER_PUSH 3.0f
 
 FpsPlayerSettings fps_player_settings_default(void) {
   FpsPlayerSettings settings;
@@ -145,6 +152,28 @@ static void player_use(VkrCtx *ctx, FpsPlayer *player,
   const VkrIoValue activator = {.kind = VKR_IO_ENTITY,
                                 .entity = player->entity};
   (void)vkr_io_send(ctx, target, player->press_input, &activator);
+}
+
+/* The ladder ahead: a sensor with `fps_ladder` that a short level ray from
+   the chest meets, or NULL. A ray starting inside it meets it at once. */
+static const FpsLadder *player_ladder(VkrCtx *ctx, const FpsPlayer *player,
+                                      const FpsPlayerState *state) {
+  const Vec3 chest = vec3_add(player->current_foot,
+                              vec3_new(0, state->crouched ? .6f : 1.0f, 0));
+  const Vec3 ahead = vec3_new(cosf(state->yaw), 0.0f, sinf(state->yaw));
+  const VkrQueryFilter filter = {.mask = UINT16_MAX,
+                                 .include_sensors = true_v,
+                                 .ignored = &player->entity,
+                                 .ignored_count = 1};
+  VkrRayHit hit;
+  if (!vkr_raycast(ctx, chest, vec3_scale(ahead, PLAYER_LADDER_REACH), &filter,
+                   &hit)) {
+    return NULL;
+  }
+  const FpsLadder *ladder =
+      vkr_component_get(ctx, hit.collider, fps_ladder_type());
+  return ladder ? ladder
+                : vkr_component_get(ctx, hit.entity, fps_ladder_type());
 }
 
 static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
@@ -287,7 +316,19 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
                            .gravity = vkr_gravity(ctx),
                            .crouch = crouch_requested,
                            .dt = dt};
-  if (motor.ground == VKR_GROUND_ON_GROUND) {
+  /* On a ladder gravity waits: forward climbs, down while the view looks
+     down, and a jump pushes off it, away and up. */
+  const FpsLadder *ladder = player_ladder(ctx, player, state);
+  if (ladder && jump) {
+    move.velocity =
+        vec3_new(-cosf(state->yaw) * PLAYER_LADDER_PUSH, PLAYER_LADDER_PUSH,
+                 -sinf(state->yaw) * PLAYER_LADDER_PUSH);
+  } else if (ladder) {
+    move.gravity = vec3_zero();
+    move.velocity.y =
+        (state->pitch < PLAYER_LADDER_DOWN_PITCH ? -forward : forward) *
+        ladder->climb_speed;
+  } else if (motor.ground == VKR_GROUND_ON_GROUND) {
     move.velocity.y = jump && !crouch_requested && !motor.crouched
                           ? player->settings.jump_speed
                           : motor.ground_velocity.y;

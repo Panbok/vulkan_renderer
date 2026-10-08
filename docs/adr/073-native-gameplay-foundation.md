@@ -145,7 +145,14 @@ held intent and simulation aim; scene physics owns its motor. Before physics it
 completes due reloads, consumes ordered commands, performs hitscan fire, and steps
 the motor. E traces 2 m from the eye, past the player, and sends `press` with
 the player as activator to the hit brush when it carries a `button`
-(ADR-084), resolved once by `vkr_component_named` and `vkr_io_input`. After native physics it consumes a reserved shot fact and applies a
+(ADR-084), resolved once by `vkr_component_named` and `vkr_io_input`.
+A level ray 0.6 m ahead of the chest that includes sensors finds a ladder: a
+trigger brush carrying the module's `fps_ladder` (`climb_speed`, 2.5 m/s).
+On one, gravity waits and forward climbs, or descends while the view looks
+more than 0.5 rad down; horizontal movement still pushes toward the wall, so
+the top of a ladder that reaches above the floor it leads to steps the
+player onto it, and a jump pushes off away and up at 3 m/s. The module's
+`data_version` is 4. After native physics it consumes a reserved shot fact and applies a
 hit impulse. Motor and animation failures retain their specific diagnostic.
 One pending shot slot is sufficient for the example's six-tick fire
 interval. This is a single-player client, not the proposed multi-shooter damage
