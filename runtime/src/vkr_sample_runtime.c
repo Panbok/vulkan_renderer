@@ -19,6 +19,8 @@
 #include "math/vkr_quat.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
 #include "renderer/systems/vkr_camera_controller.h"
@@ -223,6 +225,11 @@ typedef struct State {
   bool8_t graphics_dirty;
   float64_t graphics_changed_at;
   VkrSceneEditState edits;
+  /* Every container's undo journal and overlay loads draw from this pool,
+     not the UI's retained one, so a long build never starves the UI; each
+     journal bounds its own share (VKR_SCENE_EDIT_HISTORY_BYTES). */
+  VkrDMemory edit_memory;
+  VkrAllocator edit_allocator;
   /* Root physics world every loaded scene shares (ADR-076); created with the
      first attached scene and destroyed after the last one unloads. */
   VkrScenePhysicsSet *physics_set;
@@ -2214,8 +2221,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
     application->scene_generation = application->scene_generation == UINT64_MAX
                                         ? 1u
                                         : application->scene_generation + 1u;
-    vkr_scene_edit_reset(&state->edits,
-                         &application->ui_system.retained_allocator,
+    vkr_scene_edit_reset(&state->edits, &state->edit_allocator,
                          application->scene_generation);
     sample_physics_attach(application, scene, true_v);
     const char *physics_root_error = NULL;
@@ -2384,8 +2390,7 @@ vkr_internal void vkr_standard_scene_runtime_unload_scene_system(
   state->scene_load_stats_baseline_valid = false_v;
   state->scene_load_timer_active = false_v;
   state->scene_load_start_time_seconds = 0.0;
-  vkr_scene_edit_reset(&state->edits,
-                       &application->ui_system.retained_allocator, 0);
+  vkr_scene_edit_reset(&state->edits, &state->edit_allocator, 0);
   state->gizmo_edit_pending = false_v;
   vkr_standard_scene_runtime_clear_gizmo_selection(application);
   application->active_scene = NULL;
@@ -5297,8 +5302,7 @@ vkr_internal void sample_world_unload(VkrStandardSceneRuntime *application) {
   state->world_resource = (VkrResourceHandleInfo){0};
   state->world_handle = NULL;
   state->world_pending = false_v;
-  vkr_scene_edit_reset(&state->world_edits,
-                       &application->ui_system.retained_allocator, 0u);
+  vkr_scene_edit_reset(&state->world_edits, &state->edit_allocator, 0u);
 }
 
 /* Publishes a loaded World: its journal and sidecar, shared physics and
@@ -5311,8 +5315,7 @@ vkr_internal void sample_world_activate(VkrStandardSceneRuntime *application,
   state->world_handle = handle;
   application->world_scene = world;
   sample_physics_attach(application, world, false_v);
-  vkr_scene_edit_reset(&state->world_edits,
-                       &application->ui_system.retained_allocator, 1u);
+  vkr_scene_edit_reset(&state->world_edits, &state->edit_allocator, 1u);
   if (state->world_sidecar[0]) {
     (void)vkr_scene_edit_load(
         &state->world_edits, world,
@@ -5555,8 +5558,8 @@ vkr_internal void sample_additive_remove(VkrStandardSceneRuntime *application,
   state->additive_pending[slot] = false_v;
   state->additive_paths[slot][0] = '\0';
   state->additive_sidecars[slot][0] = '\0';
-  vkr_scene_edit_reset(&state->additive_edits[slot],
-                       &application->ui_system.retained_allocator, 0u);
+  vkr_scene_edit_reset(&state->additive_edits[slot], &state->edit_allocator,
+                       0u);
   sample_additive_publish(application);
 }
 
@@ -5653,8 +5656,8 @@ vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application) {
     vkr_scene_physics_set_paused(scene, true_v);
     sample_physics_attach(application, scene, false_v);
     (void)vkr_scene_resolve_world(scene);
-    vkr_scene_edit_reset(&state->additive_edits[slot],
-                         &application->ui_system.retained_allocator, 1u);
+    vkr_scene_edit_reset(&state->additive_edits[slot], &state->edit_allocator,
+                         1u);
     if (state->additive_sidecars[slot][0]) {
       (void)vkr_scene_edit_load(
           &state->additive_edits[slot], scene,
@@ -6788,19 +6791,30 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
              "%s%s.editor.json", absolute ? "" : vkr_content_root(),
              scene_path);
   }
-  state->edits = (VkrSceneEditState){
-      .allocator = &application->ui_system.retained_allocator};
-  state->world_edits = (VkrSceneEditState){
-      .allocator = &application->ui_system.retained_allocator};
+  /* Address space for the journals that grow (the primary's and the
+     World's at their byte budget) plus a loading overlay; pages commit as
+     journals grow, and a full pool makes the journal that asks drop its
+     oldest steps. */
+  if (!vkr_dmemory_create(MB(4), GB(2), &state->edit_memory)) {
+    log_error("Failed to reserve the scene edit memory");
+    arena_destroy(state->stats_arena);
+    state->stats_arena = NULL;
+    return false_v;
+  }
+  state->edit_allocator = (VkrAllocator){.ctx = &state->edit_memory};
+  vkr_dmemory_allocator_create(&state->edit_allocator);
+  state->edits = (VkrSceneEditState){.allocator = &state->edit_allocator};
+  state->world_edits = (VkrSceneEditState){.allocator = &state->edit_allocator};
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
-    state->additive_edits[i] = (VkrSceneEditState){
-        .allocator = &application->ui_system.retained_allocator};
+    state->additive_edits[i] =
+        (VkrSceneEditState){.allocator = &state->edit_allocator};
   }
   state->gizmo_edit_pending = false_v;
   application->editor_viewport.simulation_running =
       !runtime_config->presentation.paneled;
   if (!state->ui.initialize(state->ui.state, &application->editor_viewport.dock,
                             &application->ui_system)) {
+    vkr_dmemory_allocator_destroy(&state->edit_allocator);
     arena_destroy(state->stats_arena);
     state->stats_arena = NULL;
     return false_v;
@@ -7120,6 +7134,9 @@ int vkr_sample_runtime_run(int argc, char **argv,
   vkr_script_host_shutdown(&state->scripts);
   vkr_scene_physics_set_destroy(state->physics_set);
   state->physics_set = NULL;
+  /* Every journal reset when its container unloaded above. */
+  vkr_allocator_release_global_accounting(&state->edit_allocator);
+  vkr_dmemory_allocator_destroy(&state->edit_allocator);
   if (application.last_renderer_error == VKR_RENDERER_ERROR_DEVICE_ERROR)
     exit_code = 5;
 

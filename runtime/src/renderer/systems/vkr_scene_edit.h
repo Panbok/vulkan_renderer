@@ -12,6 +12,14 @@
 /* Entries one journal group may hold, as many as one agent batch
    (VKR_SAMPLE_EDIT_BATCH_MAX); a larger group fails and rolls back. */
 #define VKR_SCENE_EDIT_GROUP_MAX 2048u
+/* Undo payload bytes one journal keeps. Past it, or when its allocator is
+   full, the oldest steps leave before an edit fails; only the open group
+   never leaves. It lets VKR_SCENE_EDIT_UNDO_CAPACITY entity entries (two
+   17 KiB value snapshots each) stay, so it binds on terrain strokes. */
+#define VKR_SCENE_EDIT_HISTORY_BYTES MB(256)
+/* Created objects one overlay or cell document holds. Load rejects a larger
+   document, so save refuses to write one. */
+#define VKR_SCENE_EDIT_CREATED_MAX 16384u
 
 typedef enum VkrSceneEditAction {
   VKR_SCENE_EDIT_NONE,
@@ -148,6 +156,8 @@ typedef struct VkrSceneEditState {
   uint32_t touched_capacity;
   uint32_t undo_count;
   uint32_t undo_cursor;
+  /* Sum of the undo entries' payload sizes. */
+  uint64_t payload_bytes;
   uint64_t generation;
   uint64_t revision;
   uint64_t saved_revision;

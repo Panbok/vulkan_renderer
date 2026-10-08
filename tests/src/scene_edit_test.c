@@ -378,6 +378,122 @@ static void edit_test_groups(void) {
   vkr_dmemory_destroy(&memory);
 }
 
+/* Writes an overlay of `count` created roots named "n<index>". */
+static void edit_test_created_file(const char *path, uint32_t count) {
+  FILE *file = file_fopen(path, "wb");
+  assert(file);
+  fputs("{\"version\":5,\"overrides\":[],\"created\":[", file);
+  for (uint32_t i = 0; i < count; ++i) {
+    fprintf(file,
+            "%s{\"id\":%u,\"parent\":null,\"fields\":3,\"name\":\"n%u\","
+            "\"position\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]}",
+            i ? "," : "", i + 1u, i);
+  }
+  /* Version 3 and later overlays carry the scene's collision layers; these
+     are the defaults a save writes. */
+  fputs("],\"collision_settings\":{\"version\":1,\"names\":[", file);
+  for (uint32_t i = 0; i < 16u; ++i) {
+    fprintf(file, "%s\"Layer %u\"", i ? "," : "", i + 1u);
+  }
+  fputs("],\"matrix\":[", file);
+  for (uint32_t i = 0; i < 16u; ++i) {
+    fprintf(file, "%s65535", i ? "," : "");
+  }
+  fputs("],\"presets\":[{\"name\":\"Default\",\"membership\":1,"
+        "\"mask\":65535,\"sensor\":false},{\"name\":\"Sensor\","
+        "\"membership\":2,\"mask\":65535,\"sensor\":true},{\"name\":"
+        "\"No collision\",\"membership\":1,\"mask\":0,\"sensor\":false}]}}",
+        file);
+  fclose(file);
+}
+
+/* A level-sized build (ADR-084). Independent oracles: entity liveness by name,
+   the journal's own entries summed against its byte count, and the status a
+   refused load or save names. A journal whose allocator fills used to refuse
+   every further edit, and an overlay past 1,024 created objects saved but
+   never loaded. */
+static void edit_test_large(void) {
+  VkrDMemory scene_memory;
+  assert(vkr_dmemory_create(MB(16), MB(512), &scene_memory));
+  VkrAllocator scene_allocator = {.ctx = &scene_memory};
+  vkr_dmemory_allocator_create(&scene_allocator);
+  /* 1,500 creations journal about 17 MiB, eight times this pool. */
+  VkrDMemory journal_memory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &journal_memory));
+  VkrAllocator journal_allocator = {.ctx = &journal_memory};
+  vkr_dmemory_allocator_create(&journal_allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &scene_allocator, 0, 8, &error));
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, &journal_allocator, 1);
+  const uint32_t built = 1500u;
+  char name[32];
+  for (uint32_t i = 0; i < built; ++i) {
+    snprintf(name, sizeof(name), "n%u", i);
+    (void)edit_test_create(&state, &scene, VKR_ENTITY_ID_INVALID, name);
+  }
+  uint64_t kept = 0u;
+  for (uint32_t i = 0; i < state.undo_count; ++i) {
+    kept += state.undo[i].payload_size;
+  }
+  assert(state.undo_count < built && state.payload_bytes == kept);
+  assert(state.created_count == built);
+  /* The newest step still undoes and redoes. */
+  VkrEntityId found = VKR_ENTITY_ID_INVALID;
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(edit_test_alive_named(&scene, "n1499", &found) == 0u);
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  assert(edit_test_alive_named(&scene, "n1499", &found) == 1u);
+
+  /* Every object saves and loads back. */
+  FilePath directory = {.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp"),
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory(&directory));
+  char path[1024];
+  snprintf(path, sizeof(path),
+           PROJECT_SOURCE_DIR "tests/tmp/scene_large_%u.json",
+           vkr_platform_get_process_id());
+  const String8 file_path = string8_create((uint8_t *)path, strlen(path));
+  assert(vkr_scene_edit_save(&state, &scene, file_path));
+  vkr_scene_edit_reset(&state, &scene_allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+  assert(vkr_scene_init(&scene, &scene_allocator, 0, 8, &error));
+  vkr_scene_edit_reset(&state, &scene_allocator, 1);
+  assert(vkr_scene_edit_load(&state, &scene, file_path));
+  assert(state.created_count == built);
+  assert(edit_test_alive_named(&scene, "n0", &found) == 1u &&
+         edit_test_alive_named(&scene, "n1499", &found) == 1u);
+  vkr_scene_edit_reset(&state, &scene_allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+
+  /* A file at the limit loads; one more object refuses the save, and a file
+     past the limit names the limit instead of a malformed schema. */
+  edit_test_created_file(path, VKR_SCENE_EDIT_CREATED_MAX);
+  assert(vkr_scene_init(&scene, &scene_allocator, 0, 8, &error));
+  vkr_scene_edit_reset(&state, &scene_allocator, 1);
+  assert(vkr_scene_edit_load(&state, &scene, file_path));
+  assert(state.created_count == VKR_SCENE_EDIT_CREATED_MAX);
+  (void)edit_test_create(&state, &scene, VKR_ENTITY_ID_INVALID, "extra");
+  assert(!vkr_scene_edit_save(&state, &scene, file_path));
+  assert(strstr(state.status, "Save blocked"));
+  vkr_scene_edit_reset(&state, &scene_allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+  edit_test_created_file(path, VKR_SCENE_EDIT_CREATED_MAX + 1u);
+  assert(vkr_scene_init(&scene, &scene_allocator, 0, 8, &error));
+  vkr_scene_edit_reset(&state, &scene_allocator, 1);
+  assert(!vkr_scene_edit_load(&state, &scene, file_path));
+  assert(strstr(state.status, "creates more than") &&
+         state.created_count == 0u);
+
+  FilePath saved_path = {.path = file_path, .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_remove(&saved_path) == FILE_ERROR_NONE);
+  vkr_scene_edit_reset(&state, &scene_allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_allocator_destroy(&journal_allocator);
+  vkr_dmemory_allocator_destroy(&scene_allocator);
+}
+
 static void edit_test_structure(void) {
   VkrDMemory memory;
   assert(vkr_dmemory_create(MB(4), MB(8), &memory));
@@ -1232,6 +1348,7 @@ bool32_t run_scene_edit_tests(void) {
   vkr_dmemory_destroy(&memory);
   edit_test_structure();
   edit_test_groups();
+  edit_test_large();
   VkrDMemory partition_memory;
   assert(vkr_dmemory_create(MB(16), MB(64), &partition_memory));
   VkrAllocator partition_allocator = {.ctx = &partition_memory};

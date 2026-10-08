@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-06
+updated: 2026-10-08
 authority: adr
 ---
 # ADR-084: Agent channel and level design toolkit
@@ -127,8 +127,16 @@ A journal group ([vkr_scene_edit.c](../../runtime/src/renderer/systems/vkr_scene
 tags each entry appended between `vkr_scene_edit_group_begin` and
 `vkr_scene_edit_group_end`. Undo and redo move over a whole group; a failure
 inside one stops there, as between two entries. The journal holds 4,096
-entries; eviction removes the oldest whole group, and a group past 2,048
-entries, one full batch, fails. `vkr_scene_edit_group_rollback` undoes and drops the open group.
+entries and at most `VKR_SCENE_EDIT_HISTORY_BYTES` (256 MiB) of payloads;
+eviction removes the oldest whole group, and a group past 2,048 entries, one
+full batch, fails. History is a cache: past the byte budget, or when its
+allocator is full, the redo steps and then the oldest groups leave before an
+edit would fail, and only the open group never leaves. Every container's
+journal and overlay load draw from one DMemory pool the sample runtime owns
+(2 GiB of address space, committed as used), apart from the UI's retained
+pool. They shared that 64 MiB pool before, where a creation's 11.5 KiB
+snapshot (a box brush is seven entities) exhausted it after about 3,000
+created entities and every later edit failed. `vkr_scene_edit_group_rollback` undoes and drops the open group.
 
 ### Settling
 

@@ -249,15 +249,31 @@ void vkr_scene_edit_reset(VkrSceneEditState *s, VkrAllocator *allocator,
   *s = (VkrSceneEditState){.allocator = allocator, .generation = generation};
 }
 
+static bool8_t edit_journal_evict(VkrSceneEditState *s);
+
+/* Grows an array the journal owns from `capacity` to `next` items. While the
+   allocator is full, old undo steps leave first, as for a payload
+   (edit_journal_prepare); only paths that add history call it, never undo or
+   redo, which hold an entry meanwhile. */
+static void *edit_grow(VkrSceneEditState *s, void *items, uint32_t capacity,
+                       uint32_t next, uint64_t item_size) {
+  void *grown = vkr_allocator_realloc(s->allocator, items, capacity * item_size,
+                                      next * item_size, EDIT_TAG);
+  while (!grown && edit_journal_evict(s)) {
+    grown = vkr_allocator_realloc(s->allocator, items, capacity * item_size,
+                                  next * item_size, EDIT_TAG);
+  }
+  return grown;
+}
+
 static bool8_t edit_touch(VkrSceneEditState *s, VkrEntityId entity) {
   for (uint32_t i = 0; i < s->touched_count; ++i)
     if (s->touched[i].u64 == entity.u64)
       return true_v;
   if (s->touched_count == s->touched_capacity) {
     uint32_t capacity = Max(32u, s->touched_capacity * 2u);
-    VkrEntityId *next = vkr_allocator_realloc(
-        s->allocator, s->touched, s->touched_capacity * sizeof(*next),
-        capacity * sizeof(*next), EDIT_TAG);
+    VkrEntityId *next =
+        edit_grow(s, s->touched, s->touched_capacity, capacity, sizeof(*next));
     if (!next)
       return false_v;
     s->touched = next;
@@ -428,7 +444,11 @@ static bool8_t edit_write(VkrScene *scene, VkrEntityId entity,
 }
 
 /* Payloads are allocated only for live journal entries. Expanded collider
-   references and scene-global settings do not inflate every history slot. */
+   references and scene-global settings do not inflate every history slot.
+   Undo history is a cache the next edit may reclaim: past
+   VKR_SCENE_EDIT_HISTORY_BYTES, or when the allocator is full, the oldest
+   steps leave first. Callers keep no pointer into `s->undo` across this call,
+   since leaving steps move the entries after them. */
 static void *edit_journal_prepare(VkrSceneEditState *s, VkrEntityId entity,
                                   uint64_t payload_size) {
   if (s->group_open && s->group_entries >= VKR_SCENE_EDIT_GROUP_MAX) {
@@ -445,7 +465,13 @@ static void *edit_journal_prepare(VkrSceneEditState *s, VkrEntityId entity,
       return NULL;
     }
   }
+  while (s->payload_bytes + payload_size > VKR_SCENE_EDIT_HISTORY_BYTES &&
+         edit_journal_evict(s)) {
+  }
   void *payload = vkr_allocator_alloc(s->allocator, payload_size, EDIT_TAG);
+  while (!payload && edit_journal_evict(s)) {
+    payload = vkr_allocator_alloc(s->allocator, payload_size, EDIT_TAG);
+  }
   if (!payload) {
     return NULL;
   }
@@ -483,6 +509,7 @@ static void edit_journal_remove(VkrSceneEditState *s, uint32_t first,
   for (uint32_t i = first; i < first + count; ++i) {
     vkr_allocator_free(s->allocator, s->undo[i].payload,
                        s->undo[i].payload_size, EDIT_TAG);
+    s->payload_bytes -= s->undo[i].payload_size;
   }
   const uint32_t tail = s->undo_count - first - count;
   MemCopy(s->undo + first, s->undo + first + count, tail * sizeof(*s->undo));
@@ -504,6 +531,20 @@ static uint32_t edit_journal_run(const VkrSceneEditState *s, uint32_t index) {
   return end - index;
 }
 
+/* Drops the redo steps, which the next entry replaces anyway, else the
+   oldest step unless it is the open group. False when nothing can leave. */
+static bool8_t edit_journal_evict(VkrSceneEditState *s) {
+  if (s->undo_cursor < s->undo_count) {
+    edit_journal_remove(s, s->undo_cursor, s->undo_count - s->undo_cursor);
+    return true_v;
+  }
+  if (!s->undo_count || (s->group_open && s->undo[0].group == s->group_open)) {
+    return false_v;
+  }
+  edit_journal_remove(s, 0u, edit_journal_run(s, 0u));
+  return true_v;
+}
+
 static void edit_journal_append(VkrSceneEditState *s, VkrSceneEditEntry entry) {
   entry.sequence = ++s_edit_sequence;
   entry.group = s->group_open;
@@ -514,6 +555,7 @@ static void edit_journal_append(VkrSceneEditState *s, VkrSceneEditEntry entry) {
     edit_journal_remove(s, 0u, edit_journal_run(s, 0u));
   }
   s->undo[s->undo_count++] = entry;
+  s->payload_bytes += entry.payload_size;
   s->undo_cursor = s->undo_count;
   if (s->group_open) {
     s->group_entries++;
@@ -784,6 +826,8 @@ bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
     return false_v;
   }
   const uint64_t size = edit_terrain_size(whole);
+  /* A new entry's storage may evict old steps and move `last`. */
+  const uint64_t stroke_group = stroke && !s->group_open ? last->group : 0u;
   EditTerrainPayload *payload =
       previous ? vkr_allocator_alloc(s->allocator, size, EDIT_TAG)
                : edit_journal_prepare(s, entity, size);
@@ -827,12 +871,12 @@ bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
   if (previous) {
     vkr_allocator_free(s->allocator, last->payload, last->payload_size,
                        EDIT_TAG);
+    s->payload_bytes = s->payload_bytes - last->payload_size + size;
     last->payload = payload;
     last->payload_size = size;
     s->revision++;
     return true_v;
   }
-  const uint64_t stroke_group = stroke && !s->group_open ? last->group : 0u;
   edit_journal_append(s,
                       (VkrSceneEditEntry){.kind = VKR_SCENE_EDIT_ENTRY_TERRAIN,
                                           .entity = entity,
@@ -1295,9 +1339,8 @@ static bool8_t edit_created_add(VkrSceneEditState *s, VkrEntityId entity,
                                 uint32_t id) {
   if (s->created_count == s->created_capacity) {
     const uint32_t capacity = Max(16u, s->created_capacity * 2u);
-    VkrSceneEditCreated *next = vkr_allocator_realloc(
-        s->allocator, s->created, s->created_capacity * sizeof(*next),
-        capacity * sizeof(*next), EDIT_TAG);
+    VkrSceneEditCreated *next =
+        edit_grow(s, s->created, s->created_capacity, capacity, sizeof(*next));
     if (!next) {
       return false_v;
     }
@@ -1313,6 +1356,8 @@ static bool8_t edit_deleted_add(VkrSceneEditState *s,
                                 const SceneSourceIdentity *source) {
   if (s->deleted_count == s->deleted_capacity) {
     const uint32_t capacity = Max(16u, s->deleted_capacity * 2u);
+    /* Undo and redo grow this array while they hold an entry, so no step
+       may leave here. */
     SceneSourceIdentity *next = vkr_allocator_realloc(
         s->allocator, s->deleted, s->deleted_capacity * sizeof(*next),
         capacity * sizeof(*next), EDIT_TAG);
@@ -2616,9 +2661,35 @@ static bool8_t write_created(VkrJsonWriter *w, const VkrSceneEditState *s,
          write_components(w, scene, entity) && vkr_json_writer_end_object(w);
 }
 
-/* Deleted document entities, then editor-created entities with their
-   overlay ids. Dead created entities (undone creations) are skipped, and in
-   a partitioned scene those streaming with a cell go to its document. */
+/* Whether the overlay itself writes created entity `index`: dead ones
+   (undone creations) are skipped, and in a partitioned scene those
+   streaming with a cell go to its document. */
+static bool8_t edit_overlay_holds(const VkrSceneEditState *s,
+                                  const VkrScene *scene, bool8_t partitioned,
+                                  const SceneWorldPartition *settings,
+                                  uint32_t index) {
+  const VkrEntityId entity = s->created[index].entity;
+  VkrScenePartitionCell cell;
+  return vkr_scene_entity_alive(scene, entity) &&
+         !(partitioned &&
+           vkr_scene_partition_entity_cell(scene, settings, entity, &cell));
+}
+
+/* Created entities the overlay itself would write. */
+static uint32_t edit_overlay_created_count(const VkrSceneEditState *s,
+                                           const VkrScene *scene) {
+  SceneWorldPartition settings;
+  const bool8_t partitioned =
+      s->cells_root[0] && vkr_scene_partition_settings(scene, &settings);
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < s->created_count; ++i) {
+    count += edit_overlay_holds(s, scene, partitioned, &settings, i);
+  }
+  return count;
+}
+
+/* Deleted document entities, then the editor-created entities the overlay
+   holds, with their overlay ids. */
 static bool8_t write_structure(VkrJsonWriter *w, const VkrSceneEditState *s,
                                const VkrScene *scene) {
   for (uint32_t i = 0; i < s->deleted_count; ++i) {
@@ -2638,11 +2709,7 @@ static bool8_t write_structure(VkrJsonWriter *w, const VkrSceneEditState *s,
   const bool8_t partitioned =
       s->cells_root[0] && vkr_scene_partition_settings(scene, &settings);
   for (uint32_t i = 0; i < s->created_count; ++i) {
-    const VkrEntityId entity = s->created[i].entity;
-    VkrScenePartitionCell cell;
-    if (!vkr_scene_entity_alive(scene, entity) ||
-        (partitioned &&
-         vkr_scene_partition_entity_cell(scene, &settings, entity, &cell))) {
+    if (!edit_overlay_holds(s, scene, partitioned, &settings, i)) {
       continue;
     }
     if (!write_created(w, s, scene, i)) {
@@ -2709,6 +2776,14 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
   if (!vkr_scene_edit_cells_track(s, scene)) {
     snprintf(s->status, sizeof(s->status),
              "Save blocked: a cell document could not be read.");
+    return false_v;
+  }
+  const uint32_t created = edit_overlay_created_count(s, scene);
+  if (created > VKR_SCENE_EDIT_CREATED_MAX) {
+    snprintf(s->status, sizeof(s->status),
+             "Save blocked: %u created objects; a scene file loads at most %u "
+             "(world partition cells hold more).",
+             created, VKR_SCENE_EDIT_CREATED_MAX);
     return false_v;
   }
   /* Terrain samples live in their own files, written with the edits. */
@@ -2807,6 +2882,7 @@ typedef enum EditSidecarFailure {
   EDIT_SIDECAR_FAILURE_SOURCE_DUPLICATE,
   EDIT_SIDECAR_FAILURE_FINGERPRINT,
   EDIT_SIDECAR_FAILURE_FIELDS,
+  EDIT_SIDECAR_FAILURE_CREATED_LIMIT,
 } EditSidecarFailure;
 
 typedef struct EditSidecarDiagnostic {
@@ -3817,6 +3893,11 @@ edit_sidecar_reject_status(VkrSceneEditState *s,
   case EDIT_SIDECAR_FAILURE_READ:
     snprintf(s->status, sizeof(s->status), "Override file could not be read.");
     break;
+  case EDIT_SIDECAR_FAILURE_CREATED_LIMIT:
+    snprintf(s->status, sizeof(s->status),
+             "Override file creates more than %u objects.",
+             VKR_SCENE_EDIT_CREATED_MAX);
+    break;
   }
 }
 
@@ -4024,9 +4105,6 @@ static bool8_t edit_load_prepare_matrix(VkrScene *scene,
   return true_v;
 }
 
-/* Created entities read from a version 4 overlay, bounded like its records. */
-#define EDIT_CREATED_MAX 1024u
-
 typedef struct EditParentLink {
   /* Override records name the child entity; created records their id. */
   VkrEntityId child;
@@ -4207,6 +4285,39 @@ done:
   return true_v;
 }
 
+static int edit_u32_compare(const void *a, const void *b) {
+  const uint32_t x = *(const uint32_t *)a;
+  const uint32_t y = *(const uint32_t *)b;
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* A document repeating a created id is malformed. Sorting a copy of the ids
+   keeps the check linearithmic, where comparing objects pairwise walked
+   kilobyte-strided snapshots quadratically. */
+static bool8_t edit_created_ids_unique(VkrSceneEditState *s,
+                                       const EditStructureLoad *load,
+                                       EditSidecarFailure *failure) {
+  if (load->object_count < 2u) {
+    return true_v;
+  }
+  const uint64_t size = load->object_count * sizeof(uint32_t);
+  uint32_t *ids = vkr_allocator_alloc(s->allocator, size, EDIT_TAG);
+  if (!ids) {
+    *failure = EDIT_SIDECAR_FAILURE_ALLOC;
+    return false_v;
+  }
+  for (uint32_t i = 0; i < load->object_count; ++i) {
+    ids[i] = load->objects[i].created_id;
+  }
+  qsort(ids, load->object_count, sizeof(*ids), edit_u32_compare);
+  bool8_t unique = true_v;
+  for (uint32_t i = 1; i < load->object_count && unique; ++i) {
+    unique = ids[i] != ids[i - 1u];
+  }
+  vkr_allocator_free(s->allocator, ids, size, EDIT_TAG);
+  return unique;
+}
+
 static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
                                  EditStructureLoad *load,
                                  EditRecordComponents *components,
@@ -4223,13 +4334,13 @@ static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
     uint32_t wrapper = 0;
     uint32_t node = 0;
     uint64_t fingerprint = 0;
-    if (load->object_count == EDIT_CREATED_MAX ||
-        !edit_json_record(j, &values, &wrapper, &node, &fingerprint,
+    if (load->object_count == VKR_SCENE_EDIT_CREATED_MAX) {
+      *failure = EDIT_SIDECAR_FAILURE_CREATED_LIMIT;
+      return false_v;
+    }
+    if (!edit_json_record(j, &values, &wrapper, &node, &fingerprint,
                           s->allocator, components, &extra, true_v))
       return false_v;
-    for (uint32_t i = 0; i < load->object_count; ++i)
-      if (load->objects[i].created_id == extra.id)
-        return false_v;
     if (load->object_count == load->object_capacity) {
       const uint32_t capacity = Max(8u, load->object_capacity * 2u);
       EditObject *objects = vkr_allocator_realloc(
@@ -4279,7 +4390,7 @@ static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
       return false_v;
     }
     if (edit_json_take(j, ']'))
-      return true_v;
+      return edit_created_ids_unique(s, load, failure);
     if (!edit_json_take(j, ','))
       return false_v;
   }
@@ -5412,6 +5523,23 @@ static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
       blocked = true_v;
       ok = false_v;
     }
+  }
+  /* A cell document loads at most VKR_SCENE_EDIT_CREATED_MAX objects. */
+  for (uint32_t i = 0; ok && i < count;) {
+    uint32_t end = i + 1u;
+    while (end < count && edit_cell_same(members[end].cell, members[i].cell)) {
+      end++;
+    }
+    if (end - i > VKR_SCENE_EDIT_CREATED_MAX) {
+      snprintf(s->status, sizeof(s->status),
+               "Save blocked: cell %d,%d holds %u created objects; a cell "
+               "loads at most %u.",
+               members[i].cell.x, members[i].cell.z, end - i,
+               VKR_SCENE_EDIT_CREATED_MAX);
+      blocked = true_v;
+      ok = false_v;
+    }
+    i = end;
   }
   /* The documents sit in one directory beside the scene's. */
   const FilePath directory = {.path = root, .type = FILE_PATH_TYPE_ABSOLUTE};

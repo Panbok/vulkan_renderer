@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-05
+updated: 2026-10-08
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -137,7 +137,11 @@ bodies cannot be duplicated yet. With several objects selected
 ([ADR-089](089-editor-workbenches.md)), Duplicate and Delete run as one edit
 batch and one undo step. The edit overlay (version 4)
 records authoritative `components`, created entities, deleted records and
-parents, and per-scene settings. New objects come from built-in **object
+parents, and per-scene settings. It holds at most
+`VKR_SCENE_EDIT_CREATED_MAX` (16,384) created entities: load rejects a larger
+one with that reason, and save refuses to write one, since a brush and its six
+faces are seven entities. Saves had written any count while load stopped at
+1,024, so a level of a few hundred brushes saved and then loaded empty. New objects come from built-in **object
 kinds** (empty, four light kinds, one per live world type and the Player Start),
 grouped under headings in menus; Cmd `create` also accepts each registered
 script component type. A new object lands by the Scene's Snapping settings
