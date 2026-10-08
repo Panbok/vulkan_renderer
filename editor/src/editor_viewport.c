@@ -201,7 +201,7 @@ static bool8_t view_contains(Vec4 rect, Vec2 point) {
 
 static Vec4 view_scene_rect(const VkrSampleUiFrame *frame) {
   const float32_t scale = frame->ui->content_scale;
-  const float32_t top = frame->scene_only ? VKR_EDITOR_NAVIGATION_HEIGHT_PT : 0;
+  const float32_t top = vkr_editor_scene_top_pt(frame);
   const Vec4 scene = frame->mapping.panel_rect_px;
   return (Vec4){scene.x / scale, scene.y / scale + top, scene.z / scale,
                 Max(0.0f, scene.w / scale - top)};
@@ -303,7 +303,12 @@ static ViewHeaderLayout view_header_layout(const VkrEditorUi *editor,
   const Vec4 scene = view_scene_rect(frame);
   char text[VIEW_LEFT_CHIPS][48];
   view_chip_text(editor, frame, text);
-  const float32_t available = Max(0.0f, scene.z - VIEW_INSET_PT * 2.0f);
+  /* Without the top bar, the macOS window buttons sit over the Scene's
+     top-left corner, so the left chips start after them. */
+  const float32_t left_inset = frame->scene_maximized
+                                   ? Max(VIEW_INSET_PT, editor->title_inset_pt)
+                                   : VIEW_INSET_PT;
+  const float32_t available = Max(0.0f, scene.z - left_inset - VIEW_INSET_PT);
   /* The tools and the World/Local space toggle, with the panel padding and
      the gaps between them. */
   const float32_t right_width =
@@ -325,7 +330,7 @@ static ViewHeaderLayout view_header_layout(const VkrEditorUi *editor,
     const float32_t right =
         right_width + 10.0f + layout.snap + layout.speed + 2.0f * 3.0f;
     layout.show_right = width + right + 12.0f <= available;
-    layout.left = (Vec4){scene.x + VIEW_INSET_PT, scene.y + VIEW_INSET_PT,
+    layout.left = (Vec4){scene.x + left_inset, scene.y + VIEW_INSET_PT,
                          Min(width, available), VIEW_CHIP_HEIGHT_PT + 6.0f};
     layout.right =
         (Vec4){scene.x + scene.z - VIEW_INSET_PT - right,
@@ -1005,6 +1010,14 @@ VkrEditorSceneTool vkr_editor_scene_tool(const VkrEditorUi *editor) {
     return VKR_EDITOR_SCENE_TOOL_TERRAIN;
   }
   return editor->path_tool;
+}
+
+bool8_t vkr_editor_viewport_escape_armed(const VkrEditorUi *editor) {
+  return vkr_editor_scene_tool(editor) != VKR_EDITOR_SCENE_TOOL_NONE ||
+         editor->face_dragging || editor->view_popup != VIEW_POPUP_NONE ||
+         vkr_editor_brush_grid_escape_pending(editor) ||
+         vkr_editor_blockout_busy(editor) || editor->io_pick.u64 ||
+         editor->color_picker.open;
 }
 
 void vkr_editor_scene_tool_set(VkrEditorUi *editor, VkrEditorSceneTool tool) {
@@ -2561,7 +2574,7 @@ static bool8_t grid_label_rect(const VkrEditorUi *editor,
   const Vec4 image = frame->mapping.image_rect_px;
   const float32_t scale = frame->ui->content_scale;
   const Vec2 size = {image.z / scale, image.w / scale};
-  const float32_t top = frame->scene_only ? VKR_EDITOR_NAVIGATION_HEIGHT_PT : 0;
+  const float32_t top = vkr_editor_scene_top_pt(frame);
   const Vec2 label = line->label_size_pt;
   const Vec2 reserved = editor->grid_reserved_pt;
   const Vec2 delta = {b.x - a.x, b.y - a.y};

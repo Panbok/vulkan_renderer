@@ -79,7 +79,8 @@ dependable channel for scripts.
 | `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes\|level\|terrain> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window, `level` the Level checks window and `terrain` the Terrain window (ADR-084) |
 | `build.game`, `build.run` | `[profile]` | Package the project with a build profile (quoted when it has spaces; the selected profile by default), then for `build.run` run the game ([ADR-078](078-project-build-and-packaging.md)) |
 | `build.settings`, `build.open` | | Build Settings window; the last package's folder |
-| `layout.reset` | | The active workbench's default dock layout (ADR-089) |
+| `layout.reset` | | The active workbench's default dock layout (ADR-089); restores a maximized Scene |
+| `layout.maximize` | | Maximize the Scene over the panels and top bar, or restore it (G, F11; [ADR-027](027-immediate-mode-grid-ui.md)) |
 | `workbench.duplicate`, `workbench.delete` | `[workbench]` | Copy a workbench, or the active one, after it and switch to the copy; delete a custom one (ADR-089) |
 | `workbench.move`, `workbench.rename` | `<left\|right>`, `<name>` | Move the active workbench's tab; rename the active workbench (ADR-089) |
 | `select.toggle` | `<name>` | Add an object to the selection or take it out, as Ctrl+click does (ADR-089) |
@@ -168,7 +169,7 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 | `.light` | `kind`, `color`, `intensity` (radiance for rectangles), `range`, `enabled`, `inner`, `outer` (degrees) | all but `kind` |
 | `.<component>` | Descriptor properties of a component the entity carries, by type name (`sel.post_process.exposure_compensation_ev`, `sel.point_light.intensity`) | visible, non-read-only properties |
 | `view` | `camera`, `mode`, `grid`, `grid_spacing`, `grid_labels`, `grid_through`, `collision` (0 off, 1 selected, 2 all), `camera_speed`, `camera_sensitivity` (mouse-look multiplier), `grid_height` (world Y of the ground grid), `tool`, `snap` (`free`, `surface`, `grid`), `snap_offset`, `snap_yaw`, `snap_align`, `snap_centers`, `snap_magnet` (brushes snap to nearby brushes), `snap_moves` (moves keep box corners on the grid), `snap_turns` (rotate handles turn in 15° steps) | all |
-| `ui` | `zoom`, `reduce_motion`, `workbench` (read-only id), `selected` (read-only count) | `zoom`, `reduce_motion` |
+| `ui` | `zoom`, `reduce_motion`, `workbench` (read-only id), `selected` (read-only count), `maximized` (read-only) | `zoom`, `reduce_motion` |
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |
 | `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures`, `render_width`, `render_height` (the Scene's current internal extent), `texture_mb` (resident material textures in MiB), `frame_ms_max` (the longest of the last 120 frame intervals) | none |

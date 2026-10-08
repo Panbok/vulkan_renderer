@@ -39,9 +39,9 @@ static const char s_help_mouse_text[] =
     "Wheel while flying\tStep the camera speed\n"
     "Drag X / Y / Z\tScrub a value (Shift fast, Alt fine)\n"
     "Tab\tToggle free camera; Esc releases\n"
+    "Esc\tRestore a maximized Scene\n"
     "F6\tCycle shadow diagnostics\n"
-    "F8 / F9 / F10\tIBL mode and intensity\n"
-    "G\tCamera snapshot";
+    "F8 / F9 / F10\tIBL mode and intensity";
 
 VkrUiWidgetConfig vkr_editor_menu_button_config(uint32_t column, bool8_t active,
                                                 VkrFontHandle heading_font) {
@@ -203,6 +203,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_RENAME] = {"Rename", VKR_UI_ICON_PENCIL_LINE, false_v},
     [CMD_SNAP] = {"Snap to surface or grid", VKR_UI_ICON_SNAP, false_v},
     [CMD_PLAY] = {"Play", VKR_UI_ICON_PLAY, false_v},
+    [CMD_SCENE_MAXIMIZE] = {"Maximize Scene", VKR_UI_ICON_MAXIMIZE, false_v},
 };
 
 /* The keymap, after Unity's: a key and the exact modifiers held with it.
@@ -250,6 +251,9 @@ static const EditorKeyBinding s_keymap[] = {
     {CMD_WORKBENCH_9, KEY_9, EDITOR_MOD_PRIMARY},
     {CMD_WORKBENCH_PREV, KEY_PRIOR, EDITOR_MOD_PRIMARY},
     {CMD_WORKBENCH_NEXT, KEY_NEXT, EDITOR_MOD_PRIMARY},
+    /* Escape also restores a maximized Scene (editor_keymap_update). */
+    {CMD_SCENE_MAXIMIZE, KEY_G, 0u},
+    {CMD_SCENE_MAXIMIZE, KEY_F11, 0u},
     {CMD_HELP, KEY_F1, 0u},
     /* The Scene and its selection. */
     {CMD_TOOL_SELECT, KEY_Q, 0u},
@@ -335,6 +339,9 @@ static bool8_t editor_key_name(Keys key, char *out, uint64_t size) {
     break;
   case KEY_F3:
     name = "F3";
+    break;
+  case KEY_F11:
+    name = "F11";
     break;
   default:
     return false_v;
@@ -531,6 +538,13 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
   case CMD_WORKBENCH_PREV:
   case CMD_WORKBENCH_NEXT:
     return !frame->scene_only;
+  /* The startup Scene-only mode and the project launcher have no panels to
+     maximize over. */
+  case CMD_SCENE_MAXIMIZE:
+    return frame->scene_maximized_next && frame->dock && frame->mapping_valid &&
+           (!frame->scene_only || frame->scene_maximized) &&
+           (!editor->projects ||
+            vkr_editor_projects_project(editor->projects) != NULL);
   default:
     return true_v;
   }
@@ -595,6 +609,8 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor->windows[VKR_EDITOR_WINDOW_BUILD].visible;
   case CMD_BUILD_LOG:
     return editor_panel_visible(frame, VKR_UI_DOCK_PANEL_BUILD);
+  case CMD_SCENE_MAXIMIZE:
+    return frame->scene_maximized;
   default:
     return -1;
   }
@@ -703,6 +719,9 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_RESET_LAYOUT:
     vkr_editor_workbench_reset(editor, frame);
+    break;
+  case CMD_SCENE_MAXIMIZE:
+    *frame->scene_maximized_next = !frame->scene_maximized;
     break;
   case CMD_SIM_START:
     *frame->transport_action = VKR_SAMPLE_TRANSPORT_START_SIMULATION;
@@ -902,6 +921,7 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_REDUCE_MOTION},
     {CMD_WORKBENCH_PREV, true_v},
     {CMD_WORKBENCH_NEXT},
+    {CMD_SCENE_MAXIMIZE},
     {CMD_RESET_LAYOUT},
 };
 static const EditorMenuEntry s_scene_menu[] = {
@@ -1297,8 +1317,19 @@ static void editor_transport_build(VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
 }
 
+float32_t vkr_editor_scene_top_pt(const VkrSampleUiFrame *frame) {
+  return frame->scene_only && !frame->scene_maximized
+             ? VKR_EDITOR_NAVIGATION_HEIGHT_PT
+             : 0.0f;
+}
+
+/* The top bar; a maximized Scene hides it, leaving the Scene's own
+   overlays. */
 void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame) {
+  if (frame->scene_maximized) {
+    return;
+  }
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   const bool8_t projects = editor->projects != NULL;
@@ -1465,8 +1496,7 @@ static VkrUiRect editor_scene_error_rect(const VkrSampleUiFrame *frame) {
   const float32_t scale = ui->content_scale;
   const Vec4 viewport = frame->mapping.panel_rect_px;
   const float32_t top =
-      viewport.y / scale +
-      (frame->scene_only ? VKR_EDITOR_NAVIGATION_HEIGHT_PT : 0.0f) + 48.0f;
+      viewport.y / scale + vkr_editor_scene_top_pt(frame) + 48.0f;
   const float32_t bottom = (viewport.y + viewport.w) / scale - 8.0f;
   const float32_t width = Min(480.0f, Max(0.0f, viewport.z / scale - 16.0f));
   const float32_t height = Min(76.0f, Max(0.0f, bottom - top));
@@ -2206,6 +2236,20 @@ static void editor_keymap_update(VkrEditorUi *editor,
   const bool8_t scene_focus =
       frame->scene_keyboard_focus && *frame->scene_keyboard_focus;
   const bool8_t widget_focus = !scene_focus && ui->focused_id != VKR_UI_ID_NONE;
+  /* Plain Escape restores a maximized Scene when nothing else has a use for
+     it: no simulation runs, the runtime did not just release the camera or
+     a gizmo edit, and no window, popup or Scene tool holds a step. */
+  if (frame->scene_maximized && frame->scene_maximized_next &&
+      input_key_just_pressed(frame->input, KEY_ESCAPE) &&
+      (input_key_press_modifiers(frame->input, KEY_ESCAPE) & EDITOR_MODS) ==
+          0u &&
+      !widget_focus && !frame->simulation_running && !frame->escape_taken &&
+      ui->keyboard_input_layer == 0u &&
+      !vkr_editor_viewport_escape_armed(editor)) {
+    *frame->scene_maximized_next = false_v;
+    ui->capture.keyboard = true_v;
+    return;
+  }
   for (uint32_t i = 0; i < ArrayCount(s_keymap); ++i) {
     const EditorKeyBinding *binding = &s_keymap[i];
     if (binding->runtime ||
@@ -2226,6 +2270,11 @@ static void editor_keymap_update(VkrEditorUi *editor,
 
 void vkr_editor_commands_update(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
+  /* Closing the project returns to the launcher, which needs its top bar. */
+  if (frame->scene_maximized && frame->scene_maximized_next &&
+      editor->projects && !vkr_editor_projects_project(editor->projects)) {
+    *frame->scene_maximized_next = false_v;
+  }
   if (editor->menu != VKR_EDITOR_MENU_NONE) {
     /* A press anywhere but the popup and its own title closes the menu,
        including the rest of the top bar; the title's click toggles it. */

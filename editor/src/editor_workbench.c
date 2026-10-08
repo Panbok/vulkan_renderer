@@ -305,6 +305,10 @@ bool8_t vkr_editor_workbench_request(VkrEditorUi *editor,
     snprintf(message, capacity, "No such workbench");
     return false_v;
   }
+  if (frame->scene_maximized) {
+    snprintf(message, capacity, "Restore the maximized Scene first");
+    return false_v;
+  }
   if (frame->scene_only) {
     snprintf(message, capacity, "The Scene-only view has no workbenches");
     return false_v;
@@ -663,6 +667,10 @@ void vkr_editor_workbench_rename_begin(VkrEditorUi *editor, uint32_t index) {
 void vkr_editor_workbench_reset(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   vkr_editor_workbench_reset_index(editor, frame, editor->workbenches.active);
+  /* The reset layout shows its panels, so a maximized Scene returns. */
+  if (frame->scene_maximized_next) {
+    *frame->scene_maximized_next = false_v;
+  }
 }
 
 // =============================================================================

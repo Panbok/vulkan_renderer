@@ -484,7 +484,17 @@ typedef struct VkrSampleUiFrame {
   VkrSampleIoRequest *io_request;
   const VkrSampleIoResult *io_result;
   bool8_t mapping_valid;
+  /* The Scene fills the window without the dock: the startup Scene-only
+     mode, or a maximized Scene. */
   bool8_t scene_only;
+  /* The Scene is maximized (scene_only holds too) and the top navigation bar
+     is hidden. Transient; nothing saves it. */
+  bool8_t scene_maximized;
+  /* The maximized state from the next frame; starts as scene_maximized. */
+  bool8_t *scene_maximized_next;
+  /* The runtime spent this frame's Escape: it released the flying camera or
+     cancelled a gizmo pick or edit. */
+  bool8_t escape_taken;
   bool8_t mouse_captured;
   /* Runtime owns Scene keyboard focus; editor updates it during build. */
   bool8_t *scene_keyboard_focus;

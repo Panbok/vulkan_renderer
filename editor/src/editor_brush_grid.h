@@ -52,6 +52,10 @@ bool8_t vkr_editor_brush_grid_patch_cut(VkrEditorUi *editor);
 /* Whether the Clip tool holds points of a cut, which Escape drops. */
 bool8_t vkr_editor_brush_grid_clip_pending(const VkrEditorUi *editor);
 
+/* Whether Escape has a step on the grid: a drag, a patch or gathered tiles
+   to drop, or a cut's points. */
+bool8_t vkr_editor_brush_grid_escape_pending(const VkrEditorUi *editor);
+
 /* What the next press or the running drag does, or NULL. */
 const char *vkr_editor_brush_grid_hint(const VkrEditorUi *editor);
 

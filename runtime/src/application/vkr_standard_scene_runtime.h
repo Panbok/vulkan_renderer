@@ -45,6 +45,9 @@
 typedef struct VkrStandardSceneRuntimeEditorViewport {
   bool8_t enabled;
   bool8_t scene_only;
+  /* The editor's maximized Scene: it fills the window over the dock as
+     scene_only does, until restored. Transient; nothing saves it. */
+  bool8_t scene_maximized;
   bool8_t simulation_running;
   /* A script session drives the camera; the free-camera controller rests. */
   bool8_t scripts_own_camera;

@@ -28,7 +28,8 @@ Picking requests use mapped scene coordinates. Picking IDs distinguish scene
 entities and gizmo handles. The desktop pipeline resolves a pick from its
 visibility buffer; the tiled pipeline replays the opaque draws into the picking
 target ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 9). Scene-only
-mode uses the complete drawable mapping while preserving the dock tree.
+mode and a maximized Scene ([ADR-027](027-immediate-mode-grid-ui.md)) use the
+complete drawable mapping while preserving the dock tree.
 
 The application borrows up to sixteen `VkrEditorOverlayDraw` records through
 packet submission. The gizmo system owns their published geometry references;

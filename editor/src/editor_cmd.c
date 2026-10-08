@@ -2113,6 +2113,10 @@ static const CmdDef cmd_defs[] = {
     CMD_SIMPLE("layout.reset",
                "Restore the active workbench's default panel layout",
                CMD_RESET_LAYOUT),
+    CMD_SIMPLE("layout.maximize",
+               "Maximize the Scene over the panels and top bar, or restore it "
+               "(G)",
+               CMD_SCENE_MAXIMIZE),
     {"workbench.duplicate", CMD_ARG_TEXT, "[workbench]",
      "Copy a workbench, or the active one, after it and switch to the copy",
      cmd_run_workbench_edit, CMD_COUNT, 0u},

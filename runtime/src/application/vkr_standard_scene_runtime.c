@@ -645,7 +645,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_editor_viewport_panel_rect(
     return false_v;
   VkrUiRect panel = {0.0f, 0.0f, (float32_t)window_width,
                      (float32_t)window_height};
-  if (!application->editor_viewport.scene_only) {
+  if (!application->editor_viewport.scene_only &&
+      !application->editor_viewport.scene_maximized) {
     float32_t content_scale = 1.0f;
     if (vkr_standard_scene_runtime_is_windowed(application)) {
       const VkrWindowContentScale scale =
@@ -677,7 +678,8 @@ bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
     return false_v;
   if (application->editor_viewport.scene_rendering_stopped)
     return true_v;
-  if (application->editor_viewport.scene_only)
+  if (application->editor_viewport.scene_only ||
+      application->editor_viewport.scene_maximized)
     return false_v;
   VkrUiRect content = {0};
   return !vkr_ui_dock_find_panel(&application->editor_viewport.dock,

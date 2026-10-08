@@ -409,7 +409,8 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
     vkr_editor_orientation_gizmo_build(editor, frame);
     vkr_editor_viewport_build(editor, frame);
   }
-  if (!preparing_scene && frame->scene_only && frame->mapping.target_width > 0u)
+  if (!preparing_scene && frame->scene_only && !frame->scene_maximized &&
+      frame->mapping.target_width > 0u)
     vkr_editor_ui_build_camera(frame->ui, frame->scene_only,
                                frame->scene_rendering_stopped, &frame->mapping,
                                &frame->text);
@@ -523,12 +524,9 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
       int32_t x = 0, y = 0;
       input_get_button_press_position(frame->input, BUTTON_LEFT, &x, &y);
       Vec4 rect = frame->mapping.panel_rect_px;
-      if (frame->scene_only) {
-        const float32_t top =
-            VKR_EDITOR_NAVIGATION_HEIGHT_PT * ui->content_scale;
-        rect.y += top;
-        rect.w = Max(0.0f, rect.w - top);
-      }
+      const float32_t top = vkr_editor_scene_top_pt(frame) * ui->content_scale;
+      rect.y += top;
+      rect.w = Max(0.0f, rect.w - top);
       const bool8_t scene_click =
           frame->mapping_valid && !frame->scene_rendering_stopped &&
           (float32_t)x >= rect.x && (float32_t)x < rect.x + rect.z &&
@@ -548,12 +546,13 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   if (editor->cmd_active)
     vkr_ui_keyboard_navigation_enabled(frame->ui, false_v);
   /* The top bar doubles as the native title bar: its empty space drags the
-   * window. Controls, menus and modal overlays keep their clicks. */
+   * window. Controls, menus and modal overlays keep their clicks. A
+   * maximized Scene hides the bar, and its presses stay in the Scene. */
   {
     VkrUiSystem *ui = frame->ui;
-    const bool8_t allowed = ui->hot_id == VKR_UI_ID_NONE &&
-                            editor->menu == VKR_EDITOR_MENU_NONE &&
-                            ui->mouse_input_layer == 0u;
+    const bool8_t allowed =
+        ui->hot_id == VKR_UI_ID_NONE && editor->menu == VKR_EDITOR_MENU_NONE &&
+        ui->mouse_input_layer == 0u && !frame->scene_maximized;
     vkr_window_set_title_drag_region(
         frame->window, 0, 0, (int32_t)ui->target_width,
         (int32_t)(VKR_EDITOR_NAVIGATION_HEIGHT_PT * ui->content_scale),

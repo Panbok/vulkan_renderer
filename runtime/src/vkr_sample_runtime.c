@@ -171,6 +171,9 @@ typedef struct State {
   bool8_t script_start_attempted;
   InputState *input_state;
   bool8_t scene_keyboard_focus;
+  /* This frame's Escape released the flying camera or cancelled a gizmo
+     pick or edit, so the editor does not act on it too. */
+  bool8_t escape_taken;
   VkrSampleViewState view_state;
   /* The editor's last applied Hide or Isolate (VkrSampleHideRequest). */
   VkrSampleHideRequest hidden;
@@ -2773,7 +2776,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_handle_hotkeys(
     log_info("IBL validation scalar: %.2f", state->ibl_validation_scalar);
   }
 
-  if (input_is_key_up(input_state, KEY_G) &&
+  /* In the editor G maximizes the Scene instead. */
+  if (!application->editor_viewport.enabled &&
+      input_is_key_up(input_state, KEY_G) &&
       input_was_key_down(input_state, KEY_G)) {
     vkr_standard_scene_runtime_log_camera_snapshot(application);
   }
@@ -5165,6 +5170,7 @@ typedef struct VkrSampleUiRequests {
   VkrSampleCloseResponse close_response;
   bool8_t quit;
   bool8_t scene_shortcuts_blocked;
+  bool8_t scene_maximized;
 } VkrSampleUiRequests;
 
 /* Describes this frame to the UI client and runs its build. The frame lends
@@ -5276,7 +5282,11 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .scene_loading =
           state->scene_load_timer_active && !state->scene_load_terminal_logged,
       .modal = &state->modal,
-      .scene_only = application->editor_viewport.scene_only,
+      .scene_only = application->editor_viewport.scene_only ||
+                    application->editor_viewport.scene_maximized,
+      .scene_maximized = application->editor_viewport.scene_maximized,
+      .scene_maximized_next = &requests->scene_maximized,
+      .escape_taken = state->escape_taken,
       .mouse_captured = vkr_window_is_mouse_captured(&application->host.window),
   };
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
@@ -6494,6 +6504,10 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
         input_key_shortcut_modifier(state->input_state, KEY_P);
     const bool8_t escape =
         input_key_just_pressed(state->input_state, KEY_ESCAPE);
+    state->escape_taken =
+        escape && (vkr_window_is_mouse_captured(&application->host.window) ||
+                   state->gizmo_drag.active || state->gizmo_drag.pending_pick ||
+                   state->gizmo_edit_pending);
     if (escape ||
         (command && input_key_just_pressed(state->input_state, KEY_P))) {
       vkr_window_set_mouse_capture(&application->host.window, false_v);
@@ -6555,6 +6569,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   VkrSampleUiRequests requests = {
       .transport_action = VKR_SAMPLE_TRANSPORT_NONE,
       .close_response = VKR_SAMPLE_CLOSE_NONE,
+      .scene_maximized = application->editor_viewport.scene_maximized,
   };
   state->view_state.render_mode = application->globals.render_mode;
   state->view_state.gizmo_tool = (uint32_t)application->gizmo_system.tool;
@@ -6576,6 +6591,9 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   application->editor_viewport.dock_capture =
       vkr_standard_scene_runtime_build_ui_frame(application, &requests);
   application->ui_capture = vkr_ui_end(&application->ui_system);
+  application->editor_viewport.scene_maximized =
+      application->editor_viewport.enabled &&
+      !application->editor_viewport.scene_only && requests.scene_maximized;
   if (vkr_application_host_is_windowed(&application->host))
     vkr_window_set_cursor(&application->host.window,
                           application->ui_system.cursor);

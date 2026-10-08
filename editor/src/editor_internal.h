@@ -100,6 +100,8 @@ typedef enum EditorCommand {
   CMD_WORKBENCH_9,
   CMD_WORKBENCH_PREV,
   CMD_WORKBENCH_NEXT,
+  /* The Scene fills the window over the dock and the top bar, or returns. */
+  CMD_SCENE_MAXIMIZE,
   CMD_COUNT
 } EditorCommand;
 
@@ -125,6 +127,10 @@ bool8_t vkr_editor_search_field(VkrUiSystem *ui, String8 id,
                                 VkrUiPlacement placement, String8 placeholder,
                                 String8 tooltip, VkrFontHandle font);
 
+/* Points the top navigation bar covers at the top of the Scene: it lies
+   over a Scene-only Scene and hides over a maximized one. */
+float32_t vkr_editor_scene_top_pt(const VkrSampleUiFrame *frame);
+
 void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
 void vkr_editor_labels_build(VkrEditorUi *editor,
                              const VkrSampleUiFrame *frame);
@@ -137,6 +143,10 @@ bool8_t vkr_editor_dock_has(const VkrUiDockTree *dock, VkrUiDockPanelKind kind);
    running and its pending clicks; the tools exclude each other. */
 VkrEditorSceneTool vkr_editor_scene_tool(const VkrEditorUi *editor);
 void vkr_editor_scene_tool_set(VkrEditorUi *editor, VkrEditorSceneTool tool);
+/* Whether something in the Scene has a step for Escape: a running tool, a
+   drag, an open Scene popup, a grid selection, an IO connection pick or the
+   color picker. */
+bool8_t vkr_editor_viewport_escape_armed(const VkrEditorUi *editor);
 /* Multiple selection (ADR-089): the runtime's selected entity is the
    primary one; Ctrl+click (Cmd on macOS) adds or removes others. Update
    prunes dead entries once a build and clears them when the primary changes

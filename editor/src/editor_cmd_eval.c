@@ -118,8 +118,9 @@ static const char *const eval_view_members[] = {"camera",
                                                 NULL};
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
-static const char *const eval_ui_members[] = {"zoom", "reduce_motion",
-                                              "workbench", "selected", NULL};
+/* `maximized`: the Scene fills the window (layout.maximize, G). */
+static const char *const eval_ui_members[] = {
+    "zoom", "reduce_motion", "workbench", "selected", "maximized", NULL};
 static const char *const eval_gfx_members[] = {"render_scale",
                                                "dynamic",
                                                "vsync",
@@ -812,6 +813,10 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         *out = eval_string(
             "%s", vkr_editor_workbench_id(&eval->editor->workbenches,
                                           eval->editor->workbenches.active));
+        return true_v;
+      }
+      if (index == 4) {
+        *out = eval_bool(frame->scene_maximized);
         return true_v;
       }
     } else if (base->object == EVAL_OBJECT_SIM) {

@@ -1545,6 +1545,14 @@ bool8_t vkr_editor_brush_grid_clip_pending(const VkrEditorUi *editor) {
          grid->clip_count > 0u;
 }
 
+bool8_t vkr_editor_brush_grid_escape_pending(const VkrEditorUi *editor) {
+  const VkrEditorBrushGrid *grid = editor->brush_grid;
+  return grid && grid->brush.u64 &&
+         (grid->drag != GRID_HIT_NONE || grid->patch ||
+          grid->gathered_count > 0u ||
+          vkr_editor_brush_grid_clip_pending(editor));
+}
+
 /* What the Clip tool's next click does. */
 static const char *grid_clip_hint(const VkrEditorBrushGrid *grid) {
   if (grid->message[0]) {

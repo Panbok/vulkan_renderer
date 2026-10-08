@@ -112,10 +112,19 @@ Ctrl+PageUp / Ctrl+PageDown workbenches (ADR-089), F1 controls, Q/W/E/R
 tools, Shift+F frame, F free camera, End snap, Ctrl+D duplicate, Delete delete, F2 rename, B brush
 drawing, Shift+X the clip tool, Ctrl+P play (again stops and resets),
 Ctrl+Shift+P pause and resume, Ctrl+Alt+P step, Ctrl+B build and run,
-Ctrl+Shift+B build settings. A plain
+Ctrl+Shift+B build settings, G or F11 Maximize Scene. A plain
 key acts while the Scene or no widget holds the keyboard and a modified one
 unless a text field does; none act while the camera flies or a menu or the Cmd
-field is open. Windows key messages name Shift, Ctrl and Alt by their generic codes. The
+field is open. Maximize Scene (View menu, `layout.maximize`) is a transient
+state the editor never saves: the Scene fills the window as in `--scene-only`
+mode, and the dock, workbench row and top bar hide, leaving the Scene's own
+header, gizmos and icons; floating windows stay. The Scene header starts after
+the macOS window buttons, and the hidden bar publishes no drag region. Play
+keeps its Ctrl+P keys. Escape, Reset Layout or the command again restores the
+panels; Escape does so only while no simulation runs, the runtime did not
+spend it on the flying camera or a gizmo edit, and no window, popup, Scene
+tool, drag or grid selection has a step for it.
+Windows key messages name Shift, Ctrl and Alt by their generic codes. The
 window ([vkr_window_windows.c](../../runtime/src/platform/vkr_window_windows.c))
 reports the left or right key, telling them apart by scan code or the
 extended-key bit. As on macOS, it also keeps the generic Shift and Ctrl keys
