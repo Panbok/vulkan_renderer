@@ -483,18 +483,9 @@ static void edit_test_editor_hidden(void) {
   vkr_dmemory_destroy(&memory);
 }
 
-static void edit_test_created_file(const char *path, uint32_t count) {
-  FILE *file = file_fopen(path, "wb");
-  assert(file);
-  fputs("{\"version\":5,\"overrides\":[],\"created\":[", file);
-  for (uint32_t i = 0; i < count; ++i) {
-    fprintf(file,
-            "%s{\"id\":%u,\"parent\":null,\"fields\":3,\"name\":\"n%u\","
-            "\"position\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]}",
-            i ? "," : "", i + 1u, i);
-  }
-  /* Version 3 and later overlays carry the scene's collision layers; these
-     are the defaults a save writes. */
+/* Ends an overlay's created array. Version 3 and later overlays carry the
+   scene's collision layers; these are the defaults a save writes. */
+static void edit_test_file_end(FILE *file) {
   fputs("],\"collision_settings\":{\"version\":1,\"names\":[", file);
   for (uint32_t i = 0; i < 16u; ++i) {
     fprintf(file, "%s\"Layer %u\"", i ? "," : "", i + 1u);
@@ -508,7 +499,89 @@ static void edit_test_created_file(const char *path, uint32_t count) {
         "\"membership\":2,\"mask\":65535,\"sensor\":true},{\"name\":"
         "\"No collision\",\"membership\":1,\"mask\":0,\"sensor\":false}]}}",
         file);
+}
+
+static void edit_test_created_file(const char *path, uint32_t count) {
+  FILE *file = file_fopen(path, "wb");
+  assert(file);
+  fputs("{\"version\":5,\"overrides\":[],\"created\":[", file);
+  for (uint32_t i = 0; i < count; ++i) {
+    fprintf(file,
+            "%s{\"id\":%u,\"parent\":null,\"fields\":3,\"name\":\"n%u\","
+            "\"position\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]}",
+            i ? "," : "", i + 1u, i);
+  }
+  edit_test_file_end(file);
   fclose(file);
+}
+
+/* Load stages created objects packed, each with only its components' own
+   bytes, and links parents by created id. Records here come in descending
+   id order with parents later in the file, and each carries a different
+   timer. Independent oracles: the names, intervals and parents the file
+   states. A shared staging slot gives every object the last record's
+   interval; a lookup assuming file order loses the parents. */
+static void edit_test_created_order(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(64), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  FilePath directory = {.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp"),
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory(&directory));
+  char path[1024];
+  snprintf(path, sizeof(path),
+           PROJECT_SOURCE_DIR "tests/tmp/scene_order_%u.json",
+           vkr_platform_get_process_id());
+  /* c3 under c1, c2 under c3, c1 a root. */
+  static const uint32_t parents[4] = {0u, 0u, 3u, 1u};
+  FILE *file = file_fopen(path, "wb");
+  assert(file);
+  fputs("{\"version\":5,\"overrides\":[],\"created\":[", file);
+  for (uint32_t id = 3u; id >= 1u; --id) {
+    char parent[32] = "null";
+    if (parents[id]) {
+      snprintf(parent, sizeof(parent), "{\"created\":%u}", parents[id]);
+    }
+    fprintf(file,
+            "%s{\"id\":%u,\"parent\":%s,\"fields\":3,\"name\":\"c%u\","
+            "\"position\":[0,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,1,1],"
+            "\"components\":{\"timer\":{\"interval\":%u.5,"
+            "\"start_running\":false,\"once\":true}}}",
+            id == 3u ? "" : ",", id, parent, id, id);
+  }
+  edit_test_file_end(file);
+  fclose(file);
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 0, 8, &error));
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, &allocator, 1);
+  const String8 file_path = string8_create((uint8_t *)path, strlen(path));
+  assert(vkr_scene_edit_load(&state, &scene, file_path));
+  assert(state.created_count == 3u);
+  VkrEntityId objects[4] = {0};
+  for (uint32_t id = 1u; id <= 3u; ++id) {
+    char name[8];
+    snprintf(name, sizeof(name), "c%u", id);
+    assert(edit_test_alive_named(&scene, name, &objects[id]) == 1u);
+    const SceneTimer *timer =
+        vkr_scene_get_typed(&scene, objects[id], &vkr_scene_timer_type);
+    assert(timer && timer->interval == (float32_t)id + 0.5f && timer->once &&
+           !timer->start_running);
+  }
+  for (uint32_t id = 1u; id <= 3u; ++id) {
+    const VkrEntityId parent =
+        vkr_scene_get_transform(&scene, objects[id])->parent;
+    assert(parent.u64 == (parents[id] ? objects[parents[id]].u64 : 0u));
+  }
+
+  FilePath saved_path = {.path = file_path, .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_remove(&saved_path) == FILE_ERROR_NONE);
+  vkr_scene_edit_reset(&state, &allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
 }
 
 /* A level-sized build (ADR-084). Independent oracles: entity liveness by name,
@@ -840,6 +913,145 @@ static VkrEntityId edit_test_create_at(VkrSceneEditState *state,
    object after a save, byte-identical documents for cells no edit reached,
    the journal and unsaved-edit rules that refuse an unload, and the objects
    and parent links a cell's load brings back. */
+/* A created record for an overlay or cell document: `parent` 0 for a root,
+   else the parent's created id. */
+static void edit_test_record(FILE *file, bool8_t first, uint32_t id,
+                             uint32_t parent, const char *name, Vec3 at) {
+  char parent_text[32] = "null";
+  if (parent) {
+    snprintf(parent_text, sizeof(parent_text), "{\"created\":%u}", parent);
+  }
+  fprintf(file,
+          "%s{\"id\":%u,\"parent\":%s,\"fields\":3,\"name\":\"%s\","
+          "\"position\":[%g,%g,%g],\"rotation\":[0,0,0,1],\"scale\":[1,1,1]}",
+          first ? "" : ",", id, parent_text, name, (double)at.x, (double)at.y,
+          (double)at.z);
+}
+
+/* A cell loads, with the origin rebased, after objects whose created ids it
+   repeats and which the state holds out of id order; it lists children
+   before their parents in descending id order. Independent oracles: unique
+   ids across every created object, and the parents and places the documents
+   state. A search of unsorted ids keeps a repeated id, or rebases a child as
+   if it were a root. */
+static void edit_test_cell_order(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), MB(64), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  char root[1024];
+  char sidecar[1024];
+  char index[1100];
+  char cell[1100];
+  snprintf(root, sizeof(root), PROJECT_SOURCE_DIR "tests/tmp/cell_order_%u",
+           vkr_platform_get_process_id());
+  snprintf(sidecar, sizeof(sidecar),
+           PROJECT_SOURCE_DIR "tests/tmp/cell_order_%u.editor.json",
+           vkr_platform_get_process_id());
+  snprintf(index, sizeof(index), "%s/index.json", root);
+  snprintf(cell, sizeof(cell), "%s/0_0.json", root);
+  FilePath directory = {
+      .path = string8_create_from_cstr((const uint8_t *)root, strlen(root)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory(&directory));
+  SceneWorldPartition partition;
+  vkr_type_defaults(&vkr_scene_world_partition_type, &partition);
+
+  /* The persistent layer: ids 3, 2 and 1 in that order. */
+  FILE *file = file_fopen(sidecar, "wb");
+  assert(file);
+  fputs("{\"version\":5,\"overrides\":[],\"created\":[", file);
+  edit_test_record(file, true_v, 3u, 0u, "a3", vec3_new(-50, 0, 0));
+  edit_test_record(file, false_v, 2u, 0u, "a2", vec3_new(-50, 0, 2));
+  edit_test_record(file, false_v, 1u, 0u, "a1", vec3_new(-50, 0, 4));
+  edit_test_file_end(file);
+  fclose(file);
+  file = file_fopen(index, "wb");
+  assert(file);
+  fprintf(file,
+          "{\"version\":1,\"cell_size\":%g,\"next_id\":20,\"cells\":[[0,0]]}",
+          (double)partition.cell_size);
+  fclose(file);
+  /* The cell repeats ids 3 and 1, and lists 14 and 13 before their parent
+     12. */
+  file = file_fopen(cell, "wb");
+  assert(file);
+  fputs("{\"version\":1,\"cell\":[0,0],\"created\":[", file);
+  edit_test_record(file, true_v, 3u, 1u, "b3", vec3_new(0, 1, 0));
+  edit_test_record(file, false_v, 1u, 0u, "b1", vec3_new(10, 0, 10));
+  edit_test_record(file, false_v, 14u, 12u, "c14", vec3_new(0, 2, 0));
+  edit_test_record(file, false_v, 13u, 12u, "c13", vec3_new(0, 3, 0));
+  edit_test_record(file, false_v, 12u, 0u, "c12", vec3_new(20, 0, 20));
+  fputs("]}", file);
+  fclose(file);
+
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, &allocator, 25, 8, NULL));
+  assert(vkr_scene_create_typed_entity(&scene, string8_lit("Partition"),
+                                       &vkr_scene_world_partition_type,
+                                       &partition)
+             .u64);
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, &allocator, 1);
+  vkr_scene_edit_set_cells_root(
+      &state, string8_create_from_cstr((const uint8_t *)root, strlen(root)));
+  assert(vkr_scene_edit_load(
+      &state, &scene,
+      string8_create_from_cstr((const uint8_t *)sidecar, strlen(sidecar))));
+  assert(vkr_scene_edit_cells_open(&state, &scene));
+  scene.origin_offset = vec3_new(4096.0f, 0.0f, 0.0f);
+  assert(
+      vkr_scene_edit_cell_load(&state, &scene, (VkrScenePartitionCell){0, 0}));
+  vkr_scene_update_transforms(&scene);
+
+  assert(state.created_count == 8u);
+  uint32_t ids[8];
+  for (uint32_t i = 0; i < state.created_count; ++i) {
+    ids[i] = state.created[i].id;
+  }
+  for (uint32_t i = 0; i < state.created_count; ++i) {
+    for (uint32_t k = i + 1u; k < state.created_count; ++k) {
+      assert(ids[i] != ids[k]);
+    }
+  }
+  static const struct {
+    const char *name;
+    const char *parent;
+    float32_t x;
+    float32_t y;
+  } expected[] = {{"b3", "b1", 10.0f - 4096.0f, 1.0f},
+                  {"b1", NULL, 10.0f - 4096.0f, 0.0f},
+                  {"c14", "c12", 20.0f - 4096.0f, 2.0f},
+                  {"c13", "c12", 20.0f - 4096.0f, 3.0f},
+                  {"c12", NULL, 20.0f - 4096.0f, 0.0f}};
+  for (uint32_t i = 0; i < ArrayCount(expected); ++i) {
+    VkrEntityId entity;
+    VkrEntityId parent = VKR_ENTITY_ID_INVALID;
+    assert(edit_test_alive_named(&scene, expected[i].name, &entity) == 1u);
+    if (expected[i].parent) {
+      assert(edit_test_alive_named(&scene, expected[i].parent, &parent) == 1u);
+    }
+    const SceneTransform *transform = vkr_scene_get_transform(&scene, entity);
+    assert(transform->parent.u64 == parent.u64);
+    const Vec3 at = mat4_position(transform->world);
+    assert(at.x == expected[i].x && at.y == expected[i].y);
+  }
+  scene.origin_offset = vec3_zero();
+
+  vkr_scene_edit_reset(&state, &allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+  const char *paths[] = {cell, index, sidecar};
+  for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
+    FilePath path = {.path = string8_create_from_cstr((const uint8_t *)paths[i],
+                                                      strlen(paths[i])),
+                     .type = FILE_PATH_TYPE_ABSOLUTE};
+    assert(file_remove(&path) == FILE_ERROR_NONE);
+  }
+  /* POSIX removes the emptied directory; elsewhere it stays behind. */
+  (void)remove(root);
+  vkr_dmemory_destroy(&memory);
+}
+
 static void edit_test_partition(VkrAllocator *allocator) {
   char root[1024];
   char sidecar[1024];
@@ -1455,6 +1667,8 @@ bool32_t run_scene_edit_tests(void) {
   edit_test_brush_faces();
   edit_test_editor_hidden();
   edit_test_large();
+  edit_test_created_order();
+  edit_test_cell_order();
   VkrDMemory partition_memory;
   assert(vkr_dmemory_create(MB(16), MB(64), &partition_memory));
   VkrAllocator partition_allocator = {.ctx = &partition_memory};

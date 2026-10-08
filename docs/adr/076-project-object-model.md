@@ -138,10 +138,16 @@ bodies cannot be duplicated yet. With several objects selected
 batch and one undo step. The edit overlay (version 4)
 records authoritative `components`, created entities, deleted records and
 parents, and per-scene settings. It holds at most
-`VKR_SCENE_EDIT_CREATED_MAX` (16,384) created entities: load rejects a larger
+`VKR_SCENE_EDIT_CREATED_MAX` (65,536) created entities: load rejects a larger
 one with that reason, and save refuses to write one, since a brush and its six
 faces are seven entities. Saves had written any count while load stopped at
-1,024, so a level of a few hundred brushes saved and then loaded empty. New objects come from built-in **object
+1,024, so a level of a few hundred brushes saved and then loaded empty. Load
+stages each created object packed, as its 1.1 KiB of fields and its
+components' own bytes, where a record with eight 1 KiB component slots took
+9.1 KiB: a level of 17,379 created objects grew that array to 32,768
+records, 306 MB. Parent links then find created ids in a copy sorted once:
+a scan per link held the Debug scene edit suite, which loads a 65,536-object
+document, at 19 s, and the sorted copy brought it to 2.6 s. New objects come from built-in **object
 kinds** (empty, four light kinds, one per live world type and the Player Start),
 grouped under headings in menus; Cmd `create` also accepts each registered
 script component type. A new object lands by the Scene's Snapping settings

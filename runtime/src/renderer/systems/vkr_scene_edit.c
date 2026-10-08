@@ -10,6 +10,7 @@
 #include "core/vkr_json_writer.h"
 #include <errno.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -4121,10 +4122,26 @@ typedef struct EditCreatedBody {
   VkrScenePhysicsSnapshot physics;
 } EditCreatedBody;
 
+/* A staged created object, packed at `offset` in the load's byte store as
+   EditObject's fields before `components`, then each component's own bytes:
+   a level stages tens of thousands of objects, and EditObject's eight 1 KiB
+   component slots take 8 KiB of each. */
+typedef struct EditStagedObject {
+  uint64_t offset;
+  uint32_t created_id;
+} EditStagedObject;
+
+#define EDIT_OBJECT_HEAD_SIZE offsetof(EditObject, components)
+
 typedef struct EditStructureLoad {
-  EditObject *objects;
+  EditStagedObject *objects;
   uint32_t object_count;
   uint32_t object_capacity;
+  uint8_t *packed;
+  uint64_t packed_size;
+  uint64_t packed_capacity;
+  /* The object being staged, or the last one unpacked. */
+  EditObject *scratch;
   EditParentLink *links;
   uint32_t link_count;
   uint32_t link_capacity;
@@ -4142,6 +4159,14 @@ static void edit_structure_load_free(VkrSceneEditState *s,
                        load->object_capacity * sizeof(*load->objects),
                        EDIT_TAG);
   }
+  if (load->packed) {
+    vkr_allocator_free(s->allocator, load->packed, load->packed_capacity,
+                       EDIT_TAG);
+  }
+  if (load->scratch) {
+    vkr_allocator_free(s->allocator, load->scratch, sizeof(*load->scratch),
+                       EDIT_TAG);
+  }
   if (load->links) {
     vkr_allocator_free(s->allocator, load->links,
                        load->link_capacity * sizeof(*load->links), EDIT_TAG);
@@ -4151,6 +4176,68 @@ static void edit_structure_load_free(VkrSceneEditState *s,
                        load->body_capacity * sizeof(*load->bodies), EDIT_TAG);
   }
   MemZero(load, sizeof(*load));
+}
+
+/* Packs `object` into the load's byte store as its next staged object. */
+static bool8_t edit_staged_add(VkrSceneEditState *s, EditStructureLoad *load,
+                               const EditObject *object) {
+  uint64_t size = EDIT_OBJECT_HEAD_SIZE;
+  for (uint32_t c = 0; c < object->component_count; ++c) {
+    size += object->types[c]->size;
+  }
+  if (load->object_count == load->object_capacity) {
+    const uint32_t capacity = Max(64u, load->object_capacity * 2u);
+    EditStagedObject *objects = vkr_allocator_realloc(
+        s->allocator, load->objects, load->object_capacity * sizeof(*objects),
+        capacity * sizeof(*objects), EDIT_TAG);
+    if (!objects) {
+      return false_v;
+    }
+    load->objects = objects;
+    load->object_capacity = capacity;
+  }
+  if (load->packed_size + size > load->packed_capacity) {
+    uint64_t capacity = Max(KB(64), load->packed_capacity * 2u);
+    while (load->packed_size + size > capacity) {
+      capacity *= 2u;
+    }
+    uint8_t *packed = vkr_allocator_realloc(
+        s->allocator, load->packed, load->packed_capacity, capacity, EDIT_TAG);
+    if (!packed) {
+      return false_v;
+    }
+    load->packed = packed;
+    load->packed_capacity = capacity;
+  }
+
+  uint8_t *at = load->packed + load->packed_size;
+  MemCopy(at, object, EDIT_OBJECT_HEAD_SIZE);
+  at += EDIT_OBJECT_HEAD_SIZE;
+  for (uint32_t c = 0; c < object->component_count; ++c) {
+    MemCopy(at, object->components[c], object->types[c]->size);
+    at += object->types[c]->size;
+  }
+  load->objects[load->object_count++] = (EditStagedObject){
+      .offset = load->packed_size, .created_id = object->created_id};
+  load->packed_size += size;
+  return true_v;
+}
+
+/* Staged object `index` unpacked into the load's scratch object, valid until
+   the next unpack. */
+static const EditObject *edit_staged_object(const EditStructureLoad *load,
+                                            uint32_t index) {
+  const EditStagedObject *staged = &load->objects[index];
+  EditObject *object = load->scratch;
+  const uint8_t *at = load->packed + staged->offset;
+  MemCopy(object, at, EDIT_OBJECT_HEAD_SIZE);
+  at += EDIT_OBJECT_HEAD_SIZE;
+  for (uint32_t c = 0; c < object->component_count; ++c) {
+    MemCopy(object->components[c], at, object->types[c]->size);
+    at += object->types[c]->size;
+  }
+  object->created_id = staged->created_id;
+  return object;
 }
 
 static bool8_t edit_structure_body(VkrSceneEditState *s,
@@ -4341,19 +4428,15 @@ static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
     if (!edit_json_record(j, &values, &wrapper, &node, &fingerprint,
                           s->allocator, components, &extra, true_v))
       return false_v;
-    if (load->object_count == load->object_capacity) {
-      const uint32_t capacity = Max(8u, load->object_capacity * 2u);
-      EditObject *objects = vkr_allocator_realloc(
-          s->allocator, load->objects, load->object_capacity * sizeof(*objects),
-          capacity * sizeof(*objects), EDIT_TAG);
-      if (!objects) {
+    if (!load->scratch) {
+      load->scratch =
+          vkr_allocator_alloc(s->allocator, sizeof(*load->scratch), EDIT_TAG);
+      if (!load->scratch) {
         *failure = EDIT_SIDECAR_FAILURE_ALLOC;
         return false_v;
       }
-      load->objects = objects;
-      load->object_capacity = capacity;
     }
-    EditObject *object = &load->objects[load->object_count];
+    EditObject *object = load->scratch;
     /* edit_structure_load_commit builds the body once the object exists. */
     if (values.fields & VKR_SCENE_EDIT_PHYSICS) {
       if (values.physics.present &&
@@ -4381,7 +4464,10 @@ static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
       vkr_scene_entity_ref_generate(&object->ref);
     }
     object->parts |= EDIT_OBJECT_REF;
-    load->object_count++;
+    if (!edit_staged_add(s, load, object)) {
+      *failure = EDIT_SIDECAR_FAILURE_ALLOC;
+      return false_v;
+    }
     if (extra.parent.kind != EDIT_PARENT_NONE &&
         !edit_structure_link(s, load,
                              (EditParentLink){.created_child = extra.id,
@@ -4406,6 +4492,26 @@ static VkrEntityId edit_created_entity(const VkrSceneEditState *s,
   return VKR_ENTITY_ID_INVALID;
 }
 
+static int edit_created_compare(const void *a, const void *b) {
+  const uint32_t x = ((const VkrSceneEditCreated *)a)->id;
+  const uint32_t y = ((const VkrSceneEditCreated *)b)->id;
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* The entity of created id `id`, searched in `sorted`, the state's created
+   records ordered by id, else scanned for when it is NULL. */
+static VkrEntityId edit_created_lookup(const VkrSceneEditState *s,
+                                       const VkrSceneEditCreated *sorted,
+                                       uint32_t id) {
+  if (!sorted) {
+    return edit_created_entity(s, id);
+  }
+  const VkrSceneEditCreated key = {.id = id};
+  const VkrSceneEditCreated *found = bsearch(
+      &key, sorted, s->created_count, sizeof(*sorted), edit_created_compare);
+  return found ? found->entity : VKR_ENTITY_ID_INVALID;
+}
+
 /* Create the staged entities, then link parents. Runs after every override
    committed; a failure here leaves that entity out and is logged. */
 static void edit_structure_load_commit(VkrSceneEditState *s, VkrScene *scene,
@@ -4413,21 +4519,35 @@ static void edit_structure_load_commit(VkrSceneEditState *s, VkrScene *scene,
                                        EditSourceIndex *index,
                                        uint32_t index_count) {
   for (uint32_t i = 0; i < load->object_count; ++i) {
-    const VkrEntityId entity =
-        edit_object_restore(scene, &load->objects[i], VKR_ENTITY_ID_INVALID);
+    const VkrEntityId entity = edit_object_restore(
+        scene, edit_staged_object(load, i), VKR_ENTITY_ID_INVALID);
     const uint32_t id = load->objects[i].created_id;
     if (!entity.u64 || !edit_created_add(s, entity, id)) {
       log_warn("Overlay object %u could not be created", id);
     }
   }
+  /* Links and bodies find created ids in a sorted copy: a level links tens
+     of thousands of objects, which a scan per link visits quadratically. A
+     failed copy falls back to the scan. */
+  const uint64_t sorted_size =
+      (uint64_t)s->created_count * sizeof(VkrSceneEditCreated);
+  VkrSceneEditCreated *sorted =
+      sorted_size ? vkr_allocator_alloc(s->allocator, sorted_size, EDIT_TAG)
+                  : NULL;
+  if (sorted) {
+    MemCopy(sorted, s->created, sorted_size);
+    qsort(sorted, s->created_count, sizeof(*sorted), edit_created_compare);
+  }
+
   for (uint32_t i = 0; i < load->link_count; ++i) {
     const EditParentLink *link = &load->links[i];
-    const VkrEntityId child = link->created_child
-                                  ? edit_created_entity(s, link->created_child)
-                                  : link->child;
+    const VkrEntityId child =
+        link->created_child
+            ? edit_created_lookup(s, sorted, link->created_child)
+            : link->child;
     VkrEntityId parent = VKR_ENTITY_ID_INVALID;
     if (link->parent.kind == EDIT_PARENT_CREATED) {
-      parent = edit_created_entity(s, link->parent.created);
+      parent = edit_created_lookup(s, sorted, link->parent.created);
     } else if (link->parent.kind == EDIT_PARENT_DOCUMENT) {
       const EditSourceIndex *source = edit_source_find(
           index, index_count, link->parent.wrapper, link->parent.node);
@@ -4447,7 +4567,7 @@ static void edit_structure_load_commit(VkrSceneEditState *s, VkrScene *scene,
      that cannot be built leaves its object loaded without it. */
   for (uint32_t i = 0; i < load->body_count; ++i) {
     const EditCreatedBody *body = &load->bodies[i];
-    const VkrEntityId entity = edit_created_entity(s, body->created_id);
+    const VkrEntityId entity = edit_created_lookup(s, sorted, body->created_id);
     VkrSceneEditValues values;
     MemZero(&values, sizeof(values));
     values.fields = VKR_SCENE_EDIT_PHYSICS;
@@ -4457,6 +4577,9 @@ static void edit_structure_load_commit(VkrSceneEditState *s, VkrScene *scene,
       log_warn("Overlay object %u loaded without its physics body",
                body->created_id);
     }
+  }
+  if (sorted) {
+    vkr_allocator_free(s->allocator, sorted, sorted_size, EDIT_TAG);
   }
 }
 
@@ -5050,10 +5173,28 @@ bool8_t vkr_scene_edit_cells_open(VkrSceneEditState *s, VkrScene *scene) {
    high-water id keeps new objects off the ids of unloaded cells, so a
    remap is rare and only rewrites the cell it happened in. */
 static void edit_cell_remap_ids(VkrSceneEditState *s, EditStructureLoad *load) {
+  /* Loaded ids are searched in a sorted copy: a cell of tens of thousands of
+     objects beside as many loaded ones would compare every pair. A failed
+     copy falls back to the scan. */
+  const uint64_t loaded_size = (uint64_t)s->created_count * sizeof(uint32_t);
+  uint32_t *loaded =
+      loaded_size ? vkr_allocator_alloc(s->allocator, loaded_size, EDIT_TAG)
+                  : NULL;
+  if (loaded) {
+    for (uint32_t c = 0; c < s->created_count; ++c) {
+      loaded[c] = s->created[c].id;
+    }
+    qsort(loaded, s->created_count, sizeof(*loaded), edit_u32_compare);
+  }
+
   for (uint32_t i = 0; i < load->object_count; ++i) {
     const uint32_t from = load->objects[i].created_id;
     bool8_t taken = false_v;
-    for (uint32_t c = 0; c < s->created_count && !taken; ++c) {
+    if (loaded) {
+      taken = bsearch(&from, loaded, s->created_count, sizeof(*loaded),
+                      edit_u32_compare) != NULL;
+    }
+    for (uint32_t c = 0; !loaded && c < s->created_count && !taken; ++c) {
       taken = s->created[c].id == from;
     }
     if (!taken) {
@@ -5085,25 +5226,67 @@ static void edit_cell_remap_ids(VkrSceneEditState *s, EditStructureLoad *load) {
   for (uint32_t b = 0; b < load->body_count; ++b) {
     load->bodies[b].created_id &= 0x7FFFFFFFu;
   }
+  if (loaded) {
+    vkr_allocator_free(s->allocator, loaded, loaded_size, EDIT_TAG);
+  }
+}
+
+/* Whether staged object `id` has a parent. */
+static bool8_t edit_staged_child(const EditStructureLoad *load, uint32_t id) {
+  for (uint32_t l = 0; l < load->link_count; ++l) {
+    if (load->links[l].created_child == id &&
+        (load->links[l].parent.kind == EDIT_PARENT_CREATED ||
+         load->links[l].parent.kind == EDIT_PARENT_DOCUMENT)) {
+      return true_v;
+    }
+  }
+  return false_v;
 }
 
 /* Moves the staged root objects by -`offset`: a world whose origin is
    rebased (ADR-086) holds its roots that far from their documents. */
-static void edit_cell_rebase(EditStructureLoad *load, Vec3 offset) {
+static void edit_cell_rebase(VkrSceneEditState *s, EditStructureLoad *load,
+                             Vec3 offset) {
   if (offset.x == 0.0f && offset.y == 0.0f && offset.z == 0.0f) {
     return;
   }
+  /* The ids of objects with a parent, sorted, so each object is one search
+     rather than a scan of every link. A failed copy falls back to the
+     scan. */
+  const uint64_t children_size = (uint64_t)load->link_count * sizeof(uint32_t);
+  uint32_t *children =
+      children_size ? vkr_allocator_alloc(s->allocator, children_size, EDIT_TAG)
+                    : NULL;
+  uint32_t child_count = 0u;
+  for (uint32_t l = 0; children && l < load->link_count; ++l) {
+    if (load->links[l].created_child &&
+        (load->links[l].parent.kind == EDIT_PARENT_CREATED ||
+         load->links[l].parent.kind == EDIT_PARENT_DOCUMENT)) {
+      children[child_count++] = load->links[l].created_child;
+    }
+  }
+  if (children) {
+    qsort(children, child_count, sizeof(*children), edit_u32_compare);
+  }
+
   for (uint32_t i = 0; i < load->object_count; ++i) {
-    EditObject *object = &load->objects[i];
-    bool8_t child = false_v;
-    for (uint32_t l = 0; l < load->link_count && !child; ++l) {
-      child = load->links[l].created_child == object->created_id &&
-              (load->links[l].parent.kind == EDIT_PARENT_CREATED ||
-               load->links[l].parent.kind == EDIT_PARENT_DOCUMENT);
-    }
+    const uint32_t id = load->objects[i].created_id;
+    const bool8_t child =
+        children ? bsearch(&id, children, child_count, sizeof(*children),
+                           edit_u32_compare) != NULL
+                 : edit_staged_child(load, id);
     if (!child) {
-      object->transform.position = vec3_sub(object->transform.position, offset);
+      /* The packed fields keep EditObject's layout. */
+      uint8_t *at = load->packed + load->objects[i].offset +
+                    offsetof(EditObject, transform);
+      SceneTransform transform;
+      MemCopy(&transform, at, sizeof(transform));
+      transform.position = vec3_sub(transform.position, offset);
+      MemCopy(at, &transform, sizeof(transform));
     }
+  }
+  if (children) {
+    vkr_allocator_free(s->allocator, children, children_size, EDIT_TAG);
   }
 }
 
@@ -5164,7 +5347,7 @@ bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *s, VkrScene *scene,
   ok = ok && j.at == j.end;
   if (ok) {
     edit_cell_remap_ids(s, &load);
-    edit_cell_rebase(&load, scene->origin_offset);
+    edit_cell_rebase(s, &load, scene->origin_offset);
     edit_structure_load_commit(s, scene, &load, NULL, 0u);
     record->flags =
         (record->flags & ~(uint32_t)VKR_SCENE_PARTITION_CELL_UNREADABLE) |

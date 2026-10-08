@@ -19,7 +19,7 @@
 #define VKR_SCENE_EDIT_HISTORY_BYTES MB(256)
 /* Created objects one overlay or cell document holds. Load rejects a larger
    document, so save refuses to write one. */
-#define VKR_SCENE_EDIT_CREATED_MAX 16384u
+#define VKR_SCENE_EDIT_CREATED_MAX 65536u
 
 typedef enum VkrSceneEditAction {
   VKR_SCENE_EDIT_NONE,
