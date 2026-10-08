@@ -4,6 +4,7 @@
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
+#include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <assert.h>
@@ -379,6 +380,60 @@ static void edit_test_groups(void) {
 }
 
 /* Writes an overlay of `count` created roots named "n<index>". */
+/* vkr_scene_brush_faces answers from the scene's child index when it is
+   valid. The index lists children in the order they joined and can keep one
+   whose parent was written directly, as a restored object's is; the answer
+   must still match the full scan: the same faces, by entity index. */
+static void edit_test_brush_faces(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), MB(256), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 0, 8, &error));
+  const VkrEntityId brush = edit_test_entity(&scene, 0, "brush");
+  const VkrEntityId other = edit_test_entity(&scene, 1, "other");
+  SceneBrushFace face_values;
+  vkr_type_defaults(&vkr_scene_brush_face_type, &face_values);
+  VkrEntityId faces[4];
+  for (uint32_t i = 0; i < ArrayCount(faces); ++i) {
+    faces[i] = edit_test_entity(&scene, 2u + i, "face");
+    assert(vkr_scene_set_typed(&scene, faces[i], &vkr_scene_brush_face_type,
+                               &face_values));
+    vkr_scene_set_parent(&scene, faces[i], brush);
+  }
+  vkr_scene_update(&scene, 0.0);
+  assert(scene.child_index_valid);
+
+  /* faces[0] rejoins last; faces[2]'s parent changes behind the index. */
+  vkr_scene_set_parent(&scene, faces[0], other);
+  vkr_scene_set_parent(&scene, faces[0], brush);
+  vkr_scene_get_transform(&scene, faces[2])->parent = other;
+  assert(scene.child_index_valid);
+  VkrEntityId indexed[4] = {0};
+  const uint32_t indexed_count =
+      vkr_scene_brush_faces(&scene, brush, indexed, ArrayCount(indexed));
+  VkrEntityId first_two[2] = {0};
+  assert(vkr_scene_brush_faces(&scene, brush, first_two, 2u) == 3u);
+
+  scene.child_index_valid = false_v;
+  VkrEntityId scanned[4] = {0};
+  const uint32_t scanned_count =
+      vkr_scene_brush_faces(&scene, brush, scanned, ArrayCount(scanned));
+  scene.child_index_valid = true_v;
+  assert(scanned_count == 3u && indexed_count == scanned_count);
+  for (uint32_t i = 0; i < scanned_count; ++i) {
+    assert(indexed[i].u64 == scanned[i].u64);
+  }
+  assert(scanned[0].u64 == faces[0].u64 && scanned[1].u64 == faces[1].u64 &&
+         scanned[2].u64 == faces[3].u64);
+  assert(first_two[0].u64 == faces[0].u64 && first_two[1].u64 == faces[1].u64);
+
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+}
+
 static void edit_test_created_file(const char *path, uint32_t count) {
   FILE *file = file_fopen(path, "wb");
   assert(file);
@@ -1348,6 +1403,7 @@ bool32_t run_scene_edit_tests(void) {
   vkr_dmemory_destroy(&memory);
   edit_test_structure();
   edit_test_groups();
+  edit_test_brush_faces();
   edit_test_large();
   VkrDMemory partition_memory;
   assert(vkr_dmemory_create(MB(16), MB(64), &partition_memory));

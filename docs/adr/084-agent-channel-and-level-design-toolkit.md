@@ -380,7 +380,12 @@ or trigger) whose direct children carry `brush_face`: an outward `normal` and
 Faces are entities because a component value holds at most 1,024 bytes and
 descriptors have no arrays. The journal refuses transform edits of a face,
 deleting a brush deletes its faces in one journal group, the Outliner and
-Content hide faces, and object icons skip brushes.
+Content hide faces, and object icons skip brushes. `vkr_scene_brush_faces`
+lists a brush's faces from the scene's parent-to-children index while that
+index is current, checking each child's parent, and by a scan of the world
+otherwise; both list them by entity index, so face numbers do not depend on
+the path. With a scan per lookup, the change feed's boxes made a 280-box
+batch take 4.1 s on a 2,900-object level.
 
 [vkr_brush.c](../../runtime/src/level/vkr_brush.c) builds a brush on the CPU:
 each face plane's square is clipped by every other plane in double
@@ -1308,3 +1313,10 @@ material then).
   `watch_check.py` passed 4/4: undo and redo for 3.4 s gave two edit lines
   5.0 s apart, and the watcher left 0.54 s after its stdout closed. Codex
   0.160.1 could not connect. The subscription suite passed again, 12/12.
+- Headless macOS Release on the Testbed level `Level Design Test`
+  (2,900 objects, 2026-10-08): with faces read from the child index, a
+  batch of 100 `brush.box` applied in 87 ms (1,028 ms before) and one of
+  280 in 206 ms (4,101 ms before); 100 settled `brush.set_material` took
+  103 ms (1,047 ms before). Suite `scene_edit` compares the indexed lookup
+  with the scan after a face rejoins its brush, after a parent written past
+  the index and at a short capacity.

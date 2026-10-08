@@ -463,6 +463,36 @@ static VkrMaterialHandle brush_material(VkrScene *scene, VkrSceneBrushes *state,
 uint32_t vkr_scene_brush_faces(const VkrScene *scene, VkrEntityId brush,
                                VkrEntityId *out, uint32_t capacity) {
   uint32_t total = 0u;
+  /* The scene's child index answers without visiting the world. It may
+     keep a child that has since moved, so each one's parent is checked;
+     its order is not the world's, so faces are kept sorted by entity index
+     as the scan below lists them, which keeps face numbers stable. */
+  if (scene && scene->child_index_valid) {
+    uint32_t child_count = 0u;
+    const VkrEntityId *children =
+        vkr_scene_get_children(scene, brush, &child_count);
+    for (uint32_t i = 0; i < child_count; ++i) {
+      const VkrEntityId child = children[i];
+      if (!vkr_scene_entity_alive(scene, child) ||
+          brush_parent(scene, child).u64 != brush.u64 ||
+          !vkr_scene_get_typed(scene, child, &vkr_scene_brush_face_type)) {
+        continue;
+      }
+      const uint32_t kept = Min(total, capacity);
+      uint32_t at = kept;
+      while (at > 0u && out[at - 1u].parts.index > child.parts.index) {
+        at--;
+      }
+      if (at < capacity) {
+        for (uint32_t j = kept < capacity ? kept : capacity - 1u; j > at; --j) {
+          out[j] = out[j - 1u];
+        }
+        out[at] = child;
+      }
+      total++;
+    }
+    return total;
+  }
   for (uint32_t i = 0; scene && i < scene->world->dir.living; ++i) {
     const VkrEntityId child = vkr_entity_id_from_index(scene->world, i);
     if (vkr_scene_entity_alive(scene, child) &&

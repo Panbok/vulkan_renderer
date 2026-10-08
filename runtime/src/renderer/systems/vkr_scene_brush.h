@@ -55,7 +55,8 @@ const char *vkr_scene_brush_status(const VkrScene *scene, VkrEntityId brush);
    components yet: waiting to rebuild, or drawing their previous mesh until
    the new one's uploads settle. */
 uint32_t vkr_scene_brush_pending(const VkrScene *scene);
-/* Faces (direct children with `brush_face`) of `brush`, at most `capacity`;
-   returns the total. */
+/* Faces (direct children with `brush_face`) of `brush` by entity index, at
+   most `capacity`; returns the total. Reads the scene's child index while it
+   is current, else scans the world. */
 uint32_t vkr_scene_brush_faces(const VkrScene *scene, VkrEntityId brush,
                                VkrEntityId *out, uint32_t capacity);
