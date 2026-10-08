@@ -157,7 +157,7 @@ static bool32_t test_point_light_grid_build_is_deterministic(void) {
 
 /* The tiled pipeline keeps the lights nearest the camera by the distance to
  * their range, in table order, and shadows the nearest casters among them
- * (ADR-087). */
+ * (ADR-087). The first call snaps every kept light to full intensity. */
 static bool32_t test_point_light_limit_keeps_nearest(void) {
   printf("  Running test_point_light_limit_keeps_nearest...\n");
   VkrLightingSystem system = {0};
@@ -173,7 +173,8 @@ static bool32_t test_point_light_limit_keeps_nearest(void) {
   system.point_light_count = count;
   vkr_lighting_system_build_point_light_grid(&system);
 
-  vkr_lighting_system_limit_point_lights(&system, vec3_zero(), 4u, 2u);
+  vkr_lighting_system_limit_point_lights(&system, vec3_zero(), 1.0f / 60.0f, 4u,
+                                         2u);
   /* The four nearest, x = 0..30, remain in their table order (ids 3..6);
      of the casters among them, x = 0 and x = 20, keep shadows. */
   assert(system.point_light_count == 4u);
@@ -183,6 +184,7 @@ static bool32_t test_point_light_limit_keeps_nearest(void) {
   for (uint32_t i = 0u; i < 4u; ++i) {
     assert(system.point_lights[i].render_id == ids[i]);
     assert(system.point_lights[i].casts_shadow == shadowed[i]);
+    assert(system.point_lights[i].intensity == 10.0f);
   }
   /* The grid follows the kept table, where the light at the origin moved
      from index 5 to index 3. */
@@ -190,6 +192,85 @@ static bool32_t test_point_light_limit_keeps_nearest(void) {
       vkr_lighting_system_point_light_mask_at(&system, vec3_zero());
   assert(vkr_lighting_system_point_light_mask_contains(&origin, 3u));
   printf("  test_point_light_limit_keeps_nearest PASSED\n");
+  return true_v;
+}
+
+/* One frame of two shadow-casting lights 20 m apart on the x axis whose
+   ranges both hold the camera, of which the limit keeps one: the table is
+   rebuilt as the scene sync rebuilds it every frame. */
+static void limit_test_frame(VkrLightingSystem *system, float32_t camera_x) {
+  system->point_light_count = 2u;
+  system->point_lights[0] =
+      make_gltf_point(1u, vec3_new(10.0f, 0.0f, 0.0f), 100.0f);
+  system->point_lights[1] =
+      make_gltf_point(2u, vec3_new(-10.0f, 0.0f, 0.0f), 100.0f);
+  system->point_lights[0].casts_shadow = true_v;
+  system->point_lights[1].casts_shadow = true_v;
+  vkr_lighting_system_build_point_light_grid(system);
+  vkr_lighting_system_limit_point_lights(system, vec3_new(camera_x, 0.0f, 0.0f),
+                                         1.0f / 60.0f, 1u, 1u);
+}
+
+/* Lights whose ranges all hold the camera tie on the distance to their
+   range; the distance to their centre decides instead of table order. The
+   kept light stays while a rival is less than the incumbent bonus nearer,
+   and once replaced fades out over VKR_POINT_LIGHT_LIMIT_FADE_SECONDS, without
+   its shadow, before the rival fades in; a camera cut snaps (ADR-087). */
+static bool32_t test_point_light_limit_holds_and_fades(void) {
+  printf("  Running test_point_light_limit_holds_and_fades...\n");
+  VkrLightingSystem system = {0};
+  const float32_t step = 10.0f * (1.0f / 60.0f) / 0.25f;
+
+  /* Light 2 is nearer, though light 1 comes first in the table. */
+  limit_test_frame(&system, -1.0f);
+  assert(system.point_light_count == 1u);
+  assert(system.point_lights[0].render_id == 2u);
+  assert(system.point_lights[0].intensity == 10.0f);
+  assert(system.point_lights[0].casts_shadow);
+
+  /* Small moves past the midpoint keep light 2 at full intensity. */
+  for (int32_t tenth = -9; tenth <= 5; ++tenth) {
+    limit_test_frame(&system, 0.1f * (float32_t)tenth);
+    assert(system.point_light_count == 1u);
+    assert(system.point_lights[0].render_id == 2u);
+    assert(system.point_lights[0].intensity == 10.0f);
+    assert(system.point_lights[0].casts_shadow);
+  }
+
+  /* At x = 1.5, light 1 is 8.5 m away and light 2 11.5 m, more than the
+     bonus: light 2 fades out in its slot, then light 1 fades in. */
+  float32_t previous = 10.0f;
+  uint32_t frames = 0u;
+  for (;;) {
+    assert(frames < 20u);
+    limit_test_frame(&system, 1.5f);
+    assert(system.point_light_count == 1u);
+    if (system.point_lights[0].render_id == 1u) {
+      break;
+    }
+    const float32_t intensity = system.point_lights[0].intensity;
+    assert(fabsf(intensity - (previous - step)) < 1e-3f);
+    assert(!system.point_lights[0].casts_shadow);
+    previous = intensity;
+    frames++;
+  }
+  assert(frames >= 14u);
+  previous = 0.0f;
+  while (previous < 10.0f) {
+    const float32_t intensity = system.point_lights[0].intensity;
+    assert(system.point_lights[0].render_id == 1u);
+    assert(system.point_lights[0].casts_shadow);
+    assert(fabsf(intensity - Min(previous + step, 10.0f)) < 1e-3f);
+    previous = intensity;
+    limit_test_frame(&system, 1.5f);
+  }
+
+  /* A cut to light 2's side shows light 2 at once. */
+  limit_test_frame(&system, -30.0f);
+  assert(system.point_light_count == 1u);
+  assert(system.point_lights[0].render_id == 2u);
+  assert(system.point_lights[0].intensity == 10.0f);
+  printf("  test_point_light_limit_holds_and_fades PASSED\n");
   return true_v;
 }
 
@@ -908,6 +989,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_invisible_key_light_is_disabled();
   passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_limit_keeps_nearest();
+  passed &= test_point_light_limit_holds_and_fades();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();
   passed &= test_time_of_day_turns_sun_and_switches_night_groups();

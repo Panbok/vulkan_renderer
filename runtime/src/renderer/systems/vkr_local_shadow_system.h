@@ -36,6 +36,9 @@ typedef struct VkrLocalShadowCacheInput {
   /** Full-filter lights widen their penumbra by their authored source radius;
    * false keeps the fixed filter for every light. */
   bool8_t soft_shadows;
+  /** Every shown light takes the full filter; otherwise only the most
+   * important VKR_LOCAL_SHADOW_FULL_FILTER_LIGHT_COUNT do. */
+  bool8_t full_filter_all;
   uint32_t face_budget;
   uint32_t map_size;
   /** Camera distance at which shadows have faded out; positive. */

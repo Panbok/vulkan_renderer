@@ -7,6 +7,20 @@
 
 #include "vkr_lighting.h"
 
+/** One light's state across calls of the tiled pipeline's dynamic-light
+ * limit (ADR-087), matched by render id. */
+typedef struct VkrPointLightLimitEntry {
+  uint32_t render_id;
+  /** Intensity scale in [0, 1]: rises toward one while the light is selected
+   * and falls toward zero once it is not, so lights fade instead of popping. */
+  float32_t weight;
+  /** The light was among the selected lights; it ranks with the incumbent
+   * bonus. */
+  bool8_t selected;
+  /** The light held a shadow; it ranks for shadows with the bonus. */
+  bool8_t shadowed;
+} VkrPointLightLimitEntry;
+
 /**
  * @brief Lighting system for managing lighting data and applying to shaders.
  *
@@ -34,6 +48,14 @@ typedef struct VkrLightingSystem {
 
   VkrRectangleLight rectangle_lights[VKR_MAX_SCENE_RECTANGLE_LIGHTS];
   uint32_t rectangle_light_count;
+
+  /* State of vkr_lighting_system_limit_point_lights from its last call, the
+     table's identified lights that were selected or still showing, sorted
+     by render id. The scene syncs leave it alone. */
+  VkrPointLightLimitEntry point_light_limit[VKR_MAX_SCENE_POINT_LIGHTS];
+  uint32_t point_light_limit_count;
+  Vec3 point_light_limit_camera;
+  bool8_t point_light_limit_valid;
 
   // Dirty tracking
   bool8_t dirty;
@@ -67,6 +89,13 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
 void vkr_lighting_system_append_scene(VkrLightingSystem *system,
                                       const VkrScene *scene);
 
+/** A light that the dynamic-light limit selected or shadowed keeps its
+ * place until a competitor is this factor nearer (ADR-087). */
+#define VKR_POINT_LIGHT_LIMIT_INCUMBENT_BONUS 1.15f
+/** Seconds for a light the limit selects or drops to fade in or out, as long
+ * as a local shadow takes to fade in. */
+#define VKR_POINT_LIGHT_LIMIT_FADE_SECONDS 0.25f
+
 /** A white Lambertian surface lit head-on by a directional light of
  * irradiance E shows E * exposure / pi. Below this fraction of display white,
  * a sixteenth of an 8-bit step, the light is invisible (ADR-081). */
@@ -81,12 +110,25 @@ void vkr_lighting_system_apply_atmosphere_light(
     VkrLightingSystem *system, Vec3 toward_light, Vec3 irradiance,
     float32_t angular_diameter_degrees, float32_t display_exposure);
 
-/** Keeps the `light_max` point lights nearest `camera_position` by the
- * distance to their range, in table order, and shadows only the `shadow_max`
- * nearest of those that cast shadows; rebuilds the grid when lights drop. The
- * tiled pipeline's bounded set of dynamic lights (ADR-087). */
+/** The tiled pipeline's bounded set of dynamic lights (ADR-087). Selects
+ * the `light_max` point lights nearest `camera_position` by the distance to
+ * their range, ties by the distance to their centre and then by table order,
+ * and lets the `shadow_max` nearest selected casters keep their shadows. A
+ * light selected or shadowed by the previous call ranks as if the camera
+ * were VKR_POINT_LIGHT_LIMIT_INCUMBENT_BONUS times closer, so membership
+ * does not flip while distances cross.
+ *
+ * A light with a unique nonzero render id fades: its intensity scale rises
+ * by `delta_seconds` / VKR_POINT_LIGHT_LIMIT_FADE_SECONDS per call while
+ * selected and falls as fast once not. A fading-out light keeps its table
+ * slot and loses its shadow, which the local shadow cache fades out; a
+ * newly selected light takes a slot once one is free, so at most
+ * `light_max` lights draw. The first call, a camera cut and an invalid
+ * `delta_seconds` snap every selected light to full intensity. Keeps the
+ * table order of the drawn lights and rebuilds the grid when lights drop. */
 void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
                                             Vec3 camera_position,
+                                            float32_t delta_seconds,
                                             uint32_t light_max,
                                             uint32_t shadow_max);
 

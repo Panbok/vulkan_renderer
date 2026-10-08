@@ -146,7 +146,8 @@ typedef struct VkrShadowCasterDepthBounds {
  * | Field | Consumer |
  * |---|---|
  * | local_shadow_face_budget, local_shadow_map_size,
- *   local_shadow_fade_distance | vkr_local_shadow_cache_resolve() |
+ *   local_shadow_fade_distance, local_shadow_full_filter_all |
+ *   vkr_local_shadow_cache_resolve() |
  * | cascade_count | split/matrix loop; packet cascade count |
  * | shadow_map_size | texel size and snapping in the cascade fit |
  * | cascade_split_lambda | vkr_shadow_compute_cascade_splits() |
@@ -193,6 +194,11 @@ typedef struct VkrShadowConfig {
   /** Full-filter local lights widen their penumbra by their authored source
    * radius (the Soft shadows setting); false keeps the fixed filter. */
   bool8_t local_shadow_soft;
+  /** Every shown local light takes the full filter, not only the most
+   * important few. The tiled pipeline sets it every frame: its dynamic-light
+   * limit bounds the shadowed lights, so none shows the single tap's stepped
+   * edge (ADR-087). The desktop pipeline leaves it false (ADR-019). */
+  bool8_t local_shadow_full_filter_all;
   /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE also keep filtered
    * exponential variance moments that deferred lighting samples instead of
    * PCF (the Filtered far shadows setting). On in High and Ultra, off in

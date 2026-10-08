@@ -935,7 +935,9 @@ vkr_internal void test_local_shadow_camera_cut_snaps(void) {
 }
 
 /* The two most important shown lights take the full filter; the others take
- * the reduced filter, so extra shadows cost a fraction of a full light. */
+ * the reduced filter, so extra shadows cost a fraction of a full light. The
+ * tiled pipeline, whose dynamic-light limit bounds the shadowed lights, gives
+ * every shown light the full filter (ADR-087). */
 vkr_internal void test_local_shadow_reduces_least_important(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -958,6 +960,15 @@ vkr_internal void test_local_shadow_reduces_least_important(void) {
     const VkrLocalShadowView *view =
         &local.views[local.light_first_view[i] - 1u];
     assert(view->shadow_params.z == (i < 2u ? 0.0f : 1.0f));
+  }
+
+  system.config.local_shadow_full_filter_all = true_v;
+  vkr_shadow_system_resolve_local_shadows(&system, local_shadow_valid_token(),
+                                          &payload, lights, ArrayCount(lights),
+                                          &camera, &local);
+  for (uint32_t i = 0u; i < ArrayCount(lights); ++i) {
+    assert(local.light_first_view[i] != 0u);
+    assert(local.views[local.light_first_view[i] - 1u].shadow_params.z == 0.0f);
   }
   vkr_shadow_system_shutdown(&system);
 }
@@ -1041,6 +1052,63 @@ vkr_internal void test_local_shadow_distance_fade(void) {
     assert(fabsf(local_shadow_strength(&local, 0u) - expected[i]) < 1e-5f);
     assert((local.light_first_view[0] != 0u) == (expected[i] > 0.0f));
   }
+  vkr_shadow_system_shutdown(&system);
+}
+
+/* A light that stops casting, as one the tiled pipeline's dynamic-light limit
+ * no longer shadows, keeps its resident faces while its shadow fades out by
+ * one fade step per frame without a redraw, instead of vanishing at once. A
+ * camera cut drops it at once. */
+vkr_internal void test_local_shadow_fades_out_when_light_stops_casting(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.local_shadow_face_budget = 6u;
+  config.local_shadow_fade_distance = 1000.0f;
+  assert(vkr_shadow_system_init(&system, &config));
+  VkrWorldPassPayload payload = retained_static_payload();
+  VkrPointLight light = local_shadow_test_light(
+      10u, VKR_POINT_LIGHT_KIND_GLTF_POINT, 100.0f, vec3_new(0.0f, 3.0f, 0.0f));
+  const VkrRetainedLocalShadowToken valid = local_shadow_valid_token();
+  const VkrLocalShadowCamera camera =
+      local_shadow_camera(vec3_new(0.0f, 1.7f, 0.0f));
+  VkrLocalShadowPassPayload local = {0};
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  assert(local_shadow_strength(&local, 0u) == 1.0f);
+  vkr_shadow_system_commit_frame(&system, 31u);
+
+  light.casts_shadow = false_v;
+  const float32_t fade_step = (1.0f / 60.0f) / 0.25f;
+  float32_t previous = 1.0f;
+  uint32_t frames = 0u;
+  while (previous > 0.0f) {
+    assert(frames < 20u);
+    vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light,
+                                            1u, &camera, &local);
+    assert(local.render_count == 0u);
+    const float32_t strength = local_shadow_strength(&local, 0u);
+    assert(fabsf(strength - Max(previous - fade_step, 0.0f)) < 1e-4f);
+    assert((local.light_first_view[0] != 0u) == (strength > 0.0f));
+    previous = strength;
+    vkr_shadow_system_commit_frame(&system, 32u + frames);
+    frames++;
+  }
+  assert(frames >= 15u);
+
+  light.casts_shadow = true_v;
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  vkr_shadow_system_commit_frame(&system, 60u);
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  vkr_shadow_system_commit_frame(&system, 61u);
+  assert(local_shadow_strength(&local, 0u) > 0.0f);
+  light.casts_shadow = false_v;
+  const VkrLocalShadowCamera cut =
+      local_shadow_camera(vec3_new(40.0f, 1.7f, 0.0f));
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &cut, &local);
+  assert(local.light_first_view[0] == 0u);
   vkr_shadow_system_shutdown(&system);
 }
 
@@ -1880,6 +1948,7 @@ bool32_t run_shadow_system_tests(void) {
   test_local_shadow_reduces_least_important();
   test_local_shadow_feedback_orders_fill();
   test_local_shadow_distance_fade();
+  test_local_shadow_fades_out_when_light_stops_casting();
   test_local_shadow_transmission_pool_is_bounded();
   test_retained_history_reuses_per_image_and_commits_only_on_submit();
   test_retained_history_guard_contains_small_motion_not_large_motion();

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-07
+updated: 2026-10-08
 authority: adr
 ---
 
@@ -278,9 +278,20 @@ pipeline rather than a backend mechanism.
     it is baked (owner decision, 2026-10-06). Then
     `vkr_lighting_system_limit_point_lights`
     ([`vkr_lighting_system.h`](../../runtime/src/renderer/systems/vkr_lighting_system.h))
-    keeps the 16 dynamic point and spot lights nearest the camera by the
-    distance to their range, and lets the 4 nearest shadow casters among
-    them cast shadows. The forward shader evaluates them through the shared
+    selects the 16 dynamic point and spot lights nearest the camera by the
+    distance to their range, ties by the distance to their centre, and lets
+    the 4 nearest shadow casters among them cast shadows. A light selected
+    or shadowed the frame before ranks as if the camera were 1.15 times
+    closer, so membership does not flip while distances cross. A light
+    entering or leaving the set fades its intensity over 0.25 s, the local
+    shadow fade-in time: a leaving light keeps its slot until it has faded
+    and loses its shadow, which the local shadow cache fades out over the
+    same time (ADR-019), and an entering light takes the freed slot, so at
+    most 16 draw. The first frame and a camera cut snap. Before 2026-10-08
+    ties fell to table order and the set and its shadows were recomputed
+    every frame, so in a brush level of about 125 unbaked lamps whose ranges
+    held the camera, lights and shadows popped as the camera moved (user
+    report). The forward shader evaluates them through the shared
     light grid and local-light loop (`vkr_metal_packet_punctual_layered`),
     and dynamic rectangle lights through the shared LTC path. A shadowed
     light takes four bilinear comparisons of its local shadow map half a
@@ -288,8 +299,11 @@ pipeline rather than a backend mechanism.
     (`vkr_metal_packet_local_shadow_sample<false, false, true>` in
     [`sampling.metalh`](../../renderer/src/shaders/metal/msl/shadow/sampling.metalh)),
     instead of the desktop Poisson disk, so its shadow edge is smooth over
-    about a texel but has no soft penumbra (owner decisions, 2026-10-06). A
-    light the shadow system marks reduced keeps one comparison. The tent
+    about a texel but has no soft penumbra (owner decisions, 2026-10-06).
+    The tiled pipeline sets `local_shadow_full_filter_all`, so every
+    shadowed light takes the tent; before 2026-10-08 only the two most
+    important did and the others kept one comparison, whose stepped edges
+    showed on floors (user report). The tent on those two lights
     cost `Tiled.Opaque` on the 16-light orbit about 0.1 ms median and p95
     over one comparison (9.85 / 17.66 and 9.77 / 17.44 ms before, 9.92 /
     17.63 and 9.92 / 17.74 ms after;
@@ -394,8 +408,12 @@ Release editor, M1 Pro, 2026-10-06, the toolkit test level at 22:00: a
 dynamic spot light casting shadows over a brush pillar and an unshadowed
 dynamic point light, added through `vkr_mcp`, light the room on both
 pipelines, the desktop one on Metal before its removal, with the same pool, pillar shadow and tint, over the baked lamp
-groups on the tiled one. `test_point_light_limit_keeps_nearest` and the
-time-of-day lighting test cover the limit and the static-light filter.
+groups on the tiled one. `test_point_light_limit_keeps_nearest`,
+`test_point_light_limit_holds_and_fades`, the time-of-day lighting test and
+`test_local_shadow_fades_out_when_light_stops_casting` cover the limit, its
+hysteresis and fades, and the static-light filter. The fades and the
+tent for all four shadowed lights have no native capture or timing yet; the
+0.1 ms tent cost of decision 11 was measured with two full-filter lights.
 
 ### Editor evidence
 

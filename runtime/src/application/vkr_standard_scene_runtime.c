@@ -2311,8 +2311,12 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   /* The tiled pipeline filters every cascade with PCF and renders no
      moments, so a far cascade must not wait for moments to be reused
      (ADR-087). */
-  if (application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED)
+  if (application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
     frame->shadow.config.far_cascade_evsm = false_v;
+    /* Its dynamic-light limit bounds the shadowed lights, so each takes the
+       full filter (ADR-087). */
+    frame->shadow.config.local_shadow_full_filter_all = true_v;
+  }
   frame->shadow.invalidate_fit =
       application->shadow_fit_invalidate_requested || target_changed;
   application->shadow_fit_invalidate_requested = false_v;
@@ -2547,7 +2551,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
        shadows fewer still. */
     if (tiled && camera)
       vkr_lighting_system_limit_point_lights(
-          &application->lighting_system, camera->position,
+          &application->lighting_system, camera->position, (float32_t)delta,
           VKR_STANDARD_SCENE_TILED_LIGHT_MAX,
           VKR_STANDARD_SCENE_TILED_SHADOWED_LIGHT_MAX);
   }

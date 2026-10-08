@@ -749,7 +749,8 @@ frames without a decal in view do not take
 ([ADR-092](adr/092-projected-decals.md)); the desktop pipeline's G-buffer
 resolve applies the same decals. It
 draws the 16 dynamic lights nearest the camera, 4 of them shadowed with a
-four-comparison tent each, and no FXAA, screen-space effects or temporal
+four-comparison tent each, holding the set with an incumbent bonus and fading
+lights in and out over 0.25 s, and no FXAA, screen-space effects or temporal
 history. Its
 adaptive quality lowers the internal render scale to as little as 0.65 while
 frames miss a 16 ms GPU budget and upscales spatially
@@ -973,8 +974,11 @@ light range and layers sized to the resident faces. Faces whose content is
 invalid or stale redraw by importance within the preset's per-frame face
 budget (High 30, Balanced 12, Ultra 60); a light's shadow fades in once its
 faces are valid and does not switch off while they stay valid. Dynamic casters
-and publications mark the faces they may reach stale. Lights past the three
-most important take a single filtered tap and no contact shadows. The most
+and publications mark the faces they may reach stale. A light that stops
+casting fades its resident shadow out instead of dropping it. On the desktop
+pipeline lights past the two most important take a single filtered tap and no
+contact shadows; on the tiled pipeline every shadowed light takes the full
+filter. The most
 important lights also hold transmission layers for refractive casters.
 [ADR-019](adr/019-bounded-forward-spatial-lighting.md) owns these policies.
 

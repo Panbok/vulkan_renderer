@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-08
 authority: adr
 ---
 
@@ -109,6 +109,12 @@ over 0.25 s, or at once on the first resolve, a budget change and a renderer
 camera cut (the TAA rule: more than 10 m or 60 degrees of turn), since the
 image has no history to keep. A resident light whose content stays valid never
 fades out with time, so its shadow cannot switch off while the camera moves.
+A light that stops casting while its shadow shows, such as one the tiled
+pipeline's dynamic-light limit stops shadowing (ADR-087), keeps its resident
+faces where they remain free after the casting lights are placed and fades
+its shadow out over the same 0.25 s without redrawing, or drops it at once on
+a camera cut
+([`vkr_local_shadow_gather_leaving`](../../runtime/src/renderer/systems/vkr_local_shadow_system.c)).
 Receivers instead see that strength times a fade by camera distance, from one
 to zero over the last 5 m before `VkrShadowConfig.local_shadow_fade_distance`,
 120 m by default: a light past it is not shadowed, so no pixel filters it, yet
@@ -186,6 +192,9 @@ more mask time and 0.95 ms more frame time than three, because forward and
 transmission shading also filter the extra lights. On 2026-10-03 the count fell
 from three to two
 ([`vkr_local_shadow_system.c`](../../runtime/src/renderer/systems/vkr_local_shadow_system.c)).
+The tiled pipeline sets `VkrShadowConfig.local_shadow_full_filter_all` every
+frame, so each of its at most four shadowed lights takes the full filter, its
+four-comparison tent (ADR-087); the desktop pipeline keeps two.
 On Vulkan, RX 6700 XT, in the Bistro street view at 1920x1080 with TAA and the
 High preset (`local_shadow_bistro_vulkan_street` at that size, one child of 240
 frames under `local-offscreen-gpu-single`), `Shadow.LocalMask` fell from 2.84
