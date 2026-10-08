@@ -383,9 +383,12 @@ typedef struct SceneCounter {
 
 /* Moves the entity and everything under it between its authored pose and
  * an open pose `distance` metres along `direction` (in the entity's own
- * space), as Source's func_door and func_movelinear do. It moves only while
- * the game plays, through an evaluated pose; the saved transform never
- * changes. Solid and clip brushes under it collide where it moves. */
+ * space), as Source's func_door and func_movelinear do, or with a nonzero
+ * `angle` one turned that many degrees about `axis` through `pivot`, as
+ * func_door_rotating does; with `spin` it turns on while open, as a fan.
+ * It moves only while the game plays, through an evaluated pose; the saved
+ * transform never changes. Solid and clip brushes under it collide where it
+ * moves. */
 typedef struct SceneMover {
   Vec3 direction;
   /* Metres to the open pose; zero takes the size of what it moves along
@@ -402,6 +405,15 @@ typedef struct SceneMover {
   bool8_t loop;
   /* Refuses `open`, `toggle` and `set_position` until unlocked. */
   bool8_t locked;
+  /* Degrees to the open pose about `axis` through `pivot`, both in its own
+     space; zero slides along `direction` instead. `speed` is then degrees
+     per second. */
+  float32_t angle;
+  Vec3 axis;
+  Vec3 pivot;
+  /* Turns about `axis` without end while open and stops where it is when
+     closed; `angle` does not apply. */
+  bool8_t spin;
 } SceneMover;
 
 /* One connection, a child entity of its source: when the source fires

@@ -205,3 +205,18 @@ bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt);
  * `lip`. False when it is not a mover. */
 bool8_t vkr_io_mover_travel(const VkrScene *scene, VkrEntityId entity,
                             Vec3 *out);
+
+/** A rigid motion of a mover's saved world pose: a turn `rotation` about
+ * the world point `pivot`, then the world `offset`. */
+typedef struct VkrIoMoverMotion {
+  Vec3 offset;
+  VkrQuat rotation;
+  Vec3 pivot;
+} VkrIoMoverMotion;
+
+/** Mover `entity`'s open pose as a motion of its saved one: a sliding
+ * mover's travel, or a turning one's `angle` about its world axis through
+ * its world pivot (a spinning one's quarter turn, as a preview shows it).
+ * False when it is not a mover. */
+bool8_t vkr_io_mover_open_motion(const VkrScene *scene, VkrEntityId entity,
+                                 VkrIoMoverMotion *out);

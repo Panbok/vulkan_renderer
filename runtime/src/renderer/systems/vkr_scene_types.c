@@ -2535,9 +2535,38 @@ static const VkrPropertyDesc s_mover_properties[] = {
      .min = 0.0f,
      .max = 100.0f,
      .step = 0.01f},
+    {.name = "angle",
+     .label = "Angle",
+     .tooltip = "Degrees it turns to open about the axis through the pivot; "
+                "zero slides along the direction",
+     .unit = "deg",
+     .offset = TYPE_OFFSET(SceneMover, angle),
+     .kind = VKR_PROPERTY_F32,
+     .min = -3600.0f,
+     .max = 3600.0f,
+     .step = 1.0f},
+    {.name = "axis",
+     .label = "Axis",
+     .tooltip = "What it turns about, in its own space",
+     .offset = TYPE_OFFSET(SceneMover, axis),
+     .kind = VKR_PROPERTY_DIRECTION,
+     .step = 1.0f},
+    {.name = "pivot",
+     .label = "Pivot",
+     .tooltip = "Where the axis passes, in its own space: a door's hinge",
+     .unit = "m",
+     .offset = TYPE_OFFSET(SceneMover, pivot),
+     .kind = VKR_PROPERTY_VEC3,
+     .step = 0.05f},
+    {.name = "spin",
+     .label = "Spin",
+     .tooltip = "Turn about the axis without end while open, as a fan, at "
+                "the speed in degrees per second",
+     .offset = TYPE_OFFSET(SceneMover, spin),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "speed",
      .label = "Speed",
-     .unit = "m/s",
+     .tooltip = "Metres per second, or degrees per second when it turns",
      .offset = TYPE_OFFSET(SceneMover, speed),
      .kind = VKR_PROPERTY_F32,
      .min = 0.01f,
@@ -2571,17 +2600,23 @@ static const VkrPropertyDesc s_mover_properties[] = {
 };
 
 static void mover_defaults(void *value) {
-  *(SceneMover *)value = (SceneMover){
-      .direction = vec3_new(1.0f, 0.0f, 0.0f), .speed = 2.0f, .wait = -1.0f};
+  *(SceneMover *)value = (SceneMover){.direction = vec3_new(1.0f, 0.0f, 0.0f),
+                                      .speed = 2.0f,
+                                      .wait = -1.0f,
+                                      .axis = vec3_new(0.0f, 1.0f, 0.0f)};
 }
 
 static bool8_t mover_validate(const void *value, char *error,
                               uint32_t capacity) {
   const SceneMover *mover = value;
-  if (!isfinite(vec3_length(mover->direction)) ||
-      vec3_length(mover->direction) < 1.0e-4f) {
+  const bool8_t turns = mover->angle != 0.0f || mover->spin;
+  const Vec3 along = turns ? mover->axis : mover->direction;
+  if (!isfinite(vec3_length(along)) || vec3_length(along) < 1.0e-4f ||
+      !isfinite(mover->angle) || !isfinite(vec3_length(mover->pivot))) {
     if (error) {
-      snprintf(error, capacity, "A mover needs a direction");
+      snprintf(error, capacity,
+               turns ? "A turning mover needs an axis and a finite pivot"
+                     : "A mover needs a direction");
     }
     return false_v;
   }

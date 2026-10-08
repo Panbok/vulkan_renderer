@@ -3691,7 +3691,7 @@ bool8_t vkr_scene_physics_generated_set_kinematic(
 
 bool8_t vkr_scene_physics_generated_move(VkrScene *scene, uint64_t key,
                                          Vec3 position, VkrQuat rotation,
-                                         const char **error) {
+                                         Vec3 pivot, const char **error) {
   VkrScenePhysics *physics = scene ? scene->physics : NULL;
   if (physics && physics->dispatching) {
     return physics_fail(
@@ -3699,11 +3699,17 @@ bool8_t vkr_scene_physics_generated_move(VkrScene *scene, uint64_t key,
   }
   const int32_t index = physics ? physics_generated_find(physics, key) : -1;
   if (index < 0 || !physics->generated[index].kinematic ||
-      !physics_vec_finite(position) || !physics_rotation_valid(rotation)) {
+      !physics_vec_finite(position) || !physics_vec_finite(pivot) ||
+      !physics_rotation_valid(rotation)) {
     return physics_fail(error, "A generated move needs a kinematic generated "
                                "body and a finite unit pose");
   }
-  physics->generated[index].target_position = position;
-  physics->generated[index].target_rotation = rotation;
+  /* The body turns about its origin, where the colliders' frame starts, so
+     a turn about `pivot` adds the pivot's swing: p - R p in that frame. */
+  ScenePhysicsGenerated *generated = &physics->generated[index];
+  const Vec3 local = vec3_sub(pivot, generated->origin);
+  generated->target_position = vec3_add(
+      position, vec3_sub(local, vkr_quat_rotate_vec3(rotation, local)));
+  generated->target_rotation = rotation;
   return true_v;
 }

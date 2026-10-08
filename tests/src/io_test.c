@@ -456,6 +456,95 @@ static void io_test_mover(void) {
   printf("  io_test_mover PASSED\n");
 }
 
+/* The evaluated world position of `mover`. */
+static Vec3 io_test_mover_position(IoTest *test, VkrEntityId mover) {
+  const SceneEvaluatedTransform *pose = vkr_entity_get_component(
+      test->scene.world, mover, test->scene.comp_evaluated_transform);
+  assert(pose);
+  return vec3_new(pose->world.elements[12], pose->world.elements[13],
+                  pose->world.elements[14]);
+}
+
+/* A turning mover (ADR-084): a door 90 degrees about +Y through a hinge
+ * 1 m along its +X at 45 degrees per second, and a fan spinning at 90.
+ * Oracles: the door's origin swings about the hinge from (5, 1, -3) to
+ * (6, 1, -2), at 45 degrees after 1 s and open after 2 s when on_opened
+ * reaches the probe; the fan is back at rest after one 4 s turn without
+ * on_opened, and a close stops it where it is. */
+static void io_test_mover_turn(void) {
+  printf("  Running io_test_mover_turn...\n");
+  IoTest test;
+  io_test_begin(&test);
+  const SceneMover door_settings = {.angle = 90.0f,
+                                    .axis = vec3_new(0.0f, 1.0f, 0.0f),
+                                    .pivot = vec3_new(1.0f, 0.0f, 0.0f),
+                                    .speed = 45.0f,
+                                    .wait = -1.0f};
+  const VkrEntityId door =
+      io_test_entity(&test, "door", &vkr_scene_mover_type, &door_settings);
+  const SceneMover fan_settings = {.axis = vec3_new(0.0f, 1.0f, 0.0f),
+                                   .pivot = vec3_new(1.0f, 0.0f, 0.0f),
+                                   .spin = true_v,
+                                   .speed = 90.0f,
+                                   .wait = -1.0f};
+  const VkrEntityId fan =
+      io_test_entity(&test, "fan", &vkr_scene_mover_type, &fan_settings);
+  const Vec3 saved = vec3_new(5.0f, 1.0f, -3.0f);
+  assert(vkr_scene_set_transform(&test.scene, door, saved, vkr_quat_identity(),
+                                 vec3_one()));
+  assert(vkr_scene_set_transform(&test.scene, fan, saved, vkr_quat_identity(),
+                                 vec3_one()));
+  const VkrEntityId probe = io_test_entity(&test, "probe", &s_probe_type, NULL);
+  (void)io_test_connect(&test, door, "on_opened", probe, "record", "1", 0.0f,
+                        0u);
+  (void)io_test_connect(&test, fan, "on_opened", probe, "record", "2", 0.0f,
+                        0u);
+  vkr_scene_update_transforms(&test.scene);
+  io_test_publish(&test);
+  assert(test.router.problems == 0u);
+  assert(vkr_io_router_send(&test.router, door,
+                            io_test_input_of(&test, door, "open"), NULL,
+                            false_v));
+  assert(vkr_io_router_send(
+      &test.router, fan, io_test_input_of(&test, fan, "open"), NULL, false_v));
+  const float64_t dt = 1.0 / 60.0;
+  const float32_t half = 0.70710678f;
+  for (uint32_t tick = 1; tick <= 240u; ++tick) {
+    assert(vkr_io_router_step(&test.router, dt));
+    assert(vkr_io_router_tick(&test.router, &test.scene, tick * dt));
+    const Vec3 at = io_test_mover_position(&test, door);
+    if (tick == 60u) {
+      assert(fabsf(at.x - (6.0f - half)) < 1e-4f &&
+             fabsf(at.z - (-3.0f + half)) < 1e-4f);
+    }
+    if (tick == 119u) {
+      assert(test.record_count == 0u);
+    }
+    if (tick == 120u) {
+      assert(test.record_count == 1u && test.records[0].value == 1);
+      assert(fabsf(at.x - 6.0f) < 1e-4f && fabsf(at.y - 1.0f) < 1e-4f &&
+             fabsf(at.z + 2.0f) < 1e-4f);
+    }
+  }
+  /* One whole turn of the fan, and no on_opened from it. */
+  const Vec3 turned = io_test_mover_position(&test, fan);
+  assert(vec3_length(vec3_sub(turned, saved)) < 1e-3f);
+  assert(test.record_count == 1u);
+
+  assert(vkr_io_router_step(&test.router, 30.0 * dt));
+  assert(vkr_io_router_send(
+      &test.router, fan, io_test_input_of(&test, fan, "close"), NULL, false_v));
+  const Vec3 stopped = io_test_mover_position(&test, fan);
+  assert(vec3_length(vec3_sub(stopped, saved)) > 0.5f);
+  for (uint32_t tick = 0; tick < 30u; ++tick) {
+    assert(vkr_io_router_step(&test.router, dt));
+  }
+  assert(vec3_length(vec3_sub(io_test_mover_position(&test, fan), stopped)) <
+         1e-6f);
+  io_test_end(&test);
+  printf("  io_test_mover_turn PASSED\n");
+}
+
 bool32_t run_io_tests(void) {
   printf("--- Starting IO Tests ---\n");
   io_test_order();
@@ -467,6 +556,7 @@ bool32_t run_io_tests(void) {
   io_test_timer();
   io_test_problems();
   io_test_mover();
+  io_test_mover_turn();
   printf("--- IO Tests Completed ---\n");
   return true_v;
 }

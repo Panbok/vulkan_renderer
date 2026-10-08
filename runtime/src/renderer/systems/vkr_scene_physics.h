@@ -317,10 +317,11 @@ bool8_t vkr_scene_physics_generated_set_kinematic(
     const VkrPhysicsColliderDesc *colliders, uint32_t collider_count,
     const char **error);
 /* The pose kinematic generated body `key` moves to from the next step: a
-   rigid motion of its world-space colliders. */
+   rigid motion of its world-space colliders, turned by `rotation` about the
+   world point `pivot` and then moved by `position`. */
 bool8_t vkr_scene_physics_generated_move(VkrScene *scene, uint64_t key,
                                          Vec3 position, VkrQuat rotation,
-                                         const char **error);
+                                         Vec3 pivot, const char **error);
 void vkr_scene_physics_generated_remove(VkrScene *scene, uint64_t key);
 bool8_t vkr_scene_physics_matrix_allowed(const VkrScene *scene,
                                          VkrEntityId entity, Mat4 local);

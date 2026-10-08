@@ -444,8 +444,8 @@ static void physics_test_generated_kinematic(VkrAllocator *allocator) {
                                                    &error));
   assert(fabsf(physics_test_floor_top(&scene, 0.5f, 0.5f)) < 1e-3f);
   /* Only a kinematic generated body takes a target. */
-  assert(!vkr_scene_physics_generated_move(&scene, 9u, vec3_zero(),
-                                           vkr_quat_identity(), &error));
+  assert(!vkr_scene_physics_generated_move(
+      &scene, 9u, vec3_zero(), vkr_quat_identity(), vec3_zero(), &error));
   /* A session's callbacks run the clock, as the script host's do. */
   const VkrSceneSimulationCallbacks callbacks = {.after_tick =
                                                      physics_test_after_tick};
@@ -455,7 +455,7 @@ static void physics_test_generated_kinematic(VkrAllocator *allocator) {
   for (uint32_t i = 1; i <= 60u; ++i) {
     assert(vkr_scene_physics_generated_move(
         &scene, 7u, vec3_new(0.0f, (float32_t)i / 60.0f, 0.0f),
-        vkr_quat_identity(), &error));
+        vkr_quat_identity(), vec3_zero(), &error));
     assert(vkr_scene_physics_step(&scene, &error));
   }
   assert(fabsf(physics_test_floor_top(&scene, 0.5f, 0.5f) - 1.0f) < 1e-3f);
@@ -481,6 +481,54 @@ static void physics_test_generated_kinematic(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+/* The first hit of a ray from `from` along `along`, or NAN. */
+static float32_t physics_test_hit_x(VkrScene *scene, Vec3 from, Vec3 along) {
+  VkrPhysicsRayHit hit = {0};
+  if (!vkr_scene_physics_raycast(scene, from, along, &hit)) {
+    return NAN;
+  }
+  return hit.position[0];
+}
+
+/* A turning mover's body (ADR-084): a 2 m door from x 3 to 5 hinged at
+ * x = 3 turns 90 degrees about +Y, so +X swings to -Z and the door then
+ * stands along z from 0 to -2 at x = 3. Oracle: a ray along +X at z = -1
+ * misses it at rest and meets its face at x = 2.95 once turned; a turn
+ * about the body's origin instead would leave nothing there. */
+static void physics_test_generated_turn(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 14, 16, NULL));
+  const char *error = NULL;
+  const VkrEntityId door = physics_test_entity(&scene, vec3_zero());
+  const VkrPhysicsColliderDesc box = {.entity_id = door.u64,
+                                      .shape = VKR_PHYSICS_BOX,
+                                      .position = {4.0f, 1.0f, 0.0f},
+                                      .rotation = {0, 0, 0, 1},
+                                      .scale = {1, 1, 1},
+                                      .half_extent = {1.0f, 1.0f, 0.05f},
+                                      .enabled = true_v};
+  assert(vkr_scene_physics_generated_set_kinematic(&scene, 8u, door, &box, 1u,
+                                                   &error));
+  const VkrSceneSimulationCallbacks callbacks = {.after_tick =
+                                                     physics_test_after_tick};
+  assert(vkr_scene_simulation_configure(&scene, &callbacks, &error));
+  const Vec3 from = vec3_new(0.0f, 1.0f, -1.0f);
+  const Vec3 along = vec3_new(10.0f, 0.0f, 0.0f);
+  assert(isnan(physics_test_hit_x(&scene, from, along)));
+
+  const VkrQuat quarter =
+      vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), 0.5f * VKR_PI);
+  assert(vkr_scene_physics_generated_move(&scene, 8u, vec3_zero(), quarter,
+                                          vec3_new(3.0f, 0.0f, 0.0f), &error));
+  assert(vkr_scene_physics_step(&scene, &error));
+  assert(vkr_scene_physics_step(&scene, &error));
+  assert(fabsf(physics_test_hit_x(&scene, from, along) - 2.95f) < 1e-3f);
+
+  vkr_scene_physics_set_paused(&scene, true_v);
+  assert(vkr_scene_simulation_detach(&scene, NULL));
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_scene_physics_tests(void) {
   printf("--- Starting Scene Physics Tests ---\n");
   physics_test_descriptors();
@@ -492,6 +540,7 @@ bool32_t run_scene_physics_tests(void) {
   physics_test_empty_finalize(&allocator);
   physics_test_generated(&allocator);
   physics_test_generated_kinematic(&allocator);
+  physics_test_generated_turn(&allocator);
   physics_test_rebase(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 31, 16, NULL));

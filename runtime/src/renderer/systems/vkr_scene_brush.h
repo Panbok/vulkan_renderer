@@ -41,11 +41,12 @@ void vkr_scene_brush_entity_destroying(VkrScene *scene, VkrEntityId entity);
 /* Rebuilds settled dirty brushes and the collision cells and mover bodies
    they touch. */
 void vkr_scene_brush_update(VkrScene *scene);
-/* Moves the kinematic body of `mover`'s brushes by `offset` metres in world
-   space from their rest from the next physics step; nothing without one.
-   The IO router calls it as the mover moves (vkr_io_router.h). */
-void vkr_scene_brush_mover_move(VkrScene *scene, VkrEntityId mover,
-                                Vec3 offset);
+/* Moves the kinematic body of `mover`'s brushes from their rest from the
+   next physics step, turned by `rotation` about the world point `pivot` and
+   then moved by the world `offset`; nothing without one. The IO router
+   calls it as the mover moves (vkr_io_router.h). */
+void vkr_scene_brush_mover_move(VkrScene *scene, VkrEntityId mover, Vec3 offset,
+                                VkrQuat rotation, Vec3 pivot);
 void vkr_scene_brush_shutdown(VkrScene *scene);
 
 /* NULL when brush or blockout shape `brush` built, else why it did not.

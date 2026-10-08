@@ -1285,12 +1285,12 @@ static void brush_rebuild_mover(VkrScene *scene, VkrSceneBrushes *state,
   }
 }
 
-void vkr_scene_brush_mover_move(VkrScene *scene, VkrEntityId mover,
-                                Vec3 offset) {
+void vkr_scene_brush_mover_move(VkrScene *scene, VkrEntityId mover, Vec3 offset,
+                                VkrQuat rotation, Vec3 pivot) {
   /* A mover without solid brushes has no body; nothing collides to move. */
   if (scene && scene->brushes) {
     (void)vkr_scene_physics_generated_move(scene, brush_mover_key(mover),
-                                           offset, vkr_quat_identity(), NULL);
+                                           offset, rotation, pivot, NULL);
   }
 }
 

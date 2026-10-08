@@ -780,7 +780,7 @@ are:
 | `relay` | `on_trigger` | `trigger`, `enable`, `disable` |
 | `timer` (`interval`, `start_running`, `once`) | `on_timer` | `start`, `stop`, `set_interval` |
 | `counter` (`start`, `min`, `max`) | `on_changed` (the value), `on_max`, `on_min` | `add`, `subtract`, `set` |
-| `mover` (`direction`, `distance`, `lip`, `speed`, `wait`, `start_open`, `loop`, `locked`) | `on_open`, `on_opened`, `on_close`, `on_closed` | `open`, `close`, `toggle`, `lock`, `unlock`, `set_position` (0 to 1) |
+| `mover` (`direction`, `distance`, `lip`, `angle`, `axis`, `pivot`, `spin`, `speed`, `wait`, `start_open`, `loop`, `locked`) | `on_open`, `on_opened`, `on_close`, `on_closed` | `open`, `close`, `toggle`, `lock`, `unlock`, `set_position` (0 to 1) |
 | Every entity | none | `show`, `hide`, `destroy` |
 
 Script behaviors declare theirs with `VKR_OUTPUTS` and `VKR_INPUTS`
@@ -825,7 +825,11 @@ The script host owns one router per session
 A `mover` moves its entity and everything under it between its saved pose
 and an open pose `distance` meters along `direction` in its own space, as
 Source's func_door and func_movelinear do; a zero distance takes the extent
-of its meshes and shapes along the direction less `lip`. It moves only
+of its meshes and shapes along the direction less `lip`. A nonzero `angle`
+turns it that many degrees about `axis` through `pivot`, both in its own
+space, as func_door_rotating does, and `speed` is then degrees per second;
+`spin` turns it without end while open, as a fan, wrapping whole turns, and
+a close stops it where it is without `on_opened` or `on_closed`. It moves only
 during Play: publication and refresh give each mover an evaluated transform
 at its pose, `vkr_io_router_step` rewrites it first in each tick's
 `before_physics`, and clearing the router removes it, so the saved transform
@@ -837,8 +841,11 @@ after `wait` (at least zero) at each end; `locked` refuses `open`, `toggle`
 and `set_position` but still closes. Solid and clip brushes under a mover
 (the nearest at or above them) join one kinematic generated body per mover
 instead of a cell, at most 32 hulls; the hulls stay in world space at rest
-and the body's kinematic target is the mover's world offset, so a character
-on it reads its ground velocity. The mover's motion never rebuilds its
+and the body's kinematic target is the mover's motion from rest, a turn
+about its world pivot and then its world offset
+(`vkr_scene_physics_generated_move` turns about the pivot in the body's
+rebased frame), so a character on it reads its ground velocity. A character
+on a turning platform is not turned with it. The mover's motion never rebuilds its
 brushes, and their own edits wait until its evaluated pose clears; trigger
 brushes and blockout shapes under a mover keep their static bodies at rest.
 A reset rebuilds kinematic generated bodies at rest; an origin rebase moves
@@ -871,9 +878,12 @@ bar during Play, with script instances or engine IO components alone, and
 `broken_connection`. The Level Design palette's Mover button and operation
 `mover.create` (`objects` that share one parent, `name`, and `values` over
 the mover's defaults) group the objects under a new entity carrying a
-`mover` at the center of their world box, as one batch. The Create menu's
-Level group adds Mover. Outside Play, the Scene draws the selected mover's
-box at its open pose and a line to it.
+`mover` at the center of their world box, as one batch; `hinge` (`+x`,
+`-x`, `+z` or `-z`) makes a door turning 90 degrees, or the `angle` given,
+about the vertical line through the middle of that side of the box. The
+Create menu's Level group adds Mover. Outside Play, the Scene draws the
+selected mover's box at its open pose, moved or turned
+(`vkr_io_mover_open_motion`), and a line to it.
 
 Operations `io.connect` (`source`, `output`, `target`, `input`, `value`,
 `delay`, `limit`; a target the same batch creates is allowed, because a

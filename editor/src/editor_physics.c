@@ -415,10 +415,17 @@ static uint32_t physics_io_lines(VkrEditorUi *editor,
   return count;
 }
 
+/* Where a mover's open pose puts a point of its rest pose. */
+static Vec3 physics_mover_open(const VkrIoMoverMotion *motion, Vec3 point) {
+  const Vec3 turned =
+      vkr_quat_rotate_vec3(motion->rotation, vec3_sub(point, motion->pivot));
+  return vec3_add(vec3_add(motion->pivot, turned), motion->offset);
+}
+
 /* The open pose of the selected mover, or of the mover above the selected
-   entity (ADR-084): the box around what it moves, at the offset its open
-   pose puts it, and a line from where it rests to there. Returns how many
-   lines it would draw. */
+   entity (ADR-084): the box around what it moves, moved or turned as its
+   open pose puts it, and a line from where it rests to there. Returns how
+   many lines it would draw. */
 static uint32_t physics_mover_lines(VkrEditorUi *editor,
                                     const VkrSampleUiFrame *frame,
                                     uint32_t capacity, bool8_t draw) {
@@ -436,9 +443,11 @@ static uint32_t physics_mover_lines(VkrEditorUi *editor,
             : NULL;
     mover = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
   }
-  Vec3 offset = vec3_zero();
-  if (!scene || !mover.u64 || !vkr_io_mover_travel(scene, mover, &offset) ||
-      vec3_length(offset) <= 0.0f) {
+  VkrIoMoverMotion motion = {0};
+  if (!scene || !mover.u64 ||
+      !vkr_io_mover_open_motion(scene, mover, &motion) ||
+      (vec3_length(motion.offset) <= 0.0f &&
+       fabsf(motion.rotation.w) >= 0.99999f)) {
     return 0u;
   }
   if (!draw) {
@@ -456,9 +465,7 @@ static uint32_t physics_mover_lines(VkrEditorUi *editor,
   const Vec4 color = {0.55f, 0.85f, 1.0f, 1.0f};
   const Vec3 center = vec3_scale(vec3_add(lo, hi), 0.5f);
   physics_line(editor, frame, VKR_ENTITY_ID_INVALID, center,
-               vec3_add(center, offset), color, capacity);
-  lo = vec3_add(lo, offset);
-  hi = vec3_add(hi, offset);
+               physics_mover_open(&motion, center), color, capacity);
   for (uint32_t corner = 0; corner < 8u; ++corner) {
     const Vec3 from = {(corner & 1u) ? hi.x : lo.x, (corner & 2u) ? hi.y : lo.y,
                        (corner & 4u) ? hi.z : lo.z};
@@ -474,8 +481,9 @@ static uint32_t physics_mover_lines(VkrEditorUi *editor,
       } else {
         to.z = hi.z;
       }
-      physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from, to, color,
-                   capacity);
+      physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+                   physics_mover_open(&motion, from),
+                   physics_mover_open(&motion, to), color, capacity);
     }
   }
   return 13u;

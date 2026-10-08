@@ -2887,6 +2887,29 @@ static bool8_t ops_build_mover_create(OpsContext *ctx,
       ops_view_world(ctx, batch, &parent, &parent_world, 0u)) {
     center = mat4_mul_vec3(mat4_inverse_affine(parent_world), center);
   }
+  /* 'hinge' turns it as a door about the vertical line through the middle
+     of that side of its objects' box, 90 degrees unless 'values' says. */
+  String8 hinge = {0};
+  if (vkr_bakery_json_get_string(args, "hinge", &hinge)) {
+    const bool8_t along_x = ops_equals(hinge, "+x") || ops_equals(hinge, "-x");
+    if (!along_x && !ops_equals(hinge, "+z") && !ops_equals(hinge, "-z")) {
+      return ops_fail(ctx, OPS_INVALID, "'hinge' is +x, -x, +z or -z");
+    }
+    Vec3 point = vec3_scale(vec3_add(lo, hi), 0.5f);
+    const bool8_t plus = hinge.str[0] == '+';
+    if (along_x) {
+      point.x = plus ? hi.x : lo.x;
+    } else {
+      point.z = plus ? hi.z : lo.z;
+    }
+    SceneMover *settings = (SceneMover *)mover;
+    settings->pivot = vec3_sub(
+        mat4_mul_vec3(mat4_inverse_affine(parent_world), point), center);
+    settings->axis = vec3_new(0.0f, 1.0f, 0.0f);
+    if (settings->angle == 0.0f && !settings->spin) {
+      settings->angle = 90.0f;
+    }
+  }
 
   VkrSampleEditBatchItem *item =
       ops_batch_add(ctx, batch, refs[0].container, VKR_SCENE_EDIT_CREATE);
@@ -9275,10 +9298,18 @@ static const OpsDef s_ops[] = {
      "'direction' (its own space; zero distance takes their size less "
      "'lip') at 'speed' m/s on its open, close, toggle and set_position "
      "inputs, waits 'wait' seconds (-1 stays open), and fires on_open, "
-     "on_opened, on_close and on_closed. 'values' sets the mover component "
-     "(direction, distance, lip, speed, wait, start_open, loop, locked).",
+     "on_opened, on_close and on_closed. A nonzero 'angle' turns them that "
+     "many degrees about 'axis' through 'pivot' (its own space) at 'speed' "
+     "degrees per second instead, and 'spin' turns them without end while "
+     "open, as a fan. 'hinge' (+x, -x, +z or -z) makes a door: the pivot on "
+     "the vertical line through the middle of that side of their box, 90 "
+     "degrees unless 'values' gives an angle. 'values' sets the mover "
+     "component (direction, distance, lip, angle, axis, pivot, spin, speed, "
+     "wait, start_open, loop, locked).",
      "{\"type\":\"object\",\"properties\":{\"objects\":{\"type\":\"array\","
      "\"items\":" OPS_ENTITY_SCHEMA ",\"minItems\":1,\"maxItems\":64},"
+     "\"hinge\":{\"type\":\"string\",\"enum\":[\"+x\",\"-x\",\"+z\","
+     "\"-z\"]},"
      "\"name\":{\"type\":\"string\"},\"values\":" OPS_VALUES_SCHEMA
      "," OPS_REVIEW_SCHEMA "},\"required\":[\"objects\"]}",
      NULL, ops_build_mover_create},
