@@ -177,6 +177,69 @@ void vkr_brush_grid_axes(Vec3 normal, Vec3 *out_u, Vec3 *out_v);
 uint32_t vkr_brush_hull(const Vec3 *points, uint32_t count, VkrBrushPlane *out,
                         uint32_t capacity);
 
+/* Z-fighting (ADR-084): two drawn faces of different solids that lie in one
+   plane and face the same way, so the depth test picks between them pixel
+   by pixel. Their normals lie within VKR_BRUSH_COPLANAR_DEGREES of each
+   other, and their overlap counts only where it lies within
+   VKR_BRUSH_COPLANAR_DISTANCE of both planes. Faces back to back, or 2 mm
+   apart, do not fight. */
+#define VKR_BRUSH_COPLANAR_DISTANCE 1.0e-3f
+#define VKR_BRUSH_COPLANAR_DEGREES 0.5f
+
+/* One face for vkr_brush_coplanar_overlaps. The caller sets the unit
+   `normal`, the `count` corners from `first` in its vertex array,
+   counterclockwise seen from outside, and the solid it belongs to
+   (`owner`); faces of one owner never fight. The function writes the
+   rest. */
+typedef struct VkrBrushFaceRef {
+  Vec3 normal;
+  Vec3 lo;
+  Vec3 hi;
+  uint32_t first;
+  uint32_t count;
+  uint32_t owner;
+  /* The plane's distance from the faces' common center, and the farthest
+     corner from that center. */
+  float32_t key;
+  float32_t reach;
+} VkrBrushFaceRef;
+
+/* Scratch of vkr_brush_coplanar_overlaps: where a face sits among the
+   faces about in its plane and facing about its way. A face takes up to
+   VKR_BRUSH_FACE_SLOT_MAX. */
+#define VKR_BRUSH_FACE_SLOT_MAX 6u
+
+typedef struct VkrBrushFaceSlot {
+  int64_t bucket;
+  float32_t lo;
+  float32_t hi;
+  uint32_t face;
+  uint8_t echo;
+  uint8_t classes;
+} VkrBrushFaceSlot;
+
+typedef struct VkrBrushFaceOverlap {
+  uint32_t owner_a;
+  uint32_t owner_b;
+  /* Square meters the two faces share, the middle of that area, and the
+     way the first face looks. */
+  float32_t area;
+  Vec3 center;
+  Vec3 normal;
+} VkrBrushFaceOverlap;
+
+/* The pairs of `faces` that z-fight over more than `min_area` square
+   meters, at most `capacity` of them in `out`; returns how many it found.
+   `scratch` holds VKR_BRUSH_FACE_SLOT_MAX * `count` slots. Faces group by
+   plane and main axis and sweep along one axis, so each meets only faces
+   near its plane, facing about its way, around its extent. */
+uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
+                                     const Vec3 *vertices,
+                                     VkrBrushFaceSlot *scratch,
+                                     float32_t min_area,
+                                     VkrBrushFaceOverlap *out,
+                                     uint32_t capacity);
+
 /* Moves the corners of the brush `planes` that lie at one of `points`
    (within 1 mm) by `delta`, after cutting it with `split` when that is not
    NULL, and writes the result to `out` as at most `capacity` (up to

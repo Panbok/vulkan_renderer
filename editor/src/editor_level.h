@@ -43,13 +43,18 @@ typedef enum VkrEditorLevelIssueKind {
   VKR_EDITOR_LEVEL_BROKEN_CONNECTION,
   /* Floor beside walkable floor that only a crouched capsule passes. */
   VKR_EDITOR_LEVEL_CROUCH_ONLY,
+  /* Drawn faces of two solids sharing a plane and facing the same way, so
+     they flicker (vkr_brush_coplanar_overlaps); the value is the shared
+     area. */
+  VKR_EDITOR_LEVEL_Z_FIGHT,
   VKR_EDITOR_LEVEL_ISSUE_COUNT,
 } VkrEditorLevelIssueKind;
 
 typedef struct VkrEditorLevelIssue {
   VkrEditorLevelIssueKind kind;
   Vec3 position;
-  /* The brush or entity at fault, when one is. */
+  /* The brush or entity at fault, when one is, and the one it overlaps or
+     fights, or the broken connection. */
   VkrEntityId entity;
   VkrEntityId other;
   /* Step height, slope degrees, headroom, gap width or area, by kind. */

@@ -1,5 +1,7 @@
 #include "level/vkr_brush.h"
 
+#include "containers/vkr_sort.h"
+
 #include <math.h>
 
 /* Clipping works in double precision: a face starts as a square
@@ -726,6 +728,273 @@ uint32_t vkr_brush_hull(const Vec3 *points, uint32_t count, VkrBrushPlane *out,
     }
   }
   return written >= VKR_BRUSH_FACE_MIN ? written : 0u;
+}
+
+/* Corners one face's overlap with another holds at most: a polygon clipped
+   by every edge of the other and by two planes, each adding one corner. */
+#define BRUSH_OVERLAP_POINT_MAX (2u * VKR_BRUSH_POLYGON_MAX + 4u)
+
+/* Main axis classes a face's slots take: +X, -X, +Y, -Y, +Z, -Z. */
+#define BRUSH_SLOT_CLASSES 6u
+
+/* Slots sort by bucket, then along the sweep axis; ties keep a total
+   order. */
+static int32_t brush_slot_compare(const void *lhs, const void *rhs) {
+  const VkrBrushFaceSlot *a = lhs;
+  const VkrBrushFaceSlot *b = rhs;
+  if (a->bucket != b->bucket) {
+    return a->bucket < b->bucket ? -1 : 1;
+  }
+  if (a->lo != b->lo) {
+    return a->lo < b->lo ? -1 : 1;
+  }
+  if (a->face != b->face) {
+    return a->face < b->face ? -1 : 1;
+  }
+  return a->echo < b->echo ? -1 : (a->echo > b->echo ? 1 : 0);
+}
+
+/* The main axis classes of unit `normal`: its largest component's, and
+   every other within `slack` of it, so a normal within the coplanar angle
+   of this one has its own main class among them. Bit 2 * axis is the
+   positive direction, the next bit the negative. */
+static uint32_t brush_normal_classes(Vec3 normal, float32_t slack) {
+  const float32_t components[3] = {normal.x, normal.y, normal.z};
+  const float32_t largest =
+      Max(fabsf(normal.x), Max(fabsf(normal.y), fabsf(normal.z)));
+  uint32_t classes = 0u;
+  for (uint32_t axis = 0; axis < 3u; ++axis) {
+    if (fabsf(components[axis]) >= largest - slack) {
+      classes |= 1u << (2u * axis + (components[axis] < 0.0f ? 1u : 0u));
+    }
+  }
+  return classes;
+}
+
+/* Keeps the part of convex polygon `in` where dot(normal, p) <= distance
+   (Sutherland-Hodgman). */
+static uint32_t brush_overlap_clip(const Vec3 *in, uint32_t count, Vec3 normal,
+                                   float32_t distance, Vec3 *out) {
+  uint32_t written = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    const Vec3 a = in[i];
+    const Vec3 b = in[(i + 1u) % count];
+    const float32_t da = vec3_dot(normal, a) - distance;
+    const float32_t db = vec3_dot(normal, b) - distance;
+    if (da <= 0.0f && written < BRUSH_OVERLAP_POINT_MAX) {
+      out[written++] = a;
+    }
+    if ((da <= 0.0f) != (db <= 0.0f) && written < BRUSH_OVERLAP_POINT_MAX) {
+      out[written++] = vec3_add(a, vec3_scale(vec3_sub(b, a), da / (da - db)));
+    }
+  }
+  return written;
+}
+
+/* The area of face `b` dropped onto face `a`'s plane that lies inside `a`
+   and within VKR_BRUSH_COPLANAR_DISTANCE of `b`'s plane, and its middle. */
+static float32_t brush_face_overlap(const VkrBrushFaceRef *a,
+                                    const VkrBrushFaceRef *b,
+                                    const Vec3 *vertices, Vec3 *out_center) {
+  Vec3 ping[BRUSH_OVERLAP_POINT_MAX];
+  Vec3 pong[BRUSH_OVERLAP_POINT_MAX];
+  /* Relative to a corner of `a`, so float precision follows the faces'
+     size rather than their distance from the world origin. */
+  const Vec3 origin = vertices[a->first];
+  uint32_t count = b->count;
+  for (uint32_t k = 0; k < count; ++k) {
+    const Vec3 p = vec3_sub(vertices[b->first + k], origin);
+    ping[k] = vec3_sub(p, vec3_scale(a->normal, vec3_dot(a->normal, p)));
+  }
+
+  /* Inside each edge of `a`: cross(normal, edge) points inward for corners
+     counterclockwise around the normal. */
+  Vec3 *in = ping;
+  Vec3 *out = pong;
+  for (uint32_t e = 0; e < a->count && count >= 3u; ++e) {
+    const Vec3 p0 = vec3_sub(vertices[a->first + e], origin);
+    const Vec3 p1 = vec3_sub(vertices[a->first + (e + 1u) % a->count], origin);
+    const Vec3 outward = vec3_cross(vec3_sub(p1, p0), a->normal);
+    count = brush_overlap_clip(in, count, outward, vec3_dot(outward, p0), out);
+    Vec3 *swap = in;
+    in = out;
+    out = swap;
+  }
+
+  /* Only where the planes stay within the tolerance of each other. */
+  const float32_t distance =
+      vec3_dot(b->normal, vec3_sub(vertices[b->first], origin));
+  if (count >= 3u) {
+    count = brush_overlap_clip(in, count, b->normal,
+                               distance + VKR_BRUSH_COPLANAR_DISTANCE, out);
+    count = brush_overlap_clip(out, count, vec3_negate(b->normal),
+                               -(distance - VKR_BRUSH_COPLANAR_DISTANCE), in);
+  }
+  if (count < 3u) {
+    return 0.0f;
+  }
+
+  Vec3 twice = vec3_zero();
+  Vec3 sum = vec3_zero();
+  for (uint32_t k = 0; k < count; ++k) {
+    twice = vec3_add(twice, vec3_cross(in[k], in[(k + 1u) % count]));
+    sum = vec3_add(sum, in[k]);
+  }
+  *out_center = vec3_add(origin, vec3_scale(sum, 1.0f / (float32_t)count));
+  return 0.5f * fabsf(vec3_dot(twice, a->normal));
+}
+
+uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
+                                     const Vec3 *vertices,
+                                     VkrBrushFaceSlot *scratch,
+                                     float32_t min_area,
+                                     VkrBrushFaceOverlap *out,
+                                     uint32_t capacity) {
+  /* The faces' common center keeps every plane distance small. */
+  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrBrushFaceRef *face = &faces[i];
+    face->lo = vec3_new(INFINITY, INFINITY, INFINITY);
+    face->hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    if (face->count < 3u || face->count > VKR_BRUSH_POLYGON_MAX) {
+      continue;
+    }
+    for (uint32_t k = 0; k < face->count; ++k) {
+      const Vec3 p = vertices[face->first + k];
+      face->lo = vec3_new(Min(face->lo.x, p.x), Min(face->lo.y, p.y),
+                          Min(face->lo.z, p.z));
+      face->hi = vec3_new(Max(face->hi.x, p.x), Max(face->hi.y, p.y),
+                          Max(face->hi.z, p.z));
+    }
+    lo = vec3_new(Min(lo.x, face->lo.x), Min(lo.y, face->lo.y),
+                  Min(lo.z, face->lo.z));
+    hi = vec3_new(Max(hi.x, face->hi.x), Max(hi.y, face->hi.y),
+                  Max(hi.z, face->hi.z));
+  }
+  const Vec3 center = vec3_scale(vec3_add(lo, hi), 0.5f);
+  float32_t reach_max = 0.0f;
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrBrushFaceRef *face = &faces[i];
+    face->key = INFINITY;
+    face->reach = 0.0f;
+    if (face->count < 3u || face->count > VKR_BRUSH_POLYGON_MAX) {
+      continue;
+    }
+    float32_t reach = 0.0f;
+    for (uint32_t k = 0; k < face->count; ++k) {
+      reach =
+          Max(reach, vec3_length(vec3_sub(vertices[face->first + k], center)));
+    }
+    const float32_t key =
+        vec3_dot(face->normal, vec3_sub(vertices[face->first], center));
+    if (isfinite(key) && isfinite(reach)) {
+      face->key = key;
+      face->reach = reach;
+      reach_max = Max(reach_max, reach);
+    }
+  }
+
+  /* Unit normals within the angle differ by at most 2 sin(angle / 2), so
+     planes that meet within the distance at a point `reach` from the
+     center have keys at most `window` apart. A face sits in the cell of its
+     key and echoes into the next, and in each main axis class its normal
+     may share with a fighting face's, so any two that may fight share a
+     bucket. A pair meets only in the first bucket they share: never as two
+     echoes, and only in the lowest class both take. */
+  const float32_t radians = VKR_BRUSH_COPLANAR_DEGREES * 0.01745329252f;
+  const float32_t spread = 2.0f * sinf(0.5f * radians);
+  const float32_t cos_min = cosf(radians);
+  const float32_t margin = VKR_BRUSH_COPLANAR_DISTANCE;
+  const float32_t window = margin + spread * reach_max;
+  /* Within a bucket, faces sweep along an axis no common face is
+     perpendicular to, so faces far apart in their plane never meet. */
+  const Vec3 axis = vec3_normalize(vec3_new(0.62f, 0.37f, 0.71f));
+  uint32_t slot_count = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrBrushFaceRef *face = &faces[i];
+    if (face->key == INFINITY) {
+      continue;
+    }
+    const int64_t cell = (int64_t)floorf(face->key / window);
+    const uint32_t classes =
+        brush_normal_classes(face->normal, 2.0f * spread + 1.0e-5f);
+    for (uint32_t c = 0; c < BRUSH_SLOT_CLASSES; ++c) {
+      if (!(classes & (1u << c))) {
+        continue;
+      }
+      for (uint32_t echo = 0; echo < 2u; ++echo) {
+        scratch[slot_count++] = (VkrBrushFaceSlot){
+            .bucket = (cell + (int64_t)echo) * BRUSH_SLOT_CLASSES + c,
+            .lo = vec3_dot(axis, face->lo),
+            .hi = vec3_dot(axis, face->hi),
+            .face = i,
+            .echo = (uint8_t)echo,
+            .classes = (uint8_t)classes,
+        };
+      }
+    }
+  }
+  vkr_sort(scratch, slot_count, sizeof(*scratch), brush_slot_compare);
+
+  uint32_t found = 0u;
+  for (uint32_t s = 0; s < slot_count; ++s) {
+    const VkrBrushFaceSlot *first = &scratch[s];
+    /* Cells below zero leave a negative remainder. */
+    const uint32_t bucket_class =
+        (uint32_t)(((first->bucket % BRUSH_SLOT_CLASSES) + BRUSH_SLOT_CLASSES) %
+                   BRUSH_SLOT_CLASSES);
+    for (uint32_t t = s + 1u;
+         t < slot_count && scratch[t].bucket == first->bucket &&
+         scratch[t].lo <= first->hi + margin;
+         ++t) {
+      const VkrBrushFaceSlot *second = &scratch[t];
+      const uint32_t shared = (uint32_t)(first->classes & second->classes);
+      if ((first->echo && second->echo) ||
+          (shared & ((1u << bucket_class) - 1u))) {
+        continue;
+      }
+      const VkrBrushFaceRef *a = &faces[first->face];
+      const VkrBrushFaceRef *b = &faces[second->face];
+      if (b->owner == a->owner || vec3_dot(a->normal, b->normal) < cos_min ||
+          fabsf(b->key - a->key) > margin + spread * Min(a->reach, b->reach)) {
+        continue;
+      }
+      /* The overlap lies in both boxes: its area is at most their common
+         box seen along the normal's main axis, which faces that only touch
+         along an edge leave empty. */
+      const Vec3 n = a->normal;
+      const float32_t ex =
+          Max(0.0f, Min(a->hi.x, b->hi.x) - Max(a->lo.x, b->lo.x));
+      const float32_t ey =
+          Max(0.0f, Min(a->hi.y, b->hi.y) - Max(a->lo.y, b->lo.y));
+      const float32_t ez =
+          Max(0.0f, Min(a->hi.z, b->hi.z) - Max(a->lo.z, b->lo.z));
+      const float32_t nx = fabsf(n.x);
+      const float32_t ny = fabsf(n.y);
+      const float32_t nz = fabsf(n.z);
+      const float32_t bound = nx >= ny && nx >= nz ? ey * ez / nx
+                              : ny >= nz           ? ex * ez / ny
+                                                   : ex * ey / nz;
+      if (bound <= min_area) {
+        continue;
+      }
+      Vec3 middle = vec3_zero();
+      const float32_t area = brush_face_overlap(a, b, vertices, &middle);
+      if (area <= min_area) {
+        continue;
+      }
+      if (found < capacity) {
+        out[found] = (VkrBrushFaceOverlap){.owner_a = a->owner,
+                                           .owner_b = b->owner,
+                                           .area = area,
+                                           .center = middle,
+                                           .normal = a->normal};
+      }
+      found++;
+    }
+  }
+  return found;
 }
 
 /* The input plane a hull plane copies: the one it lies on, else the one

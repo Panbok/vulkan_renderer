@@ -94,7 +94,7 @@ const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind) {
   static const char *const names[VKR_EDITOR_LEVEL_ISSUE_COUNT] = {
       "step_too_high",     "too_steep",   "low_ceiling", "too_narrow",
       "void_edge",         "unreachable", "overlap",     "invalid_brush",
-      "broken_connection", "crouch_only"};
+      "broken_connection", "crouch_only", "z_fight"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? names[kind] : "unknown";
 }
 
@@ -619,8 +619,10 @@ typedef struct LevelIssues {
   uint32_t found;
 } LevelIssues;
 
-static void level_issue(LevelIssues *issues, VkrEditorLevelIssueKind kind,
-                        Vec3 position, VkrEntityId entity, float32_t value) {
+/* Whether an issue of `kind` at `position` merges into one already kept. */
+static bool8_t level_issue_merges(const LevelIssues *issues,
+                                  VkrEditorLevelIssueKind kind, Vec3 position,
+                                  VkrEntityId entity) {
   for (uint32_t i = 0; i < issues->count; ++i) {
     /* One object's defect along its edge reads as one issue every 8 m. */
     const bool8_t same =
@@ -631,8 +633,16 @@ static void level_issue(LevelIssues *issues, VkrEditorLevelIssueKind kind,
                                 : LEVEL_MERGE_DISTANCE;
     if (issues->items[i].kind == kind &&
         vec3_length(vec3_sub(issues->items[i].position, position)) < merge) {
-      return;
+      return true_v;
     }
+  }
+  return false_v;
+}
+
+static void level_issue(LevelIssues *issues, VkrEditorLevelIssueKind kind,
+                        Vec3 position, VkrEntityId entity, float32_t value) {
+  if (level_issue_merges(issues, kind, position, entity)) {
+    return;
   }
   issues->found++;
   if (issues->count < issues->capacity) {
@@ -901,6 +911,226 @@ static void level_lint_brushes(LevelGrid *grid, LevelIssues *issues) {
   free(piece);
 }
 
+/* The smallest shared area that counts as z-fighting, one square
+   centimeter, and how far in front of it another solid hides it. */
+#define LEVEL_FIGHT_AREA_MIN 1.0e-4f
+#define LEVEL_FIGHT_FRONT 0.01f
+/* Shared areas one check reads at most; the issues merge far below it. */
+#define LEVEL_FIGHT_MAX 4096u
+
+/* A solid whose drawn faces the z-fighting check gathered: a brush, or a
+   piece of a blockout shape (its entity), with its world planes and box. */
+typedef struct LevelFightSolid {
+  VkrEntityId entity;
+  uint32_t first_plane;
+  uint32_t plane_count;
+  Vec3 lo;
+  Vec3 hi;
+} LevelFightSolid;
+
+/* The drawn faces about a region in world space. The check owns every
+   array and frees them when it returns. */
+typedef struct LevelFightSet {
+  VkrBrushFaceRef *faces;
+  Vec3 *vertices;
+  LevelFightSolid *solids;
+  VkrBrushPlane *planes;
+  uint32_t face_count;
+  uint32_t face_capacity;
+  uint32_t vertex_count;
+  uint32_t vertex_capacity;
+  uint32_t solid_count;
+  uint32_t solid_capacity;
+  uint32_t plane_count;
+  uint32_t plane_capacity;
+  bool8_t failed;
+} LevelFightSet;
+
+/* Grows `*items` to hold at least `needed` items of `size` bytes; growth
+   moves them. */
+static bool8_t level_reserve(void **items, uint32_t *capacity, uint64_t needed,
+                             uint64_t size) {
+  if (needed <= *capacity) {
+    return true_v;
+  }
+  if (needed > UINT32_MAX / 2u) {
+    return false_v;
+  }
+  const uint32_t grown = Max(Max(*capacity * 2u, (uint32_t)needed), 256u);
+  void *moved = realloc(*items, (size_t)grown * size);
+  if (!moved) {
+    return false_v;
+  }
+  *items = moved;
+  *capacity = grown;
+  return true_v;
+}
+
+/* Adds the faces of `geometry`, built in world space from `planes`, as one
+   solid of `entity`. */
+static void level_fight_add(LevelFightSet *set, VkrEntityId entity,
+                            const VkrBrushGeometry *geometry,
+                            const VkrBrushPlane *planes, uint32_t plane_count) {
+  if (set->failed ||
+      !level_reserve((void **)&set->faces, &set->face_capacity,
+                     (uint64_t)set->face_count + geometry->face_count,
+                     sizeof(*set->faces)) ||
+      !level_reserve((void **)&set->vertices, &set->vertex_capacity,
+                     (uint64_t)set->vertex_count + geometry->vertex_count,
+                     sizeof(*set->vertices)) ||
+      !level_reserve((void **)&set->solids, &set->solid_capacity,
+                     (uint64_t)set->solid_count + 1u, sizeof(*set->solids)) ||
+      !level_reserve((void **)&set->planes, &set->plane_capacity,
+                     (uint64_t)set->plane_count + plane_count,
+                     sizeof(*set->planes))) {
+    set->failed = true_v;
+    return;
+  }
+  const uint32_t owner = set->solid_count++;
+  set->solids[owner] = (LevelFightSolid){.entity = entity,
+                                         .first_plane = set->plane_count,
+                                         .plane_count = plane_count,
+                                         .lo = geometry->min,
+                                         .hi = geometry->max};
+  MemCopy(set->planes + set->plane_count, planes,
+          plane_count * sizeof(*planes));
+  set->plane_count += plane_count;
+  for (uint32_t f = 0; f < geometry->face_count; ++f) {
+    const VkrBrushPolygon polygon = geometry->polygons[f];
+    set->faces[set->face_count++] =
+        (VkrBrushFaceRef){.normal = geometry->normals[f],
+                          .first = set->vertex_count,
+                          .count = polygon.count,
+                          .owner = owner};
+    MemCopy(set->vertices + set->vertex_count,
+            geometry->vertices + polygon.first,
+            polygon.count * sizeof(*set->vertices));
+    set->vertex_count += polygon.count;
+  }
+}
+
+/* Whether `point` lies inside a gathered solid, deeper than the coplanar
+   distance. */
+static bool8_t level_fight_hidden(const LevelFightSet *set, Vec3 point) {
+  for (uint32_t s = 0; s < set->solid_count; ++s) {
+    const LevelFightSolid *solid = &set->solids[s];
+    if (point.x < solid->lo.x || point.y < solid->lo.y ||
+        point.z < solid->lo.z || point.x > solid->hi.x ||
+        point.y > solid->hi.y || point.z > solid->hi.z) {
+      continue;
+    }
+    bool8_t inside = true_v;
+    for (uint32_t p = 0; p < solid->plane_count && inside; ++p) {
+      const VkrBrushPlane plane = set->planes[solid->first_plane + p];
+      inside = vec3_dot(plane.normal, point) - plane.distance <
+               -VKR_BRUSH_COPLANAR_DISTANCE;
+    }
+    if (inside) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+static bool8_t level_box_apart(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi) {
+  return a_hi.x < b_lo.x || a_hi.y < b_lo.y || a_hi.z < b_lo.z ||
+         b_hi.x < a_lo.x || b_hi.y < a_lo.y || b_hi.z < a_lo.z;
+}
+
+/* Gathers the drawn faces of the visible solid and visual brushes and
+   blockout shape pieces whose boxes touch lo-hi. Clip and trigger brushes
+   draw only while editing. */
+static void level_fight_gather(const VkrScene *scene, Vec3 lo, Vec3 hi,
+                               VkrBrushGeometry *geometry, LevelFightSet *set) {
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  for (uint32_t i = 0; i < scene->world->dir.living && !set->failed; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    if (!vkr_scene_entity_alive(scene, entity) ||
+        !vkr_scene_entity_visible(scene, entity)) {
+      continue;
+    }
+    const SceneBrushSettings *brush =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type);
+    if (brush) {
+      uint32_t count = 0u;
+      if ((brush->role == SCENE_BRUSH_ROLE_SOLID ||
+           brush->role == SCENE_BRUSH_ROLE_VISUAL) &&
+          level_brush_planes(scene, entity, planes, &count) &&
+          vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK &&
+          !level_box_apart(geometry->min, geometry->max, lo, hi)) {
+        level_fight_add(set, entity, geometry, planes, count);
+      }
+      continue;
+    }
+    VkrBlockoutPiece *pieces = NULL;
+    const uint32_t piece_count =
+        vkr_editor_shape_pieces(scene, entity, &pieces);
+    for (uint32_t k = 0; k < piece_count; ++k) {
+      const uint32_t count = vkr_brush_hull(
+          pieces[k].points, pieces[k].point_count, planes, VKR_BRUSH_FACE_MAX);
+      if (count &&
+          vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK &&
+          !level_box_apart(geometry->min, geometry->max, lo, hi)) {
+        level_fight_add(set, entity, geometry, planes, count);
+      }
+    }
+    free(pieces);
+  }
+}
+
+/* Drawn faces of two solids that share a plane and face the same way over
+   more than a square centimeter: z-fighting, which flickers in any view.
+   A shared area counts in the region its middle lies in, and not when the
+   point just in front of it lies inside another solid, as a face buried in
+   a wall. */
+static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
+  const Vec3 lo = vec3_new(grid->min.x, grid->min.y - 4.0f, grid->min.z);
+  const Vec3 hi = vec3_new(grid->max.x, grid->max.y + 4.0f, grid->max.z);
+  LevelFightSet set = {0};
+  VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
+  VkrBrushFaceSlot *slots = NULL;
+  VkrBrushFaceOverlap *fights = malloc(LEVEL_FIGHT_MAX * sizeof(*fights));
+  if (!geometry || !fights) {
+    goto cleanup;
+  }
+  level_fight_gather(grid->scene, lo, hi, geometry, &set);
+  slots =
+      malloc((size_t)set.face_count * VKR_BRUSH_FACE_SLOT_MAX * sizeof(*slots));
+  if (set.failed || !slots) {
+    goto cleanup;
+  }
+
+  const uint32_t found = vkr_brush_coplanar_overlaps(
+      set.faces, set.face_count, set.vertices, slots, LEVEL_FIGHT_AREA_MIN,
+      fights, LEVEL_FIGHT_MAX);
+  for (uint32_t i = 0; i < Min(found, LEVEL_FIGHT_MAX); ++i) {
+    const VkrBrushFaceOverlap *fight = &fights[i];
+    const Vec3 at = fight->center;
+    const VkrEntityId entity = set.solids[fight->owner_a].entity;
+    if (at.x < grid->min.x || at.x >= grid->max.x || at.z < grid->min.z ||
+        at.z >= grid->max.z || at.y < lo.y || at.y > hi.y ||
+        level_issue_merges(issues, VKR_EDITOR_LEVEL_Z_FIGHT, at, entity) ||
+        level_fight_hidden(
+            &set, vec3_add(at, vec3_scale(fight->normal, LEVEL_FIGHT_FRONT)))) {
+      continue;
+    }
+    const uint32_t index = issues->count;
+    level_issue(issues, VKR_EDITOR_LEVEL_Z_FIGHT, at, entity, fight->area);
+    if (issues->count > index) {
+      issues->items[index].other = set.solids[fight->owner_b].entity;
+    }
+  }
+
+cleanup:
+  free(set.faces);
+  free(set.vertices);
+  free(set.solids);
+  free(set.planes);
+  free(geometry);
+  free(slots);
+  free(fights);
+}
+
 uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
                                    const VkrScene *scene, const Vec3 *start,
                                    VkrEditorLevelIssue *out, uint32_t capacity,
@@ -919,6 +1149,7 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
   }
   level_lint_floor(&grid, &issues);
   level_lint_brushes(&grid, &issues);
+  level_lint_fights(&grid, &issues);
   level_lint_connections(&grid, &issues);
   uint32_t reachable = 0u;
   int32_t *queue = malloc(total * sizeof(*queue));
@@ -1737,7 +1968,7 @@ static const char *level_issue_label(VkrEditorLevelIssueKind kind) {
       "Step too high",   "Too steep",           "Low ceiling",
       "Gap too narrow",  "Edge into void",      "Unreachable area",
       "Brushes overlap", "Brush did not build", "Connection does not route",
-      "Crouch only"};
+      "Crouch only",     "Faces z-fight"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? labels[kind] : "Issue";
 }
 
@@ -1958,17 +2189,27 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
       const String8 name = scene && vkr_scene_entity_alive(scene, issue->entity)
                                ? vkr_scene_get_name(scene, issue->entity)
                                : (String8){0};
-      /* Steps, headroom and gaps are meters; slopes are degrees. */
+      /* Steps, headroom and gaps are meters; slopes are degrees; z-fighting
+         is the shared area, between two named solids. */
       char value[32] = {0};
+      String8 other = {0};
       if (issue->kind == VKR_EDITOR_LEVEL_TOO_STEEP) {
         snprintf(value, sizeof(value), "%.0f deg", issue->value);
       } else if (issue->kind <= VKR_EDITOR_LEVEL_TOO_NARROW) {
         snprintf(value, sizeof(value), "%.2f m", issue->value);
+      } else if (issue->kind == VKR_EDITOR_LEVEL_Z_FIGHT) {
+        snprintf(value, sizeof(value), "%.3g m2", issue->value);
+        if (issue->other.u64 != issue->entity.u64 && scene &&
+            vkr_scene_entity_alive(scene, issue->other)) {
+          other = vkr_scene_get_name(scene, issue->other);
+        }
       }
       char text[200];
-      snprintf(text, sizeof(text), "%s  %s  %.*s",
+      snprintf(text, sizeof(text), "%s  %s  %.*s%s%.*s",
                level_issue_label(issue->kind), value,
-               (int)Min(name.length, 60u), (const char *)name.str);
+               (int)Min(name.length, 60u), (const char *)name.str,
+               other.length ? " / " : "", (int)Min(other.length, 60u),
+               other.length ? (const char *)other.str : "");
       VkrUiWidgetConfig label =
           vkr_editor_text_config(theme->font_body, theme->text);
       label.placement = (VkrUiPlacement){.column = 0u,

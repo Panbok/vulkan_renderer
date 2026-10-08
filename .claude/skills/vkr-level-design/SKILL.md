@@ -118,7 +118,8 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    most 200 cells a side: `#` walls, `n` gaps too narrow, `,` out of reach,
    `c` passable crouched.
 4. `level.lint` in tiles of 76 m or less (0.3 m cells); expect no issue of
-   a kind the spec forbids.
+   a kind the spec forbids, and never a `z_fight` (coplanar faces that
+   flicker): move or trim `entity` or `other` until it is gone.
 5. One `view.capture` sheet (`views`, `max_width` 768) with labelled
    `marks` at doors, spawns and stairs. Each mark answers its pixel and
    `hidden` (collision between the camera and the point); judge look and

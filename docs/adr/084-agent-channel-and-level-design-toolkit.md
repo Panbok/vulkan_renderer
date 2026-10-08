@@ -750,9 +750,27 @@ crouched capsule, passages only the crouched capsule fits (`crouch_only`,
 with the headroom), gaps narrower than its diameter, walkable edges with no
 floor within
 4 m below, walkable areas the `start` (or the first enabled Player Start)
-cannot reach, overlapping solid brushes and brushes that did not build. Each
+cannot reach, overlapping solid brushes, brushes that did not build, and
+z-fighting (`z_fight`). Each
 issue names its position, the entity at fault and the step height, slope,
-headroom or gap; issues of one kind on one entity within 8 m merge.
+headroom, gap or area; issues of one kind on one entity within 8 m merge.
+
+A `z_fight` is two drawn faces of different solids that share a plane and
+face the same way, so the depth test picks between them pixel by pixel and
+they flicker in any view. The check builds, in world space, the faces of
+every visible solid and visual brush and every blockout shape piece whose
+box touches the region; clip and trigger brushes draw only while editing.
+Faces fight where their normals lie within 0.5° and their overlap, more
+than 1 cm², lies within 1 mm of both planes
+([vkr_brush.c](../../runtime/src/level/vkr_brush.c),
+`vkr_brush_coplanar_overlaps`). Faces back to back, faces that only touch
+along an edge and faces 2 mm apart do not fight. Faces group by plane
+distance and main axis and sweep along one axis, so each meets only faces
+near its plane and extent. A shared area counts in the region its middle
+lies in, and not when the point 1 cm in front of that middle lies inside
+another solid, as a face buried in a wall. The issue names both solids
+(`entity` and `other`; one blockout shape's pieces name it twice) and the
+shared area in square meters.
 `query.reachable` flood-fills from `from` and returns whether `to` is
 reachable with one route and its length: standing first, then crouched,
 so `crouch` says only that a route needs crouching, and `ladders` counts the
@@ -1211,6 +1229,13 @@ material then).
 - `./build_test.sh` suite `brush` covers carve (pieces, no overlap, the
   disjoint and swallowed cases), prune, extrude and merge, with volumes
   conserved (2026-10-04, macOS Debug).
+- Suite `brush` covers z-fighting (2026-10-08, macOS Debug): two boxes whose
+  tops share a plane fight over their 1 m² overlap, also turned 30° and
+  1 km from the origin; a box on another's top and a top 2 mm higher do
+  not. With the detection disabled the suite fails. On a synthetic 76 m
+  tile of 2,800 boxes and 21 spirals (21,252 faces), the face search took
+  about 9 ms and building the faces about 5 ms in a Release tester. The
+  editor's `level.lint` path is built but was not run.
 - Headless macOS Release on Bistro (2026-10-04): a doorway carved through a
   wall, a hollowed block, an extruded and face-moved step, a merge, a clip
   keeping both pieces and a refused face move that would break the solid. A

@@ -9621,7 +9621,10 @@ static const OpsDef s_ops[] = {
      "high, slopes too steep, low ceilings, passages only a crouched capsule "
      "fits (crouch_only), gaps too narrow, edges into the void, areas the "
      "start (or the Player Start) cannot reach, overlapping solid brushes, "
-     "brushes that did not build and IO connections that will not route.",
+     "brushes that did not build, IO connections that will not route, and "
+     "z_fight: drawn faces of two brushes or blockout pieces that share a "
+     "plane and face the same way, so they flicker ('entity' and 'other', "
+     "'value' the shared square meters).",
      "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
      "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
      ",\"max\":" OPS_VEC3_SCHEMA

@@ -714,6 +714,86 @@ static void brush_test_dents(VkrBrushGeometry *geometry) {
   free(piece);
 }
 
+/* Two boxes built as owners 0 and 1, every corner turned `angle` radians
+   about Y and moved by `offset`, and the pairs of their faces that
+   z-fight; `out` receives the first. */
+static uint32_t brush_test_fights(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi,
+                                  float32_t angle, Vec3 offset,
+                                  VkrBrushGeometry *geometry,
+                                  VkrBrushFaceOverlap *out) {
+  VkrBrushFaceRef faces[2u * VKR_BRUSH_FACE_MAX];
+  Vec3 vertices[64u];
+  uint32_t face_count = 0u;
+  uint32_t vertex_count = 0u;
+  const float32_t c = cosf(angle);
+  const float32_t s = sinf(angle);
+  for (uint32_t owner = 0; owner < 2u; ++owner) {
+    VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+    const uint32_t plane_count =
+        vkr_brush_box_planes(owner ? b_lo : a_lo, owner ? b_hi : a_hi, planes);
+    assert(vkr_brush_build(planes, plane_count, geometry, NULL) ==
+           VKR_BRUSH_OK);
+    for (uint32_t f = 0; f < geometry->face_count; ++f) {
+      const VkrBrushPolygon polygon = geometry->polygons[f];
+      const Vec3 n = geometry->normals[f];
+      faces[face_count++] = (VkrBrushFaceRef){
+          .normal = vec3_new(c * n.x + s * n.z, n.y, -s * n.x + c * n.z),
+          .first = vertex_count,
+          .count = polygon.count,
+          .owner = owner,
+      };
+      for (uint32_t k = 0; k < polygon.count; ++k) {
+        const Vec3 p = geometry->vertices[polygon.first + k];
+        assert(vertex_count < ArrayCount(vertices));
+        vertices[vertex_count++] = vec3_add(
+            offset, vec3_new(c * p.x + s * p.z, p.y, -s * p.x + c * p.z));
+      }
+    }
+  }
+  VkrBrushFaceSlot slots[VKR_BRUSH_FACE_SLOT_MAX * ArrayCount(faces)];
+  return vkr_brush_coplanar_overlaps(faces, face_count, vertices, slots,
+                                     1.0e-4f, out, 1u);
+}
+
+/* Z-fighting (ADR-084): boxes whose tops share a plane and overlap fight
+   over the shared square, turned and far from the origin too; a box on
+   another's top, back to back, and a top 2 mm higher do not. */
+static void brush_test_coplanar(VkrBrushGeometry *geometry) {
+  const Vec3 lo = vec3_new(0.0f, 0.0f, 0.0f);
+  const Vec3 hi = vec3_new(2.0f, 1.0f, 2.0f);
+  VkrBrushFaceOverlap overlap = {0};
+
+  uint32_t found = brush_test_fights(lo, hi, vec3_new(1.0f, 0.5f, 1.0f),
+                                     vec3_new(3.0f, 1.0f, 3.0f), 0.0f,
+                                     vec3_zero(), geometry, &overlap);
+  assert(found == 1u);
+  assert(brush_test_near(overlap.area, 1.0f, 1.0e-4f));
+  assert(brush_test_near(overlap.center.x, 1.5f, 1.0e-4f));
+  assert(brush_test_near(overlap.center.y, 1.0f, 1.0e-4f));
+  assert(brush_test_near(overlap.center.z, 1.5f, 1.0e-4f));
+  assert(overlap.owner_a != overlap.owner_b);
+
+  const Vec3 far = vec3_new(1000.0f, 20.0f, -500.0f);
+  found = brush_test_fights(lo, hi, vec3_new(1.0f, 0.5f, 1.0f),
+                            vec3_new(3.0f, 1.0f, 3.0f), 0.5236f, far, geometry,
+                            &overlap);
+  assert(found == 1u);
+  assert(brush_test_near(overlap.area, 1.0f, 1.0e-2f));
+  assert(brush_test_near(overlap.center.y, 21.0f, 1.0e-3f));
+
+  /* Back to back: the upper box's bottom on the lower one's top. Their
+     sides share planes but touch only along an edge. */
+  found = brush_test_fights(lo, hi, vec3_new(0.0f, 1.0f, 0.0f),
+                            vec3_new(2.0f, 2.0f, 2.0f), 0.0f, vec3_zero(),
+                            geometry, &overlap);
+  assert(found == 0u);
+
+  found = brush_test_fights(lo, hi, vec3_new(1.0f, 0.5f, 1.0f),
+                            vec3_new(3.0f, 1.002f, 3.0f), 0.0f, vec3_zero(),
+                            geometry, &overlap);
+  assert(found == 0u);
+}
+
 bool32_t run_brush_tests(void) {
   printf("--- Brush Tests ---\n");
   VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
@@ -725,6 +805,7 @@ bool32_t run_brush_tests(void) {
   brush_test_uv();
   brush_test_lightmap(geometry);
   brush_test_blockout(geometry);
+  brush_test_coplanar(geometry);
   free(geometry);
   printf("--- Brush Tests Completed ---\n");
   return true_v;
