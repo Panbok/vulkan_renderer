@@ -261,7 +261,11 @@ The scene loader reads a `lightmaps` block's `path`
 decodes the set and publishes every layer page as one
 `VKR_TEXTURE_FORMAT_ASTC_4x4_HDR` 2D array whose slice
 `page * layer_count + layer` is the file's page image, uploaded from the file
-bytes in place. Metal uploads a texture larger than 64 MB in consecutive
+bytes in place. The loader reads the file into one buffer, and recording the
+publication transfers that buffer to the publication queue without a copy
+(ADR-082); the queue frees it after the render thread's native upload has
+copied it into staging, so the set is held once on the CPU side rather than
+twice. Metal uploads a texture larger than 64 MB in consecutive
 submissions of whole slices or mips (`vkr_metal_packet_upload_texture`),
 because Bistro's 453 MB set exceeds the largest publication slot the
 upload ring can grow to. Metal 4 devices always sample ASTC HDR; Vulkan enables

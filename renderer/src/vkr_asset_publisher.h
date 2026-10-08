@@ -90,8 +90,8 @@ vkr_publication_state_confirmed(const VkrPublicationState *state) {
  * before preparing that frame, and every result arrives later through
  * `poll_completion`. A publish, unpublish or bake call returns whether it was
  * recorded; recording copies the payload, except texture bytes the caller
- * retains until the completion (`VkrTexturePreparedLoad.upload_retained`). A
- * publication that succeeds is
+ * retains until the completion or transfers to the queue
+ * (`VkrTexturePreparedLoad.upload_ownership`). A publication that succeeds is
  * resolvable in the frame it was recorded for, but only its completion tells
  * whether it succeeded, so asset systems track each resource with a
  * VkrPublicationState and admit loaded meshes, loaded textures and baked

@@ -2578,9 +2578,8 @@ bool8_t vkr_texture_system_prepare_load_from_file(
 }
 
 bool8_t vkr_texture_system_finalize_prepared_load(
-    VkrTextureSystem *system, String8 name,
-    const VkrTexturePreparedLoad *prepared, VkrTextureHandle *out_handle,
-    VkrRendererError *out_error) {
+    VkrTextureSystem *system, String8 name, VkrTexturePreparedLoad *prepared,
+    VkrTextureHandle *out_handle, VkrRendererError *out_error) {
   assert_log(system != NULL, "System is NULL");
   assert_log(name.str != NULL, "Name is NULL");
   assert_log(prepared != NULL, "Prepared payload is NULL");
@@ -2664,6 +2663,17 @@ bool8_t vkr_texture_system_finalize_prepared_load(
     }
     *out_error = renderer_error;
     return false_v;
+  }
+  /* The renderer's table, which reports completions, took transferred bytes
+     and frees them after its batch runs, so the caller's struct stops naming
+     them, including on the map-insertion rollback below. A native table
+     copied them before returning; the caller keeps and releases them. */
+  if (prepared->upload_ownership == VKR_TEXTURE_UPLOAD_TRANSFERRED &&
+      publisher->poll_completion) {
+    prepared->upload_data = NULL;
+    prepared->upload_data_size = 0u;
+    prepared->upload_regions = NULL;
+    prepared->upload_region_count = 0u;
   }
 
   VkrTextureEntry new_entry = {

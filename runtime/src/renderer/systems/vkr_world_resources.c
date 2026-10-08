@@ -203,7 +203,7 @@ vkr_internal bool8_t vkr_world_resources_create_constant_source(
     };
   }
 
-  const VkrTexturePreparedLoad prepared = {
+  VkrTexturePreparedLoad prepared = {
       .description =
           {
               .width = 1u,

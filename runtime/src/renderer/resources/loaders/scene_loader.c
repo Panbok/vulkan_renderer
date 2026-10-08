@@ -332,13 +332,11 @@ vkr_internal bool8_t scene_loader_prepare_diffuse_volume(
     String8 path, VkrAllocator *temp_alloc,
     VkrDiffuseVolumeBinding *out_binding, VkrTexturePreparedLoad *out_prepared,
     VkrSceneDiffuseVolumeLayers **out_layers);
-vkr_internal void
-scene_loader_apply_diffuse_volume_import(VkrScene *scene,
-                                         struct VkrRenderAssets *assets,
-                                         const SceneDiffuseVolumeImport *import,
-                                         const VkrDiffuseVolumeBinding *binding,
-                                         const VkrTexturePreparedLoad *prepared,
-                                         VkrSceneDiffuseVolumeLayers **layers);
+vkr_internal void scene_loader_apply_diffuse_volume_import(
+    VkrScene *scene, struct VkrRenderAssets *assets,
+    const SceneDiffuseVolumeImport *import,
+    const VkrDiffuseVolumeBinding *binding, VkrTexturePreparedLoad *prepared,
+    VkrSceneDiffuseVolumeLayers **layers);
 vkr_internal SceneSubsurfaceImport scene_subsurface_import_defaults(void);
 vkr_internal SceneSubsurfaceImport
 scene_loader_parse_subsurface_import(String8 json);
@@ -365,7 +363,7 @@ scene_loader_reset_scene_reflection_probes(VkrScene *scene,
 vkr_internal void scene_loader_apply_reflection_probe_imports(
     VkrScene *scene, struct VkrRenderAssets *assets,
     const SceneReflectionProbeImport *imports, uint32_t import_count,
-    const VkrTexturePreparedLoad *prepared_cubemaps,
+    VkrTexturePreparedLoad *prepared_cubemaps,
     const bool8_t *prepared_cubemaps_ready);
 vkr_internal bool8_t scene_loader_parse_json_imports(
     VkrAllocator *allocator, VkrMutex mutex, String8 json,
@@ -1458,13 +1456,11 @@ vkr_internal bool8_t scene_loader_prepare_diffuse_volume(
   return true_v;
 }
 
-vkr_internal void
-scene_loader_apply_diffuse_volume_import(VkrScene *scene,
-                                         struct VkrRenderAssets *assets,
-                                         const SceneDiffuseVolumeImport *import,
-                                         const VkrDiffuseVolumeBinding *binding,
-                                         const VkrTexturePreparedLoad *prepared,
-                                         VkrSceneDiffuseVolumeLayers **layers) {
+vkr_internal void scene_loader_apply_diffuse_volume_import(
+    VkrScene *scene, struct VkrRenderAssets *assets,
+    const SceneDiffuseVolumeImport *import,
+    const VkrDiffuseVolumeBinding *binding, VkrTexturePreparedLoad *prepared,
+    VkrSceneDiffuseVolumeLayers **layers) {
   if (!scene)
     return;
   vkr_scene_reset_diffuse_volume(scene, assets);
@@ -1520,7 +1516,10 @@ scene_loader_parse_lightmap_import(String8 json) {
 /* Reads and validates a VKLM set into the scene's lightmap record and the
    upload of every layer page: one ASTC 4x4 HDR 2D array whose slice
    page * layer_count + layer is the file's page image in file order, so the
-   upload reads the file bytes in place. */
+   upload reads the file bytes in place. The file is held once, from this
+   read to the native upload: the payload owns it until its publication is
+   recorded, which transfers it to the publication queue instead of copying
+   it (VKR_TEXTURE_UPLOAD_TRANSFERRED). */
 vkr_internal bool8_t scene_loader_prepare_lightmaps(
     String8 path, VkrAllocator *temp_alloc,
     VkrTexturePreparedLoad *out_prepared, VkrSceneLightmaps **out_lightmaps) {
@@ -1549,7 +1548,9 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
               file_get_error_string(file_error).str);
     return false_v;
   }
-  /* The upload owns the file bytes (malloc, see VkrTexturePreparedLoad). */
+  /* The prepared upload owns the file bytes (malloc, see
+     VkrTexturePreparedLoad) until scene_loader_apply_lightmaps() hands them
+     to the publication queue or the payload releases them. */
   uint8_t *bytes = (uint8_t *)malloc((size_t)stats.size);
   uint64_t byte_count = 0u;
   while (bytes && file_error == FILE_ERROR_NONE && byte_count < stats.size) {
@@ -1673,17 +1674,20 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
       .upload_mip_levels = 1u,
       .upload_array_layers = slice_count,
       .upload_is_compressed = true_v,
+      .upload_ownership = VKR_TEXTURE_UPLOAD_TRANSFERRED,
   };
   *out_lightmaps = lightmaps;
   return true_v;
 }
 
 /* Publishes the lightmap texture and hands the set to the scene, replacing
-   any previous set; the scene binds its instances as their meshes attach. */
+   any previous set; the scene binds its instances as their meshes attach.
+   An accepted publication takes `prepared`'s file bytes and clears its
+   pointers; the caller releases whatever `prepared` still names. */
 vkr_internal void
 scene_loader_apply_lightmaps(VkrScene *scene, struct VkrRenderAssets *assets,
                              const SceneLightmapImport *import,
-                             const VkrTexturePreparedLoad *prepared,
+                             VkrTexturePreparedLoad *prepared,
                              VkrSceneLightmaps **lightmaps) {
   vkr_scene_reset_lightmaps(scene, assets);
   if (!import->has_block || !import->valid) {
@@ -1804,7 +1808,7 @@ vkr_internal bool8_t scene_loader_apply_subsurface_import(
       .byte_offset = 0u,
       .byte_size = VKR_SUBSURFACE_TABLE_BYTE_COUNT,
   };
-  const VkrTexturePreparedLoad prepared = {
+  VkrTexturePreparedLoad prepared = {
       .description =
           {
               .id = VKR_INVALID_ID,
@@ -2182,7 +2186,7 @@ scene_loader_reset_scene_reflection_probes(VkrScene *scene,
 vkr_internal void scene_loader_apply_reflection_probe_imports(
     VkrScene *scene, struct VkrRenderAssets *assets,
     const SceneReflectionProbeImport *imports, uint32_t import_count,
-    const VkrTexturePreparedLoad *prepared_cubemaps,
+    VkrTexturePreparedLoad *prepared_cubemaps,
     const bool8_t *prepared_cubemaps_ready) {
   if (!scene) {
     return;
@@ -2240,11 +2244,11 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
           VkrRendererError cubemap_error = VKR_RENDERER_ERROR_NONE;
           if (import->cubemap_path.length > 0u) {
             VkrTexturePreparedLoad local_prepared = {0};
-            const VkrTexturePreparedLoad *upload =
-                prepared_cubemaps && prepared_cubemaps_ready &&
-                        prepared_cubemaps_ready[i]
-                    ? &prepared_cubemaps[i]
-                    : &local_prepared;
+            VkrTexturePreparedLoad *upload = prepared_cubemaps &&
+                                                     prepared_cubemaps_ready &&
+                                                     prepared_cubemaps_ready[i]
+                                                 ? &prepared_cubemaps[i]
+                                                 : &local_prepared;
             const bool8_t prepared =
                 upload != &local_prepared ||
                 vkr_texture_system_prepare_load_from_file(
@@ -4950,6 +4954,7 @@ vkr_internal bool8_t scene_loader_finalize_step(
                                      ? &async_payload->lightmap_prepared
                                      : NULL,
                                  &async_payload->lightmaps);
+    /* Frees the file bytes only when no publication took them. */
     if (async_payload->lightmap_prepared_ready) {
       vkr_texture_system_release_prepared_load(
           &async_payload->lightmap_prepared);

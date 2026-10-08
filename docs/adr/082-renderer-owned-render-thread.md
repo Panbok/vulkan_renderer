@@ -47,10 +47,17 @@ on itself.
 Asset publication does not wait. `VkrRenderer.asset_publisher` is the
 renderer's own table, threaded or not: each publish, unpublish, sampler
 update or bake call records an ordered command with copies of its payload
-(`vkr_publication_queue.c`) and returns whether it was recorded. A loaded
-texture's bytes are the exception: its request keeps the decoded payload
-until the publication settles, even when canceled meanwhile, so the command
-borrows them (`VkrTexturePreparedLoad.upload_retained`). Submitting a
+(`vkr_publication_queue.c`) and returns whether it was recorded. Texture
+bytes have two exceptions (`VkrTexturePreparedLoad.upload_ownership`). A
+loaded texture's request keeps the decoded payload until the publication
+settles, even when canceled meanwhile, so the command borrows them
+(`RETAINED`). A payload too large to hold twice, such as a lightmap set
+(ADR-088), moves to the batch instead (`TRANSFERRED`): the command takes the
+caller's buffers without copying, the texture system clears the caller's
+pointers, and the batch frees them after it has run, once the native upload
+has copied them into backend staging. A publication the queue refuses, or
+one that finds the texture already present, leaves them with the caller.
+Submitting a
 frame hands the recorded batch to the thread that renders it, which runs the
 commands through the backend's table in order before preparing that frame,
 inside the frame once acquired, so Vulkan uploads still record into an

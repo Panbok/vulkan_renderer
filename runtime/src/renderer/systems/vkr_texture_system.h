@@ -347,11 +347,16 @@ bool8_t vkr_texture_system_prepare_load_from_file(
  * On success the returned handle is visible to acquire calls. This direct API
  * does not acquire a reference; resource loaders retain their result
  * separately.
+ *
+ * With VKR_TEXTURE_UPLOAD_TRANSFERRED, a publication the renderer's table
+ * accepted owns the bytes, and this clears `prepared`'s data and region
+ * pointers; otherwise, including when an existing texture of `name` is
+ * returned, the caller still owns them. Release `prepared` afterwards either
+ * way.
  */
 bool8_t vkr_texture_system_finalize_prepared_load(
-    VkrTextureSystem *system, String8 name,
-    const VkrTexturePreparedLoad *prepared, VkrTextureHandle *out_handle,
-    VkrRendererError *out_error);
+    VkrTextureSystem *system, String8 name, VkrTexturePreparedLoad *prepared,
+    VkrTextureHandle *out_handle, VkrRendererError *out_error);
 
 /**
  * @brief Releases CPU memory owned by a prepared texture payload.

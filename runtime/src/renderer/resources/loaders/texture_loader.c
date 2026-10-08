@@ -144,7 +144,7 @@ vkr_internal bool8_t vkr_texture_loader_finalize_async(
 
   /* The request keeps this payload until the publication settles
      (publication_state), so the publication borrows its bytes. */
-  async_payload->prepared.upload_retained = true_v;
+  async_payload->prepared.upload_ownership = VKR_TEXTURE_UPLOAD_RETAINED;
   VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
   if (!vkr_texture_system_finalize_prepared_load(
           system, name, &async_payload->prepared, &handle, out_error)) {

@@ -165,6 +165,27 @@ vkr_internal void *vkr_publication_copy_bulk(VkrRenderer *renderer,
   return copy;
 }
 
+/* Takes `count` malloc-owned blocks into the recording batch, which frees
+   them once it has run, or none of them when the batch is out of memory. */
+vkr_internal bool8_t vkr_publication_adopt_bulk(VkrRenderer *renderer,
+                                                void *const *blocks,
+                                                uint32_t count) {
+  VkrPublicationBatch *batch = renderer->publications.recording;
+  VkrPublicationBlock *records =
+      arena_alloc(batch->arena, (uint64_t)count * sizeof(*records),
+                  ARENA_MEMORY_TAG_RENDERER);
+  if (!records) {
+    log_error("Publication queue could not take %u payload blocks", count);
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    records[i].bytes = blocks[i];
+    records[i].next = batch->blocks;
+    batch->blocks = &records[i];
+  }
+  return true_v;
+}
+
 vkr_internal String8 vkr_publication_copy_string8(VkrRenderer *renderer,
                                                   String8 source) {
   const uint8_t *copy =
@@ -295,7 +316,19 @@ vkr_publication_record_texture(void *state, VkrTextureHandle handle,
   }
   command->texture = *texture;
   queue->recording->upload_bytes += texture->upload_data_size;
-  if (texture->upload_retained) {
+  if (texture->upload_ownership == VKR_TEXTURE_UPLOAD_RETAINED) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+  if (texture->upload_ownership == VKR_TEXTURE_UPLOAD_TRANSFERRED) {
+    /* Owner from here: this batch. Last CPU read: the native publish_texture
+       below in vkr_publication_queue_run(), which copies the bytes into
+       backend staging before it returns; the GPU reads only that staging.
+       Release: vkr_publication_batch_reset() after the batch has run. */
+    void *const blocks[] = {texture->upload_data, texture->upload_regions};
+    if (!vkr_publication_adopt_bulk(renderer, blocks, ArrayCount(blocks))) {
+      command->discarded = true_v;
+      return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
     return VKR_RENDERER_ERROR_NONE;
   }
   command->texture.upload_data = vkr_publication_copy_bulk(
