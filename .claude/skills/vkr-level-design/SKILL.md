@@ -41,6 +41,32 @@ sets the order of work and the checks that prove a level.
   earlier ones made, by name or `$k`. Room parts carry the room's name:
   cut a door into `north/Store/Wall South +Z` in the room's own batch.
 - Give names your prefix (`north/Store`) so name references stay unique.
+- With `parent`, corners, points and planes are in the parent's space:
+  subtract the parent's position from world coordinates first.
+- Pick materials from the brush palette, `assets/materials/dev/dev_<name>.mt`
+  (`ls` the folder); `dev_light` glows, for ceiling panels.
+- Detail breaks routes: props in a walkway, a seat (0.45 m is above a step)
+  or a railing across a ladder top. Keep walkways 1 m wide and rerun every
+  route query after each detail pass.
+
+## Gameplay pieces
+
+- Doors, lifts and platforms: `mover.create` on their brushes; `hinge` makes
+  a swinging door. Make a lift a timed loop (`loop` true, `wait` seconds at
+  each end) unless the spec asks for a call button; a trigger brush under a
+  mover moves with it.
+- Buttons: `component.add` `button` on a solid or clip brush, or on a parent
+  up to 8 levels above it, within 2 m of the player's eyes (1.6 m above its
+  feet). Wire `io.connect` from `on_pressed` to the mover's `open`.
+- Ladders: a trigger brush with `component.add` `fps_ladder`. The player
+  climbs while a 0.6 m ray forward from its chest (1 m above its feet) hits
+  the trigger, so make the trigger about 0.6 m deep in front of the climbed
+  face and reach at least 1 m above the upper floor. Leave the railing open
+  where the ladder meets that floor.
+- Railings: a 1 m `clip` brush stops the player and the checks; draw the
+  rails and posts as `visual` brushes.
+- Hiding an object in the editor removes it from placement and picks only:
+  collision, level checks and the game still have it.
 
 ## Verify, cheapest first
 
@@ -70,6 +96,16 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    falls more than a step below its route. The walk sees what the grid
    checks miss: collision a brush lost, a prop in a doorway, a mover that
    did not open.
+   - Ask `query.reachable` for `points` 512: the default 32 points cut
+     corners the grid walked around, as past a stair's stringer. Drop the
+     points that lie within 0.2 m of the line between their neighbours, and
+     count a point reached within 0.3 m across and 0.5 m in height.
+   - A rise between neighbouring points beyond a step is a ladder: walk to
+     the lower point, then hold forward facing the upper one until the
+     player stands there.
+   - When the player stalls, plan again from where it stands before you
+     report a failure. Wait for a mover by polling `query.bounds` of its
+     moving part.
 
 Reads wait for rebuilds; repeat a read that answers `settled` false. Only
 collision counts in checks: Bistro's own meshes have none, so checks see
@@ -105,6 +141,7 @@ slope 45°); prefer the spec's own values when it gives them.
 | Ramp | at most 30° | over 45° |
 | Ceiling | at least 2.6 m above the floor | under 1.8 m |
 | Drop | at most 4 m stays one walkable area | an edge with no floor within 4 m |
+| Crawl space | 1.15 to 1.7 m clear (crouched capsule 1.08 m) | `crouch_only`, by design |
 
 ## level_run.py
 
@@ -127,6 +164,15 @@ result and tests `equals`, `between`, `at_least`, `at_most`, `count` or
 `contains`. A step that fails stops the run unless it sets `"continue":
 true`. Exit 0 means every step passed, 1 that one failed, and 2 a plan,
 usage or connection error.
+
+## Keep the level
+
+Save only when the task keeps the level. Run Cmd `scene.save`, then confirm
+`editor.status` answers `scene.unsaved` false before your last client
+disconnects: a headless editor quits once its `--exec` script has ended and
+no client is connected, discarding unsaved edits. A scene file holds at most
+65,536 created objects (a box brush is 7) and a save over that is refused;
+build a larger level in world partition cells.
 
 ## Done when
 
