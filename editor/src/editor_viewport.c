@@ -986,6 +986,15 @@ const VkrEditorBrushMaterial
         {"Blue", "assets/materials/dev/dev_blue.mt"},
         {"Clip", "assets/materials/dev/dev_clip.mt"},
         {"Trigger", "assets/materials/dev/dev_trigger.mt"},
+        {"Concrete", "assets/materials/dev/dev_concrete.mt"},
+        {"Metal", "assets/materials/dev/dev_metal.mt"},
+        {"Dark", "assets/materials/dev/dev_dark.mt"},
+        {"Tile", "assets/materials/dev/dev_tile.mt"},
+        {"Wood", "assets/materials/dev/dev_wood.mt"},
+        {"Hazard", "assets/materials/dev/dev_hazard.mt"},
+        {"Red", "assets/materials/dev/dev_red.mt"},
+        {"Green", "assets/materials/dev/dev_green.mt"},
+        {"Light", "assets/materials/dev/dev_light.mt"},
 };
 
 void vkr_editor_brush_style(const VkrEditorUi *editor, char *out,

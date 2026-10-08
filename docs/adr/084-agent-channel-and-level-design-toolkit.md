@@ -406,8 +406,11 @@ rebuild makes one generated mesh with one submesh per face material (16 at
 most), attached as the entity's runtime shape through
 `vkr_scene_attach_generated_mesh`, so transform sync, picking, visibility and
 the Show filter follow the shape path. Materials load once per scene and
-path; an empty path uses `assets/materials/dev/dev_grid.mt`, one of seven dev
-grid materials shipped as engine content. Clip and trigger brushes draw only
+path; an empty path uses `assets/materials/dev/dev_grid.mt`, one of sixteen
+dev grid materials shipped as engine content: grid, floor, wall, orange,
+blue, clip and trigger, and concrete, metal, dark, tile, wood, hazard, red,
+green and an emissive light panel (`dev_light`), all tints of the one grid
+texture. Clip and trigger brushes draw only
 while `VkrScene.editor_volumes` is set, which the editor runtime sets while
 it edits and clears during Play; games leave it off.
 

@@ -171,7 +171,7 @@ typedef struct VkrEditorBrushMaterial {
   const char *label;
   const char *path;
 } VkrEditorBrushMaterial;
-#define VKR_EDITOR_BRUSH_MATERIAL_COUNT 7u
+#define VKR_EDITOR_BRUSH_MATERIAL_COUNT 16u
 extern const VkrEditorBrushMaterial
     vkr_editor_brush_materials[VKR_EDITOR_BRUSH_MATERIAL_COUNT];
 /* The world box the brush tool is drawing. */
