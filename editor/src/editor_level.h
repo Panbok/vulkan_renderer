@@ -88,7 +88,8 @@ float32_t vkr_editor_level_map_size(Vec3 min, Vec3 max,
    running +x, as a top capture shows it. A cell shows its highest walkable
    floor, else its highest floor: '.' walkable (and reached from `start`
    when one is given), ',' walkable but out of reach, 'S' the start, '#'
-   too close to a wall, 'n' a gap narrower than the capsule, '_' a ceiling
+   too close to a wall or a top narrower than the capsule's radius, 'n' a
+   gap narrower than the capsule, '_' a ceiling
    too low, '/' too steep and '-' no floor; `heights`, when not NULL,
    receives each shown floor's world y, NAN where none; false when the grid
    holds more than `capacity` cells. */

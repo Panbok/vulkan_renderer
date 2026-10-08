@@ -6609,9 +6609,9 @@ static VkrEditorOpStatus ops_run_map(OpsContext *ctx) {
           vkr_bakery_json_cstr(
               arena, "'.' walkable; ',' walkable, out of reach of the start; "
                      "'c' passable crouched; ';' passable crouched, out of "
-                     "reach; 'S' start; '#' too close to a wall; 'n' gap too "
-                     "narrow; '_' ceiling too low; '/' too steep; '-' no "
-                     "floor"));
+                     "reach; 'S' start; '#' too close to a wall, or a top "
+                     "too thin to stand on; 'n' gap too narrow; '_' ceiling "
+                     "too low; '/' too steep; '-' no floor"));
   ops_set(ctx, result, "walkable", vkr_bakery_json_int(arena, stats.walkable));
   if (start_found) {
     ops_set(ctx, result, "start", ops_vec3(ctx, level.start));
@@ -6671,13 +6671,23 @@ static VkrEditorOpStatus ops_run_reachable(OpsContext *ctx) {
   ops_level_end(ctx->ops);
   Arena *arena = ops_arena(ctx);
   VkrBakeryJson *points = vkr_bakery_json_array(arena);
-  /* At most 32 points along the route. */
-  const uint32_t stride = Max(1u, (count + 31u) / 32u);
-  for (uint32_t i = 0; i < count; i += stride) {
-    vkr_bakery_json_append(points, ops_vec3(ctx, path[i]));
-  }
-  if (count && (count - 1u) % stride) {
-    vkr_bakery_json_append(points, ops_vec3(ctx, path[count - 1u]));
+  /* About 'points' (default 32) points along the route, the last, and both
+     ends of each change in height beyond a step, as a ladder or a drop, so
+     a player driven along the points meets the ladder at its foot. */
+  float64_t wanted = 32.0;
+  (void)ops_arg_number(args, "points", &wanted);
+  const uint32_t budget =
+      (uint32_t)vkr_clamp_f64(wanted, 2.0, (float64_t)ArrayCount(path));
+  const uint32_t stride = Max(1u, (count + budget - 1u) / budget);
+  const float32_t step_up = pending->level.capsule.step_up;
+  for (uint32_t i = 0; i < count; ++i) {
+    const bool8_t climbs_in =
+        i > 0u && fabsf(path[i].y - path[i - 1u].y) > step_up;
+    const bool8_t climbs_out =
+        i + 1u < count && fabsf(path[i + 1u].y - path[i].y) > step_up;
+    if (i % stride == 0u || i + 1u == count || climbs_in || climbs_out) {
+      vkr_bakery_json_append(points, ops_vec3(ctx, path[i]));
+    }
   }
   ctx->call->result = vkr_bakery_json_object(arena);
   ops_set(ctx, ctx->call->result, "reachable",
@@ -9067,9 +9077,10 @@ static const OpsDef s_ops[] = {
      NULL, ops_build_component_remove},
     {"brush.box",
      "Create a box brush between two corners, snapped to 'grid' (default "
-     "1/16 m), turned by 'rotation' (degrees XYZ) about its center. Role "
-     "solid renders and collides, visual only renders, clip only collides, "
-     "trigger is a sensor volume.",
+     "1/16 m), turned by 'rotation' (degrees XYZ) about its center; with "
+     "'parent' the corners are in the parent's space. Role solid renders "
+     "and collides, visual only renders, clip only collides, trigger is a "
+     "sensor volume.",
      "{\"type\":\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
      ",\"max\":" OPS_VEC3_SCHEMA ",\"rotation\":" OPS_VEC3_SCHEMA
      "," OPS_BRUSH_SCHEMA "," OPS_REVIEW_SCHEMA
@@ -9621,13 +9632,16 @@ static const OpsDef s_ops[] = {
      ops_run_map, NULL, OPS_SETTLES},
     {"query.reachable",
      "Whether the player capsule can walk from one floor point to another, "
-     "standing or crouched and up or down ladders, with the route; 'crouch' "
-     "says it passes floor only a crouched capsule fits and 'ladders' how "
-     "many ladders it climbs.",
+     "standing or crouched and up or down ladders, with the route: about "
+     "'points' points (default 32; 512 keeps each grid step of a route of "
+     "about that many, as a driven player needs), always with both ends of "
+     "each ladder or drop; 'crouch' says it passes floor only a crouched "
+     "capsule fits and 'ladders' how many ladders it climbs.",
      "{\"type\":\"object\",\"properties\":{\"from\":" OPS_VEC3_SCHEMA
-     ",\"to\":" OPS_VEC3_SCHEMA ",\"container\":" OPS_CONTAINER_SCHEMA
-     "," OPS_CAPSULE_SCHEMA "," OPS_SETTLE_SCHEMA
-     "},\"required\":[\"from\",\"to\"]}",
+     ",\"to\":" OPS_VEC3_SCHEMA
+     ",\"points\":{\"type\":\"integer\",\"minimum\":2,\"maximum\":512}"
+     ",\"container\":" OPS_CONTAINER_SCHEMA "," OPS_CAPSULE_SCHEMA
+     "," OPS_SETTLE_SCHEMA "},\"required\":[\"from\",\"to\"]}",
      ops_run_reachable, NULL, OPS_SETTLES},
     {"query.bounds", "World bounds of an entity and its descendants.",
      "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA

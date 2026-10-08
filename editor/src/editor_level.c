@@ -40,6 +40,9 @@ typedef enum LevelState {
   LEVEL_WALL,
   /* Only a crouched capsule fits; passable crouched. */
   LEVEL_CROUCH,
+  /* Floor narrower than the capsule's radius, as a rail, fence or wall top
+     the capsule only balances on; not passable and not an issue. */
+  LEVEL_THIN,
 } LevelState;
 
 typedef struct LevelNode {
@@ -139,6 +142,27 @@ static LevelNode *level_node(LevelGrid *grid, uint32_t x, uint32_t z,
   return &grid->nodes[((size_t)z * grid->nx + x) * LEVEL_LAYER_MAX + layer];
 }
 
+/* Whether floor within a step of `point` lies half the capsule's radius to
+   one side of it along x and along z: a rail or wall top narrower than the
+   radius only balances the capsule. A probe starting inside a solid counts,
+   as beside a wall. */
+static bool8_t level_supported(LevelGrid *grid, Vec3 point) {
+  const float32_t reach = grid->capsule->radius * 0.5f;
+  const float32_t step = grid->capsule->step_up + 0.05f;
+  const Vec3 down = vec3_new(0.0f, -2.0f * step, 0.0f);
+  const Vec3 sides[2][2] = {
+      {{reach, step, 0.0f, 0.0f}, {-reach, step, 0.0f, 0.0f}},
+      {{0.0f, step, reach, 0.0f}, {0.0f, step, -reach, 0.0f}}};
+  for (uint32_t axis = 0; axis < 2u; ++axis) {
+    VkrPhysicsRayHit hit = {0};
+    if (!level_ray(grid->scene, vec3_add(point, sides[axis][0]), down, &hit) &&
+        !level_ray(grid->scene, vec3_add(point, sides[axis][1]), down, &hit)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 /* Every floor under one cell's center, top to bottom, classified for the
    capsule. */
 static void level_sample_cell(LevelGrid *grid, uint32_t x, uint32_t z) {
@@ -186,9 +210,19 @@ static void level_sample_cell(LevelGrid *grid, uint32_t x, uint32_t z) {
       node->state = LEVEL_STEEP;
       continue;
     }
-    /* The capsule fits when spheres at its middle and top touch nothing. */
+    if (!level_supported(grid, point)) {
+      node->state = LEVEL_THIN;
+      continue;
+    }
+    /* The capsule fits when spheres just above the step height, at its
+       middle and at its top touch nothing: furniture such as a chair seat
+       lies between what a step climbs and the capsule's middle. */
     const float32_t r = capsule->radius * 0.9f;
-    if (!level_blocked(
+    const Vec3 low =
+        vec3_add(point, vec3_new(0.0f, capsule->step_up + r + 0.02f, 0.0f));
+    const bool8_t low_clear = !level_blocked(grid->scene, low, r);
+    if (low_clear &&
+        !level_blocked(
             grid->scene,
             vec3_add(point, vec3_new(0.0f, capsule->height * 0.5f, 0.0f)), r) &&
         !level_blocked(
@@ -206,6 +240,7 @@ static void level_sample_cell(LevelGrid *grid, uint32_t x, uint32_t z) {
     const float32_t crouch = capsule->crouch_height;
     const bool8_t crouch_fits =
         crouch > 2.0f * capsule->radius && crouch < capsule->height &&
+        low_clear &&
         !level_blocked(grid->scene,
                        vec3_add(point, vec3_new(0.0f, crouch * 0.5f, 0.0f)),
                        r) &&
@@ -374,7 +409,21 @@ static bool8_t level_step(LevelGrid *grid, const LevelNode *a,
   const Vec3 from = vec3_new(a->position.x, knee, a->position.z);
   const Vec3 to = vec3_new(b->position.x, knee, b->position.z);
   VkrPhysicsRayHit hit = {0};
-  return !level_ray(grid->scene, from, vec3_sub(to, from), &hit);
+  if (level_ray(grid->scene, from, vec3_sub(to, from), &hit)) {
+    return false_v;
+  }
+  /* A drop falls clear to the lower floor: not through the slab under the
+     higher one, as from a roof down to a catwalk under it. */
+  const float32_t drop =
+      Max(a->position.y, b->position.y) - Min(a->position.y, b->position.y);
+  if (drop > grid->capsule->step_up) {
+    const LevelNode *lower = a->position.y < b->position.y ? a : b;
+    const Vec3 top = vec3_new(lower->position.x, knee, lower->position.z);
+    return !level_ray(grid->scene, top,
+                      vec3_new(0.0f, lower->position.y + 0.1f - knee, 0.0f),
+                      &hit);
+  }
+  return true_v;
 }
 
 static const int32_t s_level_dx[4] = {1, -1, 0, 0};
@@ -948,19 +997,47 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
     route->gap = reached ? 0.0f : best;
   }
   if (end >= 0) {
-    /* Walk back from the end, then reverse into start-to-end order. */
-    uint32_t count = 0u;
+    /* Walk back from the end to total the route, then again keeping an even
+       share of its steps that fits `path`, with the start, the end and both
+       ends of each change in height beyond a step, as a ladder or a drop,
+       and reverse into start-to-end order. Keeping the first steps found
+       would drop the start of a long route. */
+    const float32_t step_up = grid.capsule->step_up;
+    uint32_t steps = 0u;
+    uint32_t changes = 0u;
     for (int32_t at = end; at >= 0; at = grid.nodes[at].parent) {
+      const int32_t parent = grid.nodes[at].parent;
       route->crouch |= grid.nodes[at].state == LEVEL_CROUCH;
       route->ladders += grid.nodes[at].ladder ? 1u : 0u;
-      if (grid.nodes[at].parent >= 0) {
-        *length +=
-            vec3_length(vec3_sub(grid.nodes[at].position,
-                                 grid.nodes[grid.nodes[at].parent].position));
+      if (parent >= 0) {
+        *length += vec3_length(
+            vec3_sub(grid.nodes[at].position, grid.nodes[parent].position));
+        changes += fabsf(grid.nodes[at].position.y -
+                         grid.nodes[parent].position.y) > step_up
+                       ? 2u
+                       : 0u;
       }
-      if (count < path_capacity) {
+      steps++;
+    }
+    const uint32_t share =
+        path_capacity > changes + 2u ? path_capacity - changes - 2u : 1u;
+    const uint32_t stride = Max(1u, (steps + share - 1u) / share);
+    uint32_t count = 0u;
+    uint32_t from_start = steps - 1u;
+    /* The walk runs from the end: whether the step from a node to the one
+       after it on the route changes height beyond a step. */
+    bool8_t change_after = false_v;
+    for (int32_t at = end; at >= 0 && count < path_capacity;
+         at = grid.nodes[at].parent, from_start--) {
+      const int32_t parent = grid.nodes[at].parent;
+      const bool8_t change_before =
+          parent >= 0 && fabsf(grid.nodes[at].position.y -
+                               grid.nodes[parent].position.y) > step_up;
+      if (from_start % stride == 0u || from_start == steps - 1u ||
+          change_before || change_after) {
         path[count++] = grid.nodes[at].position;
       }
+      change_after = change_before;
     }
     for (uint32_t i = 0; i < count / 2u; ++i) {
       const Vec3 swap = path[i];

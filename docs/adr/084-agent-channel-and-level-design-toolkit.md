@@ -718,11 +718,16 @@ keeps every floor a downward ray finds from start heights one capsule height
 apart, so floors under roofs count; a ray that starts inside a solid
 starts again 0.25 m lower, so the floor under a slab thinner than the
 capsule is found. A floor is walkable when its slope is within
-`max_slope_radians`, a capsule's height fits above it and side rays find no
-wall closer than the radius; it is passable crouched when only the crouched
-capsule (`crouch_height`) fits, under a ceiling or beside its edge.
-Neighbouring passable floors connect when the step up is within `step_up`, a
-drop is at most 4 m, and nothing blocks the way at knee height. The floors
+`max_slope_radians`, floor within a step lies half the capsule radius to one
+side of it along x and along z, and spheres just above the step height, at
+the capsule's middle and at its top touch nothing. A rail, fence or wall top
+narrower than the radius only balances the capsule, so it is no floor; a
+chair seat lies between what a step climbs and the capsule's middle, so it
+blocks. A floor is passable crouched when only the crouched capsule
+(`crouch_height`) fits, under a ceiling or beside its edge. Neighbouring
+passable floors connect when the step up is within `step_up`, a drop is at
+most 4 m and falls clear to the lower floor rather than through the slab
+under the higher one, and nothing blocks the way at knee height. The floors
 at the foot and the top of each ladder connect both ways: a trigger brush
 carrying the FPS module's `fps_ladder` joins the passable floor nearest its
 foot, within 1 m and the capsule radius of its box, to the highest one
@@ -743,7 +748,13 @@ headroom or gap; issues of one kind on one entity within 8 m merge.
 `query.reachable` flood-fills from `from` and returns whether `to` is
 reachable with one route and its length: standing first, then crouched,
 so `crouch` says only that a route needs crouching, and `ladders` counts the
-ladders it climbs. A failed route answers whether
+ladders it climbs. The route keeps about `points` points (default 32), the
+last, and both ends of each change in height beyond a step, so a player
+driven along it meets each ladder at its foot. A thinned stretch can cut a
+corner the grid walks around, as past the low end of a stair's stringer, so
+a driver asks for 512, every step of a route that long. A longer route is
+thinned evenly from its start, still with both ends of each ladder or drop.
+A failed route answers whether
 each end stands on a walkable floor (`from_floor`, `to_floor`), the reached
 floor nearest `to` (`closest`), the distance left (`gap`) and the route to
 it, so an agent sees where the way stops. Each column is cast 1.3 cm and
@@ -772,7 +783,8 @@ maximum, each character a cell along +x, as a top capture shows them. A cell
 shows its highest walkable floor, else its highest crouch floor, else its
 highest floor: `.` walkable and, with a start, reached from it, `,` walkable
 but out of reach, `c` and `;` passable crouched, reached or not, `S` the start,
-`#` too close to a wall, `n` a gap narrower than the capsule, `_` a ceiling
+`#` too close to a wall or a top narrower than the capsule's radius, `n` a
+gap narrower than the capsule, `_` a ceiling
 too low, `/` too steep and `-` no floor. `cell` sets the cell edge (by
 default 96 cells along the longer side) and a map holds at most 200 a side;
 `heights` adds each shown floor's world height. A region whose top lies
