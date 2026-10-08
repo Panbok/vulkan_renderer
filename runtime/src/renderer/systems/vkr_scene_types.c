@@ -2390,6 +2390,51 @@ const VkrTypeDesc vkr_scene_relay_type = {
     .inputs = s_relay_inputs,
 };
 
+static const VkrIoPort s_button_outputs[] = {
+    {"on_pressed", "On pressed", VKR_PROPERTY_ENTITY},
+    {"on_refused", "On refused", VKR_PROPERTY_ENTITY},
+    {NULL, NULL, 0u}};
+static const VkrIoPort s_button_inputs[] = {
+    {"press", "Press", VKR_PROPERTY_ENTITY},
+    {"lock", "Lock", VKR_IO_PORT_NONE},
+    {"unlock", "Unlock", VKR_IO_PORT_NONE},
+    {NULL, NULL, 0u}};
+
+static const VkrPropertyDesc s_button_properties[] = {
+    {.name = "wait",
+     .label = "Wait",
+     .tooltip = "Seconds before it takes another press; -1 takes one press "
+                "a session",
+     .unit = "s",
+     .offset = TYPE_OFFSET(SceneButton, wait),
+     .kind = VKR_PROPERTY_F32,
+     .min = -1.0f,
+     .max = 86400.0f,
+     .step = 0.05f},
+    {.name = "locked",
+     .label = "Locked",
+     .tooltip = "A press fires On refused instead until unlocked",
+     .offset = TYPE_OFFSET(SceneButton, locked),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void button_defaults(void *value) {
+  *(SceneButton *)value = (SceneButton){.wait = 1.0f};
+}
+
+const VkrTypeDesc vkr_scene_button_type = {
+    .name = "button",
+    .label = "Button",
+    .category = "Level",
+    .properties = s_button_properties,
+    .property_count = ArrayCount(s_button_properties),
+    .size = sizeof(SceneButton),
+    .align = _Alignof(SceneButton),
+    .defaults = button_defaults,
+    .outputs = s_button_outputs,
+    .inputs = s_button_inputs,
+};
+
 static const VkrIoPort s_timer_outputs[] = {
     {"on_timer", "On timer", VKR_IO_PORT_NONE}, {NULL, NULL, 0u}};
 static const VkrIoPort s_timer_inputs[] = {
@@ -3308,6 +3353,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_brush_face_type,
     &vkr_scene_trigger_type,
     &vkr_scene_relay_type,
+    &vkr_scene_button_type,
     &vkr_scene_timer_type,
     &vkr_scene_counter_type,
     &vkr_scene_io_connection_type,
@@ -3388,8 +3434,8 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_decal_type || type == &vkr_scene_brush_type ||
          type == &vkr_scene_brush_face_type ||
          type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
-         type == &vkr_scene_timer_type || type == &vkr_scene_counter_type ||
-         type == &vkr_scene_mover_type ||
+         type == &vkr_scene_button_type || type == &vkr_scene_timer_type ||
+         type == &vkr_scene_counter_type || type == &vkr_scene_mover_type ||
          type == &vkr_scene_io_connection_type ||
          type == &vkr_scene_terrain_type || type == &vkr_scene_spline_type ||
          type == &vkr_scene_spline_point_type ||

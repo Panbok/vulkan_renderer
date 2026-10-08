@@ -657,6 +657,8 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_LIGHTNING;
   if (type == &vkr_scene_relay_type)
     return VKR_UI_ICON_GIT_BRANCH;
+  if (type == &vkr_scene_button_type)
+    return VKR_UI_ICON_HAND;
   if (type == &vkr_scene_timer_type)
     return VKR_UI_ICON_TIMER;
   if (type == &vkr_scene_counter_type)
@@ -730,6 +732,8 @@ static const EditorObjectKind s_object_kinds[] = {
     {"scatter", "Scatter", VKR_UI_ICON_TREE, &vkr_scene_scatter_type, false_v,
      "Level", 8u},
     {"relay", "Relay", VKR_UI_ICON_GIT_BRANCH, &vkr_scene_relay_type, false_v,
+     "Level"},
+    {"button", "Button", VKR_UI_ICON_HAND, &vkr_scene_button_type, false_v,
      "Level"},
     {"timer", "Timer", VKR_UI_ICON_TIMER, &vkr_scene_timer_type, false_v,
      "Level"},

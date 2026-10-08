@@ -70,6 +70,14 @@ typedef struct IoRelay {
   bool8_t enabled;
 } IoRelay;
 
+typedef struct IoButton {
+  VkrEntityId entity;
+  float32_t wait;
+  bool8_t locked;
+  /* Router time it next takes a press; infinite after a one-press wait. */
+  float64_t ready_at;
+} IoButton;
+
 typedef struct IoTimer {
   VkrEntityId entity;
   float32_t interval;
@@ -548,6 +556,7 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
   router->timer_count = 0u;
   router->counter_count = 0u;
   router->mover_count = 0u;
+  router->button_count = 0u;
   const uint32_t connections = io_count_typed(
       router->scenes, router->scene_count, &vkr_scene_io_connection_type);
   const uint32_t triggers = io_count_typed(router->scenes, router->scene_count,
@@ -560,12 +569,15 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
                                            &vkr_scene_counter_type);
   const uint32_t movers = io_count_typed(router->scenes, router->scene_count,
                                          &vkr_scene_mover_type);
+  const uint32_t buttons = io_count_typed(router->scenes, router->scene_count,
+                                          &vkr_scene_button_type);
   router->capacities[0] = connections;
   router->capacities[1] = triggers;
   router->capacities[2] = relays;
   router->capacities[3] = timers;
   router->capacities[4] = counters;
   router->capacities[5] = movers;
+  router->capacities[6] = buttons;
   bool8_t ok = true_v;
   router->connections =
       io_alloc(router, connections, sizeof(IoConnection), &ok);
@@ -574,6 +586,7 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
   router->timers = io_alloc(router, timers, sizeof(IoTimer), &ok);
   router->counters = io_alloc(router, counters, sizeof(IoCounter), &ok);
   router->movers = io_alloc(router, movers, sizeof(IoMover), &ok);
+  router->buttons = io_alloc(router, buttons, sizeof(IoButton), &ok);
   if (!ok) {
     return false_v;
   }
@@ -609,6 +622,15 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
       if (relay && router->relay_count < relays) {
         router->relays[router->relay_count++] =
             (IoRelay){.entity = entity, .enabled = relay->enabled};
+      }
+      const SceneButton *button =
+          vkr_scene_get_typed(scene, entity, &vkr_scene_button_type);
+      if (button && router->button_count < buttons) {
+        router->buttons[router->button_count++] =
+            (IoButton){.entity = entity,
+                       .wait = button->wait,
+                       .locked = button->locked,
+                       .ready_at = -INFINITY};
       }
       const SceneTimer *timer =
           vkr_scene_get_typed(scene, entity, &vkr_scene_timer_type);
@@ -886,6 +908,7 @@ bool8_t vkr_io_router_refresh(VkrIoRouter *router) {
     io_free(router, router->timers, router->capacities[3], sizeof(IoTimer));
     io_free(router, router->counters, router->capacities[4], sizeof(IoCounter));
     io_free(router, router->movers, router->capacities[5], sizeof(IoMover));
+    io_free(router, router->buttons, router->capacities[6], sizeof(IoButton));
     *router = previous;
     return false_v;
   }
@@ -894,6 +917,7 @@ bool8_t vkr_io_router_refresh(VkrIoRouter *router) {
   IO_CARRY(timers, timer_count)
   IO_CARRY(counters, counter_count)
   IO_CARRY(movers, mover_count)
+  IO_CARRY(buttons, button_count)
   /* A mover whose component went while its entity stayed rests again. */
   for (uint32_t o = 0; o < previous.mover_count; ++o) {
     bool8_t kept = false_v;
@@ -923,6 +947,7 @@ bool8_t vkr_io_router_refresh(VkrIoRouter *router) {
   io_free(router, previous.timers, previous.capacities[3], sizeof(IoTimer));
   io_free(router, previous.counters, previous.capacities[4], sizeof(IoCounter));
   io_free(router, previous.movers, previous.capacities[5], sizeof(IoMover));
+  io_free(router, previous.buttons, previous.capacities[6], sizeof(IoButton));
   return true_v;
 }
 #undef IO_CARRY
@@ -943,6 +968,7 @@ void vkr_io_router_clear(VkrIoRouter *router) {
   io_free(router, router->timers, router->capacities[3], sizeof(IoTimer));
   io_free(router, router->counters, router->capacities[4], sizeof(IoCounter));
   io_free(router, router->movers, router->capacities[5], sizeof(IoMover));
+  io_free(router, router->buttons, router->capacities[6], sizeof(IoButton));
   io_free(router, router->queue, VKR_IO_QUEUE_MAX, sizeof(IoDelivery));
   io_free(router, router->delayed, VKR_IO_QUEUE_MAX, sizeof(IoDelivery));
   io_free(router, router->fired, VKR_IO_QUEUE_MAX, sizeof(IoFired));
@@ -1139,6 +1165,15 @@ static IoRelay *io_relay(VkrIoRouter *router, VkrEntityId entity) {
   return NULL;
 }
 
+static IoButton *io_button(VkrIoRouter *router, VkrEntityId entity) {
+  for (uint32_t i = 0; i < router->button_count; ++i) {
+    if (router->buttons[i].entity.u64 == entity.u64) {
+      return &router->buttons[i];
+    }
+  }
+  return NULL;
+}
+
 static IoTimer *io_timer(VkrIoRouter *router, VkrEntityId entity) {
   for (uint32_t i = 0; i < router->timer_count; ++i) {
     if (router->timers[i].entity.u64 == entity.u64) {
@@ -1250,6 +1285,30 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
     }
     relay->enabled = !strcmp(name, "enable");
     return true_v;
+  }
+  if (type == &vkr_scene_button_type) {
+    IoButton *button = io_button(router, delivery->target);
+    if (!button) {
+      return true_v;
+    }
+    if (!strcmp(name, "lock") || !strcmp(name, "unlock")) {
+      button->locked = !strcmp(name, "lock");
+      return true_v;
+    }
+    /* A press passes its activator on; one while it waits does nothing. */
+    const VkrIoValue *activator =
+        delivery->value.kind == VKR_IO_ENTITY ? &delivery->value : NULL;
+    if (button->locked) {
+      return io_emit(router, delivery->target, io_out(type, "on_refused"),
+                     activator, depth);
+    }
+    if (router->now < button->ready_at) {
+      return true_v;
+    }
+    button->ready_at =
+        button->wait < 0.0f ? INFINITY : router->now + button->wait;
+    return io_emit(router, delivery->target, io_out(type, "on_pressed"),
+                   activator, depth);
   }
   if (type == &vkr_scene_timer_type) {
     IoTimer *timer = io_timer(router, delivery->target);

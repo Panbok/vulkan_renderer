@@ -57,6 +57,7 @@ extern const VkrTypeDesc vkr_scene_blockout_type;
 /* Entity IO (ADR-084). */
 extern const VkrTypeDesc vkr_scene_trigger_type;
 extern const VkrTypeDesc vkr_scene_relay_type;
+extern const VkrTypeDesc vkr_scene_button_type;
 extern const VkrTypeDesc vkr_scene_timer_type;
 extern const VkrTypeDesc vkr_scene_counter_type;
 extern const VkrTypeDesc vkr_scene_mover_type;

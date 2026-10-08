@@ -19,7 +19,9 @@ typedef struct IoProbe {
 } IoProbe;
 
 static const VkrIoPort s_probe_inputs[] = {
-    {"record", "Record", VKR_PROPERTY_I32}, {NULL, NULL, 0u}};
+    {"record", "Record", VKR_PROPERTY_I32},
+    {"who", "Who", VKR_PROPERTY_ENTITY},
+    {NULL, NULL, 0u}};
 static const VkrIoPort s_probe_outputs[] = {
     {"on_value", "On value", VKR_PROPERTY_I32}, {NULL, NULL, 0u}};
 
@@ -35,6 +37,8 @@ static const VkrTypeDesc s_probe_type = {
 typedef struct IoRecord {
   VkrEntityId target;
   int32_t value;
+  /* The entity `who` received; `value` is then zero. */
+  VkrEntityId who;
 } IoRecord;
 
 typedef struct IoTest {
@@ -51,10 +55,12 @@ static bool8_t io_test_input(void *context, VkrScene *scene, VkrEntityId target,
                              const VkrIoValue *value) {
   (void)scene;
   IoTest *test = context;
-  assert(type == &s_probe_type && input == 0u && value->kind == VKR_IO_I32);
+  assert(type == &s_probe_type && input <= 1u &&
+         value->kind == (input ? VKR_IO_ENTITY : VKR_IO_I32));
   assert(test->record_count < ArrayCount(test->records));
   test->records[test->record_count++] =
-      (IoRecord){.target = target, .value = value->i32};
+      input ? (IoRecord){.target = target, .who = {.u64 = value->entity.id}}
+            : (IoRecord){.target = target, .value = value->i32};
   return true_v;
 }
 
@@ -545,6 +551,67 @@ static void io_test_mover_turn(void) {
   printf("  io_test_mover_turn PASSED\n");
 }
 
+/* A button (ADR-084), as the player's use key presses it. Oracles: a
+ * press reaches on_pressed with its activator, a second one inside the
+ * 1 s wait does nothing and one after it presses again; a locked button
+ * fires on_refused; a one-press button (-1) takes a single press a
+ * session. */
+static void io_test_button(void) {
+  printf("  Running io_test_button...\n");
+  IoTest test;
+  io_test_begin(&test);
+  const SceneButton settings = {.wait = 1.0f};
+  const VkrEntityId button =
+      io_test_entity(&test, "button", &vkr_scene_button_type, &settings);
+  const SceneButton once_settings = {.wait = -1.0f};
+  const VkrEntityId once =
+      io_test_entity(&test, "once", &vkr_scene_button_type, &once_settings);
+  const VkrEntityId player =
+      io_test_entity(&test, "player", &s_probe_type, NULL);
+  const VkrEntityId probe = io_test_entity(&test, "probe", &s_probe_type, NULL);
+  (void)io_test_connect(&test, button, "on_pressed", probe, "record", "1", 0.0f,
+                        0u);
+  (void)io_test_connect(&test, button, "on_pressed", probe, "who", "", 0.0f,
+                        0u);
+  (void)io_test_connect(&test, button, "on_refused", probe, "record", "2", 0.0f,
+                        0u);
+  (void)io_test_connect(&test, once, "on_pressed", probe, "record", "3", 0.0f,
+                        0u);
+  io_test_publish(&test);
+  assert(test.router.problems == 0u);
+  const VkrIoValue activator = {.kind = VKR_IO_ENTITY,
+                                .entity = {.id = player.u64}};
+  const VkrIoEndpoint press = io_test_input_of(&test, button, "press");
+  const VkrIoEndpoint press_once = io_test_input_of(&test, once, "press");
+
+  assert(vkr_io_router_tick(&test.router, &test.scene, 0.0));
+  assert(vkr_io_router_send(&test.router, button, press, &activator, false_v));
+  assert(test.record_count == 2u && test.records[0].value == 1 &&
+         test.records[1].who.u64 == player.u64);
+  assert(vkr_io_router_tick(&test.router, &test.scene, 0.5));
+  assert(vkr_io_router_send(&test.router, button, press, &activator, false_v));
+  assert(test.record_count == 2u);
+  assert(vkr_io_router_tick(&test.router, &test.scene, 1.0));
+  assert(vkr_io_router_send(&test.router, button, press, &activator, false_v));
+  assert(test.record_count == 4u && test.records[2].value == 1);
+
+  assert(vkr_io_router_send(&test.router, button,
+                            io_test_input_of(&test, button, "lock"), NULL,
+                            false_v));
+  assert(vkr_io_router_tick(&test.router, &test.scene, 5.0));
+  assert(vkr_io_router_send(&test.router, button, press, &activator, false_v));
+  assert(test.record_count == 5u && test.records[4].value == 2);
+
+  assert(
+      vkr_io_router_send(&test.router, once, press_once, &activator, false_v));
+  assert(vkr_io_router_tick(&test.router, &test.scene, 500.0));
+  assert(
+      vkr_io_router_send(&test.router, once, press_once, &activator, false_v));
+  assert(test.record_count == 6u && test.records[5].value == 3);
+  io_test_end(&test);
+  printf("  io_test_button PASSED\n");
+}
+
 bool32_t run_io_tests(void) {
   printf("--- Starting IO Tests ---\n");
   io_test_order();
@@ -557,6 +624,7 @@ bool32_t run_io_tests(void) {
   io_test_problems();
   io_test_mover();
   io_test_mover_turn();
+  io_test_button();
   printf("--- IO Tests Completed ---\n");
   return true_v;
 }

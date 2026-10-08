@@ -4,6 +4,8 @@
 
 #define PLAYER_PITCH_LIMIT 1.45f
 #define PLAYER_LOOK_SCALE 0.0025f
+/* How far the use key reaches from the eye, in metres. */
+#define PLAYER_USE_REACH 2.0f
 
 FpsPlayerSettings fps_player_settings_default(void) {
   FpsPlayerSettings settings;
@@ -114,6 +116,37 @@ static void player_fire(VkrCtx *ctx, FpsPlayer *player, FpsPlayerState *state,
                                     &filter, &player->pending_hit);
 }
 
+/* The use key presses the button the eye looks at within reach: the brush
+   hit carries the `button` component, as Source's func_button is a brush.
+   The press names the player as its activator. */
+static void player_use(VkrCtx *ctx, FpsPlayer *player,
+                       const FpsPlayerState *state) {
+  if (!player->button_type || !player->press_input.id) {
+    return;
+  }
+  const Vec3 eye = vec3_add(player->current_foot,
+                            vec3_new(0, state->crouched ? .9f : 1.6f, 0));
+  const Vec3 direction =
+      vec3_new(cosf(state->pitch) * cosf(state->yaw), sinf(state->pitch),
+               cosf(state->pitch) * sinf(state->yaw));
+  const VkrQueryFilter filter = {
+      .mask = UINT16_MAX, .ignored = &player->entity, .ignored_count = 1};
+  VkrRayHit hit;
+  if (!vkr_raycast(ctx, eye, vec3_scale(direction, PLAYER_USE_REACH), &filter,
+                   &hit)) {
+    return;
+  }
+  const VkrEntity target =
+      vkr_component_get(ctx, hit.collider, player->button_type) ? hit.collider
+                                                                : hit.entity;
+  if (!vkr_component_get(ctx, target, player->button_type)) {
+    return;
+  }
+  const VkrIoValue activator = {.kind = VKR_IO_ENTITY,
+                                .entity = player->entity};
+  (void)vkr_io_send(ctx, target, player->press_input, &activator);
+}
+
 static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
   FpsPlayerState *state = fps_player_state(ctx, player);
   if (!state) {
@@ -178,6 +211,9 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
       break;
     case FPS_ACTION_JUMP:
       jump = true_v;
+      break;
+    case FPS_ACTION_USE:
+      player_use(ctx, player, state);
       break;
     case FPS_ACTION_CAMERA:
       fps_camera_rig_set_mode(&player->camera,
@@ -406,6 +442,9 @@ void fps_player_observe(VkrCtx *ctx, FpsPlayer *player,
     case VKR_KEY_V:
       action = FPS_ACTION_CAMERA;
       break;
+    case VKR_KEY_E:
+      action = FPS_ACTION_USE;
+      break;
     case VKR_KEY_CONTROL:
     case VKR_KEY_LCONTROL:
     case VKR_KEY_RCONTROL:
@@ -499,6 +538,10 @@ bool8_t fps_player_attach(VkrCtx *ctx, FpsPlayer *player,
                         .attached = true_v};
   if (!vkr_state_add(ctx, config->entity, state_type, NULL)) {
     goto fail;
+  }
+  player->button_type = vkr_component_named(ctx, "button");
+  if (player->button_type) {
+    player->press_input = vkr_io_input(ctx, player->button_type, "press");
   }
   const VkrCharacterDesc motor = vkr_character_default(ctx);
   if (!vkr_character_create(ctx, config->entity, &motor,

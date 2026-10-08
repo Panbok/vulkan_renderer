@@ -114,6 +114,10 @@ typedef struct FpsPlayer {
   char error[192];
   FpsWeaponShot pending_shot;
   VkrRayHit pending_hit;
+  /* The engine's `button` and its `press` input (ADR-084), resolved once;
+     NULL when the engine has none. */
+  const VkrComponentDesc *button_type;
+  VkrIoInput press_input;
   uint64_t shots_fired;
   uint64_t hits;
   uint64_t instance_id;

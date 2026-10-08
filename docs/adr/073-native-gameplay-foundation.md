@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-04
+updated: 2026-10-08
 authority: adr
 ---
 
@@ -143,7 +143,9 @@ deterministic replay guarantee.
 composition on an existing root entity: `FpsPlayerState` stores weapon, inventory,
 held intent and simulation aim; scene physics owns its motor. Before physics it
 completes due reloads, consumes ordered commands, performs hitscan fire, and steps
-the motor. After native physics it consumes a reserved shot fact and applies a
+the motor. E traces 2 m from the eye, past the player, and sends `press` with
+the player as activator to the hit brush when it carries a `button`
+(ADR-084), resolved once by `vkr_component_named` and `vkr_io_input`. After native physics it consumes a reserved shot fact and applies a
 hit impulse. Motor and animation failures retain their specific diagnostic.
 One pending shot slot is sufficient for the example's six-tick fire
 interval. This is a single-player client, not the proposed multi-shooter damage

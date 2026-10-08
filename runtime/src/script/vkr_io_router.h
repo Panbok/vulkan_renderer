@@ -113,8 +113,10 @@ typedef struct VkrIoRouter {
   uint32_t counter_count;
   struct IoMover *movers;
   uint32_t mover_count;
+  struct IoButton *buttons;
+  uint32_t button_count;
   /* What publication reserved for each list. */
-  uint32_t capacities[6];
+  uint32_t capacities[7];
   /* Zero-delay deliveries, a ring. */
   struct IoDelivery *queue;
   uint32_t queue_head;

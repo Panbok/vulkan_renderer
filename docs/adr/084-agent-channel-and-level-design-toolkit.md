@@ -778,6 +778,7 @@ are:
 |---|---|---|
 | `trigger` (`enabled`, `once`, `filter` component) | `on_enter` and `on_exit` (the other entity), `on_empty` | `enable`, `disable`, `toggle` |
 | `relay` | `on_trigger` | `trigger`, `enable`, `disable` |
+| `button` (`wait`, `locked`) | `on_pressed` and `on_refused` (the activator) | `press` (the activator), `lock`, `unlock` |
 | `timer` (`interval`, `start_running`, `once`) | `on_timer` | `start`, `stop`, `set_interval` |
 | `counter` (`start`, `min`, `max`) | `on_changed` (the value), `on_max`, `on_min` | `add`, `subtract`, `set` |
 | `mover` (`direction`, `distance`, `lip`, `angle`, `axis`, `pivot`, `spin`, `speed`, `wait`, `start_open`, `loop`, `locked`) | `on_open`, `on_opened`, `on_close`, `on_closed` | `open`, `close`, `toggle`, `lock`, `unlock`, `set_position` (0 to 1) |
@@ -821,6 +822,14 @@ The script host owns one router per session
 5. **Trace.** Each delivery logs
    `[io] 12.350 Lobby trigger.on_enter(Player) -> Door A.open`; `io.trace`
    turns it off.
+
+A `button` is pressed by `press`, as Source's func_button: the FPS player's
+use key (E) traces 2 m from the eye and presses the brush it hits when that
+brush carries the button, naming the player as activator. It fires
+`on_pressed` with the activator and then takes no press for `wait` seconds,
+or for the session with a negative wait; while `locked` a press fires
+`on_refused` instead. A door that opens on use carries a button whose
+`on_pressed` reaches its mover.
 
 A `mover` moves its entity and everything under it between its saved pose
 and an open pose `distance` meters along `direction` in its own space, as
@@ -871,8 +880,8 @@ selected in the Scene or Outliner becomes the target) and the ports both
 ends offer. The Scene draws amber lines from the selection to its targets
 and blue lines from the sources that reach it. Connections and faces show no
 transform, script, component or physics rows. The Create menu's Level group
-adds Trigger Volume (a trigger brush with `trigger`), Relay, Timer and
-Counter. Cmd `io.trace` and `io.fire <object> <input> [value]` work in the
+adds Trigger Volume (a trigger brush with `trigger`), Relay, Button, Timer
+and Counter. Cmd `io.trace` and `io.fire <object> <input> [value]` work in the
 bar during Play, with script instances or engine IO components alone, and
 `level.lint` reports connections that will not route as
 `broken_connection`. The Level Design palette's Mover button and operation

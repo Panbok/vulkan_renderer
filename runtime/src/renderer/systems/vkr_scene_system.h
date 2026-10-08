@@ -365,6 +365,15 @@ typedef struct SceneRelay {
   bool8_t enabled;
 } SceneRelay;
 
+/* Pressed by `press`, as the player's use key sends it, as Source's
+ * func_button: fires `on_pressed` with the activator, then takes no press
+ * for `wait` seconds, or with a negative wait for the rest of the session;
+ * while `locked` a press fires `on_refused` instead. */
+typedef struct SceneButton {
+  float32_t wait;
+  bool8_t locked;
+} SceneButton;
+
 /* Fires `on_timer` every `interval` seconds of simulation while running. */
 typedef struct SceneTimer {
   float32_t interval;
