@@ -2151,17 +2151,20 @@ static bool8_t physics_generated_drive(VkrScenePhysics *physics,
                                          (float32_t)VKR_SCENE_PHYSICS_FIXED_DT);
 }
 
-/* A target set while the clock runs drives its body at once: a character
-   stepped later in the same tick, before the world step, rides this tick's
-   motion rather than the last one's (ADR-073). The step drives it again;
-   a failure here surfaces there. */
+/* A target set while the clock runs, or during a tick, single steps
+   included, drives its body at once: a character stepped later in the
+   same tick, before the world step, rides this tick's motion rather than
+   the last one's (ADR-073). The step drives it again; a failure here
+   surfaces there. */
 static bool8_t physics_drives_now(const VkrScene *scene) {
-  return !physics_paused(scene) && !scene->physics_disabled &&
-         scene->physics->world && !scene->physics->faulted;
+  return (!physics_paused(scene) || physics_clock(scene)->simulation.active) &&
+         !scene->physics_disabled && scene->physics->world &&
+         !scene->physics->faulted;
 }
 
-/* Kinematic targets and the interpolation origin before a shared step. */
-static bool8_t physics_step_begin(VkrScene *scene, const char **error) {
+/* Drives every kinematic body of `scene` toward its target over the next
+   step. */
+static bool8_t physics_drive_kinematic(VkrScene *scene, const char **error) {
   VkrScenePhysics *physics = scene->physics;
   for (ScenePhysicsBody *body = physics->bodies; body; body = body->next) {
     if (physics_body_drivable(body) && !physics_body_drive(physics, body)) {
@@ -2177,13 +2180,27 @@ static bool8_t physics_step_begin(VkrScene *scene, const char **error) {
       return physics_fail(error, vkr_physics_last_error(physics->world));
     }
   }
-  for (ScenePhysicsBody *body = physics->bodies; body; body = body->next) {
+  return true_v;
+}
+
+/* Kinematic targets and the interpolation origin before a shared step. */
+static bool8_t physics_step_begin(VkrScene *scene, const char **error) {
+  if (!physics_drive_kinematic(scene, error)) {
+    return false_v;
+  }
+  for (ScenePhysicsBody *body = scene->physics->bodies; body;
+       body = body->next) {
     body->previous_pose = body->current_pose;
   }
   return true_v;
 }
 
-static void physics_step_end(VkrScene *scene) {
+/* Reads the stepped poses, then drives each kinematic body toward the
+   target it reached: still until a new target drives it. A body whose
+   owner sets no target next tick, as a mover at rest, does not carry a
+   character stepped then with the velocity of the step that brought it
+   there (ADR-073). */
+static bool8_t physics_step_end(VkrScene *scene, const char **error) {
   VkrScenePhysics *physics = scene->physics;
   for (ScenePhysicsBody *body = physics->bodies; body; body = body->next) {
     if (body->body != VKR_PHYSICS_BODY_INVALID) {
@@ -2191,6 +2208,7 @@ static void physics_step_end(VkrScene *scene) {
                                 &body->current_pose);
     }
   }
+  return physics_drive_kinematic(scene, error);
 }
 
 bool8_t vkr_scene_physics_tick(VkrScene *scene, const char **error) {
@@ -2259,7 +2277,9 @@ bool8_t vkr_scene_physics_tick(VkrScene *scene, const char **error) {
     return physics_fail(error, vkr_physics_last_error(physics->world));
   }
   for (uint32_t i = 0; i < count; ++i) {
-    physics_step_end(scenes[i]);
+    if (!physics_step_end(scenes[i], error)) {
+      return false_v;
+    }
   }
   if (!vkr_scene_physics_publish_bones(scene, false_v, error)) {
     return false_v;

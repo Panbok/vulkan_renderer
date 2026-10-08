@@ -6,6 +6,7 @@
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_simulation.h"
 #include "renderer/systems/vkr_scene_types.h"
+#include "script/vkr_io_router.h"
 #include "script/vkr_script_host.h"
 #include <assert.h>
 #include <math.h>
@@ -24,11 +25,15 @@ typedef struct PlayerTest PlayerTest;
 
 /* A kinematic deck a test drives as the IO router drives a mover's brushes
  * (ADR-084): before the player's tick, its body's target and its drawn pose
- * move to `motion(tick)`, a turn about the world origin then an offset. */
+ * move to `motion(tick)`, a turn about the world origin then an offset.
+ * With a `router`, the deck carries a mover that router steps instead, and
+ * its body follows the pose the router wrote on the ticks it wrote one, as
+ * vkr_scene_brush_mover_move does. */
 typedef struct PlayerTestDeck {
   uint64_t key;
   VkrEntityId entity;
   void (*motion)(uint64_t tick, Vec3 *offset, VkrQuat *rotation);
+  VkrIoRouter *router;
 } PlayerTestDeck;
 
 struct PlayerTest {
@@ -58,6 +63,21 @@ static bool8_t player_test_before(VkrScene *scene, uint64_t tick,
         mat4_mul(mat4_translate(offset), vkr_quat_to_mat4(rotation));
     if (!vkr_scene_set_evaluated_transform(scene, test->deck.entity, &pose)) {
       scene->simulation.error = "Deck pose refused";
+      return false_v;
+    }
+  }
+  if (test->deck.router) {
+    if (!vkr_io_router_step(test->deck.router, VKR_SCENE_SIMULATION_FIXED_DT)) {
+      scene->simulation.error = "Deck mover step failed";
+      return false_v;
+    }
+    const SceneEvaluatedTransform *pose = vkr_entity_get_component(
+        scene->world, test->deck.entity, scene->comp_evaluated_transform);
+    if (pose && pose->tick == tick &&
+        !vkr_scene_physics_generated_move(
+            scene, test->deck.key, mat4_position(pose->world),
+            vkr_quat_identity(), vec3_zero(), &error)) {
+      scene->simulation.error = error;
       return false_v;
     }
   }
@@ -666,6 +686,70 @@ static void test_player_tram_jump(VkrAllocator *allocator) {
   player_deck_end(&test, &scene);
 }
 
+/* A looping tram mover (ADR-084) 6.5 m along -X at 8 m/s resting half a
+ * second at each end, stepped by the IO router before the player as
+ * script_host_before_physics does: out, back and out again, each leg ending
+ * three quarters into its 49th tick; running, or paused and single-stepped
+ * (sim.step). Oracle: the deck's drawn pose each tick; the player's offset
+ * from it moves less than a millimetre in any tick, and it stays grounded.
+ * A player carried by the deck's last tick again while the deck rests ends
+ * each leg 0.1 m further along it; one stepped against last tick's deck
+ * motion slips a tick's travel as the deck sets off. */
+static void test_player_tram_mover(VkrAllocator *allocator,
+                                   bool8_t single_step) {
+  VkrScene scene;
+  InputState input = {0};
+  PlayerTest test = {0};
+  player_deck_begin(&test, &scene, allocator, &input, single_step ? 55 : 54,
+                    vec3_new(20, .25f, 3), vec3_new(0, .05f, 0), NULL);
+  const SceneMover mover = {.direction = vec3_new(-1, 0, 0),
+                            .distance = 6.5f,
+                            .speed = 8.0f,
+                            .wait = 0.5f,
+                            .loop = true_v};
+  assert(vkr_scene_set_typed(&scene, test.deck.entity, &vkr_scene_mover_type,
+                             &mover));
+  vkr_scene_update_transforms(&scene);
+  VkrIoRouter router = {0};
+  VkrScene *scenes[1] = {&scene};
+  const VkrIoRouterHooks hooks = {0};
+  assert(vkr_io_router_publish(&router, scenes, 1u, &hooks, allocator));
+  test.deck.router = &router;
+  if (single_step) {
+    vkr_scene_physics_set_paused(&scene, true_v);
+  }
+  const FpsPlayerState *state = fps_player_state(test.ctx, &test.player);
+  assert(state);
+  Vec3 last = vec3_zero();
+  float32_t worst = 0.0f;
+  float32_t far = 0.0f;
+  bool8_t grounded = true_v;
+  for (uint64_t tick = 1; tick <= 220u; ++tick) {
+    if (single_step) {
+      assert(vkr_scene_physics_step(&scene, NULL));
+    } else {
+      vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+    }
+    assert(scene.simulation.completed_ticks == tick);
+    const SceneEvaluatedTransform *pose = vkr_entity_get_component(
+        scene.world, test.deck.entity, scene.comp_evaluated_transform);
+    assert(pose);
+    const Vec3 deck = mat4_position(pose->world);
+    far = Min(far, deck.x);
+    const Vec3 offset = vec3_sub(test.player.current_foot, deck);
+    if (tick > DECK_SETTLE_TICKS) {
+      grounded = grounded && state->grounded;
+      worst = Max(worst, vec3_length(vec3_sub(offset, last)));
+    }
+    last = offset;
+  }
+  assert(fabsf(far + 6.5f) < 1e-4f);
+  assert(grounded && worst < 1e-3f);
+  test.deck.router = NULL;
+  vkr_io_router_clear(&router);
+  player_deck_end(&test, &scene);
+}
+
 /* An elevator deck 1.5 m/s up and down. Oracle: the deck's height each
  * tick; the player stays grounded on it every tick, its feet within 5 mm of
  * where they rested on the deck. A player stepped against the deck's pose
@@ -776,6 +860,8 @@ bool32_t run_gameplay_player_tests(void) {
   test_player_elevator(&allocator);
   test_player_tram_drawn(&allocator);
   test_player_tram_jump(&allocator);
+  test_player_tram_mover(&allocator, false_v);
+  test_player_tram_mover(&allocator, true_v);
   test_player_evaluated_transforms(&allocator);
   test_player_observer_bursts(&allocator);
   test_player_unfocused_simulation(&allocator);
