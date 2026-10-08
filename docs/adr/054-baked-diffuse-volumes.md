@@ -104,7 +104,7 @@ an inner cell layer. The fixed 4 × 4 × 4 default used before 2026-10-08
 ignored the bounds. `test_fitted_volume_grid_finds_every_room` requires that
 a 48 × 4 × 12 m row of four rooms, which fits 16 × 4 × 4 probes at
 3 × 1 × 3 m, proves cells in every room, and that 4 × 4 × 4, which spaces
-its probes a room apart there, proves none; the test has not run yet.
+its probes a room apart there, proves none.
 
 A region is retained only when a representative's nearest blocking boundary on
 all six axial rays is front-facing toward room air. Missing, grazing, mixed, or
