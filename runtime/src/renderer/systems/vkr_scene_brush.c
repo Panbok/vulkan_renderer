@@ -1044,19 +1044,25 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
       shape ? vkr_entity_get_component(scene->world, record->entity,
                                        scene->comp_transform)
             : NULL;
+  /* A first build attaches the entity's mesh, which moves it to another
+     archetype: the swap-remove then fills its old row with another entity.
+     Values the build needs afterwards are copied before, never read through
+     component pointers. */
   if (shape_transform) {
-    brush_rebuild_shape(scene, state, record, shape, &shape_transform->world);
+    const Mat4 shape_world = shape_transform->world;
+    brush_rebuild_shape(scene, state, record, shape, &shape_world);
     return;
   }
-  const SceneBrushSettings *settings =
+  const SceneBrushSettings *stored =
       vkr_scene_get_typed(scene, record->entity, &vkr_scene_brush_type);
   const SceneTransform *transform = vkr_entity_get_component(
       scene->world, record->entity, scene->comp_transform);
-  if (!settings || !transform) {
+  if (!stored || !transform) {
     brush_clear(scene, state, record);
     snprintf(record->status, sizeof(record->status), "no brush or transform");
     return;
   }
+  const SceneBrushSettings settings = *stored;
   const Mat4 world = transform->world;
   VkrEntityId face_entities[VKR_BRUSH_FACE_MAX + 1u];
   const uint32_t face_count = vkr_scene_brush_faces(
@@ -1104,7 +1110,7 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
                                        brush_trigger_key(record->entity));
     record->trigger_body = false_v;
   }
-  const SceneBrushRole role = settings->role;
+  const SceneBrushRole role = settings.role;
   if (role != SCENE_BRUSH_ROLE_VISUAL &&
       brush_store_hull(scene, record, state->geometry, &world)) {
     if (role == SCENE_BRUSH_ROLE_TRIGGER) {
