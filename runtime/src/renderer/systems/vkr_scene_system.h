@@ -222,6 +222,21 @@ typedef struct SceneDecal {
   bool8_t enabled;
 } SceneDecal;
 
+/** Bytes of one material path in a `material_override` component, its
+    terminator included. */
+#define SCENE_MATERIAL_OVERRIDE_PATH_CAPACITY 112u
+
+/**
+ * A `material_override` component: per submesh, the material file the
+ * entity's mesh instance draws instead of its asset's, leaving the shared
+ * mesh asset unchanged (vkr_scene_material_override.h). Path i names
+ * submesh i's material; an empty path keeps the mesh's own.
+ */
+typedef struct SceneMaterialOverride {
+  char materials[VKR_MESH_MATERIAL_OVERRIDE_MAX]
+                [SCENE_MATERIAL_OVERRIDE_PATH_CAPACITY];
+} SceneMaterialOverride;
+
 /* How a brush takes part in the level (ADR-084): solid renders and collides,
  * visual only renders, clip only collides, and trigger is a sensor volume. Clip
  * and trigger brushes draw only while the editor edits the scene. */
@@ -1196,6 +1211,9 @@ typedef struct VkrScene {
   /** Decal material bindings, created with the first decal
    * (vkr_scene_decal.h). */
   struct s_VkrSceneDecals *decals;
+  /** Mesh material override bindings, created with the first
+   * `material_override` component (vkr_scene_material_override.h). */
+  struct s_VkrSceneMaterialOverrides *material_overrides;
   /** Population state, created with the first spline mesh or scatter
       (vkr_scene_population.h). */
   struct s_VkrScenePopulation *population;

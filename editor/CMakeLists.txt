@@ -41,6 +41,8 @@ add_executable(vkr_editor
     src/editor_project_store.c
     src/editor_scripts.c
     src/editor_code.c
+    src/editor_graph.c
+    src/editor_material.c
 )
 target_include_directories(vkr_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_SOURCE_DIR}/vendor")

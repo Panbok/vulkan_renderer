@@ -740,7 +740,7 @@ void vkr_editor_agent_update(VkrEditorAgent *agent, VkrEditorUi *editor,
   if (!agent) {
     return;
   }
-  vkr_editor_ops_update(agent->ops, frame);
+  vkr_editor_ops_update(agent->ops, editor, frame);
   agent_waits_update(agent, frame);
   if (agent->listener != VKR_LOCAL_SOCKET_INVALID) {
     agent_accept(agent);

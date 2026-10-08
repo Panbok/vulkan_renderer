@@ -300,6 +300,8 @@ String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
     return string8_lit("Script editor");
   case VKR_UI_DOCK_PANEL_TERRAIN:
     return string8_lit("Terrain");
+  case VKR_UI_DOCK_PANEL_MATERIAL:
+    return string8_lit("Material");
   default:
     return string8_lit("Panel");
   }
@@ -544,6 +546,7 @@ VkrUiRect vkr_ui_dock_tab_rect(const VkrUiDockTree *tree, uint32_t leaf,
       [VKR_UI_DOCK_PANEL_LEVEL_CHECKS] = 140.0f,
       [VKR_UI_DOCK_PANEL_SCRIPT] = 140.0f,
       [VKR_UI_DOCK_PANEL_TERRAIN] = 104.0f,
+      [VKR_UI_DOCK_PANEL_MATERIAL] = 108.0f,
   };
   float32_t total = 0.0f;
   float32_t preceding = 0.0f;
@@ -818,7 +821,7 @@ static String8 vkr_ui_dock_panel_name(VkrUiDockPanelKind kind) {
   static const char *const names[VKR_UI_DOCK_PANEL_COUNT] = {
       "scene_viewport", "hierarchy", "inspector", "console", "toolbar",
       "custom",         "bakery",    "content",   "build",   "tools",
-      "level_checks",   "script",    "terrain",
+      "level_checks",   "script",    "terrain",   "material",
   };
   return string8_create_from_cstr((const uint8_t *)names[kind],
                                   string_length(names[kind]));

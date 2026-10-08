@@ -262,6 +262,11 @@ bool8_t vkr_scene_edit_undo(VkrSceneEditState *state, VkrScene *scene,
 /** Sequence of the entry undo (or redo) would apply next, or zero. */
 uint64_t vkr_scene_edit_next_sequence(const VkrSceneEditState *state,
                                       bool8_t redo);
+/** The next step and group numbers of the counters every journal draws
+ * from, for another journal whose steps undo in order with scene steps,
+ * such as the editor's material documents. */
+uint64_t vkr_scene_edit_take_sequence(void);
+uint64_t vkr_scene_edit_take_group(void);
 bool8_t vkr_scene_edit_save(VkrSceneEditState *state, VkrScene *scene,
                             String8 path);
 bool8_t vkr_scene_edit_load(VkrSceneEditState *state, VkrScene *scene,

@@ -738,6 +738,8 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_TREE;
   if (type == &vkr_scene_tags_type)
     return VKR_UI_ICON_TAG;
+  if (type == &vkr_scene_material_override_type)
+    return VKR_UI_ICON_MATERIAL;
   if (vkr_scene_world_type_registered(type))
     return VKR_UI_ICON_CODE;
   return VKR_UI_ICON_LIGHT;

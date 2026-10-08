@@ -1284,9 +1284,30 @@ allocation_failure:
   return false_v;
 }
 
+/* Drops the references `instance` holds on its material overrides and
+   clears them. */
+vkr_internal void
+vkr_mesh_manager_release_instance_materials(VkrMeshManager *manager,
+                                            VkrMeshInstance *instance) {
+  for (uint32_t i = 0u; i < instance->material_override_count; ++i) {
+    if (instance->material_overrides[i].id != 0u) {
+      vkr_material_system_release(manager->material_system,
+                                  instance->material_overrides[i]);
+    }
+    instance->material_overrides[i] = (VkrMaterialHandle){0};
+  }
+  instance->material_override_count = 0u;
+}
+
 void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
   if (!manager)
     return;
+
+  for (uint32_t i = 0u; i < manager->instance_count; ++i) {
+    const uint32_t slot = manager->instance_live_indices.data[i];
+    vkr_mesh_manager_release_instance_materials(
+        manager, &manager->mesh_instances.data[slot]);
+  }
 
   for (uint32_t i = 0; i < manager->meshes.length; ++i) {
     VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, i);
@@ -3539,6 +3560,7 @@ bool8_t vkr_mesh_manager_destroy_instance(VkrMeshManager *manager,
 
   uint32_t live_index = inst->live_index;
 
+  vkr_mesh_manager_release_instance_materials(manager, inst);
   vkr_mesh_manager_asset_instance_index_remove_instance(manager, slot,
                                                         inst->asset);
 
@@ -3621,6 +3643,66 @@ uint32_t vkr_mesh_manager_set_lightmap_slots(VkrMeshManager *manager,
         manager, VKR_SHADOW_CASTER_MOBILITY_STATIC, false_v);
   }
   return set;
+}
+
+bool8_t vkr_mesh_manager_instance_set_materials(
+    VkrMeshManager *manager, VkrMeshInstanceHandle handle,
+    const VkrMaterialHandle *materials, uint32_t count) {
+  assert_log(manager != NULL, "Manager is NULL");
+  VkrMeshInstance *inst = vkr_mesh_manager_get_instance(manager, handle);
+  if (!inst || count > VKR_MESH_MATERIAL_OVERRIDE_MAX ||
+      (count > 0u && !materials)) {
+    return false_v;
+  }
+
+  /* The count ends at the last set entry, so an instance whose entries are
+     all empty reads no override at all. */
+  uint32_t used = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (materials[i].id != 0u) {
+      used = i + 1u;
+    }
+  }
+  bool8_t changed = used != inst->material_override_count;
+  for (uint32_t i = 0u; i < used && !changed; ++i) {
+    changed = MemCompare(&inst->material_overrides[i], &materials[i],
+                         sizeof(materials[i])) != 0;
+  }
+  if (!changed) {
+    return true_v;
+  }
+
+  /* References to the new materials come first, so a material kept across
+     the change never drops to zero and unloads. */
+  for (uint32_t i = 0u; i < used; ++i) {
+    if (materials[i].id != 0u) {
+      vkr_material_system_add_ref(manager->material_system, materials[i]);
+    }
+  }
+  vkr_mesh_manager_release_instance_materials(manager, inst);
+  for (uint32_t i = 0u; i < used; ++i) {
+    inst->material_overrides[i] = materials[i];
+  }
+  inst->material_override_count = used;
+
+  if (!inst->visible || inst->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+    return true_v;
+  }
+  /* Retained draws and shadows that captured this instance hold its old
+     materials. A static change reaches only the instance's bounds, so
+     retained shadows elsewhere stay valid. */
+  if (inst->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC) {
+    manager->generations.static_content++;
+    const float32_t radius = inst->bounds_world_radius;
+    const Vec3 extent = vec3_new(radius, radius, radius);
+    vkr_mesh_manager_record_static_change(
+        manager, inst->bounds_valid,
+        vec3_sub(inst->bounds_world_center, extent),
+        vec3_add(inst->bounds_world_center, extent));
+  } else {
+    manager->generations.dynamic_content++;
+  }
+  return true_v;
 }
 
 VkrMeshInstance *vkr_mesh_manager_get_instance(VkrMeshManager *manager,

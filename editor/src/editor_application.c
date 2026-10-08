@@ -5,6 +5,7 @@
 #include "editor_content.h"
 #include "editor_install.h"
 #include "editor_internal.h"
+#include "editor_material.h"
 #include "editor_level.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
@@ -92,6 +93,7 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   editor->ui.build = vkr_editor_build_create(&ui->retained_allocator);
   editor->ui.scripts = vkr_editor_scripts_create(&ui->retained_allocator);
   editor->ui.code = vkr_editor_code_create(&ui->retained_allocator);
+  editor->ui.materials = vkr_editor_material_create(&ui->retained_allocator);
   editor->ui.scene_panels =
       vkr_editor_scene_panels_create(&ui->retained_allocator);
   editor->ui.physics_settings =
@@ -100,7 +102,7 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
       &ui->retained_allocator, editor->agent_socket, !editor->agent_disabled);
   if (!editor->ui.bakery || !editor->ui.build || !editor->ui.scene_panels ||
       !editor->ui.physics_settings || !editor->ui.scripts || !editor->ui.code ||
-      !editor->ui.agent)
+      !editor->ui.materials || !editor->ui.agent)
     goto cleanup;
   /* Startup Cmd scripts: the environment first, then --exec. */
   editor->ui.cmd_quit_when_done = editor->headless;

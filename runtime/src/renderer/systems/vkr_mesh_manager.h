@@ -446,9 +446,28 @@ uint32_t vkr_mesh_manager_set_lightmap_slots(VkrMeshManager *manager,
                                              uint32_t count);
 
 /**
+ * @brief Replaces the submesh material overrides of one mesh instance.
+ *
+ * Entry i of `materials` replaces submesh i's asset material for this
+ * instance only (vkr_mesh_instance_submesh_material); an entry with id 0, and
+ * every submesh at or past `count`, keeps the asset's material. A count of
+ * zero clears the overrides. The instance takes one reference on each set
+ * entry and drops those of the overrides it replaces, so callers keep their
+ * own references; destroying the instance drops its references. A drawn
+ * instance's change notes one content change for its shadow mobility,
+ * reaching only its world bounds.
+ * @return false for a stale handle or `count` above
+ * VKR_MESH_MATERIAL_OVERRIDE_MAX, changing nothing.
+ */
+bool8_t vkr_mesh_manager_instance_set_materials(
+    VkrMeshManager *manager, VkrMeshInstanceHandle handle,
+    const VkrMaterialHandle *materials, uint32_t count);
+
+/**
  * @brief Destroy a mesh instance.
  *
- * Releases pipeline state, decrements asset ref_count, and frees the slot.
+ * Releases pipeline state and material overrides, decrements asset
+ * ref_count, and frees the slot.
  *
  * @param manager The mesh manager.
  * @param instance Handle to the instance.

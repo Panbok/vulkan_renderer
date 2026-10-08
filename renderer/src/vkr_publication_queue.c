@@ -414,11 +414,7 @@ vkr_internal bool8_t vkr_publication_record_material(
   }
   command->material = *material;
   command->material.name = vkr_publication_copy_cstr(renderer, material->name);
-  command->material.shader_name =
-      vkr_publication_copy_cstr(renderer, material->shader_name);
-  command->discarded =
-      (material->name && !command->material.name) ||
-      (material->shader_name && !command->material.shader_name);
+  command->discarded = material->name && !command->material.name;
   return !command->discarded;
 }
 

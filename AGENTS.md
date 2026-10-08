@@ -87,6 +87,8 @@ conditional references needed for the current step:
 - `vkr-editor-cmd` to drive the editor by text or scripted `--exec` runs.
 - `vkr-level-design` to build or check levels through the editor's agent
   channel, alone or beside other agents.
+- `vkr-art` for material graphs, instances and the art pass through the
+  editor's agent channel.
 - `vkr-harness` for cases, profiles, captures, reports, and baselines; add
   `vkr-performance` for timing claims or `vkr-validation` for native diagnostics.
 - `unslop` for reports, explanations, and other output the user reads beyond

@@ -1,4 +1,5 @@
 #include "editor_internal.h"
+#include "editor_material.h"
 #include "editor_level.h"
 #include "editor_terrain.h"
 
@@ -39,6 +40,7 @@ static Vec4 editor_dock_icon_color(VkrUiDockPanelKind kind) {
       {0.58f, 0.86f, 0.52f, 1.0f}, /* Level checks */
       {0.52f, 0.76f, 0.98f, 1.0f}, /* Script editor */
       {0.62f, 0.84f, 0.62f, 1.0f}, /* Terrain */
+      {0.92f, 0.66f, 0.30f, 1.0f}, /* Material */
   };
   return colors[kind];
 }
@@ -49,7 +51,7 @@ static VkrUiIcon editor_dock_panel_icon(VkrUiDockPanelKind kind) {
       VKR_UI_ICON_CONSOLE, VKR_UI_ICON_NONE,        VKR_UI_ICON_NONE,
       VKR_UI_ICON_BAKERY,  VKR_UI_ICON_CONTENT,     VKR_UI_ICON_EXPORT,
       VKR_UI_ICON_SHAPES,  VKR_UI_ICON_PERSON_WALK, VKR_UI_ICON_CODE,
-      VKR_UI_ICON_WAVES,
+      VKR_UI_ICON_WAVES,   VKR_UI_ICON_MATERIAL,
   };
   return icons[kind];
 }
@@ -309,6 +311,9 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
         break;
       case VKR_UI_DOCK_PANEL_TERRAIN:
         vkr_editor_terrain_window_build(editor, frame, rect);
+        break;
+      case VKR_UI_DOCK_PANEL_MATERIAL:
+        vkr_editor_material_panel_build(editor, frame, rect);
         break;
       default:
         break;

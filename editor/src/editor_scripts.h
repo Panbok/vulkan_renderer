@@ -131,3 +131,10 @@ vkr_editor_scripts_module_of(const VkrEditorScripts *scripts, const char *path);
 uint32_t vkr_editor_scripts_diagnostic_count(const VkrEditorScripts *scripts);
 const VkrEditorScriptDiagnostic *
 vkr_editor_scripts_diagnostic(const VkrEditorScripts *scripts, uint32_t index);
+
+/* Each entry of directory `path` except dot entries, in the platform's
+   order, with whether it is a directory. */
+typedef void (*VkrEditorDirectoryVisit)(void *context, const char *name,
+                                        bool8_t directory);
+void vkr_editor_directory_list(const char *path, VkrEditorDirectoryVisit visit,
+                               void *context);

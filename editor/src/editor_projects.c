@@ -2061,9 +2061,11 @@ static void project_material_coverage(const VkrSampleUiFrame *frame,
       continue;
     }
     const Mat4 clip = mat4_mul(frame->view_projection, instance->model);
-    for (uint64_t s = 0; s < asset->submeshes.length; ++s) {
+    for (uint32_t s = 0; s < (uint32_t)asset->submeshes.length; ++s) {
       const VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
-      if (submesh->material.id == 0u || submesh->material.id > capacity) {
+      const VkrMaterialHandle material =
+          vkr_mesh_instance_submesh_material(instance, s, submesh->material);
+      if (material.id == 0u || material.id > capacity) {
         continue;
       }
       float32_t min_x = 1.0f;
@@ -2096,7 +2098,7 @@ static void project_material_coverage(const VkrSampleUiFrame *frame,
           surrounds ? 2.0f
                     : Clamp(max_y, -1.0f, 1.0f) - Clamp(min_y, -1.0f, 1.0f);
       if (width > 0.0f && height > 0.0f) {
-        coverage[submesh->material.id - 1u] += width * height * 0.25f;
+        coverage[material.id - 1u] += width * height * 0.25f;
       }
     }
   }

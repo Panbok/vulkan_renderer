@@ -3,7 +3,11 @@
 #include "filesystem/vkr_filesystem_cpp.h"
 
 extern "C" {
+#include "assets/vkr_material_graph.h"
 #include "core/vkr_hash.h"
+#include "filesystem/vkr_asset_path.h"
+#include "memory/arena.h"
+#include "memory/vkr_arena_allocator.h"
 }
 
 #include <ktx-software/external/basisu/encoder/basisu_gpu_texture.h>
@@ -18,6 +22,8 @@ extern "C" {
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -772,6 +778,85 @@ void material_defaults(VkrBakeMaterial *material) {
   material->attenuation_color = vec3_new(1, 1, 1);
 }
 
+/* Replaces `text`, the `.mt` file `material_path`, with the definition its
+   graph lowers to when it names one (`graph=`), as the runtime material
+   loader does. A plain definition stays as it is. The instance `name` is not
+   needed: the baker does not read material names. */
+VkrBakeMaterialError expand_graph(const char *material_path,
+                                  std::string *text) {
+  const String8 content = string8_create_from_cstr(
+      (const uint8_t *)text->data(), (uint64_t)text->size());
+  VkrMaterialInstance instance = {};
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {};
+  if (!vkr_material_instance_read(content, &instance, error, sizeof(error))) {
+    return error[0] ? VKR_BAKE_MATERIAL_ERROR_PARSE
+                    : VKR_BAKE_MATERIAL_ERROR_NONE;
+  }
+
+  Arena *arena = arena_create(MB(16), KB(256));
+  if (!arena) {
+    return VKR_BAKE_MATERIAL_ERROR_OUT_OF_MEMORY;
+  }
+  VkrAllocator allocator = {.ctx = arena};
+  VkrBakeMaterialError result = VKR_BAKE_MATERIAL_ERROR_NONE;
+  VkrMaterialGraph *graph = nullptr;
+  String8 graph_path = {};
+  FilePath graph_file = {};
+  FileMode mode = bitset8_create();
+  FileHandle handle = {};
+  FileError read_error = FILE_ERROR_NONE;
+  String8 json = {};
+  String8 definition = {};
+  VkrMaterialLowering lowering = {};
+  if (!vkr_allocator_arena(&allocator)) {
+    result = VKR_BAKE_MATERIAL_ERROR_OUT_OF_MEMORY;
+    goto cleanup;
+  }
+  graph = (VkrMaterialGraph *)vkr_allocator_alloc(
+      &allocator, sizeof(*graph), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  if (!graph) {
+    result = VKR_BAKE_MATERIAL_ERROR_OUT_OF_MEMORY;
+    goto cleanup;
+  }
+
+  graph_path = vkr_asset_path_resolve(
+      &allocator,
+      string8_create_from_cstr((const uint8_t *)material_path,
+                               strlen(material_path)),
+      string8_create_from_cstr((const uint8_t *)instance.graph,
+                               strlen(instance.graph)));
+  graph_file = vkr_asset_path_file(&allocator, graph_path);
+  bitset8_set(&mode, FILE_MODE_READ);
+  if (!graph_path.str || !graph_file.path.str ||
+      file_open(&graph_file, mode, &handle) != FILE_ERROR_NONE) {
+    result = VKR_BAKE_MATERIAL_ERROR_IO;
+    goto cleanup;
+  }
+  read_error = file_read_string(&handle, &allocator, &json);
+  file_close(&handle);
+  if (read_error != FILE_ERROR_NONE) {
+    result = VKR_BAKE_MATERIAL_ERROR_IO;
+    goto cleanup;
+  }
+
+  if (!vkr_material_graph_read(json, graph, error, sizeof(error))) {
+    result = VKR_BAKE_MATERIAL_ERROR_PARSE;
+    goto cleanup;
+  }
+  if (!vkr_material_graph_lower(graph, graph_path, instance.params,
+                                instance.param_count, &allocator, &definition,
+                                &lowering)) {
+    result = VKR_BAKE_MATERIAL_ERROR_UNSUPPORTED;
+    goto cleanup;
+  }
+  text->assign((const char *)definition.str, (size_t)definition.length);
+
+cleanup:
+  vkr_allocator_release_global_accounting(&allocator);
+  arena_destroy(arena);
+  return result;
+}
+
 } // namespace
 
 extern "C" VkrBakeTextureStore *
@@ -828,12 +913,22 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
       *out_error = VKR_BAKE_MATERIAL_ERROR_INVALID_ARGUMENT;
     return false_v;
   }
-  std::ifstream file(vkr_filesystem_native_utf8_path(material_path));
-  if (!file) {
+  std::ifstream source(vkr_filesystem_native_utf8_path(material_path));
+  if (!source) {
     if (out_error)
       *out_error = VKR_BAKE_MATERIAL_ERROR_IO;
     return false_v;
   }
+  std::string text((std::istreambuf_iterator<char>(source)),
+                   std::istreambuf_iterator<char>());
+  source.close();
+  const VkrBakeMaterialError graph_error = expand_graph(material_path, &text);
+  if (graph_error != VKR_BAKE_MATERIAL_ERROR_NONE) {
+    if (out_error)
+      *out_error = graph_error;
+    return false_v;
+  }
+  std::istringstream file(text);
   VkrBakeMaterial material = {};
   material_defaults(&material);
   std::array<std::string, VKR_BAKE_MATERIAL_TEXTURE_COUNT> texture_paths;

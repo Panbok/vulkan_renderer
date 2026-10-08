@@ -277,9 +277,13 @@ Array(VkrMeshAsset);
  * @brief Per-entity mesh instance referencing a shared asset.
  *
  * Stores transform and visibility. The actual
- * geometry/material data is retrieved from the referenced asset.
+ * geometry/material data is retrieved from the referenced asset, except for
+ * the submesh materials this instance overrides.
  */
 struct VkrSkinningInput;
+
+/** Submesh material overrides one mesh instance can hold. */
+#define VKR_MESH_MATERIAL_OVERRIDE_MAX 8u
 
 typedef struct VkrMeshInstance {
   VkrMeshAssetHandle asset;
@@ -304,8 +308,28 @@ typedef struct VkrMeshInstance {
   VkrShadowCasterMobility shadow_mobility;
   /** Zero, or the scene lightmap rectangle + 1 its draws sample (ADR-088). */
   uint32_t lightmap_slot;
+
+  /** Entries in use of `material_overrides`; zero for an instance drawing
+      only its asset's materials. */
+  uint32_t material_override_count;
+  /** Entry i replaces submesh i's asset material when its id is nonzero.
+      The instance holds one material reference per set entry
+      (vkr_mesh_manager_instance_set_materials). */
+  VkrMaterialHandle material_overrides[VKR_MESH_MATERIAL_OVERRIDE_MAX];
 } VkrMeshInstance;
 Array(VkrMeshInstance);
+
+/** The material submesh `submesh_index` of `instance` draws: its override,
+    or `asset_material`, that submesh's material in the shared asset. */
+vkr_internal INLINE VkrMaterialHandle vkr_mesh_instance_submesh_material(
+    const VkrMeshInstance *instance, uint32_t submesh_index,
+    VkrMaterialHandle asset_material) {
+  if (submesh_index < instance->material_override_count &&
+      instance->material_overrides[submesh_index].id != 0u) {
+    return instance->material_overrides[submesh_index];
+  }
+  return asset_material;
+}
 
 /** The lightmap slot of one mesh instance, or of one generated mesh when
     `instance` is invalid (vkr_mesh_manager_set_lightmap_slots). */

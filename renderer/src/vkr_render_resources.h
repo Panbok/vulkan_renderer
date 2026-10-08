@@ -226,13 +226,8 @@ typedef struct VkrMaterialTexture {
 
 typedef struct VkrMaterial {
   uint32_t id;
-  uint32_t pipeline_id; // pipeline family id (world/ui etc.)
   uint32_t generation;
   const char *name;
-
-  // Preferred shader name, e.g., "shader.default.world". If NULL, a
-  // domain-based default is used.
-  const char *shader_name;
 
   VkrMaterialType material_type;
   VkrMaterialAlphaMode alpha_mode;

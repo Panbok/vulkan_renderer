@@ -74,6 +74,10 @@ typedef struct VkrEditorChange {
   char problem[160];
   uint32_t entity_count;
   VkrEntityId entities[VKR_EDITOR_CHANGE_ENTITY_MAX];
+  /* A change to a material document instead of a scene: the first file its
+     group wrote, which Reject reverts through the material journal
+     (editor_material.h); empty for a scene change. */
+  char document[256];
 } VkrEditorChange;
 
 #define VKR_EDITOR_CLAIM_MAX 64u
@@ -104,7 +108,8 @@ bool8_t vkr_editor_ops_quick(String8 op);
 
 /* Drops changes whose group left its journal, as after a scene reload or an
    undo followed by another edit. Call once per build. */
-void vkr_editor_ops_update(VkrEditorOps *ops, const VkrSampleUiFrame *frame);
+void vkr_editor_ops_update(VkrEditorOps *ops, const VkrEditorUi *editor,
+                           const VkrSampleUiFrame *frame);
 
 /* `value` of `type` as the JSON object documents and `values` arguments
    take, into `out`; false when it does not fit. */

@@ -43,6 +43,12 @@ typedef enum VkrEditorContentActionKind {
      `drop_px`: attach it to the object there, else add an object running
      it. */
   VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT,
+  /* A material file or graph (`source` is its path): show it in the
+     Material panel. */
+  VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL,
+  /* A material (`source`) dropped on the viewport at `drop_px`: assign it
+     to the brush or mesh there. */
+  VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL,
 } VkrEditorContentActionKind;
 
 /* A Content context menu's commands (ADR-076). */

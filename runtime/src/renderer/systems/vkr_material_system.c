@@ -136,7 +136,6 @@ vkr_internal void vkr_material_system_init_surface_material(
   material->pbr.thickness_factor = 0.0f;
   material->pbr.attenuation_color = vec3_new(1.0f, 1.0f, 1.0f);
   material->pbr.attenuation_distance = 0.0f;
-  material->pipeline_id = VKR_INVALID_ID;
 
   vkr_material_system_reset_texture_slots(material);
   vkr_material_system_apply_default_surface_textures(system, material);
@@ -156,8 +155,7 @@ vkr_internal uint64_t vkr_material_shadow_key(const VkrMaterial *published) {
   return (uint64_t)published->alpha_mode |
          ((uint64_t)(published->double_sided != 0) << 8u) |
          ((uint64_t)vkr_material_system_material_is_transmissive(published)
-          << 9u) |
-         ((uint64_t)published->pipeline_id << 16u);
+          << 9u);
 }
 
 /* Queues whether the command just recorded for material `id` can change a
@@ -838,7 +836,6 @@ static void vkr_material_system_apply_replacement(VkrMaterialSystem *system,
   }
 
   const VkrMaterial *definition = &replacement->definition;
-  material->pipeline_id = definition->pipeline_id;
   material->material_type = definition->material_type;
   material->alpha_mode = definition->alpha_mode;
   material->alpha_mode_explicit = definition->alpha_mode_explicit;
@@ -1627,8 +1624,6 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
     vkr_material_system_shutdown(system);
     return false_v;
   }
-  for (uint64_t i = 0; i < system->materials.length; ++i)
-    system->materials.data[i] = (VkrMaterial){.pipeline_id = VKR_INVALID_ID};
 
   uint64_t hash_size = ((uint64_t)config->max_material_count) * 2ULL;
   if (hash_size > UINT32_MAX) {

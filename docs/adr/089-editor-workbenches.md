@@ -9,8 +9,9 @@ authority: adr
 ## Status
 
 Accepted (partial). The workbench row with General, Level Design, Terrain,
-Lighting, Scripting and custom copies, their palettes, the docked Level
-checks, Script editor and Terrain panels, switching, the keys, the tab menu
+Lighting, Scripting, Art ([ADR-093](093-material-graphs-and-art-workbench.md))
+and custom copies, their palettes, the docked Level checks, Script editor,
+Terrain and Material panels, switching, the keys, the tab menu
 and inline rename, Cmd `workbench*` statements and `ui.workbench`, the
 `workbench.*` agent operations, and persistence in project settings and in
 the layout file are implemented and verified headless on Windows/Vulkan.
@@ -53,7 +54,7 @@ directory that holds `.vkreditor`
 ### Row and switching
 
 A 28-point row under the 38-point top bar shows one tab per workbench, in the
-order General, Level Design, Terrain, Lighting, Scripting. The dock tree's
+order General, Level Design, Terrain, Lighting, Scripting, Art. The dock tree's
 toolbar leaf takes both heights through `VkrUiDockTree.toolbar_pt`, which the
 editor sets every build; the app and `--scene-only` keep 38 points, and the
 top bar alone stays the window's drag region.
@@ -198,6 +199,8 @@ review:
 | Lighting | Lights, Environment | Point, Spot, Rect, Directional; Sky, Clouds, Fog, Volumetric fog, Post process | The Create menu's kinds |
 | Lighting | View | Lit, Lighting only, Detail lighting, Light icons | The render mode, as `view.mode` sets it; `CMD_LABELS` |
 | Lighting | Bake | Bake lighting, Preferences | `CMD_SCENE_BAKE`, `CMD_GRAPHICS` |
+| Art | Materials | Edit, Assign, Reset | Opens the selected face's or brush's material in the Material panel; `face.set_material` of the open material on the selected face, else every face of the selected brush; the same with an empty material |
+| Art | View | Greybox | Toggles the greybox view (ADR-084) |
 
 The Terrain body's Create section shows in the Terrain window too, so the
 floating window opens 440 points tall. Brushes the Create path makes are

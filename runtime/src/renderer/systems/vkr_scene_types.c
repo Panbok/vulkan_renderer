@@ -1911,6 +1911,43 @@ const VkrTypeDesc vkr_scene_decal_type = {
     .validate = decal_validate,
 };
 
+/* ---- Material overrides ---- */
+
+/* One path per submesh, `material_0` naming submesh 0's material. */
+#define MATERIAL_OVERRIDE_PROPERTY(index)                                      \
+  {.name = "material_" #index,                                                 \
+   .label = "Submesh " #index,                                                 \
+   .tooltip =                                                                  \
+       "Material file for submesh " #index "; empty keeps the mesh's own",     \
+   .offset = TYPE_OFFSET(SceneMaterialOverride, materials[index]),             \
+   .capacity = SCENE_MATERIAL_OVERRIDE_PATH_CAPACITY,                          \
+   .kind = VKR_PROPERTY_STRING}
+
+static const VkrPropertyDesc s_material_override_properties[] = {
+    MATERIAL_OVERRIDE_PROPERTY(0), MATERIAL_OVERRIDE_PROPERTY(1),
+    MATERIAL_OVERRIDE_PROPERTY(2), MATERIAL_OVERRIDE_PROPERTY(3),
+    MATERIAL_OVERRIDE_PROPERTY(4), MATERIAL_OVERRIDE_PROPERTY(5),
+    MATERIAL_OVERRIDE_PROPERTY(6), MATERIAL_OVERRIDE_PROPERTY(7),
+};
+
+#undef MATERIAL_OVERRIDE_PROPERTY
+
+_Static_assert(ArrayCount(s_material_override_properties) ==
+                   VKR_MESH_MATERIAL_OVERRIDE_MAX,
+               "One material_override property per override entry");
+_Static_assert(sizeof(SceneMaterialOverride) <= VKR_TYPE_VALUE_MAX,
+               "A material_override value fits the typed value bound");
+
+const VkrTypeDesc vkr_scene_material_override_type = {
+    .name = "material_override",
+    .label = "Material overrides",
+    .category = "Rendering",
+    .properties = s_material_override_properties,
+    .property_count = ArrayCount(s_material_override_properties),
+    .size = sizeof(SceneMaterialOverride),
+    .align = AlignOf(SceneMaterialOverride),
+};
+
 /* ---- Brushes ---- */
 
 _Static_assert(sizeof(SceneBrushRole) == sizeof(uint32_t),
@@ -3603,6 +3640,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_blockout_type,
     &vkr_scene_mover_type,
     &vkr_scene_tags_type,
+    &vkr_scene_material_override_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -3667,8 +3705,9 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_animation_settings_type ||
          type == &vkr_scene_time_of_day_type || type == &vkr_scene_shape_type ||
          type == &vkr_scene_text_type || type == &vkr_scene_player_start_type ||
-         type == &vkr_scene_decal_type || type == &vkr_scene_brush_type ||
-         type == &vkr_scene_brush_face_type ||
+         type == &vkr_scene_decal_type ||
+         type == &vkr_scene_material_override_type ||
+         type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
          type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
          type == &vkr_scene_button_type || type == &vkr_scene_timer_type ||
          type == &vkr_scene_counter_type || type == &vkr_scene_mover_type ||

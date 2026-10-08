@@ -1,4 +1,5 @@
 #include "renderer/resources/loaders/material_loader.h"
+#include "assets/vkr_material_graph.h"
 #include "containers/str.h"
 #include "filesystem/vkr_asset_path.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -6,18 +7,6 @@
 
 #define VKR_MATERIAL_EXTENSION "mt"
 
-/**
- * @brief Maximum path length for texture paths in parsed material data.
- */
-#define VKR_MATERIAL_PATH_MAX 512
-
-/**
- * @brief Intended sampling color space for material textures.
- */
-typedef enum VkrMaterialTextureColorSpace {
-  VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR = 0,
-  VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB = 1,
-} VkrMaterialTextureColorSpace;
 
 typedef enum VkrMaterialTextureClass {
   VKR_MATERIAL_TEXTURE_CLASS_UNKNOWN = 0,
@@ -42,34 +31,6 @@ typedef struct VkrMaterialSlotAlias {
   VkrTextureSlot slot;
 } VkrMaterialSlotAlias;
 
-/**
- * @brief Parsed material data before textures are loaded.
- * Used for batch loading to separate parsing from GPU upload.
- */
-typedef struct VkrParsedMaterialData {
-  char name[VKR_MATERIAL_NAME_MAX];
-  char shader_name[VKR_MATERIAL_NAME_MAX];
-  uint32_t pipeline_id;
-  VkrMaterialType material_type;
-  VkrMaterialAlphaMode alpha_mode;
-  bool8_t alpha_mode_explicit;
-  bool8_t double_sided;
-  VkrPhongProperties phong;
-  VkrPbrProperties pbr;
-  float32_t alpha_cutoff;
-  bool8_t alpha_cutoff_set;
-  bool8_t cutout_enabled;
-  /** The largest roughness the surface reaches, when the file records it. */
-  float32_t roughness_max;
-  bool8_t roughness_max_set;
-
-  // Texture paths as fixed buffers (thread-safe for parallel parsing)
-  char texture_paths[VKR_TEXTURE_SLOT_COUNT][VKR_MATERIAL_PATH_MAX];
-  VkrMaterialTextureColorSpace texture_colorspace[VKR_TEXTURE_SLOT_COUNT];
-
-  bool8_t parse_success;
-  VkrRendererError parse_error;
-} VkrParsedMaterialData;
 
 /**
  * @brief Job payload for parallel material file parsing.
@@ -190,36 +151,6 @@ vkr_internal bool8_t vkr_material_loader_find_existing(
   return true_v;
 }
 
-vkr_internal uint32_t vkr_get_pipeline_id_from_string(char *value) {
-  assert_log(value != NULL, "Value is NULL");
-  assert_log(strlen(value) > 0, "Value is empty");
-
-  if (string_equalsi(value, "world")) {
-    return VKR_PIPELINE_DOMAIN_WORLD;
-  } else if (string_equalsi(value, "ui")) {
-    return VKR_PIPELINE_DOMAIN_UI;
-  } else if (string_equalsi(value, "compute")) {
-    return VKR_PIPELINE_DOMAIN_COMPUTE;
-  } else if (string_equalsi(value, "shadow")) {
-    return VKR_PIPELINE_DOMAIN_SHADOW;
-  } else if (string_equalsi(value, "post")) {
-    return VKR_PIPELINE_DOMAIN_POST;
-  }
-
-  return VKR_INVALID_ID;
-}
-
-vkr_internal void vkr_material_cleanup_shader_name(VkrMaterialSystem *system,
-                                                   const char *shader_name) {
-  if (!shader_name ||
-      !vkr_dmemory_owns_ptr(&system->string_memory, (void *)shader_name)) {
-    return;
-  }
-  uint64_t len = string_length(shader_name) + 1;
-  vkr_allocator_free(&system->string_allocator, (void *)shader_name, len,
-                     VKR_ALLOCATOR_MEMORY_TAG_STRING);
-}
-
 vkr_internal uint32_t vkr_material_find_slot(VkrMaterialSystem *system) {
   if (system->free_count > 0) {
     uint32_t slot = system->free_ids.data[system->free_count - 1];
@@ -248,7 +179,6 @@ vkr_internal void vkr_material_loader_discard_slot(VkrMaterialSystem *system,
       .generation = material->generation,
   };
   const char *stable_name = material->name;
-  const char *stable_shader = material->shader_name;
   if (published && handle.id != 0) {
     (void)vkr_material_system_unpublish(system, handle);
   }
@@ -261,10 +191,6 @@ vkr_internal void vkr_material_loader_discard_slot(VkrMaterialSystem *system,
       vkr_texture_system_release_by_handle(system->texture_system,
                                            material->textures[i].handle);
     }
-  }
-  if (stable_shader &&
-      vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_shader)) {
-    vkr_material_cleanup_shader_name(system, stable_shader);
   }
   if (stable_name &&
       vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_name)) {
@@ -949,32 +875,6 @@ vkr_material_make_string8_from_path_buffer(const char *path_buffer) {
   return string8_create_from_cstr((const uint8_t *)path_buffer, length);
 }
 
-vkr_internal bool8_t vkr_material_copy_trimmed_value_to_cstr(
-    String8 value, char *out_buffer, uint64_t out_buffer_size,
-    uint32_t *out_length) {
-  assert_log(out_buffer != NULL, "Output buffer is NULL");
-  assert_log(out_buffer_size > 0, "Output buffer size must be > 0");
-
-  String8 trimmed = value;
-  string8_trim(&trimmed);
-
-  if (!trimmed.str || trimmed.length == 0 ||
-      trimmed.length >= out_buffer_size) {
-    out_buffer[0] = '\0';
-    if (out_length) {
-      *out_length = 0;
-    }
-    return false_v;
-  }
-
-  MemCopy(out_buffer, trimmed.str, (size_t)trimmed.length);
-  out_buffer[trimmed.length] = '\0';
-  if (out_length) {
-    *out_length = (uint32_t)trimmed.length;
-  }
-  return true_v;
-}
-
 /* Whether the surface's roughness exceeds zero somewhere (VkrMaterial::rough).
    A roughness texture scales the factor by an unknown amount, so a file that
    has one and records no bound counts as smooth. */
@@ -996,7 +896,6 @@ vkr_material_loader_init_from_parsed(VkrMaterial *material,
   assert_log(material_system != NULL, "Material system is NULL");
 
   vkr_material_init_defaults(material, material_system);
-  material->pipeline_id = parsed->pipeline_id;
   material->material_type = parsed->material_type;
   material->alpha_mode = parsed->alpha_mode;
   material->alpha_mode_explicit = parsed->alpha_mode_explicit;
@@ -1043,14 +942,12 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
   VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
   if (vkr_material_loader_find_existing(system, material_name, &existing_handle,
                                         &acquire_err)) {
-    vkr_material_cleanup_shader_name(system, loaded_material.shader_name);
     out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
     out_handle->as.material = existing_handle;
     *out_error = VKR_RENDERER_ERROR_NONE;
     return true_v;
   }
   if (acquire_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
-    vkr_material_cleanup_shader_name(system, loaded_material.shader_name);
     *out_error = acquire_err;
     return false_v;
   }
@@ -1058,7 +955,6 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
   uint32_t slot = vkr_material_find_slot(system);
   if (slot == VKR_INVALID_ID) {
     log_error("Material system is full");
-    vkr_material_cleanup_shader_name(system, loaded_material.shader_name);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1068,7 +964,6 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_name) {
     log_error("Failed to allocate name for material");
-    vkr_material_cleanup_shader_name(system, loaded_material.shader_name);
     system->free_ids.data[system->free_count++] = slot;
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -1251,18 +1146,6 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
   MemCopy(stable_name, material_name.str, (size_t)material_name.length);
   stable_name[material_name.length] = '\0';
 
-  char *stable_shader = NULL;
-  uint64_t shader_name_len = string_length(parsed->shader_name);
-  if (shader_name_len > 0) {
-    stable_shader =
-        vkr_allocator_alloc(&system->string_allocator, shader_name_len + 1,
-                            VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    if (stable_shader) {
-      MemCopy(stable_shader, parsed->shader_name, (size_t)shader_name_len);
-      stable_shader[shader_name_len] = '\0';
-    }
-  }
-
   VkrMaterial material = {0};
   vkr_material_loader_init_from_parsed(&material, parsed, system);
 
@@ -1271,7 +1154,6 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
   dst->id = slot + 1;
   dst->generation = system->generation_counter++;
   dst->name = stable_name;
-  dst->shader_name = stable_shader;
 
   for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; ++i) {
     const VkrMaterialAsyncDependency *dependency =
@@ -1290,11 +1172,6 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
   };
   if (!vkr_hash_table_insert_VkrMaterialEntry(&system->material_by_name,
                                               stable_name, new_entry)) {
-    if (stable_shader &&
-        vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_shader)) {
-      vkr_allocator_free(&system->string_allocator, stable_shader,
-                         shader_name_len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    }
     vkr_allocator_free(&system->string_allocator, stable_name,
                        material_name.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -1423,7 +1300,6 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   // Reset material slot
   VkrMaterial *material = &system->materials.data[material_index];
   const char *stable_name = entry->name;
-  const char *stable_shader = material->shader_name;
   const VkrMaterialHandle material_handle = {
       .id = material->id, .generation = material->generation};
   vkr_material_system_cancel_texture_streams(system, material_handle);
@@ -1439,8 +1315,6 @@ vkr_material_loader_unload(VkrResourceLoader *self,
 
   material->id = 0;
   material->name = NULL;
-  material->shader_name = NULL;
-  material->pipeline_id = VKR_INVALID_ID;
   material->material_type = VKR_MATERIAL_TYPE_PHONG;
   material->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
   material->alpha_mode_explicit = false_v;
@@ -1476,13 +1350,6 @@ vkr_material_loader_unload(VkrResourceLoader *self,
       vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_name)) {
     uint64_t len = string_length(stable_name) + 1;
     vkr_allocator_free(&system->string_allocator, (void *)stable_name, len,
-                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  }
-
-  if (stable_shader &&
-      vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_shader)) {
-    uint64_t len = string_length(stable_shader) + 1;
-    vkr_allocator_free(&system->string_allocator, (void *)stable_shader, len,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
   }
 }
@@ -1568,18 +1435,6 @@ vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
       out_material->name = name_copy;
       material_name = string8_create_from_cstr((const uint8_t *)name_copy,
                                                material_name.length);
-    }
-  }
-
-  if (parsed.shader_name[0] != '\0') {
-    uint64_t shader_name_len = string_length(parsed.shader_name);
-    char *stable = (char *)vkr_allocator_alloc(
-        &material_system->string_allocator, shader_name_len + 1,
-        VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    if (stable) {
-      MemCopy(stable, parsed.shader_name, shader_name_len);
-      stable[shader_name_len] = '\0';
-      out_material->shader_name = stable;
     }
   }
 
@@ -1706,7 +1561,6 @@ vkr_material_loader_set_parse_defaults(VkrParsedMaterialData *out_data) {
   out_data->cutout_enabled = false_v;
   out_data->roughness_max = 0.0f;
   out_data->roughness_max_set = false_v;
-  out_data->pipeline_id = VKR_INVALID_ID;
   for (uint32_t slot = 0; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
     out_data->texture_paths[slot][0] = '\0';
     out_data->texture_colorspace[slot] = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
@@ -1948,7 +1802,7 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_volume_key(
   return VKR_MATERIAL_KEY_MATCHED;
 }
 
-/* Alpha, culling, shader and pipeline selection. */
+/* Alpha and culling state. */
 vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_state_key(
     VkrParsedMaterialData *out_data, String8 key, String8 value) {
   if (vkr_string8_equals_cstr_i(&key, "alpha_mode")) {
@@ -1975,24 +1829,6 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_state_key(
       // not an explicit mode override. Keep that behavior for compatibility.
       out_data->cutout_enabled = cutout;
     }
-  } else if (string8_contains_cstr(&key, "shader")) {
-    char shader_name[VKR_MATERIAL_NAME_MAX] = {0};
-    uint32_t trimmed_len = 0;
-    if (!vkr_material_copy_trimmed_value_to_cstr(
-            value, shader_name, sizeof(shader_name), &trimmed_len)) {
-      return VKR_MATERIAL_KEY_MATCHED;
-    }
-    if (trimmed_len > 0 && trimmed_len < sizeof(out_data->shader_name)) {
-      MemCopy(out_data->shader_name, shader_name, (size_t)trimmed_len);
-      out_data->shader_name[trimmed_len] = '\0';
-    }
-  } else if (string8_contains_cstr(&key, "pipeline")) {
-    char pipeline_name[VKR_MATERIAL_NAME_MAX] = {0};
-    if (!vkr_material_copy_trimmed_value_to_cstr(value, pipeline_name,
-                                                 sizeof(pipeline_name), NULL)) {
-      return VKR_MATERIAL_KEY_MATCHED;
-    }
-    out_data->pipeline_id = vkr_get_pipeline_id_from_string(pipeline_name);
   } else {
     return VKR_MATERIAL_KEY_UNMATCHED;
   }
@@ -2196,11 +2032,81 @@ vkr_internal bool8_t vkr_material_loader_resolve_texture_paths(
   return true_v;
 }
 
+/* A `.mt` that names a graph (vkr_material_graph.h) stands for the
+   definition its graph lowers to with the instance's parameters; the
+   instance's `name` replaces the file stem. Leaves `content` alone when the
+   text names no graph. */
+vkr_internal bool8_t vkr_material_loader_expand_graph(
+    VkrAllocator *allocator, String8 path, String8 *content,
+    VkrParsedMaterialData *out_data) {
+  VkrMaterialInstance *instance = vkr_allocator_alloc(
+      allocator, sizeof(*instance), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  VkrMaterialGraph *graph = vkr_allocator_alloc(
+      allocator, sizeof(*graph), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  if (!instance || !graph) {
+    out_data->parse_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  if (!vkr_material_instance_read(*content, instance, error, sizeof(error))) {
+    if (!error[0]) {
+      return true_v;
+    }
+    log_error("Material '%.*s': %s", (int)path.length, path.str, error);
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  const String8 graph_path = vkr_asset_path_resolve(
+      allocator, path,
+      string8_create_from_cstr((const uint8_t *)instance->graph,
+                               strlen(instance->graph)));
+  FilePath file_path = vkr_asset_path_file(allocator, graph_path);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle file = {0};
+  String8 json = {0};
+  if (!graph_path.str || file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
+    log_error("Material '%.*s': graph '%s' does not open", (int)path.length,
+              path.str, instance->graph);
+    out_data->parse_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+  const FileError read_error = file_read_string(&file, allocator, &json);
+  file_close(&file);
+  VkrMaterialLowering lowering = {0};
+  String8 definition = {0};
+  if (read_error != FILE_ERROR_NONE ||
+      !vkr_material_graph_read(json, graph, error, sizeof(error))) {
+    log_error("Material '%.*s': graph '%s': %s", (int)path.length, path.str,
+              instance->graph, error[0] ? error : "unreadable");
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (!vkr_material_graph_lower(graph, graph_path, instance->params,
+                                instance->param_count, allocator, &definition,
+                                &lowering)) {
+    log_error("Material '%.*s': graph '%s' does not lower (%s%s%s)",
+              (int)path.length, path.str, instance->graph, lowering.reason,
+              lowering.node[0] ? ", node " : "", lowering.node);
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (instance->name[0]) {
+    snprintf(out_data->name, sizeof(out_data->name), "%s", instance->name);
+  }
+  *content = definition;
+  return true_v;
+}
+
 /* Parses `.mt` text into `out_data`, whose defaults and file-stem name the
    caller set; texture references resolve against `path`. */
 vkr_internal bool8_t vkr_material_loader_parse_text(
     VkrAllocator *allocator, String8 path, String8 file_content,
     VkrParsedMaterialData *out_data) {
+  if (!vkr_material_loader_expand_graph(allocator, path, &file_content,
+                                        out_data)) {
+    return false_v;
+  }
   uint64_t offset = 0;
   while (offset < file_content.length) {
     uint64_t line_end = offset;
@@ -2275,6 +2181,15 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
   }
   return vkr_material_loader_parse_text(allocator, path, file_content,
                                         out_data);
+}
+
+bool8_t vkr_material_loader_parse_definition(VkrAllocator *allocator,
+                                             String8 path, String8 definition,
+                                             VkrParsedMaterialData *out_data) {
+  vkr_material_loader_set_parse_defaults(out_data);
+  String8 material_name = {0};
+  vkr_get_stable_material_name(out_data->name, path, &material_name);
+  return vkr_material_loader_parse_text(allocator, path, definition, out_data);
 }
 
 bool8_t vkr_material_loader_replace_live(VkrMaterialSystem *system,
@@ -2664,7 +2579,6 @@ vkr_internal bool8_t vkr_material_batch_create_material(
   material->id = slot + 1;
   material->generation = mat_sys->generation_counter++;
   material->name = stable_name;
-  material->pipeline_id = parsed->pipeline_id;
   material->material_type = parsed->material_type;
   material->alpha_mode = parsed->alpha_mode;
   material->alpha_mode_explicit = parsed->alpha_mode_explicit;
@@ -2676,18 +2590,6 @@ vkr_internal bool8_t vkr_material_batch_create_material(
     material->alpha_cutoff = parsed->alpha_cutoff;
   } else if (parsed->cutout_enabled) {
     material->alpha_cutoff = VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
-  }
-
-  if (parsed->shader_name[0] != '\0') {
-    size_t shader_len = string_length(parsed->shader_name);
-    char *stable_shader =
-        vkr_allocator_alloc(&mat_sys->string_allocator, shader_len + 1,
-                            VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    if (stable_shader) {
-      MemCopy(stable_shader, parsed->shader_name, shader_len);
-      stable_shader[shader_len] = '\0';
-      material->shader_name = stable_shader;
-    }
   }
 
   for (uint32_t t = 0; t < textures->count; t++) {

@@ -48,6 +48,8 @@ typedef enum VkrUiDockPanelKind {
   VKR_UI_DOCK_PANEL_SCRIPT,
   /* Terrain sculpting and painting (ADR-084). */
   VKR_UI_DOCK_PANEL_TERRAIN,
+  /* The material graph editor (docs/proposals/artist-toolkit.md). */
+  VKR_UI_DOCK_PANEL_MATERIAL,
   VKR_UI_DOCK_PANEL_COUNT,
 } VkrUiDockPanelKind;
 

@@ -26,7 +26,6 @@ Array(Vec2);
 Array(Vec3);
 Array(VkrVertex3d);
 Array(VkrMeshSkinVertex);
-#define DEFAULT_SHADER string8_lit("shader.default.world")
 
 typedef struct VkrMeshSourceDependency {
   String8 path;
@@ -35,7 +34,6 @@ Array(VkrMeshSourceDependency);
 
 typedef struct VkrMeshLoaderMaterialDef {
   String8 name;
-  String8 shader_name;
   Vec4 diffuse_color;
   Vec4 specular_color;
   Vec3 emission_color;
@@ -708,9 +706,6 @@ vkr_internal bool8_t vkr_mesh_loader_write_material_file(
     return false_v;
   }
 
-  String8 shader_value = (material->shader_name.length > 0)
-                             ? material->shader_name
-                             : DEFAULT_SHADER;
   float32_t alpha_cutoff =
       material->alpha_cutoff_set
           ? material->alpha_cutoff
@@ -758,10 +753,6 @@ vkr_internal bool8_t vkr_mesh_loader_write_material_file(
                                material->emission_color.y,
                                material->emission_color.z),
       alpha_cutoff_line,
-      string8_create_formatted(state->load_allocator, "shader=%.*s",
-                               (int32_t)shader_value.length,
-                               (const char *)shader_value.str),
-      string8_create_formatted(state->load_allocator, "pipeline=%s", "world"),
   };
 
   for (uint32_t i = 0; i < ArrayCount(lines); ++i) {
@@ -1174,7 +1165,6 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
       String8 mat_name = vkr_string8_trimmed_suffix(&line, 6);
       VkrMeshLoaderMaterialDef def = {
           .name = string8_duplicate(state->load_allocator, &mat_name),
-          .shader_name = DEFAULT_SHADER,
           .diffuse_color = vec4_new(1, 1, 1, 1),
           .specular_color = vec4_new(1, 1, 1, 1),
           .emission_color = vec3_new(0, 0, 0),
@@ -1247,9 +1237,6 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
                      ? string8_duplicate(state->load_allocator, &value)
                      : file_path_join(state->load_allocator, mtl_dir, value))
               : vkr_mesh_loader_texture_path(state->load_allocator, &value);
-    } else if (vkr_string8_starts_with(&line, "shader")) {
-      String8 value = vkr_string8_trimmed_suffix(&line, 6);
-      current->shader_name = string8_duplicate(state->load_allocator, &value);
     } else if (vkr_string8_starts_with(&line, "alpha_cutoff")) {
       String8 value = vkr_string8_trimmed_suffix(&line, 12);
       float32_t cutoff = 0.0f;

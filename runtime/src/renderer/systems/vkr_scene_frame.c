@@ -364,8 +364,9 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
     const uint32_t submesh_count = (uint32_t)asset->submeshes.length;
     for (uint32_t s = 0; s < submesh_count; ++s) {
       VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
-      VkrMaterial *material =
-          vkr_material_system_get_live(materials, submesh->material);
+      VkrMaterial *material = vkr_material_system_get_live(
+          materials,
+          vkr_mesh_instance_submesh_material(instance, s, submesh->material));
       const VkrDrawAlphaRouting alpha = vkr_draw_alpha_routing(
           vkr_material_system_material_alpha_mode(materials, material));
       const bool8_t transmissive =
@@ -494,12 +495,14 @@ vkr_internal void vkr_scene_emit_world_sources(
     const uint32_t submesh_count = (uint32_t)asset->submeshes.length;
     for (uint32_t s = 0; s < submesh_count; ++s) {
       VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
+      const VkrMaterialHandle submesh_material =
+          vkr_mesh_instance_submesh_material(instance, s, submesh->material);
       VkrMaterial *material =
-          vkr_material_system_get_live(materials, submesh->material);
+          vkr_material_system_get_live(materials, submesh_material);
       const VkrMaterialHandle draw_material =
           material ? (VkrMaterialHandle){.id = material->id,
                                          .generation = material->generation}
-                   : submesh->material;
+                   : submesh_material;
       vkr_material_system_touch_texture_residency(materials, draw_material);
       const VkrDrawAlphaRouting alpha = vkr_draw_alpha_routing(
           vkr_material_system_material_alpha_mode(materials, material));

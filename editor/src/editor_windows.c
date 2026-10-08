@@ -1,5 +1,6 @@
 #include "editor_brush_grid.h"
 #include "editor_internal.h"
+#include "editor_material.h"
 #include "editor_level.h"
 #include "editor_ops.h"
 #include "editor_partition.h"
@@ -427,8 +428,46 @@ static bool8_t editor_any_additive(const VkrSampleUiFrame *frame) {
   return false_v;
 }
 
-/* Undo and redo cover every container's journal (ADR-076). */
-static bool8_t editor_can_undo(const VkrSampleUiFrame *frame, bool8_t redo) {
+/* The sequence of the scene step undo (or redo) would apply next across
+   every container's journal, as the runtime picks it, or zero. */
+static uint64_t editor_scene_next_sequence(const VkrSampleUiFrame *frame,
+                                           bool8_t redo) {
+  const VkrSceneEditState *journals[VKR_SCENE_ADDITIVE_MAX + 2u];
+  uint32_t count = 0u;
+  journals[count++] = frame->scene ? frame->edits : NULL;
+  journals[count++] = frame->world ? frame->world_edits : NULL;
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    journals[count++] = frame->additive[i] ? frame->additive_edits[i] : NULL;
+  }
+  uint64_t best = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint64_t next =
+        journals[i] ? vkr_scene_edit_next_sequence(journals[i], redo) : 0u;
+    if (next && (!best || (redo ? next < best : next > best))) {
+      best = next;
+    }
+  }
+  return best;
+}
+
+/* Whether the next undo (or redo) is a material document's step: its
+   sequence is newer (or, redoing, older) than every scene step's. */
+static bool8_t editor_undo_material(const VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    bool8_t redo) {
+  const uint64_t material =
+      vkr_editor_material_next_sequence(editor->materials, redo);
+  const uint64_t scene = editor_scene_next_sequence(frame, redo);
+  return material && (!scene || (redo ? material < scene : material > scene));
+}
+
+/* Undo and redo cover every container's journal (ADR-076) and the material
+   documents' (editor_material.h). */
+static bool8_t editor_can_undo(const VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame, bool8_t redo) {
+  if (vkr_editor_material_next_sequence(editor->materials, redo)) {
+    return true_v;
+  }
   const VkrSceneEditState *journals[VKR_SCENE_ADDITIVE_MAX + 2u];
   uint32_t count = 0u;
   if (frame->scene)
@@ -465,7 +504,7 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
            editor_any_additive(frame);
   case CMD_UNDO:
   case CMD_REDO:
-    return editor_can_undo(frame, command == CMD_REDO);
+    return editor_can_undo(editor, frame, command == CMD_REDO);
   case CMD_REVEAL:
     return editor->hidden_count > 0u;
   case CMD_FRAME:
@@ -622,6 +661,12 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
       VKR_SCENE_EDIT_LOAD, VKR_SCENE_EDIT_RELOAD, VKR_SCENE_EDIT_UNLOAD,
       VKR_SCENE_EDIT_SAVE, VKR_SCENE_EDIT_UNDO,   VKR_SCENE_EDIT_REDO,
       VKR_SCENE_EDIT_FRAME};
+  if ((command == CMD_UNDO || command == CMD_REDO) &&
+      editor_undo_material(editor, frame, command == CMD_REDO)) {
+    (void)vkr_editor_material_undo(editor->materials, frame,
+                                   command == CMD_REDO);
+    return;
+  }
   if (command <= CMD_FRAME) {
     *frame->scene_edit = (VkrSceneEditRequest){
         .action = actions[command], .entity = frame->selected_entity};

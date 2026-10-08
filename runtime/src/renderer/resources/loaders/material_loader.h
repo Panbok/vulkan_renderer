@@ -3,6 +3,43 @@
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_resource_system.h"
 
+/** Maximum path length for texture paths in parsed material data. */
+#define VKR_MATERIAL_PATH_MAX 512
+
+/** Intended sampling color space for material textures. */
+typedef enum VkrMaterialTextureColorSpace {
+  VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR = 0,
+  VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB = 1,
+} VkrMaterialTextureColorSpace;
+
+/**
+ * @brief Parsed material data before textures are loaded: factors, state and
+ * texture paths resolved against the `.mt` file. Batch loading parses on
+ * workers before any GPU upload.
+ */
+typedef struct VkrParsedMaterialData {
+  char name[VKR_MATERIAL_NAME_MAX];
+  VkrMaterialType material_type;
+  VkrMaterialAlphaMode alpha_mode;
+  bool8_t alpha_mode_explicit;
+  bool8_t double_sided;
+  VkrPhongProperties phong;
+  VkrPbrProperties pbr;
+  float32_t alpha_cutoff;
+  bool8_t alpha_cutoff_set;
+  bool8_t cutout_enabled;
+  /** The largest roughness the surface reaches, when the file records it. */
+  float32_t roughness_max;
+  bool8_t roughness_max_set;
+
+  // Texture paths as fixed buffers (thread-safe for parallel parsing)
+  char texture_paths[VKR_TEXTURE_SLOT_COUNT][VKR_MATERIAL_PATH_MAX];
+  VkrMaterialTextureColorSpace texture_colorspace[VKR_TEXTURE_SLOT_COUNT];
+
+  bool8_t parse_success;
+  VkrRendererError parse_error;
+} VkrParsedMaterialData;
+
 // =============================================================================
 // Resource Loader Factory
 // =============================================================================
@@ -17,6 +54,18 @@
  * @return The configured resource loader
  */
 VkrResourceLoader vkr_material_loader_create(void);
+
+/**
+ * @brief Parses `.mt` text as the contents of a file at `path`, without
+ * loading textures. A definition that names a graph lowers it first
+ * (vkr_material_graph.h). Scratch allocations go to `allocator`.
+ *
+ * @return false with `out_data->parse_error` when the loader would reject
+ * the definition.
+ */
+bool8_t vkr_material_loader_parse_definition(VkrAllocator *allocator,
+                                             String8 path, String8 definition,
+                                             VkrParsedMaterialData *out_data);
 
 /**
  * @brief Replaces the live material that a `.mt` definition names.

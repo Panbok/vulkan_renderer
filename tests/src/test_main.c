@@ -6,6 +6,7 @@
 #include "animation_player_tests.h"
 #include "animation_tests.h"
 #include "brush_test.h"
+#include "material_graph_tests.h"
 #include "camera_rig_test.h"
 #include "character_test.h"
 #include "collision_asset_test.h"
@@ -17,6 +18,7 @@
 #include "io_test.h"
 #include "lightmap_bake_tests.h"
 #include "mesh_lightmap_uv_tests.h"
+#include "mesh_material_override_tests.h"
 #include "mesh_skin_tests.h"
 #include "physics_test.h"
 #include "player_animation_test.h"
@@ -126,8 +128,10 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_animation_loader_tests),
     VKR_TEST_SUITE(run_scene_animation_tests),
     VKR_TEST_SUITE(run_material_pbr_tests),
+    VKR_TEST_SUITE(run_material_graph_tests),
     VKR_TEST_SUITE(run_mesh_cooked_tests),
     VKR_TEST_SUITE(run_mesh_lightmap_uv_tests),
+    VKR_TEST_SUITE(run_mesh_material_override_tests),
     VKR_TEST_SUITE(run_lightmap_bake_tests),
     VKR_TEST_SUITE(run_filesystem_tests),
     VKR_TEST_SUITE(run_asset_path_tests),

@@ -488,6 +488,10 @@ static void *edit_journal_prepare(VkrSceneEditState *s, VkrEntityId entity,
 static uint64_t s_edit_sequence;
 static uint64_t s_edit_group;
 
+uint64_t vkr_scene_edit_take_sequence(void) { return ++s_edit_sequence; }
+
+uint64_t vkr_scene_edit_take_group(void) { return ++s_edit_group; }
+
 uint64_t vkr_scene_edit_next_sequence(const VkrSceneEditState *s,
                                       bool8_t redo) {
   if (!s || !s->undo) {

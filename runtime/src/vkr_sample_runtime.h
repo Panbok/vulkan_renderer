@@ -151,6 +151,8 @@ typedef enum VkrSamplePickPurpose {
   /* A Ctrl+click (Cmd on macOS): add the picked object to the editor's
      selection, or take it out. */
   VKR_SAMPLE_PICK_SELECT_TOGGLE,
+  /* A material dropped: assign it to the picked brush or mesh. */
+  VKR_SAMPLE_PICK_MATERIAL_DROP,
 } VkrSamplePickPurpose;
 
 /* Set the live time of day (ADR-090): the rendered scene's clock hour, and

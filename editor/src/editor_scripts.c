@@ -176,12 +176,8 @@ static uint64_t scripts_fingerprint(VkrAllocator *allocator, const char *path) {
   return hash ? hash : 1u;
 }
 
-typedef void (*ScriptsEntryVisit)(void *context, const char *name,
-                                  bool8_t directory);
-
-/* Each entry of `path` except dot entries, in the platform's order. */
-static void scripts_list(const char *path, ScriptsEntryVisit visit,
-                         void *context) {
+void vkr_editor_directory_list(const char *path, VkrEditorDirectoryVisit visit,
+                               void *context) {
 #if defined(PLATFORM_WINDOWS)
   char pattern[VKR_EDITOR_SCRIPT_PATH];
   wchar_t wide[VKR_EDITOR_SCRIPT_PATH];
@@ -333,7 +329,7 @@ static void scripts_visit_module(void *context, const char *name,
   scripts_read_description(scripts, &module);
   scan->module = scripts->module_count;
   scripts->modules[scripts->module_count++] = module;
-  scripts_list(module.directory, scripts_visit_file, scan);
+  vkr_editor_directory_list(module.directory, scripts_visit_file, scan);
 }
 
 /* Shows the project's state on every package. */
@@ -359,7 +355,7 @@ static void scripts_scan(VkrEditorScripts *scripts,
   scripts->module_count = 0u;
   scripts->file_count = 0u;
   ScriptsScan scan = {.scripts = scripts};
-  scripts_list(scripts->scripts_directory, scripts_visit_module, &scan);
+  vkr_editor_directory_list(scripts->scripts_directory, scripts_visit_module, &scan);
   for (uint32_t i = 0; i < scripts->module_count; ++i) {
     VkrEditorScriptModule *module = &scripts->modules[i];
     module->status = scripts->status;

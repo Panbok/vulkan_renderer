@@ -557,7 +557,6 @@ test_material_pbr_inference_from_scalar_keys(MaterialPbrTestContext *ctx) {
       &ctx->material_system, handle_info.as.material);
   assert(material != NULL);
   assert(material->material_type == VKR_MATERIAL_TYPE_PBR);
-  assert(material->pipeline_id == VKR_PIPELINE_DOMAIN_WORLD);
   assert(fabsf(material->pbr.metallic - 0.25f) < 0.0001f);
   assert(fabsf(material->pbr.roughness - 0.60f) < 0.0001f);
   assert(fabsf(material->pbr.dielectric_specular.x - 0.01f) < 0.0001f);

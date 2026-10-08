@@ -1,5 +1,6 @@
 #include "editor_agent.h"
 #include "editor_internal.h"
+#include "editor_material.h"
 #include "editor_io.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
@@ -397,6 +398,9 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   }
   vkr_editor_projects_build_scene_progress(editor->projects, editor, frame);
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
+  /* The Material panel's canvas places itself from the window origin, so
+     it builds here, over the dock it sits in. */
+  vkr_editor_material_canvas_build(editor, frame);
   const bool8_t preparing_scene =
       frame->scene_backdrop_blur && *frame->scene_backdrop_blur;
   vkr_editor_grid_build(editor, frame);
@@ -454,6 +458,9 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
       frame->context_purpose == VKR_SAMPLE_PICK_SCRIPT_DROP) {
     vkr_editor_finish_script_drop(editor, frame);
   } else if (frame->context_requested &&
+             frame->context_purpose == VKR_SAMPLE_PICK_MATERIAL_DROP) {
+    vkr_editor_material_finish_drop(editor, frame);
+  } else if (frame->context_requested &&
              frame->context_purpose == VKR_SAMPLE_PICK_SELECT_TOGGLE) {
     vkr_editor_selection_toggle(editor, frame, frame->context_entity);
   } else if (frame->context_requested && !text_menu) {
@@ -508,6 +515,15 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
       (void)vkr_editor_code_open(editor->code, editor, content_action.source);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT) {
       vkr_editor_code_new_script(editor->code, editor);
+    } else if (content_action.kind ==
+               VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL) {
+      vkr_editor_material_drop(editor->materials, frame, content_action.source,
+                               content_action.drop_px);
+    } else if (content_action.kind ==
+               VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL) {
+      (void)vkr_editor_material_open(editor->materials, frame,
+                                     content_action.source);
+      vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_MATERIAL);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT) {
       vkr_editor_drop_script(editor, frame, content_action.name,
                              content_action.drop_px);

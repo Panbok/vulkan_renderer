@@ -2927,9 +2927,6 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
                                                : "double_sided=false");
   ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "alpha_cutoff", alpha_cutoff);
-  ok = ok && vkr_mesh_loader_gltf_write_literal_line(&text,
-                                                     "shader=shader.pbr.world");
-  ok = ok && vkr_mesh_loader_gltf_write_literal_line(&text, "pipeline=world");
 
   ok = ok && vkr_mesh_loader_gltf_write_extension_lines(&text, info, material);
   ok = ok && vkr_mesh_loader_gltf_write_texture_lines(&text, info, &textures);

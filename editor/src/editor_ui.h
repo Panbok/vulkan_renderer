@@ -241,6 +241,8 @@ typedef enum VkrEditorWorkbenchKind {
   VKR_EDITOR_WORKBENCH_TERRAIN,
   VKR_EDITOR_WORKBENCH_LIGHTING,
   VKR_EDITOR_WORKBENCH_SCRIPTING,
+  /* Materials and the art pass (docs/proposals/artist-toolkit.md). */
+  VKR_EDITOR_WORKBENCH_ART,
   VKR_EDITOR_WORKBENCH_COUNT,
 } VkrEditorWorkbenchKind;
 
@@ -420,6 +422,8 @@ typedef struct VkrEditorUi {
   /* Project script modules and the Script editor window (ADR-079). */
   struct VkrEditorScripts *scripts;
   struct VkrEditorCode *code;
+  /* Material graphs and files, and their journal (editor_material.h). */
+  struct VkrEditorMaterials *materials;
   VkrEditorScenePanels *scene_panels;
   VkrEditorPhysicsSettings *physics_settings;
   VkrEditorMenu menu;

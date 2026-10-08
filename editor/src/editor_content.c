@@ -2730,7 +2730,9 @@ static void content_action(VkrEditorContent *content,
                            kind == VKR_EDITOR_CONTENT_ACTION_FRAME_ENTITY ||
                            kind == VKR_EDITOR_CONTENT_ACTION_RENAME_ENTITY ||
                            kind == VKR_EDITOR_CONTENT_ACTION_DELETE_ENTITY ||
-                           kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT;
+                           kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT ||
+                           kind == VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL ||
+                           kind == VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL;
   if (content->read_only && !browsing) {
     return;
   }
@@ -2877,6 +2879,8 @@ static void content_activate(VkrEditorContent *content, uint32_t shown) {
     content_action(content, VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT);
   } else if (kind == CONTENT_SCRIPT) {
     content_action(content, VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT);
+  } else if (kind == CONTENT_MATERIAL) {
+    content_action(content, VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL);
   }
 }
 
@@ -3590,6 +3594,12 @@ static void content_drag_update(VkrEditorContent *content, VkrUiSystem *ui) {
       content->selected = shown;
       content_action(content, VKR_EDITOR_CONTENT_ACTION_PLACE_ASSET);
       content->action.drop_px = (Vec2){x, y};
+    } else if (over_viewport && entry->kind == CONTENT_MATERIAL) {
+      /* The editor picks under the drop and assigns the material there. */
+      content->selected = shown;
+      content_action(content, VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL);
+      content->action.drop_px = (Vec2){x, y};
+      content->action.dropped = true_v;
     } else if (over_viewport && entry->kind == CONTENT_SCRIPT) {
       /* The editor picks under the drop to attach, else adds an object. */
       content->selected = shown;
@@ -4515,6 +4525,8 @@ static void content_menu_run(VkrEditorContent *content, uint32_t shown,
       content_action(content, VKR_EDITOR_CONTENT_ACTION_SELECT_ENTITY);
     } else if (entry->kind == CONTENT_SCRIPT) {
       content_action(content, VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT);
+    } else if (entry->kind == CONTENT_MATERIAL) {
+      content_action(content, VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL);
     } else {
       content->details_hidden = false_v;
     }

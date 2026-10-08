@@ -9,8 +9,10 @@ The artist toolkit follows the level design toolkit
 ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)). The level
 toolkit designs and structures a level. The artist toolkit gives the
 finished layout its look: materials, lighting, sky, fog, post-processing and
-set dressing. Part 1 is implemented and recorded in ADR-084; this proposal
-keeps its remaining scope and the other parts:
+set dressing. Part 1 is implemented and recorded in ADR-084, and the
+Standard tier of Parts 2 and 5 in
+[ADR-093](../adr/093-material-graphs-and-art-workbench.md); this proposal
+keeps their remaining scope and the other parts:
 
 1. Surface tags and fixed greybox looks with measurement aids in the level
    toolkit.
@@ -245,6 +247,14 @@ Remaining here:
 
 ## Part 2: Material graphs
 
+Implemented on 2026-10-09 and recorded in ADR-093: graph documents, the
+node set below except material functions, Standard lowering, instances,
+graphs from definitions and the removal of `shader=` and `pipeline=`.
+Remaining here: material functions (`.mtf`), the `decal` and
+`terrain_layer` domains, the `surface=` and `world_size=` keys (Phase 3),
+badges for outputs the tiled pipeline ignores, and costs from the offline
+compilers.
+
 ### Documents
 
 | File | Content | Owner |
@@ -450,6 +460,12 @@ render thread: swap on next frame
 
 ## Part 5: The Art workbench
 
+Implemented on 2026-10-09 and recorded in ADR-093: the workbench, the node
+canvas, the Material panel with its inspector, the document journal, mesh
+material overrides, assignment by palette, operation and drop. Remaining
+here: the Lookdev scene, a material picker in Details, and comment frames
+on the canvas.
+
 A new built-in workbench, **Art**, sits next to Lighting. It works on the
 open level scene, so the viewport is the live preview of every material
 edit.
@@ -626,7 +642,7 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 | `surface.*` | `list`, `define`, `theme.create`, `theme.bind`, `theme.select` | Project and scene |
 | `brush.*` | `set_surface` (implemented; it sets the surface, the mark or both) | Scene |
 | `face.*` | `set_material` (implemented; an empty `material` clears the override) | Scene |
-| `material.*` | `create`, `instance`, `describe`, `patch`, `set_param`, `assign`, `compile`, `cost`, `preview` | Documents and scene |
+| `material.*` | `list`, `create`, `describe`, `patch`, `set_param`, `assign`, `compile` and `open` are implemented; `preview` remains, and `cost` is part of each lowering answer | Documents and scene |
 | `look.*` | `volume` (intent: a look volume from a box and overrides) | Scene |
 | `env.*` | `describe`, `preset.save`, `preset.apply` | Scene |
 | `lighting.*` | `bake` with settings, `time` | Scene and bake jobs |
@@ -666,7 +682,7 @@ Each phase is usable on its own and keeps the rules of Goals and limits.
 | Phase | Delivers | Acceptance evidence |
 |---|---|---|
 | 1. Surface tags and greybox | Implemented (ADR-084) | Recorded in ADR-084 |
-| 2. Graph documents and the Art workbench | `.mtg`, `.mtf`, `.mt` with `graph=`, the node canvas, the Art workbench, document journal, Standard lowering of today's material model, material picker and drop, `material.*` operations | A CPU test lowers every Bistro `.mt` through the built-in Standard graph to byte-identical material rows. A Release Metal snapshot of Bistro is unchanged |
+| 2. Graph documents and the Art workbench | Implemented (ADR-093); material functions, the Lookdev scene and the Details picker remain | Recorded in ADR-093 |
 | 3. Layered Standard and the art pass | Layer blend with mask sources, `world_size`, themes and bindings, face overrides, `art.lint` | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
 | 4. Custom graphs | Code generation, the project shader library, Metal per-graph variants, Vulkan classification and per-graph resolve, the budget, pipeline creation at scene and cell load, the late-draw fallback and `pipelines_late` | `pipelines_late` is zero over the Bistro glide camera with 8 Custom graphs assigned. Cold and warm pipeline creation time per graph on the M1 Pro. A Custom graph that reproduces a Standard material gives an equal snapshot. Vulkan native checks wait for a Windows host |
 | 5. Lighting and look | Environment panel and presets, look volumes, light gizmos and list, probe and volume creation, bake settings, time scrubber, artist view modes, `query.luminance` | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |

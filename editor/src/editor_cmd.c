@@ -53,13 +53,14 @@ typedef enum CmdArg {
  * tables below index for index. */
 static const char *const cmd_panels[] = {
     "outliner", "details",      "console", "bakery",  "content", "build",
-    "tools",    "level_checks", "script",  "terrain", NULL};
+    "tools",    "level_checks", "script",  "terrain", "material", NULL};
 static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_HIERARCHY, VKR_UI_DOCK_PANEL_INSPECTOR,
     VKR_UI_DOCK_PANEL_CONSOLE,   VKR_UI_DOCK_PANEL_BAKERY,
     VKR_UI_DOCK_PANEL_CONTENT,   VKR_UI_DOCK_PANEL_BUILD,
     VKR_UI_DOCK_PANEL_TOOLS,     VKR_UI_DOCK_PANEL_LEVEL_CHECKS,
-    VKR_UI_DOCK_PANEL_SCRIPT,    VKR_UI_DOCK_PANEL_TERRAIN};
+    VKR_UI_DOCK_PANEL_SCRIPT,    VKR_UI_DOCK_PANEL_TERRAIN,
+    VKR_UI_DOCK_PANEL_MATERIAL};
 
 static const char *const cmd_windows[] = {
     "animation", "physics", "preferences", "draws",  "memory",

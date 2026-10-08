@@ -2,6 +2,8 @@
 
 #include "editor_agent.h"
 #include "editor_internal.h"
+#include "editor_material.h"
+#include "editor_workbench.h"
 #include "editor_level.h"
 
 #include "core/logger.h"
@@ -9,6 +11,8 @@
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
 #include "level/vkr_brush.h"
+#include "renderer/resources/loaders/material_loader.h"
+#include "filesystem/vkr_asset_path.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_brush.h"
@@ -4733,6 +4737,11 @@ static VkrBakeryJson *ops_change_json(OpsContext *ctx,
     ops_set(ctx, object, "author",
             vkr_bakery_json_cstr(ops_arena(ctx), change->author));
   }
+  if (change->document[0]) {
+    ops_set(ctx, object, "document",
+            vkr_bakery_json_cstr(ops_arena(ctx), change->document));
+    return object;
+  }
   ops_set(ctx, object, "container",
           vkr_bakery_json_cstr(
               ops_arena(ctx),
@@ -6177,6 +6186,22 @@ static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
       return VKR_EDITOR_OP_DONE;
     }
     VkrEditorChange *target = &ops->changes[index];
+    /* A document change reverts at once through the material journal. */
+    if (target->document[0]) {
+      char problem[160] = {0};
+      if (!vkr_editor_material_group_revert(ctx->editor->materials, ctx->frame,
+                                            target->group, problem,
+                                            sizeof(problem))) {
+        snprintf(target->problem, sizeof(target->problem), "%s", problem);
+        target->rejecting = false_v;
+        ops_fail(ctx, OPS_REJECTED, "%s", problem);
+        return VKR_EDITOR_OP_DONE;
+      }
+      ops_change_remove(ops, (uint32_t)index);
+      call->result = vkr_bakery_json_object(ops_arena(ctx));
+      ops_set(ctx, call->result, "rejected", vkr_bakery_json_int(ops_arena(ctx), id));
+      return VKR_EDITOR_OP_DONE;
+    }
     if (ctx->frame->simulation_running || !ctx->frame->edit_batch ||
         ctx->frame->edit_batch->token) {
       ops_fail(ctx, OPS_BUSY, "The scene cannot change now");
@@ -6353,13 +6378,23 @@ static bool8_t ops_undo_own(OpsContext *ctx, bool8_t redo) {
       best_sequence = sequence;
     }
   }
-  if (!best) {
+  /* A material document step newer (or, redoing, older) than every scene
+     step goes first, as the Undo command picks it. */
+  const VkrEditorMaterials *materials = ctx->editor->materials;
+  const uint64_t material =
+      vkr_editor_material_next_sequence(materials, redo);
+  const char *owner = NULL;
+  if (material && (!best_sequence || (redo ? material < best_sequence
+                                           : material > best_sequence))) {
+    owner = vkr_editor_material_next_author(materials, redo);
+    owner = owner[0] ? owner : NULL;
+  } else if (!best) {
     return true_v;
+  } else {
+    const VkrSceneEditEntry *entry =
+        &best->undo[redo ? best->undo_cursor : best->undo_cursor - 1u];
+    owner = ops_authored_find(ctx->ops, entry->group, (uint16_t)best_container);
   }
-  const VkrSceneEditEntry *entry =
-      &best->undo[redo ? best->undo_cursor : best->undo_cursor - 1u];
-  const char *owner =
-      ops_authored_find(ctx->ops, entry->group, (uint16_t)best_container);
   if (owner && strcmp(owner, ctx->call->author) == 0) {
     return true_v;
   }
@@ -9581,6 +9616,1089 @@ static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
   "\"min\":" OPS_VEC3_SCHEMA ",\"max\":" OPS_VEC3_SCHEMA "},\"required\":["    \
   "\"min\",\"max\"]}]}"
 
+// =============================================================================
+// Materials (docs/proposals/artist-toolkit.md, part 2)
+// =============================================================================
+
+/* The call's arena as an allocator for the material graph module. */
+static bool8_t ops_allocator(OpsContext *ctx, VkrAllocator *out) {
+  *out = (VkrAllocator){.ctx = ops_arena(ctx)};
+  return vkr_allocator_arena(out) ||
+         ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+}
+
+static bool8_t ops_material_ends(const char *path, const char *suffix) {
+  const size_t length = strlen(path);
+  const size_t suffix_length = strlen(suffix);
+  return length > suffix_length &&
+         strcmp(path + length - suffix_length, suffix) == 0;
+}
+
+/* A content-root relative path in `args[key]` naming a material file or,
+   with `graph`, a graph; no absolute paths, '..' or backslashes. */
+static bool8_t ops_material_path(OpsContext *ctx, const VkrBakeryJson *args,
+                                 const char *key, bool8_t graph,
+                                 char out[VKR_EDITOR_MATERIAL_PATH]) {
+  out[0] = '\0';
+  if (!ops_arg_string(ctx, args, key, out, VKR_EDITOR_MATERIAL_PATH)) {
+    return false_v;
+  }
+  const bool8_t kind_ok = graph ? ops_material_ends(out, ".mtg")
+                                : (ops_material_ends(out, ".mt") ||
+                                   ops_material_ends(out, ".mtg"));
+  if (!out[0] || out[0] == '/' || strstr(out, "..") || strchr(out, '\\') ||
+      strchr(out, ':') || !kind_ok) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'%s' is a content-root relative path to a %s", key,
+                    graph ? "graph (.mtg)" : "material (.mt) or graph (.mtg)");
+  }
+  return true_v;
+}
+
+/* Writes one document as this call's journal group; an agent's write with
+   `review` (default true) becomes a pending change. */
+static bool8_t ops_material_write(OpsContext *ctx, const char *path,
+                                  String8 text, bool8_t remove,
+                                  const char *label) {
+  VkrEditorOpCall *call = ctx->call;
+  const uint64_t group = vkr_editor_material_group();
+  char error[160] = {0};
+  if (!vkr_editor_material_write(ctx->editor->materials, ctx->frame, path, text,
+                                 remove, group, call->author, error,
+                                 sizeof(error))) {
+    return ops_fail(ctx, OPS_REJECTED, "%s", error);
+  }
+  VkrEditorOps *ops = ctx->ops;
+  if (!call->author[0] || !ops_arg_bool(call->args, "review", true_v) ||
+      ops->change_count == VKR_EDITOR_CHANGE_MAX) {
+    return true_v;
+  }
+  VkrEditorChange *change = &ops->changes[ops->change_count++];
+  MemZero(change, sizeof(*change));
+  change->id = ++ops->next_change_id;
+  change->group = group;
+  change->created = vkr_platform_get_absolute_time();
+  snprintf(change->label, sizeof(change->label), "%s", label);
+  snprintf(change->author, sizeof(change->author), "%s", call->author);
+  snprintf(change->document, sizeof(change->document), "%s", path);
+  if (!call->result) {
+    call->result = vkr_bakery_json_object(ops_arena(ctx));
+  }
+  ops_set(ctx, call->result, "change",
+          vkr_bakery_json_int(ops_arena(ctx), change->id));
+  char toast[160];
+  snprintf(toast, sizeof(toast), "Agent change to review: %s", label);
+  vkr_editor_toast(ctx->editor, VKR_UI_ICON_MATERIAL,
+                   vkr_ui_theme()->accent_hover, toast);
+  return true_v;
+}
+
+/* Reads graph document `path` into `out`. */
+static bool8_t ops_material_graph_load(OpsContext *ctx, const char *path,
+                                       VkrMaterialGraph *out) {
+  VkrAllocator allocator;
+  String8 text = {0};
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  if (!ops_allocator(ctx, &allocator)) {
+    return false_v;
+  }
+  if (!vkr_editor_material_read(&allocator, path, &text)) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "Graph '%s' does not open", path);
+  }
+  if (!vkr_material_graph_read(text, out, error, sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "Graph '%s': %s", path, error);
+  }
+  return true_v;
+}
+
+static VkrMaterialGraph *ops_material_graph_alloc(OpsContext *ctx) {
+  VkrMaterialGraph *graph =
+      arena_alloc(ops_arena(ctx), sizeof(*graph), ARENA_MEMORY_TAG_STRUCT);
+  if (!graph) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  return graph;
+}
+
+/* How `graph` lowers with `params`: tier, reason, cost and, with
+   `definition`, the `.mt` text the loader reads. */
+static VkrBakeryJson *ops_material_lowering(OpsContext *ctx,
+                                            const VkrMaterialGraph *graph,
+                                            const char *graph_path,
+                                            const VkrMaterialParam *params,
+                                            uint32_t param_count,
+                                            bool8_t definition) {
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *report = vkr_bakery_json_object(arena);
+  VkrAllocator allocator;
+  if (!ops_allocator(ctx, &allocator)) {
+    return report;
+  }
+  VkrMaterialLowering lowering = {0};
+  String8 text = {0};
+  const bool8_t lowered = vkr_material_graph_lower(
+      graph, string8_create_from_cstr((const uint8_t *)graph_path,
+                                      strlen(graph_path)),
+      params, param_count, &allocator, &text, &lowering);
+  ops_set(ctx, report, "tier",
+          vkr_bakery_json_cstr(arena, lowered ? "standard" : "unsupported"));
+  if (!lowered) {
+    ops_set(ctx, report, "reason", vkr_bakery_json_cstr(arena, lowering.reason));
+    if (lowering.node[0]) {
+      ops_set(ctx, report, "node", vkr_bakery_json_cstr(arena, lowering.node));
+    }
+  }
+  ops_set(ctx, report, "samples", vkr_bakery_json_int(arena, lowering.samples));
+  ops_set(ctx, report, "alu", vkr_bakery_json_int(arena, lowering.alu));
+  /* Standard graphs lower to row data: no shader and no pipeline. */
+  ops_set(ctx, report, "pipelines", vkr_bakery_json_int(arena, 0));
+  if (lowered && definition) {
+    ops_set(ctx, report, "definition", ops_string(ctx, text));
+  }
+  return report;
+}
+
+/* The exposed parameters of `graph`: name, type and default. */
+static VkrBakeryJson *ops_material_params(OpsContext *ctx,
+                                          const VkrMaterialGraph *graph) {
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *list = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < graph->node_count; ++i) {
+    const VkrMaterialNode *node = &graph->nodes[i];
+    if (!node->parameter[0]) {
+      continue;
+    }
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    ops_set(ctx, entry, "name", vkr_bakery_json_cstr(arena, node->parameter));
+    ops_set(ctx, entry, "type",
+            vkr_bakery_json_cstr(arena,
+                                 vkr_material_node_desc(node->kind)->name));
+    if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
+      ops_set(ctx, entry, "default", ops_number(ctx, node->value.x));
+    } else if (node->kind == VKR_MATERIAL_NODE_COLOR) {
+      ops_set(ctx, entry, "default",
+              ops_vec3(ctx, vec3_new(node->value.x, node->value.y,
+                                     node->value.z)));
+    } else {
+      ops_set(ctx, entry, "default", vkr_bakery_json_cstr(arena, node->path));
+    }
+    vkr_bakery_json_append(list, entry);
+  }
+  return list;
+}
+
+/* An instance parameter value as `.mt` text: a number, r,g,b or a path. */
+static bool8_t ops_material_param_text(OpsContext *ctx,
+                                       const VkrBakeryJson *value, char *out,
+                                       uint32_t capacity) {
+  if (value->type == VKR_BAKERY_JSON_INT) {
+    snprintf(out, capacity, "%lld", (long long)value->integer);
+    return true_v;
+  }
+  if (value->type == VKR_BAKERY_JSON_FLOAT) {
+    snprintf(out, capacity, "%.9g", value->number);
+    return true_v;
+  }
+  if (value->type == VKR_BAKERY_JSON_STRING &&
+      value->string.length < capacity && value->string.length) {
+    snprintf(out, capacity, "%.*s", (int)value->string.length,
+             (const char *)value->string.str);
+    return true_v;
+  }
+  if (value->type == VKR_BAKERY_JSON_ARRAY && value->count == 3u) {
+    float64_t c[3];
+    uint32_t i = 0u;
+    for (const VkrBakeryJson *item = value->first; item; item = item->next) {
+      if (item->type == VKR_BAKERY_JSON_INT) {
+        c[i++] = (float64_t)item->integer;
+      } else if (item->type == VKR_BAKERY_JSON_FLOAT) {
+        c[i++] = item->number;
+      } else {
+        return ops_fail(ctx, OPS_INVALID, "A colour is three numbers");
+      }
+    }
+    snprintf(out, capacity, "%.9g,%.9g,%.9g", c[0], c[1], c[2]);
+    return true_v;
+  }
+  return ops_fail(ctx, OPS_INVALID,
+                  "A parameter value is a number, [r, g, b] or a file path");
+}
+
+/* `.mt` text of an instance: name, graph and parameters. */
+static bool8_t ops_material_instance_text(OpsContext *ctx,
+                                          const VkrMaterialInstance *instance,
+                                          String8 *out) {
+  char *text = arena_alloc(ops_arena(ctx), 16384u, ARENA_MEMORY_TAG_STRING);
+  if (!text) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  int length = 0;
+  if (instance->name[0]) {
+    length += snprintf(text + length, 16384u - (uint32_t)length, "name=%s\n",
+                       instance->name);
+  }
+  length += snprintf(text + length, 16384u - (uint32_t)length, "graph=%s\n",
+                     instance->graph);
+  for (uint32_t i = 0; i < instance->param_count; ++i) {
+    length += snprintf(text + length, 16384u - (uint32_t)length,
+                       "param.%s=%s\n", instance->params[i].name,
+                       instance->params[i].value);
+  }
+  *out = (String8){.str = (uint8_t *)text, .length = (uint64_t)length};
+  return true_v;
+}
+
+/* Applies `params` (an object of name to value, null to remove) over the
+   instance's overrides. */
+static bool8_t ops_material_apply_params(OpsContext *ctx,
+                                         const VkrBakeryJson *params,
+                                         VkrMaterialInstance *instance) {
+  if (!params) {
+    return true_v;
+  }
+  if (params->type != VKR_BAKERY_JSON_OBJECT) {
+    return ops_fail(ctx, OPS_INVALID, "'params' maps names to values");
+  }
+  for (const VkrBakeryJson *item = params->first; item; item = item->next) {
+    char name[VKR_MATERIAL_GRAPH_ID_CAPACITY];
+    if (!item->key.length || item->key.length >= sizeof(name)) {
+      return ops_fail(ctx, OPS_INVALID, "A parameter name is 1 to 31 bytes");
+    }
+    snprintf(name, sizeof(name), "%.*s", (int)item->key.length,
+             (const char *)item->key.str);
+    uint32_t at = 0u;
+    while (at < instance->param_count &&
+           strcmp(instance->params[at].name, name) != 0) {
+      at++;
+    }
+    if (item->type == VKR_BAKERY_JSON_NULL) {
+      if (at < instance->param_count) {
+        instance->params[at] = instance->params[--instance->param_count];
+      }
+      continue;
+    }
+    if (at == instance->param_count) {
+      if (instance->param_count == VKR_MATERIAL_GRAPH_PARAM_MAX) {
+        return ops_fail(ctx, OPS_LIMIT, "An instance sets at most %u parameters",
+                        VKR_MATERIAL_GRAPH_PARAM_MAX);
+      }
+      instance->param_count++;
+      snprintf(instance->params[at].name, sizeof(instance->params[at].name),
+               "%s", name);
+    }
+    if (!ops_material_param_text(ctx, item, instance->params[at].value,
+                                 sizeof(instance->params[at].value))) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Reads instance `path` and its graph. */
+static bool8_t ops_material_instance_load(OpsContext *ctx, const char *path,
+                                          VkrMaterialInstance *instance,
+                                          VkrMaterialGraph *graph,
+                                          char graph_path[VKR_EDITOR_MATERIAL_PATH]) {
+  VkrAllocator allocator;
+  String8 text = {0};
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  if (!ops_allocator(ctx, &allocator)) {
+    return false_v;
+  }
+  if (!vkr_editor_material_read(&allocator, path, &text)) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not open", path);
+  }
+  if (!vkr_material_instance_read(text, instance, error, sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' is no graph instance%s%s", path,
+                    error[0] ? ": " : "", error);
+  }
+  const String8 resolved = vkr_asset_path_resolve(
+      &allocator, string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      string8_create_from_cstr((const uint8_t *)instance->graph,
+                               strlen(instance->graph)));
+  if (!resolved.str || resolved.length >= VKR_EDITOR_MATERIAL_PATH) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' names an invalid graph", path);
+  }
+  snprintf(graph_path, VKR_EDITOR_MATERIAL_PATH, "%s",
+           (const char *)resolved.str);
+  return ops_material_graph_load(ctx, graph_path, graph);
+}
+
+static VkrEditorOpStatus ops_run_material_list(OpsContext *ctx) {
+  char filter[128] = "";
+  if (!ops_arg_string(ctx, ctx->call->args, "contains", filter,
+                      sizeof(filter))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  enum { LIST_MAX = 512 };
+  const char *paths[VKR_EDITOR_MATERIAL_INDEX_MAX];
+  const char *graphs[VKR_EDITOR_MATERIAL_INDEX_MAX];
+  const uint32_t count = vkr_editor_material_index(
+      ctx->editor->materials, ctx->frame->ui->frame_allocator, paths, graphs,
+      VKR_EDITOR_MATERIAL_INDEX_MAX);
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *list = vkr_bakery_json_array(arena);
+  uint32_t matched = 0u;
+  for (uint32_t i = 0; i < Min(count, VKR_EDITOR_MATERIAL_INDEX_MAX); ++i) {
+    if (filter[0] && !strstr(paths[i], filter) && !strstr(graphs[i], filter)) {
+      continue;
+    }
+    if (++matched > LIST_MAX) {
+      continue;
+    }
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    ops_set(ctx, entry, "path", vkr_bakery_json_cstr(arena, paths[i]));
+    ops_set(ctx, entry, "kind",
+            vkr_bakery_json_cstr(arena, ops_material_ends(paths[i], ".mtg")
+                                            ? "graph"
+                                        : graphs[i][0] ? "instance"
+                                                       : "definition"));
+    if (graphs[i][0]) {
+      ops_set(ctx, entry, "graph", vkr_bakery_json_cstr(arena, graphs[i]));
+    }
+    vkr_bakery_json_append(list, entry);
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "materials", list);
+  ops_set(ctx, ctx->call->result, "count", vkr_bakery_json_int(arena, matched));
+  if (matched > LIST_MAX) {
+    ops_set(ctx, ctx->call->result, "truncated", vkr_bakery_json_bool(arena, 1));
+  }
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_material_describe(OpsContext *ctx) {
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  if (!ops_material_path(ctx, ctx->call->args, "path", false_v, path)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrAllocator allocator;
+  if (!ops_allocator(ctx, &allocator)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "path", vkr_bakery_json_cstr(arena, path));
+  const VkrEditorMaterialKind kind =
+      vkr_editor_material_kind(&allocator, path);
+  VkrMaterialGraph *graph = ops_material_graph_alloc(ctx);
+  if (!graph) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (kind == VKR_EDITOR_MATERIAL_GRAPH) {
+    if (!ops_material_graph_load(ctx, path, graph)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    String8 text = {0};
+    ops_set(ctx, result, "kind", vkr_bakery_json_cstr(arena, "graph"));
+    if (vkr_material_graph_describe(graph, &allocator, &text)) {
+      ops_set(ctx, result, "nodes", ops_string(ctx, text));
+    }
+    ops_set(ctx, result, "parameters", ops_material_params(ctx, graph));
+    ops_set(ctx, result, "lowering",
+            ops_material_lowering(ctx, graph, path, NULL, 0u, false_v));
+    /* The material files that are instances of this graph. */
+    const char *paths[VKR_EDITOR_MATERIAL_INDEX_MAX];
+    const char *graphs[VKR_EDITOR_MATERIAL_INDEX_MAX];
+    const uint32_t count = Min(
+        vkr_editor_material_index(ctx->editor->materials,
+                                  ctx->frame->ui->frame_allocator, paths, graphs,
+                                  VKR_EDITOR_MATERIAL_INDEX_MAX),
+        VKR_EDITOR_MATERIAL_INDEX_MAX);
+    VkrBakeryJson *instances = vkr_bakery_json_array(arena);
+    for (uint32_t i = 0; i < count; ++i) {
+      if (strcmp(graphs[i], path) == 0) {
+        vkr_bakery_json_append(instances, vkr_bakery_json_cstr(arena, paths[i]));
+      }
+    }
+    ops_set(ctx, result, "instances", instances);
+  } else if (kind == VKR_EDITOR_MATERIAL_INSTANCE) {
+    VkrMaterialInstance instance;
+    char graph_path[VKR_EDITOR_MATERIAL_PATH];
+    if (!ops_material_instance_load(ctx, path, &instance, graph, graph_path)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    ops_set(ctx, result, "kind", vkr_bakery_json_cstr(arena, "instance"));
+    ops_set(ctx, result, "graph", vkr_bakery_json_cstr(arena, graph_path));
+    VkrBakeryJson *params = vkr_bakery_json_object(arena);
+    for (uint32_t i = 0; i < instance.param_count; ++i) {
+      ops_set(ctx, params, instance.params[i].name,
+              vkr_bakery_json_cstr(arena, instance.params[i].value));
+    }
+    ops_set(ctx, result, "params", params);
+    ops_set(ctx, result, "parameters", ops_material_params(ctx, graph));
+    ops_set(ctx, result, "lowering",
+            ops_material_lowering(ctx, graph, graph_path, instance.params,
+                                  instance.param_count, false_v));
+  } else {
+    String8 text = {0};
+    if (!vkr_editor_material_read(&allocator, path, &text)) {
+      ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not open", path);
+      return VKR_EDITOR_OP_DONE;
+    }
+    char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+    ops_set(ctx, result, "kind", vkr_bakery_json_cstr(arena, "definition"));
+    ops_set(ctx, result, "text", ops_string(ctx, text));
+    ops_set(ctx, result, "graph_form",
+            vkr_bakery_json_bool(arena, vkr_material_graph_from_definition(
+                                            text, graph, error, sizeof(error))));
+    if (error[0]) {
+      ops_set(ctx, result, "graph_form_reason",
+              vkr_bakery_json_cstr(arena, error));
+    }
+  }
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* A new graph's starting nodes: a grey base colour, metallic 0 and
+   roughness 0.5 into the surface output. */
+static void ops_material_template(VkrMaterialGraph *graph) {
+  vkr_material_graph_init(graph);
+  const uint32_t base =
+      vkr_material_graph_add(graph, VKR_MATERIAL_NODE_COLOR, "base_color");
+  const uint32_t metallic =
+      vkr_material_graph_add(graph, VKR_MATERIAL_NODE_SCALAR, "metallic");
+  const uint32_t roughness =
+      vkr_material_graph_add(graph, VKR_MATERIAL_NODE_SCALAR, "roughness");
+  const uint32_t output =
+      vkr_material_graph_add(graph, VKR_MATERIAL_NODE_SURFACE_OUTPUT, "output");
+  graph->nodes[base].value = vec4_new(0.8f, 0.8f, 0.8f, 0.0f);
+  snprintf(graph->nodes[base].parameter, sizeof(graph->nodes[base].parameter),
+           "base_color");
+  graph->nodes[metallic].value.x = 0.0f;
+  graph->nodes[roughness].value.x = 0.5f;
+  snprintf(graph->nodes[roughness].parameter,
+           sizeof(graph->nodes[roughness].parameter), "roughness");
+  graph->nodes[base].position = vec2_new(0.0f, 0.0f);
+  graph->nodes[metallic].position = vec2_new(0.0f, 120.0f);
+  graph->nodes[roughness].position = vec2_new(0.0f, 240.0f);
+  graph->nodes[output].position = vec2_new(320.0f, 0.0f);
+  char error[64];
+  (void)vkr_material_graph_connect(graph, base, 0u, output, 0u, error,
+                                   sizeof(error));
+  (void)vkr_material_graph_connect(graph, metallic, 0u, output, 2u, error,
+                                   sizeof(error));
+  (void)vkr_material_graph_connect(graph, roughness, 0u, output, 3u, error,
+                                   sizeof(error));
+}
+
+static VkrEditorOpStatus ops_run_material_create(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  String8 kind = {0};
+  if (!ops_material_path(ctx, args, "path", false_v, path)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_bakery_json_get_string(args, "kind", &kind) ||
+      (!ops_equals(kind, "graph") && !ops_equals(kind, "instance") &&
+       !ops_equals(kind, "definition"))) {
+    ops_fail(ctx, OPS_INVALID, "'kind' is graph, instance or definition");
+    return VKR_EDITOR_OP_DONE;
+  }
+  const bool8_t graph_kind = ops_equals(kind, "graph");
+  if (graph_kind != ops_material_ends(path, ".mtg")) {
+    ops_fail(ctx, OPS_INVALID, "A graph's path ends in .mtg, a material's .mt");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrAllocator allocator;
+  if (!ops_allocator(ctx, &allocator)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  String8 existing = {0};
+  if (vkr_editor_material_read(&allocator, path, &existing) &&
+      !ops_arg_bool(args, "overwrite", false_v)) {
+    ops_fail(ctx, OPS_INVALID, "'%s' exists; pass \"overwrite\": true", path);
+    return VKR_EDITOR_OP_DONE;
+  }
+  char from[VKR_EDITOR_MATERIAL_PATH] = "";
+  if (vkr_bakery_json_get(args, "from") &&
+      !ops_material_path(ctx, args, "from", false_v, from)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  String8 text = {0};
+  if (graph_kind) {
+    VkrMaterialGraph *graph = ops_material_graph_alloc(ctx);
+    if (!graph) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (from[0]) {
+      String8 definition = {0};
+      char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+      if (!vkr_editor_material_read(&allocator, from, &definition)) {
+        ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not open", from);
+        return VKR_EDITOR_OP_DONE;
+      }
+      if (!vkr_material_graph_from_definition(definition, graph, error,
+                                              sizeof(error))) {
+        ops_fail(ctx, OPS_INVALID, "'%s' has no graph form: %s", from, error);
+        return VKR_EDITOR_OP_DONE;
+      }
+      /* Texture paths were relative to the material; make them
+         content-root relative for the graph's own folder. */
+      for (uint32_t i = 0; i < graph->node_count; ++i) {
+        VkrMaterialNode *node = &graph->nodes[i];
+        if (node->kind != VKR_MATERIAL_NODE_TEXTURE) {
+          continue;
+        }
+        const String8 resolved = vkr_asset_path_resolve(
+            &allocator,
+            string8_create_from_cstr((const uint8_t *)from, strlen(from)),
+            string8_create_from_cstr((const uint8_t *)node->path,
+                                     strlen(node->path)));
+        if (resolved.str && resolved.length < sizeof(node->path)) {
+          snprintf(node->path, sizeof(node->path), "%s",
+                   (const char *)resolved.str);
+        }
+      }
+    } else {
+      ops_material_template(graph);
+    }
+    if (!vkr_material_graph_write(graph, &allocator, &text)) {
+      ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+      return VKR_EDITOR_OP_DONE;
+    }
+  } else if (ops_equals(kind, "instance")) {
+    VkrMaterialInstance *instance =
+        arena_alloc(ops_arena(ctx), sizeof(*instance), ARENA_MEMORY_TAG_STRUCT);
+    VkrMaterialGraph *graph = ops_material_graph_alloc(ctx);
+    if (!instance || !graph) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    MemZero(instance, sizeof(*instance));
+    if (!ops_material_path(ctx, args, "graph", true_v, instance->graph) ||
+        !ops_material_graph_load(ctx, instance->graph, graph) ||
+        !ops_arg_string(ctx, args, "name", instance->name,
+                        sizeof(instance->name)) ||
+        !ops_material_apply_params(ctx, vkr_bakery_json_get(args, "params"),
+                                   instance) ||
+        !ops_material_instance_text(ctx, instance, &text)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    VkrMaterialLowering lowering = {0};
+    String8 definition = {0};
+    if (!vkr_material_graph_lower(
+            graph,
+            string8_create_from_cstr((const uint8_t *)instance->graph,
+                                     strlen(instance->graph)),
+            instance->params, instance->param_count, &allocator, &definition,
+            &lowering)) {
+      ops_fail(ctx, OPS_INVALID, "The instance does not lower: %s%s%s",
+               lowering.reason, lowering.node[0] ? ", node " : "",
+               lowering.node);
+      return VKR_EDITOR_OP_DONE;
+    }
+  } else if (from[0]) {
+    if (!vkr_editor_material_read(&allocator, from, &text)) {
+      ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not open", from);
+      return VKR_EDITOR_OP_DONE;
+    }
+  } else {
+    text = string8_lit("type=pbr\nbase_color=0.8,0.8,0.8,1\nmetallic=0\n"
+                       "roughness=0.5\n");
+  }
+  char label[96];
+  snprintf(label, sizeof(label), "Create %.80s", path);
+  if (!ops_material_write(ctx, path, text, false_v, label)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->call->result) {
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  }
+  ops_set(ctx, ctx->call->result, "path",
+          vkr_bakery_json_cstr(ops_arena(ctx), path));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* A link argument "node.port" of `graph`: the node and the output port,
+   or with `input`, the input port. */
+static bool8_t ops_material_port(OpsContext *ctx, const VkrMaterialGraph *graph,
+                                 const VkrBakeryJson *edit, const char *key,
+                                 bool8_t input, uint32_t *out_node,
+                                 uint32_t *out_port) {
+  String8 text = {0};
+  if (!vkr_bakery_json_get_string(edit, key, &text)) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' is \"node.port\"", key);
+  }
+  uint64_t dot = 0u;
+  while (dot < text.length && text.str[dot] != '.') {
+    dot++;
+  }
+  const String8 id = {.str = text.str, .length = dot};
+  *out_node = vkr_material_graph_find(graph, id);
+  if (*out_node == UINT32_MAX) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "No node '%.*s'", (int)id.length,
+                    (const char *)id.str);
+  }
+  const VkrMaterialNodeKind kind = graph->nodes[*out_node].kind;
+  if (dot == text.length) {
+    if (input) {
+      return ops_fail(ctx, OPS_INVALID, "'%s' names an input: \"node.port\"",
+                      key);
+    }
+    *out_port = 0u;
+    return true_v;
+  }
+  const String8 port = {.str = text.str + dot + 1u,
+                        .length = text.length - dot - 1u};
+  *out_port = input ? vkr_material_node_input(kind, port)
+                    : vkr_material_node_output(kind, port);
+  if (*out_port == UINT32_MAX) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "'%.*s' has no %s '%.*s'",
+                    (int)id.length, (const char *)id.str,
+                    input ? "input" : "output", (int)port.length,
+                    (const char *)port.str);
+  }
+  return true_v;
+}
+
+/* Sets the fields an edit names on node `index`. */
+static bool8_t ops_material_node_fields(OpsContext *ctx,
+                                        VkrMaterialGraph *graph, uint32_t index,
+                                        const VkrBakeryJson *edit) {
+  VkrMaterialNode *node = &graph->nodes[index];
+  const VkrBakeryJson *value = vkr_bakery_json_get(edit, "value");
+  if (value) {
+    if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
+      float64_t number = 0.0;
+      if (!ops_arg_number(edit, "value", &number) || !isfinite(number)) {
+        return ops_fail(ctx, OPS_INVALID, "A scalar's value is a number");
+      }
+      node->value.x = (float32_t)number;
+    } else if (node->kind == VKR_MATERIAL_NODE_COLOR) {
+      bool8_t has = false_v;
+      Vec3 color = {0};
+      if (!ops_arg_vec3(ctx, edit, "value", &color, &has)) {
+        return false_v;
+      }
+      node->value = vec4_new(color.x, color.y, color.z, 0.0f);
+    } else {
+      return ops_fail(ctx, OPS_INVALID, "Only scalars and colours have values");
+    }
+  }
+  if (vkr_bakery_json_get(edit, "path")) {
+    if (node->kind != VKR_MATERIAL_NODE_TEXTURE ||
+        !ops_arg_string(ctx, edit, "path", node->path, sizeof(node->path))) {
+      return node->kind == VKR_MATERIAL_NODE_TEXTURE
+                 ? false_v
+                 : ops_fail(ctx, OPS_INVALID, "Only textures have a path");
+    }
+  }
+  if (!ops_arg_string(ctx, edit, "parameter", node->parameter,
+                      sizeof(node->parameter))) {
+    return false_v;
+  }
+  String8 space = {0};
+  if (vkr_bakery_json_get_string(edit, "color_space", &space)) {
+    node->color_space = ops_equals(space, "srgb")     ? VKR_MATERIAL_COLOR_SPACE_SRGB
+                        : ops_equals(space, "linear") ? VKR_MATERIAL_COLOR_SPACE_LINEAR
+                                                      : VKR_MATERIAL_COLOR_SPACE_AUTO;
+  }
+  float32_t position[2];
+  bool8_t has_position = false_v;
+  if (!ops_arg_floats(ctx, edit, "position", position, 2u, &has_position)) {
+    return false_v;
+  }
+  if (has_position) {
+    node->position = vec2_new(position[0], position[1]);
+  }
+  char rename[VKR_MATERIAL_GRAPH_ID_CAPACITY] = "";
+  if (!ops_arg_string(ctx, edit, "rename", rename, sizeof(rename))) {
+    return false_v;
+  }
+  if (rename[0]) {
+    snprintf(node->id, sizeof(node->id), "%s", rename);
+  }
+  return true_v;
+}
+
+static bool8_t ops_material_settings(OpsContext *ctx, VkrMaterialGraph *graph,
+                                     const VkrBakeryJson *edit) {
+  VkrMaterialGraphSettings *settings = &graph->settings;
+  String8 alpha = {0};
+  if (vkr_bakery_json_get_string(edit, "alpha_mode", &alpha)) {
+    static const char *const modes[] = {"infer", "opaque", "mask", "blend"};
+    uint32_t mode = UINT32_MAX;
+    for (uint32_t i = 0; i < ArrayCount(modes); ++i) {
+      mode = ops_equals(alpha, modes[i]) ? i : mode;
+    }
+    if (mode == UINT32_MAX) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'alpha_mode' is infer, opaque, mask or blend");
+    }
+    settings->alpha_mode = (VkrMaterialGraphAlpha)mode;
+  }
+  float64_t number = 0.0;
+  if (ops_arg_number(edit, "alpha_cutoff", &number)) {
+    settings->alpha_cutoff = (float32_t)number;
+  }
+  if (ops_arg_number(edit, "temporal_reactivity", &number)) {
+    settings->temporal_reactivity = (float32_t)number;
+  }
+  if (ops_arg_number(edit, "roughness_max", &number)) {
+    settings->roughness_max = (float32_t)number;
+  }
+  if (ops_arg_number(edit, "subsurface_profile", &number)) {
+    if (number < 0.0 || number > 7.0 || number != floor(number)) {
+      return ops_fail(ctx, OPS_INVALID, "'subsurface_profile' is 0 to 7");
+    }
+    settings->subsurface_profile = (uint32_t)number;
+  }
+  settings->double_sided =
+      ops_arg_bool(edit, "double_sided", settings->double_sided);
+  return true_v;
+}
+
+/* Applies one edit of material.patch to `graph`. */
+static bool8_t ops_material_edit(OpsContext *ctx, VkrMaterialGraph *graph,
+                                 const VkrBakeryJson *edit) {
+  String8 op = {0};
+  if (!edit || edit->type != VKR_BAKERY_JSON_OBJECT ||
+      !vkr_bakery_json_get_string(edit, "op", &op)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "Each edit is an object with an 'op': add, remove, "
+                    "connect, disconnect, set or settings");
+  }
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  if (ops_equals(op, "add")) {
+    String8 type = {0};
+    VkrMaterialNodeKind kind = VKR_MATERIAL_NODE_SCALAR;
+    char id[VKR_MATERIAL_GRAPH_ID_CAPACITY] = "";
+    if (!vkr_bakery_json_get_string(edit, "type", &type) ||
+        !vkr_material_node_find(type, &kind)) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'type' is scalar, color, texture, multiply, normal_map "
+                      "or surface_output");
+    }
+    if (!ops_arg_string(ctx, edit, "id", id, sizeof(id))) {
+      return false_v;
+    }
+    if (id[0] && vkr_material_graph_find(
+                     graph, string8_create_from_cstr((const uint8_t *)id,
+                                                     strlen(id))) != UINT32_MAX) {
+      return ops_fail(ctx, OPS_INVALID, "Node '%s' exists", id);
+    }
+    const uint32_t index = vkr_material_graph_add(
+        graph, kind, id[0] ? id : vkr_material_node_desc(kind)->name);
+    if (index == UINT32_MAX) {
+      return ops_fail(ctx, OPS_LIMIT, "A graph holds at most %u nodes",
+                      VKR_MATERIAL_GRAPH_NODE_MAX);
+    }
+    return ops_material_node_fields(ctx, graph, index, edit);
+  }
+  if (ops_equals(op, "remove") || ops_equals(op, "set")) {
+    String8 id = {0};
+    if (!vkr_bakery_json_get_string(edit, "id", &id)) {
+      return ops_fail(ctx, OPS_INVALID, "'id' names the node");
+    }
+    const uint32_t index = vkr_material_graph_find(graph, id);
+    if (index == UINT32_MAX) {
+      return ops_fail(ctx, OPS_NOT_FOUND, "No node '%.*s'", (int)id.length,
+                      (const char *)id.str);
+    }
+    if (ops_equals(op, "remove")) {
+      vkr_material_graph_remove(graph, index);
+      return true_v;
+    }
+    return ops_material_node_fields(ctx, graph, index, edit);
+  }
+  if (ops_equals(op, "connect")) {
+    uint32_t from = 0u;
+    uint32_t from_port = 0u;
+    uint32_t to = 0u;
+    uint32_t to_port = 0u;
+    if (!ops_material_port(ctx, graph, edit, "from", false_v, &from,
+                           &from_port) ||
+        !ops_material_port(ctx, graph, edit, "to", true_v, &to, &to_port)) {
+      return false_v;
+    }
+    return vkr_material_graph_connect(graph, from, from_port, to, to_port,
+                                      error, sizeof(error))
+               ? true_v
+               : ops_fail(ctx, OPS_INVALID, "%s", error);
+  }
+  if (ops_equals(op, "disconnect")) {
+    uint32_t to = 0u;
+    uint32_t to_port = 0u;
+    if (!ops_material_port(ctx, graph, edit, "to", true_v, &to, &to_port)) {
+      return false_v;
+    }
+    graph->nodes[to].inputs[to_port] = (VkrMaterialLink){0};
+    return true_v;
+  }
+  if (ops_equals(op, "settings")) {
+    return ops_material_settings(ctx, graph, edit);
+  }
+  return ops_fail(ctx, OPS_INVALID,
+                  "Unknown edit '%.*s': add, remove, connect, disconnect, set "
+                  "or settings",
+                  (int)op.length, (const char *)op.str);
+}
+
+static VkrEditorOpStatus ops_run_material_patch(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  if (!ops_material_path(ctx, args, "path", true_v, path)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrBakeryJson *edits = vkr_bakery_json_get(args, "edits");
+  if (!edits || edits->type != VKR_BAKERY_JSON_ARRAY || !edits->count) {
+    ops_fail(ctx, OPS_INVALID, "'edits' lists one or more edits");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrMaterialGraph *graph = ops_material_graph_alloc(ctx);
+  if (!graph || !ops_material_graph_load(ctx, path, graph)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  uint32_t index = 0u;
+  for (const VkrBakeryJson *edit = edits->first; edit;
+       edit = edit->next, ++index) {
+    if (!ops_material_edit(ctx, graph, edit)) {
+      char message[256];
+      snprintf(message, sizeof(message), "edits[%u]: %s", index,
+               ctx->call->error);
+      snprintf(ctx->call->error, sizeof(ctx->call->error), "%s", message);
+      return VKR_EDITOR_OP_DONE;
+    }
+  }
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  if (!vkr_material_graph_validate(graph, error, sizeof(error))) {
+    ops_fail(ctx, OPS_INVALID, "%s; nothing changed", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrAllocator allocator;
+  String8 text = {0};
+  if (!ops_allocator(ctx, &allocator) ||
+      !vkr_material_graph_write(graph, &allocator, &text)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* The change reads as the agent's label, else as the graph's name. */
+  String8 label = {0};
+  char label_text[96];
+  if (vkr_bakery_json_get_string(args, "label", &label) && label.length) {
+    snprintf(label_text, sizeof(label_text), "%.*s",
+             (int)Min(label.length, (uint64_t)95u), (const char *)label.str);
+  } else {
+    snprintf(label_text, sizeof(label_text), "Edit %.80s", path);
+  }
+  if (!ops_material_write(ctx, path, text, false_v, label_text)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->call->result) {
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  }
+  ops_set(ctx, ctx->call->result, "nodes",
+          vkr_bakery_json_int(ops_arena(ctx), graph->node_count));
+  ops_set(ctx, ctx->call->result, "lowering",
+          ops_material_lowering(ctx, graph, path, NULL, 0u, false_v));
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_material_set_param(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  if (!ops_material_path(ctx, args, "path", false_v, path)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrMaterialInstance *instance =
+      arena_alloc(ops_arena(ctx), sizeof(*instance), ARENA_MEMORY_TAG_STRUCT);
+  VkrMaterialGraph *graph = ops_material_graph_alloc(ctx);
+  char graph_path[VKR_EDITOR_MATERIAL_PATH];
+  String8 text = {0};
+  if (!instance || !graph ||
+      !ops_material_instance_load(ctx, path, instance, graph, graph_path) ||
+      !ops_material_apply_params(ctx, vkr_bakery_json_get(args, "params"),
+                                 instance) ||
+      !ops_material_instance_text(ctx, instance, &text)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrAllocator allocator;
+  VkrMaterialLowering lowering = {0};
+  String8 definition = {0};
+  if (!ops_allocator(ctx, &allocator)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_material_graph_lower(
+          graph,
+          string8_create_from_cstr((const uint8_t *)graph_path,
+                                   strlen(graph_path)),
+          instance->params, instance->param_count, &allocator, &definition,
+          &lowering)) {
+    ops_fail(ctx, OPS_INVALID, "%s%s%s; nothing changed", lowering.reason,
+             lowering.node[0] ? ", node " : "", lowering.node);
+    return VKR_EDITOR_OP_DONE;
+  }
+  char label[96];
+  snprintf(label, sizeof(label), "Parameters of %.70s", path);
+  if (!ops_material_write(ctx, path, text, false_v, label)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->call->result) {
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  }
+  ops_set(ctx, ctx->call->result, "lowering",
+          ops_material_lowering(ctx, graph, graph_path, instance->params,
+                                instance->param_count, false_v));
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_material_compile(OpsContext *ctx) {
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  if (!ops_material_path(ctx, ctx->call->args, "path", false_v, path)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrAllocator allocator;
+  if (!ops_allocator(ctx, &allocator)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrMaterialGraph *graph = ops_material_graph_alloc(ctx);
+  if (!graph) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrEditorMaterialKind kind = vkr_editor_material_kind(&allocator, path);
+  if (kind == VKR_EDITOR_MATERIAL_GRAPH) {
+    if (ops_material_graph_load(ctx, path, graph)) {
+      ctx->call->result =
+          ops_material_lowering(ctx, graph, path, NULL, 0u, true_v);
+    }
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (kind == VKR_EDITOR_MATERIAL_INSTANCE) {
+    VkrMaterialInstance *instance =
+        arena_alloc(ops_arena(ctx), sizeof(*instance), ARENA_MEMORY_TAG_STRUCT);
+    char graph_path[VKR_EDITOR_MATERIAL_PATH];
+    if (instance &&
+        ops_material_instance_load(ctx, path, instance, graph, graph_path)) {
+      ctx->call->result =
+          ops_material_lowering(ctx, graph, graph_path, instance->params,
+                                instance->param_count, true_v);
+    }
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* A plain definition checks as the loader reads it. */
+  String8 text = {0};
+  VkrParsedMaterialData *parsed =
+      arena_alloc(ops_arena(ctx), sizeof(*parsed), ARENA_MEMORY_TAG_STRUCT);
+  if (!parsed || !vkr_editor_material_read(&allocator, path, &text)) {
+    ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not open", path);
+    return VKR_EDITOR_OP_DONE;
+  }
+  const bool8_t ok = vkr_material_loader_parse_definition(
+      &allocator, string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      text, parsed);
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "tier",
+          vkr_bakery_json_cstr(ops_arena(ctx), ok ? "standard" : "invalid"));
+  ops_set(ctx, ctx->call->result, "pipelines",
+          vkr_bakery_json_int(ops_arena(ctx), 0));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* material.assign: `material` on one `face`, on a `brush`'s faces (all or
+   those `faces` selects), or on an `entity`: a brush's faces, else a mesh's
+   submesh `slot` or every submesh through its `material_override`. An
+   empty `material` returns faces to their greybox looks and submeshes to
+   their own materials. */
+static bool8_t ops_build_material_assign(OpsContext *ctx,
+                                         const VkrBakeryJson *args,
+                                         OpsBatch *batch) {
+  char material[VKR_EDITOR_MATERIAL_PATH] = "";
+  if (!ops_arg_string(ctx, args, "material", material, sizeof(material))) {
+    return false_v;
+  }
+  if (material[0] && (!ops_material_ends(material, ".mt") ||
+                      material[0] == '/' || strstr(material, ".."))) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'material' is a content-root relative .mt, or empty to "
+                    "clear");
+  }
+  if (vkr_bakery_json_get(args, "face") || vkr_bakery_json_get(args, "brush")) {
+    return ops_build_face_look(ctx, args, batch, true_v);
+  }
+  OpsRef ref;
+  if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, "entity"), "entity",
+               &ref)) {
+    return false_v;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, ref.container);
+  Arena *arena = ops_arena(ctx);
+  if (scene && (vkr_scene_get_typed(scene, ref.entity, &vkr_scene_brush_type) ||
+                vkr_scene_get_typed(scene, ref.entity,
+                                    &vkr_scene_brush_face_type))) {
+    VkrBakeryJson *face_args = vkr_bakery_json_clone(arena, args);
+    const bool8_t face = vkr_scene_get_typed(scene, ref.entity,
+                                             &vkr_scene_brush_face_type) != NULL;
+    ops_set(ctx, face_args, face ? "face" : "brush",
+            vkr_bakery_json_clone(arena, vkr_bakery_json_get(args, "entity")));
+    return ops_build_face_look(ctx, face_args, batch, true_v);
+  }
+  SceneMeshInfo info;
+  if (!scene || !vkr_scene_mesh_info(scene, ref.entity, &info) ||
+      !info.submeshes) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "The entity is neither a brush nor a loaded mesh");
+  }
+  float64_t slot = -1.0;
+  if (ops_arg_number(args, "slot", &slot) &&
+      (slot < 0.0 || slot >= (float64_t)VKR_MESH_MATERIAL_OVERRIDE_MAX ||
+       slot != floor(slot))) {
+    return ops_fail(ctx, OPS_INVALID, "'slot' is a submesh from 0 to %u",
+                    VKR_MESH_MATERIAL_OVERRIDE_MAX - 1u);
+  }
+  const uint32_t first = slot >= 0.0 ? (uint32_t)slot : 0u;
+  const uint32_t last =
+      slot >= 0.0 ? first + 1u
+                  : Min(info.submeshes, (uint32_t)VKR_MESH_MATERIAL_OVERRIDE_MAX);
+  VkrBakeryJson *values = vkr_bakery_json_object(arena);
+  for (uint32_t i = first; i < last; ++i) {
+    char key[16];
+    snprintf(key, sizeof(key), "material_%u", i);
+    ops_set(ctx, values, key, vkr_bakery_json_cstr(arena, material));
+  }
+  VkrBakeryJson *component = vkr_bakery_json_object(arena);
+  ops_set(ctx, component, "entity",
+          vkr_bakery_json_clone(arena, vkr_bakery_json_get(args, "entity")));
+  ops_set(ctx, component, "type",
+          vkr_bakery_json_cstr(arena, vkr_scene_material_override_type.name));
+  ops_set(ctx, component, "values", values);
+  _Alignas(16) uint8_t current[VKR_TYPE_VALUE_MAX];
+  const bool8_t present = ops_component_get(
+      scene, ref.entity, &vkr_scene_material_override_type, 0u, current);
+  return ops_build_component(ctx, component, batch,
+                             present ? VKR_SCENE_EDIT_APPLY
+                                     : VKR_SCENE_EDIT_ADD_COMPONENT);
+}
+
+/* material.open: shows a document in the Material panel for the
+   designer, and with `workbench`, switches to the Art workbench. */
+static VkrEditorOpStatus ops_run_material_open(OpsContext *ctx) {
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  if (!ops_material_path(ctx, ctx->call->args, "path", false_v, path)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_material_open(ctx->editor->materials, ctx->frame, path)) {
+    ops_fail(ctx, OPS_INVALID, "%s does not open in the Material panel", path);
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (ops_arg_bool(ctx->call->args, "workbench", false_v)) {
+    const VkrEditorWorkbenches *workbenches = &ctx->editor->workbenches;
+    for (uint32_t i = 0; i < workbenches->count; ++i) {
+      const VkrEditorWorkbench *item = &workbenches->items[i];
+      if (item->kind == VKR_EDITOR_WORKBENCH_ART && !item->custom) {
+        char message[128];
+        (void)vkr_editor_workbench_request(ctx->editor, ctx->frame, i,
+                                           message, sizeof(message));
+        break;
+      }
+    }
+  }
+  vkr_editor_dock_show(ctx->frame->dock, VKR_UI_DOCK_PANEL_MATERIAL);
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "path",
+          vkr_bakery_json_cstr(ops_arena(ctx), path));
+  return VKR_EDITOR_OP_DONE;
+}
+
 static const OpsDef s_ops[] = {
     {"ops.list", "Every operation with its description and argument schema.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_list, NULL, OPS_QUICK},
@@ -10268,6 +11386,82 @@ static const OpsDef s_ops[] = {
      ",\"container\":" OPS_CONTAINER_SCHEMA "," OPS_CAPSULE_SCHEMA
      "," OPS_SETTLE_SCHEMA "},\"required\":[\"from\",\"to\"]}",
      ops_run_reachable, NULL, OPS_SETTLES},
+    {"material.list",
+     "Material files and graphs under the content root's assets: path, kind "
+     "(graph, instance or definition) and an instance's graph; 'contains' "
+     "filters by path.",
+     "{\"type\":\"object\",\"properties\":{\"contains\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_material_list, NULL, OPS_QUICK},
+    {"material.describe",
+     "One material document: a graph's nodes (one line each), exposed "
+     "parameters, how it lowers (tier, reason, node, samples, pipelines) and "
+     "its instances; an instance's graph, overrides and lowering; or a plain "
+     "definition's text and whether it has a graph form.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"}},\"required\":[\"path\"]}",
+     ops_run_material_describe, NULL, OPS_QUICK},
+    {"material.create",
+     "Create a material document at a content path: a 'graph' (.mtg) from a "
+     "starting template or 'from' a PBR .mt; an 'instance' (.mt) of a "
+     "'graph' with 'params' overrides and a 'name'; or a 'definition' (.mt), "
+     "copied 'from' another. Fails on an existing file unless 'overwrite'.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"graph\","
+     "\"instance\",\"definition\"]},\"from\":{\"type\":\"string\"},"
+     "\"graph\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},"
+     "\"params\":{\"type\":\"object\"},\"overwrite\":{\"type\":"
+     "\"boolean\"}," OPS_REVIEW_SCHEMA "},\"required\":[\"path\","
+     "\"kind\"]}",
+     ops_run_material_create, NULL},
+    {"material.patch",
+     "Edit a graph (.mtg) as one undo step: 'edits' in order, each an 'op': "
+     "add {type, id?, value?, path?, parameter?, color_space?, position?}, "
+     "remove {id}, connect {from: \"node.output\", to: \"node.input\"}, "
+     "disconnect {to}, set {id, value?, path?, parameter?, color_space?, "
+     "position?, rename?} or settings {alpha_mode?, alpha_cutoff?, "
+     "double_sided?, subsurface_profile?, temporal_reactivity?, "
+     "roughness_max?}. A failed edit or an invalid graph changes nothing. "
+     "Answers how the graph lowers.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"},\"edits\":{\"type\":\"array\",\"items\":{\"type\":"
+     "\"object\"}},\"label\":{\"type\":\"string\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"path\",\"edits\"]}",
+     ops_run_material_patch, NULL},
+    {"material.set_param",
+     "Set an instance's parameter overrides: 'params' maps names to a "
+     "number, [r, g, b] or a texture path (relative to the instance with ./), "
+     "null removing one.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"},\"params\":{\"type\":\"object\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"path\",\"params\"]}",
+     ops_run_material_set_param, NULL},
+    {"material.compile",
+     "Lower a graph or instance without changing it: tier, reason, node, "
+     "samples, pipelines and the .mt definition the loader reads; a plain "
+     "definition checks as the loader reads it.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"}},\"required\":[\"path\"]}",
+     ops_run_material_compile, NULL, OPS_QUICK},
+    {"material.assign",
+     "Assign a material (.mt) to a 'face', a 'brush' (all faces or those "
+     "'faces' selects) or an 'entity': a brush's faces, else a mesh's "
+     "submesh 'slot' (0 to 7) or every submesh, through its "
+     "material_override; an empty 'material' clears.",
+     "{\"type\":\"object\",\"properties\":{\"material\":{\"type\":"
+     "\"string\"},\"face\":" OPS_ENTITY_SCHEMA ",\"brush\":"
+     OPS_ENTITY_SCHEMA ",\"entity\":" OPS_ENTITY_SCHEMA ",\"slot\":{"
+     "\"type\":\"integer\"},\"faces\":{\"type\":\"array\",\"items\":"
+     "{\"type\":\"string\"}}," OPS_REVIEW_SCHEMA "},\"required\":["
+     "\"material\"]}",
+     NULL, ops_build_material_assign},
+    {"material.open",
+     "Show a material document in the Material panel, and with "
+     "'workbench' switch to the Art workbench, so the designer sees it.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"},\"workbench\":{\"type\":\"boolean\"}},"
+     "\"required\":[\"path\"]}",
+     ops_run_material_open, NULL},
     {"query.measure",
      "Measure in meters: from 'from' to 'to' the distance, horizontal run, "
      "rise and slope in degrees; or the world 'size' of an 'entity' and its "
@@ -10468,7 +11662,8 @@ static bool8_t ops_input_active(InputState *input) {
   return false_v;
 }
 
-void vkr_editor_ops_update(VkrEditorOps *ops, const VkrSampleUiFrame *frame) {
+void vkr_editor_ops_update(VkrEditorOps *ops, const VkrEditorUi *editor,
+                           const VkrSampleUiFrame *frame) {
   if (ops && frame->input && ops_input_active(frame->input)) {
     ops->input_last = vkr_platform_get_absolute_time();
   }
@@ -10480,10 +11675,14 @@ void vkr_editor_ops_update(VkrEditorOps *ops, const VkrSampleUiFrame *frame) {
     ops_claims_load(ops, frame);
   }
   for (uint32_t i = 0; ops && i < ops->change_count;) {
-    const VkrSceneEditState *journal =
-        ops_journal(frame, ops->changes[i].container);
-    if (!journal ||
-        !vkr_scene_edit_group_present(journal, ops->changes[i].group)) {
+    const VkrEditorChange *change = &ops->changes[i];
+    const VkrSceneEditState *journal = ops_journal(frame, change->container);
+    const bool8_t present =
+        change->document[0]
+            ? vkr_editor_material_group_present(editor->materials,
+                                                change->group)
+            : journal && vkr_scene_edit_group_present(journal, change->group);
+    if (!present) {
       ops_change_remove(ops, i);
       continue;
     }
