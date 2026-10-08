@@ -6018,9 +6018,10 @@ static VkrEditorOpStatus ops_run_reachable(OpsContext *ctx) {
   Vec3 path[512];
   uint32_t count = 0u;
   float32_t length = 0.0f;
+  VkrEditorLevelRoute route;
   const bool8_t reached = vkr_editor_level_job_reachable(
       ctx->ops->level_job, pending->level.scene, pending->from, pending->to,
-      path, ArrayCount(path), &count, &length);
+      path, ArrayCount(path), &count, &length, &route);
   ops_level_end(ctx->ops);
   Arena *arena = ops_arena(ctx);
   VkrBakeryJson *points = vkr_bakery_json_array(arena);
@@ -6037,6 +6038,18 @@ static VkrEditorOpStatus ops_run_reachable(OpsContext *ctx) {
           vkr_bakery_json_bool(arena, reached));
   if (reached) {
     ops_set(ctx, ctx->call->result, "length", ops_number(ctx, length));
+    ops_set(ctx, ctx->call->result, "path", points);
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* Where the way stops: the ends' floors, and the route to the reached
+     floor nearest 'to'. */
+  ops_set(ctx, ctx->call->result, "from_floor",
+          vkr_bakery_json_bool(arena, route.from_found));
+  ops_set(ctx, ctx->call->result, "to_floor",
+          vkr_bakery_json_bool(arena, route.to_found));
+  if (route.from_found) {
+    ops_set(ctx, ctx->call->result, "closest", ops_vec3(ctx, route.closest));
+    ops_set(ctx, ctx->call->result, "gap", ops_number(ctx, route.gap));
     ops_set(ctx, ctx->call->result, "path", points);
   }
   return VKR_EDITOR_OP_DONE;

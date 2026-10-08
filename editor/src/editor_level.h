@@ -98,11 +98,23 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
                                    const VkrScene *scene, const Vec3 *start,
                                    VkrEditorLevelIssue *out, uint32_t capacity,
                                    VkrEditorLevelStats *stats);
+/* Why a route failed: whether each end stands on a walkable floor, and the
+   reached floor nearest `to` with the distance left. */
+typedef struct VkrEditorLevelRoute {
+  bool8_t from_found;
+  bool8_t to_found;
+  Vec3 closest;
+  float32_t gap;
+} VkrEditorLevelRoute;
+
+/* Whether the capsule walks from `from` to `to`; the route to `to`, or when
+   it does not reach it, to the reached floor nearest it. */
 bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
                                        const VkrScene *scene, Vec3 from,
                                        Vec3 to, Vec3 *path,
                                        uint32_t path_capacity,
-                                       uint32_t *path_count, float32_t *length);
+                                       uint32_t *path_count, float32_t *length,
+                                       VkrEditorLevelRoute *route);
 bool8_t vkr_editor_level_job_map(VkrEditorLevelJob *job, const VkrScene *scene,
                                  const Vec3 *start, char *text,
                                  float32_t *heights, uint32_t capacity,

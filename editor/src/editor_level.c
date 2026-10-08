@@ -18,6 +18,12 @@
 
 /* Floors one grid cell holds at most. */
 #define LEVEL_LAYER_MAX 4u
+/* Offsets of each cell's rays from its center, in meters: small, and off
+   the 1/16 m grid. */
+#define LEVEL_SAMPLE_SKEW_X 0.0131f
+#define LEVEL_SAMPLE_SKEW_Z 0.0073f
+/* A gap the walk steps over is at most this share of the capsule's width. */
+#define LEVEL_GAP_SHARE 0.75f
 /* Issues of one kind closer than this merge into one. */
 #define LEVEL_MERGE_DISTANCE 1.0f
 
@@ -122,8 +128,14 @@ static LevelNode *level_node(LevelGrid *grid, uint32_t x, uint32_t z,
    capsule. */
 static void level_sample_cell(LevelGrid *grid, uint32_t x, uint32_t z) {
   const VkrEditorLevelCapsule *capsule = grid->capsule;
-  const float32_t px = grid->min.x + ((float32_t)x + 0.5f) * grid->cell;
-  const float32_t pz = grid->min.z + ((float32_t)z + 0.5f) * grid->cell;
+  /* A ray exactly along an edge two collision pieces share can slip between
+     their triangles, as down a stair riser of a blockout shape, and report
+     the floor under the solid. Geometry snaps to 1/16 m, so each column is
+     cast a little off its cell's center, off that grid. */
+  const float32_t px =
+      grid->min.x + ((float32_t)x + 0.5f) * grid->cell + LEVEL_SAMPLE_SKEW_X;
+  const float32_t pz =
+      grid->min.z + ((float32_t)z + 0.5f) * grid->cell + LEVEL_SAMPLE_SKEW_Z;
   const float32_t depth = grid->max.y - grid->min.y + 1.0f;
   uint8_t *count = &grid->layers[(size_t)z * grid->nx + x];
   for (float32_t start = grid->max.y + 0.5f;
@@ -325,6 +337,11 @@ static const int32_t s_level_dz[4] = {0, 0, 1, -1};
    how many nodes it reached. */
 static uint32_t level_walk(LevelGrid *grid, int32_t start, int32_t *queue) {
   const size_t total = (size_t)grid->nx * grid->nz * LEVEL_LAYER_MAX;
+  /* The capsule's round bottom rests on both edges of a gap narrower than
+     itself, so the walk also steps over one cell when that cell is that
+     narrow; a wider cell is a real gap. */
+  const uint32_t reach =
+      grid->cell <= LEVEL_GAP_SHARE * 2.0f * grid->capsule->radius ? 2u : 1u;
   uint32_t head = 0u;
   uint32_t tail = 0u;
   grid->nodes[start].visited = true_v;
@@ -335,21 +352,23 @@ static uint32_t level_walk(LevelGrid *grid, int32_t start, int32_t *queue) {
     const uint32_t x = cell % grid->nx;
     const uint32_t z = cell / grid->nx;
     for (uint32_t d = 0; d < 4u; ++d) {
-      const int32_t nx = (int32_t)x + s_level_dx[d];
-      const int32_t nz = (int32_t)z + s_level_dz[d];
-      if (nx < 0 || nz < 0 || nx >= (int32_t)grid->nx ||
-          nz >= (int32_t)grid->nz) {
-        continue;
-      }
-      const uint8_t layers = grid->layers[(size_t)nz * grid->nx + nx];
-      for (uint32_t l = 0; l < layers; ++l) {
-        LevelNode *next = level_node(grid, (uint32_t)nx, (uint32_t)nz, l);
-        const int32_t next_index = (int32_t)(next - grid->nodes);
-        if (!next->visited && (size_t)next_index < total &&
-            level_step(grid, &grid->nodes[index], next)) {
-          next->visited = true_v;
-          next->parent = index;
-          queue[tail++] = next_index;
+      for (uint32_t k = 1u; k <= reach; ++k) {
+        const int32_t nx = (int32_t)x + s_level_dx[d] * (int32_t)k;
+        const int32_t nz = (int32_t)z + s_level_dz[d] * (int32_t)k;
+        if (nx < 0 || nz < 0 || nx >= (int32_t)grid->nx ||
+            nz >= (int32_t)grid->nz) {
+          break;
+        }
+        const uint8_t layers = grid->layers[(size_t)nz * grid->nx + nx];
+        for (uint32_t l = 0; l < layers; ++l) {
+          LevelNode *next = level_node(grid, (uint32_t)nx, (uint32_t)nz, l);
+          const int32_t next_index = (int32_t)(next - grid->nodes);
+          if (!next->visited && (size_t)next_index < total &&
+              level_step(grid, &grid->nodes[index], next)) {
+            next->visited = true_v;
+            next->parent = index;
+            queue[tail++] = next_index;
+          }
         }
       }
     }
@@ -733,25 +752,43 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
                                        const VkrScene *scene, Vec3 from,
                                        Vec3 to, Vec3 *path,
                                        uint32_t path_capacity,
-                                       uint32_t *path_count,
-                                       float32_t *length) {
+                                       uint32_t *path_count, float32_t *length,
+                                       VkrEditorLevelRoute *route) {
   *path_count = 0u;
   *length = 0.0f;
+  *route = (VkrEditorLevelRoute){0};
   LevelGrid grid = job->grid;
   grid.scene = (VkrScene *)scene;
   const size_t total = (size_t)grid.nx * grid.nz * LEVEL_LAYER_MAX;
   int32_t *queue = malloc(total * sizeof(*queue));
   const int32_t start = level_nearest(&grid, from);
   const int32_t goal = level_nearest(&grid, to);
+  route->from_found = start >= 0;
+  route->to_found = goal >= 0;
   bool8_t reached = false_v;
-  if (queue && start >= 0 && goal >= 0) {
-    (void)level_walk(&grid, start, queue);
-    reached = grid.nodes[goal].visited;
+  int32_t end = -1;
+  if (queue && start >= 0) {
+    const uint32_t visited = level_walk(&grid, start, queue);
+    reached = goal >= 0 && grid.nodes[goal].visited;
+    end = reached ? goal : start;
+    /* A failed route ends at the reached floor nearest `to`, to show where
+       the way stops. */
+    float32_t best = INFINITY;
+    for (uint32_t i = 0; !reached && i < visited; ++i) {
+      const float32_t distance =
+          vec3_length(vec3_sub(grid.nodes[queue[i]].position, to));
+      if (distance < best) {
+        best = distance;
+        end = queue[i];
+      }
+    }
+    route->closest = grid.nodes[end].position;
+    route->gap = reached ? 0.0f : best;
   }
-  if (reached) {
-    /* Walk back from the goal, then reverse into start-to-goal order. */
+  if (end >= 0) {
+    /* Walk back from the end, then reverse into start-to-end order. */
     uint32_t count = 0u;
-    for (int32_t at = goal; at >= 0; at = grid.nodes[at].parent) {
+    for (int32_t at = end; at >= 0; at = grid.nodes[at].parent) {
       if (grid.nodes[at].parent >= 0) {
         *length +=
             vec3_length(vec3_sub(grid.nodes[at].position,

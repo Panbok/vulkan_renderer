@@ -669,7 +669,16 @@ cannot reach, overlapping solid brushes and brushes that did not build. Each
 issue names its position, the entity at fault and the step height, slope,
 headroom or gap; issues of one kind on one entity within 8 m merge.
 `query.reachable` flood-fills from `from` and returns whether `to` is
-reachable with one route and its length. The grid's cell grows with the
+reachable with one route and its length. A failed route answers whether
+each end stands on a walkable floor (`from_floor`, `to_floor`), the reached
+floor nearest `to` (`closest`), the distance left (`gap`) and the route to
+it, so an agent sees where the way stops. Each column is cast 1.3 cm and
+0.7 cm off its cell's center, off the 1/16 m grid geometry snaps to: a ray
+exactly along an edge two collision pieces share, as a stair riser of a
+blockout shape, slipped between their triangles and found the floor under
+the solid, cutting the stairs whenever a row of cells met a riser. The walk
+steps over one cell no wider than three quarters of the capsule, whose
+round bottom rests on both edges of so narrow a gap. The grid's cell grows with the
 region past 65,536 cells of the capsule radius: a square up to 76.8 m keeps
 0.3 m cells, while a 256 m square samples every metre and can miss a gap
 narrower than the capsule.
