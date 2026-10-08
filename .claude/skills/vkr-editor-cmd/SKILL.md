@@ -66,6 +66,16 @@ Name yourself with `agent` (or `--agent`) so your changes carry an author and
 wait for rebuilds of earlier edits; repeat a result with `"settled": false`.
 To build or check a level through the channel, follow `vkr-level-design`.
 
+## Drive the player
+
+In a headless run, Play reads synthetic input as the player's own
+(ADR-075): `sim.play`, then `ui.key w down` walks the FPS player until
+`ui.key w up`, `ui.key shift down` slows it to a walk, `ui.key space` jumps
+and `ui.look <dx> 0` turns it by dx × 0.0025 radians. `entity.get Player`
+answers its `world_position` (the feet); its rotation stays authored, so
+track the yaw from the looks you sent, starting at the Player Start's facing.
+`sim.stop` resets the scene.
+
 ## Read results
 
 Each statement prints `[cmd] > <statement>` and then `[cmd] <result>` or

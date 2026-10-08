@@ -1073,25 +1073,17 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
   static const struct {
     const char *name;
     Keys key;
-  } keys[] = {{"up", KEY_UP},
-              {"down", KEY_DOWN},
-              {"left", KEY_LEFT},
-              {"right", KEY_RIGHT},
-              {"enter", KEY_ENTER},
-              {"escape", KEY_ESCAPE},
-              {"tab", KEY_TAB},
-              {"backspace", KEY_BACKSPACE},
-              {"delete", KEY_DELETE},
-              {"home", KEY_HOME},
-              {"pageup", KEY_PRIOR},
-              {"pagedown", KEY_NEXT},
-              {"end", KEY_END},
-              {"a", KEY_A},
-              {"c", KEY_C},
-              {"v", KEY_V},
-              {"x", KEY_X},
-              {"y", KEY_Y},
-              {"z", KEY_Z}};
+  } keys[] = {{"up", KEY_UP},         {"down", KEY_DOWN},
+              {"left", KEY_LEFT},     {"right", KEY_RIGHT},
+              {"enter", KEY_ENTER},   {"escape", KEY_ESCAPE},
+              {"tab", KEY_TAB},       {"backspace", KEY_BACKSPACE},
+              {"delete", KEY_DELETE}, {"home", KEY_HOME},
+              {"pageup", KEY_PRIOR},  {"pagedown", KEY_NEXT},
+              {"end", KEY_END},       {"shift", KEY_LSHIFT},
+              {"ctrl", KEY_LCONTROL}, {"alt", KEY_LMENU},
+              {"a", KEY_A},           {"c", KEY_C},
+              {"v", KEY_V},           {"x", KEY_X},
+              {"y", KEY_Y},           {"z", KEY_Z}};
   static const struct {
     const char *prefix;
     Keys key;
@@ -1100,6 +1092,22 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
                    {"ctrl+", KEY_LCONTROL},
                    {"shift+", KEY_LSHIFT}};
   String8 word = cmd_unquote(arg);
+  /* A trailing "down" or "up" presses or releases only, so a key can stay
+     held across statements, as walking in Play needs. */
+  int32_t only = 0;
+  static const struct {
+    const char *suffix;
+    int32_t phase;
+  } halves[] = {{" down", 3}, {" up", 4}};
+  for (uint32_t h = 0; h < ArrayCount(halves); ++h) {
+    const uint64_t length = strlen(halves[h].suffix);
+    if (word.length > length &&
+        !MemCompare(halves[h].suffix, word.str + word.length - length,
+                    length)) {
+      only = halves[h].phase;
+      word.length -= length;
+    }
+  }
   Keys held[ArrayCount(modifiers)];
   uint32_t held_count = 0u;
   for (bool8_t found = true_v; found;) {
@@ -1151,17 +1159,17 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
   VkrEditorUi *editor = ctx->editor;
   if (key != KEY_MAX_KEYS) {
     editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
-    for (uint32_t m = 0; m < held_count; ++m) {
+    for (uint32_t m = 0; only != 4 && m < held_count; ++m) {
       int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
       step[0] = 3;
       step[3] = (int32_t)held[m];
     }
-    for (int32_t phase = 3; phase <= 4; ++phase) {
+    for (int32_t phase = only ? only : 3; phase <= (only ? only : 4); ++phase) {
       int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
       step[0] = phase;
       step[3] = (int32_t)key;
     }
-    for (uint32_t m = 0; m < held_count; ++m) {
+    for (uint32_t m = 0; only != 3 && m < held_count; ++m) {
       int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
       step[0] = 4;
       step[3] = (int32_t)held[m];
@@ -1172,9 +1180,33 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
   }
   snprintf(ctx->message, sizeof(ctx->message),
            "ui.key needs [cmd+|alt+|ctrl+|shift+] and up, down, left, right, "
-           "enter, escape, tab, backspace, delete, home, end, space, a letter, "
-           "a digit or f1 to f12");
+           "enter, escape, tab, backspace, delete, home, end, space, shift, "
+           "ctrl, alt, a letter, a digit or f1 to f12, then [down|up]");
   return false_v;
+}
+
+/* ui.look <dx> <dy> moves the pointer by points from where it is, as mouse
+ * motion would; captured gameplay reads it as look (ADR-073). */
+static bool8_t cmd_run_ui_look(CmdContext *ctx, const CmdDef *def,
+                               String8 arg) {
+  (void)def;
+  char text[64] = {0};
+  MemCopy(text, arg.str, Min(arg.length, (uint64_t)sizeof(text) - 1u));
+  int32_t dx = 0;
+  int32_t dy = 0;
+  if (sscanf(text, "%d %d", &dx, &dy) != 2) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "ui.look needs <dx> <dy> in points");
+    return false_v;
+  }
+  VkrEditorUi *editor = ctx->editor;
+  editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
+  int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
+  step[0] = 6;
+  step[1] = dx;
+  step[2] = dy;
+  snprintf(ctx->message, sizeof(ctx->message), "Look %d %d", dx, dy);
+  return true_v;
 }
 
 /* ui.type <text> commits up to 32 ASCII characters to the focused field, one
@@ -1210,6 +1242,11 @@ void vkr_editor_cmd_pointer_input(VkrEditorUi *editor, InputState *input) {
   const int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_next++];
   if (step[0] == 0) {
     input_process_mouse_move(input, step[1], step[2]);
+  } else if (step[0] == 6) {
+    int32_t x = 0;
+    int32_t y = 0;
+    input_get_mouse_position(input, &x, &y);
+    input_process_mouse_move(input, x + step[1], y + step[2]);
   } else if (step[0] == 5) {
     (void)input_process_char(input, (uint32_t)step[3]);
   } else if (step[0] >= 3) {
@@ -2193,9 +2230,13 @@ static const CmdDef cmd_defs[] = {
     {"ui.click", CMD_ARG_TEXT, "<x> <y> [count] [right|alt|ctrl]",
      "Click the window at a point, as the mouse would", cmd_run_ui_click,
      CMD_COUNT, 0u},
-    {"ui.key", CMD_ARG_TEXT, "[cmd+|alt+|ctrl+|shift+]<key>",
-     "Press and release a key with modifiers, as the keyboard would",
+    {"ui.key", CMD_ARG_TEXT, "[cmd+|alt+|ctrl+|shift+]<key> [down|up]",
+     "Press and release a key with modifiers, as the keyboard would; down or "
+     "up only presses or releases it, and shift, ctrl or alt alone are keys",
      cmd_run_ui_key, CMD_COUNT, 0u},
+    {"ui.look", CMD_ARG_TEXT, "<dx> <dy>",
+     "Move the pointer by points from where it is, as mouse motion would",
+     cmd_run_ui_look, CMD_COUNT, 0u},
     {"ui.type", CMD_ARG_TEXT, "<text>",
      "Type characters into the focused field, as the keyboard would",
      cmd_run_ui_type, CMD_COUNT, 0u},

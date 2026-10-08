@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-08
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -48,7 +48,11 @@ hold the queue: a script saves or discards first.
 offscreen present target (ADR-014) of the editor's 1680x1050 size in pixels at
 content scale 1, and the process takes no input or focus. The host still
 clears input edges after every frame, so a scripted `ui.*` press reads as
-pressed for one frame, as it does with a window. The editor quits once
+pressed for one frame, as it does with a window. With no window to hold the
+mouse, gameplay in Play reads this synthetic input as focused input while the
+Scene shows perspective, so `ui.key w down`, `ui.look` and `ui.key w up` walk
+the FPS player ([ADR-073](073-native-gameplay-foundation.md)) for scripted
+playtests; a windowed run still needs the captured mouse. The editor quits once
 its Cmd queue drains and no agent client is connected or waiting
 ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), discarding unsaved
 edits and saying so in a `[cmd]` line;
@@ -108,7 +112,8 @@ dependable channel for scripts.
 | `script.goto`, `script.type` | `<line>`, `<text>` | Move the Script editor's caret to a line, or type ASCII text at it as the keyboard would, completion included |
 | `script.save`, `script.status` | | Save the active Script editor tab, which rebuilds and hot reloads its module; report each module's build and load state and the diagnostic count |
 | `script.attach`, `script.edit` | `<type\|none>`, | Set the selection's script slot to a loaded script type or remove it (undoable, one entry); open the selection's script source |
-| `ui.click`, `ui.drag`, `ui.key`, `ui.type` | `<x> <y> [count] [right\|alt\|ctrl]`, `<x0> <y0> <x1> <y1>`, `[cmd+\|alt+\|ctrl+\|shift+]<key>`, `<text>` | Synthetic input in window points, one step per frame before the UI reads input: a left, double or right click, with Alt held for `alt` and Ctrl (Cmd on macOS) for `ctrl`; a left drag that holds while a pick resolves; a key (`up`, `down`, `left`, `right`, `enter`, `escape`, `tab`, `backspace`, `delete`, `home`, `end`, `space`, a letter, a digit or `f1` to `f12`) with held modifiers; or up to 32 typed ASCII characters for the focused field. The queue holds until the steps ran |
+| `ui.click`, `ui.drag`, `ui.key`, `ui.type` | `<x> <y> [count] [right\|alt\|ctrl]`, `<x0> <y0> <x1> <y1>`, `[cmd+\|alt+\|ctrl+\|shift+]<key> [down\|up]`, `<text>` | Synthetic input in window points, one step per frame before the UI reads input: a left, double or right click, with Alt held for `alt` and Ctrl (Cmd on macOS) for `ctrl`; a left drag that holds while a pick resolves; a key (`up`, `down`, `left`, `right`, `enter`, `escape`, `tab`, `backspace`, `delete`, `home`, `end`, `space`, `shift`, `ctrl`, `alt`, a letter, a digit or `f1` to `f12`) with held modifiers, or with `down` or `up` only its press or release, so it stays held across statements; or up to 32 typed ASCII characters for the focused field. The queue holds until the steps ran |
+| `ui.look` | `<dx> <dy>` | Moves the pointer by points from where it is, one step, as mouse motion would; captured gameplay reads it as look ([ADR-073](073-native-gameplay-foundation.md)) |
 | `component.add`, `component.remove` | `<type>` | Add or remove a live world component, or `physics_body`, on the selection (undoable); World-only types only on World objects |
 | `physics.motion` | `<static\|kinematic\|dynamic>` | Set the selection's physics body motion (undoable) |
 | `parent` | `<name\|none>` | Reparent the selection within its container, keeping its world pose |

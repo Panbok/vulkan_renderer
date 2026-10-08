@@ -57,6 +57,13 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    editor a capture waits until they stop working; capture-heavy work
    belongs in a headless editor.
 
+6. Walk the routes with the player (`vkr-editor-cmd`, Drive the player):
+   steer toward points from `query.reachable` paths, or your own where it
+   answers false, and report where the player stops making progress or
+   falls more than a step below its route. The walk sees what the grid
+   checks miss: collision a brush lost, a prop in a doorway, a mover that
+   did not open.
+
 Reads wait for rebuilds; repeat a read that answers `settled` false. Only
 collision counts in checks: Bistro's own meshes have none, so checks see
 brushes, blockout shapes, terrain and colliders.

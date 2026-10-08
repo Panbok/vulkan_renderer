@@ -3681,11 +3681,17 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
   VkrScriptFrame frame = {
       .now = vkr_platform_get_absolute_time(),
       .scene_delta = delta_time,
+      /* A headless run has no window to capture and no user over its
+         panels; its synthetic input (Cmd ui.key and ui.look) is the only
+         input, so gameplay reads it while the Scene shows perspective. */
       .input_focused =
-          !state->modal && !application->ui_capture.keyboard &&
-          !application->ui_capture.mouse &&
+          !state->modal &&
           state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE &&
-          vkr_window_is_mouse_captured(&application->host.window),
+          (vkr_standard_scene_runtime_is_windowed(application)
+               ? !application->ui_capture.keyboard &&
+                     !application->ui_capture.mouse &&
+                     vkr_window_is_mouse_captured(&application->host.window)
+               : true_v),
       .simulation_running = application->editor_viewport.simulation_running,
       .camera_available =
           state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
