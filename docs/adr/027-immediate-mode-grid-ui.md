@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-08
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -217,9 +217,11 @@ centre: the nearest collision of the scene and its World, else the opaque
 depth the GPU pick resolves at that pixel, unprojected with the camera of the
 request. Reset height returns it to zero, and `grid.height <y>` sets it.
 Placement onto the ground plane uses the same height, so scenes without
-collision place objects on the fitted floor. The backends lift the grid by
-translating its unprojection; the side views' ZY plane stays at x = 0. The X and Z
-axis lines are red and blue (Z and Y green from the sides).
+collision place objects on the fitted floor. The backends shift the grid by
+translating its unprojection along the plane's normal. The left and right
+views' ZY plane and the front and back views' XY plane lie at the depth the
+view is framed on, so a side view away from the origin still shows its grid.
+The X, Y and Z axis lines are red, green and blue.
 
 Orthographic views can label cells in screen order: numbers 1..N left to right
 along the Scene's top edge and letters A.. top to bottom along its right edge,

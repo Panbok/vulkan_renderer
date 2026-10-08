@@ -319,11 +319,9 @@ static void physics_claims(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
 static void physics_brush_draft(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 uint32_t capacity) {
-  const Vec3 a = editor->brush_draw_start;
-  const Vec3 b = editor->brush_draw_end;
-  const Vec3 lo = vec3_new(Min(a.x, b.x), a.y, Min(a.z, b.z));
-  const Vec3 hi =
-      vec3_new(Max(a.x, b.x), a.y + editor->brush_draw_height, Max(a.z, b.z));
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  vkr_editor_brush_draft_box(editor, &lo, &hi);
   const Vec4 color = {0.35f, 0.75f, 1.0f, 1.0f};
   for (uint32_t corner = 0; corner < 8; ++corner) {
     const Vec3 from = {(corner & 1) ? hi.x : lo.x, (corner & 2) ? hi.y : lo.y,

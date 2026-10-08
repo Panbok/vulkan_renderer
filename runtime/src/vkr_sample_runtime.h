@@ -68,6 +68,9 @@ typedef enum VkrSampleCameraView {
   VKR_SAMPLE_CAMERA_LEFT,
   VKR_SAMPLE_CAMERA_RIGHT,
   VKR_SAMPLE_CAMERA_BOTTOM,
+  /* From +Z looking toward -Z, and from -Z toward +Z; Y is up in both. */
+  VKR_SAMPLE_CAMERA_FRONT,
+  VKR_SAMPLE_CAMERA_BACK,
   VKR_SAMPLE_CAMERA_VIEW_COUNT,
 } VkrSampleCameraView;
 

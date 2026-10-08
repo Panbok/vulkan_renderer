@@ -96,14 +96,26 @@ static const char *const eval_entity_members[] = {
     "name",  "position", "rotation",       "scale", "visible",
     "light", "id",       "world_position", NULL};
 static const char *const eval_vec_members[] = {"x", "y", "z", "length", NULL};
-static const char *const eval_view_members[] = {
-    "camera",       "mode",         "grid",
-    "grid_spacing", "camera_speed", "tool",
-    "grid_labels",  "grid_through", "collision",
-    "snap",         "snap_offset",  "snap_yaw",
-    "snap_align",   "snap_centers", "camera_sensitivity",
-    "grid_height",  "snap_magnet",  "snap_moves",
-    "snap_turns",   NULL};
+static const char *const eval_view_members[] = {"camera",
+                                                "mode",
+                                                "grid",
+                                                "grid_spacing",
+                                                "camera_speed",
+                                                "tool",
+                                                "grid_labels",
+                                                "grid_through",
+                                                "collision",
+                                                "snap",
+                                                "snap_offset",
+                                                "snap_yaw",
+                                                "snap_align",
+                                                "snap_centers",
+                                                "camera_sensitivity",
+                                                "grid_height",
+                                                "snap_magnet",
+                                                "snap_moves",
+                                                "snap_turns",
+                                                NULL};
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
 static const char *const eval_ui_members[] = {"zoom", "reduce_motion",

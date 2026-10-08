@@ -532,8 +532,14 @@ box starts and its steps. Surface starts it on the upward-facing collision
 surface under the pointer, so a brush drawn on another brush sits on top of
 it, and falls back to the grid plane. Grid draws on the grid plane. Both keep
 the corners on grid crossings and the height in whole cells; Free draws on the
-grid plane in 1/16 m steps. A new box, wedge, cylinder or stairs takes the
-palette's role and, when solid or visual, its last Material swatch.
+grid plane in 1/16 m steps. An orthographic view draws a box in one step,
+as Hammer's 2D views do: the drag outlines its two screen axes in the same
+steps and the release creates it. Its depth along the view is the selected
+object's, so walls drawn from the front match a floor drawn from the top;
+without a selection it is 1 m from the surface under the pointer in Top or
+Bottom, or from the depth a side view is framed on. A new box, wedge,
+cylinder or stairs takes the palette's role and, when solid or visual, its
+last Material swatch.
 
 The stairs tool places stairs in the palette's kind and turn with a drag
 from where they start toward where they go, on a surface with Surface

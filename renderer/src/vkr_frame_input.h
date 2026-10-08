@@ -614,6 +614,8 @@ typedef enum VkrEditorGridPlane {
   VKR_EDITOR_GRID_PLANE_XZ = 0,
   /** x = 0, seen from the left and right views. */
   VKR_EDITOR_GRID_PLANE_ZY,
+  /** z = 0, seen from the front and back views. */
+  VKR_EDITOR_GRID_PLANE_XY,
   VKR_EDITOR_GRID_PLANE_COUNT,
 } VkrEditorGridPlane;
 
@@ -631,8 +633,9 @@ typedef struct VkrEditorGridPayload {
       camera; both zero keep every distance opaque. */
   float32_t fade_start;
   float32_t fade_end;
-  /** World Y of the XZ plane, so the grid can lie on a floor modelled above
-      the origin; the ZY side plane stays at x = 0. */
+  /** Where the plane lies along its normal: world Y of the XZ plane, so the
+      grid can lie on a floor modelled above the origin, X of the ZY plane
+      and Z of the XY plane, the depth a side view is framed on. */
   float32_t height;
 } VkrEditorGridPayload;
 

@@ -48,8 +48,8 @@ enum {
 /* VKR_EDITOR_GRID_MIN_SPACING_PX of shared/editor_grid_kernel.slangh. */
 #define VIEW_GRID_MIN_SPACING_PX 6.0f
 
-static const char *const view_camera_names[] = {"Perspective", "Top", "Left",
-                                                "Right", "Bottom"};
+static const char *const view_camera_names[] = {
+    "Perspective", "Top", "Left", "Right", "Bottom", "Front", "Back"};
 
 static const struct {
   const char *name;
@@ -721,6 +721,125 @@ static Vec3 brush_draw_magnet(const VkrEditorUi *editor, Vec3 point, Vec3 eye) {
   return point;
 }
 
+static void viewport_brush_create(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame);
+
+/* The world axis an orthographic view looks along, or -1 in perspective. */
+static int32_t brush_draw_depth_axis(const VkrSampleUiFrame *frame) {
+  switch (frame->view_state.camera_view) {
+  case VKR_SAMPLE_CAMERA_TOP:
+  case VKR_SAMPLE_CAMERA_BOTTOM:
+    return 1;
+  case VKR_SAMPLE_CAMERA_LEFT:
+  case VKR_SAMPLE_CAMERA_RIGHT:
+    return 0;
+  case VKR_SAMPLE_CAMERA_FRONT:
+  case VKR_SAMPLE_CAMERA_BACK:
+    return 2;
+  default:
+    return -1;
+  }
+}
+
+/* How deep a box drawn flat reaches along `axis`: as deep as the selected
+   object's box, so walls drawn in a side view match a floor drawn from the
+   top; else 1 m from the surface under the pointer in a top or bottom view,
+   or from the depth the view is framed on, in `step` increments. */
+static void brush_draw_depth(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                             Vec2 pixel, uint32_t axis, float32_t step,
+                             float32_t *out_lo, float32_t *out_hi) {
+  const VkrEntityId selected = frame->selected_entity;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, selected);
+  VkrBrushGeometry *scratch =
+      scene && vkr_scene_entity_alive(scene, selected)
+          ? vkr_allocator_alloc(frame->ui->frame_allocator, sizeof(*scratch),
+                                VKR_ALLOCATOR_MEMORY_TAG_STRUCT)
+          : NULL;
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  if (scratch &&
+      vkr_editor_entity_world_box(scene, selected, scratch, &lo, &hi) &&
+      hi.elements[axis] - lo.elements[axis] > 1.0e-3f) {
+    *out_lo = lo.elements[axis];
+    *out_hi = hi.elements[axis];
+    return;
+  }
+  /* The middle of an orthographic depth range is where the view is framed. */
+  const Vec4 image = frame->mapping.image_rect_px;
+  Vec3 focus = {0};
+  *out_lo = 0.0f;
+  if (axis == 1u) {
+    *out_lo = brush_draw_base(editor, frame, pixel, false_v);
+  } else if (viewport_unproject(
+                 frame,
+                 (Vec2){image.x + image.z * 0.5f, image.y + image.w * 0.5f},
+                 0.5f, &focus)) {
+    *out_lo = roundf(focus.elements[axis] / step) * step;
+  }
+  *out_hi = *out_lo + 1.0f;
+}
+
+/* An orthographic view draws a box flat: a drag outlines it on the two
+   screen axes in `step` increments and the release creates it, as deep as
+   brush_draw_depth says. */
+static void viewport_brush_draw_flat(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     uint32_t axis, float32_t step) {
+  VkrUiSystem *ui = frame->ui;
+  const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  if (!viewport_ray(frame, mouse, &origin, &direction)) {
+    return;
+  }
+  /* The pointer's place on the screen axes, snapped; the magnet takes the
+     sides of brushes beside it. */
+  Vec3 point = origin;
+  for (uint32_t a = 0; a < 3u; ++a) {
+    if (a != axis) {
+      point.elements[a] = roundf(point.elements[a] / step) * step;
+    }
+  }
+  if (!editor->brush_dragging) {
+    const bool8_t alt = input_is_key_down(frame->input, KEY_LMENU) ||
+                        input_is_key_down(frame->input, KEY_RMENU);
+    if (!ui->mouse_pressed || !editor->scene_pointer_free ||
+        editor->menu != VKR_EDITOR_MENU_NONE || editor->face_dragging ||
+        editor->face_handle_hot >= 0 || alt ||
+        vkr_editor_brush_grid_busy(editor) ||
+        vkr_editor_blockout_busy(editor)) {
+      return;
+    }
+    vkr_editor_magnet_begin(editor, frame);
+    float32_t lo = 0.0f;
+    float32_t hi = 0.0f;
+    brush_draw_depth(editor, frame, mouse, axis, step, &lo, &hi);
+    editor->brush_dragging = true_v;
+    editor->brush_draw_flat = true_v;
+    editor->brush_draw_start = point;
+    editor->brush_draw_start.elements[axis] = lo;
+    editor->brush_draw_end = point;
+    editor->brush_draw_end.elements[axis] = hi;
+    return;
+  }
+  for (uint32_t a = 0; a < 3u; ++a) {
+    if (a != axis) {
+      editor->brush_draw_end.elements[a] = vkr_editor_magnet_value(
+          editor, a, point.elements[a], point, point, origin);
+    }
+  }
+  if (input_is_button_down(frame->input, BUTTON_LEFT) && !ui->mouse_released) {
+    return;
+  }
+  editor->brush_dragging = false_v;
+  const Vec3 size = vec3_sub(editor->brush_draw_end, editor->brush_draw_start);
+  if (fabsf(size.x) < 1.0e-3f || fabsf(size.y) < 1.0e-3f ||
+      fabsf(size.z) < 1.0e-3f) {
+    return;
+  }
+  viewport_brush_create(editor, frame);
+}
+
 /* Brush drawing (ADR-084): while it is on,
    the Scene image takes the mouse from picking, a left drag outlines the
    base, then the pointer raises the box, as Chisel and Hammer draw, and a
@@ -731,7 +850,8 @@ static Vec3 brush_draw_magnet(const VkrEditorUi *editor, Vec3 point, Vec3 eye) {
    plane, both on grid crossings and in whole cells; Free draws on the grid
    plane in 1/16 m steps. With the magnet on, corners and the top snap to
    the sides, tops and bottoms of brushes beside them. Escape cancels a box,
-   or turns drawing off. */
+   or turns drawing off. An orthographic view draws flat instead
+   (viewport_brush_draw_flat). */
 static void viewport_brush_draw(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
@@ -762,6 +882,12 @@ static void viewport_brush_draw(VkrEditorUi *editor,
                              ? frame->view_state.grid_spacing
                              : 1.0f;
   const float32_t step = grid ? cell : 0.0625f;
+  const int32_t depth_axis = brush_draw_depth_axis(frame);
+  if (depth_axis >= 0 && !editor->brush_raising &&
+      (!editor->brush_dragging || editor->brush_draw_flat)) {
+    viewport_brush_draw_flat(editor, frame, (uint32_t)depth_axis, step);
+    return;
+  }
   const Vec3 a = editor->brush_draw_start;
   const Vec3 b = editor->brush_draw_end;
   const Vec3 base_center =
@@ -812,6 +938,7 @@ static void viewport_brush_draw(VkrEditorUi *editor,
       vkr_editor_magnet_begin(editor, frame);
       point = brush_draw_magnet(editor, point, origin);
       editor->brush_dragging = true_v;
+      editor->brush_draw_flat = false_v;
       editor->brush_draw_start = point;
       editor->brush_draw_end = point;
       editor->brush_draw_height = frame->view_state.grid_spacing > 0.0f
@@ -922,10 +1049,25 @@ static bool8_t viewport_target(const VkrSampleUiFrame *frame, char *out,
 /* Creates the box the brush tool outlined through brush.box, in the
    container new objects go to, with the palette's brush role and
    material. */
-static void viewport_brush_create(VkrEditorUi *editor,
-                                  const VkrSampleUiFrame *frame) {
+void vkr_editor_brush_draft_box(const VkrEditorUi *editor, Vec3 *out_lo,
+                                Vec3 *out_hi) {
   const Vec3 a = editor->brush_draw_start;
   const Vec3 b = editor->brush_draw_end;
+  if (editor->brush_draw_flat) {
+    *out_lo = vec3_new(Min(a.x, b.x), Min(a.y, b.y), Min(a.z, b.z));
+    *out_hi = vec3_new(Max(a.x, b.x), Max(a.y, b.y), Max(a.z, b.z));
+    return;
+  }
+  *out_lo = vec3_new(Min(a.x, b.x), a.y, Min(a.z, b.z));
+  *out_hi =
+      vec3_new(Max(a.x, b.x), a.y + editor->brush_draw_height, Max(a.z, b.z));
+}
+
+static void viewport_brush_create(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame) {
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  vkr_editor_brush_draft_box(editor, &lo, &hi);
   char target[16];
   if (!viewport_target(frame, target, sizeof(target))) {
     return;
@@ -937,8 +1079,7 @@ static void viewport_brush_create(VkrEditorUi *editor,
            "{\"v\":1,\"id\":\"draw\",\"op\":\"brush.box\",\"args\":{"
            "\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
            "%s,\"grid\":0,\"review\":false,\"select\":true}}",
-           Min(a.x, b.x), a.y, Min(a.z, b.z), Max(a.x, b.x),
-           a.y + editor->brush_draw_height, Max(a.z, b.z), target, style);
+           lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, target, style);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -1178,8 +1319,7 @@ static void viewport_nudge(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   Vec3 up = {0};
   Vec3 eye = {0};
   Vec3 forward = {0};
-  if (pressed == UINT32_MAX ||
-      !viewport_unproject(frame, center, 0.5f, &at) ||
+  if (pressed == UINT32_MAX || !viewport_unproject(frame, center, 0.5f, &at) ||
       !viewport_unproject(frame, (Vec2){center.x + 1.0f, center.y}, 0.5f,
                           &right) ||
       !viewport_unproject(frame, (Vec2){center.x, center.y - 1.0f}, 0.5f,
@@ -1225,14 +1365,14 @@ static void viewport_nudge(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
         nudge_carried(scene, selection[i], selection, count)) {
       continue;
     }
-    length += snprintf(
-        line + length, sizeof(line) - (size_t)length,
-        "%s{\"op\":\"entity.move\",\"args\":{\"entity\":\"%u:%u:%u\","
-        "\"offset\":[%g,%g,%g]}}",
-        moved ? "," : "", (unsigned)selection[i].parts.world,
-        (unsigned)selection[i].parts.index,
-        (unsigned)selection[i].parts.generation, (double)offset.x,
-        (double)offset.y, (double)offset.z);
+    length +=
+        snprintf(line + length, sizeof(line) - (size_t)length,
+                 "%s{\"op\":\"entity.move\",\"args\":{\"entity\":\"%u:%u:%u\","
+                 "\"offset\":[%g,%g,%g]}}",
+                 moved ? "," : "", (unsigned)selection[i].parts.world,
+                 (unsigned)selection[i].parts.index,
+                 (unsigned)selection[i].parts.generation, (double)offset.x,
+                 (double)offset.y, (double)offset.z);
     moved++;
   }
   snprintf(line + length, sizeof(line) - (size_t)length, "]}}");
@@ -1611,6 +1751,9 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
   case VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW:
     hint = editor->brush_raising
                ? "Move up to set the box's height, then click. Esc cancels."
+           : frame->view_state.camera_view != VKR_SAMPLE_CAMERA_PERSPECTIVE
+               ? "Drag to draw a box brush, as deep as the selection or 1 m. "
+                 "Esc stops."
                : "Drag to draw a box brush's base. Esc stops.";
     break;
   case VKR_EDITOR_SCENE_TOOL_CLIP:
@@ -2254,16 +2397,31 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
   (void)vkr_ui_input_layer_set(ui, 0);
 }
 
+/* The renderer's grid plane (VkrEditorGridPlane) of a view: XZ, ZY from the
+ * left and right, XY from the front and back. */
+static uint32_t grid_view_plane(VkrSampleCameraView view) {
+  if (view == VKR_SAMPLE_CAMERA_LEFT || view == VKR_SAMPLE_CAMERA_RIGHT) {
+    return VKR_EDITOR_GRID_PLANE_ZY;
+  }
+  if (view == VKR_SAMPLE_CAMERA_FRONT || view == VKR_SAMPLE_CAMERA_BACK) {
+    return VKR_EDITOR_GRID_PLANE_XY;
+  }
+  return VKR_EDITOR_GRID_PLANE_XZ;
+}
+
 /* Solve the chosen plane's projective mapping directly. A ray parallel to the
  * plane, including the perspective horizon, has no unique intersection. */
 static bool8_t grid_plane_point(const VkrSampleUiFrame *frame, Vec2 ndc,
-                                bool8_t side, Vec2 *point) {
+                                uint32_t plane, Vec2 *point) {
+  /* The plane's in-plane axes, as grid_world maps them back. */
+  static const Vec4 us[VKR_EDITOR_GRID_PLANE_COUNT] = {
+      {1, 0, 0, 0}, {0, 0, 1, 0}, {1, 0, 0, 0}};
+  static const Vec4 vs[VKR_EDITOR_GRID_PLANE_COUNT] = {
+      {0, 0, 1, 0}, {0, 1, 0, 0}, {0, 1, 0, 0}};
   const Mat4 matrix = frame->view_projection;
   const Vec4 origin = mat4_mul_vec4(matrix, (Vec4){0, 0, 0, 1});
-  const Vec4 u =
-      mat4_mul_vec4(matrix, side ? (Vec4){0, 0, 1, 0} : (Vec4){1, 0, 0, 0});
-  const Vec4 v =
-      mat4_mul_vec4(matrix, side ? (Vec4){0, 1, 0, 0} : (Vec4){0, 0, 1, 0});
+  const Vec4 u = mat4_mul_vec4(matrix, us[plane]);
+  const Vec4 v = mat4_mul_vec4(matrix, vs[plane]);
   const float64_t a = u.x - ndc.x * u.w;
   const float64_t b = v.x - ndc.x * v.w;
   const float64_t c = u.y - ndc.y * u.w;
@@ -2280,8 +2438,14 @@ static bool8_t grid_plane_point(const VkrSampleUiFrame *frame, Vec2 ndc,
   return isfinite(point->x) && isfinite(point->y);
 }
 
-static Vec3 grid_world(Vec2 point, bool8_t side) {
-  return side ? (Vec3){0, point.y, point.x} : (Vec3){point.x, 0, point.y};
+static Vec3 grid_world(Vec2 point, uint32_t plane) {
+  if (plane == VKR_EDITOR_GRID_PLANE_ZY) {
+    return (Vec3){0, point.y, point.x};
+  }
+  if (plane == VKR_EDITOR_GRID_PLANE_XY) {
+    return (Vec3){point.x, point.y, 0};
+  }
+  return (Vec3){point.x, 0, point.y};
 }
 
 bool8_t vkr_editor_viewport_pixel(const VkrSampleUiFrame *frame, Vec3 world,
@@ -2799,11 +2963,11 @@ bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
  * extent is empty. */
 static bool8_t grid_fit_orthographic(const VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
-                                     bool8_t side, float32_t *spacing,
+                                     uint32_t plane, float32_t *spacing,
                                      Vec2 *minimum, Vec2 *maximum) {
   for (uint32_t i = 0; i < 4; ++i) {
     Vec2 point;
-    if (!grid_plane_point(frame, (Vec2){i & 1 ? 1 : -1, i & 2 ? 1 : -1}, side,
+    if (!grid_plane_point(frame, (Vec2){i & 1 ? 1 : -1, i & 2 ? 1 : -1}, plane,
                           &point)) {
       return false_v;
     }
@@ -2930,7 +3094,7 @@ static void grid_build_label_widgets(VkrEditorUi *editor, VkrUiSystem *ui) {
 }
 
 /* Orthographic lines fill the visible plane at the fitted spacing. */
-static void grid_orthographic_lines(VkrEditorUi *editor, bool8_t side,
+static void grid_orthographic_lines(VkrEditorUi *editor, uint32_t plane,
                                     float32_t spacing, Vec2 minimum,
                                     Vec2 maximum, bool8_t first_axis_top,
                                     uint32_t capacity) {
@@ -2947,11 +3111,11 @@ static void grid_orthographic_lines(VkrEditorUi *editor, bool8_t side,
       const Vec2 to =
           axis ? (Vec2){maximum.x, coordinate} : (Vec2){coordinate, maximum.y};
       editor->grid_lines[editor->grid_line_count++] = (VkrEditorGridLine){
-          .from = grid_world(from, side),
-          .to = grid_world(to, side),
+          .from = grid_world(from, plane),
+          .to = grid_world(to, plane),
           .label_offset = grid_world(axis ? (Vec2){0, spacing * 0.5f}
                                           : (Vec2){spacing * 0.5f, 0},
-                                     side),
+                                     plane),
           .top_label = axis == 0 ? first_axis_top : !first_axis_top,
       };
     }
@@ -2976,9 +3140,7 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     return;
   }
   VkrUiSystem *ui = frame->ui;
-  const bool8_t side =
-      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_LEFT ||
-      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_RIGHT;
+  const uint32_t plane = grid_view_plane(frame->view_state.camera_view);
   float32_t spacing = frame->view_state.grid_spacing;
   if (!isfinite(spacing) || spacing <= 0) {
     return;
@@ -2986,8 +3148,8 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   Vec2 minimum = {INFINITY, INFINITY};
   Vec2 maximum = {-INFINITY, -INFINITY};
   Vec2 center_plane;
-  if (!grid_plane_point(frame, (Vec2){0, 0}, side, &center_plane) ||
-      !grid_fit_orthographic(editor, frame, side, &spacing, &minimum,
+  if (!grid_plane_point(frame, (Vec2){0, 0}, plane, &center_plane) ||
+      !grid_fit_orthographic(editor, frame, plane, &spacing, &minimum,
                              &maximum) ||
       !isfinite(spacing) || spacing <= 0 ||
       fabsf(minimum.x / spacing) > 1000000000 ||
@@ -2996,7 +3158,7 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       fabsf(maximum.y / spacing) > 1000000000) {
     return;
   }
-  const Vec3 center = grid_world(center_plane, side);
+  const Vec3 center = grid_world(center_plane, plane);
   const Vec4 image = frame->mapping.image_rect_px;
   VkrUiPanelConfig panel = view_panel(
       (Vec4){image.x / ui->content_scale, image.y / ui->content_scale,
@@ -3020,7 +3182,7 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   const bool8_t first_axis_top =
       grid_first_axis_top(frame, false_v, center, spacing);
   editor->grid_spacing = spacing;
-  grid_orthographic_lines(editor, side, spacing, minimum, maximum,
+  grid_orthographic_lines(editor, plane, spacing, minimum, maximum,
                           first_axis_top, capacity);
   /* Labels are sized for the largest possible ordinal. */
   uint32_t axis_lines[2] = {0, 0};
@@ -3102,6 +3264,7 @@ static bool8_t view_gizmo_axes(const VkrSampleUiFrame *frame,
   /* A step proportional to the view distance keeps the probe near-linear. */
   const float32_t step = Max(0.01f, fabsf(base.w) * 0.05f);
   static const Vec3 axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  float32_t lengths[3] = {0};
   for (uint32_t i = 0; i < 3; ++i) {
     const Vec3 tip = vec3_add(origin, vec3_scale(axes[i], step));
     const Vec4 clip =
@@ -3116,15 +3279,26 @@ static bool8_t view_gizmo_axes(const VkrSampleUiFrame *frame,
             : 1.0f;
     delta.x *= aspect;
     const float32_t length = sqrtf(delta.x * delta.x + delta.y * delta.y);
+    lengths[i] = length;
     out_axes[i].direction = length > 1e-6f
                                 ? (Vec2){delta.x / length, delta.y / length}
                                 : (Vec2){0.0f, 0.0f};
-    /* Keep foreshortening: axes pointing at the camera draw shorter. */
-    const float32_t reference = step / Max(fabsf(base.w), 1e-6f);
-    const float32_t scale = Min(1.0f, length / Max(reference, 1e-6f));
+    out_axes[i].depth = clip.w - base.w;
+  }
+  /* Keep foreshortening: axes pointing at the camera draw shorter. An
+     orthographic view's w stays 1, so its full length comes from the three
+     projected unit axes, whose squares sum to twice it squared. */
+  const bool8_t orthographic =
+      frame->view_state.camera_view != VKR_SAMPLE_CAMERA_PERSPECTIVE;
+  const float32_t full =
+      orthographic
+          ? sqrtf(0.5f * (lengths[0] * lengths[0] + lengths[1] * lengths[1] +
+                          lengths[2] * lengths[2]))
+          : step / Max(fabsf(base.w), 1e-6f);
+  for (uint32_t i = 0; i < 3; ++i) {
+    const float32_t scale = Min(1.0f, lengths[i] / Max(full, 1e-6f));
     out_axes[i].direction.x *= scale;
     out_axes[i].direction.y *= scale;
-    out_axes[i].depth = clip.w - base.w;
   }
   return true_v;
 }
@@ -3165,12 +3339,11 @@ void vkr_editor_orientation_gizmo_build(VkrEditorUi *editor,
   }
   const Vec4 colors[3] = {theme->axis_x, theme->axis_y, theme->axis_z};
   static const char *names[3] = {"X", "Y", "Z"};
+  /* Each cap looks from its end of the axis toward the origin. */
   static const VkrSampleCameraView positive_views[3] = {
-      VKR_SAMPLE_CAMERA_RIGHT, VKR_SAMPLE_CAMERA_TOP,
-      VKR_SAMPLE_CAMERA_PERSPECTIVE};
+      VKR_SAMPLE_CAMERA_RIGHT, VKR_SAMPLE_CAMERA_TOP, VKR_SAMPLE_CAMERA_FRONT};
   static const VkrSampleCameraView negative_views[3] = {
-      VKR_SAMPLE_CAMERA_LEFT, VKR_SAMPLE_CAMERA_BOTTOM,
-      VKR_SAMPLE_CAMERA_PERSPECTIVE};
+      VKR_SAMPLE_CAMERA_LEFT, VKR_SAMPLE_CAMERA_BOTTOM, VKR_SAMPLE_CAMERA_BACK};
   const Vec2 center = {size * 0.5f, size * 0.5f};
   /* Draw back-facing ends first so near ends sit on top. */
   uint32_t order[6];
@@ -3231,8 +3404,12 @@ void vkr_editor_orientation_gizmo_build(VkrEditorUi *editor,
                       positive ? string8_create((uint8_t *)names[axis], 1u)
                                : (String8){0},
                       &end_cap)) {
+      /* The cap of the current view goes back to perspective. */
       VkrSampleViewState next = frame->view_state;
       next.camera_view = positive ? positive_views[axis] : negative_views[axis];
+      if (next.camera_view == frame->view_state.camera_view) {
+        next.camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE;
+      }
       view_request(frame, next);
     }
     (void)vkr_ui_pop_id(ui);

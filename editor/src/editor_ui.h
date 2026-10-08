@@ -551,6 +551,10 @@ typedef struct VkrEditorUi {
   Vec3 brush_draw_start;
   Vec3 brush_draw_end;
   float32_t brush_draw_height;
+  /* An orthographic view draws the box flat: `brush_draw_start` and
+     `brush_draw_end` are opposite corners, the drag sets the two screen
+     axes and the release creates it (vkr_editor_brush_draft_box). */
+  bool8_t brush_draw_flat;
   /* `ui.click`, `ui.drag` and `ui.key` input steps, one per frame:
    * {kind, x px, y px, button or key} with kind 0 move, 1 press, 2 release,
    * 3 key press, 4 key release. The queue holds until they run. */

@@ -4952,24 +4952,40 @@ static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
   }
 }
 
-/* The ground grid follows the view: the XZ plane in perspective, top and
-   bottom views, the ZY plane from the sides. In perspective it fades with
-   distance, farther as the camera rises. */
+/* The ground grid follows the view: the XZ plane at the grid height in
+   perspective, top and bottom views, the ZY plane from the left and right
+   and the XY plane from the front and back, both at the depth the view is
+   framed on. In perspective it fades with distance, farther as the camera
+   rises. */
 static void sample_grid_apply(VkrStandardSceneRuntime *application) {
   const VkrSampleViewState *view = &state->view_state;
   const VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
-  const bool8_t side = view->camera_view == VKR_SAMPLE_CAMERA_LEFT ||
-                       view->camera_view == VKR_SAMPLE_CAMERA_RIGHT;
+  VkrEditorGridPlane plane = VKR_EDITOR_GRID_PLANE_XZ;
+  if (view->camera_view == VKR_SAMPLE_CAMERA_LEFT ||
+      view->camera_view == VKR_SAMPLE_CAMERA_RIGHT) {
+    plane = VKR_EDITOR_GRID_PLANE_ZY;
+  } else if (view->camera_view == VKR_SAMPLE_CAMERA_FRONT ||
+             view->camera_view == VKR_SAMPLE_CAMERA_BACK) {
+    plane = VKR_EDITOR_GRID_PLANE_XY;
+  }
   VkrEditorGridPayload grid = {
       .enabled = view->grid_enabled && camera &&
                  (application->active_scene ||
                   vkr_scene_handle_get_scene(state->world_handle)),
       .through_geometry = view->grid_through_geometry,
-      .plane = side ? VKR_EDITOR_GRID_PLANE_ZY : VKR_EDITOR_GRID_PLANE_XZ,
+      .plane = plane,
       .cell_size = vkr_clamp_f32(view->grid_spacing, 0.001f, 10000.0f),
-      .height = side ? 0.0f : view->grid_height,
+      .height = view->grid_height,
   };
+  if (camera && plane != VKR_EDITOR_GRID_PLANE_XZ) {
+    /* An orthographic view is framed on the middle of its depth range. */
+    const Vec3 focus =
+        vec3_add(camera->position,
+                 vec3_scale(camera->forward,
+                            0.5f * (camera->near_clip + camera->far_clip)));
+    grid.height = plane == VKR_EDITOR_GRID_PLANE_ZY ? focus.x : focus.z;
+  }
   if (grid.enabled && view->camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE) {
     const float32_t height = fabsf(camera->position.y - grid.height);
     grid.fade_end = Max(grid.cell_size * 150.0f, height * 60.0f);
@@ -5061,9 +5077,11 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
                                 0.5f * (camera->near_clip + camera->far_clip)));
       }
       static const Vec3 forwards[VKR_SAMPLE_CAMERA_VIEW_COUNT] = {
-          {0, 0, -1}, {0, -1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}};
+          {0, 0, -1}, {0, -1, 0}, {1, 0, 0}, {-1, 0, 0},
+          {0, 1, 0},  {0, 0, -1}, {0, 0, 1}};
       static const Vec3 ups[VKR_SAMPLE_CAMERA_VIEW_COUNT] = {
-          {0, 1, 0}, {0, 0, -1}, {0, 1, 0}, {0, 1, 0}, {0, 0, 1}};
+          {0, 1, 0}, {0, 0, -1}, {0, 1, 0}, {0, 1, 0},
+          {0, 0, 1}, {0, 1, 0},  {0, 1, 0}};
       const Vec3 forward = forwards[next.camera_view];
       const float32_t distance = 0.5f * (camera->near_clip + camera->far_clip);
       (void)vkr_camera_set_basis(

@@ -9,7 +9,8 @@ struct VkrVulkanEditorGridRoot
     // x finest cell, y fade start, z fade end, w 1 when drawn through geometry.
     float4 params;
     uint2 extent;
-    // 0 is the XZ plane (y = 0), 1 the ZY plane (x = 0).
+    // 0 is the XZ plane (y = 0), 1 the ZY plane (x = 0), 2 the XY plane
+    // (z = 0).
     uint plane;
     uint depth_texture;
     VkrDisplayOutputParams* display_output;
@@ -58,11 +59,13 @@ float4 editor_grid_fragment(VkrVulkanEditorGridOutput input) : SV_Target0
     float3 ray = vkr_vk_editor_grid_unproject(root, ndc, 1.0f) - near_point;
     // The plane's normal axis and its two in-plane coordinates.
     bool side = root.plane == 1u;
-    float origin_height = side ? near_point.x : near_point.y;
-    float slope = side ? ray.x : ray.y;
+    bool front = root.plane == 2u;
+    float origin_height =
+        side ? near_point.x : (front ? near_point.z : near_point.y);
+    float slope = side ? ray.x : (front ? ray.z : ray.y);
     float t = abs(slope) > 1e-9f ? -origin_height / slope : -1.0f;
     float3 hit = near_point + ray * t;
-    float2 coord = side ? hit.zy : hit.xz;
+    float2 coord = side ? hit.zy : (front ? hit.xy : hit.xz);
     // Derivatives come before any discard.
     float2 footprint = fwidth(coord);
     float t_footprint = fwidth(t);
@@ -97,8 +100,11 @@ float4 editor_grid_fragment(VkrVulkanEditorGridOutput input) : SV_Target0
         float distance = length(hit - root.camera_position.xyz);
         fade = 1.0f - smoothstep(root.params.y, root.params.z, distance);
     }
-    float3 axis_u = side ? float3(0.25f, 0.45f, 1.0f) : float3(1.0f, 0.24f, 0.24f);
-    float3 axis_v = side ? float3(0.35f, 0.85f, 0.35f) : float3(0.25f, 0.45f, 1.0f);
+    float3 x_color = float3(1.0f, 0.24f, 0.24f);
+    float3 y_color = float3(0.35f, 0.85f, 0.35f);
+    float3 z_color = float3(0.25f, 0.45f, 1.0f);
+    float3 axis_u = side ? z_color : x_color;
+    float3 axis_v = side || front ? y_color : z_color;
     float4 color = vkr_editor_grid_shade(coord, footprint, root.params.x,
                                          fade * visibility, axis_u, axis_v);
     if (color.a <= 0.0f)

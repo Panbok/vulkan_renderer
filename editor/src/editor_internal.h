@@ -169,6 +169,9 @@ typedef struct VkrEditorBrushMaterial {
 #define VKR_EDITOR_BRUSH_MATERIAL_COUNT 7u
 extern const VkrEditorBrushMaterial
     vkr_editor_brush_materials[VKR_EDITOR_BRUSH_MATERIAL_COUNT];
+/* The world box the brush tool is drawing. */
+void vkr_editor_brush_draft_box(const VkrEditorUi *editor, Vec3 *out_lo,
+                                Vec3 *out_hi);
 /* `world` in window pixels through the Scene's view projection; false
    behind the eye. */
 bool8_t vkr_editor_viewport_pixel(const VkrSampleUiFrame *frame, Vec3 world,

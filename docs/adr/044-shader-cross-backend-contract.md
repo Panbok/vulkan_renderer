@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-07
+updated: 2026-10-08
 authority: adr
 ---
 
@@ -580,6 +580,16 @@ from 44 to 68 at 0.25 m, and left 6.6 m unchanged. On 2026-10-03 the macOS
 Release build compiled the Metal library with that change, and the windowed
 Bistro editor drew the grid at 0.25 and 1.7 m above it with lines up to the
 camera, hidden under the raised pavement; no contrast was measured on Metal.
+
+Native entries pick the plane by the root's `plane`: 0 is XZ, 1 ZY and 2 XY
+(front and back views), and the hosts translate the unprojection along that
+plane's normal by the payload `height`, so side planes lie at the depth the
+view is framed on. On 2026-10-08 the macOS Release editor drew the XY plane in
+the Front view and the ZY plane in the Right view through Metal at about
+x = 900 m and z = 400 m, and the XY plane through the origin with its red X
+and green Y axes; the Vulkan `packet.editor_grid` stages pass `spirv-val`.
+Native Vulkan execution of the XY plane and of the side-plane offset is
+unavailable until a Windows Release run.
 
 Picking also returns the opaque device depth at the picked pixel, which the
 editor's grid fit unprojects. On Vulkan the picking resolve root grows to 80

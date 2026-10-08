@@ -87,7 +87,7 @@ dependable channel for scripts.
 | `sim.play`, `sim.pause`, `sim.step`, `sim.stop` | | Simulation transport |
 | `render.start`, `render.stop` | | Scene rendering |
 | `camera.capture` | | Toggle free-camera capture |
-| `camera.view` | `<perspective\|top\|left\|right\|bottom>` | Scene camera view |
+| `camera.view` | `<perspective\|top\|left\|right\|bottom\|front\|back>` | Scene camera view |
 | `camera.speed` | `<units/s>` | Free-camera speed |
 | `view.mode` | `<lit\|unlit\|detail-lighting\|lighting-only\|wireframe>` | Render mode |
 | `tool` | `<select\|move\|rotate\|scale>` | Transform tool |

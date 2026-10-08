@@ -736,11 +736,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_editor_grid(
   const Mat4 view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
       mat4_mul(packet->input.globals.projection, packet->input.globals.view));
-  /* The shader's plane passes through its origin: lift the unprojected
-     world by the grid height instead of changing the shader contract. */
-  const float32_t plane_height =
-      grid->plane == VKR_EDITOR_GRID_PLANE_XZ ? grid->height : 0.0f;
-  const Vec3 eye = packet->input.globals.view_position;
+  /* The shader's plane passes through its origin: shift the unprojected
+     world along the plane's normal by the grid height instead of changing
+     the shader contract. */
+  const Vec3 shift = vec3_scale(
+      grid->plane == VKR_EDITOR_GRID_PLANE_ZY   ? vec3_new(1.0f, 0.0f, 0.0f)
+      : grid->plane == VKR_EDITOR_GRID_PLANE_XY ? vec3_new(0.0f, 0.0f, 1.0f)
+                                                : vec3_new(0.0f, 1.0f, 0.0f),
+      grid->height);
+  const Vec3 eye = vec3_sub(packet->input.globals.view_position, shift);
   uint64_t root_gpu = 0u;
   VkrMetalPacketEditorGridRoot *root =
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
@@ -748,9 +752,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_editor_grid(
     return false_v;
   *root = (VkrMetalPacketEditorGridRoot){
       .inverse_view_projection =
-          mat4_mul(mat4_translate(vec3_new(0.0f, -plane_height, 0.0f)),
+          mat4_mul(mat4_translate(vec3_scale(shift, -1.0f)),
                    mat4_inverse(view_projection)),
-      .camera_position = {eye.x, eye.y - plane_height, eye.z,
+      .camera_position = {eye.x, eye.y, eye.z,
                           grid->fade_end > 0.0f ? 1.0f : 0.0f},
       .params = {grid->cell_size, grid->fade_start, grid->fade_end,
                  grid->through_geometry ? 1.0f : 0.0f},

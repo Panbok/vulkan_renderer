@@ -1288,10 +1288,9 @@ static float32_t magnet_reach(Vec3 point, Vec3 eye) {
 Vec3 vkr_editor_magnet_move(VkrEditorUi *editor, const VkrScene *scene,
                             VkrEntityId entity, Vec3 from, Vec3 to, Vec3 eye,
                             bool8_t start) {
-  const float32_t step =
-      editor->placement.move_grid && editor->move_step > 0.0f
-          ? editor->move_step
-          : 0.0f;
+  const float32_t step = editor->placement.move_grid && editor->move_step > 0.0f
+                             ? editor->move_step
+                             : 0.0f;
   if ((!editor->placement.magnet && step <= 0.0f) || !scene ||
       !vkr_scene_entity_alive(scene, entity) ||
       vkr_editor_entity_free(scene, entity)) {

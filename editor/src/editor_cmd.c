@@ -84,7 +84,7 @@ const char *vkr_editor_cmd_window_name(VkrEditorWindowKind kind) {
 
 /* Indexed by VkrSampleCameraView. */
 const char *const vkr_editor_cmd_camera_views[] = {
-    "perspective", "top", "left", "right", "bottom", NULL};
+    "perspective", "top", "left", "right", "bottom", "front", "back", NULL};
 
 const char *const vkr_editor_cmd_render_modes[] = {
     "lit", "unlit", "detail-lighting", "lighting-only", "wireframe", NULL};

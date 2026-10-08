@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-08
 authority: adr
 ---
 # ADR-046: One editor viewport mapping for scene presentation and interaction
@@ -104,7 +104,9 @@ native gameplay when simulation runs; [ADR-073](073-native-gameplay-foundation.m
 owns its input and focus contract.
 
 The runtime owns `VkrSampleViewState` and applies editor requests after UI build.
-Camera choices are Perspective and orthographic Top, Left, Right and Bottom.
+Camera choices are Perspective and orthographic Top, Left, Right, Bottom,
+Front and Back. The orientation gizmo's caps pick the axis views (the Z caps
+Front and Back), and the cap of the current view returns to Perspective.
 Entering an orthographic view saves the editor perspective camera, frames the
 selection or a point ahead of that camera, and enables the grid. Switching axis
 views preserves the target and vertical span; returning to Perspective restores
@@ -117,6 +119,8 @@ Basis vectors are explicit, avoiding yaw/pitch singularities in vertical views:
 | Left | +X | +Y |
 | Right | -X | +Y |
 | Bottom | +Y | +Z |
+| Front | -Z | +Y |
+| Back | +Z | +Y |
 
 Holding RMB pans in the image plane; W/A/S/D translate along that plane while
 captured. Wheel input changes the orthographic span. Scene aspect changes update
