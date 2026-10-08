@@ -279,6 +279,9 @@ struct VkrEditorProjects {
   bool8_t bake_reflection;
   bool8_t bake_diffuse;
   bool8_t bake_lightmap;
+  /* Lightmap samples per texel a Cmd bake asks for; zero keeps the
+     baker's default. */
+  uint32_t bake_lightmap_samples;
   /* Model imports and rebuilds cook lightmap UVs (the Bakery setting). */
   bool8_t lightmap_uvs;
   bool8_t prepare_assets;
@@ -1859,6 +1862,14 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
          project_json_bool(writer, "diffuse", projects->bake_diffuse) &&
          project_json_bool(writer, "lightmap", projects->bake_lightmap) &&
          vkr_json_writer_end_object(writer);
+    if (projects->bake_lightmap_samples) {
+      ok = ok &&
+           vkr_json_writer_name(writer, string8_lit("lightmap_settings")) &&
+           vkr_json_writer_begin_object(writer) &&
+           vkr_json_writer_name(writer, string8_lit("samples")) &&
+           vkr_json_writer_u64(writer, projects->bake_lightmap_samples) &&
+           vkr_json_writer_end_object(writer);
+    }
   }
   if (projects->operation[0]) {
     ok = ok && project_json_text(writer, "name", projects->action_name) &&
@@ -7294,7 +7305,7 @@ bool8_t vkr_editor_projects_create_scene(VkrEditorProjects *projects,
 bool8_t vkr_editor_projects_bake_lighting(VkrEditorProjects *projects,
                                           VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame,
-                                          bool8_t lightmap) {
+                                          bool8_t lightmap, uint32_t samples) {
   if (!projects) {
     return false_v;
   }
@@ -7329,9 +7340,11 @@ bool8_t vkr_editor_projects_bake_lighting(VkrEditorProjects *projects,
   projects->bake_reflection = true_v;
   projects->bake_diffuse = true_v;
   projects->bake_lightmap = lightmap;
+  projects->bake_lightmap_samples = samples;
   projects->pending_scene = projects->active_scene;
   snprintf(projects->operation, sizeof(projects->operation), "bake_scene");
   project_start_job(projects, editor, frame, false_v);
+  projects->bake_lightmap_samples = 0u;
   if (!projects->job_id) {
     projects->operation[0] = '\0';
     if (!projects->message[0]) {

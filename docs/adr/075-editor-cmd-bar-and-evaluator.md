@@ -122,7 +122,7 @@ dependable channel for scripts.
 | `physics.motion` | `<static\|kinematic\|dynamic>` | Set the selection's physics body motion (undoable) |
 | `parent` | `<name\|none>` | Reparent the selection within its container, keeping its world pose |
 | `scene.open`, `scene.create` | `<name>` | Open a project scene (the scene already loading or open stays as it is), or create an empty one and open it |
-| `scene.bake` | `[lightmaps]` | Bake the open project scene's lighting as Bake lighting does: reflection probes, the diffuse volume and, when the Bakery option is on or `lightmaps` is given, its lightmaps ([ADR-088](088-baked-lightmap-sets.md)); refused with unsaved edits, outside a writable project scene or while a job runs |
+| `scene.bake` | `[lightmaps [samples]]` | Bake the open project scene's lighting as Bake lighting does: reflection probes, the diffuse volume and, when the Bakery option is on or `lightmaps` is given, its lightmaps traced with `samples` per texel (1 to 4,096; the baker's default is 16) ([ADR-088](088-baked-lightmap-sets.md)); refused with unsaved edits, outside a writable project scene or while a job runs; a failed bake reopens the scene before it reports |
 | `scene.add`, `scene.remove` | `<name\|path>`, `<slot\|name> [discard]` | Load a project scene or scene file beside the primary one, or unload it |
 | `scene.primary` | `<slot\|name>` | Make an added project scene the primary scene, adding the previous primary back beside it |
 | `scene.instantiate` | `<name>` | Copy another project scene into the open one under a new root at the origin, as an unlinked prefab instance |

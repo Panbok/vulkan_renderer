@@ -102,7 +102,8 @@ lists) hold the queue until the work settles and print
 timed `wait`. Save or discard edits before such a command, because an
 unsaved-edits prompt does not hold the queue.
 To bake a project scene's lighting, run `scene.save` (or discard) and then
-`scene.bake lightmaps` (without `lightmaps` it follows the Bakery option);
+`scene.bake lightmaps [samples]` (without `lightmaps` it follows the Bakery
+option; 16 samples per texel unless given);
 after the settle line it prints the outcome, an `error:` line on failure.
 Mouse gestures such as dragging or right-clicking a Content item have no
 statement: use `content.place`, `content.drop`, `content.move` and

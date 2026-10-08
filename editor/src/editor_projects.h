@@ -78,13 +78,14 @@ bool8_t vkr_editor_projects_create_scene(VkrEditorProjects *projects,
                                          const char *name);
 
 /* Cmd's scene.bake (ADR-075, ADR-088): start the Bake lighting job for the
-   open project scene, with lightmaps when `lightmap` is set. False when it
-   cannot start (no writable project scene, unsaved edits, or a job, load or
-   dialog in the way); vkr_editor_projects_message says why. */
+   open project scene, with lightmaps when `lightmap` is set, traced with
+   `samples` per texel (0 keeps the baker's default). False when it cannot
+   start (no writable project scene, unsaved edits, or a job, load or dialog
+   in the way); vkr_editor_projects_message says why. */
 bool8_t vkr_editor_projects_bake_lighting(VkrEditorProjects *projects,
                                           VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame,
-                                          bool8_t lightmap);
+                                          bool8_t lightmap, uint32_t samples);
 /* The outcome of the last bake vkr_editor_projects_bake_lighting started,
    taken once its job and the reload after it settle; a job that ended
    without recording one reports the status line as a failure. */

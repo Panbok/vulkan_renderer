@@ -1357,8 +1357,22 @@ static bool8_t cmd_run_scene_create(CmdContext *ctx, const CmdDef *def,
    it settle, then reports the outcome. */
 static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
-  const String8 word = cmd_trim(arg);
-  if (word.length && !vkr_string8_equals_cstr(&word, "lightmaps")) {
+  /* "lightmaps" and an optional sample count per texel. */
+  const String8 text = cmd_trim(arg);
+  uint64_t split = 0u;
+  while (split < text.length && text.str[split] != ' ') {
+    ++split;
+  }
+  const String8 word = {.str = text.str, .length = split};
+  const String8 rest = cmd_trim(
+      (String8){.str = text.str + split, .length = text.length - split});
+  uint32_t samples = 0u;
+  bool8_t valid = !word.length || vkr_string8_equals_cstr(&word, "lightmaps");
+  for (uint64_t i = 0u; valid && i < rest.length; ++i) {
+    valid = rest.str[i] >= '0' && rest.str[i] <= '9' && samples < 100000u;
+    samples = samples * 10u + (uint32_t)(rest.str[i] - '0');
+  }
+  if (!valid || (rest.length && (samples < 1u || samples > 4096u))) {
     snprintf(ctx->message, sizeof(ctx->message), "Usage: %s %s", def->name,
              def->usage);
     return false_v;
@@ -1366,7 +1380,7 @@ static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
   const bool8_t lightmap =
       word.length != 0u || vkr_editor_bakery_lightmap(ctx->editor->bakery);
   if (!vkr_editor_projects_bake_lighting(ctx->editor->projects, ctx->editor,
-                                         ctx->frame, lightmap)) {
+                                         ctx->frame, lightmap, samples)) {
     snprintf(ctx->message, sizeof(ctx->message), "%s",
              vkr_editor_projects_message(ctx->editor->projects));
     return false_v;
@@ -2319,9 +2333,10 @@ static const CmdDef cmd_defs[] = {
     {"scene.create", CMD_ARG_TEXT, "<name>",
      "Create an empty scene in the project and open it", cmd_run_scene_create,
      CMD_COUNT, 0u, .holds = true_v},
-    {"scene.bake", CMD_ARG_TEXT, "[lightmaps]",
+    {"scene.bake", CMD_ARG_TEXT, "[lightmaps [samples]]",
      "Bake the open project scene's lighting as Bake lighting does; "
-     "lightmaps adds its lightmaps whatever the Bakery option",
+     "lightmaps adds its lightmaps whatever the Bakery option, traced with "
+     "samples per texel (1-4096; the baker's default is 16)",
      cmd_run_scene_bake, CMD_COUNT, 0u, .holds = true_v},
     {"scene.inherit", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Whether the open scene uses the World's objects where it has none",
