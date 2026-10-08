@@ -322,7 +322,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
           vkr_standard_scene_runtime_is_windowed(application)
               ? &application->host.window
               : NULL,
-          70.0f, 0.1f, 500.0f, &application->active_camera))
+          VKR_STANDARD_SCENE_CAMERA_FOV_DEGREES, 0.1f, 500.0f,
+          &application->active_camera))
     return false_v;
   vkr_camera_registry_set_active(&application->camera_system,
                                  application->active_camera);
@@ -330,8 +331,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
       &application->camera_system, application->active_camera);
   uint32_t width = 0u, height = 0u;
   vkr_renderer_present_target_extent(&application->renderer, &width, &height);
-  if (!camera || !vkr_camera_set_perspective_lens(camera, 70.0f, 0.1f, 500.0f,
-                                                  width, height))
+  if (!camera || !vkr_camera_set_perspective_lens(
+                     camera, VKR_STANDARD_SCENE_CAMERA_FOV_DEGREES, 0.1f,
+                     500.0f, width, height))
     return false_v;
   vkr_camera_system_update(camera);
   if (!vkr_lighting_system_init(&application->lighting_system))

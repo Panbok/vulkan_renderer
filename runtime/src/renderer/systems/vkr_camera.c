@@ -45,10 +45,6 @@ vkr_internal void vkr_camera_update_orientation(VkrCamera *camera) {
   camera->view_dirty = true_v;
 }
 
-vkr_internal float32_t vkr_camera_clamp_zoom(float32_t zoom) {
-  return vkr_clamp_f32(zoom, VKR_MIN_CAMERA_ZOOM, VKR_MAX_CAMERA_ZOOM);
-}
-
 void vkr_camera_system_perspective_create(VkrCamera *camera, VkrWindow *window,
                                           float32_t zoom, float32_t near_clip,
                                           float32_t far_clip) {
@@ -207,11 +203,6 @@ bool8_t vkr_camera_set_perspective_lens(VkrCamera *camera,
   camera->cached_window_height = height;
   camera->projection_dirty = true_v;
   return true_v;
-}
-
-void vkr_camera_zoom(VkrCamera *camera, float32_t zoom_delta) {
-  camera->zoom = vkr_camera_clamp_zoom(camera->zoom + zoom_delta);
-  camera->projection_dirty = true_v;
 }
 
 Mat4 vkr_camera_system_get_view_matrix(const VkrCamera *camera) {

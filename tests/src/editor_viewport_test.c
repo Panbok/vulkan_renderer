@@ -4,6 +4,7 @@
 #include "renderer/systems/vkr_editor_viewport.h"
 #include "vkr_exposure.h"
 #include "vkr_renderer_internal.h"
+#include "vkr_sample_runtime.h"
 
 #include <assert.h>
 #include <math.h>
@@ -171,12 +172,39 @@ static void test_orthographic_resize(void) {
   assert(camera.top_clip - camera.bottom_clip == 20.0f);
 }
 
+/* The wheel steps the free-camera speed while flying and over the speed
+   chip: every line moves it inside the span, so no rounding stalls a step,
+   and about 24 lines cross the whole span. */
+static void test_camera_speed_wheel_step(void) {
+  const float32_t min = VKR_SAMPLE_CAMERA_SPEED_MIN;
+  const float32_t max = VKR_SAMPLE_CAMERA_SPEED_MAX;
+  assert(fabsf(vkr_sample_camera_speed_step(min, 24.0f) - max) < 1e-4f);
+  assert(fabsf(vkr_sample_camera_speed_step(max, -24.0f) - min) < 1e-6f);
+  assert(fabsf(vkr_sample_camera_speed_step(max, 1.0f) - max) < 1e-4f);
+  assert(fabsf(vkr_sample_camera_speed_step(min, -1.0f) - min) < 1e-6f);
+  // A speed saved outside the span steps back into it.
+  assert(vkr_sample_camera_speed_step(500.0f, -1.0f) < max);
+
+  float32_t speed = min;
+  uint32_t lines = 0u;
+  while (speed < max - 1e-4f) {
+    const float32_t faster = vkr_sample_camera_speed_step(speed, 1.0f);
+    assert(faster > speed && faster <= max + 1e-4f);
+    assert(vkr_sample_camera_speed_step(faster, -1.0f) < faster);
+    speed = faster;
+    ++lines;
+    assert(lines <= 30u);
+  }
+  assert(lines >= 20u);
+}
+
 bool32_t run_editor_viewport_tests(void) {
   printf("Running editor viewport tests...\n");
   test_editor_viewport_mapping();
   test_editor_viewport_packet_validation();
   test_scene_output_extent_restore();
   test_orthographic_resize();
+  test_camera_speed_wheel_step();
   printf("Editor viewport tests PASSED\n");
   return true_v;
 }

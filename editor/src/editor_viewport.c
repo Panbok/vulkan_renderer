@@ -40,9 +40,6 @@ enum {
 #define VIEW_POPUP_WIDTH_PT 244.0f
 #define VIEW_POPUP_ROW_MAX 24u
 #define VIEW_INSET_PT 8.0f
-/* Logarithmic speed range of the slider, in world units per second. */
-#define VIEW_SPEED_MIN 0.1f
-#define VIEW_SPEED_MAX 100.0f
 /* Mouse-look multiplier range of the camera popup; 6 is the default. */
 #define VIEW_SENSITIVITY_MIN 0.5f
 #define VIEW_SENSITIVITY_MAX 20.0f
@@ -172,21 +169,6 @@ static const char *view_render_name(VkrRenderMode mode) {
     }
   }
   return "Diagnostic";
-}
-
-static float32_t view_speed_fraction(float32_t speed) {
-  return vkr_clamp_f32(logf(Max(speed, 1e-6f) / VIEW_SPEED_MIN) /
-                           logf(VIEW_SPEED_MAX / VIEW_SPEED_MIN),
-                       0.0f, 1.0f);
-}
-
-/* Two significant digits keep the value readable on the chip. */
-static float32_t view_speed_value(float32_t fraction) {
-  const float32_t speed =
-      VIEW_SPEED_MIN * powf(VIEW_SPEED_MAX / VIEW_SPEED_MIN,
-                            vkr_clamp_f32(fraction, 0.0f, 1.0f));
-  const float32_t unit = powf(10.0f, floorf(log10f(speed)) - 1.0f);
-  return roundf(speed / unit) * unit;
 }
 
 static void view_speed_text(float32_t speed, char text[24]) {
@@ -576,7 +558,7 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     snprintf(rows[count++].text, sizeof(rows[0].text), "Camera speed  %.3g u/s",
              (double)speed);
     rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
-                              .value = view_speed_fraction(speed),
+                              .value = vkr_sample_camera_speed_fraction(speed),
                               .minimum = 0.0f,
                               .maximum = 1.0f};
     const float32_t sensitivity = state->camera_sensitivity;
@@ -2118,7 +2100,7 @@ static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     if (index == 3u)
       next->camera_sensitivity = roundf(value * 10.0f) / 10.0f;
     else
-      next->camera_speed = view_speed_value(value);
+      next->camera_speed = vkr_sample_camera_speed_value(value);
     return;
   }
   if (popup != VIEW_POPUP_QUALITY || !frame->graphics) {
@@ -2246,9 +2228,8 @@ static void view_speed_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       "Camera speed in units per second (scroll to adjust)", VIEW_POPUP_SPEED);
   if (!disabled && ui->mouse_wheel && ui->hot_id == chip_id) {
     VkrSampleViewState next = frame->view_state;
-    next.camera_speed =
-        view_speed_value(view_speed_fraction(next.camera_speed) +
-                         (float32_t)ui->mouse_wheel / 24.0f);
+    next.camera_speed = vkr_sample_camera_speed_step(
+        next.camera_speed, (float32_t)ui->mouse_wheel);
     view_request(frame, next);
   }
 }

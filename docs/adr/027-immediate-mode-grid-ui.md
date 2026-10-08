@@ -163,7 +163,10 @@ Snapping chip (where spawned objects land; [ADR-076](076-project-object-model.md
 and a camera speed chip on its right. The speed chip shows the speed; its dropdown holds a
 logarithmic 0.1-100 units-per-second slider and a 0.5-20 mouse sensitivity
 slider (default 6, saved with the editor preferences) and an Invert mouse Y
-toggle, and the wheel over the chip steps the speed. Invert mouse Y is the
+toggle, and the wheel over the chip steps the speed. The wheel while the
+camera flies steps it the same way (24 lines span the range); nothing zooms
+the perspective lens, which stays at 70 degrees
+(`VKR_STANDARD_SCENE_CAMERA_FOV_DEGREES`). Invert mouse Y is the
 machine-local Graphics setting `invert_mouse_y`: captured upward motion looks
 up unless it is set, in the Scene camera and in gameplay, which read it from
 `InputState.invert_look_y`. Mouse look turns 1/60 degree per pointer count at

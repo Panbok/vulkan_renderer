@@ -36,6 +36,7 @@
    from its action. The keymap's own lines come first in the Help window. */
 static const char s_help_mouse_text[] =
     "Hold RMB\tFly the Scene camera (WASD, Q/E down and up)\n"
+    "Wheel while flying\tStep the camera speed\n"
     "Drag X / Y / Z\tScrub a value (Shift fast, Alt fine)\n"
     "Tab\tToggle free camera; Esc releases\n"
     "F6\tCycle shadow diagnostics\n"

@@ -105,6 +105,19 @@ typedef struct VkrSampleViewState {
   bool8_t grid_through_geometry;
 } VkrSampleViewState;
 
+/* The free-camera speeds, in world units per second, that the Scene's speed
+ * control and the wheel while flying span on a logarithmic scale. */
+#define VKR_SAMPLE_CAMERA_SPEED_MIN 0.1f
+#define VKR_SAMPLE_CAMERA_SPEED_MAX 100.0f
+
+/* Where `speed` sits on the speed span, in [0, 1]. */
+float32_t vkr_sample_camera_speed_fraction(float32_t speed);
+/* The speed at `fraction` of the span, rounded to two significant digits. */
+float32_t vkr_sample_camera_speed_value(float32_t fraction);
+/* The speed `wheel_lines` wheel lines away from `speed`; 24 lines cross the
+ * whole span. */
+float32_t vkr_sample_camera_speed_step(float32_t speed, float32_t wheel_lines);
+
 /* The editor's Hide and Isolate (ADR-084): objects of any loaded container
  * the Scene neither draws nor picks, with everything under them, or with
  * `isolate` the only ones it draws. The runtime keeps the latest applied
@@ -206,6 +219,8 @@ typedef struct VkrSampleSceneRecall {
   Vec3 position;
   float32_t yaw;
   float32_t pitch;
+  /* Read and written for compatibility; the Scene keeps
+     VKR_STANDARD_SCENE_CAMERA_FOV_DEGREES. */
   float32_t field_of_view;
   float32_t near_plane;
   float32_t far_plane;

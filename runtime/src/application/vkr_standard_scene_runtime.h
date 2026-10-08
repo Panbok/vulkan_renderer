@@ -34,6 +34,11 @@
 #include "vkr_sample_runtime.h"
 #include "vkr_visibility.h"
 
+/* Vertical field of view, in degrees, of the free camera the app and the
+ * editor Scene fly. No input changes it, and a scene's recalled view keeps
+ * it. */
+#define VKR_STANDARD_SCENE_CAMERA_FOV_DEGREES 70.0f
+
 /**
  * @brief Editor viewport state owned by the application.
  */

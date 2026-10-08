@@ -18,8 +18,6 @@
 #define VKR_DEFAULT_CAMERA_YAW -90.0f
 #define VKR_DEFAULT_CAMERA_PITCH 0.0f
 
-#define VKR_MIN_CAMERA_ZOOM 1.0f
-#define VKR_MAX_CAMERA_ZOOM 45.0f
 #define VKR_MAX_CAMERA_PITCH 89.0f
 #define VKR_MIN_CAMERA_PITCH -89.0f
 
@@ -215,13 +213,6 @@ bool8_t vkr_camera_set_perspective_lens(VkrCamera *camera,
                                         float32_t vertical_fov_degrees,
                                         float32_t near_clip, float32_t far_clip,
                                         uint32_t width, uint32_t height);
-
-/**
- * @brief Adjusts zoom (perspective FOV) and marks projection dirty.
- * @param camera Camera to zoom
- * @param zoom_delta Zoom delta
- */
-void vkr_camera_zoom(VkrCamera *camera, float32_t zoom_delta);
 
 /**
  * @brief Recomputes camera matrices if marked dirty.

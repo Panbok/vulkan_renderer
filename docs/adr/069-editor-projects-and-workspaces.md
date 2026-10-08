@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-08
 authority: adr
 ---
 
@@ -166,7 +166,10 @@ dynamic resolution and render scale) belong to the
 machine: the editor starts from the last applied settings in a machine-local
 `graphics.json` beside the workspace locator, and a project's stored values
 of those settings do not apply.
-Viewport and hierarchy recall are keyed by scene within the project. Lights,
+Viewport and hierarchy recall are keyed by scene within the project. A
+recalled view restores the camera pose, clip planes and grid height; its
+`fov` is still read and written for older editors, but the Scene keeps its
+fixed 70 degree lens. Lights,
 environment, probes, fog, authored cameras and edit overrides remain scene data.
 Native window/display placement and the workspace locator remain machine-local.
 

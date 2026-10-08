@@ -2955,11 +2955,14 @@ vkr_internal void vkr_standard_scene_runtime_apply_free_camera_input(
       vkr_camera_controller_move_right(controller, -1.0f);
     }
 
+    /* The wheel steps the flight speed as it does over the speed chip; the
+       lens never changes. */
     int32_t wheel_delta = 0;
     input_get_mouse_wheel(input_state, &wheel_delta);
     if (wheel_delta != 0) {
-      float32_t zoom_delta = -(float32_t)wheel_delta * 0.1f;
-      vkr_camera_zoom(camera, zoom_delta);
+      camera->speed =
+          vkr_sample_camera_speed_step(camera->speed, (float32_t)wheel_delta);
+      state->view_state.camera_speed = camera->speed;
     }
 
     int32_t x = 0;
@@ -4998,6 +5001,27 @@ static void sample_grid_apply(VkrStandardSceneRuntime *application) {
     grid.fade_start = grid.fade_end * 0.35f;
   }
   application->editor_viewport.grid = grid;
+}
+
+float32_t vkr_sample_camera_speed_fraction(float32_t speed) {
+  return vkr_clamp_f32(
+      logf(Max(speed, 1e-6f) / VKR_SAMPLE_CAMERA_SPEED_MIN) /
+          logf(VKR_SAMPLE_CAMERA_SPEED_MAX / VKR_SAMPLE_CAMERA_SPEED_MIN),
+      0.0f, 1.0f);
+}
+
+float32_t vkr_sample_camera_speed_value(float32_t fraction) {
+  const float32_t speed =
+      VKR_SAMPLE_CAMERA_SPEED_MIN *
+      powf(VKR_SAMPLE_CAMERA_SPEED_MAX / VKR_SAMPLE_CAMERA_SPEED_MIN,
+           vkr_clamp_f32(fraction, 0.0f, 1.0f));
+  const float32_t unit = powf(10.0f, floorf(log10f(speed)) - 1.0f);
+  return roundf(speed / unit) * unit;
+}
+
+float32_t vkr_sample_camera_speed_step(float32_t speed, float32_t wheel_lines) {
+  return vkr_sample_camera_speed_value(vkr_sample_camera_speed_fraction(speed) +
+                                       wheel_lines / 24.0f);
 }
 
 static void sample_view_apply(VkrStandardSceneRuntime *application,
@@ -7523,7 +7547,8 @@ sample_recall_snapshot(VkrStandardSceneRuntime *application) {
         state->script_camera_active ? state->editor_camera_yaw : camera->yaw;
     result.pitch = state->script_camera_active ? state->editor_camera_pitch
                                                : camera->pitch;
-    result.field_of_view = camera->zoom;
+    /* Written for older readers, which still apply it. */
+    result.field_of_view = VKR_STANDARD_SCENE_CAMERA_FOV_DEGREES;
     result.near_plane = camera->near_clip;
     result.far_plane = camera->far_clip;
   }
@@ -7571,9 +7596,11 @@ sample_editor_state_apply(VkrStandardSceneRuntime *application,
       state->perspective_camera_saved = false_v;
       state->script_camera_active = false_v;
       vkr_camera_set_pose(camera, value->position, value->yaw, value->pitch);
+      /* The Scene's lens is fixed: a recalled field of view, such as a
+         narrowed one older editors saved, does not apply. */
       (void)vkr_camera_set_perspective_lens(
-          camera, value->field_of_view, value->near_plane, value->far_plane,
-          Max(camera->cached_window_width, 1u),
+          camera, VKR_STANDARD_SCENE_CAMERA_FOV_DEGREES, value->near_plane,
+          value->far_plane, Max(camera->cached_window_width, 1u),
           Max(camera->cached_window_height, 1u));
       vkr_renderer_invalidate_temporal_history(&application->renderer);
     }
