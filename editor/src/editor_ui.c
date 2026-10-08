@@ -159,7 +159,10 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .labels_markers = true_v,
       .labels_text = true_v,
       .labels_empty = true_v,
-      .placement = {.target = VKR_EDITOR_SNAP_SURFACE, .magnet = true_v},
+      .placement = {.target = VKR_EDITOR_SNAP_SURFACE,
+                    .magnet = true_v,
+                    .move_grid = true_v,
+                    .turn_steps = true_v},
       .corridor_curved = true_v,
       .face_handle_hot = -1,
       .windows =

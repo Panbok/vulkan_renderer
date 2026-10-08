@@ -133,7 +133,14 @@ typedef struct VkrEditorPlacement {
   float32_t yaw_degrees;
   /* Moved and drawn brushes snap to nearby brushes (editor_level.h). */
   bool8_t magnet;
+  /* Move handles and arrow nudges keep the moved object's box corner on the
+     grid, or its origin when it has no box. */
+  bool8_t move_grid;
+  /* Rotate handles turn in VKR_EDITOR_TURN_STEP_DEGREES steps. */
+  bool8_t turn_steps;
 } VkrEditorPlacement;
+
+#define VKR_EDITOR_TURN_STEP_DEGREES 15.0f
 
 /* Objects one selection holds: the primary and the extra ones. */
 #define VKR_EDITOR_SELECTION_MAX 16u
@@ -574,6 +581,9 @@ typedef struct VkrEditorUi {
    * the other's strip so corner labels never collide. */
   Vec2 grid_reserved_pt;
   float32_t grid_spacing; /* Drawn world cell size; zero without a grid. */
+  /* The view's grid step at the last build: drags the runtime applies after
+     the build snap moves to it. */
+  float32_t move_step;
   uint32_t grid_line_count;
   VkrEditorGridLine grid_lines[VKR_EDITOR_GRID_LINE_CAPACITY];
   VkrEditorColorPicker color_picker;

@@ -8854,6 +8854,36 @@ static bool8_t ops_build_place(OpsContext *ctx, const VkrBakeryJson *args,
   return true_v;
 }
 
+/* entity.move: an entity shifted by a world offset, in its parent's space,
+   as the arrow keys nudge the selection. */
+static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
+                              OpsBatch *batch) {
+  OpsRef ref;
+  Vec3 offset = {0};
+  bool8_t has_offset = false_v;
+  if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, "entity"), "entity",
+               &ref) ||
+      !ops_arg_vec3(ctx, args, "offset", &offset, &has_offset)) {
+    return false_v;
+  }
+  if (!has_offset) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'offset' is the world [x, y, z] move in meters");
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, ref.container);
+  if (ref.item < 0 &&
+      vkr_scene_get_typed(scene, ref.entity, &vkr_scene_brush_face_type)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "A brush face moves with its brush; move the brush, or "
+                    "its face with brush.move_face");
+  }
+  if (!ops_move_world(ctx, batch, &ref, scene, offset)) {
+    return false_v;
+  }
+  ops_op_result(batch, &ref);
+  return true_v;
+}
+
 #define OPS_ENTITY_SCHEMA                                                      \
   "{\"type\":\"string\",\"description\":\"An entity: world:index:generation, " \
   "an exact unique name, or $k for the entity operation k of the same batch "  \
@@ -9133,6 +9163,14 @@ static const OpsDef s_ops[] = {
      "\"number\"},\"keep\":{\"type\":\"boolean\"}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"entity\",\"target\",\"mode\"]}",
      NULL, ops_build_place},
+    {"entity.move",
+     "Move an entity by the world 'offset' [x, y, z] in meters, whatever its "
+     "parent's pose; its children follow. A batch of these moves a group as "
+     "one undo step.",
+     "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
+     ",\"offset\":" OPS_VEC3_SCHEMA "," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"entity\",\"offset\"]}",
+     NULL, ops_build_move},
     {"brush.snap",
      "Snap objects together: the first stays, each other one (unless it has "
      "free_placement) moves the least distance that sets its world box "

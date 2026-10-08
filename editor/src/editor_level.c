@@ -1288,7 +1288,11 @@ static float32_t magnet_reach(Vec3 point, Vec3 eye) {
 Vec3 vkr_editor_magnet_move(VkrEditorUi *editor, const VkrScene *scene,
                             VkrEntityId entity, Vec3 from, Vec3 to, Vec3 eye,
                             bool8_t start) {
-  if (!editor->placement.magnet || !scene ||
+  const float32_t step =
+      editor->placement.move_grid && editor->move_step > 0.0f
+          ? editor->move_step
+          : 0.0f;
+  if ((!editor->placement.magnet && step <= 0.0f) || !scene ||
       !vkr_scene_entity_alive(scene, entity) ||
       vkr_editor_entity_free(scene, entity)) {
     return to;
@@ -1304,18 +1308,28 @@ Vec3 vkr_editor_magnet_move(VkrEditorUi *editor, const VkrScene *scene,
     magnet->count = 0u;
     magnet->moving =
         vkr_editor_entity_world_box(scene, entity, &magnet->geometry, &lo, &hi);
-    magnet->moving_lo = vec3_sub(lo, from);
-    magnet->moving_hi = vec3_sub(hi, from);
+    magnet->moving_lo = magnet->moving ? vec3_sub(lo, from) : vec3_zero();
+    magnet->moving_hi = magnet->moving ? vec3_sub(hi, from) : vec3_zero();
     magnet->moving_floor =
         magnet->moving ? vkr_editor_entity_floor(scene, entity,
                                                  &magnet->geometry, lo, hi) -
                              from.y
                        : 0.0f;
-    if (magnet->moving) {
+    if (magnet->moving && editor->placement.magnet) {
       magnet_gather(magnet, scene, entity);
     }
   }
-  if (!magnet->moving) {
+
+  /* The grid takes the box's low corner, or the origin of an object without
+     a box, before the magnet pulls it against a neighbour. */
+  if (step > 0.0f) {
+    for (uint32_t axis = 0; axis < 3u; ++axis) {
+      const float32_t corner =
+          magnet->moving_lo.elements[axis] + to.elements[axis];
+      to.elements[axis] += roundf(corner / step) * step - corner;
+    }
+  }
+  if (!magnet->moving || !editor->placement.magnet) {
     return to;
   }
 

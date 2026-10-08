@@ -102,7 +102,8 @@ static const char *const eval_view_members[] = {
     "grid_labels",  "grid_through", "collision",
     "snap",         "snap_offset",  "snap_yaw",
     "snap_align",   "snap_centers", "camera_sensitivity",
-    "grid_height",  "snap_magnet",  NULL};
+    "grid_height",  "snap_magnet",  "snap_moves",
+    "snap_turns",   NULL};
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
 static const char *const eval_ui_members[] = {"zoom", "reduce_motion",
@@ -728,6 +729,12 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         return true_v;
       case 16:
         *out = eval_bool(eval->editor->placement.magnet);
+        return true_v;
+      case 17:
+        *out = eval_bool(eval->editor->placement.move_grid);
+        return true_v;
+      case 18:
+        *out = eval_bool(eval->editor->placement.turn_steps);
         return true_v;
       case 5:
         for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
@@ -1535,10 +1542,12 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
     return eval_fail(eval, "That value is read-only");
   /* Snapping is editor state; it needs no view request. */
   const int32_t snap_member = eval_word_index(eval_view_members, member);
-  if (snap_member == 16) {
+  if (snap_member >= 16 && snap_member <= 18) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member))
       return false_v;
-    eval->editor->placement.magnet = value->number != 0.0;
+    VkrEditorPlacement *place = &eval->editor->placement;
+    bool8_t *flags[] = {&place->magnet, &place->move_grid, &place->turn_steps};
+    *flags[snap_member - 16] = value->number != 0.0;
     return true_v;
   }
   if (snap_member >= 9 && snap_member <= 13) {

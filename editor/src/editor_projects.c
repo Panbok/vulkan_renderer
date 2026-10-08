@@ -666,6 +666,10 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
       project_json_number(&writer, "place_yaw",
                           editor->placement.yaw_degrees) &&
       project_json_bool(&writer, "place_magnet", editor->placement.magnet) &&
+      project_json_bool(&writer, "place_move_grid",
+                        editor->placement.move_grid) &&
+      project_json_bool(&writer, "place_turn_steps",
+                        editor->placement.turn_steps) &&
       project_json_bool(&writer, "console_follow",
                         editor->console.follow_tail) &&
       project_json_bool(&writer, "console_verbose",
@@ -966,6 +970,10 @@ static void project_restore_settings(VkrEditorProjects *projects,
     (void)vkr_json_get_float(&panels, "place_yaw", &place.yaw_degrees);
     panels.pos = 0;
     (void)vkr_json_get_bool(&panels, "place_magnet", &place.magnet);
+    panels.pos = 0;
+    (void)vkr_json_get_bool(&panels, "place_move_grid", &place.move_grid);
+    panels.pos = 0;
+    (void)vkr_json_get_bool(&panels, "place_turn_steps", &place.turn_steps);
     panels.pos = 0;
     if (target >= 0.0f && target < (float32_t)VKR_EDITOR_SNAP_COUNT)
       place.target = (VkrEditorSnapTarget)target;

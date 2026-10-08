@@ -544,6 +544,16 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     snprintf(magnet->text, sizeof(magnet->text),
              "Snap brushes to nearby brushes");
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text), "Move and rotate");
+    ViewRow *grid = &rows[count++];
+    *grid = (ViewRow){.checked = place->move_grid};
+    snprintf(grid->text, sizeof(grid->text), "Snap moves to the %.4g m grid",
+             (double)state->grid_spacing);
+    ViewRow *turn = &rows[count++];
+    *turn = (ViewRow){.checked = place->turn_steps};
+    snprintf(turn->text, sizeof(turn->text), "Rotate in %.0f\xc2\xb0 steps",
+             (double)VKR_EDITOR_TURN_STEP_DEGREES);
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
     snprintf(rows[count++].text, sizeof(rows[0].text), "Rotation  %.0f\xc2\xb0",
              (double)place->yaw_degrees);
     rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
@@ -642,6 +652,8 @@ static void view_request(const VkrSampleUiFrame *frame,
 
 static bool8_t viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
                             Vec3 *origin, Vec3 *direction);
+static bool8_t viewport_unproject(const VkrSampleUiFrame *frame, Vec2 pixel,
+                                  float32_t depth, Vec3 *out);
 static bool8_t grid_eye(const VkrSampleUiFrame *frame, Vec3 *eye);
 static bool8_t face_axis_closest(Vec3 point, Vec3 axis, Vec3 origin,
                                  Vec3 direction, float32_t *out_s,
@@ -1111,6 +1123,125 @@ static void viewport_face_handles(VkrEditorUi *editor,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
+/* The world axis nearest `direction`, signed; `level` keeps to X and Z. */
+static Vec3 nudge_axis(Vec3 direction, bool8_t level) {
+  uint32_t best = 0u;
+  for (uint32_t axis = 1u; axis < 3u; ++axis) {
+    if ((!level || axis != 1u) &&
+        fabsf(direction.elements[axis]) > fabsf(direction.elements[best])) {
+      best = axis;
+    }
+  }
+  Vec3 out = vec3_zero();
+  out.elements[best] = direction.elements[best] < 0.0f ? -1.0f : 1.0f;
+  return out;
+}
+
+/* Whether a parent of `entity` is in `selection`, which then carries it. */
+static bool8_t nudge_carried(const VkrScene *scene, VkrEntityId entity,
+                             const VkrEntityId *selection, uint32_t count) {
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  for (uint32_t depth = 0; transform && transform->parent.u64 && depth < 64u;
+       ++depth) {
+    for (uint32_t i = 0; i < count; ++i) {
+      if (selection[i].u64 == transform->parent.u64) {
+        return true_v;
+      }
+    }
+    transform = vkr_entity_get_component(scene->world, transform->parent,
+                                         scene->comp_transform);
+  }
+  return false_v;
+}
+
+/* The arrow keys nudge the selection one grid step along the world axis
+   nearest the screen's: Left and Right along its right, Up and Down along
+   its up in an orthographic view and away from the eye in perspective,
+   Page Up and Page Down along Y. One batch moves every selected object as
+   one undo step. */
+static void viewport_nudge(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                           VkrEntityId selected, const VkrScene *scene) {
+  static const Keys keys[] = {KEY_LEFT, KEY_RIGHT, KEY_UP,
+                              KEY_DOWN, KEY_PRIOR, KEY_NEXT};
+  uint32_t pressed = UINT32_MAX;
+  for (uint32_t i = 0; i < ArrayCount(keys) && pressed == UINT32_MAX; ++i) {
+    if (input_key_just_pressed(frame->input, keys[i]) &&
+        input_key_press_modifiers(frame->input, keys[i]) == 0u) {
+      pressed = i;
+    }
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  const Vec2 center = {image.x + image.z * 0.5f, image.y + image.w * 0.5f};
+  Vec3 at = {0};
+  Vec3 right = {0};
+  Vec3 up = {0};
+  Vec3 eye = {0};
+  Vec3 forward = {0};
+  if (pressed == UINT32_MAX ||
+      !viewport_unproject(frame, center, 0.5f, &at) ||
+      !viewport_unproject(frame, (Vec2){center.x + 1.0f, center.y}, 0.5f,
+                          &right) ||
+      !viewport_unproject(frame, (Vec2){center.x, center.y - 1.0f}, 0.5f,
+                          &up) ||
+      !viewport_ray(frame, center, &eye, &forward)) {
+    return;
+  }
+  const bool8_t perspective =
+      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
+  Vec3 axis = vec3_new(0.0f, 1.0f, 0.0f);
+  if (pressed < 2u) {
+    axis = nudge_axis(vec3_sub(right, at), perspective);
+  } else if (pressed < 4u) {
+    axis = perspective ? nudge_axis(forward, true_v)
+                       : nudge_axis(vec3_sub(up, at), false_v);
+  }
+  const float32_t step = frame->view_state.grid_spacing > 0.0f
+                             ? frame->view_state.grid_spacing
+                             : 0.0625f;
+  const bool8_t negative = (pressed & 1u) == ((pressed < 2u) ? 0u : 1u);
+  const Vec3 offset = vec3_scale(axis, negative ? -step : step);
+
+  /* The primary, then the rest of the selection in its scene; faces move
+     with their brushes and children with a selected parent. */
+  VkrEntityId selection[1u + VKR_EDITOR_SELECTION_MAX] = {selected};
+  uint32_t count = 1u;
+  for (uint32_t i = 0; i < editor->selection_extra_count; ++i) {
+    const VkrEntityId extra = editor->selection_extra[i];
+    if (extra.u64 != selected.u64 &&
+        extra.parts.world == selected.parts.world &&
+        vkr_scene_entity_alive(scene, extra)) {
+      selection[count++] = extra;
+    }
+  }
+  char line[8192];
+  int32_t length = snprintf(line, sizeof(line),
+                            "{\"v\":1,\"id\":\"nudge\",\"op\":\"batch\","
+                            "\"args\":{\"label\":\"Nudge\",\"review\":false,"
+                            "\"ops\":[");
+  uint32_t moved = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (vkr_scene_get_typed(scene, selection[i], &vkr_scene_brush_face_type) ||
+        nudge_carried(scene, selection[i], selection, count)) {
+      continue;
+    }
+    length += snprintf(
+        line + length, sizeof(line) - (size_t)length,
+        "%s{\"op\":\"entity.move\",\"args\":{\"entity\":\"%u:%u:%u\","
+        "\"offset\":[%g,%g,%g]}}",
+        moved ? "," : "", (unsigned)selection[i].parts.world,
+        (unsigned)selection[i].parts.index,
+        (unsigned)selection[i].parts.generation, (double)offset.x,
+        (double)offset.y, (double)offset.z);
+    moved++;
+  }
+  snprintf(line + length, sizeof(line) - (size_t)length, "]}}");
+  if (moved) {
+    (void)vkr_editor_agent_submit(editor->agent, line);
+  }
+  frame->ui->capture.keyboard = true_v;
+}
+
 /* Face editing (ADR-084): a brush selected with the Select tool shows a
    handle on every face and a drag pushes or pulls that face; Alt+click
    selects the brush face under the pointer instead of its object, which
@@ -1202,10 +1333,13 @@ static void viewport_face_tools(VkrEditorUi *editor,
       origin, direction, has_ray, inside,
       alt || editor->face_handle_hot >= 0 || editor->face_dragging ||
           vkr_editor_blockout_busy(editor));
-  if (!face_selected) {
+  if (!scene_focus && ui->focused_id != VKR_UI_ID_NONE) {
     return;
   }
-  if (!scene_focus && ui->focused_id != VKR_UI_ID_NONE) {
+  if (!face_selected) {
+    if (alive && !frame->simulation_running) {
+      viewport_nudge(editor, frame, selected, scene);
+    }
     return;
   }
   static const Keys keys[] = {KEY_UP, KEY_DOWN};
@@ -1762,7 +1896,7 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
     return true_v;
   case VIEW_POPUP_SNAP:
     /* Rows: header, the targets, cell centers, normal alignment, the
-       magnet. */
+       magnet, then a header, grid moves and rotation steps. */
     if (index >= 1 && index <= VKR_EDITOR_SNAP_COUNT) {
       editor->placement.target = (VkrEditorSnapTarget)(index - 1u);
     } else if (index == VKR_EDITOR_SNAP_COUNT + 1u) {
@@ -1771,6 +1905,10 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
       editor->placement.align_to_normal = !editor->placement.align_to_normal;
     } else if (index == VKR_EDITOR_SNAP_COUNT + 3u) {
       editor->placement.magnet = !editor->placement.magnet;
+    } else if (index == VKR_EDITOR_SNAP_COUNT + 5u) {
+      editor->placement.move_grid = !editor->placement.move_grid;
+    } else if (index == VKR_EDITOR_SNAP_COUNT + 6u) {
+      editor->placement.turn_steps = !editor->placement.turn_steps;
     }
     return true_v;
   case VIEW_POPUP_SPEED:
@@ -1816,7 +1954,7 @@ static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                              bool8_t done, VkrSampleViewState *next) {
   if (popup == VIEW_POPUP_SNAP) {
     /* Rotation in 15 degree steps, offset in centimetres. */
-    if (index == VKR_EDITOR_SNAP_COUNT + 5u)
+    if (index == VKR_EDITOR_SNAP_COUNT + 8u)
       editor->placement.yaw_degrees = roundf(value / 15.0f) * 15.0f;
     else
       editor->placement.offset = roundf(value * 100.0f) / 100.0f;

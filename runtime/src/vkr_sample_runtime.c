@@ -1972,6 +1972,9 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
     float32_t sign =
         (vec3_dot(state->gizmo_drag.axis, cross) < 0.0f) ? -1.0f : 1.0f;
     angle *= sign;
+    if (state->ui.snap_turn) {
+      angle = state->ui.snap_turn(state->ui.state, angle);
+    }
 
     /* Preserve editable local TRS. A nonuniform parent can introduce shear
      * under exact world rotation, so only its rotational frame is converted. */

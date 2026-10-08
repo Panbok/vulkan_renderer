@@ -94,7 +94,7 @@ thread during the editor's build.
 |---|---|
 | `ops.list`, `editor.status` | The table, with whether each operation settles; loaded containers with their journal `revision`, selection, simulation, view, pending changes and what still rebuilds |
 | `scene.describe`, `entity.get`, `query.bounds` | Entities with ID, name, parent, component types, local pose and world bounds; one entity's components as descriptor JSON |
-| `entity.create`, `entity.set`, `entity.delete`, `entity.parent` | Structure and pose; delete with `recursive` deletes descendants first |
+| `entity.create`, `entity.set`, `entity.move`, `entity.delete`, `entity.parent` | Structure and pose; `entity.move` shifts by a world offset; delete with `recursive` deletes descendants first |
 | `component.add`, `component.set`, `component.remove` | Component values by descriptor property name, partial for `set` |
 | `batch` | Several write operations as one journal group |
 | `changes.list`, `changes.accept`, `changes.reject` | Review of agent edits |
@@ -590,6 +590,20 @@ compares axis-aligned world boxes of the other brushes, triggers excepted,
 and of shape pieces, gathered once when a move or a box starts
 ([editor_level.c](../../editor/src/editor_level.c)), so a slanted face snaps
 by its box.
+
+With Snap moves to the grid on (default; Cmd `view.snap_moves`), a gizmo or
+Select-tool move first puts the low corner of the object's world box on the
+view's grid step, or its origin when it has no box, and the magnet then
+pulls it against a neighbour. With Rotate in 15° steps on (default; Cmd
+`view.snap_turns`), a rotate handle turns in whole steps
+(`VkrSampleUiClient.snap_turn`). Both live in the Snapping menu and the
+project's editor settings. With an object selected and no face, the arrow
+keys move the selection one grid step along the world axis nearest the
+screen's right, or its up in an orthographic view and its depth in
+perspective; Page Up and Page Down move it along Y. One batch of
+`entity.move`, each a world offset in its parent's space, moves every
+selected object but faces and children of selected parents as one undo
+step.
 
 Dragging an Outliner row onto another row of the same scene parents the
 object under it (`entity.parent` with `snap`) as one undo step. A reparent

@@ -483,6 +483,9 @@ typedef struct VkrSampleUiClient {
    * the result on the handle's axis or plane. */
   Vec3 (*snap_move)(void *state, const VkrScene *scene, VkrEntityId entity,
                     Vec3 from, Vec3 to, Vec3 eye, bool8_t start);
+  /** Optional: the angle in radians a rotate drag turns by, from the one the
+   * pointer asks for, such as rounded to whole steps. */
+  float32_t (*snap_turn)(void *state, float32_t radians);
   /** Optional: other entities a move of `primary` carries by the same world
    * offset, such as the rest of a selection; returns how many it wrote. Those
    * outside `primary`'s scene stay. The move undoes as one step. */

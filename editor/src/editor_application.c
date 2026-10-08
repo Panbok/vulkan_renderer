@@ -234,6 +234,7 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
         Min(editor->ui.frame_ms_count + 1u, ArrayCount(editor->ui.frame_ms));
   }
   editor->ui.frame_last_time = now;
+  editor->ui.move_step = frame->view_state.grid_spacing;
   if (!editor->ui.content) {
     editor->ui.content = vkr_editor_content_create(
         &frame->ui->retained_allocator, frame->assets);
@@ -380,6 +381,16 @@ static Vec3 editor_application_snap_move(void *state, const VkrScene *scene,
                                 start);
 }
 
+/* Rotate handles turn in whole steps while the Snapping menu asks. */
+static float32_t editor_application_snap_turn(void *state, float32_t radians) {
+  const VkrEditorApplication *editor = state;
+  if (!editor->ui.placement.turn_steps) {
+    return radians;
+  }
+  const float32_t step = VKR_EDITOR_TURN_STEP_DEGREES * VKR_PI / 180.0f;
+  return roundf(radians / step) * step;
+}
+
 /* A move of the primary selection carries the rest of the selection. */
 static uint32_t editor_application_move_companions(void *state,
                                                    VkrEntityId primary,
@@ -474,6 +485,7 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
           editor->project_managed ? editor_application_save_scene : NULL,
       .project_scene = editor_application_project_scene,
       .snap_move = editor_application_snap_move,
+      .snap_turn = editor_application_snap_turn,
       .move_companions = editor_application_move_companions,
       .shutdown = editor_application_shutdown,
   };
