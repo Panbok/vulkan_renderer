@@ -622,6 +622,61 @@ vkr_physics_character_get_state(VkrPhysicsWorld *world,
   return true_v;
 }
 
+/* While a character stands on a moving body, its own move sees that body
+   still; the step then carries it with the body (ride_position). */
+class s_RideListener final : public JPH::CharacterContactListener {
+public:
+  explicit s_RideListener(JPH::BodyID ground) : ground(ground) {}
+  void OnAdjustBodyVelocity(const JPH::CharacterVirtual *character,
+                            const JPH::Body &body, JPH::Vec3 &linear,
+                            JPH::Vec3 &angular) override {
+    (void)character;
+    if (body.GetID() == ground) {
+      linear = JPH::Vec3::sZero();
+      angular = JPH::Vec3::sZero();
+    }
+  }
+  const JPH::BodyID ground;
+};
+
+/* The body a character on the ground stands on when it moves, or an
+   invalid id: static ground carries nothing. */
+static JPH::BodyID ride_ground(VkrPhysicsWorld *world,
+                               const JPH::CharacterVirtual &character) {
+  const JPH::BodyID ground = character.GetGroundBodyID();
+  if (character.GetGroundState() !=
+          JPH::CharacterBase::EGroundState::OnGround ||
+      ground.IsInvalid()) {
+    return JPH::BodyID();
+  }
+  JPH::BodyLockRead lock(world->system.GetBodyLockInterface(), ground);
+  if (!lock.SucceededAndIsInBroadPhase() || lock.GetBody().IsStatic()) {
+    return JPH::BodyID();
+  }
+  return ground;
+}
+
+/* Where `position` goes as body `ground` moves through the coming step of
+   `dt`: turned about its center of mass by its angular velocity, then
+   moved by its linear one, as the step integrates it. A kinematic body's
+   velocities take it to the target its owner set this tick. */
+static JPH::RVec3 ride_position(VkrPhysicsWorld *world, JPH::BodyID ground,
+                                JPH::RVec3 position, float32_t dt) {
+  JPH::BodyLockRead lock(world->system.GetBodyLockInterface(), ground);
+  if (!lock.SucceededAndIsInBroadPhase()) {
+    return position;
+  }
+  const JPH::Body &body = lock.GetBody();
+  const JPH::RVec3 center = body.GetCenterOfMassPosition();
+  JPH::Vec3 arm = JPH::Vec3(position - center);
+  const JPH::Vec3 angular = body.GetAngularVelocity();
+  const float32_t rate = angular.Length();
+  if (rate > 1.0e-6f) {
+    arm = JPH::Quat::sRotation(angular / rate, rate * dt) * arm;
+  }
+  return center + arm + body.GetLinearVelocity() * dt;
+}
+
 extern "C" bool8_t
 vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
                            const VkrPhysicsCharacterInput *input,
@@ -661,6 +716,15 @@ vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
         slot->character->SetShapeOffset(previous_offset);
       }
     }
+    /* Standing on a moving body, the character moves as on still ground,
+       relative to that body's pose before the step, and then the body's
+       motion through the step carries it: up, down, along and around,
+       where it stands when the step ends. */
+    const JPH::BodyID ground = ride_ground(world, *slot->character);
+    s_RideListener ride(ground);
+    if (!ground.IsInvalid()) {
+      slot->character->SetListener(&ride);
+    }
     slot->character->SetLinearVelocity(vec(input->velocity) +
                                        input->dt * vec(input->gravity));
     /* Character and rigid updates are serialized and reuse fixed world scratch.
@@ -668,9 +732,19 @@ vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
      * not a claim that the SDK performs no hot allocation. */
     slot->character->ExtendedUpdate(input->dt, vec(input->gravity), settings,
                                     {}, filter, filter, {}, world->scratch);
+    slot->character->SetListener(nullptr);
     if (slot->character->GetMaxHitsExceeded()) {
       world->faulted = true_v;
       return fail(world, "Character contact capacity exceeded; reset required");
+    }
+    if (!ground.IsInvalid()) {
+      const JPH::RVec3 from = slot->character->GetPosition();
+      const JPH::RVec3 to = ride_position(world, ground, from, input->dt);
+      slot->character->SetPosition(to);
+      /* Velocities stay world-space: the ride adds to the solved move. */
+      slot->character->SetLinearVelocity(slot->character->GetLinearVelocity() +
+                                         JPH::Vec3(to - from) / input->dt);
+      slot->character->UpdateGroundVelocity();
     }
     VkrPhysicsCharacterState result;
     character_read(world, *slot, &result);
@@ -683,6 +757,7 @@ vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
     *state = result;
     return true_v;
   } catch (...) {
+    slot->character->SetListener(nullptr);
     world->faulted = true_v;
     return fail(world, "Character update failed; reset required");
   }

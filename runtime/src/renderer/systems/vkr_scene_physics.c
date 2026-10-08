@@ -2116,40 +2116,64 @@ physics_step_scenes(VkrScene *scene,
   return count;
 }
 
+/* Sets a kinematic body's velocity toward its target for the next step;
+   Jolt moves it there during that step. */
+static bool8_t physics_body_drive(VkrScenePhysics *physics,
+                                  const ScenePhysicsBody *body) {
+  const float32_t position[3] = {body->target_position.x,
+                                 body->target_position.y,
+                                 body->target_position.z};
+  const float32_t rotation[4] = {
+      body->target_rotation.x, body->target_rotation.y, body->target_rotation.z,
+      body->target_rotation.w};
+  return vkr_physics_body_move_kinematic(physics->world, body->body, position,
+                                         rotation,
+                                         (float32_t)VKR_SCENE_PHYSICS_FIXED_DT);
+}
+
+static bool8_t physics_body_drivable(const ScenePhysicsBody *body) {
+  return body->authored.body.motion == VKR_PHYSICS_KINEMATIC &&
+         body->authored.body.enabled && !body->disabled &&
+         body->body != VKR_PHYSICS_BODY_INVALID;
+}
+
+/* The same for a kinematic generated body, such as a mover's brushes
+   (ADR-084). */
+static bool8_t physics_generated_drive(VkrScenePhysics *physics,
+                                       const ScenePhysicsGenerated *generated) {
+  const Vec3 at = vec3_add(generated->origin, generated->target_position);
+  const float32_t position[3] = {at.x, at.y, at.z};
+  const float32_t rotation[4] = {
+      generated->target_rotation.x, generated->target_rotation.y,
+      generated->target_rotation.z, generated->target_rotation.w};
+  return vkr_physics_body_move_kinematic(physics->world, generated->body,
+                                         position, rotation,
+                                         (float32_t)VKR_SCENE_PHYSICS_FIXED_DT);
+}
+
+/* A target set while the clock runs drives its body at once: a character
+   stepped later in the same tick, before the world step, rides this tick's
+   motion rather than the last one's (ADR-073). The step drives it again;
+   a failure here surfaces there. */
+static bool8_t physics_drives_now(const VkrScene *scene) {
+  return !physics_paused(scene) && !scene->physics_disabled &&
+         scene->physics->world && !scene->physics->faulted;
+}
+
 /* Kinematic targets and the interpolation origin before a shared step. */
 static bool8_t physics_step_begin(VkrScene *scene, const char **error) {
   VkrScenePhysics *physics = scene->physics;
   for (ScenePhysicsBody *body = physics->bodies; body; body = body->next) {
-    if (body->authored.body.motion == VKR_PHYSICS_KINEMATIC &&
-        body->authored.body.enabled && !body->disabled &&
-        body->body != VKR_PHYSICS_BODY_INVALID) {
-      const float32_t position[3] = {body->target_position.x,
-                                     body->target_position.y,
-                                     body->target_position.z};
-      const float32_t rotation[4] = {
-          body->target_rotation.x, body->target_rotation.y,
-          body->target_rotation.z, body->target_rotation.w};
-      if (!vkr_physics_body_move_kinematic(
-              physics->world, body->body, position, rotation,
-              (float32_t)VKR_SCENE_PHYSICS_FIXED_DT)) {
-        return physics_fail(error, vkr_physics_last_error(physics->world));
-      }
+    if (physics_body_drivable(body) && !physics_body_drive(physics, body)) {
+      return physics_fail(error, vkr_physics_last_error(physics->world));
     }
   }
-  /* Kinematic generated bodies, such as a mover's brushes (ADR-084). */
   for (uint32_t i = 0; i < physics->generated_count; ++i) {
     const ScenePhysicsGenerated *generated = &physics->generated[i];
     if (!generated->kinematic || generated->body == VKR_PHYSICS_BODY_INVALID) {
       continue;
     }
-    const Vec3 at = vec3_add(generated->origin, generated->target_position);
-    const float32_t position[3] = {at.x, at.y, at.z};
-    const float32_t rotation[4] = {
-        generated->target_rotation.x, generated->target_rotation.y,
-        generated->target_rotation.z, generated->target_rotation.w};
-    if (!vkr_physics_body_move_kinematic(
-            physics->world, generated->body, position, rotation,
-            (float32_t)VKR_SCENE_PHYSICS_FIXED_DT)) {
+    if (!physics_generated_drive(physics, generated)) {
       return physics_fail(error, vkr_physics_last_error(physics->world));
     }
   }
@@ -3053,6 +3077,9 @@ bool8_t vkr_scene_physics_set_kinematic_target(VkrScene *scene,
   }
   body->target_position = position;
   body->target_rotation = rotation;
+  if (physics_drives_now(scene) && physics_body_drivable(body)) {
+    (void)physics_body_drive(scene->physics, body);
+  }
   return true_v;
 }
 
@@ -3711,5 +3738,9 @@ bool8_t vkr_scene_physics_generated_move(VkrScene *scene, uint64_t key,
   generated->target_position = vec3_add(
       position, vec3_sub(local, vkr_quat_rotate_vec3(rotation, local)));
   generated->target_rotation = rotation;
+  if (physics_drives_now(scene) &&
+      generated->body != VKR_PHYSICS_BODY_INVALID) {
+    (void)physics_generated_drive(physics, generated);
+  }
   return true_v;
 }

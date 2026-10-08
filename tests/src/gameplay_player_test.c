@@ -20,16 +20,45 @@ static VkrScriptHost s_script_host;
 static VkrDMemory s_module_memory;
 static VkrAllocator s_module_allocator;
 
-typedef struct PlayerTest {
+typedef struct PlayerTest PlayerTest;
+
+/* A kinematic deck a test drives as the IO router drives a mover's brushes
+ * (ADR-084): before the player's tick, its body's target and its drawn pose
+ * move to `motion(tick)`, a turn about the world origin then an offset. */
+typedef struct PlayerTestDeck {
+  uint64_t key;
+  VkrEntityId entity;
+  void (*motion)(uint64_t tick, Vec3 *offset, VkrQuat *rotation);
+} PlayerTestDeck;
+
+struct PlayerTest {
   VkrCtx *ctx;
   VkrScene *scene;
   FpsPlayer player;
-} PlayerTest;
+  PlayerTestDeck deck;
+};
 
 static bool8_t player_test_before(VkrScene *scene, uint64_t tick,
                                   void *context) {
   PlayerTest *test = context;
   const char *error = NULL;
+  /* The router steps movers before behaviors (script_host_before_physics). */
+  if (test->deck.motion) {
+    Vec3 offset = vec3_zero();
+    VkrQuat rotation = vkr_quat_identity();
+    test->deck.motion(tick, &offset, &rotation);
+    if (!vkr_scene_physics_generated_move(scene, test->deck.key, offset,
+                                          rotation, vec3_zero(), &error)) {
+      scene->simulation.error = error;
+      return false_v;
+    }
+    const Mat4 pose =
+        mat4_mul(mat4_translate(offset), vkr_quat_to_mat4(rotation));
+    if (!vkr_scene_set_evaluated_transform(scene, test->deck.entity, &pose)) {
+      scene->simulation.error = "Deck pose refused";
+      return false_v;
+    }
+  }
   if (!fps_player_before_physics(test->ctx, &test->player, tick, &error)) {
     scene->simulation.error = error;
     return false_v;
@@ -454,54 +483,169 @@ static void test_player_ladder(VkrAllocator *allocator, bool8_t ladder) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+/* Ticks a player stands on a deck before it sets off. */
+#define DECK_SETTLE_TICKS 10u
+
+/* Ticks of `count` from the one after `start` that have run by `tick`. */
+static float32_t deck_ticks(uint64_t tick, uint64_t start, uint64_t count) {
+  if (tick <= start) {
+    return 0.0f;
+  }
+  return (float32_t)Min(tick - start, count);
+}
+
+/* A tram 8 m/s east for two seconds, then stopped. */
+static void deck_tram(uint64_t tick, Vec3 *offset, VkrQuat *rotation) {
+  (void)rotation;
+  const float32_t dt = (float32_t)VKR_SCENE_SIMULATION_FIXED_DT;
+  *offset =
+      vec3_new(8.0f * dt * deck_ticks(tick, DECK_SETTLE_TICKS, 120u), 0, 0);
+}
+
+/* An elevator 1.5 m/s up for two seconds, half a second at the top, then
+   down again. */
+static void deck_elevator(uint64_t tick, Vec3 *offset, VkrQuat *rotation) {
+  (void)rotation;
+  const float32_t dt = (float32_t)VKR_SCENE_SIMULATION_FIXED_DT;
+  const float32_t up = deck_ticks(tick, DECK_SETTLE_TICKS, 120u);
+  const float32_t down = deck_ticks(tick, DECK_SETTLE_TICKS + 150u, 120u);
+  *offset = vec3_new(0, 1.5f * dt * (up - down), 0);
+}
+
+/* A floor turning 90 degrees a second about +Y for one second. */
+static void deck_turn(uint64_t tick, Vec3 *offset, VkrQuat *rotation) {
+  (void)offset;
+  const float32_t dt = (float32_t)VKR_SCENE_SIMULATION_FIXED_DT;
+  *rotation = vkr_quat_from_axis_angle(
+      vec3_new(0, 1, 0), 0.5f * VKR_PI * dt * deck_ticks(tick, 10u, 60u));
+}
+
+/* A player standing at `foot` on a kinematic box deck whose top rests at
+   y = 0, its drawn pose and body moved by `motion` each tick. */
+static void player_deck_begin(PlayerTest *test, VkrScene *scene,
+                              VkrAllocator *allocator, InputState *input,
+                              uint32_t seed, Vec3 half, Vec3 foot,
+                              void (*motion)(uint64_t, Vec3 *, VkrQuat *)) {
+  assert(vkr_scene_init(scene, allocator, seed, 16, NULL));
+  const VkrEntityId deck = vkr_scene_create_entity(scene, NULL);
+  assert(vkr_scene_set_transform(scene, deck, vec3_zero(), vkr_quat_identity(),
+                                 vec3_one()));
+  /* Publication adds a mover's evaluated pose; a tick only rewrites it. */
+  const Mat4 rest = mat4_identity();
+  assert(vkr_scene_set_evaluated_transform(scene, deck, &rest));
+  const VkrPhysicsColliderDesc box = {.entity_id = deck.u64,
+                                      .shape = VKR_PHYSICS_BOX,
+                                      .position = {0, -half.y, 0},
+                                      .rotation = {0, 0, 0, 1},
+                                      .scale = {1, 1, 1},
+                                      .half_extent = {half.x, half.y, half.z},
+                                      .enabled = true_v};
+  const uint64_t key = 22u;
+  assert(vkr_scene_physics_generated_set_kinematic(scene, key, deck, &box, 1u,
+                                                   false_v, NULL));
+  const VkrEntityId entity = vkr_scene_create_entity(scene, NULL);
+  assert(vkr_scene_set_transform(scene, entity, foot, vkr_quat_identity(),
+                                 vec3_one()));
+  assert(player_attach(test, scene, input, entity, 90u + seed, 0));
+  test->deck = (PlayerTestDeck){.key = key, .entity = deck, .motion = motion};
+  vkr_scene_physics_set_paused(scene, false_v);
+  assert(fps_player_frame(test->ctx, &test->player, 100, true_v) == 0);
+}
+
+static void player_deck_end(PlayerTest *test, VkrScene *scene) {
+  assert(!scene->simulation.faulted);
+  player_shutdown(test);
+  vkr_scene_shutdown(scene, NULL);
+}
+
+/* A tram deck at 8 m/s (ADR-084 movers, ADR-073 riding). Oracle: the
+ * deck's own pose each tick; the player's offset from it moves less than a
+ * millimetre in any tick, while it sets off, rides and stops, and the
+ * player stays grounded. A player one tick behind the deck slips back
+ * 8/60 m as it sets off and on as it stops. */
+static void test_player_tram(VkrAllocator *allocator) {
+  VkrScene scene;
+  InputState input = {0};
+  PlayerTest test = {0};
+  player_deck_begin(&test, &scene, allocator, &input, 50, vec3_new(20, .25f, 3),
+                    vec3_new(0, .05f, 0), deck_tram);
+  const FpsPlayerState *state = fps_player_state(test.ctx, &test.player);
+  assert(state);
+  Vec3 last = vec3_zero();
+  float32_t worst = 0.0f;
+  bool8_t grounded = true_v;
+  for (uint64_t tick = 1; tick <= 180u; ++tick) {
+    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+    assert(scene.simulation.completed_ticks == tick);
+    Vec3 deck = vec3_zero();
+    VkrQuat rotation = vkr_quat_identity();
+    deck_tram(tick, &deck, &rotation);
+    const Vec3 offset = vec3_sub(test.player.current_foot, deck);
+    if (tick > DECK_SETTLE_TICKS) {
+      grounded = grounded && state->grounded;
+      worst = Max(worst, vec3_length(vec3_sub(offset, last)));
+    }
+    last = offset;
+  }
+  assert(grounded && worst < 1e-3f);
+  assert(test.player.current_foot.x > 15.9f);
+  player_deck_end(&test, &scene);
+}
+
+/* An elevator deck 1.5 m/s up and down. Oracle: the deck's height each
+ * tick; the player stays grounded on it every tick, its feet within 5 mm of
+ * where they rested on the deck. A player stepped against the deck's pose
+ * before the step floats a tick's descent, 2.5 cm, above it going down. */
+static void test_player_elevator(VkrAllocator *allocator) {
+  VkrScene scene;
+  InputState input = {0};
+  PlayerTest test = {0};
+  player_deck_begin(&test, &scene, allocator, &input, 51, vec3_new(2, .25f, 2),
+                    vec3_new(0, .05f, 0), deck_elevator);
+  const FpsPlayerState *state = fps_player_state(test.ctx, &test.player);
+  assert(state);
+  float32_t rest = 0.0f;
+  float32_t worst = 0.0f;
+  bool8_t grounded = true_v;
+  for (uint64_t tick = 1; tick <= 300u; ++tick) {
+    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+    Vec3 deck = vec3_zero();
+    VkrQuat rotation = vkr_quat_identity();
+    deck_elevator(tick, &deck, &rotation);
+    const float32_t gap = test.player.current_foot.y - deck.y;
+    if (tick == DECK_SETTLE_TICKS) {
+      rest = gap;
+    } else if (tick > DECK_SETTLE_TICKS) {
+      grounded = grounded && state->grounded;
+      worst = Max(worst, fabsf(gap - rest));
+    }
+  }
+  assert(grounded && worst < 5e-3f);
+  player_deck_end(&test, &scene);
+}
+
 /* A turning platform (ADR-084 movers): a kinematic floor turning 90 degrees
  * a second about +Y under a player standing 1.5 m east of its axis. Oracle:
  * after one second the player stands a quarter turn on, 1.5 m north (+X
- * turns to -Z), and its yaw turned with it from 0 to -pi/2; a player the
- * floor neither carries nor turns stays east, facing east. */
+ * turns to -Z), within a millimetre, and its yaw turned with it from 0 to
+ * -pi/2; a player a tick behind the floor stays 4 cm and 1.5 degrees
+ * short, and one it neither carries nor turns stays east, facing east. */
 static void test_player_turning_platform(VkrAllocator *allocator) {
   VkrScene scene;
-  assert(vkr_scene_init(&scene, allocator, 49, 16, NULL));
   InputState input = {0};
-  const VkrEntityId floor = vkr_scene_create_entity(&scene, NULL);
-  const VkrPhysicsColliderDesc box = {.entity_id = floor.u64,
-                                      .shape = VKR_PHYSICS_BOX,
-                                      .position = {0, -.25f, 0},
-                                      .rotation = {0, 0, 0, 1},
-                                      .scale = {1, 1, 1},
-                                      .half_extent = {3, .25f, 3},
-                                      .enabled = true_v};
-  assert(vkr_scene_physics_generated_set_kinematic(&scene, 22u, floor, &box, 1u,
-                                                   false_v, NULL));
-  const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
-  assert(vkr_scene_set_transform(&scene, entity, vec3_new(1.5f, .05f, 0),
-                                 vkr_quat_identity(), vec3_one()));
   PlayerTest test = {0};
-  FpsPlayer *const player = &test.player;
-  assert(player_attach(&test, &scene, &input, entity, 91, 0));
-  vkr_scene_physics_set_paused(&scene, false_v);
-  assert(fps_player_frame(test.ctx, player, 100, true_v) == 0);
-  /* Settle on the floor before it turns. */
-  for (uint32_t tick = 0; tick < 10u; ++tick) {
+  player_deck_begin(&test, &scene, allocator, &input, 49, vec3_new(3, .25f, 3),
+                    vec3_new(1.5f, .05f, 0), deck_turn);
+  for (uint32_t tick = 0; tick < 70u; ++tick) {
     vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
   }
-  const float32_t rate = 0.5f * VKR_PI;
-  for (uint32_t tick = 1; tick <= 60u; ++tick) {
-    const VkrQuat turn = vkr_quat_from_axis_angle(
-        vec3_new(0, 1, 0),
-        rate * (float32_t)(tick * VKR_SCENE_SIMULATION_FIXED_DT));
-    assert(vkr_scene_physics_generated_move(&scene, 22u, vec3_zero(), turn,
-                                            vec3_zero(), NULL));
-    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
-  }
-  assert(!scene.simulation.faulted);
+  const FpsPlayer *player = &test.player;
   const FpsPlayerState *state = fps_player_state(test.ctx, player);
   assert(state);
-  assert(fabsf(player->current_foot.x) < .2f &&
-         fabsf(player->current_foot.z + 1.5f) < .2f);
-  assert(fabsf(state->yaw + 0.5f * VKR_PI) < .1f);
-  player_shutdown(&test);
-  vkr_scene_shutdown(&scene, NULL);
+  assert(fabsf(player->current_foot.x) < 1e-3f &&
+         fabsf(player->current_foot.z + 1.5f) < 1e-3f);
+  assert(fabsf(state->yaw + 0.5f * VKR_PI) < 1e-3f);
+  player_deck_end(&test, &scene);
 }
 
 static void test_player_authored_camera_mode(VkrAllocator *allocator) {
@@ -554,6 +698,8 @@ bool32_t run_gameplay_player_tests(void) {
   test_player_ladder(&allocator, true_v);
   test_player_ladder(&allocator, false_v);
   test_player_turning_platform(&allocator);
+  test_player_tram(&allocator);
+  test_player_elevator(&allocator);
   test_player_evaluated_transforms(&allocator);
   test_player_observer_bursts(&allocator);
   test_player_unfocused_simulation(&allocator);

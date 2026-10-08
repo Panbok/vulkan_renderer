@@ -336,13 +336,12 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
         (state->pitch < PLAYER_LADDER_DOWN_PITCH ? -forward : forward) *
         ladder->climb_speed;
   } else if (motor.ground == VKR_GROUND_ON_GROUND) {
+    /* The move is relative to the ground: what it stands on carries it
+       (ADR-073), and a turning floor turns it, the view too: yaw runs from
+       +X toward +Z, against a spin about +Y. */
     move.velocity.y = jump && !crouch_requested && !motor.crouched
                           ? player->settings.jump_speed
-                          : motor.ground_velocity.y;
-    /* What it stands on carries it, and a turning floor turns it, the view
-       too: yaw runs from +X toward +Z, against a spin about +Y. */
-    move.velocity.x += motor.ground_velocity.x;
-    move.velocity.z += motor.ground_velocity.z;
+                          : 0.0f;
     const float32_t turn = -motor.ground_angular_velocity.y * dt;
     if (turn != 0.0f) {
       state->yaw = remainderf(state->yaw + turn, 6.28318530718f);

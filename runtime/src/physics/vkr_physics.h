@@ -48,7 +48,9 @@ typedef enum VkrPhysicsCharacterGround {
 
 typedef struct VkrPhysicsCharacterInput {
   /* Complete desired velocity before gravity, including retained vertical
-   * speed, ground velocity and an optional jump supplied by the controller. */
+   * speed and an optional jump supplied by the controller. On the ground it
+   * is relative to what the character stands on: a moving body carries it
+   * through the step (vkr_physics_character_step). */
   float32_t velocity[3];
   float32_t gravity[3]; // Added to velocity exactly once as gravity * dt.
   float32_t dt;
@@ -292,6 +294,11 @@ bool8_t vkr_physics_character_create(VkrPhysicsWorld *world,
 bool8_t vkr_physics_character_destroy(VkrPhysicsWorld *world,
                                       VkrPhysicsCharacter character);
 /* ExtendedUpdate uses Y-up stairs/floor helpers and explicit caller time.
+ * A character on the ground of a body that is not static moves against that
+ * body as if it stood still, then rides the body's motion through the
+ * coming world step: turned about its center of mass and moved by its
+ * velocities, which a kinematic target set this tick already holds. The
+ * state's velocity is world-space, the ride included.
  * Stance changes reuse the prebuilt shapes and collision-check expansion;
  * blocked standing is a successful step whose state remains crouched.
  * A contact-capacity failure faults the world, preserving no partial-tick

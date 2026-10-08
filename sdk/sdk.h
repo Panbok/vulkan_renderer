@@ -436,7 +436,10 @@ typedef struct VkrCharacterState {
 } VkrCharacterState;
 
 typedef struct VkrCharacterMove {
-  /** Desired velocity before gravity, including kept vertical speed. */
+  /** Desired velocity before gravity, including kept vertical speed. On the
+   * ground it is relative to what the character stands on: a moving
+   * platform carries it through the tick. The state's velocity is
+   * world-space, the ride included. */
   Vec3 velocity;
   /** Added once as gravity * dt. */
   Vec3 gravity;
