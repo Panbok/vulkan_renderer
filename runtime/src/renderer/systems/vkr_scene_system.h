@@ -103,6 +103,12 @@ typedef struct SceneTransform {
 /* Transient presentation override; authored transforms remain unchanged. */
 typedef struct SceneEvaluatedTransform {
   Mat4 world;
+  /* A pose a fixed tick wrote keeps the one before that tick, and the tick
+     (vkr_scene_physics_clock); until another tick completes it draws
+     between them, as physics bodies do. Zero for a pose written between
+     ticks, which draws as it is. */
+  Mat4 previous;
+  uint64_t tick;
 } SceneEvaluatedTransform;
 
 /* Stable within a source revision; names and ECS entity slots are not keys. */

@@ -245,6 +245,16 @@ bool8_t vkr_scene_physics_raycast(VkrScene *scene, Vec3 origin,
                                   Vec3 displacement, VkrPhysicsRayHit *hit);
 float64_t vkr_scene_physics_time(const VkrScene *scene);
 float64_t vkr_scene_physics_debt(const VkrScene *scene);
+/* The fixed-tick clock `scene` draws by, its physics set driver's: the
+   tick running now (0 between ticks), the last one completed, and how far
+   presentation is from that tick toward the next, in [0, 1]; 1 while
+   paused or disabled. */
+typedef struct VkrScenePhysicsClock {
+  uint64_t running;
+  uint64_t completed;
+  float32_t alpha;
+} VkrScenePhysicsClock;
+VkrScenePhysicsClock vkr_scene_physics_clock(const VkrScene *scene);
 /* Consumes completed fixed ticks once for scene animation, including Step. */
 float64_t vkr_scene_physics_animation_delta(VkrScene *scene,
                                             float64_t fallback);

@@ -2753,11 +2753,7 @@ bool8_t vkr_scene_physics_world_matrix(VkrScene *scene, VkrEntityId entity,
     if (!transform || !matrix) {
       return false_v;
     }
-    const float32_t alpha =
-        physics_paused(scene) || scene->physics_disabled
-            ? 1.0f
-            : (float32_t)Min(1.0, physics_clock(scene)->simulation.accumulator /
-                                      VKR_SCENE_PHYSICS_FIXED_DT);
+    const float32_t alpha = vkr_scene_physics_clock(scene).alpha;
     const Vec3 previous = vec3_new(character->previous.foot_position[0],
                                    character->previous.foot_position[1],
                                    character->previous.foot_position[2]);
@@ -2774,11 +2770,7 @@ bool8_t vkr_scene_physics_world_matrix(VkrScene *scene, VkrEntityId entity,
       body->body == VKR_PHYSICS_BODY_INVALID) {
     return false_v;
   }
-  const float32_t alpha =
-      physics_paused(scene) || scene->physics_disabled
-          ? 1.0f
-          : (float32_t)Min(1.0, physics_clock(scene)->simulation.accumulator /
-                                    VKR_SCENE_PHYSICS_FIXED_DT);
+  const float32_t alpha = vkr_scene_physics_clock(scene).alpha;
   const VkrPhysicsPose *previous = &body->previous_pose;
   const VkrPhysicsPose *current = &body->current_pose;
   const Vec3 position =
@@ -2821,6 +2813,21 @@ float64_t vkr_scene_physics_time(const VkrScene *scene) {
 
 float64_t vkr_scene_physics_debt(const VkrScene *scene) {
   return scene ? scene->simulation.accumulator : 0.0;
+}
+
+VkrScenePhysicsClock vkr_scene_physics_clock(const VkrScene *scene) {
+  const VkrScene *clock = physics_clock(scene);
+  if (!clock) {
+    return (VkrScenePhysicsClock){.alpha = 1.0f};
+  }
+  const VkrSceneSimulation *simulation = &clock->simulation;
+  return (VkrScenePhysicsClock){
+      .running = simulation->active ? simulation->completed_ticks + 1u : 0u,
+      .completed = simulation->completed_ticks,
+      .alpha = physics_paused(scene) || scene->physics_disabled
+                   ? 1.0f
+                   : (float32_t)Min(1.0, simulation->accumulator /
+                                             VKR_SCENE_PHYSICS_FIXED_DT)};
 }
 
 float64_t vkr_scene_physics_animation_delta(VkrScene *scene,

@@ -2783,6 +2783,34 @@ VkrSceneKeyLight vkr_scene_atmosphere_frame_key_light(VkrScene *scene) {
   return atmosphere->frame_key_light;
 }
 
+/* An evaluated pose a tick wrote, drawn `alpha` of the way from the one
+   before it: the turn between their bases slerped, the origin lerped, as
+   physics bodies interpolate. Both poses are rigid motions of one rest pose
+   (a mover's), so the turn between their bases is a pure rotation whatever
+   that pose's scale. */
+static Mat4 scene_evaluated_blend(const SceneEvaluatedTransform *evaluated,
+                                  float32_t alpha) {
+  if (alpha >= 1.0f || MemCompare(&evaluated->previous, &evaluated->world,
+                                  sizeof(evaluated->world)) == 0) {
+    return evaluated->world;
+  }
+  Mat4 from = evaluated->previous;
+  Mat4 to = evaluated->world;
+  const Vec3 from_origin = mat4_position(from);
+  const Vec3 to_origin = mat4_position(to);
+  from.m03 = from.m13 = from.m23 = 0.0f;
+  to.m03 = to.m13 = to.m23 = 0.0f;
+  const VkrQuat turn =
+      vkr_quat_normalize(mat4_to_quat(mat4_mul(to, mat4_inverse_affine(from))));
+  Mat4 blended = mat4_mul(
+      vkr_quat_to_mat4(vkr_quat_slerp(vkr_quat_identity(), turn, alpha)), from);
+  const Vec3 origin = vec3_lerp(from_origin, to_origin, alpha);
+  blended.m03 = origin.x;
+  blended.m13 = origin.y;
+  blended.m23 = origin.z;
+  return blended;
+}
+
 void vkr_scene_update_transforms(VkrScene *scene) {
   if (!scene || scene->simulation.active || !scene_compile_queries(scene)) {
     return;
@@ -2815,6 +2843,7 @@ void vkr_scene_update_transforms(VkrScene *scene) {
   // propagation
   VkrWorld *world = scene->world;
   VkrComponentTypeId comp_transform = scene->comp_transform;
+  const VkrScenePhysicsClock clock = vkr_scene_physics_clock(scene);
 
   for (uint32_t i = 0; i < scene->topo_count; i++) {
     // Full entity ID stored in topo_order - no reconstruction needed
@@ -2848,7 +2877,9 @@ void vkr_scene_update_transforms(VkrScene *scene) {
             world, entity, scene->comp_evaluated_transform);
     bool8_t physics_override = evaluated != NULL;
     if (evaluated) {
-      physics_world = evaluated->world;
+      physics_world = evaluated->tick && evaluated->tick == clock.completed
+                          ? scene_evaluated_blend(evaluated, clock.alpha)
+                          : evaluated->world;
     } else if (scene->physics) {
       physics_override =
           vkr_scene_physics_world_matrix(scene, entity, &physics_world);
@@ -3142,10 +3173,18 @@ bool8_t vkr_scene_set_evaluated_transform(VkrScene *scene, VkrEntityId entity,
   }
   SceneEvaluatedTransform *value = vkr_entity_get_component_if_alive(
       scene->world, entity, scene->comp_evaluated_transform);
+  /* A tick's pose keeps where the last tick left it; writing it again in
+     the same tick keeps that origin. */
+  const uint64_t tick = vkr_scene_physics_clock(scene).running;
   if (matrix && value) {
+    if (!tick || value->tick != tick) {
+      value->previous = value->world;
+    }
     value->world = *matrix;
+    value->tick = tick;
   } else if (matrix) {
-    const SceneEvaluatedTransform initial = {.world = *matrix};
+    const SceneEvaluatedTransform initial = {
+        .world = *matrix, .previous = *matrix, .tick = tick};
     if (!vkr_entity_add_component(scene->world, entity,
                                   scene->comp_evaluated_transform, &initial)) {
       return false_v;

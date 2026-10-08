@@ -35,6 +35,8 @@ struct PlayerTest {
   VkrCtx *ctx;
   VkrScene *scene;
   FpsPlayer player;
+  /* The player's entity and the deck under it, when a test has one. */
+  VkrEntityId entity;
   PlayerTestDeck deck;
 };
 
@@ -547,6 +549,7 @@ static void player_deck_begin(PlayerTest *test, VkrScene *scene,
   assert(vkr_scene_set_transform(scene, entity, foot, vkr_quat_identity(),
                                  vec3_one()));
   assert(player_attach(test, scene, input, entity, 90u + seed, 0));
+  test->entity = entity;
   test->deck = (PlayerTestDeck){.key = key, .entity = deck, .motion = motion};
   vkr_scene_physics_set_paused(scene, false_v);
   assert(fps_player_frame(test->ctx, &test->player, 100, true_v) == 0);
@@ -589,6 +592,39 @@ static void test_player_tram(VkrAllocator *allocator) {
   }
   assert(grounded && worst < 1e-3f);
   assert(test.player.current_foot.x > 15.9f);
+  player_deck_end(&test, &scene);
+}
+
+/* The drawn tram deck and player (ADR-084, ADR-073), read every half
+ * tick. Oracle: the player's drawn offset from the drawn deck stays within
+ * a millimetre of where it stood as the deck sets off, rides at 8 m/s and
+ * stops: both draw the same share of the way between their last two
+ * ticks. A deck drawn at its latest tick runs half a tick, 6.7 cm, ahead of
+ * the player at each half tick. */
+static void test_player_tram_drawn(VkrAllocator *allocator) {
+  VkrScene scene;
+  InputState input = {0};
+  PlayerTest test = {0};
+  player_deck_begin(&test, &scene, allocator, &input, 52, vec3_new(20, .25f, 3),
+                    vec3_new(0, .05f, 0), deck_tram);
+  Vec3 rest = vec3_zero();
+  float32_t worst = 0.0f;
+  for (uint32_t frame = 1; frame <= 360u; ++frame) {
+    vkr_scene_update(&scene, 0.5 * VKR_SCENE_SIMULATION_FIXED_DT);
+    const SceneTransform *player = vkr_scene_get_transform(&scene, test.entity);
+    const SceneTransform *deck =
+        vkr_scene_get_transform(&scene, test.deck.entity);
+    assert(player && deck);
+    const Vec3 offset =
+        vec3_sub(mat4_position(player->world), mat4_position(deck->world));
+    if (frame == 2u * DECK_SETTLE_TICKS) {
+      rest = offset;
+    } else if (frame > 2u * DECK_SETTLE_TICKS) {
+      worst = Max(worst, vec3_length(vec3_sub(offset, rest)));
+    }
+  }
+  assert(scene.simulation.completed_ticks == 180u);
+  assert(worst < 1e-3f);
   player_deck_end(&test, &scene);
 }
 
@@ -700,6 +736,7 @@ bool32_t run_gameplay_player_tests(void) {
   test_player_turning_platform(&allocator);
   test_player_tram(&allocator);
   test_player_elevator(&allocator);
+  test_player_tram_drawn(&allocator);
   test_player_evaluated_transforms(&allocator);
   test_player_observer_bursts(&allocator);
   test_player_unfocused_simulation(&allocator);
