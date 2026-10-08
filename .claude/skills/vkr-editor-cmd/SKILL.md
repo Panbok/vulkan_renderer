@@ -90,6 +90,13 @@ the scene unsaved, so the closing `quit` needs `discard` unless you ran
 `scene.save` deliberately. Do not save edits to tracked scene files unless the
 task asks for it.
 
+Object icons fade out behind collision and past the icon distance:
+`labels.occlusion on|off` and `labels.distance <metres>` (0 for no limit) set
+them. `ui.icons`, `ui.icons_shown` and `ui.icons_occluded` count the icons
+built, placed on the Scene and hidden by collision. Rays test at most 48 icons
+per frame, so after a camera or scene change `wait 1` before reading the
+counts.
+
 ## Limits
 
 The evaluator has no loops, user functions or file access, and cannot create

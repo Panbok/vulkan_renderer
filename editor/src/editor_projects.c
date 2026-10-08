@@ -664,6 +664,10 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
       project_json_bool(&writer, "labels_markers", editor->labels_markers) &&
       project_json_bool(&writer, "labels_text", editor->labels_text) &&
       project_json_bool(&writer, "labels_empty", editor->labels_empty) &&
+      project_json_bool(&writer, "labels_occlusion",
+                        editor->labels_occlusion) &&
+      project_json_number(&writer, "labels_max_distance",
+                          editor->labels_max_distance) &&
       project_json_number(&writer, "place_target",
                           (float64_t)editor->placement.target) &&
       project_json_bool(&writer, "place_align",
@@ -917,6 +921,8 @@ static void project_restore_settings(VkrEditorProjects *projects,
   editor->labels_markers = true_v;
   editor->labels_text = true_v;
   editor->labels_empty = true_v;
+  editor->labels_occlusion = true_v;
+  editor->labels_max_distance = VKR_EDITOR_LABEL_DISTANCE_DEFAULT;
   editor->console.follow_tail = true_v;
   editor->console.search[0] = '\0';
   for (uint32_t i = 0; i < ArrayCount(editor->console.levels); ++i) {
@@ -964,6 +970,15 @@ static void project_restore_settings(VkrEditorProjects *projects,
   panels.pos = 0;
   (void)vkr_json_get_bool(&panels, "labels_empty", &editor->labels_empty);
   panels.pos = 0;
+  (void)vkr_json_get_bool(&panels, "labels_occlusion",
+                          &editor->labels_occlusion);
+  panels.pos = 0;
+  {
+    float32_t distance = VKR_EDITOR_LABEL_DISTANCE_DEFAULT;
+    (void)vkr_json_get_float(&panels, "labels_max_distance", &distance);
+    panels.pos = 0;
+    editor->labels_max_distance = vkr_editor_label_distance(distance);
+  }
   {
     VkrEditorPlacement place = defaults.placement;
     float32_t target = (float32_t)place.target;

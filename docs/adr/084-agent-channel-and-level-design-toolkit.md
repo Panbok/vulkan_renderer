@@ -290,7 +290,9 @@ each bare or with a `label` of up to 15 characters: each view projects them
 through the camera of the build that asked for its frame
 (`VkrSampleUiFrame.view_projection`) and draws each as a cross with its
 number and label in a 3 by 5 pixel font. A physics ray from the near plane
-under the mark to the mark decides whether collision hides it: the cross is
+under the mark to the mark, through every loaded scene, decides whether
+collision hides it, by the test that fades Scene object icons
+(`vkr_editor_label_occluded`, ADR-027): the cross is
 magenta where the camera sees the point and blue behind collision, and the
 answer gives each mark's pixel (`at`) and `hidden`, or null outside the
 view. Geometry without collision hides nothing. An agent checks where a

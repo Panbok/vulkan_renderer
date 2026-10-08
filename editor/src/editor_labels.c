@@ -142,9 +142,23 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
       (!build->empty && !editor_label_kind(editor, scene, entity, &kind))) {
     return;
   }
-  const bool8_t placed =
-      !kind.abstract &&
-      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  const SceneTransform *transform =
+      kind.abstract ? NULL
+                    : vkr_entity_get_component(scene->world, entity,
+                                               scene->comp_transform);
+  const bool8_t placed = transform != NULL;
+  /* A text's origin is its box corner; its icon sits just above its
+     glyphs. */
+  const Vec3 pivot = vkr_scene_text_marker_local(scene, entity);
+  const Vec4 world =
+      placed ? mat4_mul_vec4(transform->world, vec3_to_vec4(pivot, 1.0f))
+             : (Vec4){0.0f, 0.0f, 0.0f, 1.0f};
+  /* Collision and distance fade the icon; colors carry the opacity, and a
+     floor keeps a zero icon alpha from meaning the text color. */
+  const float32_t alpha =
+      vkr_editor_label_sight(&editor->label_sights, frame, scene, entity,
+                             placed, vec3_new(world.x, world.y, world.z));
+  const float32_t opacity = Max(alpha, VKR_EDITOR_LABEL_ALPHA_MIN);
   const float32_t size = EDITOR_LABEL_SIZE_PT;
   const bool8_t selected = entity.u64 == frame->selected_entity.u64;
   /* A selected placed object keeps a faint icon that clicks through to the
@@ -174,6 +188,9 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
                      : selected              ? theme->text_on_accent
                                              : kind.tint;
   label.tooltip = vkr_scene_get_name(scene, entity);
+  label.style.background_color.w *= opacity;
+  label.style.border_color.w *= opacity;
+  label.icon_color.w *= opacity;
   (void)vkr_ui_push_id_u64(ui, entity.u64);
   if (under_gizmo) {
     label.style.background_color = vkr_ui_color_alpha(theme->accent, 0.35f);
@@ -191,9 +208,8 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
       .entity = entity,
       .scene = scene,
       .stack = placed ? UINT32_MAX : build->stacked++,
-      /* A text's origin is its box corner; its icon sits just above its
-         glyphs. */
-      .pivot = vkr_scene_text_marker_local(scene, entity),
+      .pivot = pivot,
+      .alpha = alpha,
   };
   (void)vkr_ui_pop_id(ui);
 }
@@ -315,6 +331,10 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
   editor->label_anchor_count = 0;
   editor->label_anchors = NULL;
   editor->label_scene_generation = frame->scene_generation;
+  /* A build that draws no icons keeps their visibility for the next one
+     and counts none. */
+  editor->label_sights.icon_count = 0u;
+  editor->label_sights.occluded_count = 0u;
   const VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX] = {frame->scene,
                                                          frame->world};
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
@@ -380,6 +400,10 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
       &ui->id_stack, string8_lit("editor.object.icons"));
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.object.icons"), &panel))
     return;
+  vkr_editor_label_sights_begin(
+      &editor->label_sights, frame, editor->labels_occlusion,
+      editor->labels_max_distance, (float32_t)ui->delta_time, ui->reduce_motion,
+      ui->frame_allocator);
   EditorLabelBuild build = {
       .editor = editor, .frame = frame, .capacity = capacity};
   for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
@@ -398,11 +422,14 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
       (void)vkr_ui_pop_id(ui);
     }
   }
+  vkr_editor_label_sights_end(&editor->label_sights);
+  editor->label_sights.icon_count = editor->label_anchor_count;
   (void)vkr_ui_panel_end(ui);
 }
 
 void vkr_editor_labels_project(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame) {
+  editor->label_sights.shown_count = 0u;
   if ((!frame->scene && !frame->world) || frame->scene_rendering_stopped ||
       editor->label_scene_generation != frame->scene_generation ||
       !editor->label_anchor_count)
@@ -450,9 +477,15 @@ void vkr_editor_labels_project(VkrEditorUi *editor,
         offset.y -= (float32_t)anchor.stack * (size + EDITOR_LABEL_GAP_PT);
       }
     }
+    /* An icon faded below the floor leaves the Scene, as one outside it
+       does, so it takes no clicks. */
     if (offset.x < 0 || offset.y < 0 || offset.x + size > image.z / scale ||
-        offset.y + size > image.w / scale)
+        offset.y + size > image.w / scale ||
+        anchor.alpha < VKR_EDITOR_LABEL_ALPHA_MIN) {
       offset = (Vec2){100000.0f, 100000.0f};
+    } else {
+      editor->label_sights.shown_count++;
+    }
     (void)vkr_ui_widget_set_rect(frame->ui, anchor.widget,
                                  (VkrUiRect){offset.x, offset.y, size, size});
   }

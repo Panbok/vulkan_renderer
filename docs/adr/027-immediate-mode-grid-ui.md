@@ -326,9 +326,35 @@ Bistro's punctual lights are points.
 
 Light labels are 26-point round chips above the entity origin, drawing the
 sun, flashlight or bulb icon in the light's own color, composited
-at native UI resolution, outside lighting and temporal history. They are visible
-through scene geometry, clipped to the displayed Scene image, hidden behind the
-camera and while Scene rendering is stopped. Disabled lights remain selectable
+at native UI resolution, outside lighting and temporal history. They are
+clipped to the displayed Scene image, hidden behind the camera and while Scene
+rendering is stopped.
+
+Object icons behind collision fade out. `vkr_editor_label_occluded`
+([editor_label_sight.c](../../editor/src/editor_label_sight.c)) casts a
+physics ray from the near plane under the icon to the entity's point through
+every loaded scene (the open one, the World and added scenes; one query per
+shared physics set). It ignores the icon's own entity and its parent, so a
+mover or button does not hide its own icon, and a point within 5 cm of a
+surface stays visible. `view.capture` marks use the same test (ADR-084).
+`VkrEditorLabelSights` keeps each icon's opacity and last ray result across
+builds in anchor order, matching an entry within 32 places of the last
+build's order. A build casts at most 48 rays: icons no ray has tested go
+first, then a round-robin sweep that starts again whenever the camera, a
+loaded container, its structure or edit revision, or the occlusion setting
+changes, every build while the simulation runs, and once a second otherwise.
+Icons off the Scene or past the icon distance spend no ray. Opacity moves
+toward its target over 120 ms (at once with reduced motion): 1 for the
+selection; 0 behind collision; an untested icon holds its opacity, so a hidden
+one never flashes in. A perspective view multiplies the target by a fade from
+0.8 to 1.0 of the icon distance; orthographic views do not fade with distance.
+Icons under 0.02 opacity leave the Scene and take no clicks. Show holds the
+"Hide icons behind geometry" toggle (`labels_occlusion`, on by default) and
+the "Icon distance" slider (`labels_max_distance`, 80 m by default, 0 for no
+limit, at most 500 m), saved with the other icon settings in the project's
+editor settings. With physics off in every loaded scene nothing hides an icon,
+and the toggle reads "(needs physics)". Geometry without collision, and
+triggers, hide nothing. A Show option wider than the popup widens it. Disabled lights remain selectable
 with gray icons. Clicking an icon selects its entity in Hierarchy and Inspector;
 selected icons use the accent color. Frame-scratch anchor records retain entity
 IDs, never component pointers, and are discarded on the next UI build. A scene

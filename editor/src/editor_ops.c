@@ -6942,44 +6942,6 @@ static void ops_capture_view_apply(const VkrSampleUiFrame *frame,
   }
 }
 
-/* Whether collision lies between the camera and the mark at `point`,
-   whose clip position `clip` the view's matrix gave: a ray from the near
-   plane under the mark (depth 0, mat4_perspective and mat4_ortho_zo_yinv)
-   to the mark. Geometry without collision hides nothing. */
-static bool8_t ops_capture_hidden(const VkrSampleUiFrame *frame,
-                                  Mat4 view_projection, Vec4 clip, Vec3 point) {
-  const Vec4 near_point =
-      mat4_mul_vec4(mat4_inverse(view_projection),
-                    (Vec4){clip.x / clip.w, clip.y / clip.w, 0.0f, 1.0f});
-  if (!isfinite(near_point.w) || fabsf(near_point.w) < 1.0e-9f) {
-    return false_v;
-  }
-  const Vec3 origin =
-      vec3_new(near_point.x / near_point.w, near_point.y / near_point.w,
-               near_point.z / near_point.w);
-  const Vec3 displacement = vec3_sub(point, origin);
-  const float32_t length = vec3_length(displacement);
-  if (!isfinite(length) || length < 1.0e-3f) {
-    return false_v;
-  }
-  /* A mark on a surface stays visible; the length term covers float
-     error on the long rays of an orthographic view. */
-  const float32_t slack = 0.05f + 1.0e-4f * length;
-  const VkrScene *scenes[2] = {frame->scene, frame->world};
-  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
-    VkrPhysicsQueryFilter filter = {.mask = UINT16_MAX};
-    VkrPhysicsRayHit hit = {0};
-    /* Physics queries take a mutable scene but change none of its state. */
-    if (scenes[i] &&
-        vkr_scene_physics_raycast_query((VkrScene *)scenes[i], origin,
-                                        displacement, &filter, &hit) &&
-        hit.fraction * length < length - slack) {
-      return true_v;
-    }
-  }
-  return false_v;
-}
-
 /* Keeps the captured frame of the current view at its cell size, with
    its marks drawn, and frees the full frame. */
 static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
@@ -7007,6 +6969,7 @@ static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
      capture places the Scene's image where the window shows it. */
   const Vec4 image = ctx->frame->mapping.image_rect_px;
   const float32_t scale = (float32_t)view->width / (float32_t)width;
+  const Mat4 inverse_view_projection = mat4_inverse(view->view_projection);
   for (uint32_t i = 0; i < pending->mark_count; ++i) {
     const Vec4 clip = mat4_mul_vec4(view->view_projection,
                                     vec3_to_vec4(pending->marks[i], 1.0f));
@@ -7025,8 +6988,11 @@ static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
     }
     view->marks[i] = at;
     view->mark_shown[i] = true_v;
-    view->mark_hidden[i] = ops_capture_hidden(ctx->frame, view->view_projection,
-                                              clip, pending->marks[i]);
+    /* Collision of every loaded scene hides a mark, as it hides an object
+       icon. */
+    view->mark_hidden[i] = vkr_editor_label_occluded(
+        ctx->frame, view->view_projection, inverse_view_projection,
+        pending->marks[i], NULL, VKR_ENTITY_ID_INVALID);
     /* Magenta where the camera sees the mark, blue behind collision. */
     static const uint8_t seen[3] = {255u, 40u, 210u};
     static const uint8_t behind[3] = {70u, 170u, 255u};

@@ -10,6 +10,7 @@
 #include "debug_overlay_test.h"
 #include "decal_tests.h"
 #include "dmemory_test.h"
+#include "editor_label_sight_test.h"
 #include "editor_viewport_test.h"
 #include "entity_test.h"
 #include "event_data_buffer_test.h"

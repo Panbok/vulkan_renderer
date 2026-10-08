@@ -207,8 +207,10 @@ runtime. Debug > Labels controls object icons: lights, scripted objects and
 other placed objects draw above their origins, including an empty-object icon
 for placed objects that nothing else draws or marks, and abstract World objects
 (sun, sky, fog, post process) stack above the world origin, projected with the
-packet's unjittered camera and Scene mapping. The selected object's icon fades
-and lets clicks through to the gizmo beneath it. A quick right click in the
+packet's unjittered camera and Scene mapping. Icons behind collision and
+past the icon distance fade out, testing a bounded number of icons per frame
+([ADR-027](adr/027-immediate-mode-grid-ui.md)). The selected object's icon
+fades and lets clicks through to the gizmo beneath it. A quick right click in the
 Scene opens the menu of the object under the pointer.
 Details rows come from each component's type descriptor and apply through the
 edit journal.

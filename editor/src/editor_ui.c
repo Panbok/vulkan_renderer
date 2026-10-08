@@ -159,6 +159,8 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .labels_markers = true_v,
       .labels_text = true_v,
       .labels_empty = true_v,
+      .labels_occlusion = true_v,
+      .labels_max_distance = VKR_EDITOR_LABEL_DISTANCE_DEFAULT,
       .placement = {.target = VKR_EDITOR_SNAP_SURFACE,
                     .magnet = true_v,
                     .move_grid = true_v,

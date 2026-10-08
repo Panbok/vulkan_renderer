@@ -38,7 +38,7 @@ enum {
 #define VIEW_POPUP_ROW_PT 24.0f
 #define VIEW_POPUP_HEADER_PT 24.0f
 #define VIEW_POPUP_WIDTH_PT 244.0f
-#define VIEW_POPUP_ROW_MAX 24u
+#define VIEW_POPUP_ROW_MAX 32u
 #define VIEW_INSET_PT 8.0f
 /* Mouse-look multiplier range of the camera popup; 6 is the default. */
 #define VIEW_SENSITIVITY_MIN 0.5f
@@ -80,6 +80,11 @@ typedef enum ViewShowTarget {
   VIEW_SHOW_ICONS,
   /* One icon category: the offset of its flag in VkrEditorUi. */
   VIEW_SHOW_ICON_KIND,
+  /* Icons behind collision fade out (labels_occlusion). */
+  VIEW_SHOW_ICON_OCCLUSION,
+  /* The icon distance: its header, then its slider (labels_max_distance). */
+  VIEW_SHOW_ICON_DISTANCE,
+  VIEW_SHOW_ICON_DISTANCE_SLIDER,
   VIEW_SHOW_GRID,
   VIEW_SHOW_GRID_THROUGH,
   /* Collision shapes: `value` is the display mode the row selects. */
@@ -109,6 +114,9 @@ static const struct {
      offsetof(VkrEditorUi, labels_markers)},
     {"Text objects", VIEW_SHOW_ICON_KIND, offsetof(VkrEditorUi, labels_text)},
     {"Empty objects", VIEW_SHOW_ICON_KIND, offsetof(VkrEditorUi, labels_empty)},
+    {"Hide icons behind geometry", VIEW_SHOW_ICON_OCCLUSION, 0},
+    {"Icon distance", VIEW_SHOW_ICON_DISTANCE, 0},
+    {"", VIEW_SHOW_ICON_DISTANCE_SLIDER, 0},
     {"Overlays", VIEW_SHOW_HEADER, 0},
     {"Grid", VIEW_SHOW_GRID, 0},
     {"Grid through geometry", VIEW_SHOW_GRID_THROUGH, 0},
@@ -426,6 +434,32 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
         row->checked = *view_icon_flag(editor, value);
         row->disabled = !editor->labels_enabled;
         break;
+      case VIEW_SHOW_ICON_OCCLUSION:
+        /* Rays test collision: with physics off nothing hides an icon. */
+        if (!vkr_editor_label_occlusion_available(frame)) {
+          snprintf(row->text, sizeof(row->text), "%s  (needs physics)",
+                   view_show_rows[i].name);
+        }
+        row->checked = editor->labels_occlusion;
+        row->disabled = !editor->labels_enabled;
+        break;
+      case VIEW_SHOW_ICON_DISTANCE:
+        row->kind = VIEW_ROW_HEADER;
+        if (editor->labels_max_distance > 0.0f) {
+          snprintf(row->text, sizeof(row->text), "%s  %.0f m",
+                   view_show_rows[i].name, (double)editor->labels_max_distance);
+        } else {
+          snprintf(row->text, sizeof(row->text), "%s  unlimited",
+                   view_show_rows[i].name);
+        }
+        break;
+      case VIEW_SHOW_ICON_DISTANCE_SLIDER:
+        row->kind = VIEW_ROW_SLIDER;
+        row->value = editor->labels_max_distance;
+        row->minimum = 0.0f;
+        row->maximum = VKR_EDITOR_LABEL_DISTANCE_MAX;
+        row->disabled = !editor->labels_enabled;
+        break;
       case VIEW_SHOW_GRID:
         row->checked = state->grid_enabled;
         break;
@@ -601,14 +635,24 @@ static void view_popup_layout(VkrEditorUi *editor,
     editor->view_popup_rect_pt = (Vec4){0};
     return;
   }
+  /* An option whose text outgrows the usual width widens its popup: the
+     panel and button padding, the check icon and its gap. */
   float32_t height = 10.0f;
+  float32_t width = VIEW_POPUP_WIDTH_PT;
   for (uint32_t i = 0; i < count; ++i) {
     height += view_row_height(&rows[i]);
+    if (rows[i].kind == VIEW_ROW_OPTION) {
+      const float32_t text =
+          ceilf(view_text_size(frame->ui, VKR_FONT_HANDLE_INVALID, rows[i].text,
+                               vkr_ui_theme()->font_body)
+                    .x);
+      width = Max(width, text + 10.0f + 16.0f + 14.0f + 12.0f);
+    }
   }
   const float32_t scale = frame->ui->content_scale;
   const float32_t screen_w = (float32_t)frame->ui->target_width / scale;
   const float32_t screen_h = (float32_t)frame->ui->target_height / scale;
-  const Vec2 size = {VIEW_POPUP_WIDTH_PT, height};
+  const Vec2 size = {width, height};
   const Vec4 anchor = editor->view_popup_anchor_pt;
   /* A popup that would leave the Scene opens leftward from its chip. */
   const Vec4 scene = view_scene_rect(frame);
@@ -1968,6 +2012,9 @@ static void view_show_activate(VkrEditorUi *editor,
     *flag = !*flag;
     break;
   }
+  case VIEW_SHOW_ICON_OCCLUSION:
+    editor->labels_occlusion = !editor->labels_occlusion;
+    break;
   case VIEW_SHOW_GRID:
     next->grid_enabled = !next->grid_enabled;
     break;
@@ -1981,6 +2028,8 @@ static void view_show_activate(VkrEditorUi *editor,
     *frame->transport_action = VKR_SAMPLE_TRANSPORT_TOGGLE_PHYSICS;
     break;
   case VIEW_SHOW_HEADER:
+  case VIEW_SHOW_ICON_DISTANCE:
+  case VIEW_SHOW_ICON_DISTANCE_SLIDER:
     break;
   }
 }
@@ -2108,6 +2157,12 @@ static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       editor->placement.offset = roundf(value * 100.0f) / 100.0f;
     return;
   }
+  if (popup == VIEW_POPUP_SHOW) {
+    /* The icon distance, the Show menu's one slider, in 5 m steps. */
+    editor->labels_max_distance =
+        vkr_editor_label_distance(roundf(value / 5.0f) * 5.0f);
+    return;
+  }
   if (popup == VIEW_POPUP_SPEED) {
     /* Rows: speed header and slider, then sensitivity header and slider. */
     if (index == 3u)
@@ -2184,6 +2239,10 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                      : popup == VIEW_POPUP_SNAP
                          ? string8_lit("How a placed object turns and sits "
                                        "relative to its snap point")
+                     : popup == VIEW_POPUP_SHOW
+                         ? string8_lit("Object icons fade out toward this "
+                                       "distance from the camera; 0 shows "
+                                       "them at any distance")
                          : string8_lit("Share of the output resolution the "
                                        "Scene renders before upscaling");
       float32_t value = row->value;

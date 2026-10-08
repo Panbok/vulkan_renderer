@@ -713,9 +713,34 @@ static bool8_t cmd_run_grid_height(CmdContext *ctx, const CmdDef *def,
 static bool8_t cmd_run_labels(CmdContext *ctx, const CmdDef *def, String8 arg) {
   VkrEditorUi *editor = ctx->editor;
   bool8_t *targets[] = {&editor->labels_enabled, &editor->labels_directional,
-                        &editor->labels_spot, &editor->labels_point};
+                        &editor->labels_spot, &editor->labels_point,
+                        &editor->labels_occlusion};
   bool8_t *target = targets[def->value];
   return cmd_switch(ctx, cmd_split(arg, NULL), *target, target);
+}
+
+/* Metres from the camera past which icons fade out; 0 shows them at any
+   distance. */
+static bool8_t cmd_run_labels_distance(CmdContext *ctx, const CmdDef *def,
+                                       String8 arg) {
+  (void)def;
+  const String8 word = cmd_split(arg, NULL);
+  float64_t number = 0.0;
+  if (!cmd_number(word, &number) || number < 0.0) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "Expected a distance in metres, 0 for no limit, not '%.*s'",
+             (int)word.length, word.str);
+    return false_v;
+  }
+  VkrEditorUi *editor = ctx->editor;
+  editor->labels_max_distance = vkr_editor_label_distance((float32_t)number);
+  if (editor->labels_max_distance > 0.0f) {
+    snprintf(ctx->message, sizeof(ctx->message), "Icon distance %.4g m",
+             (double)editor->labels_max_distance);
+  } else {
+    snprintf(ctx->message, sizeof(ctx->message), "Icon distance unlimited");
+  }
+  return true_v;
 }
 
 static bool8_t cmd_run_zoom(CmdContext *ctx, const CmdDef *def, String8 arg) {
@@ -2246,6 +2271,11 @@ static const CmdDef cmd_defs[] = {
      cmd_run_labels, CMD_COUNT, 2u},
     {"labels.point", CMD_ARG_SWITCH, "[on|off|toggle]", "Point light icons",
      cmd_run_labels, CMD_COUNT, 3u},
+    {"labels.occlusion", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Hide object icons behind collision", cmd_run_labels, CMD_COUNT, 4u},
+    {"labels.distance", CMD_ARG_NUMBER, "<metres>",
+     "Fade object icons out past a distance from the camera; 0 for no limit",
+     cmd_run_labels_distance, CMD_COUNT, 0u},
     {"ui.zoom", CMD_ARG_ZOOM, "<scale|in|out|reset>",
      "Scale the whole interface", cmd_run_zoom, CMD_COUNT, 0u},
     {"ui.reduce_motion", CMD_ARG_SWITCH, "[on|off|toggle]",

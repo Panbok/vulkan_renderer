@@ -108,6 +108,8 @@ dependable channel for scripts.
 | `light.group` | `<group> <intensity>` | Scale a light group's static lights in every loaded container until the simulation resets; 0 switches them off ([ADR-090](090-time-of-day.md)) |
 | `grid.labels` | `[on\|off\|toggle]` | Grid cell numbers and letters |
 | `labels`, `labels.directional`, `labels.spot`, `labels.point` | `[on\|off\|toggle]` | Light icons |
+| `labels.occlusion` | `[on\|off\|toggle]` | Hide object icons behind collision (on by default; [ADR-027](027-immediate-mode-grid-ui.md)) |
+| `labels.distance` | `<metres>` | Fade object icons out over the last fifth of this distance from the camera, at most 500; 0 for no limit (80 by default) |
 | `create` | `<object>` | Create an object kind (`empty`, `cube`, `text`, a light kind or a world component type) in the selection's container, else the primary scene, else the World, at the Scene's centre by the Snapping settings ([ADR-076](076-project-object-model.md)); World-only settings always go to the World |
 | `snap` | | Rest the selection on the collision surface, grid or ground plane below it by the Snapping settings (undoable; the End key) |
 | `delete` | `[name]` | Delete the named object or every selected object (undoable) |
@@ -172,7 +174,7 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 | `.light` | `kind`, `color`, `intensity` (radiance for rectangles), `range`, `enabled`, `inner`, `outer` (degrees) | all but `kind` |
 | `.<component>` | Descriptor properties of a component the entity carries, by type name (`sel.post_process.exposure_compensation_ev`, `sel.point_light.intensity`) | visible, non-read-only properties |
 | `view` | `camera`, `mode`, `grid`, `grid_spacing`, `grid_labels`, `grid_through`, `collision` (0 off, 1 selected, 2 all), `camera_speed`, `camera_sensitivity` (mouse-look multiplier), `grid_height` (world Y of the ground grid), `tool`, `snap` (`free`, `surface`, `grid`), `snap_offset`, `snap_yaw`, `snap_align`, `snap_centers`, `snap_magnet` (brushes snap to nearby brushes), `snap_moves` (moves keep box corners on the grid), `snap_turns` (rotate handles turn in 15° steps) | all |
-| `ui` | `zoom`, `reduce_motion`, `workbench` (read-only id), `selected` (read-only count), `maximized` (read-only) | `zoom`, `reduce_motion` |
+| `ui` | `zoom`, `reduce_motion`, `workbench` (read-only id), `selected` (read-only count), `maximized` (read-only), `icons` (object icons the last build made), `icons_shown` (those the last projection placed on the Scene), `icons_occluded` (those collision hides) | `zoom`, `reduce_motion` |
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |
 | `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures`, `render_width`, `render_height` (the Scene's current internal extent), `texture_mb` (resident material textures in MiB), `frame_ms_max` (the longest of the last 120 frame intervals) | none |

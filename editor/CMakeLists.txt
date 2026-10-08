@@ -32,6 +32,7 @@ add_executable(vkr_editor
     src/editor_details.c
     src/editor_color.c
     src/editor_labels.c
+    src/editor_label_sight.c
     src/editor_physics.c
     src/editor_physics_settings.c
     src/editor_graphics.c

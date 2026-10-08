@@ -136,6 +136,41 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
                              const VkrSampleUiFrame *frame);
 void vkr_editor_labels_project(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame);
+/* Whether collision of a loaded scene (the open one, the World, added
+   ones) lies between the camera of `view_projection` and `point`: a ray
+   from the near plane under the point (depth 0, mat4_perspective and
+   mat4_ortho_zo_yinv) to it. A point on a surface stays visible, and so
+   does one behind the camera. `owner` and `entity` name an object whose
+   own collision and its parent's hide nothing, so a mover or button does
+   not hide its own icon; NULL and an invalid id name none. Geometry
+   without collision, sensors and scenes with physics off hide nothing. */
+bool8_t vkr_editor_label_occluded(const VkrSampleUiFrame *frame,
+                                  Mat4 view_projection,
+                                  Mat4 inverse_view_projection, Vec3 point,
+                                  const VkrScene *owner, VkrEntityId entity);
+/* An icon distance setting in metres, clamped to
+   [0, VKR_EDITOR_LABEL_DISTANCE_MAX]; a value that is not finite gives the
+   default. */
+float32_t vkr_editor_label_distance(float32_t metres);
+/* Whether any loaded scene has physics on, so collision can hide icons. */
+bool8_t vkr_editor_label_occlusion_available(const VkrSampleUiFrame *frame);
+/* Starts a build's icon visibility: `occlusion` and `max_distance` are the
+   editor's settings, `delta_seconds` the frame time, `instant` skips fades
+   (reduced motion). Last build's entries are copied to `scratch`, which
+   must outlive vkr_editor_label_sights_end. */
+void vkr_editor_label_sights_begin(VkrEditorLabelSights *sights,
+                                   const VkrSampleUiFrame *frame,
+                                   bool8_t occlusion, float32_t max_distance,
+                                   float32_t delta_seconds, bool8_t instant,
+                                   VkrAllocator *scratch);
+/* The next icon in anchor order: `entity` of `scene`, at world `position`
+   when `placed` (abstract icons stack at the origin and neither hide nor
+   fade with distance). Returns the opacity to draw it with. */
+float32_t vkr_editor_label_sight(VkrEditorLabelSights *sights,
+                                 const VkrSampleUiFrame *frame,
+                                 const VkrScene *scene, VkrEntityId entity,
+                                 bool8_t placed, Vec3 position);
+void vkr_editor_label_sights_end(VkrEditorLabelSights *sights);
 void vkr_editor_dock_show(VkrUiDockTree *dock, VkrUiDockPanelKind kind);
 /* Whether any tab of the tree, shown or not, holds `kind`. */
 bool8_t vkr_editor_dock_has(const VkrUiDockTree *dock, VkrUiDockPanelKind kind);

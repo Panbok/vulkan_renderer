@@ -104,6 +104,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_gtao_tests),
     VKR_TEST_SUITE(run_visibility_tests),
     VKR_TEST_SUITE(run_editor_viewport_tests),
+    VKR_TEST_SUITE(run_editor_label_sight_tests),
     VKR_TEST_SUITE(run_ui_layout_tests),
     VKR_TEST_SUITE(run_shadow_system_tests),
     VKR_TEST_SUITE(run_render_graph_barrier_tests),

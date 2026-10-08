@@ -89,7 +89,81 @@ typedef struct VkrEditorLabelAnchor {
   /* Entity-local point a placed icon marks: the origin, or the top center of
      a text's glyphs. */
   Vec3 pivot;
+  /* Faded opacity the build drew the icon with; projection keeps an icon
+     under VKR_EDITOR_LABEL_ALPHA_MIN off the Scene. */
+  float32_t alpha;
 } VkrEditorLabelAnchor;
+
+/* Icons fainter than this are not drawn and take no clicks. */
+#define VKR_EDITOR_LABEL_ALPHA_MIN 0.02f
+/* Metres from the camera past which icons fade out: the default and the
+   largest a setting takes; 0 is no limit. */
+#define VKR_EDITOR_LABEL_DISTANCE_DEFAULT 80.0f
+#define VKR_EDITOR_LABEL_DISTANCE_MAX 500.0f
+/* Icons the UI can build at most: one node each. */
+#define VKR_EDITOR_LABEL_SIGHT_MAX VKR_UI_FRAME_NODE_CAPACITY
+/* Occlusion rays one build casts at most. */
+#define VKR_EDITOR_LABEL_RAYS_PER_FRAME 48u
+
+/* One icon as the last build left it, in label anchor order: its faded
+   opacity and whether collision hid it from the camera when a ray last
+   tested it. */
+typedef struct VkrEditorLabelSight {
+  VkrEntityId entity;
+  float32_t alpha;
+  bool8_t occluded;
+  /* A ray has tested the icon since it appeared. */
+  bool8_t tested;
+} VkrEditorLabelSight;
+
+/* What decides whether earlier ray results still hold: the camera, the
+   loaded containers and their structure and edit revisions, and whether
+   occlusion applies. Zeroed before it is filled, so it compares as bytes. */
+typedef struct VkrEditorLabelSightKey {
+  Mat4 view_projection;
+  const struct VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX];
+  uint64_t revisions[2u + VKR_SCENE_ADDITIVE_MAX];
+  uint64_t edits[2u + VKR_SCENE_ADDITIVE_MAX];
+  uint64_t generation;
+  bool8_t occlusion;
+} VkrEditorLabelSightKey;
+
+/* Icon visibility kept across builds (editor_label_sight.c). A build
+   matches each icon to its entry from the last build, tests a bounded
+   number of icons per frame round robin while the key changes, and fades
+   each icon's opacity toward its target. */
+typedef struct VkrEditorLabelSights {
+  VkrEditorLabelSight entries[VKR_EDITOR_LABEL_SIGHT_MAX];
+  uint32_t count;
+  /* The last build's entries, copied to frame scratch, while this build
+     matches them; NULL outside a build. */
+  const VkrEditorLabelSight *previous;
+  uint32_t previous_count;
+  uint32_t match;
+  /* Next icon the sweep tests and how many icons it still visits; zero
+     when every icon has been tested under the current key. */
+  uint32_t cursor;
+  uint32_t sweep;
+  uint32_t rays_left;
+  /* Seconds since a sweep ended; a quiet key still gets a sweep each
+     second, for collision that builds after a load or moves without an
+     edit. */
+  float32_t idle_seconds;
+  VkrEditorLabelSightKey key;
+  /* This build's inputs. */
+  Mat4 inverse_view_projection;
+  float32_t delta_seconds;
+  float32_t max_distance;
+  bool8_t occlusion;
+  bool8_t perspective;
+  bool8_t instant;
+  /* Agent-visible counts, read between builds: icons the last build made
+     and those collision hides, and icons the last projection placed on the
+     Scene. */
+  uint32_t icon_count;
+  uint32_t occluded_count;
+  uint32_t shown_count;
+} VkrEditorLabelSights;
 
 typedef struct VkrEditorPhysicsLine VkrEditorPhysicsLine;
 
@@ -407,6 +481,10 @@ typedef struct VkrEditorUi {
   bool8_t labels_markers;
   bool8_t labels_text;
   bool8_t labels_empty;
+  /* Icons behind collision fade out; icons fade out over the last fifth of
+     `labels_max_distance` metres from the camera, 0 for no limit. */
+  bool8_t labels_occlusion;
+  float32_t labels_max_distance;
   VkrEditorPlacement placement;
   VkrEditorWorkbenches workbenches;
   /* Empty objects of the primary scene, the World and each added scene, in
@@ -415,6 +493,7 @@ typedef struct VkrEditorUi {
   /* Frame-scratch records, consumed before UI geometry preparation. */
   VkrEditorLabelAnchor *label_anchors;
   uint32_t label_anchor_count;
+  VkrEditorLabelSights label_sights;
   uint64_t label_scene_generation;
   VkrUiId label_panel;
   bool8_t label_capacity_warned;
