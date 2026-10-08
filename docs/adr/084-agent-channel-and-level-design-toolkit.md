@@ -758,6 +758,11 @@ z-fighting (`z_fight`) and movers that break a vehicle's stay
 issue names its position, the entity at fault and the step height, slope,
 headroom, gap, area or seconds; issues of one kind on one entity within 8 m
 merge, except broken connections and mover timings, each its own issue.
+The report keeps at most `limit` issues (100, up to 500) in the order the
+checks find them, floor checks first, and `found` counts them all; `kinds`
+names the kinds to report, and only the checks that find them run, so a
+z-fight sweep of a large region is neither cut short by floor issues nor
+pays for brush overlap checks.
 
 A `z_fight` is two drawn faces of different solids that share a plane and
 face the same way, so the depth test picks between them pixel by pixel and

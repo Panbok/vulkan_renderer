@@ -57,9 +57,21 @@ sets the order of work and the checks that prove a level.
 ## Gameplay pieces
 
 - Doors, lifts and platforms: `mover.create` on their brushes; `hinge` makes
-  a swinging door. Make a lift a timed loop (`loop` true, `wait` seconds at
-  each end) unless the spec asks for a call button; a trigger brush under a
-  mover moves with it.
+  a swinging door. A trigger brush under a mover moves with it.
+- Every vehicle (lift, elevator, tram, train) keeps a fixed stay and
+  departure: `loop` true with a positive `wait`, which it also rests at the
+  end it starts at. Do not make one wait to be boarded or toggled.
+  - Its doors are movers parented under it, so they ride it: build the
+    door brushes with `parent` set to the vehicle, then `mover.create`
+    them. Doors at the stops stay in the world.
+  - Wire the vehicle's `on_opened` (it reached its far end) and
+    `on_closed` (it is back at its start) to the `open` of the doors at
+    that end. Each door's opening, `wait` and closing must end within the
+    vehicle's `wait`; `level.lint` reports one that does not as
+    `mover_timing`. A once `timer` (`interval` 0.5) opens the start end's
+    doors for the first stay; count its interval in that door's cycle.
+  - A sliding door slides into a pocket inside the wall beside it (its
+    faces strictly inside the wall's), never along a wall face.
 - Buttons: `component.add` `button` on a solid or clip brush, or on a parent
   up to 8 levels above it, within 2 m of the player's eyes (1.6 m above its
   feet). Wire `io.connect` from `on_pressed` to the mover's `open`.
@@ -76,10 +88,8 @@ sets the order of work and the checks that prove a level.
   spiral's outer radius, rail every hole edge except where the landing meets
   the floor, and rail the landing's side over the stairwell.
 - A vehicle the player rides: a deck flush with the platforms (gap at most
-  0.1 m; add static lips on the platform edge), 2.3 m clear inside, openings
-  on the platform side. Put its ride trigger deep inside, away from the
-  doorways, with a 3 s `delay` on the `io.connect` to a `wait` -1 mover's
-  `toggle`: it moves only when boarded and waits at each end.
+  0.1 m; add static lips on the platform edge), 2.3 m clear inside, door
+  openings on the platform side.
 - Hiding an object in the editor removes it from placement and picks only:
   collision, level checks and the game still have it.
 
@@ -87,12 +97,14 @@ sets the order of work and the checks that prove a level.
 
 - Keep lamps `mobility` static (the default) and bake: save, then Cmd
   `scene.bake lightmaps 64`, which holds until the bake ends and the scene
-  reopens (about 4 minutes for 3,000 brushes and 140 lamps on an M1; the
-  default 16 samples look blotchy) and answers `error:` when it fails. Baked
-  lights always cast shadows, so they do not leak through walls; brushes
-  under a mover are not baked. Rebake after edits.
+  reopens (about 3 minutes for 3,200 brushes and 155 lamps on an M1) and
+  answers `error:` when it fails. Baked lights always cast shadows, so they
+  do not leak through walls; brushes under a mover are not baked.
+- Brushes added after a bake have no lightmap and draw unlit until the next
+  one: rebake after geometry edits before judging how a space looks.
 - An indoor level overrides the World's sky before its bake: scene objects
-  with `atmosphere` and `clouds` disabled and a disabled `directional_light`.
+  with `atmosphere`, `clouds` and `fog` disabled and a disabled
+  `directional_light`; the World's fog washes out a deep level.
   Otherwise the bake adds eight sun layers it can never show (453 MB of
   lightmaps instead of 101 MB in the Black Mesa level) and every frame draws
   sky and cascade passes.
@@ -101,8 +113,9 @@ sets the order of work and the checks that prove a level.
   in and out, light through walls from unshadowed lamps, and a slow frame.
   Make a light `dynamic` only when it moves or switches, and give it
   `casts_shadow`.
-- Place a lamp at least 0.1 m below its ceiling and outside every brush,
-  its `range` within its room, under a `dev_light` panel.
+- Place a lamp 0.5 m below its `dev_light` panel, outside every brush, its
+  `range` within its room. A lamp just under a panel lights the panel's
+  underside, a bright path the bake finds by chance: blotches.
 
 ## Verify, cheapest first
 
@@ -118,8 +131,13 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    most 200 cells a side: `#` walls, `n` gaps too narrow, `,` out of reach,
    `c` passable crouched.
 4. `level.lint` in tiles of 76 m or less (0.3 m cells); expect no issue of
-   a kind the spec forbids, and never a `z_fight` (coplanar faces that
-   flicker): move or trim `entity` or `other` until it is gone.
+   a kind the spec forbids, never a `mover_timing`, and never a `z_fight`
+   (coplanar faces that flicker; sweep them with `kinds` [`z_fight`,
+   `mover_timing`]: `found` above the issues returned means `limit` cut the
+   list, and floor issues come first): move or trim `entity` or `other` until
+   it is gone. Where two pieces meet on purpose, as a post on a rail or a
+   rack upright on a shelf, make one 4 mm proud of the other on each axis
+   they share, or end it flush at the other's face.
 5. One `view.capture` sheet (`views`, `max_width` 768) with labelled
    `marks` at doors, spawns and stairs. Each mark answers its pixel and
    `hidden` (collision between the camera and the point); judge look and
@@ -147,6 +165,10 @@ Put the checks in the same `level_run.py` plan as the writes, each with
      report a failure. Wait for a mover by polling `query.bounds` of its
      moving part. Walk every route both ways: a way up does not prove the
      way down.
+   - Board a timed vehicle at a fresh arrival: one already at its stop
+     may leave as the player reaches its doors. Read the player's offset
+     from the vehicle while it rests before and after the ride; a change
+     beyond 5 cm means the player slid on its deck.
    - For a drop, aim 0.6 m past the edge, or the capsule stays on it.
 
 Reads wait for rebuilds; repeat a read that answers `settled` false. Only
