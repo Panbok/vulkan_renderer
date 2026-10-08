@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Parents a trigger looks up through for the body that carries it. */
+#define IO_HOLD_DEPTH 16u
 #define IO_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 
 const VkrIoPort vkr_io_builtin_inputs[] = {
@@ -1494,10 +1496,28 @@ static bool8_t io_trigger_passes(const VkrIoRouter *router,
   return scene && vkr_scene_get_typed(scene, other, trigger->filter) != NULL;
 }
 
+/* Whether `other` is an ancestor of `entity`: a trigger brush under a mover
+   rides inside the mover's own body, which never enters or leaves it. */
+static bool8_t io_holds(VkrScene *scene, VkrEntityId other,
+                        VkrEntityId entity) {
+  for (uint32_t depth = 0; depth < IO_HOLD_DEPTH; ++depth) {
+    const SceneTransform *transform = vkr_scene_get_transform(scene, entity);
+    if (!transform || !transform->parent.u64) {
+      return false_v;
+    }
+    if (transform->parent.u64 == other.u64) {
+      return true_v;
+    }
+    entity = transform->parent;
+  }
+  return false_v;
+}
+
 /* One side of a sensor pair: `entity` saw `other` enter or leave. */
 static bool8_t io_sense(VkrIoRouter *router, VkrScene *scene,
                         VkrEntityId entity, VkrEntityId other, bool8_t began) {
-  if (!vkr_scene_entity_alive(scene, entity)) {
+  if (!vkr_scene_entity_alive(scene, entity) ||
+      io_holds(scene, other, entity)) {
     return true_v;
   }
   if (router->hooks.trigger_hook) {

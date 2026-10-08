@@ -1137,11 +1137,12 @@ static bool8_t edit_deletable_parts(const VkrScene *scene, VkrEntityId entity,
       known = id == scene->types[t].id &&
               scene->types[t].type != &vkr_scene_animation_type;
     }
-    /* Generated shape, brush and text state is rebuilt from its typed
-       component. */
+    /* Generated shape, brush, blockout and text state is rebuilt from its
+       typed component. */
     known |= (id == scene->comp_shape &&
               (vkr_scene_get_typed(scene, entity, &vkr_scene_shape_type) ||
-               vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type))) ||
+               vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) ||
+               vkr_scene_get_typed(scene, entity, &vkr_scene_blockout_type))) ||
              (id == scene->comp_text3d &&
               vkr_scene_get_typed(scene, entity, &vkr_scene_text_type));
     if (!known) {
