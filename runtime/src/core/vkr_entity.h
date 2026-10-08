@@ -375,7 +375,11 @@ vkr_internal INLINE bool8_t vkr_entity_is_alive(const VkrWorld *world,
   if (id.parts.index >= world->dir.capacity) {
     return false_v;
   }
-  return world->dir.generations[id.parts.index] == id.parts.generation;
+  /* Destroying an entity advances its slot's generation, so an id built
+     from a free slot's index (vkr_entity_id_from_index) matches it; only a
+     live entity also holds a chunk row. */
+  return world->dir.generations[id.parts.index] == id.parts.generation &&
+         world->dir.records[id.parts.index].chunk != NULL;
 }
 
 /**

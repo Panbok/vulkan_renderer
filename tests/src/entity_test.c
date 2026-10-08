@@ -431,6 +431,16 @@ static void test_world_id_validation(void) {
   assert(vkr_entity_is_alive(world_a, entity));
   assert(!vkr_entity_is_alive(world_b, entity));
 
+  /* A destroyed entity's slot takes the next generation, so an id built
+     from its index matches it; the free slot is still not alive. Scans over
+     indices (the editor's object lists) listed such slots as empty
+     objects. */
+  const uint32_t index = entity.parts.index;
+  assert(vkr_entity_destroy_entity(world_a, entity));
+  assert(!vkr_entity_is_alive(world_a, entity));
+  assert(
+      !vkr_entity_is_alive(world_a, vkr_entity_id_from_index(world_a, index)));
+
   vkr_entity_destroy_world(world_a);
   vkr_entity_destroy_world(world_b);
   teardown_suite();
