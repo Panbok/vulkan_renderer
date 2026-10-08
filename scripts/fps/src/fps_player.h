@@ -132,6 +132,9 @@ typedef struct FpsPlayer {
   float32_t facing;
   /* Commanded horizontal velocity (x, z) after acceleration. */
   Vec2 move_velocity;
+  /* Horizontal velocity (x, z) of the ground it last stood on, which it
+     keeps while off the ground (ADR-073). */
+  Vec2 carried;
   Vec3 previous_foot;
   Vec3 current_foot;
   bool8_t attached;

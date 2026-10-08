@@ -349,6 +349,16 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
           remainderf(player->render_yaw + turn, 6.28318530718f);
       player->facing = remainderf(player->facing + turn, 6.28318530718f);
     }
+    player->carried =
+        vec2_new(motor.ground_velocity.x, motor.ground_velocity.z);
+  } else {
+    /* Off the ground it keeps the way what it last stood on carried it, as
+       a jump from a moving tram lands where it took off. */
+    move.velocity.x += player->carried.x;
+    move.velocity.z += player->carried.y;
+  }
+  if (ladder) {
+    player->carried = (Vec2){0};
   }
   if (!vkr_character_move(ctx, player->entity, &move, &motor)) {
     return player_fail(player, vkr_last_error(ctx));
@@ -422,6 +432,7 @@ void fps_player_reset(VkrCtx *ctx, FpsPlayer *player) {
   player->facing = player->spawn_yaw;
   player->previous_facing = player->spawn_yaw;
   player->move_velocity = (Vec2){0};
+  player->carried = (Vec2){0};
   player->commands = (FpsInput){0};
   player->shot_pending = false_v;
   player->hit_pending = false_v;

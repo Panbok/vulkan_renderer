@@ -628,6 +628,44 @@ static void test_player_tram_drawn(VkrAllocator *allocator) {
   player_deck_end(&test, &scene);
 }
 
+/* A jump on the tram deck at 8 m/s (ADR-073). Oracle: the deck's pose
+ * each tick; the player leaves the deck for at least a quarter second and
+ * lands within 2 cm of where it took off on the deck, which moved about
+ * 4 m meanwhile. A player that drops the deck's velocity on lift-off lands
+ * metres behind. */
+static void test_player_tram_jump(VkrAllocator *allocator) {
+  VkrScene scene;
+  InputState input = {0};
+  PlayerTest test = {0};
+  player_deck_begin(&test, &scene, allocator, &input, 53, vec3_new(20, .25f, 3),
+                    vec3_new(0, .05f, 0), deck_tram);
+  const FpsPlayerState *state = fps_player_state(test.ctx, &test.player);
+  assert(state);
+  player_command(&test.player, 30u, FPS_ACTION_JUMP, true_v);
+  player_command(&test.player, 31u, FPS_ACTION_JUMP, false_v);
+  Vec3 takeoff = vec3_zero();
+  uint32_t airborne = 0u;
+  bool8_t landed = false_v;
+  for (uint64_t tick = 1; tick <= 120u && !landed; ++tick) {
+    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+    Vec3 deck = vec3_zero();
+    VkrQuat rotation = vkr_quat_identity();
+    deck_tram(tick, &deck, &rotation);
+    const Vec3 offset = vec3_sub(test.player.current_foot, deck);
+    if (tick == 29u) {
+      takeoff = offset;
+    } else if (tick >= 30u && !state->grounded) {
+      airborne++;
+    } else if (tick > 30u) {
+      landed = true_v;
+      assert(fabsf(offset.x - takeoff.x) < 2e-2f &&
+             fabsf(offset.z - takeoff.z) < 2e-2f);
+    }
+  }
+  assert(landed && airborne >= 15u);
+  player_deck_end(&test, &scene);
+}
+
 /* An elevator deck 1.5 m/s up and down. Oracle: the deck's height each
  * tick; the player stays grounded on it every tick, its feet within 5 mm of
  * where they rested on the deck. A player stepped against the deck's pose
@@ -737,6 +775,7 @@ bool32_t run_gameplay_player_tests(void) {
   test_player_tram(&allocator);
   test_player_elevator(&allocator);
   test_player_tram_drawn(&allocator);
+  test_player_tram_jump(&allocator);
   test_player_evaluated_transforms(&allocator);
   test_player_observer_bursts(&allocator);
   test_player_unfocused_simulation(&allocator);
