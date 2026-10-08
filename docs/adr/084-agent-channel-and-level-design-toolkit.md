@@ -839,7 +839,7 @@ are:
 | `button` (`wait`, `locked`) | `on_pressed` and `on_refused` (the activator) | `press` (the activator), `lock`, `unlock` |
 | `timer` (`interval`, `start_running`, `once`) | `on_timer` | `start`, `stop`, `set_interval` |
 | `counter` (`start`, `min`, `max`) | `on_changed` (the value), `on_max`, `on_min` | `add`, `subtract`, `set` |
-| `mover` (`direction`, `distance`, `lip`, `angle`, `axis`, `pivot`, `spin`, `speed`, `wait`, `start_open`, `loop`, `locked`) | `on_open`, `on_opened`, `on_close`, `on_closed` | `open`, `close`, `toggle`, `lock`, `unlock`, `set_position` (0 to 1) |
+| `mover` (`direction`, `distance`, `lip`, `angle`, `axis`, `pivot`, `spin`, `speed`, `acceleration`, `wait`, `start_open`, `loop`, `locked`) | `on_open`, `on_opened`, `on_close`, `on_closed` | `open`, `close`, `toggle`, `lock`, `unlock`, `set_position` (0 to 1) |
 | Every entity | none | `show`, `hide`, `destroy` |
 
 Script behaviors declare theirs with `VKR_OUTPUTS` and `VKR_INPUTS`
@@ -897,25 +897,39 @@ and an open pose `distance` meters along `direction` in its own space, as
 Source's func_door and func_movelinear do; a zero distance takes the extent
 of its meshes and shapes along the direction less `lip`. A nonzero `angle`
 turns it that many degrees about `axis` through `pivot`, both in its own
-space, as func_door_rotating does, and `speed` is then degrees per second;
+space, as func_door_rotating does, and `speed` is then degrees per second.
+A nonzero `acceleration` (metres or degrees per second squared) eases each
+start and stop: it speeds up from rest, slows on the curve that stops it at
+the end, and decelerates before it turns back; zero moves at `speed` at once.
 `spin` turns it without end while open, as a fan, wrapping whole turns, and
 a close stops it where it is without `on_opened` or `on_closed`. It moves only
 during Play: publication and refresh give each mover an evaluated transform
 at its pose, `vkr_io_router_step` rewrites it first in each tick's
 `before_physics`, and clearing the router removes it, so the saved transform
-never changes and children follow through the transform update. Setting off
+never changes and children follow through the transform update. The scene
+draws a pose a tick wrote between that tick and the one before by the
+physics tick alpha, as it draws bodies and characters
+(`vkr_scene_physics_clock`), so a deck and the player on it never drift
+apart between ticks. A mover under another mover (the nearest above it, its
+carrier) rides it: its rest pose has every carrier at rest, its motion from
+rest is its own motion carried by its carrier's, and the router poses
+carriers first and re-poses a carried mover whenever its carrier moves, so a
+door on a tram car opens on the car wherever the car is. Setting off
 or turning around fires `on_open` or `on_close`; reaching an end fires
 `on_opened` or `on_closed`. At the open end it closes after `wait` seconds
-unless `wait` is negative; `loop` sets off at session start and turns back
-after `wait` (at least zero) at each end; `locked` refuses `open`, `toggle`
+unless `wait` is negative; `loop` rests `wait` (at least zero) at the end
+it starts at, then sets off, and rests the same `wait` at each end it
+reaches before it turns back; `locked` refuses `open`, `toggle`
 and `set_position` but still closes. Solid and clip brushes under a mover
 (the nearest at or above them) join one kinematic generated body per mover
 instead of a cell, at most 32 hulls; the hulls stay in world space at rest
-and the body's kinematic target is the mover's motion from rest, a turn
-about its world pivot and then its world offset
+and the body's kinematic target is the mover's motion from rest, its
+carriers' included, a turn and then a world offset
 (`vkr_scene_physics_generated_move` turns about the pivot in the body's
-rebased frame), so a character on it reads its ground velocity and spin, and
-the FPS player rides and turns with it (ADR-073). A trigger brush under a
+rebased frame). Setting a target while the clock runs drives the body at
+once, so a character stepped later in the same tick, before the world step,
+rides this tick's motion: the character step carries a grounded character
+with its moving ground (ADR-073). A trigger brush under a
 mover owns a kinematic sensor that the same motion moves
 (`vkr_scene_brush_mover_move`), so a trigger riding a lift moves with it
 instead of firing again where the lift started. A trigger ignores bodies of
