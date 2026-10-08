@@ -3163,6 +3163,11 @@ static bool8_t ops_carve_one(OpsContext *ctx, OpsBatch *batch,
   if (count == UINT32_MAX) {
     return true_v;
   }
+  if (count == VKR_BRUSH_CARVE_FAILED) {
+    return ops_fail(ctx, OPS_LIMIT,
+                    "Carving brush %u needs a piece of more than %u faces",
+                    target->entity.parts.index, VKR_BRUSH_FACE_MAX);
+  }
   return ops_brush_replace(ctx, batch, target, pieces, count, cutter->values,
                            cutter->count, &target->values[0], true_v, NULL,
                            out_item);
@@ -3272,8 +3277,14 @@ static bool8_t ops_build_hollow(OpsContext *ctx, const VkrBakeryJson *args,
   const uint32_t count =
       vkr_brush_carve(brush->planes, brush->count, inner, brush->count, pieces,
                       VKR_BRUSH_FACE_MAX, geometry);
+  if (count == VKR_BRUSH_CARVE_FAILED) {
+    return ops_fail(ctx, OPS_LIMIT,
+                    "Hollowing needs a wall piece of more than %u faces",
+                    VKR_BRUSH_FACE_MAX);
+  }
   if (count == 0u || count == UINT32_MAX) {
-    return ops_fail(ctx, OPS_INVALID, "The brush cannot be hollowed");
+    return ops_fail(ctx, OPS_INVALID,
+                    "'thickness' leaves no wall around the inside");
   }
   uint32_t item = 0u;
   if (!ops_brush_replace(ctx, batch, brush, pieces, count, brush->values,
@@ -3643,6 +3654,11 @@ static bool8_t ops_build_patch(OpsContext *ctx, const VkrBakeryJson *args,
                         pieces, VKR_BRUSH_FACE_MAX, geometry);
     if (count == UINT32_MAX) {
       return ops_fail(ctx, OPS_INVALID, "The patch does not reach the brush");
+    }
+    if (count == VKR_BRUSH_CARVE_FAILED) {
+      return ops_fail(ctx, OPS_LIMIT,
+                      "The patch needs a piece of more than %u faces",
+                      VKR_BRUSH_FACE_MAX);
     }
     if (!ops_brush_replace(ctx, batch, brush, pieces, count, extra, prism.count,
                            &brush->values[face], true_v, NULL, &item)) {

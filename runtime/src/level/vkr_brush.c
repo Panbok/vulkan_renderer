@@ -507,27 +507,41 @@ uint32_t vkr_brush_carve(const VkrBrushPlane *target, uint32_t target_count,
   for (uint32_t i = 0; i < target_count; ++i) {
     (void)brush_piece_push(&remaining, target[i], i);
   }
+  /* A full piece first drops the planes that bound nothing, so it runs out
+     of room only when it has VKR_BRUSH_FACE_MAX faces. */
   VkrBrushPiece overlap = remaining;
   for (uint32_t j = 0; j < cutter_count; ++j) {
+    if (brush_piece_push(&overlap, cutter[j], target_count + j)) {
+      continue;
+    }
+    if (!vkr_brush_prune(&overlap, scratch)) {
+      return UINT32_MAX;
+    }
     if (!brush_piece_push(&overlap, cutter[j], target_count + j)) {
-      return 0u;
+      return VKR_BRUSH_CARVE_FAILED;
     }
   }
   if (!vkr_brush_prune(&overlap, scratch)) {
     return UINT32_MAX;
   }
-  /* Each cutter plane splits off the part of what remains outside it. */
+  /* Each cutter plane splits off the part of what remains outside it; what
+     remains is pruned at every step, so it holds only its own faces. */
   uint32_t written = 0u;
-  for (uint32_t j = 0; j < cutter_count && written < capacity; ++j) {
+  for (uint32_t j = 0; j < cutter_count; ++j) {
     VkrBrushPiece piece = remaining;
     if (!brush_piece_push(&piece, brush_flip(cutter[j]), target_count + j)) {
-      return written;
+      return VKR_BRUSH_CARVE_FAILED;
     }
     if (vkr_brush_prune(&piece, scratch)) {
+      if (written == capacity) {
+        return VKR_BRUSH_CARVE_FAILED;
+      }
       out[written++] = piece;
     }
-    if (!brush_piece_push(&remaining, cutter[j], target_count + j) ||
-        !vkr_brush_prune(&remaining, scratch)) {
+    if (!brush_piece_push(&remaining, cutter[j], target_count + j)) {
+      return VKR_BRUSH_CARVE_FAILED;
+    }
+    if (!vkr_brush_prune(&remaining, scratch)) {
       break;
     }
   }

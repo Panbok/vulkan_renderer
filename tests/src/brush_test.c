@@ -131,6 +131,49 @@ static void brush_test_editing(VkrBrushGeometry *geometry) {
                              vec3_new(5.0f, 4.0f, 1.0f), around);
   assert(vkr_brush_carve(wall, 6u, around, 6u, pieces, 6u, geometry) == 0u);
 
+  /* A 32-sided cylinder carved out of a wider one leaves a tube: the two
+     hold 68 planes, more than a brush, so the carve used to answer 0 and
+     the editor deleted both brushes. */
+  VkrBrushPlane outer[VKR_BRUSH_FACE_MAX];
+  VkrBrushPlane inner[VKR_BRUSH_FACE_MAX];
+  const uint32_t outer_count = vkr_brush_cylinder_planes(
+      vec3_new(0.0f, 0.0f, 0.0f), 8.0f, 10.0f, 32u, outer);
+  const uint32_t inner_count = vkr_brush_cylinder_planes(
+      vec3_new(0.0f, 0.5f, 0.0f), 7.5f, 9.0f, 32u, inner);
+  assert(vkr_brush_build(outer, outer_count, geometry, NULL) == VKR_BRUSH_OK);
+  const float32_t outer_volume = geometry->volume;
+  assert(vkr_brush_build(inner, inner_count, geometry, NULL) == VKR_BRUSH_OK);
+  const float32_t inner_volume = geometry->volume;
+  VkrBrushPiece *tube = malloc(sizeof(*tube) * VKR_BRUSH_FACE_MAX);
+  assert(tube);
+  const uint32_t tube_count =
+      vkr_brush_carve(outer, outer_count, inner, inner_count, tube,
+                      VKR_BRUSH_FACE_MAX, geometry);
+  assert(tube_count > 0u && tube_count <= inner_count);
+  float32_t tube_volume = 0.0f;
+  for (uint32_t i = 0; i < tube_count; ++i) {
+    assert(vkr_brush_build(tube[i].planes, tube[i].count, geometry, NULL) ==
+           VKR_BRUSH_OK);
+    tube_volume += geometry->volume;
+  }
+  assert(brush_test_near(tube_volume, outer_volume - inner_volume, 1.0e-2f));
+  /* Turned half a side, the same cylinder meets the first in a 64-sided
+     prism of 66 faces, which no brush holds: the carve says so instead of
+     answering with pieces. */
+  VkrBrushPlane turned[VKR_BRUSH_FACE_MAX];
+  const uint32_t turned_count = vkr_brush_cylinder_planes(
+      vec3_new(0.0f, 0.0f, 0.0f), 8.0f, 10.0f, 32u, turned);
+  const float32_t half = 3.14159265358979f / 32.0f;
+  for (uint32_t i = 0; i < 32u; ++i) {
+    const Vec3 n = turned[i].normal;
+    turned[i].normal = vec3_new(n.x * cosf(half) - n.z * sinf(half), 0.0f,
+                                n.x * sinf(half) + n.z * cosf(half));
+  }
+  assert(vkr_brush_carve(outer, outer_count, turned, turned_count, tube,
+                         VKR_BRUSH_FACE_MAX,
+                         geometry) == VKR_BRUSH_CARVE_FAILED);
+  free(tube);
+
   /* Pruning drops a plane that bounds nothing. */
   VkrBrushPiece box = {0};
   box.count = vkr_brush_box_planes(vec3_zero(), vec3_one(), box.planes);

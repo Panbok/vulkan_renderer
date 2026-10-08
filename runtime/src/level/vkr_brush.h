@@ -137,10 +137,15 @@ typedef struct VkrBrushPiece {
    build. */
 bool8_t vkr_brush_prune(VkrBrushPiece *piece, VkrBrushGeometry *scratch);
 
+/* vkr_brush_carve's answer when a piece needs more than VKR_BRUSH_FACE_MAX
+   faces or more pieces than `capacity`; nothing it wrote is complete. */
+#define VKR_BRUSH_CARVE_FAILED (UINT32_MAX - 1u)
+
 /* The parts of `target` outside `cutter`, as non-overlapping convex pieces:
    one per cutter plane at most. Returns how many it wrote, 0 when nothing
-   of the target lies outside, or UINT32_MAX when the solids do not
-   overlap. */
+   of the target lies outside, UINT32_MAX when the solids do not overlap,
+   or VKR_BRUSH_CARVE_FAILED. Planes that stop bounding a face leave as the
+   cut proceeds, so a cylinder carves out of a cylinder. */
 uint32_t vkr_brush_carve(const VkrBrushPlane *target, uint32_t target_count,
                          const VkrBrushPlane *cutter, uint32_t cutter_count,
                          VkrBrushPiece *out, uint32_t capacity,
