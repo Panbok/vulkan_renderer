@@ -51,6 +51,10 @@ sets the order of work and the checks that prove a level.
 - One room owns each shared wall. Each floor and ceiling slab covers its
   room's interior and the walls that room owns, so neighbouring slabs abut:
   where slabs overlap, a doorway exposes two coplanar faces that z-fight.
+  A room or corridor built against another room's wall ends its own walls,
+  floor and ceiling at that wall's outer face; ending them at its inner
+  face puts their end faces in the other room's wall plane (the most
+  common fight in the Black Mesa level).
 - To open an existing wall, `brush.carve` a `clip` cutter with `target`
   naming the wall; without `target` it cuts every brush the cutter touches.
 
