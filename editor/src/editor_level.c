@@ -94,7 +94,7 @@ const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind) {
   static const char *const names[VKR_EDITOR_LEVEL_ISSUE_COUNT] = {
       "step_too_high",     "too_steep",   "low_ceiling", "too_narrow",
       "void_edge",         "unreachable", "overlap",     "invalid_brush",
-      "broken_connection", "crouch_only", "z_fight"};
+      "broken_connection", "crouch_only", "z_fight",     "mover_timing"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? names[kind] : "unknown";
 }
 
@@ -651,6 +651,27 @@ static void level_issue(LevelIssues *issues, VkrEditorLevelIssueKind kind,
   }
 }
 
+/* An issue of its own, never merged with a neighbour. */
+static void level_issue_pair(LevelIssues *issues, VkrEditorLevelIssueKind kind,
+                             Vec3 position, VkrEntityId entity,
+                             VkrEntityId other, float32_t value) {
+  issues->found++;
+  if (issues->count < issues->capacity) {
+    issues->items[issues->count++] = (VkrEditorLevelIssue){.kind = kind,
+                                                           .position = position,
+                                                           .entity = entity,
+                                                           .other = other,
+                                                           .value = value};
+  }
+}
+
+/* Whether `point` lies in the region the grid covers. */
+static bool8_t level_in_region(const LevelGrid *grid, Vec3 point) {
+  return point.x >= grid->min.x && point.y >= grid->min.y &&
+         point.z >= grid->min.z && point.x <= grid->max.x &&
+         point.y <= grid->max.y && point.z <= grid->max.z;
+}
+
 /* Whether walkable floor lies within two cells of node (x, z, layer), at
    about its height. */
 static bool8_t level_near_walkable(LevelGrid *grid, uint32_t x, uint32_t z,
@@ -795,19 +816,119 @@ static void level_lint_connections(LevelGrid *grid, LevelIssues *issues) {
       continue;
     }
     const Vec3 at = mat4_position(source->world);
-    if (at.x < grid->min.x || at.y < grid->min.y || at.z < grid->min.z ||
-        at.x > grid->max.x || at.y > grid->max.y || at.z > grid->max.z ||
+    if (!level_in_region(grid, at) ||
         !vkr_io_connection_problem(scene, entity, problem, sizeof(problem))) {
       continue;
     }
     /* Each connection is its own issue, never merged with a neighbour. */
-    issues->found++;
-    if (issues->count < issues->capacity) {
-      issues->items[issues->count++] =
-          (VkrEditorLevelIssue){.kind = VKR_EDITOR_LEVEL_BROKEN_CONNECTION,
-                                .position = at,
-                                .entity = transform->parent,
-                                .other = entity};
+    level_issue_pair(issues, VKR_EDITOR_LEVEL_BROKEN_CONNECTION, at,
+                     transform->parent, entity, 0.0f);
+  }
+}
+
+/* Seconds a mover takes from one end to the other: its length over its
+   speed, plus the time its acceleration spends speeding up and slowing down
+   (vkr_io_router's io_mover_advance). A spinning mover never arrives. */
+static float32_t level_mover_seconds(const VkrScene *scene, VkrEntityId entity,
+                                     const SceneMover *mover) {
+  float32_t length = fabsf(mover->angle);
+  if (mover->angle == 0.0f) {
+    Vec3 travel = vec3_zero();
+    if (!vkr_io_mover_travel(scene, entity, &travel)) {
+      return 0.0f;
+    }
+    length = vec3_length(travel);
+  }
+  if (!(mover->speed > 0.0f) || !(length > 0.0f)) {
+    return 0.0f;
+  }
+  if (!(mover->acceleration > 0.0f)) {
+    return length / mover->speed;
+  }
+  /* Speeding up and slowing down take speed^2 / acceleration of the way. */
+  const float32_t ramps = mover->speed * mover->speed / mover->acceleration;
+  if (length >= ramps) {
+    return length / mover->speed + mover->speed / mover->acceleration;
+  }
+  return 2.0f * sqrtf(length / mover->acceleration);
+}
+
+/* A port name without its component, as `mover.open` -> `open`. */
+static const char *level_port_name(const char *name) {
+  const char *dot = strrchr(name, '.');
+  return dot ? dot + 1 : name;
+}
+
+/* Every vehicle keeps a fixed stay and departure: a looping mover rests at
+   each end, and a mover its arrival opens (a door on it or at the stop)
+   opens, waits and closes within that stay. A door that stays open, or one
+   whose delay, opening, wait and closing outlast the stay, is still open as
+   the vehicle sets off. */
+static void level_lint_movers(LevelGrid *grid, LevelIssues *issues) {
+  const VkrScene *scene = grid->scene;
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    if (!vkr_scene_entity_alive(scene, entity)) {
+      continue;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    const SceneMover *mover =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_mover_type);
+    if (transform && mover && mover->loop && !mover->spin &&
+        !(mover->wait > 0.0f)) {
+      const Vec3 at = mat4_position(transform->world);
+      if (level_in_region(grid, at)) {
+        level_issue_pair(issues, VKR_EDITOR_LEVEL_MOVER_TIMING, at, entity,
+                         VKR_ENTITY_ID_INVALID, 0.0f);
+      }
+      continue;
+    }
+    const SceneIoConnection *connection =
+        transform
+            ? vkr_scene_get_typed(scene, entity, &vkr_scene_io_connection_type)
+            : NULL;
+    const SceneMover *vehicle =
+        connection ? vkr_scene_get_typed(scene, transform->parent,
+                                         &vkr_scene_mover_type)
+                   : NULL;
+    if (!vehicle || !vehicle->loop || vehicle->spin ||
+        !(vehicle->wait > 0.0f)) {
+      continue;
+    }
+    const char *output = level_port_name(connection->output);
+    const char *input = level_port_name(connection->input);
+    if ((strcmp(output, "on_opened") && strcmp(output, "on_closed")) ||
+        (strcmp(input, "open") && strcmp(input, "toggle"))) {
+      continue;
+    }
+    const VkrEntityId door =
+        vkr_scene_find_entity_ref(scene, &connection->target);
+    const SceneMover *settings =
+        door.u64 ? vkr_scene_get_typed(scene, door, &vkr_scene_mover_type)
+                 : NULL;
+    const SceneTransform *placed =
+        settings ? vkr_entity_get_component(scene->world, door,
+                                            scene->comp_transform)
+                 : NULL;
+    if (!placed || settings->spin) {
+      continue;
+    }
+    const Vec3 at = mat4_position(placed->world);
+    if (!level_in_region(grid, at)) {
+      continue;
+    }
+    /* A door left open overruns the whole departure. */
+    const float32_t open_for =
+        settings->wait < 0.0f
+            ? INFINITY
+            : Max(0.0f, connection->delay) +
+                  2.0f * level_mover_seconds(scene, door, settings) +
+                  settings->wait;
+    if (open_for > vehicle->wait + 1.0e-3f) {
+      level_issue_pair(
+          issues, VKR_EDITOR_LEVEL_MOVER_TIMING, at, door, transform->parent,
+          isfinite(open_for) ? open_for - vehicle->wait : vehicle->wait);
     }
   }
 }
@@ -1151,6 +1272,7 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
   level_lint_brushes(&grid, &issues);
   level_lint_fights(&grid, &issues);
   level_lint_connections(&grid, &issues);
+  level_lint_movers(&grid, &issues);
   uint32_t reachable = 0u;
   int32_t *queue = malloc(total * sizeof(*queue));
   const int32_t origin = start && queue ? level_nearest(&grid, *start) : -1;
@@ -1968,7 +2090,7 @@ static const char *level_issue_label(VkrEditorLevelIssueKind kind) {
       "Step too high",   "Too steep",           "Low ceiling",
       "Gap too narrow",  "Edge into void",      "Unreachable area",
       "Brushes overlap", "Brush did not build", "Connection does not route",
-      "Crouch only",     "Faces z-fight"};
+      "Crouch only",     "Faces z-fight",       "Mover overruns its stay"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? labels[kind] : "Issue";
 }
 
@@ -2197,8 +2319,11 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
         snprintf(value, sizeof(value), "%.0f deg", issue->value);
       } else if (issue->kind <= VKR_EDITOR_LEVEL_TOO_NARROW) {
         snprintf(value, sizeof(value), "%.2f m", issue->value);
-      } else if (issue->kind == VKR_EDITOR_LEVEL_Z_FIGHT) {
-        snprintf(value, sizeof(value), "%.3g m2", issue->value);
+      } else if (issue->kind == VKR_EDITOR_LEVEL_Z_FIGHT ||
+                 issue->kind == VKR_EDITOR_LEVEL_MOVER_TIMING) {
+        snprintf(value, sizeof(value),
+                 issue->kind == VKR_EDITOR_LEVEL_Z_FIGHT ? "%.3g m2" : "%.2f s",
+                 issue->value);
         if (issue->other.u64 != issue->entity.u64 && scene &&
             vkr_scene_entity_alive(scene, issue->other)) {
           other = vkr_scene_get_name(scene, issue->other);

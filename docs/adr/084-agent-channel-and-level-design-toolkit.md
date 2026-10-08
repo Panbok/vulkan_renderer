@@ -752,10 +752,12 @@ crouched capsule, passages only the crouched capsule fits (`crouch_only`,
 with the headroom), gaps narrower than its diameter, walkable edges with no
 floor within
 4 m below, walkable areas the `start` (or the first enabled Player Start)
-cannot reach, overlapping solid brushes, brushes that did not build, and
-z-fighting (`z_fight`). Each
+cannot reach, overlapping solid brushes, brushes that did not build,
+z-fighting (`z_fight`) and movers that break a vehicle's stay
+(`mover_timing`). Each
 issue names its position, the entity at fault and the step height, slope,
-headroom, gap or area; issues of one kind on one entity within 8 m merge.
+headroom, gap, area or seconds; issues of one kind on one entity within 8 m
+merge, except broken connections and mover timings, each its own issue.
 
 A `z_fight` is two drawn faces of different solids that share a plane and
 face the same way, so the depth test picks between them pixel by pixel and
@@ -773,6 +775,20 @@ lies in, and not when the point 1 cm in front of that middle lies inside
 another solid, as a face buried in a wall. The issue names both solids
 (`entity` and `other`; one blockout shape's pieces name it twice) and the
 shared area in square meters.
+
+A `mover_timing` issue breaks the rule that every vehicle keeps a fixed
+stay and departure. A looping mover in the region with no positive `wait`
+is one (`value` 0). A mover that a looping mover's `on_opened` or
+`on_closed` opens or toggles, a door on the vehicle or at its stop, is
+another when its connection delay, opening, `wait` and closing outlast
+the vehicle's `wait`, or when it stays open (`wait` negative). That issue
+names the door (`entity`), the vehicle (`other`) and the seconds it is
+still open after the vehicle sets off (`value`; a door left open reports
+the vehicle's whole `wait`). Travel time is the length over `speed`, plus
+`speed / acceleration` when an acceleration eases it, as the router moves
+it ([editor_level.c](../../editor/src/editor_level.c),
+`level_lint_movers`). A door a timer opens for the first stop is not
+checked.
 `query.reachable` flood-fills from `from` and returns whether `to` is
 reachable with one route and its length: standing first, then crouched,
 so `crouch` says only that a route needs crouching, and `ladders` counts the

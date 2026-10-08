@@ -47,6 +47,10 @@ typedef enum VkrEditorLevelIssueKind {
      they flicker (vkr_brush_coplanar_overlaps); the value is the shared
      area. */
   VKR_EDITOR_LEVEL_Z_FIGHT,
+  /* A looping mover with no stay at its ends, or a mover a looping mover's
+     arrival opens that is not closed again when the looping one sets off;
+     the value is the seconds it overruns the stay. */
+  VKR_EDITOR_LEVEL_MOVER_TIMING,
   VKR_EDITOR_LEVEL_ISSUE_COUNT,
 } VkrEditorLevelIssueKind;
 
@@ -57,7 +61,8 @@ typedef struct VkrEditorLevelIssue {
      fights, or the broken connection. */
   VkrEntityId entity;
   VkrEntityId other;
-  /* Step height, slope degrees, headroom, gap width or area, by kind. */
+  /* Step height, slope degrees, headroom, gap width, area or seconds, by
+     kind. */
   float32_t value;
 } VkrEditorLevelIssue;
 
