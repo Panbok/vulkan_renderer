@@ -14,6 +14,11 @@
 /* The host supplies the SDK through a tool context; these tests install the
  * player's tick hooks directly, as the FPS module's hooks call them. */
 static VkrScriptHost s_script_host;
+/* The scene type table has no removal, so the FPS module's registered type
+ * copies outlive this suite: the host's memory is never released, as in the
+ * script host suite. */
+static VkrDMemory s_module_memory;
+static VkrAllocator s_module_allocator;
 
 typedef struct PlayerTest {
   VkrCtx *ctx;
@@ -538,7 +543,10 @@ bool32_t run_gameplay_player_tests(void) {
   assert(vkr_dmemory_create(MB(4), MB(32), &memory));
   VkrAllocator allocator = {.ctx = &memory};
   vkr_dmemory_allocator_create(&allocator);
-  assert(vkr_script_host_init(&s_script_host, &allocator));
+  assert(vkr_dmemory_create(MB(1), MB(4), &s_module_memory));
+  s_module_allocator = (VkrAllocator){.ctx = &s_module_memory};
+  vkr_dmemory_allocator_create(&s_module_allocator);
+  assert(vkr_script_host_init(&s_script_host, &s_module_allocator));
   /* The FPS module's component types, as the editor registers them. */
   const char *module_error = NULL;
   assert(vkr_script_host_add_module(&s_script_host, vkr_module_fps,
