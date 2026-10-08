@@ -98,6 +98,17 @@ const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind) {
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? names[kind] : "unknown";
 }
 
+VkrEditorLevelIssueKind vkr_editor_level_issue_kind(String8 name) {
+  for (uint32_t kind = 0; kind < VKR_EDITOR_LEVEL_ISSUE_COUNT; ++kind) {
+    const char *known = vkr_editor_level_issue_name(kind);
+    if (name.length == strlen(known) &&
+        MemCompare(name.str, known, name.length) == 0) {
+      return kind;
+    }
+  }
+  return VKR_EDITOR_LEVEL_ISSUE_COUNT;
+}
+
 // =============================================================================
 // Sampling
 // =============================================================================
@@ -617,7 +628,15 @@ typedef struct LevelIssues {
   uint32_t count;
   uint32_t capacity;
   uint32_t found;
+  /* Bits of the kinds reported; every kind when zero. */
+  uint32_t kinds;
 } LevelIssues;
+
+/* Whether issues of `kind` are reported. */
+static bool8_t level_wants(const LevelIssues *issues,
+                           VkrEditorLevelIssueKind kind) {
+  return !issues->kinds || (issues->kinds & (1u << kind)) != 0u;
+}
 
 /* Whether an issue of `kind` at `position` merges into one already kept. */
 static bool8_t level_issue_merges(const LevelIssues *issues,
@@ -641,7 +660,8 @@ static bool8_t level_issue_merges(const LevelIssues *issues,
 
 static void level_issue(LevelIssues *issues, VkrEditorLevelIssueKind kind,
                         Vec3 position, VkrEntityId entity, float32_t value) {
-  if (level_issue_merges(issues, kind, position, entity)) {
+  if (!level_wants(issues, kind) ||
+      level_issue_merges(issues, kind, position, entity)) {
     return;
   }
   issues->found++;
@@ -655,6 +675,9 @@ static void level_issue(LevelIssues *issues, VkrEditorLevelIssueKind kind,
 static void level_issue_pair(LevelIssues *issues, VkrEditorLevelIssueKind kind,
                              Vec3 position, VkrEntityId entity,
                              VkrEntityId other, float32_t value) {
+  if (!level_wants(issues, kind)) {
+    return;
+  }
   issues->found++;
   if (issues->count < issues->capacity) {
     issues->items[issues->count++] = (VkrEditorLevelIssue){.kind = kind,
@@ -1254,9 +1277,10 @@ cleanup:
 
 uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
                                    const VkrScene *scene, const Vec3 *start,
-                                   VkrEditorLevelIssue *out, uint32_t capacity,
+                                   uint32_t kinds, VkrEditorLevelIssue *out,
+                                   uint32_t capacity,
                                    VkrEditorLevelStats *stats) {
-  LevelIssues issues = {.items = out, .capacity = capacity};
+  LevelIssues issues = {.items = out, .capacity = capacity, .kinds = kinds};
   /* Physics queries take a mutable scene but change none of its state. */
   LevelGrid grid = job->grid;
   grid.scene = (VkrScene *)scene;
@@ -1268,11 +1292,21 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
     samples += grid.nodes[i].state != LEVEL_NONE;
     walkable += grid.nodes[i].state == LEVEL_WALKABLE;
   }
+  /* Each check runs only when a kind it reports is wanted. */
   level_lint_floor(&grid, &issues);
-  level_lint_brushes(&grid, &issues);
-  level_lint_fights(&grid, &issues);
-  level_lint_connections(&grid, &issues);
-  level_lint_movers(&grid, &issues);
+  if (level_wants(&issues, VKR_EDITOR_LEVEL_OVERLAP) ||
+      level_wants(&issues, VKR_EDITOR_LEVEL_INVALID_BRUSH)) {
+    level_lint_brushes(&grid, &issues);
+  }
+  if (level_wants(&issues, VKR_EDITOR_LEVEL_Z_FIGHT)) {
+    level_lint_fights(&grid, &issues);
+  }
+  if (level_wants(&issues, VKR_EDITOR_LEVEL_BROKEN_CONNECTION)) {
+    level_lint_connections(&grid, &issues);
+  }
+  if (level_wants(&issues, VKR_EDITOR_LEVEL_MOVER_TIMING)) {
+    level_lint_movers(&grid, &issues);
+  }
   uint32_t reachable = 0u;
   int32_t *queue = malloc(total * sizeof(*queue));
   const int32_t origin = start && queue ? level_nearest(&grid, *start) : -1;
@@ -2172,7 +2206,7 @@ static void level_window_step(VkrEditorUi *editor,
     return;
   }
   report->found = vkr_editor_level_job_lint(
-      report->job, scene, report->has_start ? &report->start : NULL,
+      report->job, scene, report->has_start ? &report->start : NULL, 0u,
       report->issues, VKR_EDITOR_LEVEL_SHOWN_MAX, &report->stats);
   vkr_editor_level_job_end(report->job);
   report->job = NULL;

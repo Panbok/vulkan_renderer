@@ -6351,6 +6351,8 @@ typedef struct OpsPendingLevel {
   OpsLevelArgs level;
   uint64_t generation;
   uint32_t limit;
+  /* level.lint: bits of the issue kinds reported, every kind when zero. */
+  uint32_t kinds;
   /* level.map */
   float64_t cell;
   float32_t edge;
@@ -6449,6 +6451,25 @@ static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
     float64_t limit = 100.0;
     (void)ops_arg_number(ctx->call->args, "limit", &limit);
     pending->limit = (uint32_t)vkr_clamp_f64(limit, 1.0, 500.0);
+    /* 'kinds' narrows the report, and the checks run, to those kinds. */
+    const VkrBakeryJson *kinds = vkr_bakery_json_get(ctx->call->args, "kinds");
+    if (kinds && kinds->type != VKR_BAKERY_JSON_ARRAY) {
+      ops_fail(ctx, OPS_INVALID, "'kinds' is an array of issue kinds");
+      return VKR_EDITOR_OP_DONE;
+    }
+    for (uint32_t i = 0; kinds && i < kinds->count; ++i) {
+      const VkrBakeryJson *name = vkr_bakery_json_at(kinds, i);
+      const VkrEditorLevelIssueKind kind =
+          name && name->type == VKR_BAKERY_JSON_STRING
+              ? vkr_editor_level_issue_kind(name->string)
+              : VKR_EDITOR_LEVEL_ISSUE_COUNT;
+      if (kind == VKR_EDITOR_LEVEL_ISSUE_COUNT) {
+        ops_fail(ctx, OPS_INVALID,
+                 "'kinds' names issue kinds, as z_fight or mover_timing");
+        return VKR_EDITOR_OP_DONE;
+      }
+      pending->kinds |= 1u << kind;
+    }
     if (!ops_level_args(ctx, &pending->level) ||
         !ops_level_begin(ctx, pending, pending->level.min, pending->level.max,
                          0.0f)) {
@@ -6472,9 +6493,9 @@ static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   VkrEditorLevelStats stats = {0};
-  const uint32_t found = vkr_editor_level_job_lint(ctx->ops->level_job, scene,
-                                                   has_start ? &start : NULL,
-                                                   issues, capacity, &stats);
+  const uint32_t found = vkr_editor_level_job_lint(
+      ctx->ops->level_job, scene, has_start ? &start : NULL, pending->kinds,
+      issues, capacity, &stats);
   ops_level_end(ctx->ops);
   Arena *arena = ops_arena(ctx);
   VkrBakeryJson *list = vkr_bakery_json_array(arena);
@@ -9587,16 +9608,20 @@ static const OpsDef s_ops[] = {
      "high, slopes too steep, low ceilings, passages only a crouched capsule "
      "fits (crouch_only), gaps too narrow, edges into the void, areas the "
      "start (or the Player Start) cannot reach, overlapping solid brushes, "
-     "brushes that did not build, IO connections that will not route, and "
+     "brushes that did not build, IO connections that will not route, "
      "z_fight: drawn faces of two brushes or blockout pieces that share a "
      "plane and face the same way, so they flicker ('entity' and 'other', "
-     "'value' the shared square meters).",
+     "'value' the shared square meters), and mover_timing: a looping mover "
+     "with no stay, or a door its arrival opens that is still open when it "
+     "leaves ('value' the seconds). 'kinds' reports only the named kinds; "
+     "'found' above the issues returned means 'limit' cut the list.",
      "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
      "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
      ",\"max\":" OPS_VEC3_SCHEMA
      "},\"required\":[\"min\",\"max\"]},\"start\":" OPS_VEC3_SCHEMA
      ",\"container\":" OPS_CONTAINER_SCHEMA "," OPS_CAPSULE_SCHEMA
      ",\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500}"
+     ",\"kinds\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}"
      "," OPS_SETTLE_SCHEMA "},\"required\":[\"region\"]}",
      ops_run_lint, NULL, OPS_SETTLES},
     {"level.map",

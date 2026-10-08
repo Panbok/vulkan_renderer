@@ -112,9 +112,14 @@ bool8_t vkr_editor_level_job_step(VkrEditorLevelJob *job, const VkrScene *scene,
                                   float64_t seconds);
 /* The share of cells sampled, 0 to 1. */
 float32_t vkr_editor_level_job_progress(const VkrEditorLevelJob *job);
+/* Reports the region's issues of the kinds in `kinds`, a mask of
+   (1u << VkrEditorLevelIssueKind) bits, or of every kind when it is zero;
+   checks only those kinds need run. Returns how many it found, which may
+   pass `capacity`. */
 uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
                                    const VkrScene *scene, const Vec3 *start,
-                                   VkrEditorLevelIssue *out, uint32_t capacity,
+                                   uint32_t kinds, VkrEditorLevelIssue *out,
+                                   uint32_t capacity,
                                    VkrEditorLevelStats *stats);
 /* Why a route failed: whether each end stands on a walkable floor, and the
    reached floor nearest `to` with the distance left. */
@@ -148,6 +153,8 @@ void vkr_editor_level_reachable_region(Vec3 from, Vec3 to, Vec3 *out_min,
                                        Vec3 *out_max);
 
 const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind);
+/* The kind `name` names, or VKR_EDITOR_LEVEL_ISSUE_COUNT. */
+VkrEditorLevelIssueKind vkr_editor_level_issue_kind(String8 name);
 
 /* The first face of `brush` a ray from `origin` along unit `direction`
    enters, within `max_distance`; the brush's planes come from its faces in
