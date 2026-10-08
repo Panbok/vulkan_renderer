@@ -422,6 +422,43 @@ bool8_t vkr_bake_voxel_cell_is_clear(const VkrBakeVoxelLayout *occupancy_layout,
 
 } // namespace
 
+bool8_t vkr_bake_voxels_fit_grid(VkrBakeAabb bounds,
+                                 uint32_t out_dimensions[3]) {
+  if (!out_dimensions || !vkr_bake_voxel_bounds_valid(bounds)) {
+    return false_v;
+  }
+  float64_t extent[3] = {0.0};
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    extent[axis] = (float64_t)vkr_bake_voxel_component(bounds.max, axis) -
+                   (float64_t)vkr_bake_voxel_component(bounds.min, axis);
+  }
+
+  /* Start at the cubic spacing whose grid would hold exactly the probe cap
+     and coarsen by one percent until the rounded-up grid fits. The loop
+     ends: at a quarter of the longest extent every axis holds the minimum
+     four probes, 64 in total. */
+  const float64_t volume = extent[0] * extent[1] * extent[2];
+  const float64_t cubic_spacing =
+      std::cbrt(volume / (float64_t)VKR_BAKE_VOXEL_MAX_PROBES);
+  float64_t spacing =
+      Max((float64_t)VKR_BAKE_VOXEL_FIT_MIN_SPACING, cubic_spacing);
+  for (;;) {
+    uint64_t count = 1u;
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      const float64_t needed = std::ceil(extent[axis] / spacing);
+      const float64_t probes =
+          Min(needed, (float64_t)VKR_BAKE_VOXEL_MAX_PROBES);
+      out_dimensions[axis] =
+          Max((uint32_t)probes, VKR_BAKE_VOXEL_FIT_MIN_DIMENSION);
+      count *= out_dimensions[axis];
+    }
+    if (count <= VKR_BAKE_VOXEL_MAX_PROBES) {
+      return true_v;
+    }
+    spacing *= 1.01;
+  }
+}
+
 bool8_t vkr_bake_voxels_build(const VkrBakeBvh *bvh,
                               const bool8_t *material_blocks_rooms,
                               uint32_t material_count,

@@ -356,6 +356,8 @@ typedef struct VkrBakeDiffuse {
   bool8_t check;
   bool8_t has_bounds;
   float64_t bounds[6];
+  /* Without --grid the baker fits the grid to the bounds (ADR-054). */
+  bool8_t has_grid;
   int64_t grid[3];
   bool8_t has_voxel_size;
   float64_t voxel_size;
@@ -410,11 +412,13 @@ vkr_internal bool8_t vkr_bake_validate_recipe(VkrBake *bake,
       }
     }
   }
-  const int64_t probes = args->grid[0] * args->grid[1] * args->grid[2];
-  if (args->grid[0] < 2 || args->grid[1] < 2 || args->grid[2] < 2 ||
-      probes > 256) {
-    return vkr_bake_fail(bake, "--grid dimensions must be at least 2 with at "
-                               "most 256 probes");
+  if (args->has_grid) {
+    const int64_t probes = args->grid[0] * args->grid[1] * args->grid[2];
+    if (args->grid[0] < 2 || args->grid[1] < 2 || args->grid[2] < 2 ||
+        probes > 256) {
+      return vkr_bake_fail(bake, "--grid dimensions must be at least 2 with "
+                                 "at most 256 probes");
+    }
   }
   if (args->has_voxel_size &&
       (!isfinite(args->voxel_size) || args->voxel_size <= 0.0)) {
@@ -450,9 +454,12 @@ vkr_internal bool8_t vkr_bake_recipe_arguments(VkrBake *bake,
   vkr_bake_push(out, "diffuse-baker");
   vkr_bake_push(out, "--scene");
   vkr_bake_push(out, scene);
-  vkr_bake_push(out, "--grid");
-  for (uint32_t i = 0u; i < 3u; ++i) {
-    vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->grid[i]));
+  if (args->has_grid) {
+    vkr_bake_push(out, "--grid");
+    for (uint32_t i = 0u; i < 3u; ++i) {
+      vkr_bake_push(out,
+                    vkr_bake_printf(bake, "%lld", (long long)args->grid[i]));
+    }
   }
   if (args->has_bounds) {
     vkr_bake_push(out, "--bounds");
@@ -845,7 +852,7 @@ vkr_internal bool8_t vkr_bake_manifest_spacing(VkrBake *bake,
       return true_v;
     }
   }
-  if (args->has_bounds) {
+  if (args->has_bounds && args->has_grid) {
     float64_t spacing[3];
     bool8_t valid = true_v;
     for (uint32_t i = 0u; i < 3u; ++i) {
@@ -908,11 +915,15 @@ vkr_internal VkrBakeryJson *vkr_bake_recipe_record(VkrBake *bake,
   } else {
     vkr_bakery_json_set(arena, recipe, "bounds", vkr_bakery_json_null(arena));
   }
-  VkrBakeryJson *grid = vkr_bakery_json_array(arena);
-  for (uint32_t i = 0u; i < 3u; ++i) {
-    vkr_bakery_json_append(grid, vkr_bakery_json_int(arena, args->grid[i]));
+  if (args->has_grid) {
+    VkrBakeryJson *grid = vkr_bakery_json_array(arena);
+    for (uint32_t i = 0u; i < 3u; ++i) {
+      vkr_bakery_json_append(grid, vkr_bakery_json_int(arena, args->grid[i]));
+    }
+    vkr_bakery_json_set(arena, recipe, "grid", grid);
+  } else {
+    vkr_bakery_json_set(arena, recipe, "grid", vkr_bakery_json_null(arena));
   }
-  vkr_bakery_json_set(arena, recipe, "grid", grid);
   vkr_bakery_json_set(arena, recipe, "voxel_size",
                       args->has_voxel_size
                           ? vkr_bakery_json_float(arena, args->voxel_size)
@@ -1294,8 +1305,7 @@ vkr_internal const char *vkr_bake_value(char **argv, int argc, int *index) {
 }
 
 vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
-  VkrBakeDiffuse args = {.grid = {4, 4, 4},
-                         .face_size = 16,
+  VkrBakeDiffuse args = {.face_size = 16,
                          .samples = 64,
                          .max_depth = 12,
                          .seed = 1,
@@ -1323,9 +1333,9 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
       ok = args.has_bounds =
           vkr_bake_parse_numbers(argv, argc, &i, 6u, args.bounds);
     } else if (!strcmp(flag, "--grid")) {
-      ok = vkr_bake_parse_integer(argv, argc, &i, &grid[0]) &&
-           vkr_bake_parse_integer(argv, argc, &i, &grid[1]) &&
-           vkr_bake_parse_integer(argv, argc, &i, &grid[2]);
+      ok = args.has_grid = vkr_bake_parse_integer(argv, argc, &i, &grid[0]) &&
+                           vkr_bake_parse_integer(argv, argc, &i, &grid[1]) &&
+                           vkr_bake_parse_integer(argv, argc, &i, &grid[2]);
       MemCopy(args.grid, grid, sizeof(grid));
     } else if (!strcmp(flag, "--voxel-size")) {
       ok = args.has_voxel_size =

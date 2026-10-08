@@ -9,6 +9,16 @@ extern "C" {
 #define VKR_BAKE_VOXEL_MAX_PROBES 256u
 #define VKR_BAKE_VOXEL_MAX_OCCUPANCY_COUNT 8000000u
 #define VKR_BAKE_VOXEL_DEFAULT_SIZE_FRACTION 0.25f
+/* A fitted grid is never finer than this spacing in meters: diffuse
+   irradiance changes little within a meter, so finer probes in a small scene
+   only add bake time. */
+#define VKR_BAKE_VOXEL_FIT_MIN_SPACING 1.0f
+/* A fitted grid has at least four probes per axis. Probes sit half a spacing
+   inside the bounds, and the full-cell proof reaches one voxel past a cell
+   into the dilated boundary, so where geometry lies on a bounds face (a
+   room's floor at the bottom of geometry-derived bounds) the outer cell on
+   that side never proves clear. Four probes leave an inner cell layer. */
+#define VKR_BAKE_VOXEL_FIT_MIN_DIMENSION 4u
 
 /** `probe_dimensions` has at most `VKR_BAKE_VOXEL_MAX_PROBES` total nodes. */
 typedef struct VkrBakeVoxelGridDesc {
@@ -40,6 +50,16 @@ typedef struct VkrBakeVoxelResult {
   uint32_t *cell_region_ids;
   uint32_t cell_count;
 } VkrBakeVoxelResult;
+
+/**
+ * Fits probe dimensions to `bounds` when the recipe names no grid: the
+ * finest near-cubic spacing, at least VKR_BAKE_VOXEL_FIT_MIN_SPACING, whose
+ * grid of at least VKR_BAKE_VOXEL_FIT_MIN_DIMENSION probes per axis holds at
+ * most VKR_BAKE_VOXEL_MAX_PROBES probes. False when `bounds` lacks a finite
+ * positive extent on every axis.
+ */
+bool8_t vkr_bake_voxels_fit_grid(VkrBakeAabb bounds,
+                                 uint32_t out_dimensions[3]);
 
 /**
  * Conservative room classification. A true entry must cover opaque materials,

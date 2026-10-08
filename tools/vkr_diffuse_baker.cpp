@@ -41,8 +41,10 @@ namespace fs = std::filesystem;
 namespace {
 struct Options {
   const char *scene = nullptr;
-  VkrBakeVoxelGridDesc grid = {{}, {4, 4, 4}, 0.0f};
+  /* Without --grid, find_rooms fits the grid to the bounds. */
+  VkrBakeVoxelGridDesc grid = {{}, {0, 0, 0}, 0.0f};
   bool explicit_bounds = false;
+  bool explicit_grid = false;
   bool inspect = false;
   const char *output = nullptr;
   const char *manifest = nullptr;
@@ -68,7 +70,8 @@ bool integer(const char *text, uint32_t *out) {
 void usage() {
   std::fprintf(stderr, "Usage: vkr_diffuse_baker --scene scene.json --inspect "
                        "[--bounds minx miny minz maxx maxy maxz] [--grid x y "
-                       "z] [--voxel-size meters]\n"
+                       "z (default: fitted to the bounds)] [--voxel-size "
+                       "meters]\n"
                        "Bake: --output file.vkdv [--manifest file.json] "
                        "[--face-size 16] [--samples 64]\n"
                        "      [--max-depth 12] [--seed 1] [--photons 1000000] "
@@ -84,6 +87,7 @@ bool parse(int argc, char **argv, Options *out) {
       for (unsigned a = 0; a < 3; ++a)
         if (!integer(argv[++i], &out->grid.probe_dimensions[a]))
           return false;
+      out->explicit_grid = true;
     } else if (std::strcmp(argv[i], "--bounds") == 0 && i + 6 < argc) {
       float values[6];
       for (float &v : values)
@@ -127,15 +131,18 @@ bool parse(int argc, char **argv, Options *out) {
   const uint64_t probe_count = (uint64_t)out->grid.probe_dimensions[0] *
                                out->grid.probe_dimensions[1] *
                                out->grid.probe_dimensions[2];
+  const bool grid_valid =
+      !out->explicit_grid || (out->grid.probe_dimensions[0] >= 2 &&
+                              out->grid.probe_dimensions[1] >= 2 &&
+                              out->grid.probe_dimensions[2] >= 2 &&
+                              out->grid.probe_dimensions[0] <= 256 &&
+                              out->grid.probe_dimensions[1] <= 256 &&
+                              out->grid.probe_dimensions[2] <= 256 &&
+                              probe_count <= VKR_BAKE_VOXEL_MAX_PROBES);
   return out->scene && (out->inspect || out->output) && out->face_size > 0 &&
          out->face_size <= 32 && out->samples > 0 && out->samples <= 65536 &&
          out->max_depth > 0 && out->max_depth <= 64 &&
-         out->photons <= 16000000 && out->grid.probe_dimensions[0] >= 2 &&
-         out->grid.probe_dimensions[1] >= 2 &&
-         out->grid.probe_dimensions[2] >= 2 &&
-         out->grid.probe_dimensions[0] <= 256 &&
-         out->grid.probe_dimensions[1] <= 256 &&
-         out->grid.probe_dimensions[2] <= 256 && probe_count <= 256 &&
+         out->photons <= 16000000 && grid_valid &&
          (!out->output || fs::u8path(out->output).extension() == ".vkdv");
 }
 
@@ -482,6 +489,11 @@ bool find_rooms(const Options &options, VkrBakeScene &scene, Arena *arena,
                      ? "Correct --bounds so every minimum is below its maximum."
                      : "The scene geometry does not enclose a 3D volume; "
                        "choose an enclosed room scene for baking.");
+    return false;
+  }
+  if (!options.explicit_grid &&
+      !vkr_bake_voxels_fit_grid(grid.bounds, grid.probe_dimensions)) {
+    std::fprintf(stderr, "Fitting the probe grid to the bounds failed\n");
     return false;
   }
   if (grid.voxel_size == 0.0f) {

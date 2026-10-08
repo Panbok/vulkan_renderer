@@ -263,10 +263,7 @@ static void *editor_bakery_worker(void *argument) {
     arguments[count++] = job->output;
     arguments[count++] = "--manifest";
     arguments[count++] = manifest;
-    arguments[count++] = "--grid";
-    arguments[count++] = "4";
-    arguments[count++] = "4";
-    arguments[count++] = "4";
+    /* No --grid: the baker fits the probe grid to the scene (ADR-054). */
     arguments[count++] = "--face-size";
     arguments[count++] = "16";
     arguments[count++] = "--samples";

@@ -7,10 +7,12 @@ extern "C" {
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 }
+#include "bake/vkr_bake_bvh.h"
 #include "bake/vkr_bake_lightmap.h"
 #include "bake/vkr_bake_material.h"
 #include "bake/vkr_bake_mesh_decode.h"
 #include "bake/vkr_bake_scene.h"
+#include "bake/vkr_bake_voxels.h"
 #include "mesh_cooked_tests.h"
 
 #include <assert.h>
@@ -19,6 +21,7 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -28,7 +31,8 @@ extern "C" {
  * texel is claimed once. Page composition keeps each rectangle's fill inside
  * it, the page encoding keeps HDR values above one, and a lightmap set file
  * round-trips while a corrupted payload or malformed table is rejected. A
- * scene's blockout stairs load as bake geometry. */
+ * scene's blockout stairs load as bake geometry. A diffuse-volume grid fitted
+ * to a level's bounds finds an interpolation cell in every room. */
 
 namespace {
 
@@ -968,6 +972,140 @@ void test_bake_scene_leaves_out_moving_brushes() {
   printf("  test_bake_scene_leaves_out_moving_brushes PASSED\n");
 }
 
+/* Appends the twelve triangles of an axis-aligned box, wound so that every
+   geometric normal faces out of the box. */
+void append_box(std::vector<VkrBakeTriangle> *triangles, Vec3 min, Vec3 max) {
+  /* cross(u, v) is +axis, so the max side keeps the u-then-v corner order
+     and the min side reverses it. */
+  const uint32_t order[2][6] = {{0u, 2u, 1u, 0u, 3u, 2u},
+                                {0u, 1u, 2u, 0u, 2u, 3u}};
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    const uint32_t u = (axis + 1u) % 3u;
+    const uint32_t v = (axis + 2u) % 3u;
+    for (uint32_t side = 0u; side < 2u; ++side) {
+      Vec3 corners[4];
+      for (uint32_t corner = 0u; corner < 4u; ++corner) {
+        const bool8_t high_u = corner == 1u || corner == 2u;
+        const bool8_t high_v = corner >= 2u;
+        corners[corner] = vec3_zero();
+        corners[corner].elements[axis] =
+            side ? max.elements[axis] : min.elements[axis];
+        corners[corner].elements[u] =
+            high_u ? max.elements[u] : min.elements[u];
+        corners[corner].elements[v] =
+            high_v ? max.elements[v] : min.elements[v];
+      }
+
+      Vec3 normal = vec3_zero();
+      normal.elements[axis] = side ? 1.0f : -1.0f;
+      for (uint32_t triangle = 0u; triangle < 2u; ++triangle) {
+        VkrBakeTriangle face = {};
+        for (uint32_t vertex = 0u; vertex < 3u; ++vertex) {
+          face.vertex[vertex].position =
+              corners[order[side][triangle * 3u + vertex]];
+          face.vertex[vertex].normal = normal;
+        }
+        triangles->push_back(face);
+      }
+    }
+  }
+}
+
+/* Classifies rooms on `desc` with the baker's default voxel size and returns
+   the valid interpolation cells, collecting their room regions. */
+uint32_t count_valid_room_cells(const VkrBakeBvh *bvh,
+                                VkrBakeVoxelGridDesc desc, Arena *arena,
+                                std::set<uint32_t> *out_regions) {
+  const bool8_t blocks_rooms[1] = {true_v};
+  const Vec3 extent = vec3_sub(desc.bounds.max, desc.bounds.min);
+  desc.voxel_size = fminf(extent.x / desc.probe_dimensions[0],
+                          fminf(extent.y / desc.probe_dimensions[1],
+                                extent.z / desc.probe_dimensions[2])) *
+                    VKR_BAKE_VOXEL_DEFAULT_SIZE_FRACTION;
+  VkrBakeVoxelResult rooms = {};
+  const bool8_t built =
+      vkr_bake_voxels_build(bvh, blocks_rooms, 1u, desc, arena, &rooms);
+  assert(built);
+  (void)built;
+
+  uint32_t valid = 0u;
+  for (uint32_t cell = 0u; cell < rooms.cell_count; ++cell) {
+    if (rooms.cell_region_ids[cell]) {
+      ++valid;
+      out_regions->insert(rooms.cell_region_ids[cell]);
+    }
+  }
+  return valid;
+}
+
+/* Four 12 m rooms in a row, 4 m tall behind 0.2 m walls, stand for a large
+   indoor level. The grid fitted to the level's bounds puts an interpolation
+   cell inside every room. The fixed 4 x 4 x 4 grid it replaced spaced probes
+   a room apart, so no cell had its eight probes in one room and the bake
+   skipped the volume. */
+void test_fitted_volume_grid_finds_every_room() {
+  printf("  test_fitted_volume_grid_finds_every_room...\n");
+  const float32_t wall = 0.2f;
+  const float32_t length = 48.0f;
+  const float32_t height = 4.0f;
+  const float32_t depth = 12.0f;
+  std::vector<VkrBakeTriangle> triangles;
+  append_box(&triangles, vec3_new(0.0f, 0.0f, 0.0f),
+             vec3_new(length, wall, depth));
+  append_box(&triangles, vec3_new(0.0f, height - wall, 0.0f),
+             vec3_new(length, height, depth));
+  append_box(&triangles, vec3_new(0.0f, 0.0f, 0.0f),
+             vec3_new(length, height, wall));
+  append_box(&triangles, vec3_new(0.0f, 0.0f, depth - wall),
+             vec3_new(length, height, depth));
+  for (uint32_t i = 0u; i <= 4u; ++i) {
+    const float32_t x = 12.0f * (float32_t)i;
+    const float32_t low = i == 0u ? 0.0f : x - 0.5f * wall;
+    const float32_t high = i == 4u ? length : x + 0.5f * wall;
+    append_box(&triangles, vec3_new(low, 0.0f, 0.0f),
+               vec3_new(high, height, depth));
+  }
+
+  Arena *arena = arena_create(MB(64), MB(1));
+  VkrBakeBvh bvh = {};
+  const VkrBakeGeometry geometry = {triangles.data(),
+                                    (uint32_t)triangles.size()};
+  const bool8_t built = vkr_bake_bvh_build(geometry, arena, &bvh);
+  assert(built);
+  (void)built;
+
+  VkrBakeVoxelGridDesc fitted = {};
+  fitted.bounds = bvh.nodes[0].bounds;
+  const bool8_t fit =
+      vkr_bake_voxels_fit_grid(fitted.bounds, fitted.probe_dimensions);
+  assert(fit);
+  (void)fit;
+  const uint32_t probes = fitted.probe_dimensions[0] *
+                          fitted.probe_dimensions[1] *
+                          fitted.probe_dimensions[2];
+  assert(probes <= VKR_BAKE_VOXEL_MAX_PROBES);
+  (void)probes;
+  std::set<uint32_t> fitted_regions;
+  const uint32_t fitted_cells =
+      count_valid_room_cells(&bvh, fitted, arena, &fitted_regions);
+  assert(fitted_cells > 0u);
+  assert(fitted_regions.size() == 4u);
+  (void)fitted_cells;
+
+  VkrBakeVoxelGridDesc fixed = fitted;
+  fixed.probe_dimensions[0] = 4u;
+  fixed.probe_dimensions[1] = 4u;
+  fixed.probe_dimensions[2] = 4u;
+  std::set<uint32_t> fixed_regions;
+  const uint32_t fixed_cells =
+      count_valid_room_cells(&bvh, fixed, arena, &fixed_regions);
+  assert(fixed_cells == 0u);
+  (void)fixed_cells;
+
+  arena_destroy(arena);
+  printf("  test_fitted_volume_grid_finds_every_room PASSED\n");
+}
+
 } // namespace
 
 bool32_t run_lightmap_bake_tests(void) {
@@ -987,6 +1125,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_bake_material_accepts_roughness_bound();
   test_bake_scene_builds_blockout_stairs();
   test_bake_scene_leaves_out_moving_brushes();
+  test_fitted_volume_grid_finds_every_room();
   printf("--- Lightmap Bake Tests Completed ---\n");
   return true_v;
 }

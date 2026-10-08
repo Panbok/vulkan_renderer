@@ -94,6 +94,18 @@ flood-filled from the bounds' faces, so explicit `--bounds` must enclose the
 rooms' walls, floors and ceilings; then remaining empty components receive
 region IDs.
 
+Without `--grid`, the baker fits the grid to the bounds
+(`vkr_bake_voxels_fit_grid`): the finest near-cubic spacing, at least 1 m,
+whose grid of at least four probes per axis holds at most 256 probes. Probes
+sit half a spacing inside the bounds and the cell proof below reaches one
+voxel past the cell into the dilated boundary, so where geometry lies on a
+bounds face the outer cell on that side never proves clear; four probes leave
+an inner cell layer. The fixed 4 × 4 × 4 default used before 2026-10-08
+ignored the bounds. `test_fitted_volume_grid_finds_every_room` requires that
+a 48 × 4 × 12 m row of four rooms, which fits 16 × 4 × 4 probes at
+3 × 1 × 3 m, proves cells in every room, and that 4 × 4 × 4, which spaces
+its probes a room apart there, proves none; the test has not run yet.
+
 A region is retained only when a representative's nearest blocking boundary on
 all six axial rays is front-facing toward room air. Missing, grazing, mixed, or
 outward-facing boundaries reject the region. An interpolation cell is valid only
@@ -135,7 +147,8 @@ cells and takes the same path. The baker traces probes on worker threads; each p
 seed derives from its probe, pixel and sample, so the volume is byte-identical
 for any `--threads` value ([ADR-077](077-asset-build-system.md)). The baker refuses to bake an
 all-invalid volume, and such a volume would render like no volume. Open and
-exterior scenes such as Bistro at the default whole-scene grid take this path.
+exterior scenes such as Bistro took this path at the fixed 4 × 4 × 4 grid; no
+one has inspected Bistro at the fitted grid.
 
 ### Runtime and shader contract
 
@@ -232,6 +245,17 @@ Bistro bake-time target.
 Revisit the grid and artifact only after a measured need for more than 256
 probes, dynamic indirect lighting, sharper caustic reconstruction, or a
 cross-backend representation that preserves the same full-cell room proof.
+
+The first condition is met. A 25,000-entity indoor brush level of about
+350 × 30 × 250 m, with rooms 4 to 20 m wide, inspected at the fixed
+4 × 4 × 4 grid on 2026-10-08 as 64 probes, 0 valid, and 0 of 27 valid cells,
+so its bake skipped the volume. The fitted grid gives it 9 × 4 × 7 = 252
+probes at about 39 × 7.5 × 36 m, cells larger than any of its rooms, so no
+cell can lie inside one room. One volume of 256 probes cannot resolve rooms
+of that size across a level of that size; it needs about 1 to 2 m spacing in
+the rooms only, as the
+[sparse diffuse volumes proposal](../proposals/sparse-diffuse-volumes.md)
+places it.
 
 ## Code evidence
 

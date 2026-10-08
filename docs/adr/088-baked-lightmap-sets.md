@@ -464,7 +464,9 @@ texels per meter with deferred textures:
   `bake_scene` (`bakes.diffuse` and `bakes.lightmap`, 64 samples): 276
   triangles, 23 lightmapped brushes on one 1,024 page, keyed by their
   document ids; the lightmaps published in 3.4 s and the volume (39 valid
-  probes, 7 valid cells, two regions) in 5.2 s. Parity on that level at 2,048
+  probes, 7 valid cells, two regions, on the fixed 4 × 4 × 4 grid that
+  ADR-054's fitted grid of up to 256 probes replaced on 2026-10-08) in
+  5.2 s. Parity on that level at 2,048
   samples before sun shadows: -0.12% overall, sky -0.02%, lamps +0.31%
   (z = 0.95), sun -0.80%. Rebaking produced the same file digest.
 
