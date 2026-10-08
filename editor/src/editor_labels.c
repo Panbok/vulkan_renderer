@@ -43,6 +43,22 @@ typedef struct EditorLabelBuild {
 
 /* Iconic components in icon priority order: lights, then world types.
    Scripts are tags on an object and never give it an icon of their own. */
+/* Shapes, brushes and animated meshes are visible geometry, and connections,
+   terrain and spline pieces belong to an owner with its own icon: none needs
+   one. */
+static bool8_t editor_label_iconless(const VkrTypeDesc *type) {
+  return type == &vkr_scene_shape_type || type == &vkr_scene_animation_type ||
+         type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
+         type == &vkr_scene_io_connection_type ||
+         type == &vkr_scene_terrain_type ||
+         type == &vkr_scene_spline_point_type ||
+         type == &vkr_scene_spline_mesh_type ||
+         vkr_scene_world_type_registered(type);
+}
+
+/* The components whose entities can show an icon. Iconless types stay out
+   of the query: a level's brush faces alone are tens of thousands of
+   entities, and turning each down later cost about 8 ms a frame. */
 static uint32_t editor_label_components(const VkrScene *scene,
                                         VkrComponentTypeId *ids) {
   uint32_t count = 0u;
@@ -50,7 +66,7 @@ static uint32_t editor_label_components(const VkrScene *scene,
   ids[count++] = scene->comp_point_light;
   ids[count++] = scene->comp_rectangle_light;
   for (uint32_t i = 0; i < scene->type_count; ++i) {
-    if (!vkr_scene_world_type_registered(scene->types[i].type)) {
+    if (!editor_label_iconless(scene->types[i].type)) {
       ids[count++] = scene->types[i].id;
     }
   }
@@ -97,15 +113,7 @@ static bool8_t editor_label_kind(const VkrEditorUi *editor,
   }
   const VkrTypeDesc *type = NULL;
   for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
-    /* Shapes, brushes and animated meshes are visible geometry and need no
-       icon. */
-    if (type == &vkr_scene_shape_type || type == &vkr_scene_animation_type ||
-        type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
-        type == &vkr_scene_io_connection_type ||
-        type == &vkr_scene_terrain_type ||
-        type == &vkr_scene_spline_point_type ||
-        type == &vkr_scene_spline_mesh_type ||
-        vkr_scene_world_type_registered(type) ||
+    if (editor_label_iconless(type) ||
         !vkr_scene_get_typed(scene, entity, type)) {
       continue;
     }
@@ -250,8 +258,18 @@ static uint32_t editor_label_empties(const VkrScene *scene,
       parents[transform->parent.parts.index] = 1u;
     }
   }
+  /* A light or a built-in world component, iconless ones included, keeps
+     an entity from showing as empty: a brush face is no empty object. */
   VkrComponentTypeId ids[3 + VKR_SCENE_TYPE_MAX];
-  const uint32_t iconic = editor_label_components(scene, ids);
+  uint32_t iconic = 0u;
+  ids[iconic++] = scene->comp_directional_light;
+  ids[iconic++] = scene->comp_point_light;
+  ids[iconic++] = scene->comp_rectangle_light;
+  for (uint32_t i = 0; i < scene->type_count; ++i) {
+    if (!vkr_scene_world_type_registered(scene->types[i].type)) {
+      ids[iconic++] = scene->types[i].id;
+    }
+  }
   const VkrComponentTypeId drawn[] = {
       scene->comp_mesh_renderer, scene->comp_text3d, scene->comp_shape,
       scene->comp_physics_body, scene->comp_physics_collider};
