@@ -1,9 +1,11 @@
 #include "gameplay_player_test.h"
+#include "fps_module.h"
 #include "fps_player.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_simulation.h"
+#include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_script_host.h"
 #include <assert.h>
 #include <math.h>
@@ -386,6 +388,117 @@ static void test_player_unfocused_simulation(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+/* A static box body for a test level. */
+static VkrEntityId player_test_box(VkrScene *scene, Vec3 center, Vec3 half) {
+  const VkrEntityId entity = vkr_scene_create_entity(scene, NULL);
+  assert(vkr_scene_set_transform(scene, entity, center, vkr_quat_identity(),
+                                 vec3_one()));
+  VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
+  body.body.motion = VKR_PHYSICS_STATIC;
+  body.colliders[0].half_extent = half;
+  assert(vkr_scene_physics_apply(scene, entity, &body, NULL));
+  return entity;
+}
+
+/* A ladder (ADR-073): a sensor carrying the FPS module's fps_ladder in
+ * front of a wall the player faces. Oracle: holding forward for one second
+ * lifts the feet above 1.5 m at the 2.5 m/s climb speed; the same push
+ * against the bare wall leaves them on the floor, so the climb comes from
+ * the ladder, not a jump or the wall. */
+static void test_player_ladder(VkrAllocator *allocator, bool8_t ladder) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 48, 16, NULL));
+  InputState input = {0};
+  (void)player_test_box(&scene, vec3_new(0, -.5f, 0), vec3_new(20, .5f, 20));
+  (void)player_test_box(&scene, vec3_new(1.2f, 2, 0), vec3_new(.2f, 2, 2));
+  if (ladder) {
+    const VkrTypeDesc *type =
+        vkr_scene_world_type_named(string8_lit("fps_ladder"));
+    assert(type);
+    const VkrEntityId rungs = vkr_scene_create_entity(&scene, NULL);
+    assert(vkr_scene_set_transform(&scene, rungs, vec3_new(.7f, 2, 0),
+                                   vkr_quat_identity(), vec3_one()));
+    const FpsLadder settings = {.climb_speed = 2.5f};
+    assert(vkr_scene_set_typed(&scene, rungs, type, &settings));
+    const VkrPhysicsColliderDesc sensor = {.entity_id = rungs.u64,
+                                           .shape = VKR_PHYSICS_BOX,
+                                           .position = {.7f, 2, 0},
+                                           .rotation = {0, 0, 0, 1},
+                                           .scale = {1, 1, 1},
+                                           .half_extent = {.3f, 2, .6f},
+                                           .enabled = true_v};
+    assert(vkr_scene_physics_generated_set(&scene, 21u, rungs, &sensor, 1u,
+                                           true_v, NULL));
+  }
+  const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, entity, vec3_new(0, .1f, 0),
+                                 vkr_quat_identity(), vec3_one()));
+  PlayerTest test = {0};
+  FpsPlayer *const player = &test.player;
+  assert(player_attach(&test, &scene, &input, entity, 90, 0));
+  vkr_scene_physics_set_paused(&scene, false_v);
+  assert(fps_player_frame(test.ctx, player, 100, true_v) == 0);
+  player_command(player, 1, FPS_ACTION_FORWARD, true_v);
+  for (uint32_t tick = 0; tick < 60u; ++tick) {
+    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+  }
+  assert(!scene.simulation.faulted);
+  assert(ladder ? player->current_foot.y > 1.5f
+                : player->current_foot.y < 0.2f);
+  player_shutdown(&test);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
+/* A turning platform (ADR-084 movers): a kinematic floor turning 90 degrees
+ * a second about +Y under a player standing 1.5 m east of its axis. Oracle:
+ * after one second the player stands a quarter turn on, 1.5 m north (+X
+ * turns to -Z), and its yaw turned with it from 0 to -pi/2; a player the
+ * floor neither carries nor turns stays east, facing east. */
+static void test_player_turning_platform(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 49, 16, NULL));
+  InputState input = {0};
+  const VkrEntityId floor = vkr_scene_create_entity(&scene, NULL);
+  const VkrPhysicsColliderDesc box = {.entity_id = floor.u64,
+                                      .shape = VKR_PHYSICS_BOX,
+                                      .position = {0, -.25f, 0},
+                                      .rotation = {0, 0, 0, 1},
+                                      .scale = {1, 1, 1},
+                                      .half_extent = {3, .25f, 3},
+                                      .enabled = true_v};
+  assert(vkr_scene_physics_generated_set_kinematic(&scene, 22u, floor, &box, 1u,
+                                                   false_v, NULL));
+  const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, entity, vec3_new(1.5f, .05f, 0),
+                                 vkr_quat_identity(), vec3_one()));
+  PlayerTest test = {0};
+  FpsPlayer *const player = &test.player;
+  assert(player_attach(&test, &scene, &input, entity, 91, 0));
+  vkr_scene_physics_set_paused(&scene, false_v);
+  assert(fps_player_frame(test.ctx, player, 100, true_v) == 0);
+  /* Settle on the floor before it turns. */
+  for (uint32_t tick = 0; tick < 10u; ++tick) {
+    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+  }
+  const float32_t rate = 0.5f * VKR_PI;
+  for (uint32_t tick = 1; tick <= 60u; ++tick) {
+    const VkrQuat turn = vkr_quat_from_axis_angle(
+        vec3_new(0, 1, 0),
+        rate * (float32_t)(tick * VKR_SCENE_SIMULATION_FIXED_DT));
+    assert(vkr_scene_physics_generated_move(&scene, 22u, vec3_zero(), turn,
+                                            vec3_zero(), NULL));
+    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+  }
+  assert(!scene.simulation.faulted);
+  const FpsPlayerState *state = fps_player_state(test.ctx, player);
+  assert(state);
+  assert(fabsf(player->current_foot.x) < .2f &&
+         fabsf(player->current_foot.z + 1.5f) < .2f);
+  assert(fabsf(state->yaw + 0.5f * VKR_PI) < .1f);
+  player_shutdown(&test);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 static void test_player_authored_camera_mode(VkrAllocator *allocator) {
   VkrScene scene = {0};
   assert(vkr_scene_init(&scene, allocator, 1, 8, NULL));
@@ -426,6 +539,13 @@ bool32_t run_gameplay_player_tests(void) {
   VkrAllocator allocator = {.ctx = &memory};
   vkr_dmemory_allocator_create(&allocator);
   assert(vkr_script_host_init(&s_script_host, &allocator));
+  /* The FPS module's component types, as the editor registers them. */
+  const char *module_error = NULL;
+  assert(vkr_script_host_add_module(&s_script_host, vkr_module_fps,
+                                    &module_error));
+  test_player_ladder(&allocator, true_v);
+  test_player_ladder(&allocator, false_v);
+  test_player_turning_platform(&allocator);
   test_player_evaluated_transforms(&allocator);
   test_player_observer_bursts(&allocator);
   test_player_unfocused_simulation(&allocator);

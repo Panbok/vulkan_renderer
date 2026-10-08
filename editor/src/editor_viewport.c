@@ -12,6 +12,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* These controls own editor interaction only. The runtime validates and applies
@@ -2724,17 +2725,88 @@ static bool8_t place_in_subtree(const VkrScene *scene, VkrEntityId entity,
   return false_v;
 }
 
-/* The first solid collision surface along a segment, past any body of `skip`
-   and its descendants. Physics queries take a mutable scene but change none
-   of its state. */
+/* How far along unit `direction` from `origin` a ray leaves collider
+   `entity`: through its brush planes, else its world box; -1 when it cannot
+   tell. */
+static float32_t place_exit(const VkrScene *scene, VkrEntityId entity,
+                            Vec3 origin, Vec3 direction) {
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  const uint32_t count =
+      vkr_editor_brush_world_planes(scene, entity, planes, ArrayCount(planes));
+  float32_t exit = INFINITY;
+  for (uint32_t i = 0; i < count; ++i) {
+    const float32_t toward = vec3_dot(planes[i].normal, direction);
+    if (toward > 1.0e-6f) {
+      exit =
+          Min(exit, (planes[i].distance - vec3_dot(planes[i].normal, origin)) /
+                        toward);
+    }
+  }
+  if (count) {
+    return isfinite(exit) ? exit : -1.0f;
+  }
+  VkrBrushGeometry *scratch = malloc(sizeof(*scratch));
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  const bool8_t boxed =
+      scratch && vkr_editor_entity_world_box(scene, entity, scratch, &lo, &hi);
+  free(scratch);
+  if (!boxed) {
+    return -1.0f;
+  }
+  for (uint32_t axis = 0; axis < 3u; ++axis) {
+    const float32_t d = direction.elements[axis];
+    if (fabsf(d) > 1.0e-6f) {
+      const float32_t side = d > 0.0f ? hi.elements[axis] : lo.elements[axis];
+      exit = Min(exit, (side - origin.elements[axis]) / d);
+    }
+  }
+  return isfinite(exit) ? exit : -1.0f;
+}
+
+/* The first solid collision surface along a segment, past `skip` and its
+   descendants and past what the editor hides (Hide and Isolate), which is
+   no surface to place on. A collider of either is passed through where the
+   ray leaves it, since a brush shares its cell's body with its neighbours;
+   another body `skip` owns is ignored whole. Physics queries take a mutable
+   scene but change none of its state. */
 static bool8_t place_raycast(const VkrScene *scene, Vec3 origin,
                              Vec3 displacement, VkrEntityId skip,
                              VkrPhysicsRayHit *hit) {
   uint64_t ignored[VKR_PHYSICS_MAX_QUERY_IGNORES];
   VkrPhysicsQueryFilter filter = {.mask = UINT16_MAX,
                                   .ignored_entities = ignored};
+  const float32_t length = vec3_length(displacement);
+  const Vec3 direction =
+      length > 0.0f ? vec3_scale(displacement, 1.0f / length) : vec3_zero();
+  float32_t travelled = 0.0f;
+  uint32_t passes = 0u;
   while (vkr_scene_physics_raycast_query((VkrScene *)scene, origin,
                                          displacement, &filter, hit)) {
+    const VkrEntityId collider = {.u64 = hit->collider_entity_id
+                                             ? hit->collider_entity_id
+                                             : hit->entity_id};
+    if (!vkr_scene_editor_shown(scene, collider) ||
+        (skip.u64 && place_in_subtree(scene, collider, skip))) {
+      /* Start again where the ray leaves it; the fraction counts the whole
+         segment. */
+      const Vec3 at =
+          vec3_new(hit->position[0], hit->position[1], hit->position[2]);
+      const float32_t exit = place_exit(scene, collider, at, direction);
+      const float32_t step =
+          vec3_length(vec3_sub(at, origin)) + Max(exit, 0.0f) + 0.01f;
+      if (exit < 0.0f || ++passes > 16u || travelled + step >= length) {
+        return false_v;
+      }
+      travelled += step;
+      origin = vec3_add(origin, vec3_scale(direction, step));
+      displacement = vec3_scale(direction, length - travelled);
+      continue;
+    }
+    if (travelled > 0.0f) {
+      hit->fraction =
+          (travelled + hit->fraction * (length - travelled)) / length;
+    }
     const VkrEntityId owner = {.u64 = hit->entity_id};
     if (!skip.u64 || !place_in_subtree(scene, owner, skip)) {
       return true_v;

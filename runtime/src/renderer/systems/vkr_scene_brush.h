@@ -18,8 +18,9 @@
  * Under a `mover` (the nearest one at or above the brush), solid and clip
  * hulls join one kinematic body per mover instead of a cell, at most 32;
  * the mover's motion in play never rebuilds its brushes, and their own
- * edits wait until its evaluated pose clears. Trigger brushes and blockout
- * shapes under a mover keep their static bodies at rest.
+ * edits wait until its evaluated pose clears. A trigger brush under a mover
+ * owns a kinematic sensor that moves with it; blockout shapes under a mover
+ * keep their static bodies at rest.
  */
 
 /* Edge of the world cells that group brush collision, in meters. */

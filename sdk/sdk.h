@@ -70,7 +70,7 @@
 #include <stdio.h>
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 7u
+#define VKR_SDK_VERSION 8u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -427,6 +427,8 @@ typedef struct VkrCharacterState {
   Vec3 foot;
   Vec3 velocity;
   Vec3 ground_velocity;
+  /** The ground body's spin, radians per second about each world axis. */
+  Vec3 ground_angular_velocity;
   Vec3 ground_normal;
   VkrEntity ground_entity;
   VkrGround ground;
@@ -601,6 +603,7 @@ typedef struct VkrSdkTable {
   bool8_t (*alive)(VkrCtx *ctx, VkrEntity entity);
   bool8_t (*set_name)(VkrCtx *ctx, VkrEntity entity, const char *name);
   bool8_t (*set_parent)(VkrCtx *ctx, VkrEntity entity, VkrEntity parent);
+  VkrEntity (*parent)(VkrCtx *ctx, VkrEntity entity);
   bool8_t (*set_visible)(VkrCtx *ctx, VkrEntity entity, bool8_t visible);
   bool8_t (*visible)(VkrCtx *ctx, VkrEntity entity);
   bool8_t (*set_transform)(VkrCtx *ctx, VkrEntity entity,
@@ -845,6 +848,11 @@ static inline bool8_t vkr_set_name(VkrCtx *ctx, VkrEntity entity,
 static inline bool8_t vkr_set_parent(VkrCtx *ctx, VkrEntity entity,
                                      VkrEntity parent) {
   return ctx->sdk->set_parent(ctx, entity, parent);
+}
+
+/** The entity's parent, or VKR_ENTITY_NONE for a root or a dead entity. */
+static inline VkrEntity vkr_parent(VkrCtx *ctx, VkrEntity entity) {
+  return ctx->sdk->parent(ctx, entity);
 }
 
 static inline bool8_t vkr_set_visible(VkrCtx *ctx, VkrEntity entity,

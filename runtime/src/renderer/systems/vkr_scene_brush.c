@@ -1130,7 +1130,8 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
     return;
   }
   /* Collision: solid and clip join their cell, or their mover's kinematic
-     body; a trigger owns a sensor, which stays where it built. */
+     body; a trigger owns a sensor, which moves with its mover when it has
+     one. */
   const uint64_t old_cell = record->cell;
   const bool8_t old_member = record->mover.u64 && record->hull_count;
   record->cell = 0u;
@@ -1154,9 +1155,14 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
           .enabled = true_v,
       };
       const char *physics_error = NULL;
-      record->trigger_body = vkr_scene_physics_generated_set(
-          scene, brush_trigger_key(record->entity), record->entity, &hull, 1u,
-          true_v, &physics_error);
+      record->trigger_body =
+          record->mover.u64
+              ? vkr_scene_physics_generated_set_kinematic(
+                    scene, brush_trigger_key(record->entity), record->entity,
+                    &hull, 1u, true_v, &physics_error)
+              : vkr_scene_physics_generated_set(
+                    scene, brush_trigger_key(record->entity), record->entity,
+                    &hull, 1u, true_v, &physics_error);
       if (!record->trigger_body && physics_error) {
         log_warn("Scene: trigger brush collision failed: %s", physics_error);
       }
@@ -1278,9 +1284,9 @@ static void brush_rebuild_mover(VkrScene *scene, VkrSceneBrushes *state,
     return;
   }
   const char *error = NULL;
-  if (!vkr_scene_physics_generated_set_kinematic(scene, brush_mover_key(mover),
-                                                 mover, colliders,
-                                                 collider_count, &error)) {
+  if (!vkr_scene_physics_generated_set_kinematic(
+          scene, brush_mover_key(mover), mover, colliders, collider_count,
+          false_v, &error)) {
     log_warn("Scene: mover collision failed: %s", error ? error : "unknown");
   }
 }
@@ -1288,9 +1294,20 @@ static void brush_rebuild_mover(VkrScene *scene, VkrSceneBrushes *state,
 void vkr_scene_brush_mover_move(VkrScene *scene, VkrEntityId mover, Vec3 offset,
                                 VkrQuat rotation, Vec3 pivot) {
   /* A mover without solid brushes has no body; nothing collides to move. */
-  if (scene && scene->brushes) {
-    (void)vkr_scene_physics_generated_move(scene, brush_mover_key(mover),
-                                           offset, rotation, pivot, NULL);
+  const VkrSceneBrushes *state = scene ? scene->brushes : NULL;
+  if (!state) {
+    return;
+  }
+  (void)vkr_scene_physics_generated_move(scene, brush_mover_key(mover), offset,
+                                         rotation, pivot, NULL);
+  /* Its trigger brushes' sensors move with it. */
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    const BrushRecord *record = &state->records[i];
+    if (record->trigger_body && record->mover.u64 == mover.u64) {
+      (void)vkr_scene_physics_generated_move(scene,
+                                             brush_trigger_key(record->entity),
+                                             offset, rotation, pivot, NULL);
+    }
   }
 }
 

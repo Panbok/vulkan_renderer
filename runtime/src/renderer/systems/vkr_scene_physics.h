@@ -308,14 +308,15 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
                                         const VkrPhysicsColliderDesc *colliders,
                                         uint32_t collider_count, bool8_t sensor,
                                         const char **error);
-/* A kinematic generated body, such as a mover's brushes: it rests at the
-   identity pose and moves to the pose vkr_scene_physics_generated_move set
-   at each step, so what stands on it rides. Replacing it keeps that pose;
-   a reset puts it back at rest. */
+/* A kinematic generated body, such as a mover's brushes or, with `sensor`,
+   a trigger brush under a mover: it rests at the identity pose and moves to
+   the pose vkr_scene_physics_generated_move set at each step, so what
+   stands on it rides and what it moves over enters it. Replacing it keeps
+   that pose; a reset puts it back at rest. */
 bool8_t vkr_scene_physics_generated_set_kinematic(
     VkrScene *scene, uint64_t key, VkrEntityId entity,
     const VkrPhysicsColliderDesc *colliders, uint32_t collider_count,
-    const char **error);
+    bool8_t sensor, const char **error);
 /* The pose kinematic generated body `key` moves to from the next step: a
    rigid motion of its world-space colliders, turned by `rotation` about the
    world point `pivot` and then moved by `position`. */

@@ -3684,9 +3684,9 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
 bool8_t vkr_scene_physics_generated_set_kinematic(
     VkrScene *scene, uint64_t key, VkrEntityId entity,
     const VkrPhysicsColliderDesc *colliders, uint32_t collider_count,
-    const char **error) {
+    bool8_t sensor, const char **error) {
   return physics_generated_add(scene, key, entity, colliders, collider_count,
-                               false_v, true_v, error);
+                               sensor, true_v, error);
 }
 
 bool8_t vkr_scene_physics_generated_move(VkrScene *scene, uint64_t key,

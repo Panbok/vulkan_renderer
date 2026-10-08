@@ -441,7 +441,7 @@ static void physics_test_generated_kinematic(VkrAllocator *allocator) {
                                       .half_extent = {4.0f, 0.5f, 4.0f},
                                       .enabled = true_v};
   assert(vkr_scene_physics_generated_set_kinematic(&scene, 7u, floor, &box, 1u,
-                                                   &error));
+                                                   false_v, &error));
   assert(fabsf(physics_test_floor_top(&scene, 0.5f, 0.5f)) < 1e-3f);
   /* Only a kinematic generated body takes a target. */
   assert(!vkr_scene_physics_generated_move(
@@ -508,7 +508,7 @@ static void physics_test_generated_turn(VkrAllocator *allocator) {
                                       .half_extent = {1.0f, 1.0f, 0.05f},
                                       .enabled = true_v};
   assert(vkr_scene_physics_generated_set_kinematic(&scene, 8u, door, &box, 1u,
-                                                   &error));
+                                                   false_v, &error));
   const VkrSceneSimulationCallbacks callbacks = {.after_tick =
                                                      physics_test_after_tick};
   assert(vkr_scene_simulation_configure(&scene, &callbacks, &error));

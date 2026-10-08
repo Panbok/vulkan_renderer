@@ -600,9 +600,11 @@ by its box.
 Hide (H, the Outliner eye, Cmd `hide`) hides the selection in the editor
 only, Shift+H (`isolate`) shows only it and Alt+H (`unhide`) shows
 everything again, as Blender does. A hidden object neither draws nor picks,
-with everything under it, and the magnet and Alt+click face picks skip it;
-its saved Visibility, the journal and the document never change, and Play
-draws everything. The editor keeps up to 256 objects for the session and
+with everything under it; the magnet, Alt+click face picks, surface
+placement, Snap (End) and a drawn box's base pass through it, a ray starting
+again where it leaves the brush or the object's box. Level checks and
+`query.*` still see it, because the game has it. Its saved Visibility, the
+journal and the document never change, and Play draws everything. The editor keeps up to 256 objects for the session and
 sends them in a `VkrSampleHideRequest`; each container takes them with
 `vkr_scene_set_editor_hidden`, which resyncs renderables only when the set
 changes. Visibility in Details, and `entity.set visible`, still hide an
@@ -869,10 +871,13 @@ instead of a cell, at most 32 hulls; the hulls stay in world space at rest
 and the body's kinematic target is the mover's motion from rest, a turn
 about its world pivot and then its world offset
 (`vkr_scene_physics_generated_move` turns about the pivot in the body's
-rebased frame), so a character on it reads its ground velocity. A character
-on a turning platform is not turned with it. The mover's motion never rebuilds its
-brushes, and their own edits wait until its evaluated pose clears; trigger
-brushes and blockout shapes under a mover keep their static bodies at rest.
+rebased frame), so a character on it reads its ground velocity and spin, and
+the FPS player rides and turns with it (ADR-073). A trigger brush under a
+mover owns a kinematic sensor that the same motion moves
+(`vkr_scene_brush_mover_move`), so a trigger riding a lift moves with it
+instead of firing again where the lift started. The mover's motion never
+rebuilds its brushes, and their own edits wait until its evaluated pose
+clears; blockout shapes under a mover keep their static bodies at rest.
 A reset rebuilds kinematic generated bodies at rest; an origin rebase moves
 each generated body's origin, and targets stay offsets from rest. Generated
 body keys: cells set bit 63; trigger brushes bits 63 and 62; blockout shapes

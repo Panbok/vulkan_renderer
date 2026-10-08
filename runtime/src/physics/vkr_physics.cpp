@@ -474,7 +474,7 @@ static s_CharacterSlot *character_lookup(VkrPhysicsWorld *world,
   return &world->characters[index];
 }
 
-static void character_read(const s_CharacterSlot &slot,
+static void character_read(VkrPhysicsWorld *world, const s_CharacterSlot &slot,
                            VkrPhysicsCharacterState *state) {
   const JPH::CharacterVirtual &character = *slot.character;
   *state = {};
@@ -482,6 +482,12 @@ static void character_read(const s_CharacterSlot &slot,
   store_vec(character.GetPosition(), state->foot_position);
   store_vec(character.GetLinearVelocity(), state->velocity);
   store_vec(character.GetGroundVelocity(), state->ground_velocity);
+  /* A turning platform's spin, so what stands on it can turn with it. */
+  const JPH::BodyID ground = character.GetGroundBodyID();
+  if (!ground.IsInvalid()) {
+    store_vec(world->system.GetBodyInterfaceNoLock().GetAngularVelocity(ground),
+              state->ground_angular_velocity);
+  }
   store_vec(character.GetGroundNormal(), state->ground_normal);
   state->ground_entity_id = character.GetGroundUserData();
   switch (character.GetGroundState()) {
@@ -612,7 +618,7 @@ vkr_physics_character_get_state(VkrPhysicsWorld *world,
     return fail(world, "Invalid character state query");
   }
   slot->character->UpdateGroundVelocity();
-  character_read(*slot, state);
+  character_read(world, *slot, state);
   return true_v;
 }
 
@@ -667,7 +673,7 @@ vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
       return fail(world, "Character contact capacity exceeded; reset required");
     }
     VkrPhysicsCharacterState result;
-    character_read(*slot, &result);
+    character_read(world, *slot, &result);
     if (!finite_vector(result.foot_position, 3) ||
         !finite_vector(result.velocity, 3)) {
       world->faulted = true_v;

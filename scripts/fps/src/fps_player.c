@@ -5,8 +5,10 @@
 
 #define PLAYER_PITCH_LIMIT 1.45f
 #define PLAYER_LOOK_SCALE 0.0025f
-/* How far the use key reaches from the eye, in metres. */
+/* How far the use key reaches from the eye, in metres, and how many parents
+   up from the hit brush it looks for a button. */
 #define PLAYER_USE_REACH 2.0f
+#define PLAYER_USE_DEPTH 8u
 /* How far ahead of the chest a ladder is found, and how far down the view
    looks before forward climbs down. */
 #define PLAYER_LADDER_REACH 0.6f
@@ -143,10 +145,15 @@ static void player_use(VkrCtx *ctx, FpsPlayer *player,
                    &hit)) {
     return;
   }
-  const VkrEntity target =
-      vkr_component_get(ctx, hit.collider, player->button_type) ? hit.collider
-                                                                : hit.entity;
-  if (!vkr_component_get(ctx, target, player->button_type)) {
+  /* The hit brush, or an object above it, carries the button. */
+  VkrEntity target = vkr_entity_valid(hit.collider) ? hit.collider : hit.entity;
+  for (uint32_t depth = 0; vkr_entity_valid(target) &&
+                           !vkr_component_get(ctx, target, player->button_type);
+       ++depth) {
+    target =
+        depth < PLAYER_USE_DEPTH ? vkr_parent(ctx, target) : VKR_ENTITY_NONE;
+  }
+  if (!vkr_entity_valid(target)) {
     return;
   }
   const VkrIoValue activator = {.kind = VKR_IO_ENTITY,
@@ -332,6 +339,17 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
     move.velocity.y = jump && !crouch_requested && !motor.crouched
                           ? player->settings.jump_speed
                           : motor.ground_velocity.y;
+    /* What it stands on carries it, and a turning floor turns it, the view
+       too: yaw runs from +X toward +Z, against a spin about +Y. */
+    move.velocity.x += motor.ground_velocity.x;
+    move.velocity.z += motor.ground_velocity.z;
+    const float32_t turn = -motor.ground_angular_velocity.y * dt;
+    if (turn != 0.0f) {
+      state->yaw = remainderf(state->yaw + turn, 6.28318530718f);
+      player->render_yaw =
+          remainderf(player->render_yaw + turn, 6.28318530718f);
+      player->facing = remainderf(player->facing + turn, 6.28318530718f);
+    }
   }
   if (!vkr_character_move(ctx, player->entity, &move, &motor)) {
     return player_fail(player, vkr_last_error(ctx));

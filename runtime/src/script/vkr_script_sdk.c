@@ -375,6 +375,16 @@ static bool8_t sdk_set_name(VkrCtx *ctx, VkrEntity entity, const char *name) {
              string8_create_from_cstr((const uint8_t *)name, strlen(name)));
 }
 
+static VkrEntity sdk_parent(VkrCtx *ctx, VkrEntity entity) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScene *scene = sdk_scene_of(script, entity);
+  const SceneTransform *transform =
+      scene ? vkr_entity_get_component(scene->world, sdk_id(entity),
+                                       scene->comp_transform)
+            : NULL;
+  return transform ? (VkrEntity){.id = transform->parent.u64} : VKR_ENTITY_NONE;
+}
+
 static bool8_t sdk_set_parent(VkrCtx *ctx, VkrEntity entity, VkrEntity parent) {
   ScriptCtx *script = sdk_ctx(ctx);
   if (sdk_deferred(script, entity, true_v)) {
@@ -1186,6 +1196,9 @@ static void sdk_character_state_from(VkrCharacterState *out,
       .ground_velocity =
           vec3_new(state->ground_velocity[0], state->ground_velocity[1],
                    state->ground_velocity[2]),
+      .ground_angular_velocity = vec3_new(state->ground_angular_velocity[0],
+                                          state->ground_angular_velocity[1],
+                                          state->ground_angular_velocity[2]),
       .ground_normal =
           vec3_new(state->ground_normal[0], state->ground_normal[1],
                    state->ground_normal[2]),
@@ -1747,6 +1760,7 @@ void script_sdk_table(VkrSdkTable *table) {
       .alive = sdk_alive,
       .set_name = sdk_set_name,
       .set_parent = sdk_set_parent,
+      .parent = sdk_parent,
       .set_visible = sdk_set_visible,
       .visible = sdk_visible,
       .set_transform = sdk_set_transform,

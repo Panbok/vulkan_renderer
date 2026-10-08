@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-04
+updated: 2026-10-08
 authority: adr
 ---
 
@@ -110,6 +110,10 @@ NULL when the version differs; there is no compatibility with older modules.
     runs it from an hour and `vkr_set_light_group` scales a light group in
     every attached container, all until the simulation resets
     ([ADR-090](090-time-of-day.md)); SDK version 7 added them.
+  - `vkr_parent` reads an entity's parent, and `VkrCharacterState` carries
+    `ground_angular_velocity`, the spin of the body a character stands on,
+    so a module can turn its player with a turning platform; SDK version 8
+    added them.
   - The host refreshes changed transforms and child lists before reads and
     after frame hooks; there is no `update_transforms` call.
 - **Structural edits in ticks.** In `fixed_update` and `late_fixed_update`,

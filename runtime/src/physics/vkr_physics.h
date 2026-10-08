@@ -60,6 +60,8 @@ typedef struct VkrPhysicsCharacterState {
   float32_t foot_position[3];
   float32_t velocity[3];
   float32_t ground_velocity[3];
+  /* The ground body's spin, radians per second about each world axis. */
+  float32_t ground_angular_velocity[3];
   float32_t ground_normal[3];
   uint64_t ground_entity_id;
   VkrPhysicsCharacterGround ground;
