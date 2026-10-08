@@ -418,6 +418,18 @@ static bool8_t level_step(LevelGrid *grid, const LevelNode *a,
       Max(a->position.y, b->position.y) - Min(a->position.y, b->position.y);
   if (drop > grid->capsule->step_up) {
     const LevelNode *lower = a->position.y < b->position.y ? a : b;
+    const LevelNode *higher = lower == a ? b : a;
+    /* The capsule walks off the higher floor at its own height, so its top
+       must fit over the lower one: not into a ceiling's edge, as from a
+       stair's steps out through the hole it climbs into. */
+    const float32_t r = grid->capsule->radius * 0.9f;
+    const Vec3 head = vec3_new(lower->position.x,
+                               higher->position.y + grid->capsule->height -
+                                   grid->capsule->radius,
+                               lower->position.z);
+    if (level_blocked(grid->scene, head, r)) {
+      return false_v;
+    }
     const Vec3 top = vec3_new(lower->position.x, knee, lower->position.z);
     return !level_ray(grid->scene, top,
                       vec3_new(0.0f, lower->position.y + 0.1f - knee, 0.0f),

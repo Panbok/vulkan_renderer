@@ -478,10 +478,16 @@ are:
   first;
 - `curved`: steps along an arc around a center beside the stairs, its inner
   radius `radius`, sweeping `turn` degrees;
-- `spiral`: steps around a pole of `radius`, turning up to 92,160 degrees.
-  Past one turn its steps float, each at least a rise thick, so no step
-  buries the flight below it. `brush.stairs` turns a spiral 22.5 degrees a
-  step, at least once, unless `sweep` says otherwise.
+- `spiral`: steps around a pole of `radius`, turning up to 92,160 degrees,
+  ending on a landing at the top that runs a width along the turn from the
+  top step's far edge, so the climb leaves onto a tread as deep as it is
+  wide. Past one turn its steps float, each at least a rise thick, so no
+  step buries the flight below it. `brush.stairs` turns a spiral 22.5
+  degrees a step, at least once, unless `sweep` says otherwise; its `to` is
+  the rim where the climb ends (the top step ends on the radius through it)
+  and an asked `width` leaves the pole the rest of that radius. The top had
+  ended wherever the step count left it, 225 degrees past `to` in the
+  Black Mesa test level, with no landing.
 
 Steps share the height evenly, each at most `step_height` high, 4,096 at
 most, on stairs at most 1,024 m high. They are solid down to the floor, or
@@ -727,7 +733,9 @@ blocks. A floor is passable crouched when only the crouched capsule
 (`crouch_height`) fits, under a ceiling or beside its edge. Neighbouring
 passable floors connect when the step up is within `step_up`, a drop is at
 most 4 m and falls clear to the lower floor rather than through the slab
-under the higher one, and nothing blocks the way at knee height. The floors
+under the higher one, with the capsule's top fitting over the lower floor
+at the higher one's height (not a ceiling edge beside a stair hole), and
+nothing blocks the way at knee height. The floors
 at the foot and the top of each ladder connect both ways: a trigger brush
 carrying the FPS module's `fps_ladder` joins the passable floor nearest its
 foot, within 1 m and the capsule radius of its box, to the highest one
@@ -890,7 +898,11 @@ rebased frame), so a character on it reads its ground velocity and spin, and
 the FPS player rides and turns with it (ADR-073). A trigger brush under a
 mover owns a kinematic sensor that the same motion moves
 (`vkr_scene_brush_mover_move`), so a trigger riding a lift moves with it
-instead of firing again where the lift started. The mover's motion never
+instead of firing again where the lift started. A trigger ignores bodies of
+its own ancestors (`io_holds` in
+[vkr_io_router.c](../../runtime/src/script/vkr_io_router.c)): a ride
+trigger inside a tram car had fired for the car's own body at session
+start and sent the empty car away. The mover's motion never
 rebuilds its brushes, and their own edits wait until its evaluated pose
 clears; blockout shapes under a mover keep their static bodies at rest.
 A reset rebuilds kinematic generated bodies at rest; an origin rebase moves
