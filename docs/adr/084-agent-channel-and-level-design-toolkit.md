@@ -93,8 +93,9 @@ thread during the editor's build.
 | Operation | Purpose |
 |---|---|
 | `ops.list`, `editor.status` | The table, with whether each operation settles; loaded containers with their journal `revision`, selection, simulation, view, pending changes and what still rebuilds |
-| `scene.describe`, `entity.get`, `query.bounds` | Entities with ID, name, parent, component types, local pose and world bounds; one entity's components as descriptor JSON |
-| `entity.create`, `entity.set`, `entity.move`, `entity.delete`, `entity.parent` | Structure and pose; `entity.move` shifts by a world offset; delete with `recursive` deletes descendants first |
+| `scene.describe`, `entity.get`, `query.bounds` | Entities with ID, name, parent, component types, [tags](#tags), local pose and world bounds; one entity's components as descriptor JSON |
+| `entity.create`, `entity.set`, `entity.move`, `entity.delete`, `entity.parent` | Structure, pose and tags; `entity.move` shifts by a world offset; delete with `recursive` deletes descendants first |
+| `tag.list` | Each tag a scene's entities carry, with its count |
 | `component.add`, `component.set`, `component.remove` | Component values by descriptor property name, partial for `set` |
 | `batch` | Several write operations as one journal group |
 | `changes.list`, `changes.accept`, `changes.reject` | Review of agent edits |
@@ -1170,6 +1171,40 @@ submesh, so the bound stays under 1 MB of each on the 16 GB floor
 `scene.describe` reports a rule's copies and status. In the Scene, splines
 draw as curves, the selected one brighter, and a selected scatter shows its
 box; the Create menu's Level group adds a Spline and a Scatter.
+
+### Tags
+
+Tags sort objects into categories that designers and agents find them by
+later, as `#labs #chair` for a chair of the labs area. They are the `tags`
+world component (`SceneTags`,
+[vkr_scene_types.c](../../runtime/src/renderer/systems/vkr_scene_types.c)):
+one 544-byte text field that documents and overlays store, duplication
+copies and deletion removes like any live component. Every input goes
+through `vkr_scene_tags_parse`: words split at spaces, tabs, line breaks or
+commas, lowercased and given a `#` when they lack one, repeats dropped in
+first-seen order. It refuses a word with a character outside `a-z`, `0-9`,
+`_` and `-` after its `#`, a `#` alone, a tag over 32 characters and more
+than 16 tags, naming the cause, instead of cutting the text. The type's
+validation accepts only that canonical text (`#labs #chair`, one space
+apart), so a document with `#Labs` fails to load the component and every
+reader compares tags byte for byte. A brush face or connection takes no
+tags; its owner does.
+
+| Argument or result | Meaning |
+|---|---|
+| `entity.create` `tags` | The new entity's tags, as one string or an array of strings |
+| `entity.set` `tags`, `tags_add`, `tags_remove` | Replace the tags, then add and remove some; no tags remove the component. A batch edits the tags an earlier operation of it set |
+| `entity.get` `tags` | The entity's tags as an array, empty when it has none; `components.tags` holds the stored text |
+| `scene.describe` `tags` | Keep only entities carrying every tag named; each row of a tagged entity has `tags` |
+| `tag.list` | `{"container", "tags": [{"tag", "count"}]}`: each tag the entities carry, most used first, narrowed by `container`, `root`, `region` and `tags` as in `scene.describe` |
+
+In Details, a Tags row under the name edits the selection's tags as text;
+Enter or leaving the field applies them as one undoable edit that adds,
+sets or removes the component, an invalid entry shows the parser's reason
+and Escape reverts. Tags give an object no icon, kind or Details section,
+and Add component does not list them. An Outliner search that starts with
+`#` matches objects whose tags begin with each word, in any case, so
+`#lab #chair` finds a chair tagged `#labs`.
 
 ## Consequences
 

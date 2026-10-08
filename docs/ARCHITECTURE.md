@@ -202,8 +202,9 @@ perspective-only effects while preserving the user's perspective settings; see
 Scene focus routes Tab to camera capture; panel
 focus routes it to widgets. The Outliner reads the World and loaded scenes
 through a virtualized tree, and double-clicking a row frames its object and
-opens its script; Details sends typed selection and edit requests to the
-runtime. Debug > Labels controls object icons: lights, scripted objects and
+opens its script; a search starting with `#` finds objects by their
+[tags](adr/084-agent-channel-and-level-design-toolkit.md#tags). Details sends
+typed selection and edit requests to the runtime. Debug > Labels controls object icons: lights, scripted objects and
 other placed objects draw above their origins, including an empty-object icon
 for placed objects that nothing else draws or marks, and abstract World objects
 (sun, sky, fog, post process) stack above the world origin, projected with the

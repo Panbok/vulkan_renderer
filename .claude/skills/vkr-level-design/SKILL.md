@@ -41,6 +41,10 @@ sets the order of work and the checks that prove a level.
   earlier ones made, by name or `$k`. Room parts carry the room's name:
   cut a door into `north/Store/Wall South +Z` in the room's own batch.
 - Give names your prefix (`north/Store`) so name references stay unique.
+- Tag each unit's root group and every reusable prop with its area and kind,
+  as `#labs #chair` (`tags` on `entity.create` or `entity.set`; `tags_add`
+  and `tags_remove` change some). Run `tag.list` first and reuse its tags;
+  find tagged pieces with `scene.describe` `tags`.
 - With `parent`, corners, points and planes are in the parent's space:
   subtract the parent's position from world coordinates first.
 - Pick materials from the brush palette, `assets/materials/dev/dev_<name>.mt`
