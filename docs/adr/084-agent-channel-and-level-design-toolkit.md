@@ -400,7 +400,9 @@ it edits and clears during Play; games leave it off.
 
 Solid and clip brushes add their world-space convex hull to their 32 m world
 cell; each cell holds static bodies of at most 32 hulls each, so a raycast's
-collider names the brush. A trigger brush owns a sensor hull. These are
+collider names the brush, and `query.raycast` answers that brush as its
+`entity` too rather than the cell body's first brush. A trigger brush owns a
+sensor hull. These are
 generated bodies (`vkr_scene_physics_generated_set`): the scene creates and
 destroys them, and snapshots, documents, the journal and Reset never see
 them. The first generated body creates a scene's physics state when the
@@ -410,7 +412,11 @@ Operations `brush.box`, `brush.wedge`, `brush.cylinder`, `brush.stairs`,
 `brush.set_material` (faces by `top`, `bottom`, `sides`, `+x`, `-x`, `+z`,
 `-z`), `blockout.room` (floor, ceiling and four walls around an interior box),
 `blockout.corridor` and `blockout.doorway` (an unscaled axis-aligned box wall
-becomes up to three brushes around an opening) build ordinary brushes.
+becomes up to three brushes around an opening, named after it with `left`,
+`right` and `lintel`) build ordinary brushes. Each operation's result names
+its entity and, under `created`, every other object it made, such as a
+room's walls or a doorway's pieces; faces and connections, which are parts,
+are left out.
 Stairs and corridors are editable blockout shapes: an entity with a
 `blockout` component (`SceneBlockout` in
 [vkr_blockout.h](../../runtime/src/level/vkr_blockout.h)) that the scene

@@ -163,6 +163,8 @@ typedef struct OpsBatch {
   uint32_t op_count;
   uint32_t op_item[VKR_SAMPLE_EDIT_BATCH_MAX];
   VkrEntityId op_target[VKR_SAMPLE_EDIT_BATCH_MAX];
+  /* The first edit each operation added; its edits run to the next one's. */
+  uint32_t op_first[VKR_SAMPLE_EDIT_BATCH_MAX];
   String8 label;
   bool8_t review;
   /* Select the first operation's entity once applied, as the editor's own
@@ -1732,7 +1734,11 @@ static bool8_t ops_arg_box(OpsContext *ctx, const VkrBakeryJson *args,
   *out_max = vec3_new(Max(lo.x, hi.x), Max(lo.y, hi.y), Max(lo.z, hi.z));
   const Vec3 size = vec3_sub(*out_max, *out_min);
   if (size.x < 1.0e-3f || size.y < 1.0e-3f || size.z < 1.0e-3f) {
-    return ops_fail(ctx, OPS_INVALID, "Every side of the box must be positive");
+    return ops_fail(ctx, OPS_INVALID,
+                    "Every side of the box must be positive after snapping "
+                    "its corners to the %.4g m grid; pass a finer 'grid', or "
+                    "0 to keep them",
+                    (float64_t)grid);
   }
   return true_v;
 }
@@ -2588,7 +2594,18 @@ static bool8_t ops_build_doorway(OpsContext *ctx, const VkrBakeryJson *args,
   Vec3 piece_lo[3];
   Vec3 piece_hi[3];
   uint32_t pieces = 0u;
-  const char *names[3] = {"Wall left", "Wall right", "Lintel"};
+  /* The pieces keep the wall's name, so a prefix such as "lab/" stays. */
+  const String8 wall_name = vkr_scene_get_name(scene, wall.entity);
+  char names[3][VKR_SCENE_EDIT_NAME_CAPACITY];
+  const char *suffixes[3] = {"left", "right", "lintel"};
+  for (uint32_t i = 0; i < 3u; ++i) {
+    if (wall_name.length) {
+      snprintf(names[i], sizeof(names[i]), "%.*s %s", (int)wall_name.length,
+               (const char *)wall_name.str, suffixes[i]);
+    } else {
+      snprintf(names[i], sizeof(names[i]), "Wall %s", suffixes[i]);
+    }
+  }
   if (along_x) {
     piece_lo[pieces] = lo;
     piece_hi[pieces++] = vec3_new(open_lo, hi.y, hi.z);
@@ -3864,6 +3881,7 @@ static bool8_t ops_build_one(OpsContext *ctx, const OpsDef *def,
   }
   batch->op_item[batch->op_count] = UINT32_MAX;
   batch->op_target[batch->op_count] = VKR_ENTITY_ID_INVALID;
+  batch->op_first[batch->op_count] = batch->count;
   if (!def->build(ctx, args, batch)) {
     return false_v;
   }
@@ -4124,6 +4142,21 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
     }
     VkrBakeryJson *entry = vkr_bakery_json_object(call->arena);
     ops_set(ctx, entry, "entity", ops_entity(ctx, scene, entity));
+    /* Every other object the operation made, as a room's walls or a
+       doorway's pieces; faces and connections are parts of them. */
+    VkrBakeryJson *made = vkr_bakery_json_array(call->arena);
+    const uint32_t end =
+        op + 1u < batch->op_count ? batch->op_first[op + 1u] : batch->count;
+    for (uint32_t i = batch->op_first[op]; scene && i < end; ++i) {
+      const VkrEntityId other = result->created[i];
+      if (other.u64 && other.u64 != entity.u64 &&
+          !vkr_scene_entity_is_part(scene, other)) {
+        vkr_bakery_json_append(made, ops_entity(ctx, scene, other));
+      }
+    }
+    if (made->first) {
+      ops_set(ctx, entry, "created", made);
+    }
     vkr_bakery_json_append(results, entry);
     ops_change_touch(&change, entity);
     if (pending->settle) {
@@ -4838,8 +4871,15 @@ static VkrEditorOpStatus ops_run_raycast(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   ops_set(ctx, ctx->call->result, "hit", vkr_bakery_json_bool(arena, 1));
+  /* Brushes share collision bodies by world cell, whose owner is just the
+     cell's first brush; the brush hit is the collider. */
+  const VkrEntityId collider = {.u64 = hit.collider_entity_id};
+  const bool8_t brush =
+      collider.u64 &&
+      vkr_scene_get_typed(scene, collider, &vkr_scene_brush_type);
   ops_set(ctx, ctx->call->result, "entity",
-          ops_entity(ctx, scene, (VkrEntityId){.u64 = hit.entity_id}));
+          ops_entity(ctx, scene,
+                     brush ? collider : (VkrEntityId){.u64 = hit.entity_id}));
   ops_set(ctx, ctx->call->result, "collider",
           ops_id(ctx, (VkrEntityId){.u64 = hit.collider_entity_id}));
   ops_set(ctx, ctx->call->result, "position",
