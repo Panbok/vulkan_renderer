@@ -26,6 +26,9 @@ namespace {
 
 constexpr uint32_t k_max_scene_entities = 65536u;
 constexpr uint32_t k_max_transform_depth = 256u;
+/* The runtime's BRUSH_MOVER_DEPTH_MAX: a brush deeper than this below its
+   mover finds none and stays static there. */
+constexpr uint32_t k_max_mover_depth = 64u;
 
 enum class ShapeKind : uint8_t { None, Cube, Unsupported };
 
@@ -59,6 +62,8 @@ struct EntityImport {
   BrushFaceStyle face;
   /* A blockout shape's settings (ADR-084); null when it has none. */
   std::unique_ptr<SceneBlockout> blockout;
+  /* It carries a `mover`, which moves it and the brushes below it. */
+  bool mover = false;
   Vec3 position = {0.0f, 0.0f, 0.0f};
   VkrQuat rotation = vkr_quat_identity();
   Vec3 scale = {1.0f, 1.0f, 1.0f};
@@ -664,6 +669,14 @@ bool parse_brush_face(const VkrJsonReader *entity, EntityImport *out) {
   return true;
 }
 
+/* A `mover` component: only its presence matters to the bake, which leaves
+   the brushes it moves out. */
+bool parse_mover(const VkrJsonReader *entity, EntityImport *out) {
+  VkrJsonReader reader = {};
+  out->mover = find_block(entity, "mover", &reader) && !parse_null(&reader);
+  return true;
+}
+
 /* The blockout type's enum names, as the scene writes them. */
 constexpr const char *k_blockout_shape_names[] = {"Stairs", "Corridor",
                                                   nullptr};
@@ -820,6 +833,7 @@ constexpr BlockParser k_block_parsers[] = {
     {"brush", parse_brush},
     {"brush_face", parse_brush_face},
     {"blockout", parse_blockout},
+    {"mover", parse_mover},
     {"transform", parse_transform},
     {"mesh", parse_mesh},
     {"shape", parse_shape},
@@ -1156,6 +1170,21 @@ bool compute_entity_worlds(const std::vector<EntityImport> &entities,
     }
   }
   return true;
+}
+
+/* Whether the entity or one of its first ancestors (k_max_mover_depth
+   entities in all) carries a mover, as the runtime's brush_mover_of finds
+   one. compute_entity_worlds has proven the parent chains acyclic and in
+   range. */
+bool moved_by_mover(const std::vector<EntityImport> &entities, uint32_t index) {
+  int32_t at = (int32_t)index;
+  for (uint32_t depth = 0u; at >= 0 && depth < k_max_mover_depth; ++depth) {
+    if (entities[(size_t)at].mover) {
+      return true;
+    }
+    at = entities[(size_t)at].parent;
+  }
+  return false;
 }
 
 Vec3 transform_direction(Mat4 world, Vec3 direction) {
@@ -1791,14 +1820,19 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
                         ": its cube shape's material does not load or its "
                         "world transform is singular");
       }
+      /* A brush or blockout shape a mover moves is out of every bake: it
+         takes no lightmap and neither blocks nor bounces baked light, since
+         the bake would hold it at its saved pose. Runtime lights light it. */
+      const bool moves =
+          (entity.brush || entity.blockout) && moved_by_mover(entities, i);
       AppendFailure failure;
-      if (entity.brush && entity.brush_draws &&
+      if (entity.brush && entity.brush_draws && !moves &&
           !append_brush(scene, entities, brush_faces[i], i, worlds[i],
                         next_instance++, &brush_materials, &failure)) {
         return fail(failure.error,
                     describe_entity(entity, i) + ": brush: " + failure.reason);
       }
-      if (entity.blockout &&
+      if (entity.blockout && !moves &&
           !append_blockout(scene, *entity.blockout, worlds[i], next_instance++,
                            &brush_materials, &failure)) {
         return fail(failure.error, describe_entity(entity, i) +

@@ -623,11 +623,16 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
   uint32_t submesh_count = 0u;
   bool8_t ok = true_v;
   record->serial = ++state->serial;
-  /* The brush's lightmap UVs, which a scene lightmap set rectangles. */
+  /* The brush's lightmap UVs, which a scene lightmap set rectangles. A brush
+     a mover moves is out of the bake (ADR-088) and takes none, so a set
+     baked before that rule never lights it from its saved pose: the draw
+     samples a lightmap only with lightmap UVs. */
   VkrBrushLightmapLayout lightmap_layout;
+  const bool8_t lightmapped =
+      !record->mover.u64 &&
+      vkr_brush_lightmap_layout(geometry, &lightmap_layout);
   const VkrBrushLightmapLayout *lightmap =
-      vkr_brush_lightmap_layout(geometry, &lightmap_layout) ? &lightmap_layout
-                                                            : NULL;
+      lightmapped ? &lightmap_layout : NULL;
   VkrAllocatorScope scope =
       vkr_allocator_begin_scope(&assets->scratch_allocator);
   for (uint32_t group = 0; group < group_count && ok; ++group) {

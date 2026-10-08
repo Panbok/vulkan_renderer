@@ -49,7 +49,11 @@ solid or visual brush from its `brush_face` children as the runtime does
 ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), with the face
 material or the dev grid, and keeps each entity's document id. It builds
 each blockout shape's pieces as the runtime does, as geometry without a
-lightmap (ADR-088). It finds an entity block by key at the entity's root or
+lightmap (ADR-088). Since 2026-10-08 it leaves out every brush and blockout
+shape that a `mover` on the entity or an ancestor moves, as the runtime's
+`brush_mover_of` finds one: the volume neither occludes nor bounces light
+off it and lights it at runtime, so a closed door no longer stops baked
+light between rooms. It finds an entity block by key at the entity's root or
 in its `components` object, never inside another block, so a blockout's
 `shape` field is not a `shape` block; components the bake does not read are
 ignored. A failed load prints the entity (index, name, id) and the block or

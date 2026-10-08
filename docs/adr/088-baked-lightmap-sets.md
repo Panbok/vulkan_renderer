@@ -66,9 +66,16 @@ from the same planes, so brushes need no cooked lightmap data.
 A blockout shape (stairs, corridors; ADR-084) has no lightmap at runtime, so
 the bake builds its pieces from `vkr_blockout_layout` and `vkr_brush_hull`
 as occluding and bouncing geometry without a lightmap instance; the diffuse
-volume lights it. A brush under a `mover` still bakes as a static brush at
-its saved pose: it occludes and takes a lightmap there, which is stale once
-the mover moves.
+volume lights it. A brush or blockout shape that a `mover` moves (the
+nearest mover at or above it, the runtime's `brush_mover_of` within 64
+levels) is out of every bake since 2026-10-08: it takes no lightmap and
+neither occludes nor bounces baked light, so a closed door no longer stops
+baked light between rooms. The diffuse volume and runtime lights light it.
+At runtime such a brush builds without lightmap UVs, so a set baked before
+this rule, which still holds an instance for it, leaves it on the volume
+instead of its saved-pose lightmap. A point or rectangle light under a mover
+still bakes when it is static: the runtime drops static lights while a set
+is loaded, so leaving it out of the bake would remove it.
 
 ### Layout
 
@@ -263,8 +270,8 @@ upload ring can grow to. Metal 4 devices always sample ASTC HDR; Vulkan enables
 
 Runtime brush meshes pack the same lightmap UVs the bake computes for them
 (`vkr_brush_lightmap_layout`,
-[`vkr_scene_brush.c`](../../runtime/src/renderer/systems/vkr_scene_brush.c));
-cooked models carry theirs from the cook.
+[`vkr_scene_brush.c`](../../runtime/src/renderer/systems/vkr_scene_brush.c)),
+except a brush a mover moves, which takes none; cooked models carry theirs from the cook.
 
 The scene keeps the layers and instances
 ([`vkr_scene_lightmaps.c`](../../runtime/src/renderer/systems/vkr_scene_lightmaps.c))

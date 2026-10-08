@@ -671,6 +671,83 @@ void test_bake_scene_builds_blockout_stairs() {
   printf("  test_bake_scene_builds_blockout_stairs PASSED\n");
 }
 
+/* The scene entities of a unit box brush centred at `x`: the brush, then its
+   six brush_face children. */
+std::string box_brush_entities(const char *name, int32_t parent, int32_t first,
+                               float32_t x, const char *material) {
+  const std::string parent_text =
+      parent < 0 ? std::string("null") : std::to_string(parent);
+  std::string text = std::string("{\"name\": \"") + name +
+                     "\", \"parent\": " + parent_text +
+                     ", \"transform\": {\"pos\": [" + std::to_string(x) +
+                     ", 0, 0], \"rot\": [0, 0, 0, 1], \"scale\": [1, 1, 1]}, "
+                     "\"components\": {\"brush\": {\"role\": \"solid\"}}}";
+  static const char *const normals[6] = {"[1, 0, 0]", "[-1, 0, 0]",
+                                         "[0, 1, 0]", "[0, -1, 0]",
+                                         "[0, 0, 1]", "[0, 0, -1]"};
+  for (const char *normal : normals) {
+    text += std::string(", {\"parent\": ") + std::to_string(first) +
+            ", \"components\": {\"brush_face\": {\"normal\": " + normal +
+            ", \"distance\": 0.5, \"material\": \"" + material + "\"}}}";
+  }
+  return text;
+}
+
+/* A brush or blockout shape a mover moves stays out of the bake (ADR-088):
+   below a mover, through a group without one, a box brush and stairs add no
+   triangle and no lightmap instance, while the static box brush beside them
+   adds its 12 triangles within its own box and its one lightmap instance. */
+void test_bake_scene_leaves_out_moving_brushes() {
+  FilePath directory = {};
+  directory.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp");
+  directory.type = FILE_PATH_TYPE_ABSOLUTE;
+  assert(file_create_directory(&directory));
+  const char *material = PROJECT_SOURCE_DIR "tests/tmp/bake_scene_mover.mt";
+  const char *path = PROJECT_SOURCE_DIR "tests/tmp/bake_scene_mover.json";
+  write_text_file(material, "type=pbr\nbase_color=0.5,0.5,0.5,1\n");
+  /* 0-6 the static wall, 7 the door's mover, 8 a group under it, 9-15 the
+     door brush under the group, 16 stairs under the mover. */
+  const std::string scene_text =
+      "{\"version\": 2, \"entities\": [" +
+      box_brush_entities("wall", -1, 0, 0.0f, material) +
+      ", {\"name\": \"door_mover\", \"parent\": null, \"transform\": "
+      "{\"pos\": [5, 0, 0], \"rot\": [0, 0, 0, 1], \"scale\": [1, 1, 1]}, "
+      "\"components\": {\"mover\": {\"direction\": [0, 1, 0]}}}"
+      ", {\"name\": \"door_group\", \"parent\": 7}, " +
+      box_brush_entities("door", 8, 9, 0.0f, material) +
+      ", {\"name\": \"door_stairs\", \"parent\": 7, \"components\": "
+      "{\"blockout\": {\"shape\": \"Stairs\", \"stairs\": \"Straight\", "
+      "\"height\": 1, \"width\": 1, \"length\": 2, \"step_height\": 0.25, "
+      "\"thickness\": 0, \"material\": \"" +
+      material + "\"}}}]}";
+  write_text_file(path, scene_text.c_str());
+
+  Arena *arena = arena_create(MB(4), MB(4));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  {
+    VkrBakeScene scene(&allocator);
+    VkrBakeSceneError error = VkrBakeSceneError::None;
+    assert(vkr_bake_scene_load(&scene, path, &error));
+    assert(error == VkrBakeSceneError::None && scene.diagnostic.empty());
+    assert(scene.triangles.size() == 12u);
+    for (const VkrBakeTriangle &triangle : scene.triangles) {
+      for (const VkrBakeVertex &vertex : triangle.vertex) {
+        assert(fabsf(vertex.position.x) <= 0.5f + 1.0e-4f);
+        assert(fabsf(vertex.position.y) <= 0.5f + 1.0e-4f);
+        assert(fabsf(vertex.position.z) <= 0.5f + 1.0e-4f);
+      }
+    }
+    assert(scene.lightmap_instances.size() == 1u);
+    assert(scene.lightmap_instances[0].entity_index == 0u);
+  }
+  arena_destroy(arena);
+  remove(path);
+  remove(material);
+  printf("  test_bake_scene_leaves_out_moving_brushes PASSED\n");
+}
+
 } // namespace
 
 bool32_t run_lightmap_bake_tests(void) {
@@ -687,6 +764,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_lightmap_denoise_stays_on_surfaces();
   test_bake_material_accepts_roughness_bound();
   test_bake_scene_builds_blockout_stairs();
+  test_bake_scene_leaves_out_moving_brushes();
   printf("--- Lightmap Bake Tests Completed ---\n");
   return true_v;
 }
