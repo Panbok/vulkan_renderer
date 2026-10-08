@@ -109,9 +109,10 @@ grace period is not hashed, since no rule removes it yet. A derived file no
 bundle holds,
 such as a paired bake's intermediate, is removed once it is older
 than 24 hours, so importing the model again within a day reuses it. If any scene or project manifest is
-unreadable, no cache entry is removed. Build and inventory revisions a live
-scene no longer names are removed after 24 hours, so an editor still streaming a
-replaced revision keeps its files; staging leftovers also wait 24 hours. A
+unreadable, no cache entry is removed. Build, inventory and edit overlay
+revisions a live scene no longer names are removed after 24 hours, so an editor
+still streaming a replaced revision keeps its files (each overlay save had kept
+its revision, 88 MB over one day's saves of a 20,000-entity level); staging leftovers also wait 24 hours. A
 scene or its edit overlay names a build revision by a scene-relative
 `builds/<revision>/...` path or by a workspace-relative path with a
 `/builds/<revision>/` segment, as overlay colliders record their cooked

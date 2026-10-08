@@ -130,6 +130,31 @@ vkr_internal bool8_t vkr_project_scene_references(VkrProjectCleanup *cleanup,
       }
     }
   }
+  /* Edit overlay revisions: each managed save publishes a new one and the
+     manifest names only the newest, so a session of saves left tens of
+     copies. Unnamed ones go after the same grace, so an editor still
+     reading one keeps it. */
+  const char *overlay_current = vkr_project_json_text(raw, "edit_overlay");
+  char edits[VKR_PROJECT_PATH];
+  (void)snprintf(edits, sizeof(edits), "%s/edits", scene_root);
+  if (vkr_bakery_is_directory(edits) && vkr_project_list(job, edits, &names)) {
+    for (uint32_t i = 0u; i < names.count; ++i) {
+      const uint64_t length = strlen(names.items[i]);
+      if (length < 5u || strcmp(names.items[i] + length - 5u, ".json") != 0) {
+        continue;
+      }
+      char revision[VKR_PROJECT_PATH];
+      const char *reference =
+          vkr_project_printf(job, "edits/%s", names.items[i]);
+      if (vkr_project_child_path(edits, names.items[i], revision) &&
+          vkr_bakery_is_file(revision) &&
+          (!overlay_current || strcmp(reference, overlay_current) != 0) &&
+          vkr_project_older_than(
+              revision, VKR_PROJECT_UNREFERENCED_GRACE_SECONDS, cleanup->now)) {
+        vkr_project_drop(cleanup, revision);
+      }
+    }
+  }
   vkr_project_forgive(job, failed_before);
   return true_v;
 }
