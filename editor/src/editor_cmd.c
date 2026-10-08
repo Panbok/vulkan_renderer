@@ -1351,6 +1351,33 @@ static bool8_t cmd_run_scene_create(CmdContext *ctx, const CmdDef *def,
   return true_v;
 }
 
+/* `scene.bake [lightmaps]`: the Bake lighting job for the open project scene
+   (ADR-088). Lightmaps follow the Bakery panel's option unless `lightmaps`
+   asks for them; the queue holds until the bake and the scene reload after
+   it settle, then reports the outcome. */
+static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
+                                  String8 arg) {
+  const String8 word = cmd_trim(arg);
+  if (word.length && !vkr_string8_equals_cstr(&word, "lightmaps")) {
+    snprintf(ctx->message, sizeof(ctx->message), "Usage: %s %s", def->name,
+             def->usage);
+    return false_v;
+  }
+  const bool8_t lightmap =
+      word.length != 0u || vkr_editor_bakery_lightmap(ctx->editor->bakery);
+  if (!vkr_editor_projects_bake_lighting(ctx->editor->projects, ctx->editor,
+                                         ctx->frame, lightmap)) {
+    snprintf(ctx->message, sizeof(ctx->message), "%s",
+             vkr_editor_projects_message(ctx->editor->projects));
+    return false_v;
+  }
+  ctx->editor->cmd_holding_bake = true_v;
+  snprintf(ctx->message, sizeof(ctx->message),
+           "Baking reflection probes, the diffuse volume%s",
+           lightmap ? " and lightmaps" : "");
+  return true_v;
+}
+
 /* Opens a project scene by name, as double-clicking it in Content does. */
 static bool8_t cmd_run_scene_open(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
@@ -2292,6 +2319,10 @@ static const CmdDef cmd_defs[] = {
     {"scene.create", CMD_ARG_TEXT, "<name>",
      "Create an empty scene in the project and open it", cmd_run_scene_create,
      CMD_COUNT, 0u, .holds = true_v},
+    {"scene.bake", CMD_ARG_TEXT, "[lightmaps]",
+     "Bake the open project scene's lighting as Bake lighting does; "
+     "lightmaps adds its lightmaps whatever the Bakery option",
+     cmd_run_scene_bake, CMD_COUNT, 0u, .holds = true_v},
     {"scene.inherit", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Whether the open scene uses the World's objects where it has none",
      cmd_run_scene_inherit, CMD_COUNT, 0u},
@@ -2521,9 +2552,10 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   /* The hold's work shows from the next frame: runners start project jobs at
    * once, and the runtime starts requested loads after this build. */
   if (editor->cmd_holding) {
-    const bool8_t busy = frame->scene_loading || frame->additive_loading ||
-                         vkr_editor_projects_busy(editor->projects) ||
-                         vkr_editor_build_busy(editor->build);
+    const bool8_t busy =
+        frame->scene_loading || frame->additive_loading ||
+        vkr_editor_projects_busy(editor->projects, editor->bakery) ||
+        vkr_editor_build_busy(editor->build);
     editor->cmd_hold_seconds += dt;
     if (busy && editor->cmd_hold_seconds < CMD_HOLD_LIMIT_SECONDS) {
       return;
@@ -2531,6 +2563,7 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     editor->cmd_holding = false_v;
     if (busy) {
       editor->cmd_holding_build = false_v;
+      editor->cmd_holding_bake = false_v;
       cmd_report(editor, false_v,
                  "Job or scene load timed out; dropped the remaining "
                  "commands");
@@ -2546,6 +2579,22 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       bool8_t succeeded = false_v;
       const char *result = vkr_editor_build_result(editor->build, &succeeded);
       cmd_report(editor, succeeded, result[0] ? result : "Build did not run");
+    }
+    if (editor->cmd_holding_bake) {
+      editor->cmd_holding_bake = false_v;
+      bool8_t succeeded = false_v;
+      const char *result =
+          vkr_editor_projects_take_bake_result(editor->projects, &succeeded);
+      /* A bake that succeeded reopens its scene; a failed reopen only sets
+         the Projects status line. */
+      if (succeeded && !frame->scene) {
+        char reopen[640];
+        snprintf(reopen, sizeof(reopen), "%s, but the scene did not reopen: %s",
+                 result, vkr_editor_projects_message(editor->projects));
+        cmd_report(editor, false_v, reopen);
+      } else {
+        cmd_report(editor, succeeded, result);
+      }
     }
   }
   if (editor->cmd_holding_op) {

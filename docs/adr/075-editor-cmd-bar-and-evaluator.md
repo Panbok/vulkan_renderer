@@ -35,12 +35,14 @@ each kind per UI build; `wait` and `wait.scene` pause it.
 A command that starts a Bakery job or a scene load holds the queue until that
 work settles, so the next statement reads its result without a timed `wait`:
 `scene.load`, `scene.reload`, `scene.open`, `scene.add`, `scene.create`,
-`scene.import`, `scene.instantiate`, `scene.primary`, `content.import`, `content.command`, `content.place`, `build.game` and
+`scene.import`, `scene.instantiate`, `scene.primary`, `scene.bake`, `content.import`, `content.command`, `content.place`, `build.game` and
 `build.run`, and `scene.save`, so
 a headless run cannot quit during a save. The hold ends when no
-project job, activation or Set primary swap runs and neither the primary scene
+project job, activation or Set primary swap runs (a failed or cancelled job
+waiting for Retry or Back does not count) and neither the primary scene
 nor an added scene is loading and no build runs, and prints `[cmd] Settled
-after <s> s`; a build hold then prints the build's result line. After
+after <s> s`; a build or `scene.bake` hold then prints its result line, an
+`error:` line when the job failed. After
 600 s it reports an error and drops the queue. An unsaved-edits prompt does not
 hold the queue: a script saves or discards first.
 
@@ -120,6 +122,7 @@ dependable channel for scripts.
 | `physics.motion` | `<static\|kinematic\|dynamic>` | Set the selection's physics body motion (undoable) |
 | `parent` | `<name\|none>` | Reparent the selection within its container, keeping its world pose |
 | `scene.open`, `scene.create` | `<name>` | Open a project scene (the scene already loading or open stays as it is), or create an empty one and open it |
+| `scene.bake` | `[lightmaps]` | Bake the open project scene's lighting as Bake lighting does: reflection probes, the diffuse volume and, when the Bakery option is on or `lightmaps` is given, its lightmaps ([ADR-088](088-baked-lightmap-sets.md)); refused with unsaved edits, outside a writable project scene or while a job runs |
 | `scene.add`, `scene.remove` | `<name\|path>`, `<slot\|name> [discard]` | Load a project scene or scene file beside the primary one, or unload it |
 | `scene.primary` | `<slot\|name>` | Make an added project scene the primary scene, adding the previous primary back beside it |
 | `scene.instantiate` | `<name>` | Copy another project scene into the open one under a new root at the origin, as an unlinked prefab instance |

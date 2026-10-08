@@ -101,6 +101,9 @@ lists) hold the queue until the work settles and print
 `[cmd] Settled after <s> s`; write the next statement directly, without a
 timed `wait`. Save or discard edits before such a command, because an
 unsaved-edits prompt does not hold the queue.
+To bake a project scene's lighting, run `scene.save` (or discard) and then
+`scene.bake lightmaps` (without `lightmaps` it follows the Bakery option);
+after the settle line it prints the outcome, an `error:` line on failure.
 Mouse gestures such as dragging or right-clicking a Content item have no
 statement: use `content.place`, `content.drop`, `content.move` and
 `content.command`, which run the same actions, and report the gesture itself

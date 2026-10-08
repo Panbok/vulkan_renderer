@@ -449,6 +449,9 @@ typedef struct VkrEditorUi {
   bool8_t cmd_holding;
   /* The hold is a build, whose result the queue reports when it settles. */
   bool8_t cmd_holding_build;
+  /* The hold is a lighting bake (`scene.bake`), whose outcome the queue
+     reports when it settles. */
+  bool8_t cmd_holding_bake;
   /* An `op` statement holds the queue until its operation answers. */
   bool8_t cmd_holding_op;
   float64_t cmd_hold_seconds;

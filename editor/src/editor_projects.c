@@ -441,6 +441,11 @@ struct VkrEditorProjects {
   char rename_name[513];
   char action_name[513];
   char message[512];
+  /* Cmd's scene.bake (ADR-075): set while its bake job has no recorded
+     outcome, then the outcome the settled Cmd hold reports. */
+  bool8_t cmd_bake_pending;
+  bool8_t cmd_bake_succeeded;
+  char cmd_bake_result[512];
   VkrGraphicsSettings graphics;
   VkrGraphicsSettings default_graphics;
   bool8_t defaults_captured;
@@ -3023,8 +3028,11 @@ static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
 }
 
 /* Unsupported features a job reports: each goes to the Console, and a toast
-   says how many there were, so an import is never silently incomplete. */
-static void project_report_warnings(VkrEditorUi *editor, String8 result) {
+   says how many there were, so an import is never silently incomplete. The
+   toast's text also goes to `summary`, empty without warnings. */
+static void project_report_warnings(VkrEditorUi *editor, String8 result,
+                                    char *summary, size_t summary_capacity) {
+  summary[0] = '\0';
   VkrJsonReader reader = vkr_json_reader_from_string(result);
   if (!vkr_json_find_array(&reader, "warnings")) {
     return;
@@ -3046,6 +3054,7 @@ static void project_report_warnings(VkrEditorUi *editor, String8 result) {
              (const char *)first.str, count > 1u ? " (and more warnings)" : "");
     vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING, vkr_ui_theme()->warning,
                      message);
+    snprintf(summary, summary_capacity, "%s", message);
   }
 }
 
@@ -3276,7 +3285,15 @@ static void project_job_complete(VkrEditorProjects *projects,
     projects->job_id = 0;
     return;
   }
-  project_report_warnings(editor, result);
+  char warnings[256];
+  project_report_warnings(editor, result, warnings, sizeof(warnings));
+  if (projects->cmd_bake_pending &&
+      !strcmp(projects->operation, "bake_scene")) {
+    projects->cmd_bake_pending = false_v;
+    projects->cmd_bake_succeeded = true_v;
+    snprintf(projects->cmd_bake_result, sizeof(projects->cmd_bake_result),
+             "Lighting baked%s%s", warnings[0] ? "; warning: " : "", warnings);
+  }
   const bool8_t unbuilt = strcmp(status, "unbuilt") == 0;
   projects->select_added_entity = false_v;
   if (!strcmp(projects->operation, "add_entities")) {
@@ -3662,10 +3679,24 @@ bool8_t vkr_editor_projects_loading(const VkrEditorProjects *projects) {
                       projects->waiting_activation);
 }
 
-bool8_t vkr_editor_projects_busy(const VkrEditorProjects *projects) {
-  return projects &&
-         (projects->job_id || projects->waiting_activation ||
-          projects->swap != PROJECT_SWAP_NONE || projects->world_wait);
+bool8_t vkr_editor_projects_busy(const VkrEditorProjects *projects,
+                                 VkrEditorBakery *bakery) {
+  if (!projects) {
+    return false_v;
+  }
+  if (projects->job_id) {
+    /* A failed or cancelled job only waits for Retry or Back, once the
+       update has recorded a Cmd bake's outcome. */
+    const VkrEditorProjectJobStatus status =
+        vkr_editor_bakery_project_status(bakery, projects->job_id, NULL);
+    const bool8_t stopped = status == VKR_EDITOR_PROJECT_JOB_FAILED ||
+                            status == VKR_EDITOR_PROJECT_JOB_CANCELLED;
+    if (!stopped || projects->cmd_bake_pending) {
+      return true_v;
+    }
+  }
+  return projects->waiting_activation || projects->swap != PROJECT_SWAP_NONE ||
+         projects->world_wait;
 }
 
 /* A dialog is open: a project view other than the editor and its progress
@@ -4172,6 +4203,19 @@ static bool8_t project_job_failed(VkrEditorProjects *projects,
     snprintf(projects->message, sizeof(projects->message),
              "Scene removed from project; file deletion is incomplete. "
              "Retry to finish. See Bakery for details.");
+  } else if (!strcmp(projects->operation, "bake_scene")) {
+    snprintf(projects->message, sizeof(projects->message),
+             "%s. Retry it, or go Back to the scene list. See Bakery for the "
+             "job output.",
+             status == VKR_EDITOR_PROJECT_JOB_CANCELLED
+                 ? "Lighting bake cancelled"
+                 : "Lighting bake failed");
+    if (projects->cmd_bake_pending) {
+      projects->cmd_bake_pending = false_v;
+      projects->cmd_bake_succeeded = false_v;
+      snprintf(projects->cmd_bake_result, sizeof(projects->cmd_bake_result),
+               "%s", projects->message);
+    }
   } else if (projects->creating_project) {
     snprintf(projects->message, sizeof(projects->message),
              "%s. The project is saved without this scene; Back opens "
@@ -7235,6 +7279,77 @@ bool8_t vkr_editor_projects_create_scene(VkrEditorProjects *projects,
   snprintf(projects->scene_name, sizeof(projects->scene_name), "%s", name);
   project_create(projects, editor, frame);
   return projects->job_id != 0;
+}
+
+bool8_t vkr_editor_projects_bake_lighting(VkrEditorProjects *projects,
+                                          VkrEditorUi *editor,
+                                          const VkrSampleUiFrame *frame,
+                                          bool8_t lightmap) {
+  if (!projects) {
+    return false_v;
+  }
+  const char *refusal = NULL;
+  if (!projects->project ||
+      projects->active_scene >= projects->project->scene_count ||
+      !frame->scene) {
+    refusal = "Baking lighting needs an open project scene; a scene file "
+              "opened outside a project has no bake outputs";
+  } else if (projects->read_only) {
+    refusal = "This workspace is read-only; baking needs its write lease";
+  } else if (project_job_stopped(projects, editor)) {
+    refusal = "The last project job stopped; Retry it or go Back first";
+  } else if (projects->job_id || projects->waiting_activation ||
+             projects->swap != PROJECT_SWAP_NONE || projects->world_wait ||
+             !strcmp(projects->operation, "delete_scene") ||
+             frame->scene_loading || vkr_editor_bakery_busy(editor->bakery)) {
+    refusal = "A bake, project job or scene load is running; bake once it "
+              "settles";
+  } else if (projects->view != PROJECT_VIEW_EDITOR) {
+    refusal = "A project dialog is open; close it first";
+  } else if (project_scene_dirty(frame)) {
+    refusal = "The scene has unsaved edits; save or discard them first";
+  }
+  if (refusal) {
+    snprintf(projects->message, sizeof(projects->message), "%s", refusal);
+    return false_v;
+  }
+
+  /* The Bake lighting job: reflection probes and the diffuse volume, plus
+     lightmaps as asked, without changing the Bakery panel's options. */
+  projects->bake_reflection = true_v;
+  projects->bake_diffuse = true_v;
+  projects->bake_lightmap = lightmap;
+  projects->pending_scene = projects->active_scene;
+  snprintf(projects->operation, sizeof(projects->operation), "bake_scene");
+  project_start_job(projects, editor, frame, false_v);
+  if (!projects->job_id) {
+    projects->operation[0] = '\0';
+    if (!projects->message[0]) {
+      snprintf(projects->message, sizeof(projects->message),
+               "The bake job could not start");
+    }
+    return false_v;
+  }
+  projects->cmd_bake_pending = true_v;
+  projects->cmd_bake_succeeded = false_v;
+  projects->cmd_bake_result[0] = '\0';
+  return true_v;
+}
+
+const char *vkr_editor_projects_take_bake_result(VkrEditorProjects *projects,
+                                                 bool8_t *out_succeeded) {
+  *out_succeeded = false_v;
+  if (!projects) {
+    return "No project is open";
+  }
+  if (projects->cmd_bake_pending) {
+    /* The job ended on a path that only set the status line. */
+    projects->cmd_bake_pending = false_v;
+    return projects->message[0] ? projects->message
+                                : "The lighting bake reported no outcome";
+  }
+  *out_succeeded = projects->cmd_bake_succeeded;
+  return projects->cmd_bake_result;
 }
 
 String8 vkr_editor_projects_scene_name(const VkrEditorProjects *projects) {

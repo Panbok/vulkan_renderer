@@ -237,7 +237,9 @@ and sets the scene's `lightmaps` block to that asset
 Lowering replaces the asset reference with a path. A bake without lightmapped
 models drops the previous set and warns. Bundles store `.vklm` uncompressed
 and mappable under pack loader `VKR_PACK_LOADER_LIGHTMAP`. The Bakery panel's
-"Scene lightmaps" option adds the bake to Prepare and to Bake lighting.
+"Scene lightmaps" option adds the bake to Prepare and to Bake lighting; the
+Cmd statement `scene.bake lightmaps` adds it without the option and reports
+the bake's outcome ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
 
 ### Runtime set
 

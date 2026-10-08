@@ -1787,6 +1787,10 @@ bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
   return true_v;
 }
 
+bool8_t vkr_editor_bakery_lightmap(const VkrEditorBakery *bakery) {
+  return bakery && bakery->lightmap;
+}
+
 bool8_t vkr_editor_bakery_lightmap_uvs(const VkrEditorBakery *bakery) {
   return bakery && bakery->lightmap_uvs;
 }

@@ -4,6 +4,7 @@
 
 typedef struct VkrEditorUi VkrEditorUi;
 typedef struct VkrEditorProjects VkrEditorProjects;
+typedef struct VkrEditorBakery VkrEditorBakery;
 
 /* Editor-lifetime owner, independent of loaded world/scene assets. */
 VkrEditorProjects *vkr_editor_projects_create(VkrAllocator *allocator, int argc,
@@ -19,8 +20,10 @@ bool8_t vkr_editor_projects_dialog_contains(const VkrEditorProjects *projects,
  * shows a compact launcher instead of the editor shell. */
 bool8_t vkr_editor_projects_launcher(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_loading(const VkrEditorProjects *projects);
-/* A scene job, its activation or a Set primary swap is still in progress. */
-bool8_t vkr_editor_projects_busy(const VkrEditorProjects *projects);
+/* A scene job, its activation or a Set primary swap is still in progress.
+   A failed or cancelled job waiting for Retry or Back is not. */
+bool8_t vkr_editor_projects_busy(const VkrEditorProjects *projects,
+                                 VkrEditorBakery *bakery);
 /** Background finalize progress for the Cmd `stats` root: whether a job
  * runs and how many finished materials its (or the last) job applied. */
 void vkr_editor_projects_finalize_stats(const VkrEditorProjects *projects,
@@ -73,6 +76,20 @@ bool8_t vkr_editor_projects_create_scene(VkrEditorProjects *projects,
                                          VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const char *name);
+
+/* Cmd's scene.bake (ADR-075, ADR-088): start the Bake lighting job for the
+   open project scene, with lightmaps when `lightmap` is set. False when it
+   cannot start (no writable project scene, unsaved edits, or a job, load or
+   dialog in the way); vkr_editor_projects_message says why. */
+bool8_t vkr_editor_projects_bake_lighting(VkrEditorProjects *projects,
+                                          VkrEditorUi *editor,
+                                          const VkrSampleUiFrame *frame,
+                                          bool8_t lightmap);
+/* The outcome of the last bake vkr_editor_projects_bake_lighting started,
+   taken once its job and the reload after it settle; a job that ended
+   without recording one reports the status line as a failure. */
+const char *vkr_editor_projects_take_bake_result(VkrEditorProjects *projects,
+                                                 bool8_t *out_succeeded);
 
 /* The open project scene's display name, or empty outside a project. */
 String8 vkr_editor_projects_scene_name(const VkrEditorProjects *projects);

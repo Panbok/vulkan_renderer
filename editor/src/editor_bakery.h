@@ -61,6 +61,9 @@ bool8_t vkr_editor_bakery_scene_bake_available(const VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
                                           bool8_t *reflection, bool8_t *diffuse,
                                           bool8_t *lightmap);
+/** Whether scene bakes add lightmaps (ADR-088), as the managed panel's
+ * "Scene lightmaps" option sets it. */
+bool8_t vkr_editor_bakery_lightmap(const VkrEditorBakery *bakery);
 /** Whether model imports and rebuilds cook lightmap UVs (ADR-087), as the
  * managed panel sets it. */
 bool8_t vkr_editor_bakery_lightmap_uvs(const VkrEditorBakery *bakery);
