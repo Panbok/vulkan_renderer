@@ -487,8 +487,10 @@ are:
   wide. Past one turn its steps float, each at least a rise thick, so no
   step buries the flight below it; from three quarters of a turn the
   landing floats too, since it reaches back over the lowest steps. The pole
-  stops 4 mm below the top tread, so its top shares no plane with the top
-  step or the landing (`z_fight`). `brush.stairs` turns a spiral 22.5
+  rises 1.125 m above the top tread as a newel post, above a 1 m rail, so
+  its top shares no plane with the top step, the landing or a landing rail
+  (`z_fight`) and is no floor beside the stairwell to step off. Rail the
+  landing's open sides. `brush.stairs` turns a spiral 22.5
   degrees a step, at least once, unless `sweep` says otherwise; its `to` is
   the rim where the climb ends (the top step ends on the radius through it)
   and an asked `width` leaves the pole the rest of that radius. The top had

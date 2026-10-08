@@ -202,13 +202,15 @@ static uint32_t layout_stairs(const SceneBlockout *shape, VkrBlockoutPiece *out,
                              Max(inner, 0.01f), outer, center, side,
                              spiral ? layout_arc_around : layout_arc_beside);
     if (spiral) {
-      /* The pole, twelve sides up to 4 mm below the top tread: level with
-         it, the pole's top shares the tread's and the landing's plane where
-         their chords cross it, and they flicker (ADR-084 z_fight). */
+      /* The pole, twelve sides, rising 1.125 m above the top tread as a
+         newel post, above a 1 m rail. Level with the tread, its top shared
+         the tread's and the landing's plane where their chords cross it,
+         so they flickered (ADR-084 z_fight), and it was a floor beside the
+         stairwell that a player could step off. */
       VkrBlockoutPiece *piece = &out[count++];
       piece->kind = VKR_BLOCKOUT_PIECE_POLE;
       piece->point_count = 24u;
-      const float32_t pole_top = Max(h - 0.004f, 0.5f * h);
+      const float32_t pole_top = h + 1.125f;
       for (uint32_t k = 0; k < 12u; ++k) {
         const float32_t a = 6.28318530718f * (float32_t)k / 12.0f;
         const Vec3 at = vec3_new(sinf(a) * inner, 0.0f, cosf(a) * inner);
