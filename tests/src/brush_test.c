@@ -757,7 +757,8 @@ static uint32_t brush_test_fights(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi,
 
 /* Z-fighting (ADR-084): boxes whose tops share a plane and overlap fight
    over the shared square, turned and far from the origin too; a box on
-   another's top, back to back, and a top 2 mm higher do not. */
+   another's top, back to back, a top 2 mm higher and tops sharing a strip
+   0.2 mm wide do not. */
 static void brush_test_coplanar(VkrBrushGeometry *geometry) {
   const Vec3 lo = vec3_new(0.0f, 0.0f, 0.0f);
   const Vec3 hi = vec3_new(2.0f, 1.0f, 2.0f);
@@ -790,6 +791,13 @@ static void brush_test_coplanar(VkrBrushGeometry *geometry) {
 
   found = brush_test_fights(lo, hi, vec3_new(1.0f, 0.5f, 1.0f),
                             vec3_new(3.0f, 1.002f, 3.0f), 0.0f, vec3_zero(),
+                            geometry, &overlap);
+  assert(found == 0u);
+
+  /* Tops sharing a plane over a 0.2 mm strip, 4 cm2 along a 2 m edge: an
+     edge contact float error leaves, not a fight. */
+  found = brush_test_fights(lo, hi, vec3_new(1.9998f, 0.5f, 0.0f),
+                            vec3_new(3.0f, 1.0f, 2.0f), 0.0f, vec3_zero(),
                             geometry, &overlap);
   assert(found == 0u);
 }

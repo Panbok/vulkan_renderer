@@ -836,12 +836,22 @@ static float32_t brush_face_overlap(const VkrBrushFaceRef *a,
 
   Vec3 twice = vec3_zero();
   Vec3 sum = vec3_zero();
+  float32_t perimeter = 0.0f;
   for (uint32_t k = 0; k < count; ++k) {
-    twice = vec3_add(twice, vec3_cross(in[k], in[(k + 1u) % count]));
+    const Vec3 next = in[(k + 1u) % count];
+    twice = vec3_add(twice, vec3_cross(in[k], next));
     sum = vec3_add(sum, in[k]);
+    perimeter += vec3_length(vec3_sub(next, in[k]));
   }
   *out_center = vec3_add(origin, vec3_scale(sum, 1.0f / (float32_t)count));
-  return 0.5f * fabsf(vec3_dot(twice, a->normal));
+  const float32_t area = 0.5f * fabsf(vec3_dot(twice, a->normal));
+  /* A strip about 2 * area / perimeter wide: narrower than the tolerance,
+     the faces only touch along an edge, as float error leaves between ring
+     pieces sharing a plane, and no pixel shows both. */
+  if (!(2.0f * area > VKR_BRUSH_COPLANAR_DISTANCE * perimeter)) {
+    return 0.0f;
+  }
+  return area;
 }
 
 uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,

@@ -767,8 +767,10 @@ box touches the region; clip and trigger brushes draw only while editing.
 Faces fight where their normals lie within 0.5° and their overlap, more
 than 1 cm², lies within 1 mm of both planes
 ([vkr_brush.c](../../runtime/src/level/vkr_brush.c),
-`vkr_brush_coplanar_overlaps`). Faces back to back, faces that only touch
-along an edge and faces 2 mm apart do not fight. Faces group by plane
+`vkr_brush_coplanar_overlaps`). Faces back to back, faces 2 mm apart and
+faces that only touch along an edge do not fight; an overlap narrower than
+1 mm (twice its area over its perimeter) is such a touch, as float error
+leaves between ring pieces that share a radial plane. Faces group by plane
 distance and main axis and sweep along one axis, so each meets only faces
 near its plane and extent. A shared area counts in the region its middle
 lies in, and not when the point 1 cm in front of that middle lies inside
