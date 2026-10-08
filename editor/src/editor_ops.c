@@ -117,6 +117,9 @@ struct VkrEditorOps {
   VkrEditorChange changes[VKR_EDITOR_CHANGE_MAX];
   uint32_t change_count;
   uint32_t next_change_id;
+  /* Batches have applied unreviewed since the list last had room; the
+     designer hears of it once per run. */
+  bool8_t review_overflow;
   uint32_t capture_serial;
   /* A ring of the newest agent batches; `authored_next` counts every one
      recorded. */
@@ -4161,6 +4164,7 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
     ops_feed_entity(event, scene, change.entities[i], scratch);
   }
   if (batch->review && ops->change_count < VKR_EDITOR_CHANGE_MAX) {
+    ops->review_overflow = false_v;
     change.id = ++ops->next_change_id;
     snprintf(change.label, sizeof(change.label), "%.*s",
              (int)Min(batch->label.length, (uint64_t)95u),
@@ -4181,6 +4185,16 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
             vkr_bakery_json_cstr(call->arena,
                                  "Too many pending changes; this one applied "
                                  "without review"));
+    if (!ops->review_overflow) {
+      ops->review_overflow = true_v;
+      char toast[160];
+      snprintf(toast, sizeof(toast),
+               "%u agent changes wait for review; new ones apply unreviewed "
+               "until some are accepted or rejected",
+               VKR_EDITOR_CHANGE_MAX);
+      vkr_editor_toast(ctx->editor, VKR_UI_ICON_TERMINAL,
+                       vkr_ui_theme()->warning, toast);
+    }
   }
   if (!pending->settle) {
     return VKR_EDITOR_OP_DONE;

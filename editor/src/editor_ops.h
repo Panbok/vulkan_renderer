@@ -52,7 +52,9 @@ typedef struct VkrEditorOpCall {
   bool8_t waited;
 } VkrEditorOpCall;
 
-#define VKR_EDITOR_CHANGE_MAX 64u
+/* Pending changes the designer can review; a long agent build fills 64 in
+   about an hour, past which its batches applied unreviewed. */
+#define VKR_EDITOR_CHANGE_MAX 512u
 #define VKR_EDITOR_CHANGE_ENTITY_MAX 128u
 
 /* A batch an agent applied for review: its journal group in `container`,

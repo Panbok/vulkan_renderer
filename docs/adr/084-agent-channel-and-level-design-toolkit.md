@@ -187,7 +187,9 @@ only. Reject calls `vkr_scene_edit_group_revert`:
 
 A refused reject names the conflicting entity. A change disappears when its
 group leaves the journal, as after a scene reload or an undo followed by a new
-edit.
+edit. The list holds `VKR_EDITOR_CHANGE_MAX` (512) changes; past that a
+reviewed batch applies unreviewed, its result carries a `warning`, and a
+toast tells the designer once until the list has room again.
 
 A change records its author, which `changes.list` returns and the Changes
 window shows before the label. Undo follows the newest entry across every
