@@ -464,6 +464,32 @@ static void test_sensor_queue_fault(void) {
   vkr_physics_world_destroy(world);
 }
 
+/* A sliver whose area Jolt treats as zero, though the adapter's own check
+   passes it, used to make Jolt refuse the whole mesh (a sloped curved
+   blockout corridor lost its collision). The mesh keeps its other triangles. */
+static void test_triangle_mesh_sliver(void) {
+  VkrPhysicsWorld *world = vkr_physics_world_create(4);
+  assert(world);
+  /* A floor quad, then a sliver 10 m long and 1e-8 m wide above it. */
+  const float32_t vertices[7][3] = {{-5, 0, -5},    {-5, 0, 5}, {5, 0, 5},
+                                    {5, 0, -5},     {0, 1, 0},  {10, 1, 0},
+                                    {5, 1, 1.0e-8f}};
+  const uint32_t indices[] = {0, 1, 2, 0, 2, 3, 4, 5, 6};
+  VkrPhysicsColliderDesc mesh = box(301);
+  mesh.shape = VKR_PHYSICS_TRIANGLE_MESH;
+  mesh.geometry = (VkrPhysicsGeometry){&vertices[0][0], 7, indices, 9};
+  VkrPhysicsBodyDesc desc = body_desc(300, &mesh);
+  desc.motion = VKR_PHYSICS_STATIC;
+  VkrPhysicsBody floor;
+  assert(vkr_physics_body_create(world, &desc, &floor));
+  const float32_t origin[3] = {1, 2, 1};
+  const float32_t ray[3] = {0, -4, 0};
+  VkrPhysicsRayHit hit;
+  assert(vkr_physics_raycast(world, origin, ray, &hit));
+  assert(hit.collider_entity_id == 301 && fabsf(hit.position[1]) < 0.01f);
+  vkr_physics_world_destroy(world);
+}
+
 static void test_geometry_scale_and_sweep(void) {
   VkrPhysicsWorld *world = vkr_physics_world_create(4);
   assert(world);
@@ -768,6 +794,7 @@ bool32_t run_physics_tests(void) {
   test_sensor_queue_fault();
   test_sensor_mutation_reservation();
   test_geometry_scale_and_sweep();
+  test_triangle_mesh_sliver();
   test_contact_identity_and_reservation();
   test_joint_limits_and_lifetime();
   test_parallel_steps_match();

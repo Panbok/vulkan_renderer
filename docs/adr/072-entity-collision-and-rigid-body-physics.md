@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-08
 authority: adr
 ---
 
@@ -111,7 +111,13 @@ morphed and compressed source geometry is rejected; use an explicit static proxy
 Convex cooking builds one enclosing hull with at most 256 vertices and rejects
 input requiring more vertices instead of silently simplifying it. Concave dynamic
 objects need multiple convex colliders. Triangle meshes are Static/Kinematic,
-with counterclockwise front faces and one-sided simulation contact. Height
+with counterclockwise front faces and one-sided simulation contact. The
+[adapter](../../runtime/src/physics/vkr_physics.cpp) refuses out-of-range,
+repeated or zero-area triangles, then drops each triangle Jolt itself treats
+as degenerate (near-zero area, or collapsed after quantizing to the mesh
+bounds) through `MeshShapeSettings::Sanitize`, because Jolt refuses a whole
+mesh for one such sliver; a sloped curved blockout corridor lost all its
+collision that way. A shape Jolt still rejects logs Jolt's reason. Height
 fields (`VKR_PHYSICS_HEIGHT_FIELD`) are Static only: a square of heights at a
 spacing, its side a multiple of four samples, with `VKR_PHYSICS_HEIGHT_HOLE`
 marking samples without ground. Scene terrains build them

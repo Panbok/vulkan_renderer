@@ -768,6 +768,10 @@ static bool8_t build_shape(const VkrPhysicsColliderDesc &c,
         }
         settings.mIndexedTriangles.emplace_back(a, b, c_index, 0);
       }
+      // Jolt refuses a whole mesh for one sliver it judges degenerate, by
+      // area or after quantizing to the mesh bounds; such a triangle has no
+      // area to collide with, so it leaves and the rest of the mesh stays.
+      settings.Sanitize();
       result = settings.Create();
     }
     break;
@@ -797,6 +801,8 @@ static bool8_t build_shape(const VkrPhysicsColliderDesc &c,
     return shape_fail(error, "Unknown collision shape");
   }
   if (result.HasError()) {
+    log_warn("Physics: Jolt rejected a collision shape: %s",
+             result.GetError().c_str());
     return shape_fail(error, "Jolt rejected collision shape");
   }
   shape = result.Get();
