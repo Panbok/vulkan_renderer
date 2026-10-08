@@ -107,8 +107,11 @@ typedef struct IoMover {
   float32_t angle;
   bool8_t turns;
   bool8_t spin;
-  /* Metres per second, or radians per second when it turns. */
+  /* Metres per second, or radians per second when it turns, and the speed
+     it gains or loses per second setting off and stopping; zero moves at
+     `speed` from the first tick to the last. */
   float32_t speed;
+  float32_t acceleration;
   float32_t wait;
   bool8_t loop;
   bool8_t locked;
@@ -118,6 +121,17 @@ typedef struct IoMover {
   /* Seconds left resting at an end before it turns back; negative when it
      stays. */
   float64_t wait_left;
+  /* Progress per second, positive opening, while it eases. */
+  float64_t rate;
+  /* The nearest mover above it in the hierarchy, whose motion carries it,
+     or -1. Carriers sort before what they carry. */
+  int32_t carrier;
+  /* Its motion from rest, its carriers' included: a turn, then a shift. */
+  VkrQuat turn;
+  Vec3 shift;
+  /* Its pose is written again at the end of this step: it or its carrier
+     moved. */
+  bool8_t pose_due;
 } IoMover;
 
 // =============================================================================
@@ -665,7 +679,8 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
           (void)io_mover_turn(scene, entity, &turn.pivot, &turn.offset);
         }
         const float64_t start = mover->start_open ? 1.0 : 0.0;
-        /* A looping mover sets off for its other end at once. */
+        /* A looping mover first rests its wait at the end it starts at,
+           then sets off, as at every end after. */
         router->movers[router->mover_count++] = (IoMover){
             .entity = entity,
             .travel = travel,
@@ -676,12 +691,18 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
             .turns = turns,
             .spin = mover->spin,
             .speed = turns ? mover->speed * VKR_PI / 180.0f : mover->speed,
+            .acceleration = turns ? mover->acceleration * VKR_PI / 180.0f
+                                  : mover->acceleration,
             .wait = mover->wait,
             .loop = mover->loop && !mover->spin,
             .locked = mover->locked,
             .progress = mover->spin ? 0.0 : start,
-            .target = mover->loop && !mover->spin ? 1.0 - start : start,
-            .wait_left = -1.0};
+            .target = start,
+            .wait_left = mover->loop && !mover->spin
+                             ? (float64_t)Max(0.0f, mover->wait)
+                             : -1.0,
+            .carrier = -1,
+            .turn = vkr_quat_identity()};
         if (!turns && vec3_length(travel) <= 0.0f) {
           const String8 name = io_name(scene, entity);
           log_warn("[io] Mover '%.*s' has nowhere to move: give it a "
@@ -714,15 +735,55 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
   return true_v;
 }
 
-/* The saved world pose of `entity`: its parent's world matrix times its
-   local one, as the transform update composes them, which an evaluated pose
-   of its own does not change. */
+/* Hierarchies deeper than this find no mover above their first levels. */
+#define IO_MOVER_DEPTH_MAX 64u
+
+/* The nearest entity above `entity` that carries a mover, or none; `chain`,
+   when given, receives the local poses from below it down to `entity`. */
+static VkrEntityId io_mover_carrier_of(const VkrScene *scene,
+                                       VkrEntityId entity, Mat4 *chain) {
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  Mat4 locals = transform ? transform->local : mat4_identity();
+  for (uint32_t depth = 0;
+       transform && transform->parent.u64 && depth < IO_MOVER_DEPTH_MAX;
+       ++depth) {
+    const VkrEntityId above = transform->parent;
+    if (vkr_scene_get_typed(scene, above, &vkr_scene_mover_type)) {
+      if (chain) {
+        *chain = locals;
+      }
+      return above;
+    }
+    transform =
+        vkr_entity_get_component(scene->world, above, scene->comp_transform);
+    if (transform) {
+      locals = mat4_mul(transform->local, locals);
+    }
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+/* The saved world pose of `entity` with every mover above it at rest: the
+   nearest one's rest pose times the local poses down from it, or with none,
+   its parent's world matrix times its local one, as the transform update
+   composes them. An evaluated pose of its own does not change it. */
 static bool8_t io_mover_rest(const VkrScene *scene, VkrEntityId entity,
                              Mat4 *out) {
   const SceneTransform *transform =
       vkr_entity_get_component(scene->world, entity, scene->comp_transform);
   if (!transform) {
     return false_v;
+  }
+  Mat4 chain;
+  const VkrEntityId carrier = io_mover_carrier_of(scene, entity, &chain);
+  if (carrier.u64) {
+    Mat4 carrier_rest;
+    if (!io_mover_rest(scene, carrier, &carrier_rest)) {
+      return false_v;
+    }
+    *out = mat4_mul(carrier_rest, chain);
+    return true_v;
   }
   const SceneTransform *parent =
       transform->parent.u64
@@ -814,24 +875,36 @@ static VkrIoMoverMotion io_mover_motion(const IoMover *mover) {
                             .pivot = mover->pivot};
 }
 
-/* Writes the mover's evaluated pose, the saved one moved `progress` of the
-   way open, and its brushes' kinematic target. Adds the evaluated
-   transform when it has none, so only publication and refresh may. */
-static void io_mover_pose(VkrScene *scene, const IoMover *mover) {
+/* Writes the mover's evaluated pose, the rest one moved `progress` of the
+   way open and carried by its carrier (posed first), and its brushes'
+   kinematic target. Adds the evaluated transform when it has none, so only
+   publication and refresh may. */
+static void io_mover_pose(VkrIoRouter *router, VkrScene *scene,
+                          IoMover *mover) {
   Mat4 rest;
   if (!io_mover_rest(scene, mover->entity, &rest)) {
     return;
   }
+  /* Its own motion, turned about the pivot then moved,
+     T(offset + pivot) R T(-pivot), as a turn then a shift. */
   const VkrIoMoverMotion motion = io_mover_motion(mover);
-  /* Turned about the pivot, then moved: T(offset + pivot) R T(-pivot). */
-  const Mat4 turn =
-      mat4_mul(mat4_translate(vec3_add(motion.offset, motion.pivot)),
-               mat4_mul(vkr_quat_to_mat4(motion.rotation),
-                        mat4_translate(vec3_scale(motion.pivot, -1.0f))));
-  const Mat4 pose = mat4_mul(turn, rest);
+  VkrQuat turn = motion.rotation;
+  Vec3 shift = vec3_add(
+      motion.offset,
+      vec3_sub(motion.pivot, vkr_quat_rotate_vec3(turn, motion.pivot)));
+  /* A door on a tram car opens on the car wherever the car is. */
+  if (mover->carrier >= 0) {
+    const IoMover *carrier = &router->movers[mover->carrier];
+    shift =
+        vec3_add(vkr_quat_rotate_vec3(carrier->turn, shift), carrier->shift);
+    turn = vkr_quat_normalize(vkr_quat_mul(carrier->turn, turn));
+  }
+  mover->turn = turn;
+  mover->shift = shift;
+  const Mat4 pose =
+      mat4_mul(mat4_mul(mat4_translate(shift), vkr_quat_to_mat4(turn)), rest);
   (void)vkr_scene_set_evaluated_transform(scene, mover->entity, &pose);
-  vkr_scene_brush_mover_move(scene, mover->entity, motion.offset,
-                             motion.rotation, motion.pivot);
+  vkr_scene_brush_mover_move(scene, mover->entity, shift, turn, vec3_zero());
 }
 
 /* Returns a mover to its saved pose: no evaluated transform, its body at
@@ -844,13 +917,73 @@ static void io_mover_release(VkrScene *scene, const IoMover *mover) {
   }
 }
 
-static void io_movers_publish(VkrIoRouter *router) {
-  for (uint32_t i = 0; i < router->mover_count; ++i) {
-    VkrScene *scene = io_scene_of(router, router->movers[i].entity);
-    if (scene && vkr_scene_entity_alive(scene, router->movers[i].entity)) {
-      io_mover_pose(scene, &router->movers[i]);
-    }
+static IoMover *io_mover(VkrIoRouter *router, VkrEntityId entity);
+
+/* How many movers are above `mover` in the hierarchy. */
+static uint32_t io_mover_depth(const VkrIoRouter *router,
+                               const IoMover *mover) {
+  const VkrScene *scene = io_scene_of(router, mover->entity);
+  uint32_t depth = 0u;
+  VkrEntityId above = mover->entity;
+  while (scene && depth < IO_MOVER_DEPTH_MAX &&
+         (above = io_mover_carrier_of(scene, above, NULL)).u64) {
+    depth++;
   }
+  return depth;
+}
+
+/* Sorts carriers before the movers they carry, keeping the order
+   otherwise, and links each mover to its carrier. Publication only. */
+static void io_movers_link(VkrIoRouter *router) {
+  for (uint32_t i = 1; i < router->mover_count; ++i) {
+    const IoMover moving = router->movers[i];
+    const uint32_t depth = io_mover_depth(router, &moving);
+    uint32_t at = i;
+    while (at > 0u &&
+           io_mover_depth(router, &router->movers[at - 1u]) > depth) {
+      router->movers[at] = router->movers[at - 1u];
+      at--;
+    }
+    router->movers[at] = moving;
+  }
+  for (uint32_t i = 0; i < router->mover_count; ++i) {
+    IoMover *mover = &router->movers[i];
+    const VkrScene *scene = io_scene_of(router, mover->entity);
+    const VkrEntityId above =
+        scene ? io_mover_carrier_of(scene, mover->entity, NULL)
+              : VKR_ENTITY_ID_INVALID;
+    const IoMover *carrier = above.u64 ? io_mover(router, above) : NULL;
+    mover->carrier =
+        carrier && carrier < mover ? (int32_t)(carrier - router->movers) : -1;
+  }
+}
+
+/* Poses the movers due and those their carriers moved, carriers first;
+   publication poses all. */
+static void io_movers_pose(VkrIoRouter *router, bool8_t all) {
+  for (uint32_t i = 0; i < router->mover_count; ++i) {
+    IoMover *mover = &router->movers[i];
+    const IoMover *carrier =
+        mover->carrier >= 0 ? &router->movers[mover->carrier] : NULL;
+    mover->pose_due = all || mover->pose_due || (carrier && carrier->pose_due);
+    VkrScene *scene = io_scene_of(router, mover->entity);
+    /* Only publication adds the evaluated transform; a tick may not. */
+    if (!mover->pose_due || !scene ||
+        !vkr_scene_entity_alive(scene, mover->entity) ||
+        (!all && !vkr_entity_has_component(scene->world, mover->entity,
+                                           scene->comp_evaluated_transform))) {
+      continue;
+    }
+    io_mover_pose(router, scene, mover);
+  }
+  for (uint32_t i = 0; i < router->mover_count; ++i) {
+    router->movers[i].pose_due = false_v;
+  }
+}
+
+static void io_movers_publish(VkrIoRouter *router) {
+  io_movers_link(router);
+  io_movers_pose(router, true_v);
 }
 
 bool8_t vkr_io_router_publish(VkrIoRouter *router, VkrScene *const *scenes,
@@ -1228,6 +1361,7 @@ static bool8_t io_mover_head(VkrIoRouter *router, IoMover *mover,
   if (target == mover->progress) {
     mover->target = target;
     mover->wait_left = io_mover_rest_time(mover);
+    mover->rate = 0.0;
     return true_v;
   }
   const bool8_t moving = mover->target != mover->progress;
@@ -1567,6 +1701,55 @@ static bool8_t io_sense(VkrIoRouter *router, VkrScene *scene,
                  NULL, 0u);
 }
 
+/* Moves a mover `dt` seconds toward its target: at its speed throughout,
+   or with an acceleration, speeding up from where it rests and slowing to
+   stop at the target, turning back first when it heads the other way. It
+   arrives exactly at the target. */
+static void io_mover_advance(IoMover *mover, float64_t dt) {
+  /* A full travel takes its length over the speed, a turn its angle;
+     none takes one tick. */
+  const float64_t length =
+      mover->turns ? fabs((float64_t)mover->angle) : vec3_length(mover->travel);
+  const float64_t remaining = mover->target - mover->progress;
+  if (length <= 0.0 || mover->acceleration <= 0.0f) {
+    const float64_t step =
+        length > 0.0 ? (float64_t)mover->speed * dt / length : 1.0;
+    if (fabs(remaining) <= step * (1.0 + 1.0e-9)) {
+      mover->progress = mover->target;
+    } else {
+      mover->progress += remaining > 0.0 ? step : -step;
+    }
+    return;
+  }
+  /* In progress per second: the top speed, the change one tick allows, and
+     the fastest it may go still to stop at the target. */
+  const float64_t top = (float64_t)mover->speed / length;
+  const float64_t acceleration = (float64_t)mover->acceleration / length;
+  const float64_t change = acceleration * dt;
+  const float64_t brake = sqrt(2.0 * acceleration * fabs(remaining));
+  const float64_t wanted = (remaining > 0.0 ? 1.0 : -1.0) * Min(top, brake);
+  if (mover->rate * wanted > 0.0 && fabs(wanted) < fabs(mover->rate)) {
+    /* Braking along its way follows the curve that stops at the target. */
+    mover->rate = wanted;
+  } else {
+    mover->rate += Clamp(wanted - mover->rate, -change, change);
+  }
+  const float64_t step = mover->rate * dt;
+  if ((step * remaining > 0.0 &&
+       fabs(step) >= fabs(remaining) * (1.0 - 1.0e-9)) ||
+      fabs(remaining) <= 0.5 * change * dt) {
+    mover->progress = mover->target;
+    mover->rate = 0.0;
+    return;
+  }
+  /* Turning back past an end stops it there. */
+  mover->progress += step;
+  if (mover->progress < 0.0 || mover->progress > 1.0) {
+    mover->progress = Clamp(mover->progress, 0.0, 1.0);
+    mover->rate = 0.0;
+  }
+}
+
 bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt) {
   if (!router->published || router->faulted) {
     return !router->faulted;
@@ -1583,12 +1766,19 @@ bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt) {
     }
     if (mover->spin) {
       /* A spinning mover turns on while open and stops where it is when
-         closed; whole turns wrap. */
-      if (mover->target == 1.0) {
-        const float64_t turn =
-            (float64_t)mover->speed * dt / (float64_t)mover->angle;
-        mover->progress = fmod(mover->progress + turn, 1.0);
-        io_mover_pose(scene, mover);
+         closed, easing both with an acceleration; whole turns wrap. */
+      const float64_t top = (float64_t)mover->speed / (float64_t)mover->angle;
+      const float64_t wanted = mover->target == 1.0 ? top : 0.0;
+      if (mover->acceleration > 0.0f) {
+        const float64_t change =
+            (float64_t)mover->acceleration / (float64_t)mover->angle * dt;
+        mover->rate += Clamp(wanted - mover->rate, -change, change);
+      } else {
+        mover->rate = wanted;
+      }
+      if (mover->rate != 0.0) {
+        mover->progress = fmod(mover->progress + mover->rate * dt, 1.0);
+        mover->pose_due = true_v;
       }
       continue;
     }
@@ -1608,19 +1798,8 @@ bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt) {
       }
       continue;
     }
-    /* A full travel takes its length over the speed, a turn its angle;
-       none takes one tick. */
-    const float64_t length = mover->turns ? fabs((float64_t)mover->angle)
-                                          : vec3_length(mover->travel);
-    const float64_t step =
-        length > 0.0 ? (float64_t)mover->speed * dt / length : 1.0;
-    const float64_t remaining = mover->target - mover->progress;
-    if (fabs(remaining) <= step * (1.0 + 1.0e-9)) {
-      mover->progress = mover->target;
-    } else {
-      mover->progress += remaining > 0.0 ? step : -step;
-    }
-    io_mover_pose(scene, mover);
+    io_mover_advance(mover, dt);
+    mover->pose_due = true_v;
     if (mover->progress != mover->target) {
       continue;
     }
@@ -1633,6 +1812,8 @@ bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt) {
       }
     }
   }
+  /* Carriers pose first, so a door on a moving car rides it. */
+  io_movers_pose(router, false_v);
   return true_v;
 }
 

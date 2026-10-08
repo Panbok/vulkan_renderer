@@ -195,9 +195,11 @@ bool8_t vkr_io_router_send(VkrIoRouter *router, VkrEntityId target,
  * `error` says why. */
 bool8_t vkr_io_router_tick(VkrIoRouter *router, VkrScene *scene, float64_t now);
 /** Before physics in a tick of `dt` seconds: moves each mover toward where
- * it heads and counts down its wait, writing its evaluated pose and its
- * brushes' kinematic target; outputs it fires deliver at the tick's end
- * (vkr_io_router_tick). No structural edits. False when the router
+ * it heads, easing with its acceleration, and counts down its wait; then
+ * writes the evaluated pose and brushes' kinematic target of each mover
+ * that moved or whose carrier, the nearest mover above it, did: its own
+ * motion carried by its carrier's. Outputs it fires deliver at the tick's
+ * end (vkr_io_router_tick). No structural edits. False when the router
  * faulted. */
 bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt);
 

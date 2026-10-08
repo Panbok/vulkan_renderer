@@ -2617,6 +2617,15 @@ static const VkrPropertyDesc s_mover_properties[] = {
      .min = 0.01f,
      .max = 1000.0f,
      .step = 0.05f},
+    {.name = "acceleration",
+     .label = "Acceleration",
+     .tooltip = "Speed it gains setting off and loses before it stops, per "
+                "second; 0 moves at full speed at once",
+     .offset = TYPE_OFFSET(SceneMover, acceleration),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 100000.0f,
+     .step = 0.1f},
     {.name = "wait",
      .label = "Wait",
      .tooltip = "Seconds it stays open before it closes by itself; -1 stays "
@@ -2656,6 +2665,12 @@ static bool8_t mover_validate(const void *value, char *error,
   const SceneMover *mover = value;
   const bool8_t turns = mover->angle != 0.0f || mover->spin;
   const Vec3 along = turns ? mover->axis : mover->direction;
+  if (!isfinite(mover->acceleration) || mover->acceleration < 0.0f) {
+    if (error) {
+      snprintf(error, capacity, "A mover's acceleration is zero or more");
+    }
+    return false_v;
+  }
   if (!isfinite(vec3_length(along)) || vec3_length(along) < 1.0e-4f ||
       !isfinite(mover->angle) || !isfinite(vec3_length(mover->pivot))) {
     if (error) {

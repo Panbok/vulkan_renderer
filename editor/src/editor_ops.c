@@ -9315,7 +9315,7 @@ static const OpsDef s_ops[] = {
      "the vertical line through the middle of that side of their box, 90 "
      "degrees unless 'values' gives an angle. 'values' sets the mover "
      "component (direction, distance, lip, angle, axis, pivot, spin, speed, "
-     "wait, start_open, loop, locked).",
+     "acceleration, wait, start_open, loop, locked).",
      "{\"type\":\"object\",\"properties\":{\"objects\":{\"type\":\"array\","
      "\"items\":" OPS_ENTITY_SCHEMA ",\"minItems\":1,\"maxItems\":64},"
      "\"hinge\":{\"type\":\"string\",\"enum\":[\"+x\",\"-x\",\"+z\","

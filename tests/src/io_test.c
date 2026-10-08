@@ -551,6 +551,212 @@ static void io_test_mover_turn(void) {
   printf("  io_test_mover_turn PASSED\n");
 }
 
+/* A looping mover (ADR-084) 2 m along +X at 1 m/s resting 2 s at each
+ * end. Oracles: its evaluated pose and the tick on_open and on_opened
+ * reach a probe. It rests its wait at the end it starts at: still at 1.9 s
+ * and 2 s, moving at the next tick, open after 2 m more at 4 s, still open
+ * until the far wait ends at 6 s, and on its way back after it. */
+static void io_test_mover_loop(void) {
+  printf("  Running io_test_mover_loop...\n");
+  IoTest test;
+  io_test_begin(&test);
+  const SceneMover settings = {.direction = vec3_new(1.0f, 0.0f, 0.0f),
+                               .distance = 2.0f,
+                               .speed = 1.0f,
+                               .wait = 2.0f,
+                               .loop = true_v};
+  const VkrEntityId mover =
+      io_test_entity(&test, "shuttle", &vkr_scene_mover_type, &settings);
+  const Vec3 saved = vec3_new(5.0f, 1.0f, -3.0f);
+  assert(vkr_scene_set_transform(&test.scene, mover, saved, vkr_quat_identity(),
+                                 vec3_one()));
+  const VkrEntityId probe = io_test_entity(&test, "probe", &s_probe_type, NULL);
+  (void)io_test_connect(&test, mover, "on_open", probe, "record", "1", 0.0f,
+                        0u);
+  (void)io_test_connect(&test, mover, "on_opened", probe, "record", "2", 0.0f,
+                        0u);
+  vkr_scene_update_transforms(&test.scene);
+  io_test_publish(&test);
+  assert(test.router.problems == 0u);
+  uint32_t reached[3] = {0};
+  const float64_t dt = 1.0 / 60.0;
+  for (uint32_t tick = 1; tick <= 362u; ++tick) {
+    const uint32_t before = test.record_count;
+    assert(vkr_io_router_step(&test.router, dt));
+    assert(vkr_io_router_tick(&test.router, &test.scene, tick * dt));
+    for (uint32_t r = before; r < test.record_count; ++r) {
+      const int32_t value = test.records[r].value;
+      assert(value >= 1 && value <= 2);
+      if (!reached[value]) {
+        reached[value] = tick;
+      }
+    }
+    const float32_t offset = io_test_mover_offset(&test, mover, saved);
+    if (tick == 114u || tick == 120u) {
+      assert(offset == 0.0f);
+    }
+    if (tick == 121u) {
+      assert(fabsf(offset - 1.0f / 60.0f) < 1e-5f);
+    }
+    if (tick == 240u || tick == 360u) {
+      assert(fabsf(offset - 2.0f) < 1e-5f);
+    }
+    if (tick == 361u) {
+      assert(offset < 2.0f - 1e-3f);
+    }
+  }
+  assert(reached[1] == 120u && reached[2] == 240u);
+  io_test_end(&test);
+  printf("  io_test_mover_loop PASSED\n");
+}
+
+/* An easing mover (ADR-084): 2 m along +X at 1 m/s speeding up and slowing
+ * at 1 m/s^2. Oracles: constant-acceleration kinematics, 1 s up to speed
+ * over 0.5 m, 1 m at speed and 1 s to a stop over 0.5 m, so it opens at
+ * 3 s; it moves 1/7200 m in the first tick against 1/60 at once, a quarter
+ * second in it has gone half a^2 t, never faster than its speed and never
+ * changing speed faster than twice its acceleration in a tick; on_opened
+ * reaches the probe when it arrives, within four ticks of 3 s. */
+static void io_test_mover_ease(void) {
+  printf("  Running io_test_mover_ease...\n");
+  IoTest test;
+  io_test_begin(&test);
+  const SceneMover settings = {.direction = vec3_new(1.0f, 0.0f, 0.0f),
+                               .distance = 2.0f,
+                               .speed = 1.0f,
+                               .acceleration = 1.0f,
+                               .wait = -1.0f};
+  const VkrEntityId mover =
+      io_test_entity(&test, "lift", &vkr_scene_mover_type, &settings);
+  const Vec3 saved = vec3_new(5.0f, 1.0f, -3.0f);
+  assert(vkr_scene_set_transform(&test.scene, mover, saved, vkr_quat_identity(),
+                                 vec3_one()));
+  const VkrEntityId probe = io_test_entity(&test, "probe", &s_probe_type, NULL);
+  (void)io_test_connect(&test, mover, "on_opened", probe, "record", "1", 0.0f,
+                        0u);
+  vkr_scene_update_transforms(&test.scene);
+  io_test_publish(&test);
+  assert(vkr_io_router_send(&test.router, mover,
+                            io_test_input_of(&test, mover, "open"), NULL,
+                            false_v));
+  const float64_t dt = 1.0 / 60.0;
+  float32_t last = 0.0f;
+  float32_t last_speed = 0.0f;
+  uint32_t opened = 0u;
+  for (uint32_t tick = 1; tick <= 200u; ++tick) {
+    assert(vkr_io_router_step(&test.router, dt));
+    assert(vkr_io_router_tick(&test.router, &test.scene, tick * dt));
+    if (!opened && test.record_count) {
+      opened = tick;
+    }
+    const float32_t offset = io_test_mover_offset(&test, mover, saved);
+    const float32_t speed = (offset - last) * 60.0f;
+    if (tick == 1u) {
+      assert(fabsf(offset - 1.0f / 3600.0f) < 1e-6f);
+    }
+    if (tick == 15u) {
+      assert(fabsf(offset - 0.5f * 0.25f * 0.25f) < 5e-3f);
+    }
+    assert(speed >= -1e-4f && speed <= 1.0f + 1e-4f);
+    assert(fabsf(speed - last_speed) <= 2.0f / 60.0f + 1e-4f);
+    last = offset;
+    last_speed = speed;
+  }
+  assert(opened >= 176u && opened <= 184u && test.record_count == 1u);
+  assert(fabsf(last - 2.0f) < 1e-5f);
+  io_test_end(&test);
+  printf("  io_test_mover_ease PASSED\n");
+}
+
+/* Movers under movers (ADR-084): a door 2 m along a car, which slides 10 m
+ * along +X at 2 m/s, slides 1 m along +Z at 0.5 m/s; a hatch 2 m along a
+ * turntable turning 90 degrees about +Y at 90 degrees a second slides 1 m
+ * along it at 1 m/s. Oracles: rigid motion composed by hand. A second in,
+ * the closed door has ridden the car 2 m; a second after it opens too it
+ * stands 4 m on and 0.5 m out; the hatch ends 3 m along the turntable's
+ * turned +X, its -Z. A carried mover posed from its own motion alone stays
+ * behind its carrier. */
+static void io_test_mover_carried(void) {
+  printf("  Running io_test_mover_carried...\n");
+  IoTest test;
+  io_test_begin(&test);
+  /* The carried movers come first, so carriers must sort ahead of them. */
+  const SceneMover door_settings = {.direction = vec3_new(0.0f, 0.0f, 1.0f),
+                                    .distance = 1.0f,
+                                    .speed = 0.5f,
+                                    .wait = -1.0f};
+  const VkrEntityId door =
+      io_test_entity(&test, "door", &vkr_scene_mover_type, &door_settings);
+  const SceneMover car_settings = {.direction = vec3_new(1.0f, 0.0f, 0.0f),
+                                   .distance = 10.0f,
+                                   .speed = 2.0f,
+                                   .wait = -1.0f};
+  const VkrEntityId car =
+      io_test_entity(&test, "car", &vkr_scene_mover_type, &car_settings);
+  const SceneMover hatch_settings = {.direction = vec3_new(1.0f, 0.0f, 0.0f),
+                                     .distance = 1.0f,
+                                     .speed = 1.0f,
+                                     .wait = -1.0f};
+  const VkrEntityId hatch =
+      io_test_entity(&test, "hatch", &vkr_scene_mover_type, &hatch_settings);
+  const SceneMover table_settings = {.angle = 90.0f,
+                                     .axis = vec3_new(0.0f, 1.0f, 0.0f),
+                                     .speed = 90.0f,
+                                     .wait = -1.0f};
+  const VkrEntityId table =
+      io_test_entity(&test, "table", &vkr_scene_mover_type, &table_settings);
+  vkr_scene_set_parent(&test.scene, door, car);
+  vkr_scene_set_parent(&test.scene, hatch, table);
+  const Vec3 car_at = vec3_new(5.0f, 1.0f, -3.0f);
+  const Vec3 table_at = vec3_new(-4.0f, 0.0f, 6.0f);
+  assert(vkr_scene_set_transform(&test.scene, car, car_at, vkr_quat_identity(),
+                                 vec3_one()));
+  assert(vkr_scene_set_transform(&test.scene, door, vec3_new(2.0f, 0.0f, 0.0f),
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_transform(&test.scene, table, table_at,
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_transform(&test.scene, hatch, vec3_new(2.0f, 0.0f, 0.0f),
+                                 vkr_quat_identity(), vec3_one()));
+  vkr_scene_update_transforms(&test.scene);
+  io_test_publish(&test);
+  assert(test.router.problems == 0u);
+  assert(vkr_io_router_send(
+      &test.router, car, io_test_input_of(&test, car, "open"), NULL, false_v));
+  assert(vkr_io_router_send(&test.router, table,
+                            io_test_input_of(&test, table, "open"), NULL,
+                            false_v));
+  assert(vkr_io_router_send(&test.router, hatch,
+                            io_test_input_of(&test, hatch, "open"), NULL,
+                            false_v));
+  const float64_t dt = 1.0 / 60.0;
+  const Vec3 door_at = vec3_new(7.0f, 1.0f, -3.0f);
+  for (uint32_t tick = 1; tick <= 120u; ++tick) {
+    if (tick == 61u) {
+      assert(vkr_io_router_send(&test.router, door,
+                                io_test_input_of(&test, door, "open"), NULL,
+                                false_v));
+    }
+    assert(vkr_io_router_step(&test.router, dt));
+    assert(vkr_io_router_tick(&test.router, &test.scene, tick * dt));
+    vkr_scene_update_transforms(&test.scene);
+    if (tick == 60u) {
+      const Vec3 at = io_test_mover_position(&test, door);
+      assert(vec3_length(vec3_sub(at, vec3_add(door_at, vec3_new(2, 0, 0)))) <
+             1e-4f);
+    }
+  }
+  const Vec3 door_open = io_test_mover_position(&test, door);
+  assert(vec3_length(vec3_sub(door_open,
+                              vec3_add(door_at, vec3_new(4.0f, 0.0f, 0.5f)))) <
+         1e-4f);
+  const Vec3 hatch_open = io_test_mover_position(&test, hatch);
+  assert(vec3_length(vec3_sub(
+             hatch_open, vec3_add(table_at, vec3_new(0.0f, 0.0f, -3.0f)))) <
+         1e-4f);
+  io_test_end(&test);
+  printf("  io_test_mover_carried PASSED\n");
+}
+
 /* A button (ADR-084), as the player's use key presses it. Oracles: a
  * press reaches on_pressed with its activator, a second one inside the
  * 1 s wait does nothing and one after it presses again; a locked button
@@ -624,6 +830,9 @@ bool32_t run_io_tests(void) {
   io_test_problems();
   io_test_mover();
   io_test_mover_turn();
+  io_test_mover_loop();
+  io_test_mover_ease();
+  io_test_mover_carried();
   io_test_button();
   printf("--- IO Tests Completed ---\n");
   return true_v;

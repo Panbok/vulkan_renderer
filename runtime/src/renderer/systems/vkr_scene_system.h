@@ -429,6 +429,9 @@ typedef struct SceneMover {
   /* Turns about `axis` without end while open and stops where it is when
      closed; `angle` does not apply. */
   bool8_t spin;
+  /* Speed gained or lost per second as it sets off and stops, in metres or
+     degrees per second squared; zero moves at `speed` at once. */
+  float32_t acceleration;
 } SceneMover;
 
 /* One connection, a child entity of its source: when the source fires
