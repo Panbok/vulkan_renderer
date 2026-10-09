@@ -48,6 +48,11 @@ typedef struct VkrMetalPacketIndirectPass {
   /* Local shadow faces clear only their atlas square before drawing. */
   MTLScissorRect clear_rect;
   bool8_t clear_depth;
+  /* A camera pass's Custom graph ranges (the frame's
+     VkrMetalCustomCompaction) and the slots that draw them, bit slot - 1;
+     zero without Custom graphs (ADR-096). */
+  uint64_t custom_arguments;
+  uint32_t custom_ready_mask;
 } VkrMetalPacketIndirectPass;
 
 typedef struct VkrMetalPacketGpuEncodeGroup {
@@ -120,6 +125,10 @@ typedef struct VkrMetalPacketPreparedPass {
     struct {
       VkrMetalPacketIndirectPass draws;
       uint64_t sky_root;
+      /* The forward variant, which picks each Custom graph's pipelines. */
+      uint32_t decals;
+      uint32_t probes;
+      uint32_t lighting;
     } tiled;
     /* The tiled pipeline's atmosphere draw over the resolved image. */
     struct {

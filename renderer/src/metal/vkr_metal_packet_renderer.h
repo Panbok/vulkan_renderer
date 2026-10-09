@@ -22,6 +22,20 @@ struct VkrMaterial;
 VkrRendererError vkr_metal_packet_renderer_get_pixel_readback_result(
     VkrMetalPacketRenderer *renderer, VkrPixelReadbackResult *out_result);
 
+/** Custom material graphs whose pipelines are still being created, and the
+    late Custom draws of every completed frame so far (ADR-096). Atomic
+    reads, safe beside the render thread. */
+/** Asks the next frame preparation to load the project library again after
+    `vkr_bakery materials` rewrote it, and to recreate every Custom graph's
+    pipelines in the background. That frame waits for the GPU first: an
+    authoring action, not a frame operation. Safe from any thread. */
+void vkr_metal_packet_renderer_request_custom_reload(
+    VkrMetalPacketRenderer *renderer);
+
+void vkr_metal_packet_renderer_pipeline_stats(
+    const VkrMetalPacketRenderer *renderer, uint32_t *out_pending_graphs,
+    uint64_t *out_late_draws);
+
 void vkr_metal_packet_renderer_geometry_megabuffer_metrics(
     const VkrMetalPacketRenderer *renderer,
     VkrGeometryMegabufferMetrics *out_metrics);
@@ -57,6 +71,8 @@ typedef struct VkrMetalPacketRendererConfig {
   const char *fragment_metallib_path;
   /** Optional Metal 4 archive path used for cold capture and warm lookup. */
   const char *pipeline_archive_path;
+  /** Optional project library of Custom material graphs (ADR-096). */
+  const char *custom_library_path;
   VkrMetalPacketTargetKind target_kind;
   uint32_t target_width;
   uint32_t target_height;
@@ -150,10 +166,17 @@ typedef enum VkrMetalPacketMaterialTextureFlag {
   VKR_METAL_PACKET_MATERIAL_ROUGH = 1u << 12u,
 } VkrMetalPacketMaterialTextureFlag;
 
+/* A Custom material's graph slot (1 to VKR_METAL_CUSTOM_GRAPH_SLOTS - 1)
+   rides in its row flags above the feature bits; 0 is the Standard tier.
+   Until the frame's ready mask holds the slot, the material draws its
+   Standard fallback as a late draw (ADR-096). */
+#define VKR_METAL_PACKET_MATERIAL_CUSTOM_SHIFT 24u
+#define VKR_METAL_PACKET_MATERIAL_CUSTOM_MASK 0x3Fu
+
 /* Texture references a published material tracks: the twelve common-row and
-   transmission textures, three per extra terrain layer, then the layer
-   mask. */
-#define VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT 22u
+   transmission textures, three per extra terrain layer, the layer mask,
+   then the eight Custom-graph textures. */
+#define VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT 30u
 
 typedef struct VkrMetalPacketRgba8TextureCreateInfo {
   const uint8_t *pixels;
@@ -219,6 +242,9 @@ typedef struct VkrMetalPacketResult {
   uint32_t gpu_overflow_count;
   uint32_t gpu_resolve_invalid_count;
   uint32_t gpu_occlusion_culled_count;
+  /* Camera draws of Custom materials that took their Standard fallback
+     because their graph's pipelines did not exist yet (ADR-096). */
+  uint32_t custom_late_count;
   uint32_t shadow_gpu_visible_count[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_gpu_bucket_counts[VKR_SHADOW_CASCADE_COUNT_MAX]
                                    [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];

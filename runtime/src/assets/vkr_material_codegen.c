@@ -4,7 +4,22 @@
 #include <stdio.h>
 #include <string.h>
 
-#define CODEGEN_FLOAT "%.9g"
+/* A float literal Metal reads exactly: nine significant digits, a decimal
+   point, and the `f` suffix. */
+typedef struct CodegenLiteral {
+  char text[40];
+} CodegenLiteral;
+
+static CodegenLiteral codegen_literal(float32_t value) {
+  CodegenLiteral literal;
+  snprintf(literal.text, sizeof(literal.text), "%.9g", (double)value);
+  if (!strpbrk(literal.text, ".eE")) {
+    strncat(literal.text, ".0",
+            sizeof(literal.text) - strlen(literal.text) - 1u);
+  }
+  strncat(literal.text, "f", sizeof(literal.text) - strlen(literal.text) - 1u);
+  return literal;
+}
 
 // =============================================================================
 // Text
@@ -214,14 +229,13 @@ static bool8_t codegen_node(Codegen *codegen, uint32_t index) {
                      scalar ? "float" : "float3", index, slot,
                      scalar ? "x" : "xyz");
     } else if (scalar) {
-      codegen_append(body, "    const float n%u = " CODEGEN_FLOAT "f;\n", index,
-                     (double)node->value.x);
+      codegen_append(body, "    const float n%u = %s;\n", index,
+                     codegen_literal(node->value.x).text);
     } else {
-      codegen_append(body,
-                     "    const float3 n%u = float3(" CODEGEN_FLOAT
-                     "f, " CODEGEN_FLOAT "f, " CODEGEN_FLOAT "f);\n",
-                     index, (double)node->value.x, (double)node->value.y,
-                     (double)node->value.z);
+      codegen_append(body, "    const float3 n%u = float3(%s, %s, %s);\n",
+                     index, codegen_literal(node->value.x).text,
+                     codegen_literal(node->value.y).text,
+                     codegen_literal(node->value.z).text);
     }
     return true_v;
   }
@@ -389,11 +403,12 @@ static bool8_t codegen_node(Codegen *codegen, uint32_t index) {
       snprintf(uv, sizeof(uv), "%s", a.text);
     }
     codegen_append(body,
-                   "    const float2 n%u = %s * float2(" CODEGEN_FLOAT
-                   "f, " CODEGEN_FLOAT "f) + float2(" CODEGEN_FLOAT
-                   "f, " CODEGEN_FLOAT "f);\n",
-                   index, uv, (double)node->value.x, (double)node->value.y,
-                   (double)node->value.z, (double)node->value.w);
+                   "    const float2 n%u = %s * float2(%s, %s) + "
+                   "float2(%s, %s);\n",
+                   index, uv, codegen_literal(node->value.x).text,
+                   codegen_literal(node->value.y).text,
+                   codegen_literal(node->value.z).text,
+                   codegen_literal(node->value.w).text);
     return true_v;
   }
   case VKR_MATERIAL_NODE_WORLD_PLANAR:
@@ -401,10 +416,8 @@ static bool8_t codegen_node(Codegen *codegen, uint32_t index) {
       return codegen_fail(codegen, node,
                           "World planar needs a size above zero meters");
     }
-    codegen_append(
-        body,
-        "    const float2 n%u = in.world_position.xz * " CODEGEN_FLOAT "f;\n",
-        index, (double)(1.0f / node->value.x));
+    codegen_append(body, "    const float2 n%u = in.world_position.xz * %s;\n",
+                   index, codegen_literal(1.0f / node->value.x).text);
     return true_v;
   default:
     return codegen_fail(codegen, node, "'%s' has no Custom form", desc->label);
@@ -623,5 +636,67 @@ bool8_t vkr_material_codegen_msl(const VkrMaterialGraph *graph,
   }
   *out_source = (String8){.str = (uint8_t *)text.data, .length = text.length};
   out->tier = VKR_MATERIAL_TIER_CUSTOM;
+  return true_v;
+}
+
+// =============================================================================
+// Entry points
+// =============================================================================
+
+bool8_t vkr_material_codegen_msl_entries(const char *function,
+                                         VkrAllocator *allocator,
+                                         String8 *out_source) {
+  /* The tiled forward entries' names and template arguments, as
+     tiled.metal declares them. */
+  static const struct {
+    const char *suffix;
+    const char *lighting;
+  } lightings[] = {
+      {"", "VKR_METAL_TILED_LIGHTING_NONE"},
+      {"_punctual", "VKR_METAL_TILED_LIGHTING_PUNCTUAL"},
+      {"_shadowed", "VKR_METAL_TILED_LIGHTING_SHADOWED"},
+      {"_all", "VKR_METAL_TILED_LIGHTING_ALL"},
+  };
+  CodegenText text = {.allocator = allocator};
+  for (uint32_t coverage = 0; coverage < 2u; ++coverage) {
+    for (uint32_t l = 0; l < ArrayCount(lightings); ++l) {
+      for (uint32_t probes = 0; probes < 2u; ++probes) {
+        for (uint32_t decals = 0; decals < 2u; ++decals) {
+          codegen_append(
+              &text,
+              "fragment float4 %s_vkr_metal_tiled_forward%s%s%s%s_fragment(\n"
+              "    VkrMetalTiledVertexOutput input [[stage_in]],\n"
+              "    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],\n"
+              "    bool front_facing [[front_facing]]) {\n"
+              "  return vkr_metal_tiled_forward<%s, %s, %s, %s,\n"
+              "      VkrMetalCustomSurface<%s>>(input, root, front_facing,\n"
+              "                                 float3(0.0f));\n"
+              "}\n\n",
+              function, lightings[l].suffix, coverage ? "_coverage" : "",
+              probes ? "_probes" : "", decals ? "_decals" : "",
+              lightings[l].lighting, coverage ? "true" : "false",
+              probes ? "true" : "false", decals ? "true" : "false", function);
+        }
+      }
+    }
+    codegen_append(
+        &text,
+        "fragment float4 %s_vkr_metal_tiled_forward_inspect%s_fragment(\n"
+        "    VkrMetalTiledVertexOutput input [[stage_in]],\n"
+        "    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],\n"
+        "    bool front_facing [[front_facing]],\n"
+        "    float3 barycentric [[barycentric_coord]]) {\n"
+        "  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_INSPECT, "
+        "%s, true, true,\n"
+        "      VkrMetalCustomSurface<%s>>(input, root, front_facing,\n"
+        "                                 barycentric);\n"
+        "}\n\n",
+        function, coverage ? "_coverage" : "", coverage ? "true" : "false",
+        function);
+  }
+  if (text.failed) {
+    return false_v;
+  }
+  *out_source = (String8){.str = (uint8_t *)text.data, .length = text.length};
   return true_v;
 }

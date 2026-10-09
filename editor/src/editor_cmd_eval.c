@@ -149,6 +149,8 @@ static const char *const eval_stats_members[] = {"frame_ms",
                                                  "render_height",
                                                  "texture_mb",
                                                  "frame_ms_max",
+                                                 "pending_pipelines",
+                                                 "pipelines_late",
                                                  NULL};
 static const char *const eval_roots[] = {
     "sel",   "view",   "ui",   "sim",  "scene", "world",     "stats",
@@ -898,6 +900,14 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       if (index == 6 || index == 7) {
         *out = eval_number(index == 6 ? frame->scene_render_width
                                       : frame->scene_render_height);
+        return true_v;
+      }
+      if (index == 10 || index == 11) {
+        /* Custom graphs still creating pipelines, or the camera draws that
+           took their fallback so far (ADR-096). */
+        *out =
+            eval_number(index == 10 ? (float64_t)frame->pipeline_pending_count
+                                    : (float64_t)frame->pipeline_late_draws);
         return true_v;
       }
       if (index == 8) {

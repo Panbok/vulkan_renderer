@@ -913,9 +913,13 @@ vkr_internal bool8_t vkr_harness_child_renderer_publications_ready(
       return false_v;
     }
   }
+  /* Custom material graphs create their pipelines after their materials
+     publish; until then they draw their fallback (ADR-096). */
   const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
   if (publisher->publications_idle &&
-      publisher->publications_idle(publisher->state)) {
+      publisher->publications_idle(publisher->state) &&
+      vkr_renderer_get_pipeline_stats(&application->renderer).pending_graphs ==
+          0u) {
     return true_v;
   }
 

@@ -510,6 +510,10 @@ vkr_internal bool8_t vkr_renderer_metrics_register_visibility(
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_hzb_history_valid, "visibility.hzb.history_valid",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  /* Camera draws of Custom materials whose graph's pipelines were still
+     being created, so they drew their Standard fallback (ADR-096). */
+  VKR_REGISTER_U64(pipelines_late, "pipelines.late", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
   const char *hzb_rejection_names[VKR_HZB_HISTORY_REJECTION_COUNT] = {
       "visibility.hzb.history_rejection.disabled",
       "visibility.hzb.history_rejection.invalid",
@@ -1537,6 +1541,7 @@ vkr_internal void vkr_renderer_metrics_collect_visibility(
   VKR_SET_U64(visibility_transmission_candidate_count,
               world->transmission_gpu_candidate_count);
   VKR_SET_U64(visibility_hzb_history_valid, world->hzb_history_valid ? 1u : 0u);
+  VKR_SET_U64(pipelines_late, world->pipelines_late);
   if (world->gpu_diagnostics_valid) {
     VKR_SET_U64(visibility_gpu_visible_count, world->gpu_visible_count);
     VKR_SET_U64(visibility_gpu_bucket_opaque_single,

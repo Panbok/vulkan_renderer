@@ -18,6 +18,7 @@ struct VkrMetalMaterialTableDevice {
   uint64_t core_storage_size;
   uint64_t transmission_offset;
   uint64_t terrain_offset;
+  uint64_t custom_offset;
   VkrMetalMaterialTableCore *core;
 };
 
@@ -53,9 +54,12 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
     table->terrain_offset =
         table->transmission_offset +
         (uint64_t)config->max_rows * sizeof(VkrMetalTransmissionMaterialGpuRow);
-    const uint64_t buffer_size =
+    table->custom_offset =
         table->terrain_offset +
         (uint64_t)config->max_rows * sizeof(VkrMetalTerrainMaterialGpuRow);
+    const uint64_t buffer_size =
+        table->custom_offset +
+        (uint64_t)config->max_rows * sizeof(VkrMetalCustomMaterialGpuRow);
     const uint64_t storage_size =
         vkr_metal_material_table_storage_requirement(config);
     table->core_storage_size = storage_size;
@@ -130,6 +134,10 @@ vkr_metal_material_table_device_publish(VkrMetalMaterialTableDevice *table,
         (VkrMetalTerrainMaterialGpuRow *)((uint8_t *)table->buffer.contents +
                                           table->terrain_offset);
     terrain[out_handle->index] = row->terrain;
+    VkrMetalCustomMaterialGpuRow *custom =
+        (VkrMetalCustomMaterialGpuRow *)((uint8_t *)table->buffer.contents +
+                                         table->custom_offset);
+    custom[out_handle->index] = row->custom;
   }
   return status;
 }
@@ -154,6 +162,10 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_replace(
         (VkrMetalTerrainMaterialGpuRow *)((uint8_t *)table->buffer.contents +
                                           table->terrain_offset);
     terrain[out_new_handle->index] = new_row->terrain;
+    VkrMetalCustomMaterialGpuRow *custom =
+        (VkrMetalCustomMaterialGpuRow *)((uint8_t *)table->buffer.contents +
+                                         table->custom_offset);
+    custom[out_new_handle->index] = new_row->custom;
   }
   return status;
 }
@@ -193,6 +205,11 @@ uint64_t vkr_metal_material_table_device_gpu_address(
 uint64_t vkr_metal_material_table_device_transmission_gpu_address(
     VkrMetalMaterialTableDevice *table) {
   return table ? table->buffer.gpuAddress + table->transmission_offset : 0;
+}
+
+uint64_t vkr_metal_material_table_device_custom_gpu_address(
+    VkrMetalMaterialTableDevice *table) {
+  return table ? table->buffer.gpuAddress + table->custom_offset : 0;
 }
 
 uint64_t vkr_metal_material_table_device_terrain_gpu_address(

@@ -255,6 +255,9 @@ typedef struct VkrRendererImplSubmitResult {
   uint32_t gpu_overflow_count;
   uint32_t gpu_resolve_invalid_count;
   uint32_t gpu_occlusion_culled_count;
+  /* Camera draws of Custom materials that took their Standard fallback
+     because their graph's pipelines were still being created (ADR-096). */
+  uint32_t custom_late_draw_count;
   uint32_t transmission_gpu_visible_count;
   uint32_t transmission_gpu_bucket_counts[VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT];
   uint32_t transmission_gpu_overflow_count;

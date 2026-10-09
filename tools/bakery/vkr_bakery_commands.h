@@ -59,6 +59,8 @@ int vkr_bakery_cmd_explain(VkrBakeryCli *cli);
 int vkr_bakery_cmd_status(VkrBakeryCli *cli);
 int vkr_bakery_cmd_gc(VkrBakeryCli *cli);
 int vkr_bakery_cmd_bundle(VkrBakeryCli *cli);
+/* Custom material graphs into the shader catalog (ADR-096). */
+int vkr_bakery_cmd_materials(VkrBakeryCli *cli);
 
 /** Reports a usage diagnostic and returns VKR_BAKERY_EXIT_USAGE. */
 int vkr_bakery_usage(const char *message);

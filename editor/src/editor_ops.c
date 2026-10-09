@@ -6,6 +6,7 @@
 #include "editor_workbench.h"
 #include "editor_level.h"
 
+#include "assets/vkr_material_codegen.h"
 #include "core/logger.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
@@ -9759,8 +9760,11 @@ static VkrBakeryJson *ops_material_lowering(OpsContext *ctx,
   ops_set(ctx, report, "samples", vkr_bakery_json_int(arena, lowering.samples));
   ops_set(ctx, report, "alu", vkr_bakery_json_int(arena, lowering.alu));
   ops_set(ctx, report, "layers", vkr_bakery_json_int(arena, lowering.layers));
-  /* Standard graphs lower to row data: no shader and no pipeline. */
-  ops_set(ctx, report, "pipelines", vkr_bakery_json_int(arena, 0));
+  /* Standard graphs lower to row data: no shader and no pipeline. A Custom
+     graph's pipelines serve every instance of it (ADR-096). */
+  ops_set(
+      ctx, report, "pipelines",
+      vkr_bakery_json_int(arena, custom ? VKR_MATERIAL_CUSTOM_PIPELINES : 0));
   if (lowered && definition) {
     ops_set(ctx, report, "definition", ops_string(ctx, text));
   }

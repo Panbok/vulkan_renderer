@@ -29,8 +29,54 @@ struct VkrMetalPacketGpuDrawRoot {
   uint hzb_enabled;
   float hzb_depth_epsilon;
   uint icb_view_group_size;
-  uint reserved_3[2];
+  device struct VkrMetalCustomCompaction *custom_compaction;
 };
+
+// The camera view's draw buckets per Custom graph slot (ADR-096); slot 0 is
+// the Standard tier and stays empty.
+#define VKR_METAL_CUSTOM_GRAPH_SLOTS 33u
+#define VKR_METAL_MATERIAL_CUSTOM_SHIFT 24u
+#define VKR_METAL_MATERIAL_CUSTOM_MASK 63u
+// A camera classification of a Custom draw: this bit, and its slot - 1 in the
+// bits the probe takes later.
+#define VKR_METAL_CUSTOM_CLASS_BIT 16u
+#define VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT 27u
+struct VkrMetalCustomCompaction {
+  uint2 execution_ranges[VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
+  atomic_uint bucket_counts[VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
+  atomic_uint bucket_cursors[VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
+  atomic_uint late_count;
+  // Slots whose pipelines exist this frame, and those still being created,
+  // bit slot - 1.
+  uint ready_mask;
+  uint pending_mask;
+  uint reserved;
+  // The frame's material table; row flags carry each material's slot.
+  const device VkrMetalPacketMaterial *materials;
+};
+
+// The Custom graph slot a camera-view candidate shades with, or 0. A Custom
+// material whose graph's pipelines are not ready this frame draws its
+// Standard fallback, which counts as a late draw while they are being
+// created.
+static uint vkr_metal_packet_custom_slot(constant VkrMetalPacketGpuDrawRoot &root,
+                                         const device VkrGpuCandidateDrawRow &candidate) {
+  if (root.custom_compaction == nullptr)
+    return 0u;
+  const uint slot =
+      (root.custom_compaction->materials[candidate.material_index].flags >>
+       VKR_METAL_MATERIAL_CUSTOM_SHIFT) &
+      VKR_METAL_MATERIAL_CUSTOM_MASK;
+  if (slot == 0u || slot >= VKR_METAL_CUSTOM_GRAPH_SLOTS)
+    return 0u;
+  if (((root.custom_compaction->ready_mask >> (slot - 1u)) & 1u) == 0u) {
+    if (((root.custom_compaction->pending_mask >> (slot - 1u)) & 1u) != 0u)
+      atomic_fetch_add_explicit(&root.custom_compaction->late_count, 1u,
+                                memory_order_relaxed);
+    return 0u;
+  }
+  return slot;
+}
 
 struct VkrMetalPacketGpuDrawView {
   float4 frustum_planes[6];
@@ -196,6 +242,18 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
       (instance.model * float4(candidate.local_bounding_sphere.xyz, 1.0)).xyz,
       candidate.local_bounding_sphere.w * instance.normal_column1.w,
       instance.normal_column1.w);
+  /* The camera sorts Custom draws into their graph's buckets. */
+  const uint slot =
+      view_index == 0u ? vkr_metal_packet_custom_slot(root, candidate) : 0u;
+  if (slot != 0u && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS) {
+    root.classifications[classification_index] =
+        (bucket + 1u) | lod_state | VKR_METAL_CUSTOM_CLASS_BIT |
+        ((slot - 1u) << VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT);
+    atomic_fetch_add_explicit(
+        &root.custom_compaction->bucket_counts[slot][bucket], 1u,
+        memory_order_relaxed);
+    return;
+  }
   root.classifications[classification_index] = (bucket + 1u) | lod_state;
   atomic_fetch_add_explicit(&state.bucket_counts[bucket], 1u,
                             memory_order_relaxed);
@@ -225,6 +283,25 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
     overflow_count += bucket_count - written_count;
     atomic_store_explicit(&state.bucket_cursors[bucket], 0u,
                           memory_order_relaxed);
+  }
+  /* The camera's Custom buckets follow its Standard ones, in the view's
+     remaining capacity. */
+  if (view_index == 0u && root.custom_compaction != nullptr) {
+    device VkrMetalCustomCompaction &custom = *root.custom_compaction;
+    for (uint slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+      for (uint bucket = 0u; bucket < 8u; ++bucket) {
+        uint bucket_count = atomic_load_explicit(
+            &custom.bucket_counts[slot][bucket], memory_order_relaxed);
+        uint written_count =
+            min(bucket_count, root.visible_capacity - visible_count);
+        custom.execution_ranges[slot][bucket] =
+            uint2(command_base + visible_count, written_count);
+        visible_count += written_count;
+        overflow_count += bucket_count - written_count;
+        atomic_store_explicit(&custom.bucket_cursors[slot][bucket], 0u,
+                              memory_order_relaxed);
+      }
+    }
   }
   state.visible_count = visible_count;
   atomic_store_explicit(&state.overflow_count, overflow_count,
@@ -275,16 +352,32 @@ kernel void vkr_metal_packet_gpu_draw_encode(
     return;
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
   uint bucket = (classification & VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK) - 1u;
-  uint lod_state = classification & ~VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK;
-  uint local_index = atomic_fetch_add_explicit(&state.bucket_cursors[bucket],
-                                               1u, memory_order_relaxed);
-  uint bucket_capacity = root.visible_capacity / 8u;
-  if (local_index >= bucket_capacity)
-    return;
   uint command_base =
       (view_index % root.icb_view_group_size) * root.candidate_count;
-  uint visible_index =
-      state.execution_ranges[bucket].x - command_base + local_index;
+  uint visible_index = 0u;
+  if ((classification & VKR_METAL_CUSTOM_CLASS_BIT) != 0u) {
+    /* A Custom draw fills its graph's bucket after the Standard ones. */
+    uint slot = (classification >> VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT) + 1u;
+    device VkrMetalCustomCompaction &custom = *root.custom_compaction;
+    uint local_index = atomic_fetch_add_explicit(
+        &custom.bucket_cursors[slot][bucket], 1u, memory_order_relaxed);
+    if (local_index >= custom.execution_ranges[slot][bucket].y)
+      return;
+    visible_index =
+        custom.execution_ranges[slot][bucket].x - command_base + local_index;
+  } else {
+    uint local_index = atomic_fetch_add_explicit(&state.bucket_cursors[bucket],
+                                                 1u, memory_order_relaxed);
+    uint bucket_capacity = root.visible_capacity / 8u;
+    if (local_index >= bucket_capacity)
+      return;
+    visible_index =
+        state.execution_ranges[bucket].x - command_base + local_index;
+  }
+  /* The LOD state, without the bucket and the Custom slot. */
+  uint lod_state = classification & ~(VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK |
+                                      VKR_METAL_CUSTOM_CLASS_BIT |
+                                      (31u << VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT));
 
   const device VkrGpuCandidateDrawRow &candidate = root.candidates[index];
   const device VkrGpuGeometryRow &geometry =

@@ -5158,6 +5158,7 @@ typedef struct VkrSampleUiRequests {
   VkrSampleTransportAction transport_action;
   VkrSampleViewRequest view_request;
   bool8_t looks_changed;
+  bool8_t custom_materials_reload;
   VkrSampleHideRequest hide_request;
   VkrSamplePhysicsRequest physics_request;
   VkrSampleIoRequest io_request;
@@ -5184,6 +5185,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
   const VkrMaterialTextureStreamStats texture_streams =
       vkr_material_system_get_texture_stream_stats(
           &application->assets.material_system);
+  const VkrRendererPipelineStats pipelines =
+      vkr_renderer_get_pipeline_stats(&application->renderer);
   VkrSampleUiFrame frame = {
       .ui = &application->ui_system,
       .window = &application->host.window,
@@ -5217,6 +5220,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
           application->editor_viewport.scene_rendering_stopped,
       .scene_error = application->editor_viewport.scene_error,
       .texture_pending_count = texture_streams.pending_count,
+      .pipeline_pending_count = pipelines.pending_graphs,
+      .pipeline_late_draws = pipelines.late_draws,
       .texture_demanded_missing_count = texture_streams.demanded_missing_count,
       .scene_output_scale = application->scene_output_scale,
       .scene_render_width = application->editor_viewport.enabled
@@ -5241,6 +5246,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .view_state = state->view_state,
       .view_request = &requests->view_request,
       .looks_changed = &requests->looks_changed,
+      .custom_materials_reload = &requests->custom_materials_reload,
       .hide_request = &requests->hide_request,
       .physics_request = &requests->physics_request,
       .io_request = &requests->io_request,
@@ -5284,8 +5290,11 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .scene_path = state->scene_path,
       .scene_status = string8_create_from_cstr(
           (const uint8_t *)state->scene_status, strlen(state->scene_status)),
-      .scene_loading =
-          state->scene_load_timer_active && !state->scene_load_terminal_logged,
+      /* A scene whose Custom material graphs are still creating their
+         pipelines draws their fallback, so it still loads (ADR-096). */
+      .scene_loading = (state->scene_load_timer_active &&
+                        !state->scene_load_terminal_logged) ||
+                       pipelines.pending_graphs > 0u,
       .modal = &state->modal,
       .scene_only = application->editor_viewport.scene_only ||
                     application->editor_viewport.scene_maximized,
@@ -6632,6 +6641,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       vkr_scene_brush_refresh_looks(scenes[i]);
     }
   }
+  if (requests.custom_materials_reload)
+    vkr_renderer_reload_custom_materials(&application->renderer);
   sample_grid_apply(application);
   if (requests.grid_fit_request.request) {
     sample_grid_fit_begin(application, requests.grid_fit_request.position_px);

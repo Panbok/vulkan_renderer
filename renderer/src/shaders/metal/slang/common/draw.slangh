@@ -200,7 +200,7 @@ struct VkrMetalPacketFrameRoot
     uint4 point_light_grid_dimensions_count;
     uint4 point_light_global_mask;
     uint point_light_count;
-    uint point_light_reserved_0;
+    float custom_time;
     uint point_light_reserved_1;
     uint point_light_reserved_2;
     Texture2DArray<float> shadow_map;
@@ -238,6 +238,7 @@ struct VkrMetalPacketFrameRoot
     uint64_t terrain_materials;
     uint64_t transmission_materials;
     VkrMetalPacketDecals* decals;
+    uint64_t custom_materials;
 };
 
 #include "../../../shared/gpu_draw.slangh"

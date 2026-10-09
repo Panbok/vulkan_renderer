@@ -232,6 +232,24 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
   }
 }
 
+/* Executes Custom graph slot `slot`'s range of camera bucket `bucket`. */
+vkr_internal void
+vkr_metal_packet_record_custom_bucket(id<MTL4RenderCommandEncoder> encoder,
+                                      const VkrMetalPacketIndirectPass *draw,
+                                      uint32_t slot, uint32_t bucket)
+    API_AVAILABLE(macos(26.0)) {
+  [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
+  [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+                                     ? MTLWindingClockwise
+                                     : MTLWindingCounterClockwise];
+  [encoder executeCommandsInBuffer:draw->commands
+                    indirectBuffer:draw->custom_arguments +
+                                   ((uint64_t)slot *
+                                        VKR_WORLD_DRAW_STATE_BUCKET_COUNT +
+                                    bucket) *
+                                       2u * sizeof(uint32_t)];
+}
+
 vkr_internal void vkr_metal_packet_record_indirect_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
@@ -271,6 +289,24 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
                       indirectBuffer:draw->arguments +
                                      (uint64_t)bucket * 2u * sizeof(uint32_t)];
   }
+  /* A camera pass draws the Custom graphs' buckets with its own pipeline:
+     it writes no shading. */
+  for (uint32_t slot = 1u;
+       draw->custom_arguments && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+    if ((draw->custom_ready_mask & (1u << (slot - 1u))) == 0u)
+      continue;
+    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+         ++bucket) {
+      id<MTLRenderPipelineState> pipeline =
+          draw->opaque_pipeline && (bucket & 2u) == 0u ? draw->opaque_pipeline
+                                                       : draw->pipeline;
+      if (pipeline != bound_pipeline) {
+        [encoder setRenderPipelineState:pipeline];
+        bound_pipeline = pipeline;
+      }
+      vkr_metal_packet_record_custom_bucket(encoder, draw, slot, bucket);
+    }
+  }
 }
 
 /* The tiled pipeline's opaque pass (ADR-087): shading of the opaque
@@ -304,6 +340,28 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
             executeCommandsInBuffer:draw->commands
                      indirectBuffer:draw->arguments +
                                     (uint64_t)bucket * 2u * sizeof(uint32_t)];
+      }
+      /* Each ready Custom graph shades its buckets with its own pipelines
+         of the frame's forward variant, in the same order. */
+      for (uint32_t slot = 1u;
+           draw->custom_arguments && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS;
+           ++slot) {
+        if ((draw->custom_ready_mask & (1u << (slot - 1u))) == 0u)
+          continue;
+        const VkrMetalCustomGraph *graph = &renderer->custom_graphs[slot];
+        const uint32_t decals = pass->tiled.decals;
+        const uint32_t probes = pass->tiled.probes;
+        const uint32_t lighting = pass->tiled.lighting;
+        [encoder setRenderPipelineState:cutout ? graph->coverage[decals][probes]
+                                                                [lighting]
+                                               : graph->forward[decals][probes]
+                                                               [lighting]];
+        for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+             ++bucket) {
+          if (((bucket & 2u) != 0u) != (cutout != 0u))
+            continue;
+          vkr_metal_packet_record_custom_bucket(encoder, draw, slot, bucket);
+        }
       }
     }
   }

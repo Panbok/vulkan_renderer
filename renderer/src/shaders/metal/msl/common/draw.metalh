@@ -113,6 +113,14 @@ struct VkrMetalPacketTerrainMaterial {
   uint mask_reserved2;
 };
 
+// A material's Custom-graph textures, samplers and parameters, which its
+// graph's generated surface function reads (ADR-096).
+struct VkrMetalPacketCustomMaterial {
+  array<texture2d<float, access::sample>, 8> textures;
+  array<sampler, 8> samplers;
+  float4 params[8];
+};
+
 struct VkrMetalPacketIblProbe {
   // ADR-038 final layout: offset 0 carries the coefficient slot, offset 4 is
   // reserved, and every field from offset 8 onward keeps its previous offset.
@@ -287,7 +295,7 @@ struct VkrMetalPacketFrameRoot {
   uint4 point_light_grid_dimensions_count;
   uint4 point_light_global_mask;
   uint point_light_count;
-  uint point_light_reserved_0;
+  float custom_time;
   uint point_light_reserved_1;
   uint point_light_reserved_2;
   // depth2d_array, not texture2d_array: sample_compare is only available on a
@@ -329,6 +337,8 @@ struct VkrMetalPacketFrameRoot {
   device VkrMetalPacketTransmissionMaterial *transmission_materials;
   // Zero without decals, whose frames take variants that never read it.
   constant VkrMetalPacketDecals *decals;
+  // Custom graphs' textures and parameters by material index (ADR-096).
+  device VkrMetalPacketCustomMaterial *custom_materials;
 };
 
 struct VkrGpuGeometryRow {
@@ -619,8 +629,8 @@ static_assert(sizeof(VkrMetalPacketMaterial) == 352,
               "Metal material row ABI must remain 352 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
               "Metal transmission material row ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketFrameRoot) == 576,
-              "Metal packet frame root ABI must remain 576 bytes");
+static_assert(sizeof(VkrMetalPacketFrameRoot) == 592,
+              "Metal packet frame root ABI must remain 592 bytes");
 static_assert(sizeof(VkrMetalPacketDecal) == 80,
               "Metal decal row ABI must remain 80 bytes");
 static_assert(sizeof(VkrMetalPacketDecals) == 48,

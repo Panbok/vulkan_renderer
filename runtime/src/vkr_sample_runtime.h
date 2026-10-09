@@ -474,6 +474,10 @@ typedef struct VkrSampleUiFrame {
   uint32_t scene_output_height;
   uint32_t texture_pending_count;
   uint32_t texture_demanded_missing_count;
+  /** Custom material graphs still creating pipelines, and the camera draws
+   * that took their fallback so far (VkrRendererPipelineStats). */
+  uint32_t pipeline_pending_count;
+  uint64_t pipeline_late_draws;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
   VkrSampleScriptRequest *script_request;
@@ -488,6 +492,9 @@ typedef struct VkrSampleUiFrame {
      scene's brushes read their themes and material sizes again
      (vkr_scene_brush_refresh_looks). */
   bool8_t *looks_changed;
+  /* Set when `vkr_bakery materials` compiled the project's Custom material
+     library: the renderer loads it again (ADR-096). */
+  bool8_t *custom_materials_reload;
   VkrSampleHideRequest *hide_request;
   VkrSamplePhysicsRequest *physics_request;
   VkrSampleIoRequest *io_request;

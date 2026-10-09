@@ -19,6 +19,17 @@ extern "C" {
 
 #define VKR_MATERIAL_CUSTOM_TEXTURE_MAX 8u
 #define VKR_MATERIAL_CUSTOM_PARAM_MAX 8u
+/* Custom graphs a project may hold: each adds its own pipelines, so the
+   editor warns past it and packaging refuses (proposal, part 3). */
+#define VKR_MATERIAL_CUSTOM_BUDGET 32u
+/* The tiled pipeline's forward variants a Custom graph gets: by lighting
+   (none, punctual, shadowed, all), probes and decals, plus the editor's
+   inspection, for opaque and alpha-tested draws. */
+#define VKR_MATERIAL_CUSTOM_FORWARD_VARIANTS 17u
+/* Pipeline states a Custom graph adds on Metal, once for all its instances:
+   forward and alpha-tested, by lighting and inspection (5), probes (2) and
+   decals (2). */
+#define VKR_MATERIAL_CUSTOM_PIPELINES 40u
 
 /* How a Custom graph's nodes bind to a material's row: the texture node of
    each Custom texture slot, with the class its uses need, and the exposed
@@ -50,6 +61,14 @@ bool8_t vkr_material_codegen_msl(const VkrMaterialGraph *graph,
                                  VkrAllocator *allocator, String8 *out_source,
                                  VkrMaterialCustomBinding *out_binding,
                                  VkrMaterialLowering *out);
+
+/* The Metal fragment entry points of Custom function `function`: one per
+   forward variant of the tiled pipeline, opaque and alpha-tested, each named
+   `<function>_<the Standard entry's name>` so the renderer finds a graph's
+   pipelines through the Standard entries' table. */
+bool8_t vkr_material_codegen_msl_entries(const char *function,
+                                         VkrAllocator *allocator,
+                                         String8 *out_source);
 
 #ifdef __cplusplus
 }

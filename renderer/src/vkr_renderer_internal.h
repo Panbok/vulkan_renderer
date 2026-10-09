@@ -49,6 +49,8 @@ typedef struct VkrWorldBatchMetrics {
   uint32_t gpu_compaction_overflow_count;
   uint32_t gpu_resolve_invalid_count;
   uint32_t gpu_occlusion_culled_count;
+  /* Late Custom draws (VkrRendererImplSubmitResult). */
+  uint32_t pipelines_late;
   uint32_t transmission_gpu_candidate_count;
   uint32_t transmission_gpu_visible_count;
   uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
@@ -130,6 +132,8 @@ typedef struct VkrRendererWorker VkrRendererWorker;
 
 struct VkrRenderer {
   VkrAllocator *instance_allocator;
+  /** Seconds of frame deltas, wrapped hourly (VkrPreparedFrame). */
+  float64_t clock_seconds;
   VkrNativeSurface surface;
   VkrPresentTargetConfig present_target;
   /** Validated scene-resolution scale and its current pixel extent. */

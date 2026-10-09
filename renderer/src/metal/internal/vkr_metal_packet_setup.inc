@@ -711,6 +711,129 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
       false_v, @"VKR Metal packet depth clear");
 }
 
+/* The tiled shading variants' entry points. Each frame takes the variant
+   for its dynamic lights, decals and reflection probes; the code a frame
+   does not need would still cost it registers. Opaque entries are by decal,
+   then probe variant; blend entries by probe variant. */
+typedef struct VkrMetalTiledEntries {
+  const char *forward[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+                     [VKR_METAL_TILED_PROBE_VARIANT_COUNT];
+  const char *coverage[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+                      [VKR_METAL_TILED_PROBE_VARIANT_COUNT];
+  const char *blend[VKR_METAL_TILED_PROBE_VARIANT_COUNT];
+  NSString *forward_label;
+  NSString *coverage_label;
+  NSString *blend_label;
+} VkrMetalTiledEntries;
+
+/* A Custom graph's forward entries are `<function>_` and these names
+   (vkr_material_codegen_msl_entries). */
+static const VkrMetalTiledEntries
+    tiled_lighting[VKR_METAL_TILED_LIGHTING_COUNT] = {
+        [VKR_METAL_TILED_LIGHTING_NONE] =
+            {
+                .forward = {{"vkr_metal_tiled_forward_fragment",
+                             "vkr_metal_tiled_forward_probes_fragment"},
+                            {"vkr_metal_tiled_forward_decals_fragment",
+                             "vkr_metal_tiled_forward_probes_decals_fragment"}},
+                .coverage =
+                    {{"vkr_metal_tiled_forward_coverage_fragment",
+                      "vkr_metal_tiled_forward_coverage_probes_fragment"},
+                     {"vkr_metal_tiled_forward_coverage_decals_fragment",
+                      "vkr_metal_tiled_forward_coverage_probes_decals_"
+                      "fragment"}},
+                .blend = {"vkr_metal_tiled_blend_fragment",
+                          "vkr_metal_tiled_blend_probes_fragment"},
+                .forward_label = @"VKR tiled forward",
+                .coverage_label = @"VKR tiled alpha-tested forward",
+                .blend_label = @"VKR tiled blend",
+            },
+        [VKR_METAL_TILED_LIGHTING_PUNCTUAL] =
+            {
+                .forward =
+                    {{"vkr_metal_tiled_forward_punctual_fragment",
+                      "vkr_metal_tiled_forward_punctual_probes_fragment"},
+                     {"vkr_metal_tiled_forward_punctual_decals_fragment",
+                      "vkr_metal_tiled_forward_punctual_probes_decals_"
+                      "fragment"}},
+                .coverage =
+                    {{"vkr_metal_tiled_forward_punctual_coverage_fragment",
+                      "vkr_metal_tiled_forward_punctual_coverage_probes_"
+                      "fragment"},
+                     {"vkr_metal_tiled_forward_punctual_coverage_decals_"
+                      "fragment",
+                      "vkr_metal_tiled_forward_punctual_coverage_probes_"
+                      "decals_fragment"}},
+                .blend = {"vkr_metal_tiled_blend_punctual_fragment",
+                          "vkr_metal_tiled_blend_punctual_probes_fragment"},
+                .forward_label = @"VKR tiled forward with punctual lights",
+                .coverage_label =
+                    @"VKR tiled alpha-tested forward with punctual lights",
+                .blend_label = @"VKR tiled blend with punctual lights",
+            },
+        [VKR_METAL_TILED_LIGHTING_SHADOWED] =
+            {
+                .forward =
+                    {{"vkr_metal_tiled_forward_shadowed_fragment",
+                      "vkr_metal_tiled_forward_shadowed_probes_fragment"},
+                     {"vkr_metal_tiled_forward_shadowed_decals_fragment",
+                      "vkr_metal_tiled_forward_shadowed_probes_decals_"
+                      "fragment"}},
+                .coverage =
+                    {{"vkr_metal_tiled_forward_shadowed_coverage_fragment",
+                      "vkr_metal_tiled_forward_shadowed_coverage_probes_"
+                      "fragment"},
+                     {"vkr_metal_tiled_forward_shadowed_coverage_decals_"
+                      "fragment",
+                      "vkr_metal_tiled_forward_shadowed_coverage_probes_"
+                      "decals_fragment"}},
+                .blend = {"vkr_metal_tiled_blend_shadowed_fragment",
+                          "vkr_metal_tiled_blend_shadowed_probes_fragment"},
+                .forward_label = @"VKR tiled forward with shadowed lights",
+                .coverage_label =
+                    @"VKR tiled alpha-tested forward with shadowed lights",
+                .blend_label = @"VKR tiled blend with shadowed lights",
+            },
+        [VKR_METAL_TILED_LIGHTING_ALL] =
+            {
+                .forward = {{"vkr_metal_tiled_forward_all_fragment",
+                             "vkr_metal_tiled_forward_all_probes_fragment"},
+                            {"vkr_metal_tiled_forward_all_decals_fragment",
+                             "vkr_metal_tiled_forward_all_probes_decals_"
+                             "fragment"}},
+                .coverage =
+                    {{"vkr_metal_tiled_forward_all_coverage_fragment",
+                      "vkr_metal_tiled_forward_all_coverage_probes_fragment"},
+                     {"vkr_metal_tiled_forward_all_coverage_decals_fragment",
+                      "vkr_metal_tiled_forward_all_coverage_probes_decals_"
+                      "fragment"}},
+                .blend = {"vkr_metal_tiled_blend_all_fragment",
+                          "vkr_metal_tiled_blend_all_probes_fragment"},
+                .forward_label = @"VKR tiled forward with all lights",
+                .coverage_label =
+                    @"VKR tiled alpha-tested forward with all lights",
+                .blend_label = @"VKR tiled blend with all lights",
+            },
+        /* Inspection frames always shade the probes and decals. */
+        [VKR_METAL_TILED_LIGHTING_INSPECT] =
+            {
+                .forward = {{"vkr_metal_tiled_forward_inspect_fragment",
+                             "vkr_metal_tiled_forward_inspect_fragment"},
+                            {"vkr_metal_tiled_forward_inspect_fragment",
+                             "vkr_metal_tiled_forward_inspect_fragment"}},
+                .coverage =
+                    {{"vkr_metal_tiled_forward_inspect_coverage_fragment",
+                      "vkr_metal_tiled_forward_inspect_coverage_fragment"},
+                     {"vkr_metal_tiled_forward_inspect_coverage_fragment",
+                      "vkr_metal_tiled_forward_inspect_coverage_fragment"}},
+                .blend = {"vkr_metal_tiled_blend_inspect_fragment",
+                          "vkr_metal_tiled_blend_inspect_fragment"},
+                .forward_label = @"VKR tiled forward inspection",
+                .coverage_label = @"VKR tiled alpha-tested forward inspection",
+                .blend_label = @"VKR tiled blend inspection",
+            },
+};
+
 /* Creates the tiled pipeline's raster pipelines (ADR-087): forward shading
    and the clear sky, multisampled; the atmosphere draw over the resolved
    image, which reads the destination and lays the clouds, aerial perspective
@@ -719,120 +842,6 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
 vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
     id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
-  /* Each frame takes the shading variant for its dynamic lights, decals and
-     reflection probes; the code a frame does not need would still cost it
-     registers. Opaque entries are by decal, then probe variant; blend
-     entries by probe variant. */
-  static const struct {
-    const char *forward[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
-                       [VKR_METAL_TILED_PROBE_VARIANT_COUNT];
-    const char *coverage[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
-                        [VKR_METAL_TILED_PROBE_VARIANT_COUNT];
-    const char *blend[VKR_METAL_TILED_PROBE_VARIANT_COUNT];
-    NSString *forward_label;
-    NSString *coverage_label;
-    NSString *blend_label;
-  } tiled_lighting[VKR_METAL_TILED_LIGHTING_COUNT] = {
-      [VKR_METAL_TILED_LIGHTING_NONE] =
-          {
-              .forward = {{"vkr_metal_tiled_forward_fragment",
-                           "vkr_metal_tiled_forward_probes_fragment"},
-                          {"vkr_metal_tiled_forward_decals_fragment",
-                           "vkr_metal_tiled_forward_probes_decals_fragment"}},
-              .coverage =
-                  {{"vkr_metal_tiled_forward_coverage_fragment",
-                    "vkr_metal_tiled_forward_coverage_probes_fragment"},
-                   {"vkr_metal_tiled_forward_coverage_decals_fragment",
-                    "vkr_metal_tiled_forward_coverage_probes_decals_fragment"}},
-              .blend = {"vkr_metal_tiled_blend_fragment",
-                        "vkr_metal_tiled_blend_probes_fragment"},
-              .forward_label = @"VKR tiled forward",
-              .coverage_label = @"VKR tiled alpha-tested forward",
-              .blend_label = @"VKR tiled blend",
-          },
-      [VKR_METAL_TILED_LIGHTING_PUNCTUAL] =
-          {
-              .forward =
-                  {{"vkr_metal_tiled_forward_punctual_fragment",
-                    "vkr_metal_tiled_forward_punctual_probes_fragment"},
-                   {"vkr_metal_tiled_forward_punctual_decals_fragment",
-                    "vkr_metal_tiled_forward_punctual_probes_decals_fragment"}},
-              .coverage =
-                  {{"vkr_metal_tiled_forward_punctual_coverage_fragment",
-                    "vkr_metal_tiled_forward_punctual_coverage_probes_"
-                    "fragment"},
-                   {"vkr_metal_tiled_forward_punctual_coverage_decals_"
-                    "fragment",
-                    "vkr_metal_tiled_forward_punctual_coverage_probes_"
-                    "decals_fragment"}},
-              .blend = {"vkr_metal_tiled_blend_punctual_fragment",
-                        "vkr_metal_tiled_blend_punctual_probes_fragment"},
-              .forward_label = @"VKR tiled forward with punctual lights",
-              .coverage_label =
-                  @"VKR tiled alpha-tested forward with punctual lights",
-              .blend_label = @"VKR tiled blend with punctual lights",
-          },
-      [VKR_METAL_TILED_LIGHTING_SHADOWED] =
-          {
-              .forward =
-                  {{"vkr_metal_tiled_forward_shadowed_fragment",
-                    "vkr_metal_tiled_forward_shadowed_probes_fragment"},
-                   {"vkr_metal_tiled_forward_shadowed_decals_fragment",
-                    "vkr_metal_tiled_forward_shadowed_probes_decals_fragment"}},
-              .coverage =
-                  {{"vkr_metal_tiled_forward_shadowed_coverage_fragment",
-                    "vkr_metal_tiled_forward_shadowed_coverage_probes_"
-                    "fragment"},
-                   {"vkr_metal_tiled_forward_shadowed_coverage_decals_"
-                    "fragment",
-                    "vkr_metal_tiled_forward_shadowed_coverage_probes_"
-                    "decals_fragment"}},
-              .blend = {"vkr_metal_tiled_blend_shadowed_fragment",
-                        "vkr_metal_tiled_blend_shadowed_probes_fragment"},
-              .forward_label = @"VKR tiled forward with shadowed lights",
-              .coverage_label =
-                  @"VKR tiled alpha-tested forward with shadowed lights",
-              .blend_label = @"VKR tiled blend with shadowed lights",
-          },
-      [VKR_METAL_TILED_LIGHTING_ALL] =
-          {
-              .forward = {{"vkr_metal_tiled_forward_all_fragment",
-                           "vkr_metal_tiled_forward_all_probes_fragment"},
-                          {"vkr_metal_tiled_forward_all_decals_fragment",
-                           "vkr_metal_tiled_forward_all_probes_decals_"
-                           "fragment"}},
-              .coverage =
-                  {{"vkr_metal_tiled_forward_all_coverage_fragment",
-                    "vkr_metal_tiled_forward_all_coverage_probes_fragment"},
-                   {"vkr_metal_tiled_forward_all_coverage_decals_fragment",
-                    "vkr_metal_tiled_forward_all_coverage_probes_decals_"
-                    "fragment"}},
-              .blend = {"vkr_metal_tiled_blend_all_fragment",
-                        "vkr_metal_tiled_blend_all_probes_fragment"},
-              .forward_label = @"VKR tiled forward with all lights",
-              .coverage_label =
-                  @"VKR tiled alpha-tested forward with all lights",
-              .blend_label = @"VKR tiled blend with all lights",
-          },
-      /* Inspection frames always shade the probes and decals. */
-      [VKR_METAL_TILED_LIGHTING_INSPECT] =
-          {
-              .forward = {{"vkr_metal_tiled_forward_inspect_fragment",
-                           "vkr_metal_tiled_forward_inspect_fragment"},
-                          {"vkr_metal_tiled_forward_inspect_fragment",
-                           "vkr_metal_tiled_forward_inspect_fragment"}},
-              .coverage =
-                  {{"vkr_metal_tiled_forward_inspect_coverage_fragment",
-                    "vkr_metal_tiled_forward_inspect_coverage_fragment"},
-                   {"vkr_metal_tiled_forward_inspect_coverage_fragment",
-                    "vkr_metal_tiled_forward_inspect_coverage_fragment"}},
-              .blend = {"vkr_metal_tiled_blend_inspect_fragment",
-                        "vkr_metal_tiled_blend_inspect_fragment"},
-              .forward_label = @"VKR tiled forward inspection",
-              .coverage_label = @"VKR tiled alpha-tested forward inspection",
-              .blend_label = @"VKR tiled blend inspection",
-          },
-  };
   for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
        ++decals) {
     for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
@@ -2621,6 +2630,12 @@ vkr_internal uint64_t vkr_metal_packet_managed_budget(id<MTLDevice> device,
   return recommended ? recommended / 3u * 2u : GB(5);
 }
 
+/* Custom material graphs (vkr_metal_packet_custom.inc) build on the tiled
+   entry table above. */
+vkr_internal bool8_t
+vkr_metal_packet_custom_load(VkrMetalPacketRenderer *renderer, const char *path)
+    API_AVAILABLE(macos(26.0));
+
 /* Creates the memory device, material table, IBL targets, lookup textures,
  * pipelines, executor registry and render graph, then finalizes the pipeline
  * archive. */
@@ -2665,6 +2680,7 @@ vkr_internal bool8_t vkr_metal_packet_create_device_resources(
          vkr_metal_packet_create_pipelines(
              renderer, config->slang_msl_path, config->slang_metallib_path,
              config->fragment_msl_path, config->fragment_metallib_path) &&
+         vkr_metal_packet_custom_load(renderer, config->custom_library_path) &&
          vkr_metal_packet_create_cloud_noise(renderer) &&
          vkr_rg_executor_registry_init(&renderer->executors,
                                        renderer->allocator) &&

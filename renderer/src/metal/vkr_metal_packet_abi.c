@@ -129,6 +129,12 @@ vkr_global const VkrMetalPacketAbiField vkr_terrain_material_fields[] = {
                   224),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_custom_material_fields[] = {
+    VKR_ABI_FIELD(VkrMetalCustomMaterialGpuRow, texture_ids, "textures", 0),
+    VKR_ABI_FIELD(VkrMetalCustomMaterialGpuRow, sampler_ids, "samplers", 64),
+    VKR_ABI_FIELD(VkrMetalCustomMaterialGpuRow, params, "params", 128),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_vertex_draw_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, geometry_rows, "geometry_rows",
                   0),
@@ -197,6 +203,7 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
                   "point_light_global_mask", 272),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, point_light_count,
                   "point_light_count", 288),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, custom_time, "custom_time", 292),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_texture_id, "shadow_map",
                   304),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_cascades, "shadow_cascades",
@@ -253,6 +260,8 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, transmission_materials,
                   "transmission_materials", 560),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, decals, "decals", 568),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, custom_materials, "custom_materials",
+                  576),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_sky_fields[] = {
@@ -624,7 +633,8 @@ vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_root_fields[] = {
                   "hzb_depth_epsilon", 176),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, icb_view_group_size,
                   "icb_view_group_size", 180),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_3, "reserved_3", 184),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, custom_compaction,
+                  "custom_compaction", 184),
 };
 
 vkr_global const VkrMetalPacketAbiField
@@ -790,6 +800,9 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_TERRAIN_MATERIAL] = VKR_ABI_RECORD(
             VkrMetalTerrainMaterialGpuRow, "VkrMetalPacketTerrainMaterial", 240,
             16, vkr_terrain_material_fields),
+        [VKR_METAL_PACKET_ABI_CUSTOM_MATERIAL] = VKR_ABI_RECORD(
+            VkrMetalCustomMaterialGpuRow, "VkrMetalPacketCustomMaterial", 256,
+            16, vkr_custom_material_fields),
         [VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketVertexDrawRoot, "VkrMetalPacketDrawRoot", 48, 16,
             vkr_vertex_draw_root_fields),
@@ -798,7 +811,7 @@ vkr_global const VkrMetalPacketAbiRecord
                            16, vkr_draw_root_fields),
         [VKR_METAL_PACKET_ABI_FRAME_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketFrameRoot, "VkrMetalPacketFrameRoot",
-                           576, 16, vkr_frame_root_fields),
+                           592, 16, vkr_frame_root_fields),
         [VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION] =
             VKR_ABI_RECORD(VkrMetalPacketLocalShadowTransmission,
                            "VkrMetalPacketLocalShadowTransmission", 48, 16,

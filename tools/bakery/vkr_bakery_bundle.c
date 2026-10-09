@@ -16,6 +16,8 @@
 
 #include "vkr_bakery_bundle.h"
 
+#include "assets/vkr_material_codegen.h"
+
 #include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
@@ -862,6 +864,26 @@ bool8_t vkr_bundle_copy_tree(const char *source, const char *destination) {
          copy.ok;
 }
 
+/* The Custom material graphs the catalog's project library holds: one
+   "name" a function in `vkr_bakery materials`' manifest. */
+static uint32_t vkr_bundle_custom_graph_count(const char *catalog) {
+  char manifest[VKR_BAKERY_PATH_CAPACITY];
+  uint8_t *text = NULL;
+  uint64_t length = 0u;
+  if (!vkr_bakery_path_join(manifest, sizeof(manifest), catalog,
+                            "metal/project_materials.json") ||
+      !vkr_bakery_read_file(manifest, MB(1), &text, &length)) {
+    return 0u;
+  }
+  uint32_t count = 0u;
+  static const char key[] = "\"name\"";
+  for (uint64_t i = 0u; i + sizeof(key) - 1u <= length; ++i) {
+    count += MemCompare(text + i, key, sizeof(key) - 1u) == 0;
+  }
+  free(text);
+  return count;
+}
+
 int vkr_bakery_cmd_bundle(VkrBakeryCli *cli) {
   if (cli->positional_count != 1u) {
     return vkr_bakery_usage(
@@ -1044,6 +1066,19 @@ int vkr_bakery_cmd_bundle(VkrBakeryCli *cli) {
     }
   }
   if (cli->shaders) {
+    /* A project past its Custom graph budget does not ship (ADR-096). */
+    const uint32_t custom_graphs = vkr_bundle_custom_graph_count(cli->shaders);
+    if (custom_graphs > VKR_MATERIAL_CUSTOM_BUDGET) {
+      char message[160];
+      snprintf(message, sizeof(message),
+               "%u Custom material graphs exceed the budget of %u",
+               custom_graphs, VKR_MATERIAL_CUSTOM_BUDGET);
+      vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_BUNDLE_FAILED, cli->shaders, 0u,
+                            0u, message,
+                            "Merge graphs that differ only in constants by "
+                            "exposing those constants as parameters.");
+      goto cleanup;
+    }
     char destination[VKR_BAKERY_PATH_CAPACITY];
     if (!vkr_bakery_path_join(destination, sizeof(destination), cli->out,
                               "shaders")) {

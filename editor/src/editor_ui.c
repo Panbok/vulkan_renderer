@@ -329,6 +329,9 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   editor->reduce_motion = frame->ui->reduce_motion;
   vkr_editor_animation_update(editor, frame);
   vkr_editor_bakery_update(editor->bakery);
+  if (vkr_editor_bakery_take_materials_compiled(editor->bakery) &&
+      frame->custom_materials_reload)
+    *frame->custom_materials_reload = true_v;
   vkr_editor_scripts_update(editor->scripts,
                             vkr_editor_bakery_service(editor->bakery), frame);
   vkr_editor_build_update(editor->build, editor, frame);

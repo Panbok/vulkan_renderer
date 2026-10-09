@@ -207,7 +207,10 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint32_t point_light_grid_dimensions_count[4];
   VkrPointLightMask point_light_global_mask;
   uint32_t point_light_count;
-  uint32_t point_light_reserved[3];
+  /** Seconds the renderer's clock has run, which Custom graphs' time reads
+      (ADR-096); it wraps hourly to keep its precision. */
+  float32_t custom_time;
+  uint32_t point_light_reserved[2];
   uint64_t shadow_texture_id;
   uint64_t shadow_cascades;
   Mat4 view;
@@ -251,6 +254,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   /** The frame's VkrMetalPacketDecals; zero without decals, whose frames
       take shading variants that never read it (ADR-092). */
   uint64_t decals;
+  /** The material table's Custom rows, which Custom graphs' surface
+      functions read by material index (ADR-096). */
+  uint64_t custom_materials;
 } VkrMetalPacketFrameRoot;
 
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, dfg_texture_id) == 472u,
@@ -284,7 +290,9 @@ _Static_assert(offsetof(VkrMetalPacketFrameRoot, transmission_materials) ==
                "Metal transmission material rows offset drift");
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, decals) == 568u,
                "Metal decal record offset drift");
-_Static_assert(sizeof(VkrMetalPacketFrameRoot) == 576u,
+_Static_assert(offsetof(VkrMetalPacketFrameRoot, custom_materials) == 576u,
+               "Metal Custom material rows offset drift");
+_Static_assert(sizeof(VkrMetalPacketFrameRoot) == 592u,
                "Metal frame root ABI size drift");
 
 /* Frame records are cold, shared records. They may span the fixed draw-root
@@ -423,8 +431,49 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   uint32_t hzb_enabled;
   float32_t hzb_depth_epsilon;
   uint32_t icb_view_group_size;
-  uint32_t reserved_3[2];
+  /** The camera view's VkrMetalCustomCompaction (ADR-096). */
+  uint64_t custom_compaction;
 } VkrMetalPacketGpuDrawRoot;
+
+/* Custom graph slots: slot 0 is the Standard tier; graphs take 1 onward
+   (ADR-096). */
+#define VKR_METAL_CUSTOM_GRAPH_SLOTS 33u
+
+/** The camera view's draw buckets per Custom graph slot: the classify
+    kernel counts them, the prefix kernel places them after the Standard
+    buckets in the view's command range, and the encode kernel fills them.
+    `ready_mask` holds the slots whose pipelines exist this frame (bit
+    slot - 1); a Custom draw of another slot takes its material's Standard
+    fallback, and counts as late while its slot is in `pending_mask`.
+   `materials` is the frame's material table, whose row flags carry each
+   material's slot. */
+typedef struct VkrMetalCustomCompaction {
+  uint32_t execution_ranges[VKR_METAL_CUSTOM_GRAPH_SLOTS]
+                           [VKR_WORLD_DRAW_STATE_BUCKET_COUNT][2];
+  uint32_t bucket_counts[VKR_METAL_CUSTOM_GRAPH_SLOTS]
+                        [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  uint32_t bucket_cursors[VKR_METAL_CUSTOM_GRAPH_SLOTS]
+                         [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  uint32_t late_count;
+  uint32_t ready_mask;
+  uint32_t pending_mask;
+  uint32_t reserved;
+  uint64_t materials;
+} VkrMetalCustomCompaction;
+
+_Static_assert(sizeof(VkrMetalCustomCompaction) ==
+                   VKR_METAL_CUSTOM_GRAPH_SLOTS *
+                           VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 16u +
+                       24u,
+               "Metal Custom compaction ABI drift");
+
+/* The compaction table spans contiguous draw-root cells, once a frame. */
+enum {
+  VKR_METAL_CUSTOM_COMPACTION_CELL_COUNT =
+      (sizeof(VkrMetalCustomCompaction) + VKR_METAL_PACKET_DRAW_ROOT_STRIDE -
+       1u) /
+      VKR_METAL_PACKET_DRAW_ROOT_STRIDE,
+};
 
 _Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 192,
                "Metal GPU draw root ABI must remain 192 bytes");
@@ -727,6 +776,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_MATERIAL,
   VKR_METAL_PACKET_ABI_TRANSMISSION_MATERIAL,
   VKR_METAL_PACKET_ABI_TERRAIN_MATERIAL,
+  VKR_METAL_PACKET_ABI_CUSTOM_MATERIAL,
   VKR_METAL_PACKET_ABI_TEXT_VERTEX,
   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_DRAW_ROOT,

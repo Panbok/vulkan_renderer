@@ -238,6 +238,8 @@ typedef struct VkrMetalPacketMaterial {
   uint32_t row_index;
   uint32_t generation;
   uint64_t last_use_submit_value;
+  /* The Custom graph slot whose reference this row holds, or 0 (ADR-096). */
+  uint32_t custom_slot;
   bool8_t owns_textures;
   bool8_t double_sided;
   bool8_t live;
@@ -422,6 +424,7 @@ typedef struct VkrMetalPacketReadbackLayout {
   uint64_t shadow_depth;
   uint64_t picking;
   uint64_t picking_depth;
+  uint64_t custom_late;
   uint64_t deferred_diagnostics;
   uint64_t deferred_diagnostics_size;
   uint64_t exposure;
@@ -440,6 +443,8 @@ vkr_metal_packet_readback_layout(bool8_t deferred_diagnostics, bool8_t exposure,
   /* The picking readback copies the picked pixel's resolved depth right
      after the object id (vkr_metal_packet_prepare_picking_readback). */
   const uint64_t picking_depth_offset = picking_offset + sizeof(uint32_t);
+  /* The camera's late Custom draws (ADR-096). */
+  const uint64_t custom_late_offset = picking_depth_offset + sizeof(float32_t);
   const uint64_t fixed_size = 32u;
   const uint64_t deferred_offset = vkr_metal_packet_align_up(fixed_size, 16u);
   const uint64_t deferred_bytes =
@@ -459,6 +464,7 @@ vkr_metal_packet_readback_layout(bool8_t deferred_diagnostics, bool8_t exposure,
       .shadow_depth = shadow_depth_offset,
       .picking = picking_offset,
       .picking_depth = picking_depth_offset,
+      .custom_late = custom_late_offset,
       .deferred_diagnostics = deferred_offset,
       .deferred_diagnostics_size = deferred_bytes,
       .exposure = exposure_offset,
@@ -486,6 +492,10 @@ typedef struct VkrMetalPacketCommitFeedbackRecord {
 } VkrMetalPacketCommitFeedbackRecord;
 
 typedef struct VkrMetalPacketCommandSlot {
+  /* The frame's count of late Custom draws in the readback slice, which
+     the result reads once the frame completes (ADR-096); NULL without
+     Custom graphs. */
+  const uint32_t *custom_late_readback;
   id<MTL4CommandAllocator> allocator;
   id<MTL4CommandBuffer> buffer;
   id<MTL4CounterHeap> timestamp_heap;
@@ -571,6 +581,34 @@ typedef enum VkrMetalTiledLighting {
    reason: frames whose camera sees no decal box take the variant without
    them. Blended surfaces take no decals. */
 #define VKR_METAL_TILED_DECAL_VARIANT_COUNT 2u
+
+#define VKR_METAL_CUSTOM_LIBRARY_PATH 4096u
+
+/* A Custom graph's pipelines (ADR-096): created on a background queue the
+   first time a material names its function. */
+typedef enum VkrMetalCustomGraphState {
+  VKR_METAL_CUSTOM_GRAPH_EMPTY = 0,
+  VKR_METAL_CUSTOM_GRAPH_PENDING,
+  VKR_METAL_CUSTOM_GRAPH_READY,
+  VKR_METAL_CUSTOM_GRAPH_FAILED,
+} VkrMetalCustomGraphState;
+
+typedef struct VkrMetalCustomGraph {
+  char function[VKR_MATERIAL_CUSTOM_FUNCTION_CAPACITY];
+  /* A VkrMetalCustomGraphState; the background creation publishes READY or
+     FAILED with release order after writing the pipelines. */
+  VkrAtomicUint32 state;
+  id<MTLRenderPipelineState> forward[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+                                    [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
+                                    [VKR_METAL_TILED_LIGHTING_COUNT];
+  id<MTLRenderPipelineState> coverage[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+                                     [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
+                                     [VKR_METAL_TILED_LIGHTING_COUNT];
+  float64_t create_seconds;
+  /* Published material rows naming the graph; a reload frees the slot at
+     zero. Render-thread owned. */
+  uint32_t references;
+} VkrMetalCustomGraph;
 
 /* The depth fade scale of a decal without depth fade: every point inside its
    box keeps full weight. */
@@ -693,6 +731,25 @@ struct VkrMetalPacketRenderer {
       tiled_blend_pipelines[VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                            [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState> tiled_text_pipeline;
+  /* Custom material graphs (ADR-096): the project library, each slot's
+     pipelines (slot 0 stays empty) and the queue group creating them. */
+  id<MTLLibrary> custom_library;
+  /* Where the library loads from, kept for reloads, and whether the next
+     frame preparation reloads it. */
+  char custom_library_path[VKR_METAL_CUSTOM_LIBRARY_PATH];
+  VkrAtomicBool custom_reload_requested;
+  dispatch_group_t custom_group;
+  VkrMetalCustomGraph custom_graphs[VKR_METAL_CUSTOM_GRAPH_SLOTS];
+  /* Slots given to graphs; slots stay given until the pipelines release. */
+  uint32_t custom_graph_count;
+  /* Late Custom draws of every completed frame, read beside the render
+     thread (vkr_metal_packet_renderer_pipeline_stats). */
+  VkrAtomicUint64 custom_late_draws;
+  /* This frame's Custom compaction in the upload ring, and its ready
+     mask. */
+  VkrMetalCustomCompaction *custom_compaction;
+  uint64_t custom_compaction_gpu;
+  uint32_t custom_ready_mask;
   id<MTLDepthStencilState> tiled_shade_state;
   id<MTLDepthStencilState> tiled_sky_state;
   id<MTLTexture> tiled_msaa_color;
@@ -984,6 +1041,7 @@ vkr_internal void vkr_metal_packet_collect_picking_results(
 #include "metal/internal/vkr_metal_packet_graph.inc"
 #include "metal/internal/vkr_metal_packet_commands.inc"
 #include "metal/internal/vkr_metal_packet_setup.inc"
+#include "metal/internal/vkr_metal_packet_custom.inc"
 #include "metal/internal/vkr_metal_packet_resources.inc"
 #include "metal/internal/vkr_metal_packet_animation_preview.inc"
 #include "metal/internal/vkr_metal_packet_frame.inc"

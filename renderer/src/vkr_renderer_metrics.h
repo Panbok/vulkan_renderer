@@ -132,6 +132,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId visibility_hzb_rejected;
   VkrMetricId visibility_transmission_hzb_rejected;
   VkrMetricId visibility_hzb_history_valid;
+  VkrMetricId pipelines_late;
   VkrMetricId exposure_accepted_texels;
   VkrMetricId exposure_retained_low_bin;
   VkrMetricId exposure_retained_high_bin;

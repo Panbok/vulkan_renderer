@@ -34,6 +34,9 @@ typedef struct VkrPreparedFrame {
   bool8_t motion_blur_enabled;
   VkrMotionBlurGpuParams motion_blur;
   float64_t motion_blur_delta_seconds;
+  /** The renderer's clock, the sum of frame deltas wrapped hourly, which
+      Custom graphs read as time (ADR-096). */
+  float32_t clock_seconds;
   bool8_t subsurface_enabled;
   VkrSubsurfaceGpuParams subsurface;
   VkrGtaoFrame gtao;

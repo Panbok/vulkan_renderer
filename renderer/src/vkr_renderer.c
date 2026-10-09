@@ -243,6 +243,7 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .gpu_overflow_count = source->gpu_overflow_count,
       .gpu_resolve_invalid_count = source->gpu_resolve_invalid_count,
       .gpu_occlusion_culled_count = source->gpu_occlusion_culled_count,
+      .custom_late_draw_count = source->custom_late_count,
       .hzb_history_valid = source->hzb_history_valid,
       .has_gpu_draw_diagnostics = source->has_gpu_draw_diagnostics,
       .exposure = source->exposure,
@@ -481,13 +482,18 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   char fragment_metallib[4096];
   char archive_default[4096];
   char graph_path[4096];
+  /* The project's Custom material graphs, from `vkr_bakery materials`
+     (ADR-096); absent until a project has one. */
+  char custom_library[4096];
   const bool8_t slang_precompiled = vkr_shader_catalog_metallib(
       "library.slang", slang_metallib, slang_msl, sizeof(slang_msl));
   const bool8_t fragment_precompiled = vkr_shader_catalog_metallib(
       "library", fragment_metallib, fragment_msl, sizeof(fragment_msl));
   if (!slang_msl[0] || !fragment_msl[0] ||
       !vkr_shader_catalog_path("metal", "vkr_application.mtlarchive",
-                               archive_default, sizeof(archive_default))) {
+                               archive_default, sizeof(archive_default)) ||
+      !vkr_shader_catalog_path("metal", "project_materials.metallib",
+                               custom_library, sizeof(custom_library))) {
     log_error("Shader catalog paths do not fit");
     if (out_error)
       *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
@@ -508,6 +514,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .slang_metallib_path = use_metallib ? slang_metallib : NULL,
       .fragment_metallib_path = use_metallib ? fragment_metallib : NULL,
       .pipeline_archive_path = pipeline_archive_path,
+      .custom_library_path = custom_library,
       .target_kind =
           renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
               ? VKR_METAL_PACKET_TARGET_OFFSCREEN
@@ -1279,6 +1286,9 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
         prepared->frame.scene_output_width, prepared->frame.scene_output_height,
         temporal_width, temporal_height);
   prepared->frame.motion_blur_delta_seconds = packet->frame.delta_time;
+  rf->clock_seconds =
+      fmod(rf->clock_seconds + Max(packet->frame.delta_time, 0.0), 3600.0);
+  prepared->frame.clock_seconds = (float32_t)rf->clock_seconds;
   prepared->frame.motion_blur_enabled =
       prepared->frame.scene_rendering && packet->globals.motion_blur_enabled &&
       packet->globals.motion_blur_shutter_angle > 0.0f &&
@@ -1906,6 +1916,26 @@ uint64_t vkr_renderer_get_completed_submit_serial(VkrRenderer *renderer) {
   return vkr_renderer_backend_completed_submit_serial(renderer);
 }
 
+VkrRendererPipelineStats
+vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer) {
+  VkrRendererPipelineStats stats = {0};
+#if defined(PLATFORM_APPLE)
+  if (renderer && renderer->metal_renderer)
+    vkr_metal_packet_renderer_pipeline_stats(
+        renderer->metal_renderer, &stats.pending_graphs, &stats.late_draws);
+#endif
+  (void)renderer;
+  return stats;
+}
+
+void vkr_renderer_reload_custom_materials(VkrRenderer *renderer) {
+#if defined(PLATFORM_APPLE)
+  if (renderer && renderer->metal_renderer)
+    vkr_metal_packet_renderer_request_custom_reload(renderer->metal_renderer);
+#endif
+  (void)renderer;
+}
+
 float32_t vkr_renderer_get_display_exposure(const VkrRenderer *renderer) {
   vkr_renderer_join_render_thread(renderer);
   return renderer->display_exposure;
@@ -2285,6 +2315,8 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
     renderer->timing_result.source_frame_index = packet->frame.frame_index;
   }
   const VkrRendererImplSubmitResult *observed = &renderer->timing_result;
+  renderer->frame_metrics.world.pipelines_late =
+      observed->custom_late_draw_count;
   renderer->frame_metrics.gpu_submission_ns = observed->gpu_submission_ns;
   renderer->frame_metrics.gpu_submission_valid = observed->gpu_submission_valid;
   renderer->frame_metrics.gpu_submission_unavailable_reason =

@@ -69,6 +69,9 @@ bool8_t vkr_editor_bakery_lightmap(const VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_lightmap_uvs(const VkrEditorBakery *bakery);
 /** The editor's Bakery daemon, or NULL where it is unavailable. */
 EditorBakeryService *vkr_editor_bakery_service(VkrEditorBakery *bakery);
+/** True once after the materials watch compiled the project's Custom
+ * material library, which the renderer then reloads (ADR-096). */
+bool8_t vkr_editor_bakery_take_materials_compiled(VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_busy(const VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_write_settings(const VkrEditorBakery *bakery,
                                          VkrJsonWriter *writer);

@@ -706,6 +706,8 @@ vkr_internal void vkr_metal_packet_release_commit_feedback_records(
 vkr_internal void
 vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
     API_AVAILABLE(macos(26.0)) {
+  /* Background Custom creations finish before anything they use goes. */
+  vkr_metal_packet_custom_release(renderer);
   [renderer->argument_table release];
   [renderer->gpu_draw_icb_argument_encoder release];
   [renderer->depth_read_state release];

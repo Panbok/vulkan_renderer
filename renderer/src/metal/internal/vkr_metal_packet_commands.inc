@@ -152,6 +152,12 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
         &slot->pending_result, slot->gpu_draw_diagnostics_readback,
         slot->shadow_cascade_count, slot->gpu_draw_view_count);
   }
+  if (slot->custom_late_readback) {
+    slot->pending_result.custom_late_count = *slot->custom_late_readback;
+    vkr_atomic_uint64_fetch_add(&renderer->custom_late_draws,
+                                slot->pending_result.custom_late_count,
+                                VKR_MEMORY_ORDER_RELAXED);
+  }
   if (slot->exposure_requested && slot->exposure_readback) {
     const uint8_t *readback = slot->exposure_readback;
     MemCopy(&slot->pending_result.exposure.state, readback,
@@ -258,6 +264,7 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->commit_feedback = NULL;
   slot->picking_readback = NULL;
   slot->gpu_draw_diagnostics_readback = NULL;
+  slot->custom_late_readback = NULL;
   slot->exposure_readback = NULL;
   slot->shadow_cascade_count = 0u;
   slot->gpu_draw_view_count = 0u;

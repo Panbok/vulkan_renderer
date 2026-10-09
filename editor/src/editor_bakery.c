@@ -121,6 +121,11 @@ struct VkrEditorBakery {
   EditorBakeryService *service;
   uint32_t shader_watch;
   bool8_t shader_watch_requested;
+  /* The materials watch rebuilds the project's Custom material library
+     when an asset changes; a compile asks the renderer to reload it. */
+  uint32_t materials_watch;
+  bool8_t materials_watch_requested;
+  bool8_t materials_compiled;
 };
 
 /* Bakery text is UI labels and path fragments, and both are legitimately
@@ -829,11 +834,64 @@ static void editor_bakery_watch_shaders(VkrEditorBakery *bakery) {
   }
 }
 
+/* Rebuilds the project's Custom material library (`vkr_bakery materials`)
+   when a file under the content root's assets changes, or the engine's
+   tiled shader source the library repeats; Bakery compiles only when the
+   generated source changed (ADR-096). Metal only. */
+static void editor_bakery_watch_materials(VkrEditorBakery *bakery) {
+#if defined(PLATFORM_APPLE)
+  if (!bakery->materials_watch_requested) {
+    bakery->materials_watch_requested = true_v;
+    char catalog[EDITOR_BAKERY_PATH_CAPACITY];
+    char assets[EDITOR_BAKERY_PATH_CAPACITY];
+    char engine[EDITOR_BAKERY_PATH_CAPACITY];
+    if (!vkr_shader_catalog_root(catalog, sizeof(catalog))) {
+      return;
+    }
+    (void)snprintf(assets, sizeof(assets), "%sassets", vkr_content_root());
+    (void)snprintf(engine, sizeof(engine), "%s/metal/library.metal", catalog);
+    const char *paths[] = {assets, engine};
+    const char *arguments[] = {"materials", "--shaders", catalog, "--root",
+                               vkr_content_root()};
+    bakery->materials_watch =
+        editor_bakery_service_watch(bakery->service, paths, ArrayCount(paths),
+                                    arguments, ArrayCount(arguments));
+  }
+  char changed[4][EDITOR_BAKERY_SERVICE_PATH];
+  while (editor_bakery_service_take_changes(
+      bakery->service, bakery->materials_watch, changed, ArrayCount(changed))) {
+  }
+  EditorBakeryRebuild rebuild = {0};
+  if (!editor_bakery_service_take_rebuild(bakery->service,
+                                          bakery->materials_watch, &rebuild)) {
+    return;
+  }
+  if (rebuild.exit_code != 0 && rebuild.exit_code != 3) {
+    log_error("Materials: the Custom material library did not compile "
+              "(exit %d); the diagnostics are above",
+              rebuild.exit_code);
+  } else if (rebuild.exit_code == 0 && rebuild.actions > rebuild.cached) {
+    log_info("Materials: Custom material library rebuilt; reloading");
+    bakery->materials_compiled = true_v;
+  }
+#else
+  (void)bakery;
+#endif
+}
+
+bool8_t vkr_editor_bakery_take_materials_compiled(VkrEditorBakery *bakery) {
+  if (!bakery || !bakery->materials_compiled)
+    return false_v;
+  bakery->materials_compiled = false_v;
+  return true_v;
+}
+
 void vkr_editor_bakery_update(VkrEditorBakery *bakery) {
   if (!bakery)
     return;
   if (bakery->service) {
     editor_bakery_watch_shaders(bakery);
+    editor_bakery_watch_materials(bakery);
     editor_bakery_service_update(bakery->service);
   }
   if (bakery->worker &&

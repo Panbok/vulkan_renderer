@@ -107,10 +107,22 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTerrainMaterialGpuRow {
   uint32_t mask_reserved[3];
 } VkrMetalTerrainMaterialGpuRow;
 
+/* Cold Custom-graph data of a material (ADR-096): the Custom texture slots
+   and their samplers, and the graph's parameters, which its generated
+   surface function reads by material index. */
+#define VKR_METAL_CUSTOM_MATERIAL_TEXTURES 8u
+#define VKR_METAL_CUSTOM_MATERIAL_PARAMS 8u
+typedef struct VKR_SIMD_ALIGN VkrMetalCustomMaterialGpuRow {
+  uint64_t texture_ids[VKR_METAL_CUSTOM_MATERIAL_TEXTURES];
+  uint64_t sampler_ids[VKR_METAL_CUSTOM_MATERIAL_TEXTURES];
+  Vec4 params[VKR_METAL_CUSTOM_MATERIAL_PARAMS];
+} VkrMetalCustomMaterialGpuRow;
+
 typedef struct VkrMetalMaterialPublishedRow {
   VkrMetalMaterialGpuRow material;
   VkrMetalTransmissionMaterialGpuRow transmission;
   VkrMetalTerrainMaterialGpuRow terrain;
+  VkrMetalCustomMaterialGpuRow custom;
 } VkrMetalMaterialPublishedRow;
 
 typedef struct VkrMetalMaterialTableConfig {
@@ -208,6 +220,8 @@ vkr_metal_material_table_device_gpu_address(VkrMetalMaterialTableDevice *table);
 uint64_t vkr_metal_material_table_device_transmission_gpu_address(
     VkrMetalMaterialTableDevice *table);
 
+uint64_t vkr_metal_material_table_device_custom_gpu_address(
+    VkrMetalMaterialTableDevice *table);
 uint64_t vkr_metal_material_table_device_terrain_gpu_address(
     VkrMetalMaterialTableDevice *table);
 

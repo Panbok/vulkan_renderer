@@ -73,6 +73,10 @@ vkr_internal const VkrBakeryCommand vkr_bakery_commands[] = {
      "world partition proxies of its cells."},
     {"preview", NULL, "preview material|prune [options]",
      "Render a material thumbnail, or prune the workspace thumbnail cache."},
+    {"materials", vkr_bakery_cmd_materials,
+     "materials --shaders <catalog> [--root <content root>]",
+     "Generate the project's Custom material graphs and compile them into "
+     "the catalog's project library."},
     {"bundle", vkr_bakery_cmd_bundle,
      "bundle <recipe.json> --out <dir> [--app <executable>] [--shaders "
      "<catalog>] [--dry-run]\n"

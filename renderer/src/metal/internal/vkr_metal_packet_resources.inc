@@ -910,6 +910,9 @@ vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
           texture->last_use_submit_value = slot->last_use_submit_value;
       }
     }
+    if (slot->custom_slot)
+      renderer->custom_graphs[slot->custom_slot].references--;
+    slot->custom_slot = 0u;
     slot->live = false_v;
     slot->generation =
         slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
@@ -921,6 +924,27 @@ vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
     slot->double_sided = false_v;
     return true_v;
   }
+}
+
+/* A material's Custom row: its Custom-graph textures, which fall back to
+   its base colour where a slot is empty and nothing samples it, and the
+   graph's parameters. */
+_Static_assert(VKR_METAL_CUSTOM_MATERIAL_TEXTURES ==
+                       VKR_MATERIAL_CUSTOM_TEXTURES &&
+                   VKR_METAL_CUSTOM_MATERIAL_PARAMS ==
+                       VKR_MATERIAL_CUSTOM_PARAMS,
+               "The Metal Custom row holds a material's Custom data");
+
+static VkrMetalCustomMaterialGpuRow
+vkr_metal_packet_custom_row(const struct VkrMaterial *material,
+                            VkrMetalPacketTexture *const *textures) {
+  VkrMetalCustomMaterialGpuRow row = {0};
+  for (uint32_t i = 0; i < VKR_MATERIAL_CUSTOM_TEXTURES; ++i) {
+    row.texture_ids[i] = textures[i]->resource.resource_id;
+    row.sampler_ids[i] = textures[i]->sampler_resource_id;
+  }
+  MemCopy(row.params, material->custom_params, sizeof(row.params));
+  return row;
 }
 
 bool8_t
@@ -979,20 +1003,27 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
             ? VKR_TEXTURE_SLOT_ANISOTROPY
             : VKR_TEXTURE_SLOT_DIFFUSE,
     };
-    /* Terrain layer slots and the layer mask follow, in slot order; a
-       material that is no terrain points them at its base color, which
-       nothing samples. */
+    /* Layer slots, the layer mask and the Custom slots follow, in slot
+       order. A material without layers points the layer slots at its base
+       color, and a slot a Custom material leaves empty does too; nothing
+       samples them. */
+    _Static_assert(ArrayCount(common_slots) + VKR_TEXTURE_SLOT_CUSTOM7 + 1u -
+                           VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR ==
+                       VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT,
+                   "Metal tracks every texture slot from the first layer on");
     VkrTextureSlot source_slots[VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT];
     MemCopy(source_slots, common_slots, sizeof(common_slots));
     for (uint32_t i = ArrayCount(common_slots); i < ArrayCount(source_slots);
          ++i) {
-      const VkrTextureSlot layer_slot =
+      const VkrTextureSlot extra_slot =
           (VkrTextureSlot)(VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR +
                            (i - ArrayCount(common_slots)));
-      source_slots[i] =
-          material->terrain && material->textures[layer_slot].enabled
-              ? layer_slot
-              : VKR_TEXTURE_SLOT_DIFFUSE;
+      const bool8_t used = extra_slot >= VKR_TEXTURE_SLOT_CUSTOM0
+                               ? material->custom_function[0] != '\0'
+                               : material->terrain;
+      source_slots[i] = used && material->textures[extra_slot].enabled
+                            ? extra_slot
+                            : VKR_TEXTURE_SLOT_DIFFUSE;
     }
     VkrMetalPacketTexture *textures[VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT] = {
         0};
@@ -1032,6 +1063,12 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       flags |= VKR_METAL_PACKET_MATERIAL_TERRAIN;
     if (material->rough)
       flags |= VKR_METAL_PACKET_MATERIAL_ROUGH;
+    /* A Custom material's graph slot; the frame's ready mask decides whether
+       it shades with its graph's pipelines (ADR-096). */
+    const uint32_t custom_slot =
+        vkr_metal_packet_custom_slot(renderer, material->custom_function);
+    flags |= (custom_slot & VKR_METAL_PACKET_MATERIAL_CUSTOM_MASK)
+             << VKR_METAL_PACKET_MATERIAL_CUSTOM_SHIFT;
     const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                           ? material->pbr.base_color
                           : material->phong.diffuse_color;
@@ -1147,6 +1184,10 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                              material->layer_mask_range.y, 0.0f, 0.0f),
                 .mask_source = material->layer_mask,
             },
+        .custom = vkr_metal_packet_custom_row(
+            material, textures + ArrayCount(common_slots) +
+                          (VKR_TEXTURE_SLOT_CUSTOM0 -
+                           VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR)),
     };
     const float32_t tint_values[4] = {tint.x, tint.y, tint.z, tint.w};
     MemCopy(row.material.tint, tint_values, sizeof(row.material.tint));
@@ -1169,6 +1210,9 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
     slot->alpha_cutoff = material->alpha_cutoff;
     slot->owns_textures = false_v;
     slot->double_sided = material->double_sided;
+    slot->custom_slot = custom_slot;
+    if (custom_slot)
+      renderer->custom_graphs[custom_slot].references++;
     slot->live = true_v;
     return true_v;
   }
@@ -2346,9 +2390,14 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
         (frame_root_gpu_draw_view_count * sizeof(VkrMetalPacketDrawRoot) +
          VKR_METAL_PACKET_DRAW_ROOT_STRIDE - 1u) /
         VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+    /* The camera's Custom compaction table spans its own cells, while any
+       material names a Custom graph. */
+    const uint32_t custom_cells = renderer->custom_graph_count
+                                      ? VKR_METAL_CUSTOM_COMPACTION_CELL_COUNT
+                                      : 0u;
     plan->root_count += 10u + draw_root_slots +
                         renderer->prepared_frame.hzb_reduce_pass_count +
-                        gpu_draw_icb_group_count;
+                        gpu_draw_icb_group_count + custom_cells;
   }
   plan->root_count += renderer->prepared_frame.shadow_cascade_count +
                       renderer->prepared_frame.local_shadow_render_count;
@@ -3314,6 +3363,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   upload->world_text_count = plan.world_text_count;
   upload->root_capacity = (uint32_t)plan.root_count;
   upload->root_cursor = 0u;
+  renderer->custom_compaction = NULL;
+  renderer->custom_compaction_gpu = 0u;
   upload->overlay_draw_count = plan.overlay_count;
   if (plan.overlay_count > 0u &&
       !vkr_metal_packet_prepare_editor_draws(

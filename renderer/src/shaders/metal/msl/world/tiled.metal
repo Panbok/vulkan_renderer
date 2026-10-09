@@ -276,6 +276,8 @@ struct VkrMetalTiledSurface {
   // refraction source a volume blurs with (ADR-087).
   float feedback_roughness;
   float occlusion;
+  // Emitted light before pre-exposure.
+  float3 emissive;
 };
 
 // A forward-drawn surface's base colour and alpha: its texture times the
@@ -345,6 +347,12 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
     surface.metallic = saturate(surface.metallic * orm.b);
   }
   surface.roughness = clamp(surface.feedback_roughness, 0.04f, 1.0f);
+  surface.emissive = material.material_emissive.rgb;
+  if ((material.flags & 4u) != 0u)
+    surface.emissive *=
+        material.emissive_texture.sample(material.emissive_sampler,
+                                         input.texcoord)
+            .rgb;
   return surface;
 }
 
@@ -556,7 +564,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   float metallic = neutral ? 0.0f : surface.metallic;
   float roughness = neutral ? 0.5f : surface.roughness;
   float ao = neutral ? 1.0f : surface.occlusion;
-  float3 emissive = neutral ? float3(0.0f) : material.material_emissive.rgb;
+  float3 emissive = neutral ? float3(0.0f) : surface.emissive;
   // Specular anti-aliasing widens the lobe by the normal's screen variance,
   // as the forward and G-buffer paths do.
   float3 normal_dx = dfdx(normal);
@@ -564,10 +572,6 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   roughness = vkr_ggx_filter_roughness(
       roughness,
       0.25f * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy)));
-  if ((material.flags & 4u) != 0u)
-    emissive *= material.emissive_texture
-                    .sample(material.emissive_sampler, input.texcoord)
-                    .rgb;
   emissive *= frame->pre_exposure;
 
   // The shared material model: clearcoat, sheen, anisotropy and diffuse
@@ -707,6 +711,135 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   return light;
 }
 
+// An alpha-tested surface's coverage: its alpha sharpened about the
+// material's cut-off to a transition about one pixel wide, which alpha to
+// coverage turns into the samples it covers. Fragments that cover no sample
+// discard.
+static float
+vkr_metal_tiled_coverage(const device VkrMetalPacketMaterial &material,
+                         float alpha) {
+  if (material.alpha_mode != 1u)
+    return 1.0f;
+  const float coverage = saturate(
+      (alpha - material.material_alpha.x) / max(fwidth(alpha), 1e-4f) + 0.5f);
+  if (coverage <= 0.0f)
+    discard_fragment();
+  return coverage;
+}
+
+// How the forward pass gets a surface. The Standard tier reads the material
+// row; alpha-tested draws read the base colour alone first, so fragments that
+// cover no sample discard before the other textures.
+struct VkrMetalStandardSurface {
+  template <bool Coverage>
+  static VkrMetalTiledSurface
+  shade(thread const VkrMetalTiledVertexOutput &input,
+        constant VkrMetalPacketFrameRoot *frame,
+        const device VkrMetalPacketMaterial &material, uint material_index,
+        thread float &coverage) {
+    const float4 base = vkr_metal_tiled_base(input, material);
+    if (Coverage)
+      coverage = vkr_metal_tiled_coverage(material, base.a);
+    return vkr_metal_tiled_surface(input, frame, material, material_index,
+                                   base);
+  }
+};
+
+// A Custom graph's surface function (ADR-096) takes the shaded point and
+// gives the core material outputs; vkr_material_codegen.c generates it.
+struct VkrMetalCustomInput {
+  float2 texcoord;
+  float4 color;
+  float3 world_position;
+  float3 world_normal;
+  float time;
+  float camera_distance;
+};
+
+struct VkrMetalCustomOutput {
+  float3 base_color;
+  float opacity;
+  float metallic;
+  float roughness;
+  float occlusion;
+  float3 emissive;
+  float3 tangent_normal;
+  bool normal_mapped;
+};
+
+// The outputs a graph leaves unconnected.
+static VkrMetalCustomOutput vkr_metal_custom_output() {
+  VkrMetalCustomOutput out;
+  out.base_color = float3(1.0f);
+  out.opacity = 1.0f;
+  out.metallic = 0.0f;
+  out.roughness = 1.0f;
+  out.occlusion = 1.0f;
+  out.emissive = float3(0.0f);
+  out.tangent_normal = float3(0.0f, 0.0f, 1.0f);
+  out.normal_mapped = false;
+  return out;
+}
+
+// A over B, zero where B is zero.
+static float vkr_custom_divide(float a, float b) {
+  return b != 0.0f ? a / b : 0.0f;
+}
+
+static float2 vkr_custom_divide(float2 a, float2 b) {
+  return select(float2(0.0f), a / b, b != float2(0.0f));
+}
+
+static float3 vkr_custom_divide(float3 a, float3 b) {
+  return select(float3(0.0f), a / b, b != float3(0.0f));
+}
+
+// X to the exponent, X below zero taken as zero.
+static float vkr_custom_power(float x, float e) {
+  return powr(max(x, 0.0f), e);
+}
+
+static float2 vkr_custom_power(float2 x, float e) {
+  return powr(max(x, float2(0.0f)), float2(e));
+}
+
+static float3 vkr_custom_power(float3 x, float e) {
+  return powr(max(x, float3(0.0f)), float3(e));
+}
+
+// A Custom graph's surface: its function evaluated once, its opacity tested
+// for coverage on alpha-tested draws.
+template <typename Graph> struct VkrMetalCustomSurface {
+  template <bool Coverage>
+  static VkrMetalTiledSurface
+  shade(thread const VkrMetalTiledVertexOutput &input,
+        constant VkrMetalPacketFrameRoot *frame,
+        const device VkrMetalPacketMaterial &material, uint material_index,
+        thread float &coverage) {
+    VkrMetalCustomInput in;
+    in.texcoord = input.texcoord;
+    in.color = input.color;
+    in.world_position = input.world_position;
+    in.world_normal = normalize(input.world_normal);
+    in.time = frame->custom_time;
+    in.camera_distance = length(frame->view_position.xyz - input.world_position);
+    const VkrMetalCustomOutput out =
+        Graph::evaluate(in, frame->custom_materials[material_index]);
+    if (Coverage)
+      coverage = vkr_metal_tiled_coverage(material, out.opacity);
+    VkrMetalTiledSurface surface;
+    surface.base = float4(out.base_color, out.opacity);
+    surface.tangent_normal = out.tangent_normal;
+    surface.normal_mapped = out.normal_mapped;
+    surface.metallic = saturate(out.metallic);
+    surface.feedback_roughness = saturate(out.roughness);
+    surface.roughness = clamp(surface.feedback_roughness, 0.04f, 1.0f);
+    surface.occlusion = saturate(out.occlusion);
+    surface.emissive = max(out.emissive, float3(0.0f));
+    return surface;
+  }
+};
+
 // The editor's unlit and wireframe modes, which replace shading; false for
 // the modes that shade. Unlit shows the base colour and the pre-exposed
 // emission; wireframe draws one-pixel edges over a dark fill, as the
@@ -723,12 +856,7 @@ static bool vkr_metal_tiled_inspect(
     return true;
   }
   if (frame->render_mode == 3u) {
-    float3 emissive = material.material_emissive.rgb;
-    if ((material.flags & 4u) != 0u)
-      emissive *= material.emissive_texture
-                      .sample(material.emissive_sampler, input.texcoord)
-                      .rgb;
-    out_color = surface.base.rgb + emissive * frame->pre_exposure;
+    out_color = surface.base.rgb + surface.emissive * frame->pre_exposure;
     return true;
   }
   return false;
@@ -742,7 +870,7 @@ static bool vkr_metal_tiled_inspect(
 // sample discard before the other material textures and shading. With Decals,
 // the frame's decals cover the surface's base colour before lighting.
 template <VkrMetalTiledLighting Lighting, bool Coverage, bool Probes,
-          bool Decals>
+          bool Decals, typename Surface = VkrMetalStandardSurface>
 static float4
 vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
                         constant VkrMetalPacketDrawRoot *root,
@@ -752,17 +880,9 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
       root->visible_rows[input.visible_row_index];
   const device VkrMetalPacketMaterial &material =
       frame->materials[visible.material_index];
-  const float4 base = vkr_metal_tiled_base(input, material);
   float coverage = 1.0f;
-  if (Coverage && material.alpha_mode == 1u) {
-    coverage = saturate((base.a - material.material_alpha.x) /
-                            max(fwidth(base.a), 1e-4f) +
-                        0.5f);
-    if (coverage <= 0.0f)
-      discard_fragment();
-  }
-  VkrMetalTiledSurface surface = vkr_metal_tiled_surface(
-      input, frame, material, visible.material_index, base);
+  VkrMetalTiledSurface surface = Surface::template shade<Coverage>(
+      input, frame, material, visible.material_index, coverage);
   if (Decals) {
     surface.base.rgb = vkr_metal_tiled_decals(
         frame, input.world_position,

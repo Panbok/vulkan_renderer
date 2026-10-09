@@ -16,23 +16,31 @@ vkr_internal void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
   return root;
 }
 
-/* Frame roots are shared cold records. Keep per-draw cells fixed at 512 B and
- * reserve their contiguous two-cell span only for this ABI-sized record. */
-vkr_internal VkrMetalPacketFrameRoot *
-vkr_metal_packet_next_frame_root(VkrMetalPacketFrameUpload *upload,
-                                 uint64_t *out_gpu_address) {
-  const uint32_t cell_count = VKR_METAL_PACKET_FRAME_ROOT_CELL_COUNT;
+/* A cold record wider than one draw-root cell: it takes `size` bytes of
+ * contiguous cells, so per-draw cells stay fixed at 512 B. */
+vkr_internal void *
+vkr_metal_packet_next_root_span(VkrMetalPacketFrameUpload *upload,
+                                uint64_t size, uint64_t *out_gpu_address) {
+  const uint64_t cell_count = (size + VKR_METAL_PACKET_DRAW_ROOT_STRIDE - 1u) /
+                              VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
   if (upload->root_cursor > upload->root_capacity ||
       cell_count > upload->root_capacity - upload->root_cursor)
     return NULL;
   const uint64_t offset =
       (uint64_t)upload->root_cursor * VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
-  upload->root_cursor += cell_count;
+  upload->root_cursor += (uint32_t)cell_count;
   *out_gpu_address = upload->root_gpu + offset;
-  VkrMetalPacketFrameRoot *root =
-      (VkrMetalPacketFrameRoot *)(upload->root_cpu + offset);
-  MemZero(root, sizeof(*root));
+  void *root = upload->root_cpu + offset;
+  MemZero(root, size);
   return root;
+}
+
+/* Frame roots are shared cold records spanning their ABI-sized cells. */
+vkr_internal VkrMetalPacketFrameRoot *
+vkr_metal_packet_next_frame_root(VkrMetalPacketFrameUpload *upload,
+                                 uint64_t *out_gpu_address) {
+  return (VkrMetalPacketFrameRoot *)vkr_metal_packet_next_root_span(
+      upload, sizeof(VkrMetalPacketFrameRoot), out_gpu_address);
 }
 
 vkr_internal VkrMetalPacketMesh *
@@ -177,6 +185,7 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
            frame_constants.point_light_grid_dimensions_count[3]},
       .point_light_global_mask = frame_constants.point_light_global_mask,
       .point_light_count = frame_constants.point_light_count,
+      .custom_time = packet->clock_seconds,
       .shadow_texture_id = upload->shadow_texture_id,
       .shadow_cascades = upload->shadow_cascades_gpu,
       .local_shadow_texture_id = upload->local_shadow_texture_id,
@@ -218,6 +227,8 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
   frame_root->decals = upload->decals_gpu;
   frame_root->terrain_materials =
       vkr_metal_material_table_device_terrain_gpu_address(renderer->materials);
+  frame_root->custom_materials =
+      vkr_metal_material_table_device_custom_gpu_address(renderer->materials);
   frame_root->transmission_materials =
       vkr_metal_material_table_device_transmission_gpu_address(
           renderer->materials);
@@ -1035,6 +1046,37 @@ vkr_metal_packet_next_gpu_draw_root(VkrMetalPacketFrameUpload *upload,
                                     out_gpu_address);
 }
 
+/* This frame's Custom compaction table (ADR-096), made the first time a GPU
+   draw root asks for it, with the ready mask the frame records with. Zero
+   while no material names a Custom graph. The upload plan reserves its
+   cells; a publication since the plan finds none, and that frame draws
+   every Custom material's fallback. */
+vkr_internal void
+vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
+                                   VkrMetalPacketFrameUpload *upload,
+                                   uint64_t *out_gpu_address) {
+  *out_gpu_address = 0u;
+  if (renderer->custom_graph_count == 0u)
+    return;
+  if (!renderer->custom_compaction) {
+    uint64_t gpu_address = 0u;
+    VkrMetalCustomCompaction *compaction = vkr_metal_packet_next_root_span(
+        upload, sizeof(VkrMetalCustomCompaction), &gpu_address);
+    if (!compaction)
+      return;
+    renderer->custom_ready_mask = vkr_metal_packet_custom_state_mask(
+        renderer, VKR_METAL_CUSTOM_GRAPH_READY);
+    compaction->ready_mask = renderer->custom_ready_mask;
+    compaction->pending_mask = vkr_metal_packet_custom_state_mask(
+        renderer, VKR_METAL_CUSTOM_GRAPH_PENDING);
+    compaction->materials =
+        vkr_metal_material_table_device_gpu_address(renderer->materials);
+    renderer->custom_compaction = compaction;
+    renderer->custom_compaction_gpu = gpu_address;
+  }
+  *out_gpu_address = renderer->custom_compaction_gpu;
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -1071,6 +1113,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   root->lod_views = upload->gpu_draw_lod_views_gpu;
   if (!root->views || !root->lod_views)
     return false_v;
+  vkr_metal_packet_custom_compaction(renderer, upload,
+                                     &root->custom_compaction);
 
   if (classify) {
     VkrMetalPacketGraphBufferInstance *candidates =
@@ -1765,6 +1809,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draws(
   prepared->indirect.pipeline = pipeline;
   prepared->indirect.opaque_pipeline = opaque_pipeline;
   prepared->indirect.arguments = state->resource.gpu_address;
+  if (renderer->custom_compaction) {
+    prepared->indirect.custom_arguments =
+        renderer->custom_compaction_gpu +
+        offsetof(VkrMetalCustomCompaction, execution_ranges);
+    prepared->indirect.custom_ready_mask = renderer->custom_ready_mask;
+  }
   prepared->indirect.viewport =
       (MTLViewport){0.0,
                     0.0,
@@ -2037,6 +2087,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   descriptor.tileHeight = VKR_METAL_TILED_TILE_HEIGHT;
   prepared->tiled.draws = draws;
   prepared->tiled.sky_root = sky_root;
+  prepared->tiled.decals = decals;
+  prepared->tiled.probes = probes;
+  prepared->tiled.lighting = lighting;
   prepared->active = true_v;
   return true_v;
 }
@@ -2332,6 +2385,13 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
   @autoreleasepool {
     if (renderer->frame_prepared || renderer->reserved_frame_slot)
       return false_v;
+    /* A requested reload of the Custom library runs before the frame
+       records anything (ADR-096). */
+    if (vkr_atomic_bool_exchange(&renderer->custom_reload_requested, false_v,
+                                 VKR_MEMORY_ORDER_ACQ_REL) &&
+        !vkr_metal_packet_custom_reload(renderer))
+      vkr_atomic_bool_store(&renderer->custom_reload_requested, true_v,
+                            VKR_MEMORY_ORDER_RELEASE);
     VKR_METAL_DIAGNOSTIC(
         renderer, "frame_prepare",
         "target=%ux%u scene=%ux%u render=%ux%u next_slot=%u",
@@ -3183,6 +3243,19 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_readback(
                      size:submission->readback_layout
                               .deferred_diagnostics_size];
   }
+  /* The classifier counted late Custom draws in the upload's table. */
+  if (submission->deferred_diagnostics && renderer->custom_compaction) {
+    id<MTLBuffer> upload_buffer = submission->frame_upload.buffer;
+    [capture_encoder
+           copyFromBuffer:upload_buffer
+             sourceOffset:renderer->custom_compaction_gpu +
+                          offsetof(VkrMetalCustomCompaction, late_count) -
+                          upload_buffer.gpuAddress
+                 toBuffer:(id<MTLBuffer>)submission->readback_object
+        destinationOffset:submission->readback_slice.offset +
+                          submission->readback_layout.custom_late
+                     size:sizeof(uint32_t)];
+  }
   if (submission->readback_layout.exposure_size > 0u) {
     [capture_encoder
            copyFromBuffer:(id<MTLBuffer>)
@@ -3340,6 +3413,12 @@ vkr_internal void vkr_metal_packet_record_slot_readbacks(
         (const uint8_t *)submission->readback.cpu_address +
         submission->readback_layout.deferred_diagnostics;
   }
+  command_slot->custom_late_readback =
+      submission->deferred_diagnostics && renderer->custom_compaction
+          ? (const uint32_t *)((const uint8_t *)
+                                   submission->readback.cpu_address +
+                               submission->readback_layout.custom_late)
+          : NULL;
   command_slot->exposure_readback =
       submission->readback_layout.exposure_size > 0u
           ? (const uint8_t *)submission->readback.cpu_address +

@@ -71,6 +71,11 @@ vkr_internal const VkrBakeryDiagInfo vkr_bakery_diags[VKR_BAKERY_DIAG_COUNT] = {
     {"VKR-BUNDLE-0002", VKR_BAKERY_E,
      "The platform runtime executable for the bundle was not found."},
     {"VKR-SERVE-0001", VKR_BAKERY_E, "The build daemon failed."},
+    {"VKR-MAT-0001", VKR_BAKERY_E,
+     "The project's Custom material library did not compile."},
+    {"VKR-MAT-0002", VKR_BAKERY_W,
+     "The project holds more Custom material graphs than its budget; each "
+     "adds pipelines, and packaging refuses the project."},
 };
 
 const VkrBakeryDiagInfo *vkr_bakery_diag_info(VkrBakeryDiag diag) {

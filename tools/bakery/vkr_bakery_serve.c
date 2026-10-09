@@ -31,9 +31,9 @@
  *   {"v":1,"id":N,"req":"unwatch","watch":W}
  *   {"v":1,"id":N,"req":"cancel","target":N}
  *   {"v":1,"id":N,"req":"ping"} / {"v":1,"id":N,"req":"shutdown"}
- * A run executes one subcommand (cook, build, shaders, status, inspect,
- * explain, gc) in this process; each of its event lines reaches the client
- * with "req":N added, then {"ev":"reply","req":N,"exit":code}. A watch
+ * A run executes one subcommand (cook, build, shaders, materials, status,
+ * inspect, explain, gc) in this process; each of its event lines reaches the
+ * client with "req":N added, then {"ev":"reply","req":N,"exit":code}. A watch
  * reports {"ev":"changed","watch":W,"paths":[...]} after its files settle and,
  * with argv, runs it in the background with "watch":W on its events.
  * Commands run one at a time; interactive runs start before background ones.
@@ -347,8 +347,9 @@ vkr_internal void vkr_serve_event_sink(void *context, const char *line,
 // =============================================================================
 
 vkr_internal bool8_t vkr_serve_command_allowed(const char *command) {
-  static const char *const allowed[] = {
-      "cook", "build", "shaders", "status", "inspect", "explain", "gc"};
+  static const char *const allowed[] = {"cook",      "build",  "shaders",
+                                        "materials", "status", "inspect",
+                                        "explain",   "gc"};
   for (uint32_t i = 0u; command && i < ArrayCount(allowed); ++i) {
     if (strcmp(command, allowed[i]) == 0) {
       return true_v;
@@ -394,8 +395,8 @@ vkr_internal bool8_t vkr_serve_arguments_copy(VkrServe *serve,
   }
   if (!vkr_serve_command_allowed(out->items[1])) {
     vkr_serve_arguments_free(out);
-    *out_error = "the daemon runs cook, build, shaders, status, inspect, "
-                 "explain and gc";
+    *out_error = "the daemon runs cook, build, shaders, materials, status, "
+                 "inspect, explain and gc";
     return false_v;
   }
   return true_v;
@@ -767,7 +768,7 @@ vkr_internal bool8_t vkr_serve_directory_open(VkrServeDirectory *directory,
    thread is rebuilt whenever the watch set changes. */
 vkr_internal bool8_t vkr_serve_restart_stream(VkrServe *serve) {
   vkr_serve_stop_stream(serve);
-  char (*chosen)[VKR_BAKERY_PATH_CAPACITY] =
+  char(*chosen)[VKR_BAKERY_PATH_CAPACITY] =
       malloc(VKR_SERVE_WATCH_DIRECTORIES * VKR_BAKERY_PATH_CAPACITY);
   if (!chosen) {
     return false_v;

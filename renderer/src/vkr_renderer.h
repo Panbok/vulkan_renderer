@@ -1209,6 +1209,24 @@ void vkr_renderer_get_device_information(
     Arena *temp_arena);
 uint64_t vkr_renderer_get_submit_serial(VkrRenderer *renderer);
 uint64_t vkr_renderer_get_completed_submit_serial(VkrRenderer *renderer);
+/** Pipeline readiness of Custom material graphs (ADR-096). */
+typedef struct VkrRendererPipelineStats {
+  /** Graphs whose pipelines are still being created. Their materials draw
+   * the Standard fallback meanwhile, so scene readiness waits for zero. */
+  uint32_t pending_graphs;
+  /** Camera draws that took that fallback, over every completed frame. */
+  uint64_t late_draws;
+} VkrRendererPipelineStats;
+
+/** Safe while the render thread runs. Zero on Vulkan, which draws every
+ * Custom material's fallback until it gains Custom graphs. */
+VkrRendererPipelineStats
+vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer);
+/** After `vkr_bakery materials` rewrote the project library: the next frame
+ * loads it again and recreates the Custom graphs' pipelines, which draw
+ * their fallback meanwhile. Safe while the render thread runs; nothing on
+ * Vulkan. */
+void vkr_renderer_reload_custom_materials(VkrRenderer *renderer);
 /** The exposure multiplier the latest prepared frame displays with: the
  * newest completed automatic exposure, else the manual multiplier. Zero
  * before any frame is prepared. */
