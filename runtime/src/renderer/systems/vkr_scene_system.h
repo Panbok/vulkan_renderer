@@ -237,6 +237,16 @@ typedef struct SceneMaterialOverride {
                 [SCENE_MATERIAL_OVERRIDE_PATH_CAPACITY];
 } SceneMaterialOverride;
 
+/*
+ * The surface theme a container's brush faces take for the art pass
+ * (docs/proposals/artist-toolkit.md, part 6): a `.surfaces` file binding
+ * tags to materials. A container's own theme wins; a tag it leaves unbound
+ * takes the World's, then its greybox look. Empty `theme` binds nothing.
+ */
+typedef struct SceneSurfaceTheme {
+  char theme[VKR_SURFACE_THEME_PATH_CAPACITY];
+} SceneSurfaceTheme;
+
 /* How a brush takes part in the level (ADR-084): solid renders and collides,
  * visual only renders, clip only collides, and trigger is a sensor volume. Clip
  * and trigger brushes draw only while the editor edits the scene. */
@@ -1014,6 +1024,8 @@ typedef struct VkrSceneWorldState {
   ScenePhysicsSettings physics_settings;
   SceneAnimationWorldSettings animation_settings;
   SceneTimeOfDay time_of_day;
+  /** The container's own surface theme, else the World's. */
+  SceneSurfaceTheme surface_theme;
   bool8_t has_environment;
   bool8_t has_atmosphere;
   bool8_t has_clouds;
@@ -1030,6 +1042,7 @@ typedef struct VkrSceneWorldState {
   VkrEntityId physics_settings_entity;
   VkrEntityId animation_settings_entity;
   VkrEntityId time_of_day_entity;
+  VkrEntityId surface_theme_entity;
   uint32_t probe_count;
   SceneReflectionProbeSettings probes[VKR_SCENE_REFLECTION_PROBE_MAX];
 } VkrSceneWorldState;

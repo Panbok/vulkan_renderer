@@ -70,6 +70,8 @@ typedef struct VkrBakeMaterial {
   Vec3 diffuse_transmission_color;
   float32_t anisotropy_strength;
   float32_t anisotropy_rotation;
+  /* Meters one texture repeat covers on brush faces; zero unset (1 m). */
+  Vec2 world_size;
   VkrBakeMaterialTextureRef textures[VKR_BAKE_MATERIAL_TEXTURE_COUNT];
 } VkrBakeMaterial;
 

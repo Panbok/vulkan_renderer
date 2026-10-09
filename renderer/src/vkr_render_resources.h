@@ -239,6 +239,11 @@ typedef struct VkrMaterial {
    * untextured surface's factor is exact and a textured surface counts as
    * smooth. The tiled pipeline blurs thin glass only when set (ADR-087). */
   bool8_t rough;
+  /** Art-pass metadata the renderer does not read: the meters one texture
+   * repeat covers on brush faces (zero is 1 m), and the surface tag the
+   * material is made of (a VkrSurface; 0 none). */
+  Vec2 world_size;
+  uint8_t surface;
 
   // Material parameters. `phong` remains for backwards compatibility.
   VkrPhongProperties phong;

@@ -119,6 +119,10 @@ typedef struct VkrMaterialGraphSettings {
   uint32_t subsurface_profile;
   float32_t temporal_reactivity;
   float32_t roughness_max;
+  /* Art-pass metadata: meters one texture repeat covers on brush faces
+     (zero unset, which is 1 m), and the surface tag's name (empty none). */
+  Vec2 world_size;
+  char surface[VKR_MATERIAL_GRAPH_ID_CAPACITY];
 } VkrMaterialGraphSettings;
 
 typedef struct VkrMaterialGraph {
@@ -150,10 +154,14 @@ typedef struct VkrMaterialParam {
   char value[VKR_MATERIAL_GRAPH_PATH_CAPACITY];
 } VkrMaterialParam;
 
-/* An instance's graph file and overrides, read from `.mt` text. */
+/* An instance's graph file and overrides, read from `.mt` text. Its own
+   `world_size` and `surface` lines (empty for the graph's) follow the
+   lowered definition, so they replace the graph's. */
 typedef struct VkrMaterialInstance {
   char graph[VKR_MATERIAL_GRAPH_PATH_CAPACITY];
   char name[VKR_MATERIAL_GRAPH_PATH_CAPACITY];
+  char world_size[VKR_MATERIAL_GRAPH_ID_CAPACITY];
+  char surface[VKR_MATERIAL_GRAPH_ID_CAPACITY];
   uint32_t param_count;
   VkrMaterialParam params[VKR_MATERIAL_GRAPH_PARAM_MAX];
 } VkrMaterialInstance;
@@ -218,6 +226,10 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
 bool8_t vkr_material_instance_read(String8 definition,
                                    VkrMaterialInstance *out, char *error,
                                    uint32_t capacity);
+/* Writes `instance` as `.mt` text into `allocator`: name, graph, its own
+   world size and surface, then the parameters. */
+bool8_t vkr_material_instance_write(const VkrMaterialInstance *instance,
+                                    VkrAllocator *allocator, String8 *out);
 
 /* One line a node: id, type, exposure, value or path and its inputs, for
    agents to read a graph without the canvas. */

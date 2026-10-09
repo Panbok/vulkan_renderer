@@ -840,6 +840,8 @@ static void vkr_material_system_apply_replacement(VkrMaterialSystem *system,
   material->alpha_mode = definition->alpha_mode;
   material->alpha_mode_explicit = definition->alpha_mode_explicit;
   material->double_sided = definition->double_sided;
+  material->world_size = definition->world_size;
+  material->surface = definition->surface;
   material->phong = definition->phong;
   material->pbr = definition->pbr;
   material->alpha_cutoff = definition->alpha_cutoff;

@@ -1,6 +1,8 @@
 #include "renderer/systems/vkr_scene_brush.h"
 
 #include "core/logger.h"
+#include "filesystem/filesystem.h"
+#include "filesystem/vkr_asset_path.h"
 #include "level/vkr_brush.h"
 #include "level/vkr_surface.h"
 #include "renderer/systems/vkr_geometry_system.h"
@@ -65,6 +67,9 @@ typedef struct BrushRecord {
 typedef struct BrushMaterial {
   char path[SCENE_BRUSH_MATERIAL_CAPACITY];
   VkrMaterialHandle handle;
+  /* Meters one texture repeat covers on faces that show it (the material's
+     `world_size`, 1 m without one), as of its load or the last refresh. */
+  Vec2 world_size;
   /* The cache holds one reference; false for the default fallback. */
   bool8_t owned;
 } BrushMaterial;
@@ -109,6 +114,16 @@ struct s_VkrSceneBrushes {
   uint32_t serial;
   /* Every face shows its greybox look, art-owned materials too. */
   bool8_t greybox_view;
+  /* Surface themes as read from the files the paths name: the container's
+     own (else the World's) first, the World's beneath it second. */
+  VkrSurfaceTheme themes[2];
+  char theme_paths[2][VKR_SURFACE_THEME_PATH_CAPACITY];
+  /* The theme files changed on disk; read them again. */
+  bool8_t theme_reload;
+  /* Material files changed on disk: their live replacements publish once
+     their textures load, so material sizes are compared each update until
+     none is pending. */
+  bool8_t sizes_pending;
 };
 
 // =============================================================================
@@ -432,27 +447,39 @@ void vkr_scene_brush_entity_destroying(VkrScene *scene, VkrEntityId entity) {
 // Materials
 // =============================================================================
 
+/* A material's `world_size`, or 1 m a repeat without one. */
+static Vec2 brush_world_size(const VkrMaterial *material) {
+  return material && material->world_size.x > 0.0f &&
+                 material->world_size.y > 0.0f
+             ? material->world_size
+             : vec2_new(1.0f, 1.0f);
+}
+
 /* The material for `path`, cached for the scene's lifetime; the default
    material when the file does not load. */
 static VkrMaterialHandle brush_material(VkrScene *scene, VkrSceneBrushes *state,
-                                        const char *path, bool8_t *out_owned) {
+                                        const char *path, bool8_t *out_owned,
+                                        Vec2 *out_world_size) {
   struct VkrRenderAssets *assets = scene->assets;
   for (uint32_t i = 0; i < state->material_count; ++i) {
     if (strcmp(state->materials[i].path, path) == 0) {
       *out_owned = state->materials[i].owned;
+      *out_world_size = state->materials[i].world_size;
       return state->materials[i].handle;
     }
   }
-  (void)assets;
   BrushMaterial entry = {0};
   snprintf(entry.path, sizeof(entry.path), "%s", path);
   entry.handle = vkr_scene_material_load(scene, path, &entry.owned);
+  entry.world_size = brush_world_size(vkr_material_system_get_by_handle(
+      &assets->material_system, entry.handle));
   if (brush_grow(scene->alloc, (void **)&state->materials,
                  &state->material_capacity, state->material_count + 1u,
                  sizeof(*state->materials))) {
     state->materials[state->material_count++] = entry;
   }
   *out_owned = entry.owned;
+  *out_world_size = entry.world_size;
   return entry.handle;
 }
 
@@ -477,8 +504,12 @@ static const char *brush_face_look(const VkrSceneBrushes *state,
                                          : VKR_SURFACE_TRIGGER_MATERIAL;
   }
   const char *path = vkr_surface_face_material(
-      face->surface, face->mark, face->material, normal_y, state->greybox_view);
-  *out_greybox = path != face->material;
+      face->surface, face->mark, face->material, &state->themes[0],
+      &state->themes[1], normal_y, state->greybox_view);
+  *out_greybox =
+      path != face->material &&
+      path != vkr_surface_theme_material(&state->themes[0], &state->themes[1],
+                                         (VkrSurface)face->surface);
   return path;
 }
 
@@ -558,10 +589,11 @@ static uint64_t brush_cell_key(Vec3 point) {
 /* Writes one face's polygon as a triangle fan with Hammer-style UVs. */
 /* Writes one face's triangle fan. With a lightmap layout it also writes each
    vertex's lightmap UV pair into `lightmap_uvs`, as the bake computes it
-   (ADR-088). */
+   (ADR-088). The face's UV scale counts repeats of `world_size`, its
+   material's size, so 1 shows the material at its real size. */
 static void brush_write_face(const VkrBrushGeometry *geometry, uint32_t face,
-                             const SceneBrushFace *settings, const Mat4 *world,
-                             const Mat4 *world_inverse,
+                             const SceneBrushFace *settings, Vec2 world_size,
+                             const Mat4 *world, const Mat4 *world_inverse,
                              const VkrBrushLightmapLayout *lightmap,
                              VkrVertex3d *vertices, float32_t *lightmap_uvs,
                              uint32_t *vertex_count, uint32_t *indices,
@@ -586,6 +618,8 @@ static void brush_write_face(const VkrBrushGeometry *geometry, uint32_t face,
   }
   const float32_t handedness =
       vec3_dot(vec3_cross(normal, tangent), bitangent) < 0.0f ? -1.0f : 1.0f;
+  const Vec2 uv_scale = vec2_new(settings->uv_scale.x * world_size.x,
+                                 settings->uv_scale.y * world_size.y);
   const uint32_t first = *vertex_count;
   for (uint32_t i = 0; i < polygon.count; ++i) {
     const Vec3 local = geometry->vertices[polygon.first + i];
@@ -595,7 +629,7 @@ static void brush_write_face(const VkrBrushGeometry *geometry, uint32_t face,
         .normal = vkr_vertex_pack_vec3(normal),
         .texcoord =
             vkr_brush_uv(projected, projection_normal, settings->uv_offset,
-                         settings->uv_scale, settings->uv_rotation),
+                         uv_scale, settings->uv_rotation),
         .colour = vec4_one(),
         .tangent = vec4_new(tangent.x, tangent.y, tangent.z, handedness),
     };
@@ -669,6 +703,11 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
   VkrAllocatorScope scope =
       vkr_allocator_begin_scope(&assets->scratch_allocator);
   for (uint32_t group = 0; group < group_count && ok; ++group) {
+    /* Greybox looks keep their own metric grid. */
+    bool8_t owned = false_v;
+    Vec2 world_size = vec2_new(1.0f, 1.0f);
+    const VkrMaterialHandle material =
+        brush_material(scene, state, group_paths[group], &owned, &world_size);
     uint32_t vertex_capacity = 0u;
     uint32_t index_capacity = 0u;
     for (uint32_t face = 0; face < geometry->face_count; ++face) {
@@ -696,9 +735,11 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
     uint32_t index_count = 0u;
     for (uint32_t face = 0; face < geometry->face_count; ++face) {
       if (face_group[face] == group) {
-        brush_write_face(geometry, face, face_uvs[face], world, &world_inverse,
-                         lightmap, vertices, lightmap_uvs, &vertex_count,
-                         indices, &index_count);
+        const bool8_t greybox = face_uvs[face] == &s_greybox_uv;
+        brush_write_face(geometry, face, face_uvs[face],
+                         greybox ? vec2_new(1.0f, 1.0f) : world_size, world,
+                         &world_inverse, lightmap, vertices, lightmap_uvs,
+                         &vertex_count, indices, &index_count);
       }
     }
     VkrGeometryConfig config = {
@@ -742,9 +783,6 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
       ok = false_v;
       break;
     }
-    bool8_t owned = false_v;
-    const VkrMaterialHandle material =
-        brush_material(scene, state, group_paths[group], &owned);
     submeshes[submesh_count++] = (VkrSubMeshDesc){
         .geometry = handle,
         .material = material,
@@ -1020,9 +1058,9 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
         }
         const VkrBrushGeometry *geometry = state->geometry;
         for (uint32_t f = 0; f < geometry->face_count; ++f) {
-          brush_write_face(geometry, f, &s_greybox_uv, world, &world_inverse,
-                           NULL, vertices, NULL, &vertex_count, indices,
-                           &index_count);
+          brush_write_face(geometry, f, &s_greybox_uv, vec2_new(1.0f, 1.0f),
+                           world, &world_inverse, NULL, vertices, NULL,
+                           &vertex_count, indices, &index_count);
         }
         lo = vec3_new(Min(lo.x, geometry->min.x), Min(lo.y, geometry->min.y),
                       Min(lo.z, geometry->min.z));
@@ -1058,8 +1096,9 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
         break;
       }
       bool8_t owned = false_v;
+      Vec2 world_size = vec2_new(1.0f, 1.0f);
       const VkrMaterialHandle handle_material =
-          brush_material(scene, state, looks[material], &owned);
+          brush_material(scene, state, looks[material], &owned, &world_size);
       submeshes[submesh_count++] = (VkrSubMeshDesc){
           .geometry = handle,
           .material = handle_material,
@@ -1356,11 +1395,103 @@ static bool8_t brush_matrix_equal(const Mat4 *a, const Mat4 *b) {
   return MemCompare(a->elements, b->elements, sizeof(a->elements)) == 0;
 }
 
+/* Marks every brush to rebuild at once; blockout shapes show only greybox
+   looks and keep theirs. */
+static void brush_dirty_all(VkrScene *scene, VkrSceneBrushes *state) {
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    BrushRecord *record = &state->records[i];
+    if (vkr_scene_get_typed(scene, record->entity, &vkr_scene_brush_type)) {
+      record->dirty = true_v;
+      record->settle = BRUSH_SETTLE_UPDATES;
+    }
+  }
+}
+
+/* Reads the theme file `path` names; an empty path, or a file that does not
+   read, binds nothing. */
+static void brush_theme_read(VkrScene *scene, const char *path,
+                             VkrSurfaceTheme *out) {
+  MemZero(out, sizeof(*out));
+  if (!path[0]) {
+    return;
+  }
+  VkrAllocator *scratch = &scene->assets->scratch_allocator;
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
+  FilePath file_path = vkr_asset_path_file(
+      scratch, string8_create_from_cstr((const uint8_t *)path, strlen(path)));
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle file = {0};
+  String8 json = {0};
+  char error[160] = {0};
+  if (!file_path.path.str ||
+      file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
+    log_warn("Surface theme '%s' does not open", path);
+  } else {
+    const FileError read = file_read_string(&file, scratch, &json);
+    file_close(&file);
+    if (read != FILE_ERROR_NONE ||
+        !vkr_surface_theme_read(json, out, error, sizeof(error))) {
+      log_warn("Surface theme '%s': %s", path, error[0] ? error : "unreadable");
+      MemZero(out, sizeof(*out));
+    }
+  }
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+}
+
+/* Follows the container's surface theme and the World's: when either path
+   or file changes, every brush rebuilds with the new bindings. */
+static void brush_themes_sync(VkrScene *scene, VkrSceneBrushes *state) {
+  (void)vkr_scene_resolve_world(scene);
+  const char *paths[2] = {scene->world_state.surface_theme.theme, ""};
+  const VkrScene *root = scene->world_root;
+  if (root && root != scene) {
+    paths[1] = root->world_state.surface_theme.theme;
+  }
+  if (!state->theme_reload && strcmp(paths[0], state->theme_paths[0]) == 0 &&
+      strcmp(paths[1], state->theme_paths[1]) == 0) {
+    return;
+  }
+  state->theme_reload = false_v;
+  for (uint32_t i = 0; i < 2u; ++i) {
+    snprintf(state->theme_paths[i], sizeof(state->theme_paths[i]), "%s",
+             paths[i]);
+    brush_theme_read(scene, state->theme_paths[i], &state->themes[i]);
+  }
+  brush_dirty_all(scene, state);
+}
+
+/* Rebuilds every brush when a cached material's world size changed. */
+static void brush_sizes_sync(VkrScene *scene, VkrSceneBrushes *state) {
+  if (!state->sizes_pending) {
+    return;
+  }
+  VkrMaterialSystem *materials = &scene->assets->material_system;
+  state->sizes_pending =
+      vkr_material_system_pending_replacements(materials) > 0u;
+  bool8_t changed = false_v;
+  for (uint32_t i = 0; i < state->material_count; ++i) {
+    BrushMaterial *entry = &state->materials[i];
+    const Vec2 world_size = brush_world_size(
+        vkr_material_system_get_by_handle(materials, entry->handle));
+    if (world_size.x != entry->world_size.x ||
+        world_size.y != entry->world_size.y) {
+      entry->world_size = world_size;
+      changed = true_v;
+    }
+  }
+  if (changed) {
+    brush_dirty_all(scene, state);
+  }
+}
+
 void vkr_scene_brush_update(VkrScene *scene) {
   VkrSceneBrushes *state = scene ? brush_state(scene, false_v) : NULL;
   if (!state || !scene->assets) {
     return;
   }
+  brush_themes_sync(scene, state);
+  brush_sizes_sync(scene, state);
   uint32_t budget = VKR_SCENE_BRUSH_REBUILD_BUDGET;
   for (uint32_t i = 0; i < state->record_count; ++i) {
     BrushRecord *record = &state->records[i];
@@ -1465,15 +1596,16 @@ void vkr_scene_brush_set_greybox_view(VkrScene *scene, bool8_t on) {
     return;
   }
   state->greybox_view = on;
-  /* Only brushes show art-owned materials; shapes always show their
-     greybox looks. */
-  for (uint32_t i = 0; i < state->record_count; ++i) {
-    BrushRecord *record = &state->records[i];
-    if (vkr_scene_get_typed(scene, record->entity, &vkr_scene_brush_type)) {
-      record->dirty = true_v;
-      record->settle = BRUSH_SETTLE_UPDATES;
-    }
+  brush_dirty_all(scene, state);
+}
+
+void vkr_scene_brush_refresh_looks(VkrScene *scene) {
+  VkrSceneBrushes *state = scene ? scene->brushes : NULL;
+  if (!state || !scene->assets) {
+    return;
   }
+  state->theme_reload = true_v;
+  state->sizes_pending = true_v;
 }
 
 bool8_t vkr_scene_brush_greybox_view(const VkrScene *scene) {

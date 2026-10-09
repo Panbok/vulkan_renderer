@@ -2,6 +2,7 @@
 
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
+#include "assets/vkr_material_graph.h"
 #include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
@@ -2907,8 +2908,16 @@ vkr_internal Mat4 vkr_proxy_world(const VkrProxyRecord *records, uint32_t count,
   return world;
 }
 
+/* Meters one texture repeat of material `path` covers on brush faces, as
+   the runtime reads it: its own `world_size=`, else its graph's, else 1 m. */
+vkr_internal Vec2 vkr_proxy_world_size(VkrBake *bake, const char *path);
+
+/* The proxy material for `path`, added with `uv_scale` (counting repeats of
+   the material's world size when `sized`) the first time a face shows
+   it. */
 vkr_internal uint32_t vkr_proxy_material(VkrBake *bake, VkrProxyMesh *mesh,
-                                         const char *path, Vec2 uv_scale) {
+                                         const char *path, Vec2 uv_scale,
+                                         bool8_t sized) {
   for (uint32_t i = 0u; i < mesh->material_count; ++i) {
     if (!strcmp(mesh->material[i].path, path)) {
       return i;
@@ -2916,6 +2925,10 @@ vkr_internal uint32_t vkr_proxy_material(VkrBake *bake, VkrProxyMesh *mesh,
   }
   if (mesh->material_count == VKR_PROXY_MATERIALS_MAX) {
     return mesh->material_count - 1u;
+  }
+  if (sized) {
+    const Vec2 world_size = vkr_proxy_world_size(bake, path);
+    uv_scale = vec2_new(uv_scale.x * world_size.x, uv_scale.y * world_size.y);
   }
   mesh->material[mesh->material_count] = (VkrProxyMaterial){
       .path = vkr_bake_printf(bake, "%s", path), .uv_scale = uv_scale};
@@ -2955,12 +2968,83 @@ vkr_internal bool8_t vkr_proxy_triangle(VkrBake *bake, VkrProxyMesh *mesh,
   return true_v;
 }
 
+/* The value of `key=` in `.mt` text, or an empty string. */
+vkr_internal String8 vkr_proxy_definition_value(String8 text, const char *key) {
+  const uint64_t key_length = strlen(key);
+  uint64_t at = 0u;
+  while (at < text.length) {
+    uint64_t end = at;
+    while (end < text.length && text.str[end] != '\n') {
+      end++;
+    }
+    String8 line = {.str = text.str + at, .length = end - at};
+    string8_trim(&line);
+    if (line.length > key_length && line.str[key_length] == '=' &&
+        MemCompare(line.str, key, key_length) == 0) {
+      String8 value = {.str = line.str + key_length + 1u,
+                       .length = line.length - key_length - 1u};
+      string8_trim(&value);
+      return value;
+    }
+    at = end + 1u;
+  }
+  return (String8){0};
+}
+
+vkr_internal Vec2 vkr_proxy_world_size(VkrBake *bake, const char *path) {
+  Vec2 size = vec2_new(1.0f, 1.0f);
+  uint8_t *data = NULL;
+  uint64_t length = 0u;
+  if (!vkr_bakery_read_file(vkr_bake_printf(bake, "%s/%s", bake->repo, path),
+                            0u, &data, &length)) {
+    return size;
+  }
+  const String8 text = {.str = data, .length = length};
+  const String8 value = vkr_proxy_definition_value(text, "world_size");
+  const String8 graph = vkr_proxy_definition_value(text, "graph");
+  float32_t uniform = 0.0f;
+  Vec2 parsed = {0};
+  if (value.length) {
+    if (string8_to_vec2(&value, &parsed)) {
+      size = parsed;
+    } else if (string8_to_f32(&value, &uniform)) {
+      size = vec2_new(uniform, uniform);
+    }
+  } else if (graph.length) {
+    /* An instance's graph lies beside it with ./ or ../, else under the
+       content root. */
+    const char *slash = strrchr(path, '/');
+    const bool8_t relative = graph.str[0] == '.';
+    const char *graph_path =
+        relative && slash ? vkr_bake_printf(bake, "%s/%.*s/%.*s", bake->repo,
+                                            (int)(slash - path), path,
+                                            (int)graph.length, graph.str)
+                          : vkr_bake_printf(bake, "%s/%.*s", bake->repo,
+                                            (int)graph.length, graph.str);
+    uint8_t *json = NULL;
+    uint64_t json_length = 0u;
+    VkrMaterialGraph *material_graph = arena_alloc(
+        bake->arena, sizeof(*material_graph), ARENA_MEMORY_TAG_STRUCT);
+    if (material_graph &&
+        vkr_bakery_read_file(graph_path, 0u, &json, &json_length) &&
+        vkr_material_graph_read((String8){.str = json, .length = json_length},
+                                material_graph, NULL, 0u) &&
+        material_graph->settings.world_size.x > 0.0f) {
+      size = material_graph->settings.world_size;
+    }
+    free(json);
+  }
+  free(data);
+  return size.x >= 0.01f && size.y >= 0.01f ? size : vec2_new(1.0f, 1.0f);
+}
+
 /* Adds brush `brush`'s faces, built from its `brush_face` children, in
    cell space. Clip and trigger brushes draw nothing in a game. */
 vkr_internal bool8_t vkr_proxy_brush(VkrBake *bake, VkrProxyMesh *mesh,
                                      const VkrProxyRecord *records,
                                      uint32_t count,
-                                     const VkrProxyRecord *brush, Vec3 origin) {
+                                     const VkrProxyRecord *brush, Vec3 origin,
+                                     const VkrSurfaceTheme *theme) {
   String8 role = {0};
   const VkrBakeryJson *settings =
       vkr_bakery_json_get(brush->components, "brush");
@@ -3008,8 +3092,9 @@ vkr_internal bool8_t vkr_proxy_brush(VkrBake *bake, VkrProxyMesh *mesh,
       corners[i] = vec3_sub(
           mat4_mul_vec3(world, geometry->vertices[polygon.first + i]), origin);
     }
-    /* The face's art-owned material, or its surface's greybox look with
-       the greybox repeat, as the runtime picks it (vkr_scene_brush.c). */
+    /* The face's art-owned material or its tag's theme binding, at its
+       world size, or its surface's greybox look with the greybox repeat,
+       as the runtime picks it (vkr_scene_brush.c). */
     const Vec3 normal = vec3_normalize(vec3_cross(
         vec3_sub(corners[1], corners[0]), vec3_sub(corners[2], corners[0])));
     float32_t uv_scale[2] = {1.0f, 1.0f};
@@ -3034,14 +3119,17 @@ vkr_internal bool8_t vkr_proxy_brush(VkrBake *bake, VkrProxyMesh *mesh,
     if (vkr_surface_from_legacy_material(material, &surface, &mark)) {
       material = "";
     }
-    const char *look =
-        vkr_surface_face_material(surface, mark, material, normal.y, false_v);
-    if (look != material) {
+    const char *look = vkr_surface_face_material(surface, mark, material, theme,
+                                                 NULL, normal.y, false_v);
+    const bool8_t greybox =
+        look != material &&
+        look != vkr_surface_theme_material(theme, NULL, surface);
+    if (greybox) {
       uv_scale[0] = VKR_SURFACE_GREYBOX_REPEAT;
       uv_scale[1] = VKR_SURFACE_GREYBOX_REPEAT;
     }
     const uint32_t index = vkr_proxy_material(
-        bake, mesh, look, vec2_new(uv_scale[0], uv_scale[1]));
+        bake, mesh, look, vec2_new(uv_scale[0], uv_scale[1]), !greybox);
     for (uint32_t i = 1u; i + 1u < polygon.count; ++i) {
       VKR_BAKE_TRY(vkr_proxy_triangle(bake, mesh, corners[0], corners[i],
                                       corners[i + 1u], index));
@@ -3317,10 +3405,39 @@ vkr_internal bool8_t vkr_proxy_cell(VkrBake *bake, const char *cells,
   VkrProxyMesh mesh = {0};
   const Vec3 origin =
       vec3_new((float32_t)x * cell_size, 0.0f, (float32_t)z * cell_size);
+  /* The scene's surface theme, the first one, as the runtime resolves a
+     singleton; one that does not read binds nothing. */
+  VkrSurfaceTheme *theme =
+      arena_alloc(bake->arena, sizeof(*theme), ARENA_MEMORY_TAG_STRUCT);
+  if (!theme) {
+    return vkr_bake_fail(bake, "Out of memory");
+  }
+  MemZero(theme, sizeof(*theme));
+  for (uint32_t i = 0u; i < count; ++i) {
+    String8 theme_path = {0};
+    if (!vkr_bakery_json_get_string(
+            vkr_bakery_json_get(records[i].components, "surface_theme"),
+            "theme", &theme_path) ||
+        !theme_path.length) {
+      continue;
+    }
+    uint8_t *data = NULL;
+    uint64_t length = 0u;
+    if (!vkr_bakery_read_file(vkr_bake_printf(bake, "%s/%.*s", bake->repo,
+                                              (int)theme_path.length,
+                                              theme_path.str),
+                              0u, &data, &length) ||
+        !vkr_surface_theme_read((String8){.str = data, .length = length}, theme,
+                                NULL, 0u)) {
+      MemZero(theme, sizeof(*theme));
+    }
+    free(data);
+    break;
+  }
   for (uint32_t i = 0u; i < count; ++i) {
     if (vkr_bakery_json_get(records[i].components, "brush")) {
-      VKR_BAKE_TRY(
-          vkr_proxy_brush(bake, &mesh, records, count, &records[i], origin));
+      VKR_BAKE_TRY(vkr_proxy_brush(bake, &mesh, records, count, &records[i],
+                                   origin, theme));
     }
   }
   if (!mesh.triangle_count) {

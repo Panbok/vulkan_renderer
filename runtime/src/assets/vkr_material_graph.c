@@ -690,6 +690,18 @@ bool8_t vkr_material_graph_read(String8 json, VkrMaterialGraph *out,
     }
     out->settings.alpha_mode = (VkrMaterialGraphAlpha)alpha;
     out->settings.subsurface_profile = (uint32_t)profile;
+    float32_t world_size[2] = {0.0f, 0.0f};
+    if (json_member(&settings, "world_size", &member) &&
+        (!json_floats(&member, world_size, 2u) || world_size[0] < 0.0f ||
+         world_size[1] < 0.0f)) {
+      return graph_fail(error, capacity,
+                        "\"world_size\" is two sizes in meters");
+    }
+    out->settings.world_size = vec2_new(world_size[0], world_size[1]);
+    if (!json_text(&settings, "surface", out->settings.surface,
+                   sizeof(out->settings.surface))) {
+      return graph_fail(error, capacity, "\"surface\" is a tag name");
+    }
     if (json_member(&settings, "double_sided", &member) &&
         !vkr_json_parse_bool(&member, &out->settings.double_sided)) {
       return graph_fail(error, capacity, "\"double_sided\" is true or false");
@@ -789,14 +801,23 @@ bool8_t vkr_material_graph_write(const VkrMaterialGraph *graph,
   text_append(&text, "\"alpha_mode\": \"%s\", \"alpha_cutoff\": " GRAPH_FLOAT,
               s_alpha_names[settings->alpha_mode],
               (double)settings->alpha_cutoff);
-  text_append(&text,
-              ", \"double_sided\": %s, \"subsurface_profile\": %u, "
-              "\"temporal_reactivity\": " GRAPH_FLOAT
-              ", \"roughness_max\": " GRAPH_FLOAT "},\n  \"nodes\": [",
-              settings->double_sided ? "true" : "false",
-              settings->subsurface_profile,
-              (double)settings->temporal_reactivity,
-              (double)settings->roughness_max);
+  text_append(
+      &text,
+      ", \"double_sided\": %s, \"subsurface_profile\": %u, "
+      "\"temporal_reactivity\": " GRAPH_FLOAT
+      ", \"roughness_max\": " GRAPH_FLOAT,
+      settings->double_sided ? "true" : "false", settings->subsurface_profile,
+      (double)settings->temporal_reactivity, (double)settings->roughness_max);
+  /* Art-pass metadata, only when set. */
+  if (settings->world_size.x > 0.0f) {
+    text_append(&text, ", \"world_size\": [" GRAPH_FLOAT ", " GRAPH_FLOAT "]",
+                (double)settings->world_size.x, (double)settings->world_size.y);
+  }
+  if (settings->surface[0]) {
+    text_append(&text, ", \"surface\": ");
+    text_json_string(&text, settings->surface);
+  }
+  text_append(&text, "},\n  \"nodes\": [");
   for (uint32_t i = 0; i < graph->node_count; ++i) {
     const VkrMaterialNode *node = &graph->nodes[i];
     const VkrMaterialNodeDesc *desc = vkr_material_node_desc(node->kind);
@@ -1227,6 +1248,13 @@ bool8_t vkr_material_graph_lower(const VkrMaterialGraph *graph,
     text_append(&text, "roughness_max=" GRAPH_FLOAT "\n",
                 (double)settings->roughness_max);
   }
+  if (settings->world_size.x > 0.0f) {
+    text_append(&text, "world_size=" GRAPH_FLOAT "," GRAPH_FLOAT "\n",
+                (double)settings->world_size.x, (double)settings->world_size.y);
+  }
+  if (settings->surface[0]) {
+    text_append(&text, "surface=%s\n", settings->surface);
+  }
   out->samples = context.sampled_count;
   if (!text_finish(&text, out_definition)) {
     return lower_fail(&context, NULL, "Out of memory for the definition");
@@ -1377,6 +1405,28 @@ static bool8_t raise_key(void *opaque, String8 key, String8 value) {
                         "%.*s '%.*s' is not a number", (int)key.length,
                         key.str, (int)value.length, value.str);
     }
+    return true_v;
+  }
+  if (graph_equals(key, "world_size")) {
+    float32_t uniform = 0.0f;
+    if (!string8_to_vec2(&value, &settings->world_size)) {
+      if (!string8_to_f32(&value, &uniform) || !(uniform > 0.0f)) {
+        return graph_fail(context->error, context->capacity,
+                          "world_size '%.*s' is one or two sizes",
+                          (int)value.length, value.str);
+      }
+      settings->world_size = vec2_new(uniform, uniform);
+    }
+    return true_v;
+  }
+  if (graph_equals(key, "surface")) {
+    if (value.length >= sizeof(settings->surface)) {
+      return graph_fail(context->error, context->capacity,
+                        "surface '%.*s' is not a tag name", (int)value.length,
+                        value.str);
+    }
+    MemCopy(settings->surface, value.str, value.length);
+    settings->surface[value.length] = '\0';
     return true_v;
   }
   if (graph_equals(key, "subsurface_profile")) {
@@ -1675,6 +1725,14 @@ static bool8_t instance_key(void *opaque, String8 key, String8 value) {
     target = instance->graph;
   } else if (graph_equals(key, "name")) {
     target = instance->name;
+  } else if (graph_equals(key, "world_size") || graph_equals(key, "surface")) {
+    if (value.length >= VKR_MATERIAL_GRAPH_ID_CAPACITY) {
+      return graph_fail(context->error, context->capacity,
+                        "'%.*s' is longer than %u bytes", (int)key.length,
+                        key.str, VKR_MATERIAL_GRAPH_ID_CAPACITY - 1u);
+    }
+    target =
+        graph_equals(key, "surface") ? instance->surface : instance->world_size;
   } else if (key.length > 6u && MemCompare(key.str, "param.", 6u) == 0) {
     if (instance->param_count == VKR_MATERIAL_GRAPH_PARAM_MAX ||
         key.length - 6u >= VKR_MATERIAL_GRAPH_ID_CAPACITY) {
@@ -1688,8 +1746,8 @@ static bool8_t instance_key(void *opaque, String8 key, String8 value) {
     target = param->value;
   } else {
     return graph_fail(context->error, context->capacity,
-                      "A graph instance sets name, graph and param.<name>, "
-                      "not '%.*s'",
+                      "A graph instance sets name, graph, world_size, "
+                      "surface and param.<name>, not '%.*s'",
                       (int)key.length, key.str);
   }
   MemCopy(target, value.str, value.length);
@@ -1723,6 +1781,26 @@ bool8_t vkr_material_instance_read(String8 definition,
   return true_v;
 }
 
+bool8_t vkr_material_instance_write(const VkrMaterialInstance *instance,
+                                    VkrAllocator *allocator, String8 *out) {
+  GraphText text = {.allocator = allocator};
+  if (instance->name[0]) {
+    text_append(&text, "name=%s\n", instance->name);
+  }
+  text_append(&text, "graph=%s\n", instance->graph);
+  if (instance->world_size[0]) {
+    text_append(&text, "world_size=%s\n", instance->world_size);
+  }
+  if (instance->surface[0]) {
+    text_append(&text, "surface=%s\n", instance->surface);
+  }
+  for (uint32_t i = 0; i < instance->param_count; ++i) {
+    text_append(&text, "param.%s=%s\n", instance->params[i].name,
+                instance->params[i].value);
+  }
+  return text_finish(&text, out);
+}
+
 // =============================================================================
 // Description
 // =============================================================================
@@ -1731,9 +1809,17 @@ bool8_t vkr_material_graph_describe(const VkrMaterialGraph *graph,
                                     VkrAllocator *allocator, String8 *out) {
   GraphText text = {.allocator = allocator};
   const VkrMaterialGraphSettings *settings = &graph->settings;
-  text_append(&text, "settings alpha=%s double_sided=%s\n",
+  text_append(&text, "settings alpha=%s double_sided=%s",
               s_alpha_names[settings->alpha_mode],
               settings->double_sided ? "true" : "false");
+  if (settings->world_size.x > 0.0f) {
+    text_append(&text, " world_size=" GRAPH_FLOAT "," GRAPH_FLOAT,
+                (double)settings->world_size.x, (double)settings->world_size.y);
+  }
+  if (settings->surface[0]) {
+    text_append(&text, " surface=%s", settings->surface);
+  }
+  text_append(&text, "\n");
   for (uint32_t i = 0; i < graph->node_count; ++i) {
     const VkrMaterialNode *node = &graph->nodes[i];
     const VkrMaterialNodeDesc *desc = vkr_material_node_desc(node->kind);

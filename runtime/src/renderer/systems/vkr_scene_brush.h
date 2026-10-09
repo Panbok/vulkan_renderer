@@ -10,9 +10,10 @@
  * submesh per face material, held by the entity like a shape's mesh. Solid
  * and clip brushes add a convex hull to a static body of their world cell,
  * at most 32 hulls a body; trigger brushes own a sensor hull. Each face
- * shows its art-owned material, or the greybox look of its surface tag and
- * mark (vkr_surface.h); clip and trigger brushes always show their role's
- * look. A `blockout`
+ * shows its art-owned material, the material the container's surface theme
+ * binds to its tag, or the greybox look of its tag and mark (vkr_surface.h);
+ * clip and trigger brushes always show their role's look. Faces that show
+ * a material count UV repeats of its `world_size`. A `blockout`
  * shape builds its mesh the same way from its pieces (vkr_blockout.h), and
  * owns one static body whose triangle mesh holds every piece. The scene owns
  * all of it and releases it at shutdown; documents store only the
@@ -54,6 +55,10 @@ void vkr_scene_brush_shutdown(VkrScene *scene);
    returns them; changing it rebuilds the scene's brushes. */
 void vkr_scene_brush_set_greybox_view(VkrScene *scene, bool8_t on);
 bool8_t vkr_scene_brush_greybox_view(const VkrScene *scene);
+/* Material or theme files changed on disk: reads the container's themes
+   again and rebuilds the brushes when a binding or a material's
+   `world_size` changed. */
+void vkr_scene_brush_refresh_looks(VkrScene *scene);
 
 /* NULL when brush or blockout shape `brush` built, else why it did not.
    Unbuilt ones report "pending". */

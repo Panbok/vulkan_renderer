@@ -9,10 +9,12 @@ The artist toolkit follows the level design toolkit
 ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)). The level
 toolkit designs and structures a level. The artist toolkit gives the
 finished layout its look: materials, lighting, sky, fog, post-processing and
-set dressing. Part 1 is implemented and recorded in ADR-084, and the
+set dressing. Part 1 is implemented and recorded in ADR-084, the
 Standard tier of Parts 2 and 5 in
-[ADR-093](../adr/093-material-graphs-and-art-workbench.md); this proposal
-keeps their remaining scope and the other parts:
+[ADR-093](../adr/093-material-graphs-and-art-workbench.md), and the
+bindings, world size and lint of Part 6 in
+[ADR-094](../adr/094-surface-themes-and-art-pass.md); this proposal keeps
+their remaining scope and the other parts:
 
 1. Surface tags and fixed greybox looks with measurement aids in the level
    toolkit.
@@ -238,10 +240,9 @@ Remaining here:
 - **Project tags.** A project adds tags in its settings, each with one of
   the fixed greybox tones. They come with themes in Phase 3, which keep
   project data.
-- **Tags on meshes.** A material instance declares `surface=`, so imported
-  meshes share the brushes' vocabulary (Phase 2).
-- **Bindings in the look order.** Phase 3 inserts the scene's theme binding
-  between a face's art-owned material and its greybox look.
+- **Physical uses of `surface=`.** Materials declare their tag
+  (ADR-094), so imported meshes share the brushes' vocabulary; nothing reads
+  it yet.
 - **Physical uses.** Footstep sounds, impact effects and friction read the
   tag; no phase of this proposal schedules them.
 
@@ -535,6 +536,13 @@ as on scenes (settled 2026-10-09).
 
 ## Part 6: The art pass on levels
 
+Implemented on 2026-10-09 and recorded in ADR-094: themes and their
+selection by container over the World's, the look order, `world_size` on
+brush faces, theme editing in the Material panel and the Art palette,
+`surface.*` operations and `art.lint` (its Custom-budget check waits for
+Part 3). Remaining here: the density range as a project setting, and
+themes reaching bakes from the World.
+
 ### Surface bindings
 
 A **theme** is a project asset (`.surfaces`, JSON) that maps tags to
@@ -639,14 +647,14 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 
 | Family | Operations | Writes |
 |---|---|---|
-| `surface.*` | `list`, `define`, `theme.create`, `theme.bind`, `theme.select` | Project and scene |
+| `surface.*` | `list`, `theme.create`, `theme.bind` and `theme.select` are implemented (ADR-094); `define` waits for project tags | Project and scene |
 | `brush.*` | `set_surface` (implemented; it sets the surface, the mark or both) | Scene |
 | `face.*` | `set_material` (implemented; an empty `material` clears the override) | Scene |
 | `material.*` | `list`, `create`, `describe`, `patch`, `set_param`, `assign`, `compile` and `open` are implemented; `preview` remains, and `cost` is part of each lowering answer | Documents and scene |
 | `look.*` | `volume` (intent: a look volume from a box and overrides) | Scene |
 | `env.*` | `describe`, `preset.save`, `preset.apply` | Scene |
 | `lighting.*` | `bake` with settings, `time` | Scene and bake jobs |
-| Reads | `query.luminance`, `art.lint`, `view.capture` with a `mode`; `query.measure` and `view.greybox` are implemented | — |
+| Reads | `query.luminance`, `view.capture` with a `mode`; `query.measure`, `view.greybox` and `art.lint` are implemented | — |
 
 The operations that matter most for agents:
 
@@ -683,7 +691,7 @@ Each phase is usable on its own and keeps the rules of Goals and limits.
 |---|---|---|
 | 1. Surface tags and greybox | Implemented (ADR-084) | Recorded in ADR-084 |
 | 2. Graph documents and the Art workbench | Implemented (ADR-093); material functions, the Lookdev scene and the Details picker remain | Recorded in ADR-093 |
-| 3. Layered Standard and the art pass | Layer blend with mask sources, `world_size`, themes and bindings, face overrides, `art.lint` | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
+| 3. Layered Standard and the art pass | Themes and bindings, `world_size`, face overrides and `art.lint` are implemented (ADR-094); remaining: layer blend with mask sources | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
 | 4. Custom graphs | Code generation, the project shader library, Metal per-graph variants, Vulkan classification and per-graph resolve, the budget, pipeline creation at scene and cell load, the late-draw fallback and `pipelines_late` | `pipelines_late` is zero over the Bistro glide camera with 8 Custom graphs assigned. Cold and warm pipeline creation time per graph on the M1 Pro. A Custom graph that reproduces a Standard material gives an equal snapshot. Vulkan native checks wait for a Windows host |
 | 5. Lighting and look | Environment panel and presets, look volumes, light gizmos and list, probe and volume creation, bake settings, time scrubber, artist view modes, `query.luminance` | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |
 | 6. Dressing | Decal tool and outline, scatter painting | Captures on Bistro; scatter stays within the 4,096-copy bound |

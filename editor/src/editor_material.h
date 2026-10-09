@@ -4,13 +4,13 @@
 #include "vkr_sample_runtime.h"
 
 /*
- * Material documents (docs/proposals/artist-toolkit.md, parts 2 and 5): the
- * material graphs (`.mtg`) and material files (`.mt`) that artists and
- * agents edit. Every change writes its file at once, through a temporary
- * file and a rename, then updates the live materials that read the file:
- * the material itself, or every instance of a changed graph. A document
- * journal keeps each change's text before and after, numbered from the
- * scene journals' counters (vkr_scene_edit_take_sequence), so one Undo
+ * Material documents (docs/proposals/artist-toolkit.md, parts 2, 5 and 6):
+ * the material graphs (`.mtg`), material files (`.mt`) and surface themes
+ * (`.surfaces`) that artists and agents edit. Every change writes its file at
+ * once, through a temporary file and a rename, then updates the live materials
+ * that read the file: the material itself, or every instance of a changed
+ * graph. A document journal keeps each change's text before and after, numbered
+ * from the scene journals' counters (vkr_scene_edit_take_sequence), so one Undo
  * walks scene and document steps in the order they happened, and agents'
  * document changes are reviewed and reverted like their scene changes.
  * Paths are content-root relative, as `.mt` files name each other.
@@ -35,6 +35,8 @@ typedef enum VkrEditorMaterialKind {
   VKR_EDITOR_MATERIAL_INSTANCE,
   /* A plain `.mt` definition. */
   VKR_EDITOR_MATERIAL_DEFINITION,
+  /* A `.surfaces` theme binding surface tags to materials. */
+  VKR_EDITOR_MATERIAL_THEME,
 } VkrEditorMaterialKind;
 
 VkrEditorMaterials *vkr_editor_material_create(VkrAllocator *allocator);
@@ -128,6 +130,12 @@ void vkr_editor_material_finish_drop(struct VkrEditorUi *editor,
 void vkr_editor_material_assign(struct VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 VkrEntityId entity, const char *material);
+/* A new empty surface theme, assets/surfaces/theme_<n>.surfaces, that
+   `container` (the agent channel's "primary", "world" or a slot) then
+   takes, opened in the panel. */
+void vkr_editor_material_new_theme(struct VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   const char *container);
 /* The panel's node canvas, built at the root after the dock: the canvas
    places itself from the window origin. */
 void vkr_editor_material_canvas_build(struct VkrEditorUi *editor,

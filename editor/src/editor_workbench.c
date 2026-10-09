@@ -1164,15 +1164,59 @@ static void workbench_assign(VkrEditorUi *editor,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
+/* The surface tag of the selected face, else of the selected brush's first
+   tagged face; none without one. */
+static VkrSurface workbench_selected_tag(const VkrSampleUiFrame *frame) {
+  const VkrScene *scene =
+      vkr_editor_entity_scene(frame, frame->selected_entity);
+  if (!scene || !vkr_scene_entity_alive(scene, frame->selected_entity)) {
+    return VKR_SURFACE_NONE;
+  }
+  const SceneBrushFace *face = vkr_scene_get_typed(
+      scene, frame->selected_entity, &vkr_scene_brush_face_type);
+  if (face) {
+    return face->surface;
+  }
+  VkrEntityId faces[VKR_BRUSH_FACE_MAX];
+  const uint32_t count =
+      Min(vkr_scene_brush_faces(scene, frame->selected_entity, faces,
+                                ArrayCount(faces)),
+          (uint32_t)ArrayCount(faces));
+  for (uint32_t i = 0; i < count; ++i) {
+    face = vkr_scene_get_typed(scene, faces[i], &vkr_scene_brush_face_type);
+    if (face && face->surface != VKR_SURFACE_NONE) {
+      return face->surface;
+    }
+  }
+  return VKR_SURFACE_NONE;
+}
+
+/* The agent-channel name of the selected entity's container, unquoted:
+   "primary", "world" or a slot number. */
+static void workbench_selected_container(const VkrSampleUiFrame *frame,
+                                         char *out, uint64_t capacity) {
+  const uint32_t world = frame->selected_entity.parts.world;
+  if (world == VKR_SCENE_WORLD_ROOT_ID) {
+    snprintf(out, capacity, "world");
+  } else if (world == 0u) {
+    snprintf(out, capacity, "primary");
+  } else {
+    snprintf(out, capacity, "%u", world);
+  }
+}
+
 static void workbench_art_palette(VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame,
                                   VkrUiRect bounds) {
   VkrEditorPalette palette =
       vkr_editor_palette_begin(editor, frame, bounds, 4.0f);
   const char *open = vkr_editor_material_open_path(editor->materials);
-  const bool8_t assignable =
-      open[0] && vkr_editor_material_kind(frame->ui->frame_allocator, open) !=
-                     VKR_EDITOR_MATERIAL_GRAPH;
+  const VkrEditorMaterialKind open_kind =
+      open[0] ? vkr_editor_material_kind(frame->ui->frame_allocator, open)
+              : VKR_EDITOR_MATERIAL_NONE;
+  /* Faces, meshes and themes take material files, not graphs. */
+  const bool8_t assignable = open_kind == VKR_EDITOR_MATERIAL_INSTANCE ||
+                             open_kind == VKR_EDITOR_MATERIAL_DEFINITION;
   char selected[VKR_EDITOR_MATERIAL_PATH];
   workbench_selected_material(frame, selected, sizeof(selected));
   vkr_editor_palette_heading(&palette, string8_lit("art.materials"),
@@ -1202,6 +1246,63 @@ static void workbench_art_palette(VkrEditorUi *editor,
                       "greybox look"),
           false_v, !selected[0])) {
     workbench_assign(editor, frame, "");
+  }
+
+  /* The container's theme binds tags to materials for every face that has
+     no material of its own. */
+  const VkrScene *scene =
+      frame->selected_entity.u64
+          ? vkr_editor_entity_scene(frame, frame->selected_entity)
+          : frame->scene;
+  const VkrSceneWorldState *state = scene ? &scene->world_state : NULL;
+  const char *theme =
+      state && state->surface_theme_entity.u64 &&
+              state->surface_theme_entity.parts.world == scene->world_id
+          ? state->surface_theme.theme
+          : "";
+  const VkrSurface tag = workbench_selected_tag(frame);
+  vkr_editor_palette_heading(&palette, string8_lit("art.theme"),
+                             string8_lit("THEME"));
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("art.bind"), "Bind tag", VKR_UI_ICON_TAG,
+          string8_lit("Bind the selected face's surface tag to the open "
+                      "material in this scene's theme: every face of the tag "
+                      "without its own material shows it"),
+          false_v, !theme[0] || tag == VKR_SURFACE_NONE || !assignable)) {
+    char container[16];
+    workbench_selected_container(frame, container, sizeof(container));
+    const bool8_t slot = container[0] >= '0' && container[0] <= '9';
+    char line[640];
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"palette\",\"op\":\"surface.theme.bind\","
+             "\"args\":{\"container\":%s%s%s,\"tag\":\"%s\","
+             "\"material\":\"%s\",\"review\":false}}",
+             slot ? "" : "\"", container, slot ? "" : "\"",
+             vkr_surface_names[tag], open);
+    if (editor->agent) {
+      (void)vkr_editor_agent_submit(editor->agent, line);
+    }
+  }
+  if (theme[0] &&
+      vkr_editor_palette_button(
+          &palette, string8_lit("art.theme_open"), "Open theme",
+          VKR_UI_ICON_MATERIAL,
+          string8_lit("Show this scene's surface theme in the Material panel, "
+                      "a material per surface tag"),
+          false_v, false_v)) {
+    (void)vkr_editor_material_open(editor->materials, frame, theme);
+    vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_MATERIAL);
+  }
+  if (!theme[0] &&
+      vkr_editor_palette_button(
+          &palette, string8_lit("art.theme_new"), "New theme", VKR_UI_ICON_ADD,
+          string8_lit("Make an empty surface theme for this scene and open "
+                      "it; Bind tag then fills it"),
+          false_v, !scene)) {
+    char container[16];
+    workbench_selected_container(frame, container, sizeof(container));
+    vkr_editor_material_new_theme(
+        editor, frame, frame->selected_entity.u64 ? container : "primary");
   }
   vkr_editor_palette_heading(&palette, string8_lit("art.view"),
                              string8_lit("VIEW"));

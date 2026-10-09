@@ -484,6 +484,10 @@ typedef struct VkrSampleUiFrame {
   const VkrScriptHost *scripts;
   VkrSampleViewState view_state;
   VkrSampleViewRequest *view_request;
+  /* Set when material or surface theme files changed on disk: every loaded
+     scene's brushes read their themes and material sizes again
+     (vkr_scene_brush_refresh_looks). */
+  bool8_t *looks_changed;
   VkrSampleHideRequest *hide_request;
   VkrSamplePhysicsRequest *physics_request;
   VkrSampleIoRequest *io_request;

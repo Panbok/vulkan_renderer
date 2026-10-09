@@ -686,6 +686,9 @@ bool8_t vkr_scene_resolve_world(VkrScene *scene) {
                               &state->animation_settings_entity);
   (void)scene_world_singleton(scene, &vkr_scene_time_of_day_type,
                               &state->time_of_day, &state->time_of_day_entity);
+  (void)scene_world_singleton(scene, &vkr_scene_surface_theme_type,
+                              &state->surface_theme,
+                              &state->surface_theme_entity);
 
   uint32_t indices[VKR_SCENE_REFLECTION_PROBE_MAX];
   SceneWorldGather probes = {.type = &vkr_scene_reflection_probe_type,
@@ -824,6 +827,7 @@ bool8_t vkr_scene_singleton_active(const VkrScene *scene, VkrEntityId entity,
       : type == &vkr_scene_time_of_day_type    ? state->time_of_day_entity
       : type == &vkr_scene_diffuse_volume_type ? state->diffuse_volume_entity
       : type == &vkr_scene_subsurface_type     ? state->subsurface_entity
+      : type == &vkr_scene_surface_theme_type  ? state->surface_theme_entity
                                                : entity;
   return winner.u64 == entity.u64;
 }

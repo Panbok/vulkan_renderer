@@ -49,6 +49,8 @@ typedef struct MaterialPanel {
   char graph_path[VKR_EDITOR_MATERIAL_PATH];
   bool8_t read_only;
   VkrMaterialInstance *instance;
+  /* A shown surface theme. */
+  VkrSurfaceTheme *theme;
   bool8_t lowered;
   VkrMaterialLowering lowering;
   char problem[VKR_MATERIAL_GRAPH_ERROR_CAPACITY];
@@ -101,8 +103,11 @@ VkrEditorMaterials *vkr_editor_material_create(VkrAllocator *allocator) {
   materials->panel.instance = vkr_allocator_alloc(
       allocator, sizeof(*materials->panel.instance),
       VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  materials->panel.theme =
+      vkr_allocator_alloc(allocator, sizeof(*materials->panel.theme),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!materials->steps || !materials->index || !materials->panel.graph ||
-      !materials->panel.instance) {
+      !materials->panel.instance || !materials->panel.theme) {
     return NULL;
   }
   vkr_editor_graph_view_init(&materials->panel.view);
@@ -174,6 +179,9 @@ VkrEditorMaterialKind vkr_editor_material_kind(VkrAllocator *scratch,
                                                const char *path) {
   if (material_ends_with(path, ".mtg")) {
     return VKR_EDITOR_MATERIAL_GRAPH;
+  }
+  if (material_ends_with(path, VKR_SURFACE_THEME_EXTENSION)) {
+    return VKR_EDITOR_MATERIAL_THEME;
   }
   if (!material_ends_with(path, ".mt")) {
     return VKR_EDITOR_MATERIAL_NONE;
@@ -321,8 +329,10 @@ static void material_scan_entry(void *context, const char *name,
     scan->depth++;
     vkr_editor_directory_list(scan->absolute, material_scan_entry, scan);
     scan->depth--;
-  } else if (!directory && (material_ends_with(name, ".mt") ||
-                            material_ends_with(name, ".mtg"))) {
+  } else if (!directory &&
+             (material_ends_with(name, ".mt") ||
+              material_ends_with(name, ".mtg") ||
+              material_ends_with(name, VKR_SURFACE_THEME_EXTENSION))) {
     VkrAllocatorScope scope = vkr_allocator_begin_scope(scan->scratch);
     String8 text = {0};
     if (vkr_editor_material_read(scan->scratch, scan->relative, &text)) {
@@ -397,6 +407,14 @@ static void material_replace_live(const VkrSampleUiFrame *frame,
 void vkr_editor_material_refresh(VkrEditorMaterials *materials,
                                  const VkrSampleUiFrame *frame,
                                  const char *path) {
+  /* Brushes read themes and the materials' world sizes once the frame's
+     requests apply, after the live materials below changed. */
+  const bool8_t look = material_ends_with(path, ".mt") ||
+                       material_ends_with(path, ".mtg") ||
+                       material_ends_with(path, VKR_SURFACE_THEME_EXTENSION);
+  if (look && frame->looks_changed) {
+    *frame->looks_changed = true_v;
+  }
   if (material_ends_with(path, ".mt")) {
     material_replace_live(frame, path);
     return;
@@ -721,6 +739,7 @@ bool8_t vkr_editor_material_open(VkrEditorMaterials *materials,
   panel->read_only = panel->kind != VKR_EDITOR_MATERIAL_GRAPH;
   vkr_material_graph_init(panel->graph);
   MemZero(panel->instance, sizeof(*panel->instance));
+  MemZero(panel->theme, sizeof(*panel->theme));
   snprintf(panel->graph_path, sizeof(panel->graph_path), "%s", path);
   String8 text = {0};
   char *problem = panel->problem;
@@ -748,10 +767,12 @@ bool8_t vkr_editor_material_open(VkrEditorMaterials *materials,
   } else if (panel->kind == VKR_EDITOR_MATERIAL_DEFINITION) {
     (void)vkr_material_graph_from_definition(text, panel->graph, problem,
                                              capacity);
+  } else if (panel->kind == VKR_EDITOR_MATERIAL_THEME) {
+    (void)vkr_surface_theme_read(text, panel->theme, problem, capacity);
   } else {
     snprintf(problem, capacity, "'%s' is no material or graph", path);
   }
-  if (!problem[0]) {
+  if (!problem[0] && panel->kind != VKR_EDITOR_MATERIAL_THEME) {
     panel_lower(panel, scratch);
   } else {
     panel->lowered = false_v;
@@ -799,28 +820,83 @@ static void panel_save_instance(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrEditorMaterials *materials = editor->materials;
   MaterialPanel *panel = &materials->panel;
-  const VkrMaterialInstance *instance = panel->instance;
-  char text[16384];
-  int length = 0;
-  if (instance->name[0]) {
-    length += snprintf(text + length, sizeof(text) - (size_t)length,
-                       "name=%s\n", instance->name);
-  }
-  length += snprintf(text + length, sizeof(text) - (size_t)length,
-                     "graph=%s\n", instance->graph);
-  for (uint32_t i = 0; i < instance->param_count; ++i) {
-    length += snprintf(text + length, sizeof(text) - (size_t)length,
-                       "param.%s=%s\n", instance->params[i].name,
-                       instance->params[i].value);
-  }
+  VkrAllocator *scratch = frame->ui->frame_allocator;
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
+  String8 text = {0};
   char error[160] = {0};
-  if (!vkr_editor_material_write(
-          materials, frame, panel->path,
-          (String8){.str = (uint8_t *)text, .length = (uint64_t)length},
-          false_v, 0u, NULL, error, sizeof(error))) {
+  if (vkr_material_instance_write(panel->instance, scratch, &text) &&
+      !vkr_editor_material_write(materials, frame, panel->path, text, false_v,
+                                 0u, NULL, error, sizeof(error))) {
     vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
                      error);
   }
+  vkr_allocator_end_scope(&scope, MATERIAL_TAG);
+}
+
+/* Makes `container` ("primary" or "world") take theme `path`, through the
+   agent channel as the designer, so it is one scene edit with its undo. */
+static void panel_select_theme(VkrEditorUi *editor, const char *path,
+                               const char *container) {
+  if (!editor->agent) {
+    return;
+  }
+  char line[512];
+  /* A slot number goes bare; "primary" and "world" are strings. */
+  const bool8_t slot = container[0] >= '0' && container[0] <= '9';
+  snprintf(line, sizeof(line),
+           "{\"v\":1,\"id\":\"theme\",\"op\":\"surface.theme.select\","
+           "\"args\":{\"theme\":\"%s\",\"container\":%s%s%s,"
+           "\"review\":false}}",
+           path, slot ? "" : "\"", container, slot ? "" : "\"");
+  (void)vkr_editor_agent_submit(editor->agent, line);
+}
+
+void vkr_editor_material_new_theme(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   const char *container) {
+  VkrEditorMaterials *materials = editor->materials;
+  VkrAllocator *scratch = frame->ui->frame_allocator;
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  String8 existing = {0};
+  uint32_t n = 1u;
+  do {
+    snprintf(path, sizeof(path), "assets/surfaces/theme_%u.surfaces", n++);
+  } while (vkr_editor_material_read(scratch, path, &existing) && n < 1000u);
+  const VkrSurfaceTheme empty = {0};
+  String8 text = {0};
+  char error[160] = {0};
+  const bool8_t written =
+      vkr_surface_theme_write(&empty, scratch, &text) &&
+      vkr_editor_material_write(materials, frame, path, text, false_v, 0u, NULL,
+                                error, sizeof(error));
+  vkr_allocator_end_scope(&scope, MATERIAL_TAG);
+  if (!written) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
+                     error[0] ? error : "The theme could not be written");
+    return;
+  }
+  panel_select_theme(editor, path, container);
+  (void)vkr_editor_material_open(materials, frame, path);
+  vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_MATERIAL);
+}
+
+/* Writes the shown theme as one journal step by the designer. */
+static void panel_save_theme(VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame) {
+  VkrEditorMaterials *materials = editor->materials;
+  MaterialPanel *panel = &materials->panel;
+  VkrAllocator *scratch = frame->ui->frame_allocator;
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
+  String8 text = {0};
+  char error[160] = {0};
+  if (vkr_surface_theme_write(panel->theme, scratch, &text) &&
+      !vkr_editor_material_write(materials, frame, panel->path, text, false_v,
+                                 0u, NULL, error, sizeof(error))) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
+                     error);
+  }
+  vkr_allocator_end_scope(&scope, MATERIAL_TAG);
 }
 
 /* Turns the shown plain definition into a graph beside it, `<stem>.mtg`,
@@ -1096,6 +1172,47 @@ static const VkrTypeDesc s_settings_edit_type = {
     .align = _Alignof(MaterialSettingsEdit),
 };
 
+/* A graph's or instance's art-pass metadata (artist toolkit, part 6). */
+typedef struct MaterialArtEdit {
+  Vec2 world_size;
+  uint32_t surface;
+} MaterialArtEdit;
+
+static const VkrPropertyDesc s_art_edit_properties[] = {
+    {.name = "world_size",
+     .label = "World size",
+     .tooltip = "Meters one texture repeat covers on brush faces; zero is "
+                "1 m. A face's UV scale counts repeats of it",
+     .unit = "m",
+     .offset = offsetof(MaterialArtEdit, world_size),
+     .kind = VKR_PROPERTY_VEC2,
+     .min = 0.0f,
+     .max = 1000.0f,
+     .step = 0.05f},
+    {.name = "surface",
+     .label = "Surface",
+     .tooltip = "The surface tag the material is made of",
+     .names = vkr_surface_names,
+     .labels = vkr_surface_labels,
+     .offset = offsetof(MaterialArtEdit, surface),
+     .kind = VKR_PROPERTY_ENUM},
+};
+
+static const VkrTypeDesc s_art_edit_type = {
+    .name = "material_art",
+    .label = "Art pass",
+    .properties = s_art_edit_properties,
+    .property_count = ArrayCount(s_art_edit_properties),
+    .size = sizeof(MaterialArtEdit),
+    .align = _Alignof(MaterialArtEdit),
+};
+
+/* One row of a shown theme: the material a tag binds. The whole theme is
+   larger than a typed value may be, so each tag edits as its own row. */
+typedef struct MaterialThemeRowEdit {
+  char path[VKR_SURFACE_THEME_PATH_CAPACITY];
+} MaterialThemeRowEdit;
+
 /* One exposed parameter as an instance row: its effective value. */
 typedef struct MaterialParamEdit {
   float32_t value;
@@ -1145,7 +1262,40 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     vkr_editor_details_end(details);
     return;
   }
-  if (panel->kind == VKR_EDITOR_MATERIAL_INSTANCE) {
+  if (panel->kind == VKR_EDITOR_MATERIAL_THEME) {
+    panel_label(ui, string8_lit("material.theme"), VKR_EDITOR_DETAILS_PAD_PT, y,
+                width, "Materials by surface tag",
+                vkr_ui_theme()->text_secondary, editor->heading_font);
+    y += 24.0f;
+    for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
+      MaterialThemeRowEdit edit = {0};
+      snprintf(edit.path, sizeof(edit.path), "%s",
+               panel->theme->materials[tag]);
+      const VkrPropertyDesc property = {
+          .name = vkr_surface_names[tag],
+          .label = vkr_surface_labels[tag],
+          .tooltip = "Material (.mt) this tag's faces show; empty leaves "
+                     "them to the World's theme, then their greybox look",
+          .offset = offsetof(MaterialThemeRowEdit, path),
+          .capacity = sizeof(edit.path),
+          .kind = VKR_PROPERTY_STRING,
+      };
+      const VkrTypeDesc type = {.name = "surface_theme_row",
+                                .properties = &property,
+                                .property_count = 1u,
+                                .size = sizeof(MaterialThemeRowEdit),
+                                .align = _Alignof(MaterialThemeRowEdit)};
+      (void)vkr_ui_push_id_u64(ui, tag);
+      const VkrEditorDetailsResult result = vkr_editor_details_type(
+          details, ui, frame->input, width, &y, &type, &edit, NULL, false_v);
+      (void)vkr_ui_pop_id(ui);
+      if (result.changed && !result.gesture) {
+        snprintf(panel->theme->materials[tag],
+                 sizeof(panel->theme->materials[tag]), "%s", edit.path);
+        panel_save_theme(editor, frame);
+      }
+    }
+  } else if (panel->kind == VKR_EDITOR_MATERIAL_INSTANCE) {
     /* An instance edits its overrides; a row shows the override, else the
        graph's default. */
     panel_label(ui, string8_lit("material.params"), VKR_EDITOR_DETAILS_PAD_PT,
@@ -1227,6 +1377,37 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       }
       panel_save_instance(editor, frame);
     }
+    /* Its own world size and surface, else the graph's. */
+    VkrMaterialInstance *instance = panel->instance;
+    MaterialArtEdit art = {.world_size = panel->graph->settings.world_size};
+    VkrSurface surface = VKR_SURFACE_NONE;
+    (void)vkr_surface_find(instance->surface[0]
+                               ? instance->surface
+                               : panel->graph->settings.surface,
+                           &surface);
+    art.surface = (uint32_t)surface;
+    if (instance->world_size[0]) {
+      const String8 text = material_str(instance->world_size);
+      if (!string8_to_vec2(&text, &art.world_size) &&
+          string8_to_f32(&text, &art.world_size.x)) {
+        art.world_size.y = art.world_size.x;
+      }
+    }
+    y += 8.0f;
+    const VkrEditorDetailsResult art_result =
+        vkr_editor_details_type(details, ui, frame->input, width, &y,
+                                &s_art_edit_type, &art, NULL, false_v);
+    if (art_result.changed && !art_result.gesture) {
+      if (art.world_size.x > 0.0f && art.world_size.y > 0.0f) {
+        snprintf(instance->world_size, sizeof(instance->world_size), "%g,%g",
+                 (double)art.world_size.x, (double)art.world_size.y);
+      } else {
+        instance->world_size[0] = '\0';
+      }
+      snprintf(instance->surface, sizeof(instance->surface), "%s",
+               art.surface ? vkr_surface_names[art.surface] : "");
+      panel_save_instance(editor, frame);
+    }
   } else if (selected != UINT32_MAX) {
     VkrMaterialNode *node = &panel->graph->nodes[selected];
     MaterialNodeEdit edit = {
@@ -1280,6 +1461,22 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       settings->subsurface_profile = edit.subsurface_profile;
       panel_save_graph(editor, frame);
     }
+    VkrSurface surface = VKR_SURFACE_NONE;
+    (void)vkr_surface_find(settings->surface, &surface);
+    MaterialArtEdit art = {.world_size = settings->world_size,
+                           .surface = (uint32_t)surface};
+    y += 8.0f;
+    const VkrEditorDetailsResult art_result =
+        vkr_editor_details_type(details, ui, frame->input, width, &y,
+                                &s_art_edit_type, &art, NULL, panel->read_only);
+    if (art_result.changed && !art_result.gesture && !panel->read_only) {
+      settings->world_size = art.world_size.x > 0.0f && art.world_size.y > 0.0f
+                                 ? art.world_size
+                                 : vec2_new(0.0f, 0.0f);
+      snprintf(settings->surface, sizeof(settings->surface), "%s",
+               art.surface ? vkr_surface_names[art.surface] : "");
+      panel_save_graph(editor, frame);
+    }
   }
   vkr_editor_details_end(details);
   (void)vkr_ui_panel_end(ui);
@@ -1327,7 +1524,8 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
   bool8_t clicked = false_v;
   const float32_t actions = 3.0f * 112.0f + 8.0f;
   char title[VKR_EDITOR_MATERIAL_PATH + 32];
-  static const char *const kinds[] = {"", "Graph", "Instance", "Material"};
+  static const char *const kinds[] = {"", "Graph", "Instance", "Material",
+                                      "Theme"};
   snprintf(title, sizeof(title), "%s%s%s",
            panel->path[0] ? kinds[panel->kind] : "No material open",
            panel->path[0] ? "  " : "", panel->path);
@@ -1364,10 +1562,27 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
       panel_convert(editor, frame);
     }
   }
-  panel_button(editor, ui, string8_lit("material.frame"), "Frame",
-               VKR_UI_ICON_ZOOM_IN, width - actions + 224.0f, 4.0f, 108.0f,
-               &clicked);
-  const bool8_t frame_requested = clicked;
+  bool8_t frame_requested = false_v;
+  if (panel->kind == VKR_EDITOR_MATERIAL_THEME && !panel->problem[0]) {
+    /* The scene's own theme, or the World's beneath every scene. */
+    panel_button(editor, ui, string8_lit("material.theme_scene"),
+                 "Use in scene", VKR_UI_ICON_SCENE, width - actions + 112.0f,
+                 4.0f, 108.0f, &clicked);
+    if (clicked) {
+      panel_select_theme(editor, panel->path, "primary");
+    }
+    panel_button(editor, ui, string8_lit("material.theme_world"),
+                 "Use for World", VKR_UI_ICON_WORLD, width - actions + 224.0f,
+                 4.0f, 108.0f, &clicked);
+    if (clicked) {
+      panel_select_theme(editor, panel->path, "world");
+    }
+  } else {
+    panel_button(editor, ui, string8_lit("material.frame"), "Frame",
+                 VKR_UI_ICON_ZOOM_IN, width - actions + 224.0f, 4.0f, 108.0f,
+                 &clicked);
+    frame_requested = clicked;
+  }
   char status[VKR_MATERIAL_GRAPH_ERROR_CAPACITY + 64];
   Vec4 status_color = theme->text_secondary;
   if (panel->problem[0]) {
@@ -1376,6 +1591,15 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
   } else if (!panel->path[0]) {
     snprintf(status, sizeof(status),
              "Open a material from Content, or make a new graph");
+  } else if (panel->kind == VKR_EDITOR_MATERIAL_THEME) {
+    uint32_t bound = 0u;
+    for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
+      bound += panel->theme->materials[tag][0] ? 1u : 0u;
+    }
+    snprintf(status, sizeof(status),
+             "Binds %u of %u surface tags \xc2\xb7 faces of a bound tag "
+             "show its material unless they have their own",
+             bound, VKR_SURFACE_COUNT - 1u);
   } else if (panel->lowered) {
     snprintf(status, sizeof(status),
              "Standard \xc2\xb7 %u sample%s \xc2\xb7 +0 pipelines%s",
@@ -1397,10 +1621,14 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
 
   /* The canvas fills the body left of the inspector; it builds at the root
      after the dock (vkr_editor_material_canvas_build). */
-  const float32_t inspector = Min(PANEL_INSPECTOR_PT, width * 0.45f);
+  /* A theme has no graph; its table takes the body. */
+  const bool8_t theme_shown = panel->kind == VKR_EDITOR_MATERIAL_THEME;
+  const float32_t inspector = theme_shown
+                                  ? Min(width - 20.0f, 640.0f)
+                                  : Min(PANEL_INSPECTOR_PT, width * 0.45f);
   panel->canvas = (VkrUiRect){rect.x / scale, rect.y / scale + PANEL_HEADER_PT,
                               width - inspector, height - PANEL_HEADER_PT};
-  panel->canvas_ready = panel->path[0] && !panel->problem[0];
+  panel->canvas_ready = panel->path[0] && !panel->problem[0] && !theme_shown;
   if (panel->canvas_ready && (frame_requested || !panel->framed)) {
     panel->framed = true_v;
     panel->view.selected_count = frame_requested ? panel->view.selected_count
@@ -1431,8 +1659,8 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
     }
   }
   if (panel->path[0] && !panel->problem[0]) {
-    panel_inspector(editor, frame, width - inspector, PANEL_HEADER_PT,
-                    inspector);
+    panel_inspector(editor, frame, theme_shown ? 10.0f : width - inspector,
+                    PANEL_HEADER_PT, inspector);
   }
 }
 

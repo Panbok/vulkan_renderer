@@ -31,6 +31,10 @@ typedef struct VkrParsedMaterialData {
   /** The largest roughness the surface reaches, when the file records it. */
   float32_t roughness_max;
   bool8_t roughness_max_set;
+  /** `world_size=`: meters per texture repeat on brush faces, zero unset;
+   * `surface=`: the surface tag, 0 none. */
+  Vec2 world_size;
+  uint8_t surface;
 
   // Texture paths as fixed buffers (thread-safe for parallel parsing)
   char texture_paths[VKR_TEXTURE_SLOT_COUNT][VKR_MATERIAL_PATH_MAX];

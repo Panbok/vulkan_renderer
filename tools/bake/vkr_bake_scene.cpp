@@ -57,6 +57,8 @@ struct EntityImport {
   bool brush = false;
   bool brush_draws = false;
   bool brush_face = false;
+  /* A `surface_theme` component's theme file; empty without one. */
+  std::string surface_theme;
   VkrBrushPlane face_plane = {};
   BrushFaceStyle face;
   /* A blockout shape's settings (ADR-084); null when it has none. */
@@ -689,6 +691,20 @@ bool parse_brush_face(const VkrJsonReader *entity, EntityImport *out) {
   return true;
 }
 
+/* A `surface_theme` component: the theme file that binds the scene's
+   surface tags to materials. */
+bool parse_surface_theme(const VkrJsonReader *entity, EntityImport *out) {
+  VkrJsonReader reader = {};
+  if (find_block(entity, "surface_theme", &reader) && !parse_null(&reader)) {
+    VkrJsonReader object = {};
+    if (!vkr_json_enter_object(&reader, &object)) {
+      return false;
+    }
+    (void)read_string(&object, "theme", &out->surface_theme);
+  }
+  return true;
+}
+
 /* A `mover` component: only its presence matters to the bake, which leaves
    the brushes it moves out. */
 bool parse_mover(const VkrJsonReader *entity, EntityImport *out) {
@@ -844,6 +860,7 @@ struct BlockParser {
 constexpr BlockParser k_block_parsers[] = {
     {"brush", parse_brush},
     {"brush_face", parse_brush_face},
+    {"surface_theme", parse_surface_theme},
     {"blockout", parse_blockout},
     {"mover", parse_mover},
     {"transform", parse_transform},
@@ -1476,15 +1493,17 @@ bool append_brush_polygon(VkrBakeScene *scene, const VkrBrushGeometry *geometry,
 
 /* A solid or visual brush built from its brush_face children, as the
    runtime builds its mesh: one triangle fan per face in its art-owned
-   material with UVs from the face placement, or in its surface's greybox
-   look with the greybox UVs, and lightmap UVs from the shared brush
-   layout. The brush is one lightmap
+   material or the material `theme` binds to its surface, with UVs from the
+   face placement counting repeats of the material's world size, or in its
+   surface's greybox look with the greybox UVs, and lightmap UVs from the
+   shared brush layout. The brush is one lightmap
    instance. A brush that does not build is left out, as the editor reports
    it. */
 bool append_brush(VkrBakeScene *scene,
                   const std::vector<EntityImport> &entities,
                   const std::vector<uint32_t> &faces, uint32_t entity_index,
                   Mat4 world, uint32_t source_instance_index,
+                  const VkrSurfaceTheme *theme,
                   std::map<std::string, uint32_t> *materials,
                   AppendFailure *out_failure) {
   if (faces.empty() || faces.size() > VKR_BRUSH_FACE_MAX) {
@@ -1518,13 +1537,21 @@ bool append_brush(VkrBakeScene *scene,
         vec3_normalize(vec3_new(normal.x, normal.y, normal.z));
     const char *look = vkr_surface_face_material(
         (VkrSurface)face.surface, (VkrSurfaceMark)face.mark,
-        face.material.c_str(), world_normal.y, false_v);
-    const BrushFaceStyle style =
-        look == face.material.c_str() ? face : greybox_style(look);
+        face.material.c_str(), theme, nullptr, world_normal.y, false_v);
+    const bool art = look == face.material.c_str() ||
+                     look == vkr_surface_theme_material(
+                                 theme, nullptr, (VkrSurface)face.surface);
+    BrushFaceStyle style = art ? face : greybox_style(look);
+    style.material = look;
     uint32_t material_index = 0u;
     if (!brush_material(scene, style.material, materials, &material_index,
                         out_failure)) {
       return false;
+    }
+    const Vec2 world_size = scene->materials[material_index].world_size;
+    if (art && world_size.x > 0.0f && world_size.y > 0.0f) {
+      style.uv_scale = vec2_new(style.uv_scale.x * world_size.x,
+                                style.uv_scale.y * world_size.y);
     }
     if (!append_brush_polygon(scene, geometry.get(), f, style, material_index,
                               world, normal_world, flipped,
@@ -1825,6 +1852,25 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
                   "the texture store does not allocate");
     }
     uint32_t next_instance = 0u;
+    /* The scene's surface theme, the first one, as the runtime resolves a
+       singleton; a theme that does not read binds nothing, as at runtime.
+       The World's theme, like its sun and sky, does not reach the bake. */
+    VkrSurfaceTheme surface_theme = {};
+    for (const EntityImport &entity : entities) {
+      if (entity.surface_theme.empty()) {
+        continue;
+      }
+      std::vector<uint8_t> theme_json;
+      if (read_file(entity.surface_theme.c_str(), &theme_json) &&
+          vkr_surface_theme_read(
+              string8_create_from_cstr(theme_json.data(), theme_json.size()),
+              &surface_theme, nullptr, 0u)) {
+        append_unique_path(&scene->dependency_paths, entity.surface_theme);
+      } else {
+        surface_theme = {};
+      }
+      break;
+    }
     /* A brush's faces are its brush_face children. */
     std::vector<std::vector<uint32_t>> brush_faces(entities.size());
     for (uint32_t i = 0; i < entities.size(); ++i) {
@@ -1867,7 +1913,8 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       AppendFailure failure;
       if (entity.brush && entity.brush_draws && !moves &&
           !append_brush(scene, entities, brush_faces[i], i, worlds[i],
-                        next_instance++, &brush_materials, &failure)) {
+                        next_instance++, &surface_theme, &brush_materials,
+                        &failure)) {
         return fail(failure.error,
                     describe_entity(entity, i) + ": brush: " + failure.reason);
       }

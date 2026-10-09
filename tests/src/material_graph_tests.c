@@ -1,6 +1,7 @@
 #include "material_graph_tests.h"
 
 #include "assets/vkr_material_graph.h"
+#include "level/vkr_surface.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/material_loader.h"
 
@@ -57,6 +58,9 @@ static bool8_t graph_test_same(const VkrParsedMaterialData *a,
   SAME(alpha_cutoff, a->alpha_cutoff == b->alpha_cutoff &&
                          a->alpha_cutoff_set == b->alpha_cutoff_set);
   SAME(cutout_enabled, a->cutout_enabled == b->cutout_enabled);
+  SAME(world_size, a->world_size.x == b->world_size.x &&
+                       a->world_size.y == b->world_size.y);
+  SAME(surface, a->surface == b->surface);
   SAME(roughness_max, a->roughness_max_set == b->roughness_max_set &&
                           (!a->roughness_max_set ||
                            a->roughness_max == b->roughness_max));
@@ -339,6 +343,63 @@ static void test_graph_documents(VkrAllocator *allocator) {
   printf("  test_graph_documents PASSED\n");
 }
 
+/* The art-pass keys: a definition's world size and surface tag parse, bad
+   values reject the material, and a graph raised from the definition keeps
+   them through its document and lowering. */
+static void test_graph_art_metadata(VkrAllocator *allocator) {
+  const char *definition = "type=pbr\nbase_color=0.5,0.5,0.5,1\n"
+                           "world_size=2,1\nsurface=brick\n";
+  VkrParsedMaterialData direct;
+  graph_test_parse(allocator, "assets/materials/test/art.mt",
+                   graph_test_str(definition), &direct);
+  assert(direct.world_size.x == 2.0f && direct.world_size.y == 1.0f);
+  assert(direct.surface == VKR_SURFACE_BRICK);
+
+  VkrParsedMaterialData rejected;
+  MemZero(&rejected, sizeof(rejected));
+  assert(!vkr_material_loader_parse_definition(
+      allocator, graph_test_str("assets/materials/test/bad.mt"),
+      graph_test_str("type=pbr\nworld_size=0\n"), &rejected));
+  assert(!vkr_material_loader_parse_definition(
+      allocator, graph_test_str("assets/materials/test/bad.mt"),
+      graph_test_str("type=pbr\nsurface=brik\n"), &rejected));
+  VkrParsedMaterialData uniform;
+  graph_test_parse(allocator, "assets/materials/test/uniform.mt",
+                   graph_test_str("type=pbr\nworld_size=3\n"), &uniform);
+  assert(uniform.world_size.x == 3.0f && uniform.world_size.y == 3.0f);
+
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  VkrMaterialGraph *again = malloc(sizeof(*again));
+  assert(graph && again);
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  assert(vkr_material_graph_from_definition(graph_test_str(definition), graph,
+                                            error, sizeof(error)));
+  String8 json = {0};
+  assert(vkr_material_graph_write(graph, allocator, &json));
+  assert(vkr_material_graph_read(json, again, error, sizeof(error)));
+  String8 lowered_text = {0};
+  VkrMaterialLowering lowering = {0};
+  assert(vkr_material_graph_lower(
+      again, graph_test_str("assets/materials/test/art.mtg"), NULL, 0u,
+      allocator, &lowered_text, &lowering));
+  VkrParsedMaterialData lowered;
+  graph_test_parse(allocator, "assets/materials/test/art.mt", lowered_text,
+                   &lowered);
+  char why[64] = {0};
+  assert(graph_test_same(&direct, &lowered, why, sizeof(why)));
+
+  /* An instance's own lines replace its graph's. */
+  VkrMaterialInstance instance;
+  assert(vkr_material_instance_read(
+      graph_test_str("graph=./art.mtg\nworld_size=4\nsurface=wood\n"),
+      &instance, error, sizeof(error)));
+  assert(strcmp(instance.world_size, "4") == 0);
+  assert(strcmp(instance.surface, "wood") == 0);
+  free(graph);
+  free(again);
+  printf("  test_graph_art_metadata PASSED\n");
+}
+
 /* A PBR definition becomes a graph that lowers back to the same material:
    one with every key the importers write, then every `.mt` under
    assets/materials, such as Bistro's. */
@@ -478,6 +539,7 @@ bool32_t run_material_graph_tests(void) {
   test_graph_documents(&allocator);
   test_graph_lowering(&allocator);
   test_graph_tiers(&allocator);
+  test_graph_art_metadata(&allocator);
   test_graph_round_trip(&allocator);
   arena_destroy(arena);
   printf("--- Material Graph Tests Completed ---\n");

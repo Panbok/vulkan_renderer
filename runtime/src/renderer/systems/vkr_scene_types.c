@@ -1948,6 +1948,30 @@ const VkrTypeDesc vkr_scene_material_override_type = {
     .align = AlignOf(SceneMaterialOverride),
 };
 
+/* ---- Surface themes ---- */
+
+static const VkrPropertyDesc s_surface_theme_properties[] = {
+    {.name = "theme",
+     .label = "Theme",
+     .tooltip = "A .surfaces file binding surface tags to materials for this "
+                "container's brush faces; tags it leaves unbound take the "
+                "World's theme, then their greybox look",
+     .offset = TYPE_OFFSET(SceneSurfaceTheme, theme),
+     .capacity = VKR_SURFACE_THEME_PATH_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+};
+
+const VkrTypeDesc vkr_scene_surface_theme_type = {
+    .name = "surface_theme",
+    .label = "Surface theme",
+    .category = "Level",
+    .flags = VKR_TYPE_FLAG_SINGLETON,
+    .properties = s_surface_theme_properties,
+    .property_count = ArrayCount(s_surface_theme_properties),
+    .size = sizeof(SceneSurfaceTheme),
+    .align = AlignOf(SceneSurfaceTheme),
+};
+
 /* ---- Brushes ---- */
 
 _Static_assert(sizeof(SceneBrushRole) == sizeof(uint32_t),
@@ -3641,6 +3665,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_mover_type,
     &vkr_scene_tags_type,
     &vkr_scene_material_override_type,
+    &vkr_scene_surface_theme_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -3707,6 +3732,7 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_text_type || type == &vkr_scene_player_start_type ||
          type == &vkr_scene_decal_type ||
          type == &vkr_scene_material_override_type ||
+         type == &vkr_scene_surface_theme_type ||
          type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
          type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
          type == &vkr_scene_button_type || type == &vkr_scene_timer_type ||

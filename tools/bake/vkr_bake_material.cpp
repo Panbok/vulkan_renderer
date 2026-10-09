@@ -850,6 +850,12 @@ VkrBakeMaterialError expand_graph(const char *material_path,
     goto cleanup;
   }
   text->assign((const char *)definition.str, (size_t)definition.length);
+  /* The instance's own size follows the graph's, as the runtime reads it. */
+  if (instance.world_size[0]) {
+    text->append("world_size=");
+    text->append(instance.world_size);
+    text->append("\n");
+  }
 
 cleanup:
   vkr_allocator_release_global_accounting(&allocator);
@@ -1195,6 +1201,23 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
     if (key == "double_sided") {
       if (!parse_bool(value, &material.double_sided))
         goto parse_error;
+      continue;
+    }
+    if (key == "world_size") {
+      const size_t comma = value.find(',');
+      Vec2 size = {};
+      if (comma == std::string::npos) {
+        if (!parse_float(trim(value), &size.x))
+          goto parse_error;
+        size.y = size.x;
+      } else if (!parse_float(trim(value.substr(0u, comma)), &size.x) ||
+                 !parse_float(trim(value.substr(comma + 1u)), &size.y)) {
+        goto parse_error;
+      }
+      if (size.x < 0.01f || size.y < 0.01f || size.x > 1000.0f ||
+          size.y > 1000.0f)
+        goto parse_error;
+      material.world_size = size;
       continue;
     }
     if (key.find("alpha_cutoff") != std::string::npos) {

@@ -9824,28 +9824,16 @@ static bool8_t ops_material_param_text(OpsContext *ctx,
                   "A parameter value is a number, [r, g, b] or a file path");
 }
 
-/* `.mt` text of an instance: name, graph and parameters. */
+/* `.mt` text of an instance, in the request's memory. */
 static bool8_t ops_material_instance_text(OpsContext *ctx,
                                           const VkrMaterialInstance *instance,
                                           String8 *out) {
-  char *text = arena_alloc(ops_arena(ctx), 16384u, ARENA_MEMORY_TAG_STRING);
-  if (!text) {
-    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  VkrAllocator allocator;
+  if (!ops_allocator(ctx, &allocator)) {
+    return false_v;
   }
-  int length = 0;
-  if (instance->name[0]) {
-    length += snprintf(text + length, 16384u - (uint32_t)length, "name=%s\n",
-                       instance->name);
-  }
-  length += snprintf(text + length, 16384u - (uint32_t)length, "graph=%s\n",
-                     instance->graph);
-  for (uint32_t i = 0; i < instance->param_count; ++i) {
-    length += snprintf(text + length, 16384u - (uint32_t)length,
-                       "param.%s=%s\n", instance->params[i].name,
-                       instance->params[i].value);
-  }
-  *out = (String8){.str = (uint8_t *)text, .length = (uint64_t)length};
-  return true_v;
+  return vkr_material_instance_write(instance, &allocator, out) ||
+         ops_fail(ctx, OPS_LIMIT, "Out of request memory");
 }
 
 /* Applies `params` (an object of name to value, null to remove) over the
@@ -9948,11 +9936,14 @@ static VkrEditorOpStatus ops_run_material_list(OpsContext *ctx) {
     }
     VkrBakeryJson *entry = vkr_bakery_json_object(arena);
     ops_set(ctx, entry, "path", vkr_bakery_json_cstr(arena, paths[i]));
-    ops_set(ctx, entry, "kind",
-            vkr_bakery_json_cstr(arena, ops_material_ends(paths[i], ".mtg")
-                                            ? "graph"
-                                        : graphs[i][0] ? "instance"
-                                                       : "definition"));
+    ops_set(
+        ctx, entry, "kind",
+        vkr_bakery_json_cstr(
+            arena, ops_material_ends(paths[i], ".mtg") ? "graph"
+                   : ops_material_ends(paths[i], VKR_SURFACE_THEME_EXTENSION)
+                       ? "theme"
+                   : graphs[i][0] ? "instance"
+                                  : "definition"));
     if (graphs[i][0]) {
       ops_set(ctx, entry, "graph", vkr_bakery_json_cstr(arena, graphs[i]));
     }
@@ -10026,6 +10017,14 @@ static VkrEditorOpStatus ops_run_material_describe(OpsContext *ctx) {
               vkr_bakery_json_cstr(arena, instance.params[i].value));
     }
     ops_set(ctx, result, "params", params);
+    if (instance.world_size[0]) {
+      ops_set(ctx, result, "world_size",
+              vkr_bakery_json_cstr(arena, instance.world_size));
+    }
+    if (instance.surface[0]) {
+      ops_set(ctx, result, "surface",
+              vkr_bakery_json_cstr(arena, instance.surface));
+    }
     ops_set(ctx, result, "parameters", ops_material_params(ctx, graph));
     ops_set(ctx, result, "lowering",
             ops_material_lowering(ctx, graph, graph_path, instance.params,
@@ -10312,6 +10311,51 @@ static bool8_t ops_material_node_fields(OpsContext *ctx,
   return true_v;
 }
 
+/* `world_size` (meters a texture repeat covers: a number, [x, y], or 0 to
+   unset) and `surface` (a tag name, empty to unset) over `world_size` and
+   `surface`; each kept when absent. */
+static bool8_t ops_material_art_keys(OpsContext *ctx, const VkrBakeryJson *args,
+                                     Vec2 *world_size, char *surface,
+                                     uint32_t surface_capacity) {
+  float64_t uniform = 0.0;
+  float32_t pair[2] = {0.0f, 0.0f};
+  bool8_t has_pair = false_v;
+  const VkrBakeryJson *size = vkr_bakery_json_get(args, "world_size");
+  if (size && size->type == VKR_BAKERY_JSON_ARRAY) {
+    if (!ops_arg_floats(ctx, args, "world_size", pair, 2u, &has_pair)) {
+      return false_v;
+    }
+  } else if (ops_arg_number(args, "world_size", &uniform)) {
+    pair[0] = pair[1] = (float32_t)uniform;
+    has_pair = true_v;
+  } else if (size) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'world_size' is meters per repeat: a number or [x, y]");
+  }
+  if (has_pair) {
+    const bool8_t unset = pair[0] == 0.0f && pair[1] == 0.0f;
+    if (!unset && (pair[0] < 0.01f || pair[1] < 0.01f || pair[0] > 1000.0f ||
+                   pair[1] > 1000.0f)) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'world_size' is 0.01 to 1000 m, or 0 to unset");
+    }
+    *world_size = vec2_new(pair[0], pair[1]);
+  }
+  char name[32] = "";
+  if (vkr_bakery_json_get(args, "surface")) {
+    VkrSurface tag = VKR_SURFACE_NONE;
+    if (!ops_arg_string(ctx, args, "surface", name, sizeof(name))) {
+      return false_v;
+    }
+    if (name[0] && !vkr_surface_find(name, &tag)) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'surface' is a tag surface.list names, or empty");
+    }
+    snprintf(surface, surface_capacity, "%s", name);
+  }
+  return true_v;
+}
+
 static bool8_t ops_material_settings(OpsContext *ctx, VkrMaterialGraph *graph,
                                      const VkrBakeryJson *edit) {
   VkrMaterialGraphSettings *settings = &graph->settings;
@@ -10346,7 +10390,8 @@ static bool8_t ops_material_settings(OpsContext *ctx, VkrMaterialGraph *graph,
   }
   settings->double_sided =
       ops_arg_bool(edit, "double_sided", settings->double_sided);
-  return true_v;
+  return ops_material_art_keys(ctx, edit, &settings->world_size,
+                               settings->surface, sizeof(settings->surface));
 }
 
 /* Applies one edit of material.patch to `graph`. */
@@ -10505,11 +10550,33 @@ static VkrEditorOpStatus ops_run_material_set_param(OpsContext *ctx) {
   VkrMaterialGraph *graph = ops_material_graph_alloc(ctx);
   char graph_path[VKR_EDITOR_MATERIAL_PATH];
   String8 text = {0};
+  Vec2 world_size = {0};
   if (!instance || !graph ||
       !ops_material_instance_load(ctx, path, instance, graph, graph_path) ||
       !ops_material_apply_params(ctx, vkr_bakery_json_get(args, "params"),
-                                 instance) ||
-      !ops_material_instance_text(ctx, instance, &text)) {
+                                 instance)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* The instance's own world size and surface, written as text. */
+  if (instance->world_size[0]) {
+    const String8 current = string8_create_from_cstr(
+        (const uint8_t *)instance->world_size, strlen(instance->world_size));
+    if (!string8_to_vec2(&current, &world_size) &&
+        string8_to_f32(&current, &world_size.x)) {
+      world_size.y = world_size.x;
+    }
+  }
+  if (!ops_material_art_keys(ctx, args, &world_size, instance->surface,
+                             sizeof(instance->surface))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (world_size.x > 0.0f) {
+    snprintf(instance->world_size, sizeof(instance->world_size), "%g,%g",
+             (double)world_size.x, (double)world_size.y);
+  } else {
+    instance->world_size[0] = '\0';
+  }
+  if (!ops_material_instance_text(ctx, instance, &text)) {
     return VKR_EDITOR_OP_DONE;
   }
   VkrAllocator allocator;
@@ -10671,9 +10738,20 @@ static bool8_t ops_build_material_assign(OpsContext *ctx,
 
 /* material.open: shows a document in the Material panel for the
    designer, and with `workbench`, switches to the Art workbench. */
+static bool8_t ops_theme_path(OpsContext *ctx, const VkrBakeryJson *args,
+                              const char *key,
+                              char out[VKR_EDITOR_MATERIAL_PATH]);
+
 static VkrEditorOpStatus ops_run_material_open(OpsContext *ctx) {
   char path[VKR_EDITOR_MATERIAL_PATH];
-  if (!ops_material_path(ctx, ctx->call->args, "path", false_v, path)) {
+  String8 given = {0};
+  const bool8_t theme =
+      vkr_bakery_json_get_string(ctx->call->args, "path", &given) &&
+      given.length > 9u &&
+      MemCompare(given.str + given.length - 9u, VKR_SURFACE_THEME_EXTENSION,
+                 9u) == 0;
+  if (theme ? !ops_theme_path(ctx, ctx->call->args, "path", path)
+            : !ops_material_path(ctx, ctx->call->args, "path", false_v, path)) {
     return VKR_EDITOR_OP_DONE;
   }
   if (!vkr_editor_material_open(ctx->editor->materials, ctx->frame, path)) {
@@ -10696,6 +10774,815 @@ static VkrEditorOpStatus ops_run_material_open(OpsContext *ctx) {
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "path",
           vkr_bakery_json_cstr(ops_arena(ctx), path));
+  return VKR_EDITOR_OP_DONE;
+}
+
+// =============================================================================
+// Surface themes and art lint (docs/proposals/artist-toolkit.md, part 6)
+// =============================================================================
+
+/* A content-root relative path in `out`: no absolute paths, '..',
+   backslashes, colons or quotes, ending in `suffix`. */
+static bool8_t ops_content_path(const char *path, const char *suffix,
+                                uint32_t capacity) {
+  return path[0] && path[0] != '/' && !strstr(path, "..") &&
+         !strchr(path, '\\') && !strchr(path, ':') && !strchr(path, '"') &&
+         strlen(path) < capacity && ops_material_ends(path, suffix);
+}
+
+/* A theme path in `args[key]`; empty when absent. */
+static bool8_t ops_theme_path(OpsContext *ctx, const VkrBakeryJson *args,
+                              const char *key,
+                              char out[VKR_EDITOR_MATERIAL_PATH]) {
+  out[0] = '\0';
+  if (!ops_arg_string(ctx, args, key, out, VKR_EDITOR_MATERIAL_PATH)) {
+    return false_v;
+  }
+  if (out[0] && !ops_content_path(out, VKR_SURFACE_THEME_EXTENSION,
+                                  VKR_SURFACE_THEME_PATH_CAPACITY)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'%s' is a content-root relative theme (.surfaces) under "
+                    "%u bytes",
+                    key, VKR_SURFACE_THEME_PATH_CAPACITY);
+  }
+  return true_v;
+}
+
+/* Reads theme `path` into `out`; a file that does not exist reads empty
+   when `missing_ok`. */
+static bool8_t ops_theme_load(OpsContext *ctx, const char *path,
+                              VkrSurfaceTheme *out, bool8_t missing_ok) {
+  MemZero(out, sizeof(*out));
+  VkrAllocator allocator;
+  String8 text = {0};
+  char error[160] = {0};
+  if (!ops_allocator(ctx, &allocator)) {
+    return false_v;
+  }
+  if (!vkr_editor_material_read(&allocator, path, &text)) {
+    return missing_ok ||
+           ops_fail(ctx, OPS_NOT_FOUND, "Theme '%s' does not open", path);
+  }
+  if (!vkr_surface_theme_read(text, out, error, sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "Theme '%s': %s", path, error);
+  }
+  return true_v;
+}
+
+/* The container's own theme path, and the World's beneath it, as the
+   brushes resolve them (vkr_scene_brush.c); empty for none. */
+static void ops_theme_paths(const VkrSampleUiFrame *frame, uint16_t container,
+                            const char **out_own, const char **out_world) {
+  const VkrScene *scene = ops_scene(frame, container);
+  const VkrSceneWorldState *state = &scene->world_state;
+  *out_own = state->surface_theme_entity.u64 &&
+                     state->surface_theme_entity.parts.world == scene->world_id
+                 ? state->surface_theme.theme
+                 : "";
+  *out_world = frame->world && container != VKR_SCENE_WORLD_ROOT_ID
+                   ? frame->world->world_state.surface_theme.theme
+                   : "";
+}
+
+/* Applies `materials` (tag to a .mt path, empty or null to unbind) over
+   `theme`. */
+static bool8_t ops_theme_apply(OpsContext *ctx, const VkrBakeryJson *materials,
+                               VkrSurfaceTheme *theme) {
+  if (!materials) {
+    return true_v;
+  }
+  if (materials->type != VKR_BAKERY_JSON_OBJECT) {
+    return ops_fail(ctx, OPS_INVALID, "'materials' maps tags to .mt paths");
+  }
+  for (const VkrBakeryJson *item = materials->first; item; item = item->next) {
+    char tag_name[32];
+    VkrSurface tag = VKR_SURFACE_NONE;
+    snprintf(tag_name, sizeof(tag_name), "%.*s",
+             (int)Min(item->key.length, (uint64_t)sizeof(tag_name) - 1u),
+             (const char *)item->key.str);
+    if (item->key.length >= sizeof(tag_name) ||
+        !vkr_surface_find(tag_name, &tag) || tag == VKR_SURFACE_NONE) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'%s' is no surface tag; surface.list names them",
+                      tag_name);
+    }
+    char path[VKR_SURFACE_THEME_PATH_CAPACITY] = "";
+    String8 text = {0};
+    if (item->type == VKR_BAKERY_JSON_STRING) {
+      text = item->string;
+    } else if (item->type != VKR_BAKERY_JSON_NULL) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "materials.%s is a .mt path, or empty or null to "
+                      "unbind",
+                      tag_name);
+    }
+    if (text.length) {
+      snprintf(path, sizeof(path), "%.*s",
+               (int)Min(text.length, (uint64_t)sizeof(path) - 1u),
+               (const char *)text.str);
+      if (text.length >= sizeof(path) ||
+          !ops_content_path(path, ".mt", sizeof(path))) {
+        return ops_fail(ctx, OPS_INVALID,
+                        "materials.%s is a content-root relative .mt under "
+                        "%u bytes",
+                        tag_name, VKR_SURFACE_THEME_PATH_CAPACITY);
+      }
+    }
+    snprintf(theme->materials[tag], sizeof(theme->materials[tag]), "%s", path);
+  }
+  return true_v;
+}
+
+/* Writes `theme` to `path` as one journal group. */
+static bool8_t ops_theme_write(OpsContext *ctx, const char *path,
+                               const VkrSurfaceTheme *theme,
+                               const char *label) {
+  VkrAllocator allocator;
+  String8 text = {0};
+  if (!ops_allocator(ctx, &allocator)) {
+    return false_v;
+  }
+  if (!vkr_surface_theme_write(theme, &allocator, &text)) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  return ops_material_write(ctx, path, text, false_v, label);
+}
+
+static VkrBakeryJson *ops_theme_json(OpsContext *ctx,
+                                     const VkrSurfaceTheme *theme) {
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *object = vkr_bakery_json_object(arena);
+  for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
+    if (theme->materials[tag][0]) {
+      ops_set(ctx, object, vkr_surface_names[tag],
+              vkr_bakery_json_cstr(arena, theme->materials[tag]));
+    }
+  }
+  return object;
+}
+
+/* surface.list: the tags and marks, the container's themes, and per tag
+   its faces and the material bound to it. */
+static VkrEditorOpStatus ops_run_surface_list(OpsContext *ctx) {
+  uint16_t container = 0u;
+  if (!ops_arg_container(ctx, ctx->call->args, &container)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, container);
+  const char *own_path = "";
+  const char *world_path = "";
+  ops_theme_paths(ctx->frame, container, &own_path, &world_path);
+  VkrSurfaceTheme *themes = arena_alloc(ops_arena(ctx), 2u * sizeof(*themes),
+                                        ARENA_MEMORY_TAG_STRUCT);
+  if (!themes) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  MemZero(themes, 2u * sizeof(*themes));
+  if ((own_path[0] && !ops_theme_load(ctx, own_path, &themes[0], true_v)) ||
+      (world_path[0] && !ops_theme_load(ctx, world_path, &themes[1], true_v))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+
+  /* Faces per tag, and those with an art-owned material of their own. */
+  uint32_t faces[VKR_SURFACE_COUNT] = {0};
+  uint32_t owned = 0u;
+  const VkrWorld *world = scene->world;
+  for (uint32_t i = 0; i < world->dir.capacity; ++i) {
+    if (!world->dir.records[i].chunk) {
+      continue;
+    }
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    const SceneBrushFace *face =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_brush_face_type);
+    if (!face) {
+      continue;
+    }
+    if (face->material[0]) {
+      owned++;
+    } else if ((uint32_t)face->surface < VKR_SURFACE_COUNT) {
+      faces[face->surface]++;
+    }
+  }
+
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *tags = vkr_bakery_json_array(arena);
+  for (uint32_t tag = 0; tag < VKR_SURFACE_COUNT; ++tag) {
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    ops_set(ctx, entry, "name",
+            vkr_bakery_json_cstr(arena, vkr_surface_names[tag]));
+    ops_set(ctx, entry, "label",
+            vkr_bakery_json_cstr(arena, vkr_surface_labels[tag]));
+    ops_set(ctx, entry, "faces", vkr_bakery_json_int(arena, faces[tag]));
+    const char *bound =
+        vkr_surface_theme_material(&themes[0], &themes[1], (VkrSurface)tag);
+    if (bound) {
+      ops_set(ctx, entry, "material", vkr_bakery_json_cstr(arena, bound));
+      ops_set(ctx, entry, "from",
+              vkr_bakery_json_cstr(arena, bound == themes[0].materials[tag]
+                                              ? "container"
+                                              : "world"));
+    }
+    vkr_bakery_json_append(tags, entry);
+  }
+  VkrBakeryJson *marks = vkr_bakery_json_array(arena);
+  for (uint32_t mark = 0; mark < VKR_SURFACE_MARK_COUNT; ++mark) {
+    vkr_bakery_json_append(
+        marks, vkr_bakery_json_cstr(arena, vkr_surface_mark_names[mark]));
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "container",
+          vkr_bakery_json_int(arena, container));
+  ops_set(ctx, ctx->call->result, "theme",
+          vkr_bakery_json_cstr(arena, own_path));
+  ops_set(ctx, ctx->call->result, "world_theme",
+          vkr_bakery_json_cstr(arena, world_path));
+  ops_set(ctx, ctx->call->result, "tags", tags);
+  ops_set(ctx, ctx->call->result, "marks", marks);
+  ops_set(ctx, ctx->call->result, "own_material_faces",
+          vkr_bakery_json_int(arena, owned));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* surface.theme.create: a new theme document. */
+static VkrEditorOpStatus ops_run_theme_create(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  if (!ops_theme_path(ctx, args, "path", path)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!path[0]) {
+    ops_fail(ctx, OPS_INVALID, "'path' names the new theme");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrAllocator allocator;
+  String8 existing = {0};
+  if (!ops_allocator(ctx, &allocator)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (vkr_editor_material_read(&allocator, path, &existing) &&
+      !ops_arg_bool(args, "overwrite", false_v)) {
+    ops_fail(ctx, OPS_REJECTED, "'%s' exists; pass \"overwrite\": true", path);
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrSurfaceTheme *theme =
+      arena_alloc(ops_arena(ctx), sizeof(*theme), ARENA_MEMORY_TAG_STRUCT);
+  if (!theme) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  MemZero(theme, sizeof(*theme));
+  char label[96];
+  snprintf(label, sizeof(label), "Create theme %.70s", path);
+  if (!ops_theme_apply(ctx, vkr_bakery_json_get(args, "materials"), theme) ||
+      !ops_theme_write(ctx, path, theme, label)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->call->result) {
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  }
+  ops_set(ctx, ctx->call->result, "path",
+          vkr_bakery_json_cstr(ops_arena(ctx), path));
+  ops_set(ctx, ctx->call->result, "materials", ops_theme_json(ctx, theme));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* surface.theme.bind: binds tags to materials in a theme, by default the
+   container's own. */
+static VkrEditorOpStatus ops_run_theme_bind(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  uint16_t container = 0u;
+  if (!ops_theme_path(ctx, args, "path", path) ||
+      (!path[0] && !ops_arg_container(ctx, args, &container))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!path[0]) {
+    const char *own = "";
+    const char *world = "";
+    ops_theme_paths(ctx->frame, container, &own, &world);
+    if (!own[0]) {
+      ops_fail(ctx, OPS_INVALID,
+               "The container selects no theme; give 'path' or run "
+               "surface.theme.select first");
+      return VKR_EDITOR_OP_DONE;
+    }
+    snprintf(path, sizeof(path), "%s", own);
+  }
+  VkrSurfaceTheme *theme =
+      arena_alloc(ops_arena(ctx), sizeof(*theme), ARENA_MEMORY_TAG_STRUCT);
+  if (!theme || !ops_theme_load(ctx, path, theme, false_v)) {
+    if (!theme) {
+      ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    }
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* `tag` and `material` bind one tag; `materials` binds several. */
+  String8 tag = {0};
+  const VkrBakeryJson *materials = vkr_bakery_json_get(args, "materials");
+  if (vkr_bakery_json_get_string(args, "tag", &tag)) {
+    VkrBakeryJson *one = vkr_bakery_json_object(ops_arena(ctx));
+    const VkrBakeryJson *material = vkr_bakery_json_get(args, "material");
+    if (!material) {
+      ops_fail(ctx, OPS_INVALID, "'tag' needs a 'material', empty to unbind");
+      return VKR_EDITOR_OP_DONE;
+    }
+    char key[32];
+    snprintf(key, sizeof(key), "%.*s",
+             (int)Min(tag.length, (uint64_t)sizeof(key) - 1u),
+             (const char *)tag.str);
+    ops_set(ctx, one, key, vkr_bakery_json_clone(ops_arena(ctx), material));
+    materials = one;
+  } else if (!materials) {
+    ops_fail(ctx, OPS_INVALID, "Give 'tag' and 'material', or 'materials'");
+    return VKR_EDITOR_OP_DONE;
+  }
+  char label[96];
+  snprintf(label, sizeof(label), "Bind tags in %.70s", path);
+  if (!ops_theme_apply(ctx, materials, theme) ||
+      !ops_theme_write(ctx, path, theme, label)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->call->result) {
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  }
+  ops_set(ctx, ctx->call->result, "path",
+          vkr_bakery_json_cstr(ops_arena(ctx), path));
+  ops_set(ctx, ctx->call->result, "materials", ops_theme_json(ctx, theme));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* surface.theme.select: the container's surface_theme names `theme`; an
+   entity "Surface theme" carries it when no entity of the container does. */
+static bool8_t ops_build_theme_select(OpsContext *ctx,
+                                      const VkrBakeryJson *args,
+                                      OpsBatch *batch) {
+  char theme[VKR_EDITOR_MATERIAL_PATH];
+  uint16_t container = 0u;
+  if (!vkr_bakery_json_get(args, "theme")) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'theme' names a .surfaces file, or is empty to clear");
+  }
+  if (!ops_theme_path(ctx, args, "theme", theme) ||
+      !ops_arg_container(ctx, args, &container)) {
+    return false_v;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, container);
+  const VkrEntityId holder = scene->world_state.surface_theme_entity;
+  const bool8_t own =
+      holder.u64 && holder.parts.world == scene->world_id &&
+      vkr_scene_get_typed(scene, holder, &vkr_scene_surface_theme_type);
+  SceneSurfaceTheme value = {0};
+  snprintf(value.theme, sizeof(value.theme), "%s", theme);
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, container,
+                    own ? VKR_SCENE_EDIT_APPLY : VKR_SCENE_EDIT_CREATE);
+  if (!item) {
+    return false_v;
+  }
+  VkrSceneEditValues *values = &item->request.values;
+  if (own) {
+    const OpsRef ref = {.entity = holder, .container = container, .item = -1};
+    ops_item_target(item, &ref);
+    values->fields = VKR_SCENE_EDIT_COMPONENT;
+  } else {
+    values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM |
+                     VKR_SCENE_EDIT_COMPONENT;
+    snprintf(values->name, sizeof(values->name), "Surface theme");
+    values->rotation = vkr_quat_identity();
+    values->scale = vec3_one();
+  }
+  values->component_type = &vkr_scene_surface_theme_type;
+  MemCopy(values->component, &value, sizeof(value));
+  if (!own) {
+    batch->op_item[batch->op_count] = batch->count - 1u;
+  }
+  return ops_validate_values(ctx, values);
+}
+
+/* One material art.lint checked: whether it opens and parses, its textures,
+   its untextured base colour and metallic, and the width in pixels of the
+   texture that sets texel density (base colour, else any). */
+typedef struct OpsArtMaterial {
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  bool8_t opens;
+  bool8_t parses;
+  char missing_texture[VKR_MATERIAL_PATH_MAX];
+  bool8_t uncooked;
+  uint32_t texture_width;
+  Vec2 world_size;
+  bool8_t textured_base;
+  bool8_t textured_metallic;
+  Vec4 base_color;
+  float32_t metallic;
+} OpsArtMaterial;
+
+/* The pixel width a texture's cooked `.vkt` (KTX2) or PNG source records;
+   zero when neither header reads. */
+static uint32_t ops_art_texture_width(VkrAllocator *allocator,
+                                      const char *path) {
+  char cooked[VKR_MATERIAL_PATH_MAX + 8u];
+  snprintf(cooked, sizeof(cooked), "%s.vkt", path);
+  const char *candidates[2] = {cooked, path};
+  for (uint32_t i = 0; i < 2u; ++i) {
+    FilePath file_path = vkr_asset_path_file(
+        allocator, string8_create_from_cstr((const uint8_t *)candidates[i],
+                                            strlen(candidates[i])));
+    FileMode mode = bitset8_create();
+    bitset8_set(&mode, FILE_MODE_READ);
+    bitset8_set(&mode, FILE_MODE_BINARY);
+    FileHandle file = {0};
+    if (!file_path.path.length ||
+        file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
+      continue;
+    }
+    uint8_t header[32] = {0};
+    uint64_t read = 0u;
+    const bool8_t ok = file_read_into(&file, header, sizeof(header), &read) ==
+                           FILE_ERROR_NONE &&
+                       read == sizeof(header);
+    file_close(&file);
+    if (!ok) {
+      continue;
+    }
+    /* KTX2: identifier, vkFormat, typeSize, then pixelWidth (LE). */
+    if (i == 0u && header[0] == 0xABu && header[1] == 'K') {
+      return (uint32_t)header[20] | (uint32_t)header[21] << 8u |
+             (uint32_t)header[22] << 16u | (uint32_t)header[23] << 24u;
+    }
+    /* PNG: signature, then the IHDR chunk's width (BE). */
+    if (i == 1u && header[0] == 0x89u && header[1] == 'P') {
+      return (uint32_t)header[16] << 24u | (uint32_t)header[17] << 16u |
+             (uint32_t)header[18] << 8u | (uint32_t)header[19];
+    }
+  }
+  return 0u;
+}
+
+static bool8_t ops_art_file_exists(VkrAllocator *allocator, const char *path) {
+  FilePath file_path = vkr_asset_path_file(
+      allocator, string8_create_from_cstr((const uint8_t *)path, strlen(path)));
+  return file_path.path.length && file_exists(&file_path);
+}
+
+static void ops_art_material_check(OpsContext *ctx, OpsArtMaterial *out) {
+  VkrAllocator allocator;
+  String8 text = {0};
+  out->world_size = vec2_new(1.0f, 1.0f);
+  if (!ops_allocator(ctx, &allocator) ||
+      !vkr_editor_material_read(&allocator, out->path, &text)) {
+    return;
+  }
+  out->opens = true_v;
+  VkrParsedMaterialData *parsed =
+      arena_alloc(ops_arena(ctx), sizeof(*parsed), ARENA_MEMORY_TAG_STRUCT);
+  if (!parsed) {
+    return;
+  }
+  MemZero(parsed, sizeof(*parsed));
+  out->parses = vkr_material_loader_parse_definition(
+      &allocator,
+      string8_create_from_cstr((const uint8_t *)out->path, strlen(out->path)),
+      text, parsed);
+  if (!out->parses) {
+    return;
+  }
+  if (parsed->world_size.x > 0.0f && parsed->world_size.y > 0.0f) {
+    out->world_size = parsed->world_size;
+  }
+  out->base_color = parsed->pbr.base_color;
+  out->metallic = parsed->pbr.metallic;
+  out->textured_base =
+      parsed->texture_paths[VKR_TEXTURE_SLOT_DIFFUSE][0] != '\0';
+  out->textured_metallic =
+      parsed->texture_paths[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS][0] != '\0';
+  for (uint32_t slot = 0; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+    char texture[VKR_MATERIAL_PATH_MAX];
+    snprintf(texture, sizeof(texture), "%s", parsed->texture_paths[slot]);
+    char *query = strchr(texture, '?');
+    if (query) {
+      *query = '\0';
+    }
+    if (!texture[0]) {
+      continue;
+    }
+    if (!ops_art_file_exists(&allocator, texture)) {
+      if (!out->missing_texture[0]) {
+        snprintf(out->missing_texture, sizeof(out->missing_texture), "%s",
+                 texture);
+      }
+      continue;
+    }
+    char cooked[VKR_MATERIAL_PATH_MAX + 8u];
+    snprintf(cooked, sizeof(cooked), "%s.vkt", texture);
+    if (!ops_material_ends(texture, ".vkt") &&
+        !ops_art_file_exists(&allocator, cooked)) {
+      out->uncooked = true_v;
+    }
+    if (!out->texture_width || slot == VKR_TEXTURE_SLOT_DIFFUSE) {
+      const uint32_t width = ops_art_texture_width(&allocator, texture);
+      out->texture_width = width ? width : out->texture_width;
+    }
+  }
+}
+
+/* art.lint's issues, up to `limit`, counting past it. */
+typedef struct OpsArtLint {
+  OpsContext *ctx;
+  const VkrScene *scene;
+  VkrBakeryJson *issues;
+  uint32_t found;
+  uint32_t limit;
+  uint32_t kinds;
+} OpsArtLint;
+
+typedef enum OpsArtIssue {
+  OPS_ART_UNBOUND_TAG = 0,
+  OPS_ART_MISSING_MATERIAL,
+  OPS_ART_MISSING_TEXTURE,
+  OPS_ART_UNCOOKED_TEXTURE,
+  OPS_ART_TEXEL_DENSITY,
+  OPS_ART_BASE_COLOR,
+  OPS_ART_METALLIC,
+  OPS_ART_ISSUE_COUNT,
+} OpsArtIssue;
+
+static const char *const s_art_issue_names[OPS_ART_ISSUE_COUNT] = {
+    "unbound_tag",   "missing_material", "missing_texture", "uncooked_texture",
+    "texel_density", "base_color",       "metallic"};
+
+static VkrBakeryJson *ops_art_issue(OpsArtLint *lint, OpsArtIssue kind) {
+  if (!(lint->kinds & (1u << kind))) {
+    return NULL;
+  }
+  if (lint->found++ >= lint->limit) {
+    return NULL;
+  }
+  VkrBakeryJson *issue = vkr_bakery_json_object(ops_arena(lint->ctx));
+  ops_set(lint->ctx, issue, "kind",
+          vkr_bakery_json_cstr(ops_arena(lint->ctx), s_art_issue_names[kind]));
+  vkr_bakery_json_append(lint->issues, issue);
+  return issue;
+}
+
+/* The issues of one material, reported once, naming who uses it. */
+static void ops_art_material_issues(OpsArtLint *lint,
+                                    const OpsArtMaterial *material,
+                                    const char *used_by, VkrEntityId entity) {
+  OpsContext *ctx = lint->ctx;
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *issue = NULL;
+  if (!material->opens || !material->parses) {
+    if ((issue = ops_art_issue(lint, OPS_ART_MISSING_MATERIAL))) {
+      ops_set(ctx, issue, "material",
+              vkr_bakery_json_cstr(arena, material->path));
+      ops_set(ctx, issue, "problem",
+              vkr_bakery_json_cstr(arena, material->opens ? "does not parse"
+                                                          : "does not open"));
+      ops_set(ctx, issue, "used_by", vkr_bakery_json_cstr(arena, used_by));
+      if (entity.u64) {
+        ops_set(ctx, issue, "entity", ops_entity(ctx, lint->scene, entity));
+      }
+    }
+    return;
+  }
+  if (material->missing_texture[0] &&
+      (issue = ops_art_issue(lint, OPS_ART_MISSING_TEXTURE))) {
+    ops_set(ctx, issue, "material",
+            vkr_bakery_json_cstr(arena, material->path));
+    ops_set(ctx, issue, "texture",
+            vkr_bakery_json_cstr(arena, material->missing_texture));
+  }
+  if (material->uncooked &&
+      (issue = ops_art_issue(lint, OPS_ART_UNCOOKED_TEXTURE))) {
+    ops_set(ctx, issue, "material",
+            vkr_bakery_json_cstr(arena, material->path));
+    ops_set(ctx, issue, "problem",
+            vkr_bakery_json_cstr(arena, "a texture has no cooked .vkt; build "
+                                        "assets with vkr_bakery"));
+  }
+  /* Plausible PBR albedo: a non-metal's untextured base colour between sRGB
+     30 and 240 in its brightest channel; metallic near 0 or 1. */
+  if (!material->textured_base && material->metallic < 0.5f) {
+    const Vec4 c = material->base_color;
+    const float32_t linear = Max(c.x, Max(c.y, c.z));
+    const float32_t srgb =
+        255.0f * (linear <= 0.0031308f
+                      ? 12.92f * linear
+                      : 1.055f * powf(linear, 1.0f / 2.4f) - 0.055f);
+    if ((srgb < 30.0f || srgb > 240.0f) &&
+        (issue = ops_art_issue(lint, OPS_ART_BASE_COLOR))) {
+      ops_set(ctx, issue, "material",
+              vkr_bakery_json_cstr(arena, material->path));
+      ops_set(ctx, issue, "value", ops_number(ctx, srgb));
+    }
+  }
+  if (!material->textured_metallic && material->metallic > 0.1f &&
+      material->metallic < 0.9f &&
+      (issue = ops_art_issue(lint, OPS_ART_METALLIC))) {
+    ops_set(ctx, issue, "material",
+            vkr_bakery_json_cstr(arena, material->path));
+    ops_set(ctx, issue, "value", ops_number(ctx, material->metallic));
+  }
+}
+
+/* art.lint: the art pass's problems in one container. */
+static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  uint16_t container = 0u;
+  if (!ops_arg_container(ctx, args, &container)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  float64_t limit = 100.0;
+  float64_t texel_min = 128.0;
+  float64_t texel_max = 2048.0;
+  (void)ops_arg_number(args, "limit", &limit);
+  (void)ops_arg_number(args, "texel_min", &texel_min);
+  (void)ops_arg_number(args, "texel_max", &texel_max);
+  if (limit < 1.0 || limit > 500.0 || texel_min <= 0.0 ||
+      texel_max < texel_min) {
+    ops_fail(ctx, OPS_INVALID,
+             "'limit' is 1 to 500; 0 < 'texel_min' <= 'texel_max' (px/m)");
+    return VKR_EDITOR_OP_DONE;
+  }
+  uint32_t kinds = (1u << OPS_ART_ISSUE_COUNT) - 1u;
+  const VkrBakeryJson *kind_list = vkr_bakery_json_get(args, "kinds");
+  if (kind_list) {
+    kinds = 0u;
+    for (uint32_t i = 0;
+         kind_list->type == VKR_BAKERY_JSON_ARRAY && i < kind_list->count;
+         ++i) {
+      const VkrBakeryJson *name = vkr_bakery_json_at(kind_list, i);
+      for (uint32_t k = 0; k < OPS_ART_ISSUE_COUNT; ++k) {
+        if (name->type == VKR_BAKERY_JSON_STRING &&
+            ops_equals(name->string, s_art_issue_names[k])) {
+          kinds |= 1u << k;
+        }
+      }
+    }
+    if (!kinds) {
+      ops_fail(ctx, OPS_INVALID,
+               "'kinds' lists unbound_tag, missing_material, "
+               "missing_texture, uncooked_texture, "
+               "texel_density, base_color or metallic");
+      return VKR_EDITOR_OP_DONE;
+    }
+  }
+
+  const VkrScene *scene = ops_scene(ctx->frame, container);
+  const char *own_path = "";
+  const char *world_path = "";
+  ops_theme_paths(ctx->frame, container, &own_path, &world_path);
+  VkrSurfaceTheme *themes = arena_alloc(ops_arena(ctx), 2u * sizeof(*themes),
+                                        ARENA_MEMORY_TAG_STRUCT);
+  enum { ART_MATERIALS = 256 };
+  OpsArtMaterial *materials =
+      arena_alloc(ops_arena(ctx), ART_MATERIALS * sizeof(*materials),
+                  ARENA_MEMORY_TAG_ARRAY);
+  if (!themes || !materials) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  MemZero(themes, 2u * sizeof(*themes));
+  if ((own_path[0] && !ops_theme_load(ctx, own_path, &themes[0], true_v)) ||
+      (world_path[0] && !ops_theme_load(ctx, world_path, &themes[1], true_v))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  OpsArtLint lint = {.ctx = ctx,
+                     .scene = scene,
+                     .issues = vkr_bakery_json_array(ops_arena(ctx)),
+                     .limit = (uint32_t)limit,
+                     .kinds = kinds};
+  uint32_t material_count = 0u;
+  uint32_t unbound[VKR_SURFACE_COUNT] = {0};
+  VkrEntityId unbound_face[VKR_SURFACE_COUNT] = {0};
+  uint32_t faces = 0u;
+
+  /* Faces of solid and visual brushes, with the material each shows. */
+  const VkrWorld *world = scene->world;
+  for (uint32_t i = 0; i < world->dir.capacity; ++i) {
+    if (!world->dir.records[i].chunk) {
+      continue;
+    }
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    const SceneBrushFace *face =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_brush_face_type);
+    const SceneMaterialOverride *override_paths =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_material_override_type);
+    const char *paths[VKR_MESH_MATERIAL_OVERRIDE_MAX] = {0};
+    uint32_t path_count = 0u;
+    Vec2 uv_scale = vec2_new(1.0f, 1.0f);
+    if (face) {
+      const SceneBrushSettings *brush = vkr_scene_get_typed(
+          scene, ops_parent(scene, entity), &vkr_scene_brush_type);
+      if (!brush || brush->role == SCENE_BRUSH_ROLE_CLIP ||
+          brush->role == SCENE_BRUSH_ROLE_TRIGGER) {
+        continue;
+      }
+      faces++;
+      const char *look =
+          face->material[0] ? face->material
+                            : vkr_surface_theme_material(&themes[0], &themes[1],
+                                                         face->surface);
+      if (!look) {
+        if (face->surface != VKR_SURFACE_NONE &&
+            (uint32_t)face->surface < VKR_SURFACE_COUNT &&
+            !unbound[face->surface]++) {
+          unbound_face[face->surface] = entity;
+        }
+        continue;
+      }
+      paths[path_count++] = look;
+      uv_scale = face->uv_scale;
+    } else if (override_paths) {
+      for (uint32_t slot = 0; slot < VKR_MESH_MATERIAL_OVERRIDE_MAX; ++slot) {
+        if (override_paths->materials[slot][0]) {
+          paths[path_count++] = override_paths->materials[slot];
+        }
+      }
+    }
+    for (uint32_t p = 0; p < path_count; ++p) {
+      uint32_t at = 0u;
+      while (at < material_count && strcmp(materials[at].path, paths[p]) != 0) {
+        at++;
+      }
+      if (at == material_count) {
+        if (material_count == ART_MATERIALS) {
+          continue;
+        }
+        MemZero(&materials[at], sizeof(materials[at]));
+        snprintf(materials[at].path, sizeof(materials[at].path), "%s",
+                 paths[p]);
+        ops_art_material_check(ctx, &materials[at]);
+        material_count++;
+        ops_art_material_issues(&lint, &materials[at],
+                                face ? (face->material[0] ? "face" : "theme")
+                                     : "material_override",
+                                entity);
+      }
+      /* Texel density: pixels per meter along the texture's width. */
+      const OpsArtMaterial *material = &materials[at];
+      VkrBakeryJson *issue = NULL;
+      if (face && material->texture_width) {
+        const float32_t meters = fabsf(uv_scale.x) * material->world_size.x;
+        const float64_t density =
+            meters > 0.0f ? (float64_t)material->texture_width / meters : 0.0;
+        if ((density < texel_min || density > texel_max) &&
+            (issue = ops_art_issue(&lint, OPS_ART_TEXEL_DENSITY))) {
+          ops_set(ctx, issue, "entity", ops_entity(ctx, scene, entity));
+          ops_set(ctx, issue, "material",
+                  vkr_bakery_json_cstr(ops_arena(ctx), material->path));
+          ops_set(ctx, issue, "value", ops_number(ctx, density));
+        }
+      }
+    }
+  }
+  for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
+    VkrBakeryJson *issue = NULL;
+    if (unbound[tag] && (issue = ops_art_issue(&lint, OPS_ART_UNBOUND_TAG))) {
+      ops_set(ctx, issue, "tag",
+              vkr_bakery_json_cstr(ops_arena(ctx), vkr_surface_names[tag]));
+      ops_set(ctx, issue, "value",
+              vkr_bakery_json_int(ops_arena(ctx), unbound[tag]));
+      ops_set(ctx, issue, "entity", ops_entity(ctx, scene, unbound_face[tag]));
+    }
+  }
+  /* Theme bindings that name a material no face uses yet still must
+     load. */
+  for (uint32_t t = 0; t < 2u; ++t) {
+    for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
+      const char *path = themes[t].materials[tag];
+      uint32_t at = 0u;
+      while (path[0] && at < material_count &&
+             strcmp(materials[at].path, path) != 0) {
+        at++;
+      }
+      if (!path[0] || at < material_count || material_count == ART_MATERIALS) {
+        continue;
+      }
+      MemZero(&materials[at], sizeof(materials[at]));
+      snprintf(materials[at].path, sizeof(materials[at].path), "%s", path);
+      ops_art_material_check(ctx, &materials[at]);
+      material_count++;
+      ops_art_material_issues(&lint, &materials[at], "theme",
+                              VKR_ENTITY_ID_INVALID);
+    }
+  }
+
+  Arena *arena = ops_arena(ctx);
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "container",
+          vkr_bakery_json_int(arena, container));
+  ops_set(ctx, ctx->call->result, "theme",
+          vkr_bakery_json_cstr(arena, own_path));
+  ops_set(ctx, ctx->call->result, "world_theme",
+          vkr_bakery_json_cstr(arena, world_path));
+  ops_set(ctx, ctx->call->result, "faces", vkr_bakery_json_int(arena, faces));
+  ops_set(ctx, ctx->call->result, "materials",
+          vkr_bakery_json_int(arena, material_count));
+  ops_set(ctx, ctx->call->result, "found",
+          vkr_bakery_json_int(arena, lint.found));
+  ops_set(ctx, ctx->call->result, "issues", lint.issues);
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -11387,9 +12274,9 @@ static const OpsDef s_ops[] = {
      "," OPS_SETTLE_SCHEMA "},\"required\":[\"from\",\"to\"]}",
      ops_run_reachable, NULL, OPS_SETTLES},
     {"material.list",
-     "Material files and graphs under the content root's assets: path, kind "
-     "(graph, instance or definition) and an instance's graph; 'contains' "
-     "filters by path.",
+     "Material files, graphs and surface themes under the content root's "
+     "assets: path, kind (graph, instance, definition or theme) and an "
+     "instance's graph; 'contains' filters by path.",
      "{\"type\":\"object\",\"properties\":{\"contains\":{\"type\":"
      "\"string\"}}}",
      ops_run_material_list, NULL, OPS_QUICK},
@@ -11421,7 +12308,8 @@ static const OpsDef s_ops[] = {
      "disconnect {to}, set {id, value?, path?, parameter?, color_space?, "
      "position?, rename?} or settings {alpha_mode?, alpha_cutoff?, "
      "double_sided?, subsurface_profile?, temporal_reactivity?, "
-     "roughness_max?}. A failed edit or an invalid graph changes nothing. "
+     "roughness_max?, world_size? (m per repeat on brush faces), surface? "
+     "(tag)}. A failed edit or an invalid graph changes nothing. "
      "Answers how the graph lowers.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
      "\"string\"},\"edits\":{\"type\":\"array\",\"items\":{\"type\":"
@@ -11431,10 +12319,13 @@ static const OpsDef s_ops[] = {
     {"material.set_param",
      "Set an instance's parameter overrides: 'params' maps names to a "
      "number, [r, g, b] or a texture path (relative to the instance with ./), "
-     "null removing one.",
+     "null removing one. 'world_size' (meters a texture repeat covers on "
+     "brush faces, a number or [x, y], 0 unsets) and 'surface' (a tag) "
+     "replace the graph's.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
-     "\"string\"},\"params\":{\"type\":\"object\"}," OPS_REVIEW_SCHEMA
-     "},\"required\":[\"path\",\"params\"]}",
+     "\"string\"},\"params\":{\"type\":\"object\"},\"world_size\":{},"
+     "\"surface\":{\"type\":\"string\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"path\"]}",
      ops_run_material_set_param, NULL},
     {"material.compile",
      "Lower a graph or instance without changing it: tier, reason, node, "
@@ -11449,19 +12340,66 @@ static const OpsDef s_ops[] = {
      "submesh 'slot' (0 to 7) or every submesh, through its "
      "material_override; an empty 'material' clears.",
      "{\"type\":\"object\",\"properties\":{\"material\":{\"type\":"
-     "\"string\"},\"face\":" OPS_ENTITY_SCHEMA ",\"brush\":"
-     OPS_ENTITY_SCHEMA ",\"entity\":" OPS_ENTITY_SCHEMA ",\"slot\":{"
+     "\"string\"},\"face\":" OPS_ENTITY_SCHEMA ",\"brush\":" OPS_ENTITY_SCHEMA
+     ",\"entity\":" OPS_ENTITY_SCHEMA ",\"slot\":{"
      "\"type\":\"integer\"},\"faces\":{\"type\":\"array\",\"items\":"
      "{\"type\":\"string\"}}," OPS_REVIEW_SCHEMA "},\"required\":["
      "\"material\"]}",
      NULL, ops_build_material_assign},
     {"material.open",
-     "Show a material document in the Material panel, and with "
+     "Show a material document or surface theme in the Material panel, and "
+     "with "
      "'workbench' switch to the Art workbench, so the designer sees it.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
      "\"string\"},\"workbench\":{\"type\":\"boolean\"}},"
      "\"required\":[\"path\"]}",
      ops_run_material_open, NULL},
+    {"surface.list",
+     "The surface tags (name, label, faces in the container and the material "
+     "its theme binds, from the container's theme or the World's) and marks, "
+     "with the container's 'theme' and the 'world_theme' beneath it.",
+     "{\"type\":\"object\",\"properties\":{\"container\":" OPS_CONTAINER_SCHEMA
+     "}}",
+     ops_run_surface_list, NULL, OPS_QUICK},
+    {"surface.theme.create",
+     "Create a theme (.surfaces) at a content path: 'materials' maps surface "
+     "tags to .mt paths. Fails on an existing file unless 'overwrite'.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"},\"materials\":{\"type\":\"object\"},\"overwrite\":{"
+     "\"type\":\"boolean\"}," OPS_REVIEW_SCHEMA "},\"required\":["
+     "\"path\"]}",
+     ops_run_theme_create, NULL},
+    {"surface.theme.bind",
+     "Bind surface tags to materials in a theme ('path', else the "
+     "container's own): 'tag' and 'material', or 'materials' mapping tags to "
+     ".mt paths; an empty or null material unbinds. Every face of a bound tag "
+     "without its own material shows it.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"},\"container\":" OPS_CONTAINER_SCHEMA ",\"tag\":{"
+     "\"type\":\"string\"},\"material\":{\"type\":\"string\"},"
+     "\"materials\":{\"type\":\"object\"}," OPS_REVIEW_SCHEMA "}}",
+     ops_run_theme_bind, NULL},
+    {"surface.theme.select",
+     "Make a container's brush faces take 'theme' (.surfaces; empty clears): "
+     "its surface_theme component, on a new 'Surface theme' entity when none "
+     "carries one. Tags it leaves unbound take the World's theme.",
+     "{\"type\":\"object\",\"properties\":{\"theme\":{\"type\":"
+     "\"string\"},\"container\":" OPS_CONTAINER_SCHEMA "," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"theme\"]}",
+     NULL, ops_build_theme_select},
+    {"art.lint",
+     "The art pass's problems in a container: tags no theme binds, "
+     "materials that do not open or parse, missing or uncooked textures, "
+     "texel density outside 'texel_min' to 'texel_max' px/m (128 and 2048) "
+     "on faces, implausible untextured non-metal base colours (sRGB 30 to "
+     "240) and metallic between 0.1 and 0.9; 'kinds' filters, 'limit' caps "
+     "(100).",
+     "{\"type\":\"object\",\"properties\":{\"container\":" OPS_CONTAINER_SCHEMA
+     ",\"kinds\":{\"type\":\"array\",\"items\":{"
+     "\"type\":\"string\"}},\"limit\":{\"type\":\"integer\"},"
+     "\"texel_min\":{\"type\":\"number\"},\"texel_max\":{\"type\":"
+     "\"number\"}}}",
+     ops_run_art_lint, NULL, OPS_QUICK},
     {"query.measure",
      "Measure in meters: from 'from' to 'to' the distance, horizontal run, "
      "rise and slope in degrees; or the world 'size' of an 'entity' and its "

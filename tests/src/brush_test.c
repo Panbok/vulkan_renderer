@@ -3,6 +3,7 @@
 #include "level/vkr_blockout.h"
 #include "level/vkr_brush.h"
 #include "level/vkr_surface.h"
+#include "memory/vkr_arena_allocator.h"
 
 #include <assert.h>
 #include <math.h>
@@ -873,20 +874,75 @@ static void brush_test_surfaces(void) {
   assert(vkr_surface_orientation(-0.69f) == VKR_SURFACE_WALL);
   assert(vkr_surface_orientation(-1.0f) == VKR_SURFACE_CEILING);
 
-  assert(strcmp(vkr_surface_face_material(
-                    VKR_SURFACE_WOOD, VKR_SURFACE_MARK_NONE, "", 0.0f, false_v),
-                "assets/materials/greybox/wood_wall.mt") == 0);
+  assert(
+      strcmp(vkr_surface_face_material(VKR_SURFACE_WOOD, VKR_SURFACE_MARK_NONE,
+                                       "", NULL, NULL, 0.0f, false_v),
+             "assets/materials/greybox/wood_wall.mt") == 0);
   assert(strcmp(vkr_surface_face_material(VKR_SURFACE_WOOD,
-                                          VKR_SURFACE_MARK_HAZARD, NULL, 1.0f,
-                                          false_v),
+                                          VKR_SURFACE_MARK_HAZARD, NULL, NULL,
+                                          NULL, 1.0f, false_v),
                 "assets/materials/greybox/mark_hazard_floor.mt") == 0);
   const char *art = "assets/materials/bistro/wall.mt";
   assert(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
-                                   art, 0.0f, false_v) == art);
+                                   art, NULL, NULL, 0.0f, false_v) == art);
   assert(
       strcmp(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
-                                       art, -1.0f, true_v),
+                                       art, NULL, NULL, -1.0f, true_v),
              "assets/materials/greybox/brick_ceiling.mt") == 0);
+
+  /* Themes: a container's binding over the World's, the face's own
+     material over both, marks ignored, and the greybox view over all. */
+  const char *theme_json =
+      "{\"version\": 1, \"materials\": {\"brick\": "
+      "\"assets/materials/art/brick.mt\", \"wood\": \"\"}}";
+  const char *world_json = "{\"version\": 1, \"materials\": {\"brick\": "
+                           "\"assets/materials/art/old_brick.mt\", \"wood\": "
+                           "\"assets/materials/art/oak.mt\"}}";
+  VkrSurfaceTheme theme = {0};
+  VkrSurfaceTheme world = {0};
+  char error[160] = {0};
+  assert(vkr_surface_theme_read(
+      string8_create_from_cstr((const uint8_t *)theme_json, strlen(theme_json)),
+      &theme, error, sizeof(error)));
+  assert(vkr_surface_theme_read(
+      string8_create_from_cstr((const uint8_t *)world_json, strlen(world_json)),
+      &world, error, sizeof(error)));
+  assert(strcmp(vkr_surface_face_material(VKR_SURFACE_BRICK,
+                                          VKR_SURFACE_MARK_HAZARD, "", &theme,
+                                          &world, 0.0f, false_v),
+                "assets/materials/art/brick.mt") == 0);
+  assert(
+      strcmp(vkr_surface_face_material(VKR_SURFACE_WOOD, VKR_SURFACE_MARK_NONE,
+                                       "", &theme, &world, 0.0f, false_v),
+             "assets/materials/art/oak.mt") == 0);
+  assert(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
+                                   art, &theme, &world, 0.0f, false_v) == art);
+  assert(
+      strcmp(vkr_surface_face_material(VKR_SURFACE_METAL, VKR_SURFACE_MARK_NONE,
+                                       "", &theme, &world, 1.0f, false_v),
+             "assets/materials/greybox/metal_floor.mt") == 0);
+  assert(
+      strcmp(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
+                                       "", &theme, &world, 0.0f, true_v),
+             "assets/materials/greybox/brick_wall.mt") == 0);
+  assert(vkr_surface_theme_material(&theme, &world, VKR_SURFACE_NONE) == NULL);
+
+  /* A written theme reads back the same; an unknown tag fails. */
+  Arena *arena = arena_create(KB(64), KB(64));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  String8 written = {0};
+  VkrSurfaceTheme read_back = {0};
+  assert(vkr_surface_theme_write(&world, &allocator, &written));
+  assert(vkr_surface_theme_read(written, &read_back, error, sizeof(error)));
+  assert(MemCompare(&read_back, &world, sizeof(world)) == 0);
+  const char *typo = "{\"version\": 1, \"materials\": {\"brik\": \"a.mt\"}}";
+  assert(!vkr_surface_theme_read(
+      string8_create_from_cstr((const uint8_t *)typo, strlen(typo)), &read_back,
+      error, sizeof(error)));
+  assert(strstr(error, "brik") != NULL);
+  arena_destroy(arena);
 
   VkrSurface surface = VKR_SURFACE_COUNT;
   VkrSurfaceMark mark = VKR_SURFACE_MARK_COUNT;

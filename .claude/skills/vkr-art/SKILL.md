@@ -1,24 +1,26 @@
 ---
 name: vkr-art
-description: Author VKR materials and do the art pass through the editor's agent channel - material graphs (.mtg), instances and plain .mt files, assigning them to brush faces and meshes, and checking the result by lowering reports and captures. Use for material and look work in a level; use vkr-level-design for layout, surfaces and marks, and vkr-editor-cmd to start or drive the editor.
+description: Author VKR materials and do the art pass through the editor's agent channel - material graphs (.mtg), instances and plain .mt files, surface themes that bind tags to materials, assigning materials to brush faces and meshes, and checking the result with art.lint, lowering reports and captures. Use for material and look work in a level; use vkr-level-design for layout, surfaces and marks, and vkr-editor-cmd to start or drive the editor.
 ---
 
 # VKR art pass through the agent channel
 
-[docs/proposals/artist-toolkit.md](../../../docs/proposals/artist-toolkit.md)
-and [ADR-093](../../../docs/adr/093-material-graphs-and-art-workbench.md)
-define the model; `ops.list` returns every
+[docs/proposals/artist-toolkit.md](../../../docs/proposals/artist-toolkit.md),
+[ADR-093](../../../docs/adr/093-material-graphs-and-art-workbench.md) and
+[ADR-094](../../../docs/adr/094-surface-themes-and-art-pass.md) define the
+model; `ops.list` returns every
 operation's schema. This skill sets the order of work and the checks.
 
 ## Start
 
 1. Connect and name yourself as `vkr-level-design` describes (socket,
    `agent` in every request, read `editor.status` and `changes.feed`).
-2. Read the materials before writing: `material.list` (`contains` filters by
-   path) and `material.describe` of each document you will touch.
+2. Read before writing: `surface.list` (the tags the level uses, with face
+   counts and current bindings), `art.lint`, `material.list` (`contains`
+   filters by path) and `material.describe` of each document you will
+   touch.
 3. Leave level layout alone: brushes keep their `surface` and `mark`. The art
-   pass only sets art-owned materials (`material.assign`) and material
-   documents.
+   pass sets themes, art-owned materials and material documents.
 
 ## Documents
 
@@ -55,6 +57,26 @@ shader and no pipeline. `material.patch`, `material.describe` and
   Standard; fix the graph by the `reason` and `node` the answer names.
 - Expose a value as a `parameter` only when instances vary it.
 
+## Bind tags first
+
+A theme (`.surfaces`) binds each surface tag to a material for every face
+of the tag that has no material of its own, including faces designers add
+later. Bind by tag; assign per face only for the few surfaces that need a
+unique look.
+
+- `surface.theme.create` (`path`, `materials`: tag to `.mt`), then
+  `surface.theme.select` (`theme`, `container`) makes a container take it.
+  The World's theme (`container` "world") applies under every scene's: put
+  the project's defaults there and a district's differences in its own.
+- `surface.theme.bind` changes bindings: `tag` and `material`, or
+  `materials`; an empty material unbinds. Without `path` it edits the
+  container's own theme.
+- Size textures in meters, not per face: give each material a `world_size`
+  (meters one texture repeat covers) with `material.set_param` on an
+  instance or `material.patch` settings on a graph. A face's `uv_scale` then
+  counts repeats of it, so leave faces at 1 unless one needs a different
+  scale. Set `surface` on materials meshes use, so they share the tags.
+
 ## Assign
 
 - `material.assign` gives a `face`, a `brush` (all faces, or those `faces`
@@ -71,11 +93,16 @@ shader and no pipeline. `material.patch`, `material.describe` and
 
 1. `material.compile` each graph and instance you changed: `tier` standard,
    `pipelines` 0, and `samples` within your budget.
-2. Capture the assigned surfaces (`view.capture` with `eye` and `target`);
+2. `art.lint` the container: no `unbound_tag` the level shows, no
+   `missing_material`, `missing_texture` or `uncooked_texture`; fix
+   `texel_density` (default 128 to 2048 px/m; pass the project's range) by
+   `world_size`, and `base_color` or `metallic` values outside plausible
+   PBR ranges.
+3. Capture the assigned surfaces (`view.capture` with `eye` and `target`);
    compare `view.greybox` on and off to confirm which faces carry art.
-3. Changes you make for review (`review` default true) appear in
+4. Changes you make for review (`review` default true) appear in
    `changes.list` with their `document`; the designer accepts or rejects
    them. `undo` takes only your own steps, documents included; name yourself
    in the request or it refuses.
-4. Report the documents you created or changed, their tiers and the change
-   ids.
+5. Report the documents you created or changed, their tiers, the themes
+   each container takes, what `art.lint` still reports and the change ids.

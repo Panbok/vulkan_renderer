@@ -2,6 +2,7 @@
 #include "assets/vkr_material_graph.h"
 #include "containers/str.h"
 #include "filesystem/vkr_asset_path.h"
+#include "level/vkr_surface.h"
 #include "renderer/systems/vkr_material_system.h"
 #include <math.h>
 
@@ -900,6 +901,8 @@ vkr_material_loader_init_from_parsed(VkrMaterial *material,
   material->alpha_mode = parsed->alpha_mode;
   material->alpha_mode_explicit = parsed->alpha_mode_explicit;
   material->double_sided = parsed->double_sided;
+  material->world_size = parsed->world_size;
+  material->surface = parsed->surface;
   material->phong = parsed->phong;
   material->pbr = parsed->pbr;
   if (parsed->alpha_cutoff_set) {
@@ -1855,6 +1858,39 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
     return true_v;
   }
 
+  if (vkr_string8_equals_cstr_i(&key, "world_size")) {
+    Vec2 size = {0};
+    float32_t uniform = 0.0f;
+    if (!string8_to_vec2(&value, &size)) {
+      size = string8_to_f32(&value, &uniform) ? vec2_new(uniform, uniform)
+                                              : vec2_new(-1.0f, -1.0f);
+    }
+    if (!isfinite(size.x) || !isfinite(size.y) || size.x < 0.01f ||
+        size.y < 0.01f || size.x > 1000.0f || size.y > 1000.0f) {
+      log_error("Material: world_size must be one or two sizes from 0.01 to "
+                "1000 m in '%.*s'",
+                (int)path.length, path.str);
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    out_data->world_size = size;
+    return true_v;
+  }
+
+  if (vkr_string8_equals_cstr_i(&key, "surface")) {
+    char name[32] = {0};
+    VkrSurface surface = VKR_SURFACE_NONE;
+    MemCopy(name, value.str, Min(value.length, (uint64_t)sizeof(name) - 1u));
+    if (value.length >= sizeof(name) || !vkr_surface_find(name, &surface)) {
+      log_error("Material: surface names no surface tag in '%.*s'",
+                (int)path.length, path.str);
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    out_data->surface = (uint8_t)surface;
+    return true_v;
+  }
+
   String8 subsurface_namespace = key;
   if (subsurface_namespace.length > 11u)
     subsurface_namespace.length = 11u;
@@ -2093,6 +2129,27 @@ vkr_internal bool8_t vkr_material_loader_expand_graph(
   }
   if (instance->name[0]) {
     snprintf(out_data->name, sizeof(out_data->name), "%s", instance->name);
+  }
+  /* The instance's own art-pass lines follow the graph's, so they win. */
+  if (instance->world_size[0] || instance->surface[0]) {
+    const uint64_t capacity = definition.length + 2u * 64u;
+    char *joined = vkr_allocator_alloc(allocator, capacity,
+                                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    if (!joined) {
+      out_data->parse_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
+    }
+    MemCopy(joined, definition.str, definition.length);
+    uint64_t length = definition.length;
+    if (instance->world_size[0]) {
+      length += (uint64_t)snprintf(joined + length, capacity - length,
+                                   "world_size=%s\n", instance->world_size);
+    }
+    if (instance->surface[0]) {
+      length += (uint64_t)snprintf(joined + length, capacity - length,
+                                   "surface=%s\n", instance->surface);
+    }
+    definition = (String8){.str = (uint8_t *)joined, .length = length};
   }
   *content = definition;
   return true_v;
@@ -2584,6 +2641,8 @@ vkr_internal bool8_t vkr_material_batch_create_material(
   material->alpha_mode_explicit = parsed->alpha_mode_explicit;
   material->double_sided = parsed->double_sided;
   material->rough = vkr_material_loader_rough(parsed);
+  material->world_size = parsed->world_size;
+  material->surface = parsed->surface;
   material->phong = parsed->phong;
   material->pbr = parsed->pbr;
   if (parsed->alpha_cutoff_set) {

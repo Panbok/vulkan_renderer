@@ -1,5 +1,8 @@
 #include "level/vkr_surface.h"
 
+#include "core/vkr_json.h"
+
+#include <stdio.h>
 #include <string.h>
 
 const char *const vkr_surface_names[] = {
@@ -115,11 +118,164 @@ const char *vkr_surface_greybox_material(VkrSurface surface,
   return s_surface_looks[tag][side];
 }
 
+// =============================================================================
+// Themes
+// =============================================================================
+
+static void theme_error(char *error, uint32_t capacity, const char *format,
+                        const char *name) {
+  if (error && capacity > 0u) {
+    snprintf(error, capacity, format, name);
+  }
+}
+
+/* The tag whose name is `text`, or VKR_SURFACE_COUNT. */
+static uint32_t theme_tag(String8 text) {
+  for (uint32_t tag = 0; tag < VKR_SURFACE_COUNT; ++tag) {
+    const uint64_t length = strlen(vkr_surface_names[tag]);
+    if (text.length == length &&
+        MemCompare(text.str, vkr_surface_names[tag], length) == 0) {
+      return tag;
+    }
+  }
+  return VKR_SURFACE_COUNT;
+}
+
+bool8_t vkr_surface_theme_read(String8 json, VkrSurfaceTheme *out, char *error,
+                               uint32_t capacity) {
+  MemZero(out, sizeof(*out));
+  VkrJsonReader root = vkr_json_reader_from_string(json);
+  VkrJsonReader member = root;
+  float32_t version = 0.0f;
+  if (!vkr_json_find_root_field(&member, "version") ||
+      !vkr_json_parse_float(&member, &version) ||
+      version != (float32_t)VKR_SURFACE_THEME_VERSION) {
+    theme_error(error, capacity, "%s must be 1", "version");
+    return false_v;
+  }
+
+  member = root;
+  if (!vkr_json_find_root_field(&member, "materials")) {
+    return true_v;
+  }
+  VkrJsonReader materials;
+  if (!vkr_json_enter_object(&member, &materials)) {
+    theme_error(error, capacity, "%s must be an object", "materials");
+    return false_v;
+  }
+
+  /* Members in order: "tag": "path", separated by commas. */
+  materials.pos = 1u;
+  for (;;) {
+    vkr_json_skip_whitespace(&materials);
+    if (materials.pos >= materials.length) {
+      break;
+    }
+    const uint8_t next = materials.data[materials.pos];
+    if (next == '}') {
+      break;
+    }
+    if (next == ',') {
+      materials.pos++;
+      continue;
+    }
+    String8 key = {0};
+    String8 path = {0};
+    if (!vkr_json_parse_string(&materials, &key)) {
+      theme_error(error, capacity, "%s holds a member that is not a string",
+                  "materials");
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&materials);
+    if (materials.pos >= materials.length ||
+        materials.data[materials.pos] != ':') {
+      theme_error(error, capacity, "%s holds a member without a value",
+                  "materials");
+      return false_v;
+    }
+    materials.pos++;
+    const uint32_t tag = theme_tag(key);
+    char name[32] = {0};
+    MemCopy(name, key.str, Min(key.length, (uint64_t)sizeof(name) - 1u));
+    if (tag == VKR_SURFACE_COUNT || tag == VKR_SURFACE_NONE) {
+      theme_error(error, capacity, "materials.%s names no surface tag", name);
+      return false_v;
+    }
+    if (!vkr_json_parse_string(&materials, &path) ||
+        path.length >= VKR_SURFACE_THEME_PATH_CAPACITY ||
+        memchr(path.str, '\\', path.length)) {
+      theme_error(error, capacity,
+                  "materials.%s must be a material path under 128 bytes", name);
+      return false_v;
+    }
+    MemCopy(out->materials[tag], path.str, path.length);
+    out->materials[tag][path.length] = '\0';
+  }
+  return true_v;
+}
+
+bool8_t vkr_surface_theme_write(const VkrSurfaceTheme *theme,
+                                VkrAllocator *allocator, String8 *out_json) {
+  uint64_t capacity = 64u;
+  for (uint32_t tag = 0; tag < VKR_SURFACE_COUNT; ++tag) {
+    capacity +=
+        strlen(vkr_surface_names[tag]) + strlen(theme->materials[tag]) + 16u;
+  }
+  char *text =
+      vkr_allocator_alloc(allocator, capacity, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!text) {
+    return false_v;
+  }
+
+  uint64_t length = (uint64_t)snprintf(
+      text, capacity, "{\n  \"version\": %u,\n  \"materials\": {",
+      VKR_SURFACE_THEME_VERSION);
+  bool8_t first = true_v;
+  for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
+    if (!theme->materials[tag][0]) {
+      continue;
+    }
+    length += (uint64_t)snprintf(text + length, capacity - length,
+                                 "%s\n    \"%s\": \"%s\"", first ? "" : ",",
+                                 vkr_surface_names[tag], theme->materials[tag]);
+    first = false_v;
+  }
+  length += (uint64_t)snprintf(text + length, capacity - length, "%s}\n}\n",
+                               first ? "" : "\n  ");
+  *out_json = (String8){.str = (uint8_t *)text, .length = length};
+  return true_v;
+}
+
+const char *vkr_surface_theme_material(const VkrSurfaceTheme *theme,
+                                       const VkrSurfaceTheme *fallback,
+                                       VkrSurface surface) {
+  if ((uint32_t)surface == VKR_SURFACE_NONE ||
+      (uint32_t)surface >= VKR_SURFACE_COUNT) {
+    return NULL;
+  }
+  if (theme && theme->materials[surface][0]) {
+    return theme->materials[surface];
+  }
+  if (fallback && fallback->materials[surface][0]) {
+    return fallback->materials[surface];
+  }
+  return NULL;
+}
+
 const char *vkr_surface_face_material(VkrSurface surface, VkrSurfaceMark mark,
-                                      const char *material, float32_t normal_y,
+                                      const char *material,
+                                      const VkrSurfaceTheme *theme,
+                                      const VkrSurfaceTheme *fallback,
+                                      float32_t normal_y,
                                       bool8_t greybox_view) {
-  if (!greybox_view && material && material[0]) {
-    return material;
+  if (!greybox_view) {
+    if (material && material[0]) {
+      return material;
+    }
+    const char *bound = vkr_surface_theme_material(theme, fallback, surface);
+    if (bound) {
+      return bound;
+    }
   }
   return vkr_surface_greybox_material(surface, mark,
                                       vkr_surface_orientation(normal_y));
