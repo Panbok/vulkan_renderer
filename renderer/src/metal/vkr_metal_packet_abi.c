@@ -120,6 +120,13 @@ vkr_global const VkrMetalPacketAbiField vkr_terrain_material_fields[] = {
                   160),
     VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer3_surface,
                   "layer3_surface", 176),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, mask_texture_id,
+                  "mask_texture", 192),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, mask_sampler_id,
+                  "mask_sampler", 200),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, mask_range, "mask_range", 208),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, mask_source, "mask_source",
+                  224),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_vertex_draw_root_fields[] = {
@@ -781,7 +788,7 @@ vkr_global const VkrMetalPacketAbiRecord
                            "VkrMetalPacketTransmissionMaterial", 32, 16,
                            vkr_transmission_material_fields),
         [VKR_METAL_PACKET_ABI_TERRAIN_MATERIAL] = VKR_ABI_RECORD(
-            VkrMetalTerrainMaterialGpuRow, "VkrMetalPacketTerrainMaterial", 192,
+            VkrMetalTerrainMaterialGpuRow, "VkrMetalPacketTerrainMaterial", 240,
             16, vkr_terrain_material_fields),
         [VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketVertexDrawRoot, "VkrMetalPacketDrawRoot", 48, 16,

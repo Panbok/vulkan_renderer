@@ -36,6 +36,9 @@ typedef enum VkrMaterialValueType {
   VKR_MATERIAL_VALUE_SCALAR = 0,
   VKR_MATERIAL_VALUE_COLOR,
   VKR_MATERIAL_VALUE_NORMAL,
+  /* A layer material, and the layers a blend mixes over the surface. */
+  VKR_MATERIAL_VALUE_LAYER,
+  VKR_MATERIAL_VALUE_LAYERS,
 } VkrMaterialValueType;
 
 typedef enum VkrMaterialNodeKind {
@@ -49,6 +52,12 @@ typedef enum VkrMaterialNodeKind {
   VKR_MATERIAL_NODE_MULTIPLY,
   /* A tangent-space normal map from a texture's rgb, with a strength. */
   VKR_MATERIAL_NODE_NORMAL_MAP,
+  /* A layer material file (`.mt`); exposed when it names a parameter. */
+  VKR_MATERIAL_NODE_LAYER,
+  /* Up to three layers over the surface, weighed by its mask: the vertex
+     colour, a mask texture (`path`), or slope or height across the range in
+     `value` x to y. */
+  VKR_MATERIAL_NODE_LAYER_BLEND,
   VKR_MATERIAL_NODE_SURFACE_OUTPUT,
   VKR_MATERIAL_NODE_KIND_COUNT,
 } VkrMaterialNodeKind;
@@ -85,17 +94,32 @@ typedef enum VkrMaterialColorSpace {
   VKR_MATERIAL_COLOR_SPACE_LINEAR,
 } VkrMaterialColorSpace;
 
+/* What weighs a layer blend's layers; the loader's `layer_mask` names. */
+typedef enum VkrMaterialGraphMask {
+  VKR_MATERIAL_GRAPH_MASK_VERTEX_COLOR = 0,
+  VKR_MATERIAL_GRAPH_MASK_TEXTURE,
+  VKR_MATERIAL_GRAPH_MASK_SLOPE,
+  VKR_MATERIAL_GRAPH_MASK_HEIGHT,
+  VKR_MATERIAL_GRAPH_MASK_COUNT,
+} VkrMaterialGraphMask;
+
+/* Mask names as documents store them, indexed by VkrMaterialGraphMask. */
+extern const char *const vkr_material_graph_mask_names[];
+
 typedef struct VkrMaterialNode {
   char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
   VkrMaterialNodeKind kind;
   /* Exposed parameter name of a scalar, colour or texture; empty for
      none. */
   char parameter[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-  /* Texture file: relative to the graph with ./ or ../, else to the
-     content root; query suffixes (?cs=, ?tc=) pass through. */
+  /* Texture or layer file (a layer blend's mask texture): relative to the
+     graph with ./ or ../, else to the content root; query suffixes (?cs=,
+     ?tc=) pass through. */
   char path[VKR_MATERIAL_GRAPH_PATH_CAPACITY];
   VkrMaterialColorSpace color_space;
-  /* Scalar in x, colour in xyz. */
+  /* A layer blend's mask. */
+  VkrMaterialGraphMask mask;
+  /* Scalar in x, colour in xyz, a layer blend's range in xy. */
   Vec4 value;
   /* Canvas position in points; layout only. */
   Vec2 position;
@@ -146,6 +170,8 @@ typedef struct VkrMaterialLowering {
   /* Distinct texture files sampled, and the arithmetic weight. */
   uint32_t samples;
   uint32_t alu;
+  /* Layers blended over the surface (0 to 3). */
+  uint32_t layers;
 } VkrMaterialLowering;
 
 /* One instance override: a parameter name and its `.mt` value text. */

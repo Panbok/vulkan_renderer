@@ -9750,6 +9750,7 @@ static VkrBakeryJson *ops_material_lowering(OpsContext *ctx,
   }
   ops_set(ctx, report, "samples", vkr_bakery_json_int(arena, lowering.samples));
   ops_set(ctx, report, "alu", vkr_bakery_json_int(arena, lowering.alu));
+  ops_set(ctx, report, "layers", vkr_bakery_json_int(arena, lowering.layers));
   /* Standard graphs lower to row data: no shader and no pipeline. */
   ops_set(ctx, report, "pipelines", vkr_bakery_json_int(arena, 0));
   if (lowered && definition) {
@@ -10271,17 +10272,44 @@ static bool8_t ops_material_node_fields(OpsContext *ctx,
         return false_v;
       }
       node->value = vec4_new(color.x, color.y, color.z, 0.0f);
+    } else if (node->kind == VKR_MATERIAL_NODE_LAYER_BLEND) {
+      float32_t range[2] = {0.0f, 1.0f};
+      if (!ops_arg_floats(ctx, edit, "value", range, 2u, NULL)) {
+        return false_v;
+      }
+      node->value = vec4_new(range[0], range[1], 0.0f, 0.0f);
     } else {
-      return ops_fail(ctx, OPS_INVALID, "Only scalars and colours have values");
+      return ops_fail(ctx, OPS_INVALID,
+                      "Only scalars, colours and layer blends (a [from, to] "
+                      "range) have values");
     }
   }
+  const bool8_t has_path = node->kind == VKR_MATERIAL_NODE_TEXTURE ||
+                           node->kind == VKR_MATERIAL_NODE_LAYER ||
+                           node->kind == VKR_MATERIAL_NODE_LAYER_BLEND;
   if (vkr_bakery_json_get(edit, "path")) {
-    if (node->kind != VKR_MATERIAL_NODE_TEXTURE ||
-        !ops_arg_string(ctx, edit, "path", node->path, sizeof(node->path))) {
-      return node->kind == VKR_MATERIAL_NODE_TEXTURE
-                 ? false_v
-                 : ops_fail(ctx, OPS_INVALID, "Only textures have a path");
+    if (!has_path) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "Only textures, layers and layer blends (a mask "
+                      "texture) have a path");
     }
+    if (!ops_arg_string(ctx, edit, "path", node->path, sizeof(node->path))) {
+      return false_v;
+    }
+  }
+  String8 mask = {0};
+  if (vkr_bakery_json_get_string(edit, "mask", &mask)) {
+    uint32_t found = VKR_MATERIAL_GRAPH_MASK_COUNT;
+    for (uint32_t m = 0; m < VKR_MATERIAL_GRAPH_MASK_COUNT; ++m) {
+      found = ops_equals(mask, vkr_material_graph_mask_names[m]) ? m : found;
+    }
+    if (node->kind != VKR_MATERIAL_NODE_LAYER_BLEND ||
+        found == VKR_MATERIAL_GRAPH_MASK_COUNT) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "A layer blend's 'mask' is vertex_color, texture, slope "
+                      "or height");
+    }
+    node->mask = (VkrMaterialGraphMask)found;
   }
   if (!ops_arg_string(ctx, edit, "parameter", node->parameter,
                       sizeof(node->parameter))) {
@@ -12303,7 +12331,11 @@ static const OpsDef s_ops[] = {
      ops_run_material_create, NULL},
     {"material.patch",
      "Edit a graph (.mtg) as one undo step: 'edits' in order, each an 'op': "
-     "add {type, id?, value?, path?, parameter?, color_space?, position?}, "
+     "add {type, id?, value?, path?, parameter?, color_space?, mask?, "
+     "position?} (types: scalar, color, texture, multiply, normal_map, layer "
+     "(path to a layer .mt), layer_blend (mask vertex_color, texture with "
+     "path, slope or height with value [from, to]; into output.layers), "
+     "surface_output), "
      "remove {id}, connect {from: \"node.output\", to: \"node.input\"}, "
      "disconnect {to}, set {id, value?, path?, parameter?, color_space?, "
      "position?, rename?} or settings {alpha_mode?, alpha_cutoff?, "

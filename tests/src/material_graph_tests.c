@@ -10,6 +10,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#else
+#include <direct.h>
+#endif
 
 #if !defined(_WIN32)
 #include <dirent.h>
@@ -61,6 +66,16 @@ static bool8_t graph_test_same(const VkrParsedMaterialData *a,
   SAME(world_size, a->world_size.x == b->world_size.x &&
                        a->world_size.y == b->world_size.y);
   SAME(surface, a->surface == b->surface);
+  SAME(layered, a->layered == b->layered);
+  SAME(layer_mask,
+       a->layer_mask == b->layer_mask &&
+           (!a->layered || (a->layer_mask_range.x == b->layer_mask_range.x &&
+                            a->layer_mask_range.y == b->layer_mask_range.y)));
+  for (uint32_t layer = 0; a->layered && layer < 3u; ++layer) {
+    SAME(layers, graph_test_vec4(a->layers[layer].base_color,
+                                 b->layers[layer].base_color) &&
+                     a->layers[layer].roughness == b->layers[layer].roughness);
+  }
   SAME(roughness_max, a->roughness_max_set == b->roughness_max_set &&
                           (!a->roughness_max_set ||
                            a->roughness_max == b->roughness_max));
@@ -400,6 +415,76 @@ static void test_graph_art_metadata(VkrAllocator *allocator) {
   printf("  test_graph_art_metadata PASSED\n");
 }
 
+/* A layered definition becomes a graph of layer nodes and a blend that
+   lowers back to the same layered material; a blend without a layer, or
+   with a falling range, names the node at fault. */
+static void test_graph_layers(VkrAllocator *allocator) {
+  char directory[1024];
+  char layer_file[1024];
+  snprintf(directory, sizeof(directory), "%stests/tmp/material_graph",
+           PROJECT_SOURCE_DIR);
+  snprintf(layer_file, sizeof(layer_file), "%s/moss.mt", directory);
+#if defined(_WIN32)
+  (void)_mkdir(directory);
+#else
+  (void)mkdir(directory, 0755);
+#endif
+  FILE *file = fopen(layer_file, "wb");
+  assert(file);
+  fputs("name=moss\ntype=pbr\nbase_color=0.1,0.6,0.2,1\nroughness=0.9\n", file);
+  fclose(file);
+
+  const char *definition = "type=pbr\nbase_color=0.5,0.5,0.5,1\n"
+                           "layer1=./moss.mt\nlayer_mask=slope\n"
+                           "layer_mask_range=0.6,0.9\n";
+  const char *path = "tests/tmp/material_graph/mossy.mt";
+  VkrParsedMaterialData direct;
+  graph_test_parse(allocator, path, graph_test_str(definition), &direct);
+  assert(direct.layered);
+
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  assert(graph);
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  assert(vkr_material_graph_from_definition(graph_test_str(definition), graph,
+                                            error, sizeof(error)));
+  String8 json = {0};
+  assert(vkr_material_graph_write(graph, allocator, &json));
+  assert(vkr_material_graph_read(json, graph, error, sizeof(error)));
+  String8 lowered_text = {0};
+  VkrMaterialLowering lowering = {0};
+  assert(vkr_material_graph_lower(
+      graph, graph_test_str("tests/tmp/material_graph/mossy.mtg"), NULL, 0u,
+      allocator, &lowered_text, &lowering));
+  assert(lowering.tier == VKR_MATERIAL_TIER_STANDARD && lowering.layers == 1u);
+  VkrParsedMaterialData lowered;
+  graph_test_parse(allocator, path, lowered_text, &lowered);
+  char why[64] = {0};
+  if (!graph_test_same(&direct, &lowered, why, sizeof(why))) {
+    printf("    layered round trip differs in %s\n", why);
+    assert(false);
+  }
+
+  /* A falling range, then a blend whose layer is gone. */
+  const uint32_t blend =
+      vkr_material_graph_find(graph, graph_test_str("layers"));
+  assert(blend != UINT32_MAX);
+  graph->nodes[blend].value = vec4_new(0.9f, 0.6f, 0.0f, 0.0f);
+  assert(!vkr_material_graph_lower(
+      graph, graph_test_str("tests/tmp/material_graph/mossy.mtg"), NULL, 0u,
+      allocator, &lowered_text, &lowering));
+  assert(strcmp(lowering.node, "layers") == 0);
+  graph->nodes[blend].value = vec4_new(0.6f, 0.9f, 0.0f, 0.0f);
+  vkr_material_graph_remove(
+      graph, vkr_material_graph_find(graph, graph_test_str("layer1")));
+  assert(!vkr_material_graph_lower(
+      graph, graph_test_str("tests/tmp/material_graph/mossy.mtg"), NULL, 0u,
+      allocator, &lowered_text, &lowering));
+  assert(strcmp(lowering.node, "layers") == 0);
+  free(graph);
+  remove(layer_file);
+  printf("  test_graph_layers PASSED\n");
+}
+
 /* A PBR definition becomes a graph that lowers back to the same material:
    one with every key the importers write, then every `.mt` under
    assets/materials, such as Bistro's. */
@@ -540,6 +625,7 @@ bool32_t run_material_graph_tests(void) {
   test_graph_lowering(&allocator);
   test_graph_tiers(&allocator);
   test_graph_art_metadata(&allocator);
+  test_graph_layers(&allocator);
   test_graph_round_trip(&allocator);
   arena_destroy(arena);
   printf("--- Material Graph Tests Completed ---\n");

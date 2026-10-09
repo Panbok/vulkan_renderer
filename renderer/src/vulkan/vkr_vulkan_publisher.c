@@ -2324,6 +2324,9 @@ vkr_vk_material_row_set_sampler(VkrVulkanMaterialPublishedRow *row,
   case VKR_TEXTURE_SLOT_LAYER3_BASE_COLOR:
     row->terrain.layer3_sampler = sampler_index;
     break;
+  case VKR_TEXTURE_SLOT_LAYER_MASK:
+    row->terrain.mask_sampler = sampler_index;
+    break;
   default:
     break;
   }
@@ -2826,6 +2829,11 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
               .layer3_tint = material->layers[2].base_color,
               .layer3_surface =
                   vkr_packet_terrain_layer_surface(&material->layers[2]),
+              .mask_texture = texture_indices[VKR_TEXTURE_SLOT_LAYER_MASK],
+              .mask_sampler = sampler_indices[VKR_TEXTURE_SLOT_LAYER_MASK],
+              .mask_source = material->layer_mask,
+              .mask_range = vec4_new(material->layer_mask_range.x,
+                                     material->layer_mask_range.y, 0.0f, 0.0f),
           },
   };
   VkrGpuSlotHandle new_slot = {0};

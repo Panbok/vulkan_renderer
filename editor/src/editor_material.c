@@ -1030,7 +1030,12 @@ typedef struct MaterialNodeEdit {
   Vec3 color;
   char path[VKR_MATERIAL_GRAPH_PATH_CAPACITY];
   uint32_t color_space;
+  uint32_t mask;
+  Vec2 range;
 } MaterialNodeEdit;
+
+static const char *const s_mask_labels[] = {"Vertex colour", "Mask texture",
+                                            "Slope", "Height", NULL};
 
 static const char *const s_color_space_names[] = {"auto", "srgb", "linear",
                                                   NULL};
@@ -1044,6 +1049,8 @@ enum {
   NODE_EDIT_COLOR,
   NODE_EDIT_PATH,
   NODE_EDIT_COLOR_SPACE,
+  NODE_EDIT_MASK,
+  NODE_EDIT_RANGE,
 };
 
 static const VkrPropertyDesc s_node_edit_properties[] = {
@@ -1081,21 +1088,41 @@ static const VkrPropertyDesc s_node_edit_properties[] = {
                                .label = "Colour space",
                                .names = s_color_space_names,
                                .labels = s_color_space_labels,
-                               .offset = offsetof(MaterialNodeEdit, color_space),
+                               .offset =
+                                   offsetof(MaterialNodeEdit, color_space),
                                .kind = VKR_PROPERTY_ENUM},
+    [NODE_EDIT_MASK] = {.name = "mask",
+                        .label = "Mask",
+                        .tooltip = "What weighs the layers: the vertex "
+                                   "colour's or the mask texture's RGBA "
+                                   "(layers 0 to 3), or layer 1 over the "
+                                   "surface by slope or world height",
+                        .names = vkr_material_graph_mask_names,
+                        .labels = s_mask_labels,
+                        .offset = offsetof(MaterialNodeEdit, mask),
+                        .kind = VKR_PROPERTY_ENUM},
+    [NODE_EDIT_RANGE] = {.name = "range",
+                         .label = "Range",
+                         .tooltip = "Slope (the world normal's Y, 0 to 1) or "
+                                    "height (meters) where layer 1 fades in, "
+                                    "from x to y",
+                         .offset = offsetof(MaterialNodeEdit, range),
+                         .kind = VKR_PROPERTY_VEC2,
+                         .step = 0.01f},
 };
 
 /* Only the fields a node kind has show; `context` is the kind. */
 static VkrPropertyState node_edit_state(const void *value, uint32_t property,
                                         const void *context) {
-  (void)value;
   const VkrMaterialNodeKind kind = *(const VkrMaterialNodeKind *)context;
   const bool8_t constant =
       kind == VKR_MATERIAL_NODE_SCALAR || kind == VKR_MATERIAL_NODE_COLOR;
   bool8_t shown = true_v;
+  const MaterialNodeEdit *edit = value;
   switch (property) {
   case NODE_EDIT_PARAMETER:
-    shown = constant || kind == VKR_MATERIAL_NODE_TEXTURE;
+    shown = constant || kind == VKR_MATERIAL_NODE_TEXTURE ||
+            kind == VKR_MATERIAL_NODE_LAYER;
     break;
   case NODE_EDIT_VALUE:
     shown = kind == VKR_MATERIAL_NODE_SCALAR;
@@ -1104,8 +1131,21 @@ static VkrPropertyState node_edit_state(const void *value, uint32_t property,
     shown = kind == VKR_MATERIAL_NODE_COLOR;
     break;
   case NODE_EDIT_PATH:
+    shown = kind == VKR_MATERIAL_NODE_TEXTURE ||
+            kind == VKR_MATERIAL_NODE_LAYER ||
+            (kind == VKR_MATERIAL_NODE_LAYER_BLEND &&
+             edit->mask == VKR_MATERIAL_GRAPH_MASK_TEXTURE);
+    break;
   case NODE_EDIT_COLOR_SPACE:
     shown = kind == VKR_MATERIAL_NODE_TEXTURE;
+    break;
+  case NODE_EDIT_MASK:
+    shown = kind == VKR_MATERIAL_NODE_LAYER_BLEND;
+    break;
+  case NODE_EDIT_RANGE:
+    shown = kind == VKR_MATERIAL_NODE_LAYER_BLEND &&
+            (edit->mask == VKR_MATERIAL_GRAPH_MASK_SLOPE ||
+             edit->mask == VKR_MATERIAL_GRAPH_MASK_HEIGHT);
     break;
   default:
     break;
@@ -1414,6 +1454,8 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
         .value = node->value.x,
         .color = vec3_new(node->value.x, node->value.y, node->value.z),
         .color_space = (uint32_t)node->color_space,
+        .mask = (uint32_t)node->mask,
+        .range = vec2_new(node->value.x, node->value.y),
     };
     snprintf(edit.id, sizeof(edit.id), "%s", node->id);
     snprintf(edit.parameter, sizeof(edit.parameter), "%s", node->parameter);
@@ -1432,10 +1474,13 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       snprintf(node->parameter, sizeof(node->parameter), "%s", edit.parameter);
       snprintf(node->path, sizeof(node->path), "%s", edit.path);
       node->color_space = (VkrMaterialColorSpace)edit.color_space;
-      node->value = node->kind == VKR_MATERIAL_NODE_COLOR
-                        ? vec4_new(edit.color.x, edit.color.y, edit.color.z,
-                                   0.0f)
-                        : vec4_new(edit.value, 0.0f, 0.0f, 0.0f);
+      node->mask = (VkrMaterialGraphMask)edit.mask;
+      node->value =
+          node->kind == VKR_MATERIAL_NODE_COLOR
+              ? vec4_new(edit.color.x, edit.color.y, edit.color.z, 0.0f)
+          : node->kind == VKR_MATERIAL_NODE_LAYER_BLEND
+              ? vec4_new(edit.range.x, edit.range.y, 0.0f, 0.0f)
+              : vec4_new(edit.value, 0.0f, 0.0f, 0.0f);
       panel_save_graph(editor, frame);
     }
   } else {
@@ -1602,8 +1647,10 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
              bound, VKR_SURFACE_COUNT - 1u);
   } else if (panel->lowered) {
     snprintf(status, sizeof(status),
-             "Standard \xc2\xb7 %u sample%s \xc2\xb7 +0 pipelines%s",
+             "Standard \xc2\xb7 %u sample%s \xc2\xb7 %u layer%s \xc2\xb7 +0 "
+             "pipelines%s",
              panel->lowering.samples, panel->lowering.samples == 1u ? "" : "s",
+             panel->lowering.layers, panel->lowering.layers == 1u ? "" : "s",
              panel->read_only && panel->kind != VKR_EDITOR_MATERIAL_INSTANCE
                  ? " \xc2\xb7 read only until converted"
                  : "");
@@ -1665,15 +1712,19 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
 }
 
 static const VkrEditorGraphChoice s_choices[] = {
-    {"Scalar", "Inputs"},        {"Colour", "Inputs"},
-    {"Texture", "Inputs"},       {"Multiply", "Math"},
-    {"Normal map", "Math"},      {"Surface output", "Output"},
+    {"Scalar", "Inputs"},      {"Colour", "Inputs"},
+    {"Texture", "Inputs"},     {"Layer", "Inputs"},
+    {"Multiply", "Math"},      {"Normal map", "Math"},
+    {"Layer blend", "Layers"}, {"Surface output", "Output"},
 };
 static const VkrMaterialNodeKind s_choice_kinds[] = {
-    VKR_MATERIAL_NODE_SCALAR,   VKR_MATERIAL_NODE_COLOR,
-    VKR_MATERIAL_NODE_TEXTURE,  VKR_MATERIAL_NODE_MULTIPLY,
-    VKR_MATERIAL_NODE_NORMAL_MAP, VKR_MATERIAL_NODE_SURFACE_OUTPUT,
+    VKR_MATERIAL_NODE_SCALAR,      VKR_MATERIAL_NODE_COLOR,
+    VKR_MATERIAL_NODE_TEXTURE,     VKR_MATERIAL_NODE_LAYER,
+    VKR_MATERIAL_NODE_MULTIPLY,    VKR_MATERIAL_NODE_NORMAL_MAP,
+    VKR_MATERIAL_NODE_LAYER_BLEND, VKR_MATERIAL_NODE_SURFACE_OUTPUT,
 };
+_Static_assert(ArrayCount(s_choices) == ArrayCount(s_choice_kinds),
+               "one node kind per add-node choice");
 
 /* The canvas port type of a value type; a multiply's inputs take any. */
 static uint32_t panel_port_type(VkrMaterialNodeKind kind, bool8_t input,

@@ -2300,6 +2300,77 @@ test_material_terrain_composes_layers(MaterialPbrTestContext *ctx) {
   printf("  test_material_terrain_composes_layers PASSED\n");
 }
 
+/* A layered material's keys name its layer files and mask: the layers'
+ * factors and maps compose into the layer slots, the mask source and range
+ * and the mask texture are kept, and a material that cannot be layered is
+ * refused: a mask without layers, a decreasing range, a blended base and a
+ * layer that is layered itself. */
+vkr_internal void test_material_layered_keys(MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_layered_keys...\n");
+  const char *const files[][2] = {
+      {"tests/tmp/material_pbr/layered_moss.mt",
+       "name=layered_moss\ntype=pbr\nbase_color=0.1,0.6,0.2,1\n"
+       "roughness=0.9\nbase_color_texture=./moss.vkt\n"},
+      {"tests/tmp/material_pbr/layered_nested.mt",
+       "name=layered_nested\ntype=pbr\nlayer1=./layered_moss.mt\n"},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(files); ++i) {
+    char absolute[1024];
+    snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR,
+             files[i][0]);
+    assert(material_pbr_test_write_text_file(absolute, files[i][1]));
+  }
+  const String8 path = string8_lit("tests/tmp/material_pbr/layered.mt");
+  VkrParsedMaterialData parsed;
+  assert(vkr_material_loader_parse_definition(
+      &ctx->temp_allocator, path,
+      string8_lit("type=pbr\nbase_color=0.5,0.5,0.5,1\n"
+                  "layer1=./layered_moss.mt\nlayer_mask=slope\n"
+                  "layer_mask_range=0.6,0.9\n"),
+      &parsed));
+  assert(parsed.layered && parsed.material_type == VKR_MATERIAL_TYPE_PBR);
+  assert(parsed.layer_mask == VKR_MATERIAL_LAYER_MASK_SLOPE);
+  assert(parsed.layer_mask_range.x == 0.6f &&
+         parsed.layer_mask_range.y == 0.9f);
+  assert(fabsf(parsed.layers[0].base_color.y - 0.6f) < 1e-6f &&
+         fabsf(parsed.layers[0].roughness - 0.9f) < 1e-6f);
+  /* The unnamed layers are plain white at the parse defaults. */
+  assert(parsed.layers[1].base_color.x == 1.0f &&
+         parsed.layers[2].base_color.y == 1.0f);
+  /* The layer's map lands in its slot, resolved against the layer file. */
+  assert(strstr(parsed.texture_paths[VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR],
+                "tests/tmp/material_pbr/moss.vkt") != NULL);
+  assert(parsed.texture_paths[VKR_TEXTURE_SLOT_DIFFUSE][0] == '\0');
+
+  assert(vkr_material_loader_parse_definition(
+      &ctx->temp_allocator, path,
+      string8_lit("type=pbr\nlayer1=./layered_moss.mt\nlayer_mask=texture\n"
+                  "layer_mask_texture=./mask.vkt\n"),
+      &parsed));
+  assert(parsed.layer_mask == VKR_MATERIAL_LAYER_MASK_TEXTURE);
+  assert(strstr(parsed.texture_paths[VKR_TEXTURE_SLOT_LAYER_MASK],
+                "tests/tmp/material_pbr/mask.vkt") != NULL);
+
+  const char *const refused[] = {
+      "type=pbr\nlayer_mask=slope\n",
+      "type=pbr\nlayer1=./layered_moss.mt\nlayer_mask_range=0.9,0.6\n",
+      "type=pbr\nalpha_mode=blend\nlayer1=./layered_moss.mt\n",
+      "type=pbr\nlayer1=./layered_nested.mt\n",
+      "type=pbr\nlayer1=./layered_missing.mt\n",
+  };
+  for (uint32_t i = 0u; i < ArrayCount(refused); ++i) {
+    assert(!vkr_material_loader_parse_definition(
+        &ctx->temp_allocator, path,
+        string8_create_from_cstr((const uint8_t *)refused[i],
+                                 strlen(refused[i])),
+        &parsed));
+  }
+  for (uint32_t i = 0u; i < ArrayCount(files); ++i) {
+    material_pbr_test_remove_file(files[i][0]);
+  }
+  printf("  test_material_layered_keys PASSED\n");
+}
+
 /* Shadows read an opaque material's geometry alone: publishing it again
    with another texture changes no caster's shadow. Its first publication, a
    change in culling or alpha testing, any publication of a cutout material
@@ -2395,6 +2466,7 @@ bool32_t run_material_pbr_tests(void) {
   test_material_replacement_publishes_as_one(&context);
   test_material_shadow_change_scope(&context);
   test_material_terrain_composes_layers(&context);
+  test_material_layered_keys(&context);
   test_compressed_texture_subresource_shapes(&context);
   test_texture_request_owns_pending_publication(&context);
   test_material_texture_limit_reloads_changed_textures(&context);

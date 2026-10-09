@@ -706,6 +706,10 @@ vkr_vk_validate_terrain_material_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow, layer3_tint),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
                                  layer3_surface),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow, mask_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow, mask_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow, mask_source),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow, mask_range),
   };
   FilePath shader_path = vkr_vk_shader_file(
       renderer, VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV);

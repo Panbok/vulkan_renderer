@@ -41,13 +41,15 @@ _Static_assert(sizeof(VkrMetalTransmissionMaterialGpuRow) == 32,
 _Static_assert(offsetof(VkrMetalTransmissionMaterialGpuRow,
                         transmission_sampler_id) == 16,
                "Metal transmission material sampler offset changed");
-_Static_assert(sizeof(VkrMetalTerrainMaterialGpuRow) == 192,
-               "Metal terrain material row ABI must remain 192 bytes");
+_Static_assert(sizeof(VkrMetalTerrainMaterialGpuRow) == 240,
+               "Metal terrain material row ABI must remain 240 bytes");
 _Static_assert(offsetof(VkrMetalTerrainMaterialGpuRow, layer1_tint) == 32 &&
                    offsetof(VkrMetalTerrainMaterialGpuRow,
                             layer2_base_color_texture_id) == 64 &&
                    offsetof(VkrMetalTerrainMaterialGpuRow, layer3_surface) ==
-                       176,
+                       176 &&
+                   offsetof(VkrMetalTerrainMaterialGpuRow, mask_range) == 208 &&
+                   offsetof(VkrMetalTerrainMaterialGpuRow, mask_source) == 224,
                "Metal terrain material layer offsets changed");
 
 vkr_internal VkrMetalMaterialStatus

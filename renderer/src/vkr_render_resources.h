@@ -119,8 +119,26 @@ typedef enum VkrTextureSlot {
   VKR_TEXTURE_SLOT_LAYER3_BASE_COLOR = 20,
   VKR_TEXTURE_SLOT_LAYER3_NORMAL = 21,
   VKR_TEXTURE_SLOT_LAYER3_ORM = 22,
+  /* A layered material's mask: its RGBA weigh layers 0 to 3 when the mask
+     source is VKR_MATERIAL_LAYER_MASK_TEXTURE. */
+  VKR_TEXTURE_SLOT_LAYER_MASK = 23,
   VKR_TEXTURE_SLOT_COUNT
 } VkrTextureSlot;
+
+/* What weighs a layered material's layers. The values match the shared
+   kernel's VKR_LAYER_MASK_* (shaders/shared/terrain_kernel.slangh). */
+typedef enum VkrMaterialLayerMask {
+  /* The vertex colour's RGBA weigh layers 0 to 3 (terrain). */
+  VKR_MATERIAL_LAYER_MASK_VERTEX_COLOR = 0,
+  /* The mask texture's RGBA weigh layers 0 to 3. */
+  VKR_MATERIAL_LAYER_MASK_TEXTURE = 1,
+  /* Layer 1 over layer 0 as the world normal's Y rises through the range:
+     surfaces that face up. */
+  VKR_MATERIAL_LAYER_MASK_SLOPE = 2,
+  /* Layer 1 over layer 0 as the world height rises through the range. */
+  VKR_MATERIAL_LAYER_MASK_HEIGHT = 3,
+  VKR_MATERIAL_LAYER_MASK_COUNT,
+} VkrMaterialLayerMask;
 
 /* Layers a terrain material blends; layer 0 is the material itself. */
 #define VKR_MATERIAL_TERRAIN_LAYERS 4u
@@ -253,11 +271,14 @@ typedef struct VkrMaterial {
   // Texture maps
   VkrMaterialTexture textures[VKR_TEXTURE_SLOT_COUNT];
 
-  /* A terrain material blends layer 0 (this material's own factors and
-     textures) with `layers` 1 to 3 by the vertex color, read as four layer
-     weights. It is opaque PBR. */
+  /* A layered material (a terrain, or a layered Standard material) blends
+     layer 0 (this material's own factors and textures) with `layers` 1 to 3
+     by the weights its `layer_mask` source gives; slope and height masks
+     blend from `layer_mask_range.x` to `.y`. It is opaque PBR. */
   bool8_t terrain;
   VkrMaterialLayer layers[VKR_MATERIAL_TERRAIN_LAYERS - 1u];
+  uint8_t layer_mask;
+  Vec2 layer_mask_range;
 } VkrMaterial;
 
 Array(VkrMaterial);

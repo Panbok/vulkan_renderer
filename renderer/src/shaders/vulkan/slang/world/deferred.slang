@@ -1341,11 +1341,40 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
                     .xyz,
                 material.material_surface.z);
         }
+        VkrVulkanTerrainMaterial *layers =
+            source.terrain_materials + visible.material_index;
+        // Slope and height masks read the world normal and height here,
+        // before the caller finishes the surface normal.
+        float4 mask = float4(0.0f);
+        if (layers.mask_source == VKR_LAYER_MASK_TEXTURE)
+        {
+            mask = g_textures[NonUniformResourceIndex(layers.mask_texture)]
+                       .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                       layers.mask_sampler)],
+                                   uv, uv_dx, uv_dy);
+        }
+        float world_up = 0.0f;
+        if (layers.mask_source == VKR_LAYER_MASK_SLOPE)
+        {
+            float3 world_normal = vkr_instance_transform_normal(
+                instance.normal_column0.xyz, instance.normal_column1.xyz,
+                instance.normal_column2.xyz,
+                a.normal * perspective.x + b.normal * perspective.y +
+                    c.normal * perspective.z);
+            float length_squared = dot(world_normal, world_normal);
+            world_up = length_squared > 1e-12f
+                           ? world_normal.y * rsqrt(length_squared)
+                           : 0.0f;
+        }
+        float world_height = wa.y * perspective.x + wb.y * perspective.y +
+                             wc.y * perspective.z;
         layered = vkr_vk_terrain_surface(
             vkr_terrain_layer(base, orm0, normal0, float4(1.0f),
                               material.material_surface),
-            source.terrain_materials + visible.material_index,
-            vkr_terrain_weights(color), uv, uv_dx, uv_dy, !skip_normal_map);
+            layers,
+            vkr_layer_mask_weights(layers.mask_source, color, mask, world_up,
+                                   world_height, layers.mask_range.xy),
+            uv, uv_dx, uv_dy, !skip_normal_map);
         base = layered.base;
     }
     if (neutral_lighting)

@@ -318,12 +318,22 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
   if (terrain) {
     // Explicit gradients keep the extra layers' samples defined under the
     // branches on their weights.
+    const device VkrMetalPacketTerrainMaterial &layers =
+        frame->terrain_materials[material_index];
+    const gradient2d gradients =
+        gradient2d(dfdx(input.texcoord), dfdy(input.texcoord));
+    float4 mask = float4(0.0f);
+    if (layers.mask_source == VKR_LAYER_MASK_TEXTURE)
+      mask = layers.mask_texture.sample(layers.mask_sampler, input.texcoord,
+                                        gradients);
+    const float4 weights = vkr_layer_mask_weights(
+        layers.mask_source, input.color, mask,
+        normalize(input.world_normal).y, input.world_position.y,
+        layers.mask_range.xy);
     VkrTerrainSurface layered = vkr_metal_packet_terrain_surface(
         vkr_terrain_layer(surface.base, orm, surface.tangent_normal,
                           float4(1.0f), material.material_surface),
-        frame->terrain_materials[material_index],
-        vkr_terrain_weights(input.color), input.texcoord,
-        gradient2d(dfdx(input.texcoord), dfdy(input.texcoord)), true);
+        layers, weights, input.texcoord, gradients, true);
     surface.base = layered.base;
     surface.tangent_normal = layered.tangent_normal;
     surface.metallic = layered.metallic;

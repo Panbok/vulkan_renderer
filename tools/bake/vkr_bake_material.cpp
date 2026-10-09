@@ -1203,6 +1203,13 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
         goto parse_error;
       continue;
     }
+    /* A surface tag does not change light. A layered material bakes as its
+       layer 0: the bake does not evaluate layer masks. */
+    if (key == "surface" || key == "layer1" || key == "layer2" ||
+        key == "layer3" || key == "layer_mask" || key == "layer_mask_range" ||
+        key == "layer_mask_texture") {
+      continue;
+    }
     if (key == "world_size") {
       const size_t comma = value.find(',');
       Vec2 size = {};

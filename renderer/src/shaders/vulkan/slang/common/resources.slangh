@@ -102,6 +102,13 @@ struct VkrVulkanTerrainMaterial
     uint layer3_sampler;
     float4 layer3_tint;
     float4 layer3_surface;
+    // What weighs the layers (VKR_LAYER_MASK_*): the mask texture's RGBA, or
+    // a slope or height range in mask_range.xy.
+    uint mask_texture;
+    uint mask_sampler;
+    uint mask_source;
+    uint mask_reserved;
+    float4 mask_range;
 };
 
 struct VkrVulkanTransmissionMaterial

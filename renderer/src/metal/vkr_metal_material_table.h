@@ -98,6 +98,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTerrainMaterialGpuRow {
   uint64_t layer3_sampler_id;
   Vec4 layer3_tint;
   Vec4 layer3_surface;
+  /* What weighs the layers (VkrMaterialLayerMask): the mask texture for
+     the texture source, and the slope or height range in x and y. */
+  uint64_t mask_texture_id;
+  uint64_t mask_sampler_id;
+  Vec4 mask_range;
+  uint32_t mask_source;
+  uint32_t mask_reserved[3];
 } VkrMetalTerrainMaterialGpuRow;
 
 typedef struct VkrMetalMaterialPublishedRow {

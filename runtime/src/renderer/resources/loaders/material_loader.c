@@ -440,6 +440,7 @@ vkr_internal VkrMaterialTextureClass vkr_material_texture_class_from_slot(
   case VKR_TEXTURE_SLOT_LAYER1_ORM:
   case VKR_TEXTURE_SLOT_LAYER2_ORM:
   case VKR_TEXTURE_SLOT_LAYER3_ORM:
+  case VKR_TEXTURE_SLOT_LAYER_MASK:
     return VKR_MATERIAL_TEXTURE_CLASS_DATA_MASK;
   default:
     return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB
@@ -496,6 +497,8 @@ vkr_internal const char *vkr_material_slot_name(VkrTextureSlot slot) {
     return "layer3_normal";
   case VKR_TEXTURE_SLOT_LAYER3_ORM:
     return "layer3_orm";
+  case VKR_TEXTURE_SLOT_LAYER_MASK:
+    return "layer_mask";
   default:
     return "unknown";
   }
@@ -888,6 +891,26 @@ vkr_material_loader_rough(const VkrParsedMaterialData *parsed) {
   return !roughness_textured && parsed->pbr.roughness > 0.0f;
 }
 
+/* A layered material's layers and mask; its layer slots start at the white
+   and flat defaults, which the layers' own maps replace once loaded. */
+vkr_internal void
+vkr_material_loader_init_layers(VkrMaterial *material,
+                                const VkrParsedMaterialData *parsed,
+                                VkrMaterialSystem *material_system) {
+  material->terrain = parsed->layered;
+  if (!parsed->layered) {
+    return;
+  }
+  MemCopy(material->layers, parsed->layers, sizeof(material->layers));
+  material->layer_mask = parsed->layer_mask;
+  material->layer_mask_range = parsed->layer_mask_range;
+  for (uint32_t slot = VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR;
+       slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+    material->textures[slot] = vkr_material_system_get_default_texture(
+        material_system, (VkrTextureSlot)slot);
+  }
+}
+
 vkr_internal void
 vkr_material_loader_init_from_parsed(VkrMaterial *material,
                                      const VkrParsedMaterialData *parsed,
@@ -910,6 +933,7 @@ vkr_material_loader_init_from_parsed(VkrMaterial *material,
   } else if (parsed->cutout_enabled) {
     material->alpha_cutoff = VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
   }
+  vkr_material_loader_init_layers(material, parsed, material_system);
   if (material->alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT &&
       material->alpha_cutoff <= 0.0f) {
     material->alpha_cutoff = VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
@@ -1571,6 +1595,7 @@ vkr_material_loader_set_parse_defaults(VkrParsedMaterialData *out_data) {
 
   out_data->texture_colorspace[VKR_TEXTURE_SLOT_SHEEN_COLOR] =
       VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB;
+  out_data->layer_mask_range = vec2_new(0.0f, 1.0f);
 }
 
 /** Outcome of matching one `.mt` key against one group of properties. The
@@ -1877,6 +1902,59 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
     return true_v;
   }
 
+  /* Layer files and the mask of a layered material. */
+  for (uint32_t layer = 1u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {
+    char layer_key[8];
+    snprintf(layer_key, sizeof(layer_key), "layer%u", layer);
+    if (vkr_string8_equals_cstr_i(&key, layer_key)) {
+      if (!value.length || value.length >= VKR_MATERIAL_PATH_MAX) {
+        log_error("Material: %s names a layer .mt file in '%.*s'", layer_key,
+                  (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+      MemCopy(out_data->layer_paths[layer - 1u], value.str, value.length);
+      out_data->layer_paths[layer - 1u][value.length] = '\0';
+      return true_v;
+    }
+  }
+  if (vkr_string8_equals_cstr_i(&key, "layer_mask")) {
+    static const char *const sources[VKR_MATERIAL_LAYER_MASK_COUNT] = {
+        "vertex_color", "texture", "slope", "height"};
+    for (uint32_t i = 0; i < VKR_MATERIAL_LAYER_MASK_COUNT; ++i) {
+      if (vkr_string8_equals_cstr_i(&value, sources[i])) {
+        out_data->layer_mask = (uint8_t)i;
+        return true_v;
+      }
+    }
+    log_error("Material: layer_mask is vertex_color, texture, slope or height "
+              "in '%.*s'",
+              (int)path.length, path.str);
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (vkr_string8_equals_cstr_i(&key, "layer_mask_range")) {
+    Vec2 range = {0};
+    if (!string8_to_vec2(&value, &range) || !isfinite(range.x) ||
+        !isfinite(range.y) || !(range.x < range.y)) {
+      log_error("Material: layer_mask_range is two increasing numbers in "
+                "'%.*s'",
+                (int)path.length, path.str);
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    out_data->layer_mask_range = range;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&key, "layer_mask_texture")) {
+    if (value.length > 0 && value.length < VKR_MATERIAL_PATH_MAX) {
+      MemCopy(out_data->texture_paths[VKR_TEXTURE_SLOT_LAYER_MASK], value.str,
+              (size_t)value.length);
+      out_data->texture_paths[VKR_TEXTURE_SLOT_LAYER_MASK][value.length] = '\0';
+    }
+    return true_v;
+  }
+
   if (vkr_string8_equals_cstr_i(&key, "surface")) {
     char name[32] = {0};
     VkrSurface surface = VKR_SURFACE_NONE;
@@ -2155,6 +2233,93 @@ vkr_internal bool8_t vkr_material_loader_expand_graph(
   return true_v;
 }
 
+/* Composes the layers `out_data->layer_paths` name (resolved against
+   `path`; an empty one is plain white at the parse defaults) into a layered
+   material: their factors, and their base colour, normal and ORM maps in the
+   layer slots. A layered material is opaque PBR without transmission or
+   subsurface, and its layers have no layers of their own. Without
+   `always`, nothing to do when no layer is named and no mask is set; a
+   terrain is layered `always`. */
+vkr_internal bool8_t vkr_material_loader_compose_layers(
+    VkrAllocator *allocator, String8 path, VkrParsedMaterialData *out_data,
+    bool8_t always) {
+  bool8_t named = always;
+  for (uint32_t i = 0; i < VKR_MATERIAL_TERRAIN_LAYERS - 1u; ++i) {
+    named = named || out_data->layer_paths[i][0] != '\0';
+  }
+  if (!named) {
+    if (out_data->layer_mask != VKR_MATERIAL_LAYER_MASK_VERTEX_COLOR ||
+        out_data->texture_paths[VKR_TEXTURE_SLOT_LAYER_MASK][0]) {
+      log_error("Material '%.*s': a layer mask needs layer1 to layer3",
+                (int)path.length, path.str);
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    return true_v;
+  }
+  if (out_data->alpha_mode != VKR_MATERIAL_ALPHA_OPAQUE ||
+      out_data->pbr.transmission_factor > 0.0f ||
+      out_data->pbr.thickness_factor > 0.0f ||
+      out_data->pbr.diffuse_transmission_strength > 0.0f ||
+      out_data->pbr.subsurface_strength > 0.0f) {
+    log_error("Material '%.*s': a layered material is opaque, without "
+              "transmission or subsurface",
+              (int)path.length, path.str);
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  VkrParsedMaterialData *layer = vkr_allocator_alloc(
+      allocator, sizeof(*layer), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  if (!layer) {
+    out_data->parse_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  static const VkrTextureSlot roles[VKR_MATERIAL_TERRAIN_LAYER_SLOTS] = {
+      VKR_TEXTURE_SLOT_DIFFUSE, VKR_TEXTURE_SLOT_NORMAL,
+      VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS};
+  for (uint32_t i = 0; i < VKR_MATERIAL_TERRAIN_LAYERS - 1u; ++i) {
+    vkr_material_loader_set_parse_defaults(layer);
+    const String8 text =
+        vkr_material_make_string8_from_path_buffer(out_data->layer_paths[i]);
+    if (text.length) {
+      const String8 resolved = vkr_asset_path_resolve(allocator, path, text);
+      if (!resolved.str ||
+          !vkr_material_loader_parse_file(allocator, resolved, layer)) {
+        log_error("Material '%.*s': layer%u '%s' does not load",
+                  (int)path.length, path.str, i + 1u, out_data->layer_paths[i]);
+        out_data->parse_error = layer->parse_error != VKR_RENDERER_ERROR_NONE
+                                    ? layer->parse_error
+                                    : VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+      if (layer->layered) {
+        log_error("Material '%.*s': layer%u is layered itself",
+                  (int)path.length, path.str, i + 1u);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+    }
+    out_data->layers[i] = (VkrMaterialLayer){
+        .base_color = layer->pbr.base_color,
+        .metallic = layer->pbr.metallic,
+        .roughness = layer->pbr.roughness,
+        .normal_scale = layer->pbr.normal_scale,
+        .occlusion_strength = layer->pbr.occlusion_strength,
+    };
+    const VkrTextureSlot first = vkr_texture_slot_terrain_layer(i + 1u);
+    for (uint32_t role = 0; role < VKR_MATERIAL_TERRAIN_LAYER_SLOTS; ++role) {
+      MemCopy(out_data->texture_paths[first + role],
+              layer->texture_paths[roles[role]], VKR_MATERIAL_PATH_MAX);
+      out_data->texture_colorspace[first + role] =
+          layer->texture_colorspace[roles[role]];
+    }
+  }
+  out_data->layered = true_v;
+  out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+  out_data->alpha_mode_explicit = true_v;
+  return true_v;
+}
+
 /* Parses `.mt` text into `out_data`, whose defaults and file-stem name the
    caller set; texture references resolve against `path`. */
 vkr_internal bool8_t vkr_material_loader_parse_text(
@@ -2201,6 +2366,9 @@ vkr_internal bool8_t vkr_material_loader_parse_text(
     return false_v;
   }
   if (!vkr_material_loader_resolve_texture_paths(allocator, path, out_data)) {
+    return false_v;
+  }
+  if (!vkr_material_loader_compose_layers(allocator, path, out_data, false_v)) {
     return false_v;
   }
   out_data->parse_success = true_v;
@@ -2344,8 +2512,7 @@ bool8_t vkr_material_loader_replace_terrain(
   }
 
   VkrParsedMaterialData *parsed = vkr_allocator_alloc(
-      temp_alloc, sizeof(*parsed) * VKR_MATERIAL_TERRAIN_LAYERS,
-      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+      temp_alloc, sizeof(*parsed), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   char(*resolved)[VKR_MATERIAL_PATH_MAX] = vkr_allocator_alloc(
       temp_alloc, sizeof(char[VKR_TEXTURE_SLOT_COUNT][VKR_MATERIAL_PATH_MAX]),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -2353,78 +2520,63 @@ bool8_t vkr_material_loader_replace_terrain(
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
-  /* A layer without a file is plain white at the parse defaults. */
-  for (uint32_t layer = 0u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {
-    vkr_material_loader_set_parse_defaults(&parsed[layer]);
-    if (!layer_paths[layer].str || layer_paths[layer].length == 0u) {
-      continue;
-    }
-    if (!vkr_material_loader_parse_file(temp_alloc, layer_paths[layer],
-                                        &parsed[layer])) {
-      *out_error = parsed[layer].parse_error != VKR_RENDERER_ERROR_NONE
-                       ? parsed[layer].parse_error
-                       : VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  /* Layer 0 is the material; layers 1 to 3 compose in as a layered
+     material's do, a layer without a file plain white at the parse
+     defaults. */
+  vkr_material_loader_set_parse_defaults(parsed);
+  if (layer_paths[0].str && layer_paths[0].length &&
+      !vkr_material_loader_parse_file(temp_alloc, layer_paths[0], parsed)) {
+    *out_error = parsed->parse_error != VKR_RENDERER_ERROR_NONE
+                     ? parsed->parse_error
+                     : VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  /* A terrain is opaque PBR, so the extensions an opaque terrain cannot
+     carry are off; its vertex colours weigh the layers. */
+  parsed->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
+  parsed->alpha_cutoff = 0.0f;
+  parsed->alpha_cutoff_set = false_v;
+  parsed->cutout_enabled = false_v;
+  parsed->double_sided = false_v;
+  parsed->pbr.transmission_factor = 0.0f;
+  parsed->pbr.thickness_factor = 0.0f;
+  parsed->pbr.diffuse_transmission_strength = 0.0f;
+  parsed->pbr.subsurface_strength = 0.0f;
+  parsed->layer_mask = VKR_MATERIAL_LAYER_MASK_VERTEX_COLOR;
+  parsed->texture_paths[VKR_TEXTURE_SLOT_LAYER_MASK][0] = '\0';
+  for (uint32_t layer = 1u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {
+    const String8 text = layer_paths[layer];
+    if (text.length >= VKR_MATERIAL_PATH_MAX) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       return false_v;
     }
-  }
-
-  /* Layer 0 supplies the material's factors and textures; a terrain is
-     opaque PBR, so the extensions an opaque terrain cannot carry are off. */
-  VkrMaterial replacement = {0};
-  vkr_material_loader_init_from_parsed(&replacement, &parsed[0], system);
-  replacement.material_type = VKR_MATERIAL_TYPE_PBR;
-  replacement.alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
-  replacement.alpha_mode_explicit = true_v;
-  replacement.alpha_cutoff = 0.0f;
-  replacement.double_sided = false_v;
-  replacement.pbr.transmission_factor = 0.0f;
-  replacement.pbr.thickness_factor = 0.0f;
-  replacement.pbr.diffuse_transmission_strength = 0.0f;
-  replacement.pbr.subsurface_strength = 0.0f;
-  replacement.terrain = true_v;
-  for (uint32_t layer = 1u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {
-    const VkrPbrProperties *pbr = &parsed[layer].pbr;
-    replacement.layers[layer - 1u] = (VkrMaterialLayer){
-        .base_color = pbr->base_color,
-        .metallic = pbr->metallic,
-        .roughness = pbr->roughness,
-        .normal_scale = pbr->normal_scale,
-        .occlusion_strength = pbr->occlusion_strength,
-    };
-  }
-
-  /* Layer 0 keeps its own slots; layers 1 to 3 bring their base color,
-     normal and ORM maps into theirs. */
-  VkrTextureSlot source_layer[VKR_TEXTURE_SLOT_COUNT];
-  VkrTextureSlot source_slot[VKR_TEXTURE_SLOT_COUNT];
-  for (uint32_t slot = 0u; slot < VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR; ++slot) {
-    source_layer[slot] = 0u;
-    source_slot[slot] = (VkrTextureSlot)slot;
-  }
-  for (uint32_t layer = 1u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {
-    const VkrTextureSlot first = vkr_texture_slot_terrain_layer(layer);
-    const VkrTextureSlot roles[VKR_MATERIAL_TERRAIN_LAYER_SLOTS] = {
-        VKR_TEXTURE_SLOT_DIFFUSE, VKR_TEXTURE_SLOT_NORMAL,
-        VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS};
-    for (uint32_t role = 0u; role < VKR_MATERIAL_TERRAIN_LAYER_SLOTS; ++role) {
-      source_layer[first + role] = layer;
-      source_slot[first + role] = roles[role];
+    if (text.str && text.length) {
+      MemCopy(parsed->layer_paths[layer - 1u], text.str, text.length);
     }
+    parsed->layer_paths[layer - 1u][text.str ? text.length : 0u] = '\0';
   }
+  if (!vkr_material_loader_compose_layers(temp_alloc, layer_paths[0], parsed,
+                                          true_v)) {
+    *out_error = parsed->parse_error != VKR_RENDERER_ERROR_NONE
+                     ? parsed->parse_error
+                     : VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  VkrMaterial replacement = {0};
+  vkr_material_loader_init_from_parsed(&replacement, parsed, system);
   String8 material_name = string8_create_from_cstr(
-      (const uint8_t *)parsed[0].name, string_length(parsed[0].name));
+      (const uint8_t *)parsed->name, string_length(parsed->name));
   const char *texture_paths[VKR_TEXTURE_SLOT_COUNT] = {0};
   for (uint32_t slot = 0u; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
-    const VkrParsedMaterialData *source = &parsed[source_layer[slot]];
-    String8 raw = vkr_material_make_string8_from_path_buffer(
-        source->texture_paths[source_slot[slot]]);
+    String8 raw =
+        vkr_material_make_string8_from_path_buffer(parsed->texture_paths[slot]);
     if (!raw.str || raw.length == 0) {
       continue;
     }
     String8 request = vkr_material_apply_texture_request_intent(
-        temp_alloc, raw, (VkrTextureSlot)slot,
-        source->texture_colorspace[source_slot[slot]], material_name,
-        vkr_material_slot_name((VkrTextureSlot)slot));
+        temp_alloc, raw, (VkrTextureSlot)slot, parsed->texture_colorspace[slot],
+        material_name, vkr_material_slot_name((VkrTextureSlot)slot));
     if (!vkr_material_copy_string8_to_path_buffer(request, resolved[slot])) {
       log_warn("Terrain material: %s path is too long and will use the "
                "default texture",
@@ -2650,6 +2802,7 @@ vkr_internal bool8_t vkr_material_batch_create_material(
   } else if (parsed->cutout_enabled) {
     material->alpha_cutoff = VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
   }
+  vkr_material_loader_init_layers(material, parsed, mat_sys);
 
   for (uint32_t t = 0; t < textures->count; t++) {
     if (textures->material_index[t] == material_index &&

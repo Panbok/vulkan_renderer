@@ -151,8 +151,9 @@ typedef enum VkrMetalPacketMaterialTextureFlag {
 } VkrMetalPacketMaterialTextureFlag;
 
 /* Texture references a published material tracks: the twelve common-row and
-   transmission textures, then three per extra terrain layer. */
-#define VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT 21u
+   transmission textures, three per extra terrain layer, then the layer
+   mask. */
+#define VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT 22u
 
 typedef struct VkrMetalPacketRgba8TextureCreateInfo {
   const uint8_t *pixels;

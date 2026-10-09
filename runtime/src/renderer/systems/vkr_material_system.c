@@ -450,6 +450,8 @@ vkr_material_system_get_default_texture(VkrMaterialSystem *system,
   case VKR_TEXTURE_SLOT_LAYER2_ORM:
   case VKR_TEXTURE_SLOT_LAYER3_BASE_COLOR:
   case VKR_TEXTURE_SLOT_LAYER3_ORM:
+  /* A mask without a map weighs the four layers alike. */
+  case VKR_TEXTURE_SLOT_LAYER_MASK:
     texture.handle =
         vkr_texture_system_get_default_diffuse_handle(system->texture_system);
     texture.enabled = true_v;
@@ -846,6 +848,8 @@ static void vkr_material_system_apply_replacement(VkrMaterialSystem *system,
   material->pbr = definition->pbr;
   material->alpha_cutoff = definition->alpha_cutoff;
   material->terrain = definition->terrain;
+  material->layer_mask = definition->layer_mask;
+  material->layer_mask_range = definition->layer_mask_range;
   MemCopy(material->layers, definition->layers, sizeof(material->layers));
   MemCopy(material->textures, definition->textures, sizeof(material->textures));
   for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {

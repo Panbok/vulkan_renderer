@@ -1,8 +1,10 @@
-// Shared terrain layer blend (ADR-084). A terrain material's vertex color
-// carries four layer weights. Each layer's surface comes from its base color,
-// ORM and tangent-space normal samples and its row factors; the blend is the
-// weighted sum, then the normal is renormalized and roughness clamped as the
-// common material path clamps it. Sampling stays with each backend.
+// Shared layer blend of terrain (ADR-084) and layered Standard materials
+// (ADR-094). A mask source gives four layer weights: the vertex color, a mask
+// texture's RGBA, or for slope and height a blend of layer 1 over layer 0.
+// Each layer's surface comes from its base color, ORM and tangent-space
+// normal samples and its row factors; the blend is the weighted sum, then the
+// normal is renormalized and roughness clamped as the common material path
+// clamps it. Sampling stays with each backend.
 #ifndef VKR_TERRAIN_KERNEL_SLANGH
 #define VKR_TERRAIN_KERNEL_SLANGH
 
@@ -21,6 +23,29 @@ float4 vkr_terrain_weights(float4 color)
     float4 weights = max(color, float4(0.0f, 0.0f, 0.0f, 0.0f));
     float total = weights.x + weights.y + weights.z + weights.w;
     return total > 1e-4f ? weights / total : float4(1.0f, 0.0f, 0.0f, 0.0f);
+}
+
+// Mask sources; the host's VkrMaterialLayerMask has the same values.
+#define VKR_LAYER_MASK_VERTEX_COLOR 0u
+#define VKR_LAYER_MASK_TEXTURE 1u
+#define VKR_LAYER_MASK_SLOPE 2u
+#define VKR_LAYER_MASK_HEIGHT 3u
+
+// The layer weights `source` gives. `world_up` is the world normal's Y and
+// `world_height` the world position's Y; slope and height blend layer 1 over
+// layer 0 from range.x to range.y, which the host keeps increasing.
+float4 vkr_layer_mask_weights(uint source, float4 vertex_color,
+                              float4 mask_sample, float world_up,
+                              float world_height, float2 range)
+{
+    if (source == VKR_LAYER_MASK_SLOPE || source == VKR_LAYER_MASK_HEIGHT)
+    {
+        float value = source == VKR_LAYER_MASK_SLOPE ? world_up : world_height;
+        float over = smoothstep(range.x, range.y, value);
+        return float4(1.0f - over, over, 0.0f, 0.0f);
+    }
+    return vkr_terrain_weights(source == VKR_LAYER_MASK_TEXTURE ? mask_sample
+                                                                : vertex_color);
 }
 
 // One layer's surface. `surface` is x metallic, y roughness, z normal scale

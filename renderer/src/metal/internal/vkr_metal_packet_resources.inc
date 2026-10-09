@@ -979,8 +979,9 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
             ? VKR_TEXTURE_SLOT_ANISOTROPY
             : VKR_TEXTURE_SLOT_DIFFUSE,
     };
-    /* Terrain layer slots follow; a material that is no terrain points them
-       at its base color, which nothing samples. */
+    /* Terrain layer slots and the layer mask follow, in slot order; a
+       material that is no terrain points them at its base color, which
+       nothing samples. */
     VkrTextureSlot source_slots[VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT];
     MemCopy(source_slots, common_slots, sizeof(common_slots));
     for (uint32_t i = ArrayCount(common_slots); i < ArrayCount(source_slots);
@@ -1139,6 +1140,12 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                 .layer3_tint = material->layers[2].base_color,
                 .layer3_surface =
                     vkr_packet_terrain_layer_surface(&material->layers[2]),
+                .mask_texture_id = textures[21]->resource.resource_id,
+                .mask_sampler_id = textures[21]->sampler_resource_id,
+                .mask_range =
+                    vec4_new(material->layer_mask_range.x,
+                             material->layer_mask_range.y, 0.0f, 0.0f),
+                .mask_source = material->layer_mask,
             },
     };
     const float32_t tint_values[4] = {tint.x, tint.y, tint.z, tint.w};

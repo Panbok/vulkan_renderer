@@ -551,6 +551,13 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTerrainMaterialGpuRow {
   uint32_t layer3_sampler;
   Vec4 layer3_tint;
   Vec4 layer3_surface;
+  /* What weighs the layers (VkrMaterialLayerMask): the mask texture for
+     the texture source, and the slope or height range in x and y. */
+  uint32_t mask_texture;
+  uint32_t mask_sampler;
+  uint32_t mask_source;
+  uint32_t mask_reserved;
+  Vec4 mask_range;
 } VkrVulkanTerrainMaterialGpuRow;
 
 typedef struct VkrVulkanMaterialPublishedRow {
@@ -1775,14 +1782,15 @@ _Static_assert(sizeof(VkrVulkanTransmissionMaterialGpuRow) == 16u,
 _Static_assert(offsetof(VkrVulkanTransmissionMaterialGpuRow,
                         transmission_sampler) == 8u,
                "Vulkan transmission material sampler ABI drift");
-_Static_assert(sizeof(VkrVulkanTerrainMaterialGpuRow) == 144u &&
-                   offsetof(VkrVulkanTerrainMaterialGpuRow, layer1_tint) ==
-                       16u &&
-                   offsetof(VkrVulkanTerrainMaterialGpuRow,
-                            layer2_base_color_texture) == 48u &&
-                   offsetof(VkrVulkanTerrainMaterialGpuRow, layer3_surface) ==
-                       128u,
-               "Vulkan terrain material row ABI drift");
+_Static_assert(
+    sizeof(VkrVulkanTerrainMaterialGpuRow) == 176u &&
+        offsetof(VkrVulkanTerrainMaterialGpuRow, layer1_tint) == 16u &&
+        offsetof(VkrVulkanTerrainMaterialGpuRow, layer2_base_color_texture) ==
+            48u &&
+        offsetof(VkrVulkanTerrainMaterialGpuRow, layer3_surface) == 128u &&
+        offsetof(VkrVulkanTerrainMaterialGpuRow, mask_texture) == 144u &&
+        offsetof(VkrVulkanTerrainMaterialGpuRow, mask_range) == 160u,
+    "Vulkan terrain material row ABI drift");
 _Static_assert(sizeof(VkrVulkanPushConstants) == 16u,
                "Push-constant ABI drift");
 _Static_assert(VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX <=

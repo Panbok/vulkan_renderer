@@ -35,6 +35,15 @@ typedef struct VkrParsedMaterialData {
    * `surface=`: the surface tag, 0 none. */
   Vec2 world_size;
   uint8_t surface;
+  /** A layered material (`layer1=` to `layer3=` name layer `.mt` files):
+   * their factors, and their maps in the layer texture slots, compose in
+   * after parsing. `layer_mask` (a VkrMaterialLayerMask) and its range weigh
+   * them. `layer_paths` hold the keys' text until then. */
+  bool8_t layered;
+  VkrMaterialLayer layers[VKR_MATERIAL_TERRAIN_LAYERS - 1u];
+  uint8_t layer_mask;
+  Vec2 layer_mask_range;
+  char layer_paths[VKR_MATERIAL_TERRAIN_LAYERS - 1u][VKR_MATERIAL_PATH_MAX];
 
   // Texture paths as fixed buffers (thread-safe for parallel parsing)
   char texture_paths[VKR_TEXTURE_SLOT_COUNT][VKR_MATERIAL_PATH_MAX];

@@ -39,6 +39,21 @@ static const VkrMaterialPortDesc s_normal_in[] = {
 };
 static const VkrMaterialPortDesc s_normal_out[] = {
     {"normal", "Normal", VKR_MATERIAL_VALUE_NORMAL}};
+static const VkrMaterialPortDesc s_layer_out[] = {
+    {"layer", "Layer", VKR_MATERIAL_VALUE_LAYER}};
+static const VkrMaterialPortDesc s_layer_blend_in[] = {
+    {"layer1", "Layer 1", VKR_MATERIAL_VALUE_LAYER},
+    {"layer2", "Layer 2", VKR_MATERIAL_VALUE_LAYER},
+    {"layer3", "Layer 3", VKR_MATERIAL_VALUE_LAYER},
+};
+static const VkrMaterialPortDesc s_layer_blend_out[] = {
+    {"layers", "Layers", VKR_MATERIAL_VALUE_LAYERS}};
+
+const char *const vkr_material_graph_mask_names[] = {"vertex_color", "texture",
+                                                     "slope", "height", NULL};
+_Static_assert(ArrayCount(vkr_material_graph_mask_names) ==
+                   VKR_MATERIAL_GRAPH_MASK_COUNT + 1u,
+               "one name per mask");
 
 /* The surface output's inputs, and the `.mt` keys each lowers to: the
    factor, the texture slot, the channel a scalar reads from its texture
@@ -58,8 +73,8 @@ static const VkrMaterialPortDesc s_normal_out[] = {
     false_v)                                                                   \
   X(EMISSIVE, "emissive", "Emissive", COLOR, "emissive_factor",                \
     "emissive_texture", -1, true_v)                                            \
-  X(SPECULAR, "specular", "Dielectric specular", COLOR,                        \
-    "dielectric_specular", NULL, -1, false_v)                                  \
+  X(SPECULAR, "specular", "Dielectric specular", COLOR, "dielectric_specular", \
+    NULL, -1, false_v)                                                         \
   X(CLEARCOAT, "clearcoat", "Clearcoat", SCALAR, "clearcoat_factor",           \
     "clearcoat_texture", 0, false_v)                                           \
   X(CLEARCOAT_ROUGHNESS, "clearcoat_roughness", "Clearcoat roughness", SCALAR, \
@@ -89,7 +104,8 @@ static const VkrMaterialPortDesc s_normal_out[] = {
     SCALAR, "diffuse_transmission_strength", NULL, -1, false_v)                \
   X(DIFFUSE_TRANSMISSION_COLOR, "diffuse_transmission_color",                  \
     "Diffuse transmission colour", COLOR, "diffuse_transmission_color", NULL,  \
-    -1, false_v)
+    -1, false_v)                                                               \
+  X(LAYERS, "layers", "Layers", LAYERS, NULL, NULL, -1, false_v)
 
 typedef struct SurfaceInput {
   VkrMaterialPortDesc port;
@@ -107,6 +123,7 @@ enum { SURFACE_INPUTS(SURFACE_ENUM) SURFACE_INPUT_COUNT };
 #define SCALAR VKR_MATERIAL_VALUE_SCALAR
 #define COLOR VKR_MATERIAL_VALUE_COLOR
 #define NORMAL VKR_MATERIAL_VALUE_NORMAL
+#define LAYERS VKR_MATERIAL_VALUE_LAYERS
 #define SURFACE_PORT(id, name, label, type, factor, texture, channel, srgb)    \
   {name, label, type},
 #define SURFACE_ROW(id, name, label, type, factor, texture, channel, srgb)     \
@@ -120,13 +137,14 @@ static const SurfaceInput s_surface[SURFACE_INPUT_COUNT] = {
 #undef SCALAR
 #undef COLOR
 #undef NORMAL
+#undef LAYERS
 
 _Static_assert(SURFACE_INPUT_COUNT <= VKR_MATERIAL_GRAPH_INPUT_MAX,
                "the surface output's inputs fit a node");
 
 static const VkrMaterialNodeDesc s_nodes[VKR_MATERIAL_NODE_KIND_COUNT] = {
-    [VKR_MATERIAL_NODE_SCALAR] = {"scalar", "Scalar", "A constant number",
-                                  NULL, 0, s_scalar_out, 1, 0, 0},
+    [VKR_MATERIAL_NODE_SCALAR] = {"scalar", "Scalar", "A constant number", NULL,
+                                  0, s_scalar_out, 1, 0, 0},
     [VKR_MATERIAL_NODE_COLOR] = {"color", "Colour", "A constant linear colour",
                                  NULL, 0, s_color_out, 1, 0, 0},
     [VKR_MATERIAL_NODE_TEXTURE] = {"texture", "Texture",
@@ -143,6 +161,17 @@ static const VkrMaterialNodeDesc s_nodes[VKR_MATERIAL_NODE_KIND_COUNT] = {
                                       "texture's RGB, with a strength",
                                       s_normal_in, ArrayCount(s_normal_in),
                                       s_normal_out, 1, 0, 2},
+    [VKR_MATERIAL_NODE_LAYER] = {"layer", "Layer",
+                                 "A layer material (.mt) whose base colour, "
+                                 "normal and ORM a layer blend mixes in",
+                                 NULL, 0, s_layer_out, 1, 3, 0},
+    [VKR_MATERIAL_NODE_LAYER_BLEND] = {"layer_blend", "Layer blend",
+                                       "Up to three layers over the surface, "
+                                       "weighed by the vertex colour, a mask "
+                                       "texture, slope or height",
+                                       s_layer_blend_in,
+                                       ArrayCount(s_layer_blend_in),
+                                       s_layer_blend_out, 1, 0, 4},
     [VKR_MATERIAL_NODE_SURFACE_OUTPUT] = {"surface_output", "Surface output",
                                           "The material model's inputs",
                                           s_surface_in, SURFACE_INPUT_COUNT,
@@ -299,10 +328,11 @@ bool8_t vkr_material_graph_validate(const VkrMaterialGraph *graph, char *error,
     if (node->parameter[0]) {
       if (node->kind != VKR_MATERIAL_NODE_SCALAR &&
           node->kind != VKR_MATERIAL_NODE_COLOR &&
-          node->kind != VKR_MATERIAL_NODE_TEXTURE) {
+          node->kind != VKR_MATERIAL_NODE_TEXTURE &&
+          node->kind != VKR_MATERIAL_NODE_LAYER) {
         return graph_fail(error, capacity,
-                          "Node '%s': only scalars, colours and textures are "
-                          "parameters",
+                          "Node '%s': only scalars, colours, textures and "
+                          "layers are parameters",
                           node->id);
       }
       if (!graph_name_valid(node->parameter)) {
@@ -430,6 +460,9 @@ uint32_t vkr_material_graph_add(VkrMaterialGraph *graph,
     node->value = vec4_new(1.0f, 1.0f, 1.0f, 0.0f);
   } else if (kind == VKR_MATERIAL_NODE_SCALAR) {
     node->value.x = 1.0f;
+  } else if (kind == VKR_MATERIAL_NODE_LAYER_BLEND) {
+    /* Slope: layer 1 covers what faces up past about 45 degrees. */
+    node->value = vec4_new(0.6f, 0.8f, 0.0f, 0.0f);
   }
   return graph->node_count++;
 }
@@ -746,16 +779,29 @@ bool8_t vkr_material_graph_read(String8 json, VkrMaterialGraph *out,
                         out->node_count - 1u);
     }
     node->color_space = (VkrMaterialColorSpace)color_space;
+    uint32_t mask = 0u;
+    if (!json_enum(object, "mask", vkr_material_graph_mask_names,
+                   VKR_MATERIAL_GRAPH_MASK_COUNT, &mask)) {
+      return graph_fail(error, capacity,
+                        "Node '%s': mask is vertex_color, texture, slope or "
+                        "height",
+                        node->id);
+    }
+    node->mask = (VkrMaterialGraphMask)mask;
+    if (node->kind == VKR_MATERIAL_NODE_LAYER_BLEND) {
+      node->value = vec4_new(0.0f, 1.0f, 0.0f, 0.0f);
+    }
     if (json_member(object, "value", &member)) {
-      const bool8_t ok =
-          node->kind == VKR_MATERIAL_NODE_COLOR
-              ? json_floats(&member, &node->value.x, 3u)
-              : vkr_json_parse_float(&member, &node->value.x) &&
-                    isfinite(node->value.x);
+      const bool8_t ok = node->kind == VKR_MATERIAL_NODE_COLOR
+                             ? json_floats(&member, &node->value.x, 3u)
+                         : node->kind == VKR_MATERIAL_NODE_LAYER_BLEND
+                             ? json_floats(&member, &node->value.x, 2u)
+                             : vkr_json_parse_float(&member, &node->value.x) &&
+                                   isfinite(node->value.x);
       if (!ok) {
         return graph_fail(error, capacity,
                           "Node '%s': a scalar's value is a number, a "
-                          "colour's [r, g, b]",
+                          "colour's [r, g, b], a layer blend's [from, to]",
                           node->id);
       }
     }
@@ -841,6 +887,18 @@ bool8_t vkr_material_graph_write(const VkrMaterialGraph *graph,
       if (node->color_space != VKR_MATERIAL_COLOR_SPACE_AUTO) {
         text_append(&text, ", \"color_space\": \"%s\"",
                     s_color_space_names[node->color_space]);
+      }
+    } else if (node->kind == VKR_MATERIAL_NODE_LAYER) {
+      text_append(&text, ", \"path\": ");
+      text_json_string(&text, node->path);
+    } else if (node->kind == VKR_MATERIAL_NODE_LAYER_BLEND) {
+      text_append(&text, ", \"mask\": \"%s\"",
+                  vkr_material_graph_mask_names[node->mask]);
+      text_append(&text, ", \"value\": [" GRAPH_FLOAT ", " GRAPH_FLOAT "]",
+                  (double)node->value.x, (double)node->value.y);
+      if (node->path[0]) {
+        text_append(&text, ", \"path\": ");
+        text_json_string(&text, node->path);
       }
     }
     text_append(&text,
@@ -1082,6 +1140,63 @@ static void lower_color_space(GraphText *text, const char *texture_key,
               space == VKR_MATERIAL_COLOR_SPACE_SRGB ? "srgb" : "linear");
 }
 
+/* A layer blend's `.mt` keys: each layer's file, then its mask. A layer
+   samples its base colour, normal and ORM, a mask texture one more. */
+static bool8_t lower_layers(LowerContext *context, GraphText *text,
+                            const VkrMaterialNode *blend) {
+  const VkrMaterialGraph *graph = context->graph;
+  VkrMaterialLowering *result = context->result;
+  for (uint32_t i = 0; i < ArrayCount(s_layer_blend_in); ++i) {
+    if (!blend->inputs[i].node) {
+      continue;
+    }
+    const VkrMaterialNode *layer = &graph->nodes[blend->inputs[i].node - 1u];
+    if (!layer->path[0] && !lower_override(context, layer)) {
+      return lower_fail(context, layer, "The layer names no material file");
+    }
+    const char *path = lower_texture_path(context, layer);
+    if (!path) {
+      return lower_fail(context, layer, "The layer path '%s' is not valid",
+                        layer->path);
+    }
+    text_append(text, "layer%u=%s\n", i + 1u, path);
+    result->layers++;
+    result->samples += 3u;
+  }
+  if (!result->layers) {
+    return lower_fail(context, blend, "A layer blend needs a layer");
+  }
+  if (blend->mask != VKR_MATERIAL_GRAPH_MASK_VERTEX_COLOR) {
+    text_append(text, "layer_mask=%s\n",
+                vkr_material_graph_mask_names[blend->mask]);
+  }
+  if (blend->mask == VKR_MATERIAL_GRAPH_MASK_SLOPE ||
+      blend->mask == VKR_MATERIAL_GRAPH_MASK_HEIGHT) {
+    if (!(blend->value.x < blend->value.y)) {
+      return lower_fail(context, blend,
+                        "A slope or height blend's range must rise");
+    }
+    text_append(text, "layer_mask_range=" GRAPH_FLOAT "," GRAPH_FLOAT "\n",
+                (double)blend->value.x, (double)blend->value.y);
+  }
+  if (blend->mask == VKR_MATERIAL_GRAPH_MASK_TEXTURE) {
+    const String8 raw = string8_create_from_cstr((const uint8_t *)blend->path,
+                                                 strlen(blend->path));
+    const String8 resolved =
+        raw.length ? vkr_asset_path_resolve(context->allocator,
+                                            context->graph_path, raw)
+                   : (String8){0};
+    if (!resolved.str) {
+      return lower_fail(context, blend,
+                        "A texture mask names its texture file");
+    }
+    text_append(text, "layer_mask_texture=%.*s\n", (int)resolved.length,
+                (const char *)resolved.str);
+    result->samples += 1u;
+  }
+  return true_v;
+}
+
 bool8_t vkr_material_graph_lower(const VkrMaterialGraph *graph,
                                  String8 graph_path,
                                  const VkrMaterialParam *params,
@@ -1127,7 +1242,7 @@ bool8_t vkr_material_graph_lower(const VkrMaterialGraph *graph,
   LowerSource sources[SURFACE_INPUT_COUNT];
   MemZero(sources, sizeof(sources));
   for (uint32_t input = 0; input < SURFACE_INPUT_COUNT; ++input) {
-    if (output->inputs[input].node &&
+    if (input != SURFACE_LAYERS && output->inputs[input].node &&
         !lower_source(&context, output->inputs[input], &sources[input])) {
       return false_v;
     }
@@ -1154,7 +1269,8 @@ bool8_t vkr_material_graph_lower(const VkrMaterialGraph *graph,
   for (uint32_t input = 0; input < SURFACE_INPUT_COUNT; ++input) {
     const SurfaceInput *spec = &s_surface[input];
     LowerSource *source = &sources[input];
-    if (input == SURFACE_OPACITY || !output->inputs[input].node) {
+    if (input == SURFACE_OPACITY || input == SURFACE_LAYERS ||
+        !output->inputs[input].node) {
       continue;
     }
     if (source->texture) {
@@ -1226,6 +1342,12 @@ bool8_t vkr_material_graph_lower(const VkrMaterialGraph *graph,
     lower_color_space(&text, spec->texture, source->texture, spec->srgb);
   }
 
+  if (output->inputs[SURFACE_LAYERS].node &&
+      !lower_layers(&context, &text,
+                    &graph->nodes[output->inputs[SURFACE_LAYERS].node - 1u])) {
+    return false_v;
+  }
+
   const VkrMaterialGraphSettings *settings = &graph->settings;
   if (settings->alpha_mode != VKR_MATERIAL_GRAPH_ALPHA_INFER) {
     text_append(&text, "alpha_mode=%s\n", s_alpha_names[settings->alpha_mode]);
@@ -1255,7 +1377,7 @@ bool8_t vkr_material_graph_lower(const VkrMaterialGraph *graph,
   if (settings->surface[0]) {
     text_append(&text, "surface=%s\n", settings->surface);
   }
-  out->samples = context.sampled_count;
+  out->samples += context.sampled_count;
   if (!text_finish(&text, out_definition)) {
     return lower_fail(&context, NULL, "Out of memory for the definition");
   }
@@ -1340,6 +1462,11 @@ typedef struct RaiseContext {
   String8 textures[SURFACE_INPUT_COUNT];
   String8 spaces[SURFACE_INPUT_COUNT];
   String8 base_color;
+  /* A layered definition's layer files and mask. */
+  String8 layers[3];
+  String8 layer_mask;
+  String8 layer_mask_range;
+  String8 layer_mask_texture;
 } RaiseContext;
 
 static bool8_t raise_key(void *opaque, String8 key, String8 value) {
@@ -1436,6 +1563,22 @@ static bool8_t raise_key(void *opaque, String8 key, String8 value) {
                         "subsurface_profile '%.*s' is 0 to 7",
                         (int)value.length, value.str);
     }
+    return true_v;
+  }
+  static const char *const layer_keys[] = {"layer1", "layer2", "layer3"};
+  for (uint32_t i = 0; i < ArrayCount(layer_keys); ++i) {
+    if (graph_equals(key, layer_keys[i])) {
+      context->layers[i] = value;
+      return true_v;
+    }
+  }
+  String8 *mask_text =
+      graph_equals(key, "layer_mask")           ? &context->layer_mask
+      : graph_equals(key, "layer_mask_range")   ? &context->layer_mask_range
+      : graph_equals(key, "layer_mask_texture") ? &context->layer_mask_texture
+                                                : NULL;
+  if (mask_text) {
+    *mask_text = value;
     return true_v;
   }
   for (uint32_t i = 0; i < SURFACE_INPUT_COUNT; ++i) {
@@ -1576,6 +1719,80 @@ static bool8_t raise_texture(RaiseContext *context, uint32_t input,
   return true_v;
 }
 
+/* A layered definition's layers as layer nodes and a blend into the
+   output's layers. */
+static bool8_t raise_layers(RaiseContext *context, uint32_t output,
+                            float32_t row) {
+  VkrMaterialGraph *graph = context->graph;
+  bool8_t layered = false_v;
+  for (uint32_t i = 0; i < ArrayCount(context->layers); ++i) {
+    layered = layered || context->layers[i].length > 0;
+  }
+  if (!layered) {
+    return true_v;
+  }
+  const uint32_t blend = raise_node(graph, VKR_MATERIAL_NODE_LAYER_BLEND,
+                                    "layers", vec2_new(380.0f, row));
+  if (blend == UINT32_MAX) {
+    return graph_fail(context->error, context->capacity, "Too many nodes");
+  }
+  VkrMaterialNode *node = &graph->nodes[blend];
+  node->value = vec4_new(0.0f, 1.0f, 0.0f, 0.0f);
+  if (context->layer_mask.length) {
+    bool8_t known = false_v;
+    for (uint32_t m = 0; m < VKR_MATERIAL_GRAPH_MASK_COUNT && !known; ++m) {
+      if (graph_equals(context->layer_mask, vkr_material_graph_mask_names[m])) {
+        node->mask = (VkrMaterialGraphMask)m;
+        known = true_v;
+      }
+    }
+    if (!known) {
+      return graph_fail(
+          context->error, context->capacity, "layer_mask '%.*s' is no mask",
+          (int)context->layer_mask.length, context->layer_mask.str);
+    }
+  }
+  Vec2 range = {0};
+  if (context->layer_mask_range.length) {
+    if (!string8_to_vec2(&context->layer_mask_range, &range)) {
+      return graph_fail(context->error, context->capacity,
+                        "layer_mask_range '%.*s' is two numbers",
+                        (int)context->layer_mask_range.length,
+                        context->layer_mask_range.str);
+    }
+    node->value = vec4_new(range.x, range.y, 0.0f, 0.0f);
+  }
+  if (context->layer_mask_texture.length >= sizeof(node->path)) {
+    return graph_fail(context->error, context->capacity,
+                      "layer_mask_texture is too long");
+  }
+  MemCopy(node->path, context->layer_mask_texture.str,
+          context->layer_mask_texture.length);
+  node->path[context->layer_mask_texture.length] = '\0';
+  for (uint32_t i = 0; i < ArrayCount(context->layers); ++i) {
+    const String8 path = context->layers[i];
+    if (!path.length) {
+      continue;
+    }
+    char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
+    snprintf(id, sizeof(id), "layer%u", i + 1u);
+    const uint32_t layer =
+        raise_node(graph, VKR_MATERIAL_NODE_LAYER, id,
+                   vec2_new(100.0f, row + (float32_t)i * 110.0f));
+    if (layer == UINT32_MAX || path.length >= sizeof(node->path)) {
+      return graph_fail(context->error, context->capacity,
+                        "Too many nodes or a layer path too long");
+    }
+    MemCopy(graph->nodes[layer].path, path.str, path.length);
+    graph->nodes[layer].path[path.length] = '\0';
+    graph->nodes[blend].inputs[i] =
+        (VkrMaterialLink){.node = (uint16_t)(layer + 1u)};
+  }
+  graph->nodes[output].inputs[SURFACE_LAYERS] =
+      (VkrMaterialLink){.node = (uint16_t)(blend + 1u)};
+  return true_v;
+}
+
 bool8_t vkr_material_graph_from_definition(String8 definition,
                                            VkrMaterialGraph *out, char *error,
                                            uint32_t capacity) {
@@ -1696,6 +1913,9 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
       }
     }
     out->nodes[output].inputs[input] = link;
+  }
+  if (!raise_layers(&context, output, row)) {
+    return false_v;
   }
   /* A base colour texture keeps its alpha implicit, as the loader infers
      opacity from it; the factor's alpha stays the opacity constant. */
@@ -1834,8 +2054,16 @@ bool8_t vkr_material_graph_describe(const VkrMaterialGraph *graph,
                   " value=" GRAPH_FLOAT "," GRAPH_FLOAT "," GRAPH_FLOAT,
                   (double)node->value.x, (double)node->value.y,
                   (double)node->value.z);
-    } else if (node->kind == VKR_MATERIAL_NODE_TEXTURE) {
+    } else if (node->kind == VKR_MATERIAL_NODE_TEXTURE ||
+               node->kind == VKR_MATERIAL_NODE_LAYER) {
       text_append(&text, " path=%s", node->path);
+    } else if (node->kind == VKR_MATERIAL_NODE_LAYER_BLEND) {
+      text_append(&text, " mask=%s range=" GRAPH_FLOAT "," GRAPH_FLOAT,
+                  vkr_material_graph_mask_names[node->mask],
+                  (double)node->value.x, (double)node->value.y);
+      if (node->path[0]) {
+        text_append(&text, " path=%s", node->path);
+      }
     }
     for (uint32_t port = 0; port < desc->input_count; ++port) {
       const VkrMaterialLink link = node->inputs[port];
