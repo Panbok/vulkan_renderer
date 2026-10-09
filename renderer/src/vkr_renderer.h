@@ -913,12 +913,24 @@ typedef enum VkrRenderMode {
   VKR_RENDER_MODE_LIGHTING_ONLY = 11,
   /** Visible triangle edges with a dark filled background. */
   VKR_RENDER_MODE_WIREFRAME = 12,
+  /** Artist data views (ADR-099): the value itself, without exposure or
+   * tone mapping. Base colour in linear RGB; roughness and metallic as grey;
+   * texture samples per pixel and texels per metre as colour ramps. */
+  VKR_RENDER_MODE_BASE_COLOR = 13,
+  VKR_RENDER_MODE_ROUGHNESS = 14,
+  VKR_RENDER_MODE_METALLIC = 15,
+  VKR_RENDER_MODE_MATERIAL_COST = 16,
+  VKR_RENDER_MODE_TEXEL_DENSITY = 17,
+  /** The lit image false coloured by stops from middle grey after
+   * exposure. */
+  VKR_RENDER_MODE_EXPOSURE = 18,
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 
-/** Whether `graphics` draws `mode`: the desktop pipeline draws every mode, the
- * tiled pipeline the lit image and the editor's unlit, detail lighting,
- * lighting only and wireframe modes (ADR-087). */
+/** Whether `graphics` draws `mode`: the desktop pipeline draws every mode
+ * before the artist views, the tiled pipeline the lit image, the editor's
+ * unlit, detail lighting, lighting only and wireframe modes (ADR-087), and
+ * normals and the artist views (ADR-099). */
 bool8_t
 vkr_graphics_pipeline_draws_render_mode(VkrGraphicsPipelineClass graphics,
                                         uint32_t mode);

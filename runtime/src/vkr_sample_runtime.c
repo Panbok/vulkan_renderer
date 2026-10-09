@@ -6008,8 +6008,8 @@ static void sample_capture_after_build(VkrStandardSceneRuntime *application,
   if (!request->request || state->capture_pending) {
     return;
   }
-  const VkrCaptureChannelId channel =
-      vkr_renderer_capture_channel_from_name("final_color");
+  const VkrCaptureChannelId channel = vkr_renderer_capture_channel_from_name(
+      request->scene_hdr ? "hdr_post_transmission" : "final_color");
   if (application->capture_request || channel == VKR_CAPTURE_CHANNEL_INVALID) {
     state->capture_ready =
         (VkrSampleCaptureReady){.token = request->token, .failed = true_v};

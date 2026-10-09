@@ -552,7 +552,15 @@ static const char *const s_render_mode_names[VKR_RENDER_MODE_COUNT] = {
     [VKR_RENDER_MODE_DETAIL_LIGHTING] = "detail_lighting",
     [VKR_RENDER_MODE_LIGHTING_ONLY] = "lighting_only",
     [VKR_RENDER_MODE_WIREFRAME] = "wireframe",
+    [VKR_RENDER_MODE_BASE_COLOR] = "base_color",
+    [VKR_RENDER_MODE_ROUGHNESS] = "roughness",
+    [VKR_RENDER_MODE_METALLIC] = "metallic",
+    [VKR_RENDER_MODE_MATERIAL_COST] = "material_cost",
+    [VKR_RENDER_MODE_TEXEL_DENSITY] = "texel_density",
+    [VKR_RENDER_MODE_EXPOSURE] = "exposure",
 };
+_Static_assert(VKR_RENDER_MODE_COUNT == 19u,
+               "Name every render mode a case can select");
 
 void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
   VKR_STRING_COPY_LITERAL(renderer->render_mode, "default");

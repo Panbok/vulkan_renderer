@@ -169,11 +169,19 @@ level):
    `world_size`, and `base_color` or `metallic` values outside plausible
    PBR ranges.
 3. Capture the assigned surfaces (`view.capture` with `eye` and `target`);
-   compare `view.greybox` on and off to confirm which faces carry art.
-4. Changes you make for review (`review` default true) appear in
+   compare `view.greybox` on and off to confirm which faces carry art. A
+   sheet of `views` with `mode` set to `base-color`, `roughness`,
+   `metallic`, `normals`, `material-cost` or `texel-density` shows the
+   material data without lighting (Metal; Vulkan draws them lit). Texel
+   density is blue below 128 px/m, green inside, red above 2048.
+4. Check light with numbers: `query.luminance` with labelled `marks` or a
+   `region` answers `luminance` (compare places with it; exposure does not
+   change it) and `stops` from middle grey after exposure (judge the frame
+   with it; the `exposure` mode shows the same bands as colour).
+5. Changes you make for review (`review` default true) appear in
    `changes.list` with their `document`; the designer accepts or rejects
    them. `undo` takes only your own steps, documents included; name yourself
    in the request or it refuses.
-5. Report the documents you created or changed, their tiers (with each
+6. Report the documents you created or changed, their tiers (with each
    Custom graph's reason), the themes
    each container takes, what `art.lint` still reports and the change ids.

@@ -1075,6 +1075,7 @@ static void workbench_lighting_palette(VkrEditorUi *editor,
       {"Lighting only", VKR_UI_ICON_LIGHT, VKR_RENDER_MODE_LIGHTING_ONLY},
       {"Detail lighting", VKR_UI_ICON_VIEW_MODE,
        VKR_RENDER_MODE_DETAIL_LIGHTING},
+      {"Exposure", VKR_UI_ICON_CAMERA, VKR_RENDER_MODE_EXPOSURE},
   };
   for (uint32_t i = 0u; i < ArrayCount(modes); ++i) {
     (void)vkr_ui_push_id_u64(frame->ui, i);

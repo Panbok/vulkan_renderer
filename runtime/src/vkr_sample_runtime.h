@@ -379,6 +379,9 @@ typedef struct VkrSampleEditBatchResult {
 typedef struct VkrSampleCaptureRequest {
   bool8_t request;
   uint64_t token;
+  /** Capture the Scene's scene-linear HDR colour (hdr_post_transmission,
+   * RGBA16F, pre-exposed) instead of the window (ADR-099). */
+  bool8_t scene_hdr;
 } VkrSampleCaptureRequest;
 
 typedef struct VkrSampleCaptureReady {

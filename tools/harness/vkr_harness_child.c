@@ -1612,6 +1612,25 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
     application->globals.render_mode = VKR_RENDER_MODE_LIGHTING_ONLY;
   } else if (string_equals(case_manifest->renderer.render_mode, "wireframe")) {
     application->globals.render_mode = VKR_RENDER_MODE_WIREFRAME;
+  } else {
+    /* The artist views (ADR-099). */
+    static const struct {
+      const char *name;
+      VkrRenderMode mode;
+    } artist_views[] = {
+        {"base_color", VKR_RENDER_MODE_BASE_COLOR},
+        {"roughness", VKR_RENDER_MODE_ROUGHNESS},
+        {"metallic", VKR_RENDER_MODE_METALLIC},
+        {"material_cost", VKR_RENDER_MODE_MATERIAL_COST},
+        {"texel_density", VKR_RENDER_MODE_TEXEL_DENSITY},
+        {"exposure", VKR_RENDER_MODE_EXPOSURE},
+    };
+    for (uint32_t i = 0; i < ArrayCount(artist_views); ++i) {
+      if (string_equals(case_manifest->renderer.render_mode,
+                        artist_views[i].name)) {
+        application->globals.render_mode = artist_views[i].mode;
+      }
+    }
   }
   application->shadow_debug_mode = case_manifest->renderer.shadow_debug_mode;
   application->transmission_depth_diagnostic_enabled =

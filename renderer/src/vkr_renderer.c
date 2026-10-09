@@ -52,11 +52,15 @@ vkr_graphics_pipeline_draws_render_mode(VkrGraphicsPipelineClass graphics,
   if (mode >= VKR_RENDER_MODE_COUNT) {
     return false_v;
   }
-  return graphics != VKR_GRAPHICS_PIPELINE_TILED ||
-         mode == VKR_RENDER_MODE_DEFAULT || mode == VKR_RENDER_MODE_UNLIT ||
+  /* The artist views draw on the tiled pipeline only so far (ADR-099). */
+  if (graphics != VKR_GRAPHICS_PIPELINE_TILED) {
+    return mode < VKR_RENDER_MODE_BASE_COLOR;
+  }
+  return mode == VKR_RENDER_MODE_DEFAULT || mode == VKR_RENDER_MODE_UNLIT ||
          mode == VKR_RENDER_MODE_DETAIL_LIGHTING ||
          mode == VKR_RENDER_MODE_LIGHTING_ONLY ||
-         mode == VKR_RENDER_MODE_WIREFRAME;
+         mode == VKR_RENDER_MODE_WIREFRAME || mode == VKR_RENDER_MODE_NORMAL ||
+         mode >= VKR_RENDER_MODE_BASE_COLOR;
 }
 
 vkr_internal bool8_t vkr_renderer_env_enabled(const char *name) {

@@ -24,6 +24,8 @@ static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR = 1u << 7u;
 // The pass adds bloom to the scene-linear samples itself, as Post.Bloom.Combine
 // does in graphs that have it (ADR-087).
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM = 1u << 8u;
+// The exposed scene shows in false colour by stops (ADR-099).
+static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_FALSE_COLOR = 1u << 9u;
 
 // The bloom a tonemap tap adds to its scene-linear sample.
 struct VkrMetalPacketTonemapBloom {
@@ -63,6 +65,12 @@ vkr_metal_packet_post_sample(texture2d<float, access::sample> source,
     float3 bloomed = hdr.rgb + bloom.texture.sample(source_sampler, uv).rgb *
                                    bloom.intensity;
     hdr.rgb = float3(half3(bloomed));
+  }
+  if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_FALSE_COLOR) != 0u) {
+    const float luminance =
+        dot(max(hdr.rgb * exposure, 0.0), float3(0.2126, 0.7152, 0.0722));
+    hdr.rgb = vkr_editor_ev_color(log2(max(luminance, 1e-6) / 0.18));
+    return hdr;
   }
   float3 color = vkr_color_grade(max(hdr.rgb * exposure, 0.0), grading);
   float3 display_linear =

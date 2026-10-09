@@ -93,7 +93,7 @@ dependable channel for scripts.
 | `camera.capture` | | Toggle free-camera capture |
 | `camera.view` | `<perspective\|top\|left\|right\|bottom\|front\|back>` | Scene camera view |
 | `camera.speed` | `<units/s>` | Free-camera speed |
-| `view.mode` | `<lit\|unlit\|detail-lighting\|lighting-only\|wireframe>` | Render mode |
+| `view.mode` | `<lit\|unlit\|detail-lighting\|lighting-only\|wireframe\|base-color\|roughness\|metallic\|normals\|material-cost\|texel-density\|exposure>` | Render mode; the artist views from base-color on draw on the tiled pipeline ([ADR-099](099-artist-views-and-luminance-queries.md)) |
 | `tool` | `<select\|move\|rotate\|scale>` | Transform tool |
 | `grid` | `[on\|off\|toggle]` | World grid |
 | `brush.draw` | `[on\|off\|toggle]` | Brush drawing in the Scene (B; ADR-084) |

@@ -44,3 +44,62 @@ float3 vkr_editor_triangle_barycentric(float3 point, float3 a, float3 b,
     float v = (aa * dot(ap, ac) - bb * dot(ap, ab)) / denominator;
     return float3(1.0f - u - v, u, v);
 }
+
+// Artist view modes (ADR-099). The data views show one value per pixel
+// instead of light: 2 normals, 13 base colour, 14 roughness, 15 metallic,
+// 16 material cost and 17 texel density. Mode 18 shades as usual and false
+// colours the exposed image by stops.
+bool vkr_editor_data_view(uint mode)
+{
+    return mode == 2u || (mode >= 13u && mode <= 17u);
+}
+
+bool vkr_editor_false_color(uint mode)
+{
+    return mode == 18u;
+}
+
+// Texture samples a pixel of a material takes, green at one through yellow
+// to red at eight or more.
+float3 vkr_editor_cost_color(float samples)
+{
+    float t = saturate((samples - 1.0f) / 7.0f);
+    return t < 0.5f ? float3(2.0f * t, 1.0f, 0.0f)
+                    : float3(1.0f, 2.0f - 2.0f * t, 0.0f);
+}
+
+// Texels per metre against the art range [low, high] (art.lint's default is
+// 128 to 2048): blue below it, green inside it brightening toward `high`,
+// red above it.
+float3 vkr_editor_density_color(float texels_per_metre, float low, float high)
+{
+    if (!(texels_per_metre >= low))
+    {
+        return float3(0.1f, 0.25f, 1.0f);
+    }
+    if (texels_per_metre > high)
+    {
+        return float3(1.0f, 0.15f, 0.1f);
+    }
+    float t = saturate(log2(texels_per_metre / low) / log2(high / low));
+    return float3(0.1f, 0.35f + 0.65f * t, 0.15f);
+}
+
+// One colour per whole stop from middle grey (0.18 after exposure), five
+// stops either way: purple and blues below, green at middle grey, yellows
+// and reds above, white at five stops or more.
+float3 vkr_editor_ev_color(float stops)
+{
+    int band = clamp(int(floor(stops + 0.5f)) + 5, 0, 10);
+    if (band == 0) return float3(0.30f, 0.00f, 0.40f);
+    if (band == 1) return float3(0.00f, 0.00f, 0.80f);
+    if (band == 2) return float3(0.00f, 0.40f, 1.00f);
+    if (band == 3) return float3(0.00f, 0.75f, 0.75f);
+    if (band == 4) return float3(0.00f, 0.55f, 0.25f);
+    if (band == 5) return float3(0.25f, 0.85f, 0.25f);
+    if (band == 6) return float3(0.65f, 0.90f, 0.20f);
+    if (band == 7) return float3(1.00f, 1.00f, 0.00f);
+    if (band == 8) return float3(1.00f, 0.60f, 0.00f);
+    if (band == 9) return float3(1.00f, 0.10f, 0.00f);
+    return float3(1.0f, 1.0f, 1.0f);
+}

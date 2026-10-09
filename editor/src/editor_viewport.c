@@ -58,6 +58,14 @@ static const struct {
     {"Detail lighting", VKR_RENDER_MODE_DETAIL_LIGHTING},
     {"Lighting only", VKR_RENDER_MODE_LIGHTING_ONLY},
     {"Wireframe", VKR_RENDER_MODE_WIREFRAME},
+    /* Artist views (ADR-099); the tiled pipeline draws them. */
+    {"Base colour", VKR_RENDER_MODE_BASE_COLOR},
+    {"Roughness", VKR_RENDER_MODE_ROUGHNESS},
+    {"Metallic", VKR_RENDER_MODE_METALLIC},
+    {"Normals", VKR_RENDER_MODE_NORMAL},
+    {"Material cost", VKR_RENDER_MODE_MATERIAL_COST},
+    {"Texel density", VKR_RENDER_MODE_TEXEL_DENSITY},
+    {"Exposure", VKR_RENDER_MODE_EXPOSURE},
 };
 
 static const struct {

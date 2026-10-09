@@ -601,6 +601,16 @@ vkr_metal_packet_subresource_texture(VkrMetalPacketRenderer *renderer,
                         : vkr_metal_packet_texture(renderer, use->image);
 }
 
+/* The artist views that show a value per pixel instead of light (ADR-099):
+   normals, base colour, roughness, metallic, material cost and texel
+   density. The inspection variant writes them, and the tonemap shows them
+   without exposure, grading, bloom or the tone curve. */
+vkr_internal bool8_t vkr_metal_packet_data_view(uint32_t mode) {
+  return mode == VKR_RENDER_MODE_NORMAL ||
+         (mode >= VKR_RENDER_MODE_BASE_COLOR &&
+          mode <= VKR_RENDER_MODE_TEXEL_DENSITY);
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -636,12 +646,21 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       upload, sizeof(*color_grading), &color_grading_gpu);
   if (!root || !manual_state || !color_grading)
     return false_v;
+  const uint32_t render_mode = packet->input.globals.render_mode;
+  const bool8_t data_view =
+      !editor_rect && vkr_metal_packet_data_view(render_mode);
+  const bool8_t false_color =
+      !editor_rect && render_mode == VKR_RENDER_MODE_EXPOSURE;
+  if (data_view || false_color) {
+    bloom = nil;
+  }
   *color_grading = !editor_rect && packet->input.globals.render_mode ==
                                        VKR_RENDER_MODE_DEFAULT
                        ? packet->color_grading
                        : (VkrColorGradingGpu){0};
   *manual_state = (VkrExposureGpuState){
-      .exposure_multiplier = editor_rect ? 1.0f : packet->exposure.manual,
+      .exposure_multiplier =
+          editor_rect || data_view ? 1.0f : packet->exposure.manual,
   };
   const uint32_t output_x = editor_rect ? (uint32_t)editor_rect->x : 0u;
   const uint32_t output_y = editor_rect ? (uint32_t)editor_rect->y : 0u;
@@ -653,7 +672,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       .source_texture_id = source.gpuResourceID._impl,
       .inverse_pre_exposure = 1.0f / packet->exposure.pre_exposure,
       .flags =
-          (!editor_rect && renderer->tonemap_enabled ? 1u : 0u) |
+          (!editor_rect && !data_view && !false_color &&
+                   renderer->tonemap_enabled
+               ? 1u
+               : 0u) |
+          (false_color ? VKR_METAL_PACKET_TONEMAP_FLAG_FALSE_COLOR : 0u) |
           (packet->input.globals.display_transform ==
                    VKR_DISPLAY_TRANSFORM_ACES_FITTED
                ? 4u
@@ -690,7 +713,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       exposure_use
           ? vkr_metal_packet_graph_buffer(renderer, exposure_use->buffer)
           : NULL;
-  if (exposure_state)
+  /* A data view keeps the unit exposure of its manual record. */
+  if (exposure_state && !data_view)
     root->exposure_state = exposure_state->resource.gpu_address;
   prepared->tonemap.root = root_gpu;
   prepared->tonemap.viewport =
@@ -1976,7 +2000,7 @@ vkr_metal_packet_tiled_lighting(const VkrPreparedFrame *packet) {
   if (mode == VKR_RENDER_MODE_UNLIT ||
       mode == VKR_RENDER_MODE_DETAIL_LIGHTING ||
       mode == VKR_RENDER_MODE_LIGHTING_ONLY ||
-      mode == VKR_RENDER_MODE_WIREFRAME) {
+      mode == VKR_RENDER_MODE_WIREFRAME || vkr_metal_packet_data_view(mode)) {
     return VKR_METAL_TILED_LIGHTING_INSPECT;
   }
   const VkrFrameLighting *lighting = packet->input.lighting;

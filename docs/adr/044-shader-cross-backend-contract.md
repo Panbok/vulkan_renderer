@@ -300,6 +300,14 @@ hidden edges are not drawn through opaque surfaces. The forward paths
 reconstruct barycentrics from the triangle or take them from the rasterizer;
 the visibility path consumes its triangle reconstruction.
 
+The artist views of [ADR-099](099-artist-views-and-luminance-queries.md)
+(normals, base colour, roughness, metallic, material cost, texel density and
+exposure false colour) add the mode predicates and the cost, density and
+stop ramps to `editor_view.slangh`. Only the Metal tiled inspection variant
+and tonemap consume them; the Vulkan build compiles the kernel, and its
+views wait for a Windows host. On 2026-10-09 the tiled pipeline drew all
+seven views on Bistro and passed Metal API validation.
+
 On the desktop pipeline the three inspection modes bypass bloom,
 analytic/froxel fog, SSGI, SSR, subsurface diffusion, depth of field and motion
 blur, and Wireframe also bypasses temporal reconstruction and GTAO.

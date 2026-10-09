@@ -6713,6 +6713,11 @@ typedef struct OpsPendingCapture {
   Vec3 marks[OPS_CAPTURE_MARKS_MAX];
   /* Each mark's label as the agent gave it, empty for none. */
   char mark_labels[OPS_CAPTURE_MARKS_MAX][16];
+  /* query.luminance: measure the Scene's HDR colour at the marks and over
+     `region` (fractions of the image: x0, y0, x1, y1) instead of writing
+     an image (ADR-099). */
+  bool8_t luminance;
+  float32_t region[4];
 } OpsPendingCapture;
 
 static float32_t ops_half_to_float(uint16_t half) {
@@ -7560,6 +7565,22 @@ static bool8_t ops_capture_view_parse(OpsContext *ctx,
     next.grid_labels = labels;
     next.grid_enabled = next.grid_enabled || labels;
   }
+  /* A render mode by its Cmd name, such as an artist view (ADR-099). */
+  String8 mode = {0};
+  if (vkr_bakery_json_get_string(spec, "mode", &mode)) {
+    uint32_t i = 0u;
+    while (vkr_editor_cmd_render_modes[i] &&
+           !ops_equals(mode, vkr_editor_cmd_render_modes[i])) {
+      ++i;
+    }
+    if (!vkr_editor_cmd_render_modes[i]) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'mode' is lit, unlit, detail-lighting, lighting-only, "
+                      "wireframe, base-color, roughness, metallic, normals, "
+                      "material-cost, texel-density or exposure");
+    }
+    next.render_mode = vkr_editor_cmd_render_mode_values[i];
+  }
   out->request = (VkrSampleViewRequest){.value = next, .apply = true_v};
   const VkrBakeryJson *focus = vkr_bakery_json_get(spec, "focus");
   if (focus && focus->type == VKR_BAKERY_JSON_OBJECT) {
@@ -7824,6 +7845,160 @@ static bool8_t ops_capture_finish(OpsContext *ctx, OpsPendingCapture *pending) {
    wide, with numbered `marks` at world points. Each view switches the
    Scene's view, waits OPS_CAPTURE_SETTLE_FRAMES builds and for the scene to
    settle, then asks for one frame; the end restores the view. */
+/* Scene-linear luminance of the HDR capture at `pixel`: Rec. 709 weights
+   over the pre-exposed colour, divided by its pre-exposure. */
+static float64_t ops_luminance_at(const VkrCaptureItemResult *item, uint32_t x,
+                                  uint32_t y) {
+  const uint32_t row = item->origin == VKR_CAPTURE_ORIGIN_BOTTOM_LEFT
+                           ? item->height - 1u - y
+                           : y;
+  const uint16_t *texel = (const uint16_t *)((const uint8_t *)item->data +
+                                             (uint64_t)row * item->row_pitch) +
+                          (uint64_t)x * 4u;
+  const float64_t luminance = 0.2126 * ops_half_to_float(texel[0]) +
+                              0.7152 * ops_half_to_float(texel[1]) +
+                              0.0722 * ops_half_to_float(texel[2]);
+  return item->pre_exposure > 0.0f
+             ? Max(luminance, 0.0) / (float64_t)item->pre_exposure
+             : 0.0;
+}
+
+/* One measurement into `out`: scene-linear luminance, EV100 (log2 of L
+   times 100 over the meter constant 12.5) and stops from middle grey after
+   the frame's exposure, which the exposure view bands. */
+static VkrBakeryJson *ops_luminance_json(OpsContext *ctx, VkrBakeryJson *out,
+                                         float64_t luminance,
+                                         float32_t exposure) {
+  Arena *arena = ops_arena(ctx);
+  const float64_t floor = 1.0e-9;
+  ops_set(ctx, out, "luminance", vkr_bakery_json_float(arena, luminance));
+  ops_set(ctx, out, "ev100",
+          vkr_bakery_json_float(arena, log2(Max(luminance, floor) * 8.0)));
+  ops_set(ctx, out, "stops",
+          vkr_bakery_json_float(
+              arena, log2(Max(luminance * (float64_t)exposure, floor) / 0.18)));
+  return out;
+}
+
+/* query.luminance's answer from the HDR capture: each mark's pixel and
+   luminance, and the region's mean, log-average and peak. */
+static bool8_t ops_luminance_measure(OpsContext *ctx,
+                                     OpsPendingCapture *pending,
+                                     const VkrCaptureItemResult *item) {
+  if (item->format != VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT || !item->width ||
+      !item->height || !item->data) {
+    return ops_fail(ctx, OPS_CAPTURE,
+                    "The Scene's HDR colour is not available to measure");
+  }
+  Arena *arena = ops_arena(ctx);
+  const float32_t exposure = item->display_exposure;
+  VkrBakeryJson *marks = vkr_bakery_json_array(arena);
+  const Mat4 view_projection = pending->views[0].view_projection;
+  for (uint32_t i = 0; i < pending->mark_count; ++i) {
+    VkrBakeryJson *mark = vkr_bakery_json_object(arena);
+    if (pending->mark_labels[i][0]) {
+      ops_set(ctx, mark, "label",
+              vkr_bakery_json_cstr(arena, pending->mark_labels[i]));
+    }
+    const Vec4 clip =
+        mat4_mul_vec4(view_projection, vec3_to_vec4(pending->marks[i], 1.0f));
+    const float32_t u = clip.x / clip.w * 0.5f + 0.5f;
+    const float32_t v = clip.y / clip.w * 0.5f + 0.5f;
+    if (!(clip.w > 1.0e-6f) || !(u >= 0.0f && u < 1.0f) ||
+        !(v >= 0.0f && v < 1.0f)) {
+      ops_set(ctx, mark, "at", vkr_bakery_json_null(arena));
+      vkr_bakery_json_append(marks, mark);
+      continue;
+    }
+    const uint32_t x =
+        Min((uint32_t)(u * (float32_t)item->width), item->width - 1u);
+    const uint32_t y =
+        Min((uint32_t)(v * (float32_t)item->height), item->height - 1u);
+    VkrBakeryJson *at = vkr_bakery_json_array(arena);
+    vkr_bakery_json_append(at, vkr_bakery_json_float(arena, u));
+    vkr_bakery_json_append(at, vkr_bakery_json_float(arena, v));
+    ops_set(ctx, mark, "at", at);
+    (void)ops_luminance_json(ctx, mark, ops_luminance_at(item, x, y), exposure);
+    vkr_bakery_json_append(marks, mark);
+  }
+  /* The region, a whole number of pixels within the image. */
+  const uint32_t x0 = (uint32_t)(pending->region[0] * (float32_t)item->width);
+  const uint32_t y0 = (uint32_t)(pending->region[1] * (float32_t)item->height);
+  const uint32_t x1 =
+      Max(x0 + 1u, Min(item->width, (uint32_t)ceilf(pending->region[2] *
+                                                    (float32_t)item->width)));
+  const uint32_t y1 =
+      Max(y0 + 1u, Min(item->height, (uint32_t)ceilf(pending->region[3] *
+                                                     (float32_t)item->height)));
+  float64_t sum = 0.0;
+  float64_t log_sum = 0.0;
+  float64_t peak = 0.0;
+  uint64_t count = 0u;
+  for (uint32_t y = y0; y < y1 && y < item->height; ++y) {
+    for (uint32_t x = x0; x < x1 && x < item->width; ++x) {
+      const float64_t luminance = ops_luminance_at(item, x, y);
+      sum += luminance;
+      log_sum += log2(Max(luminance, 1.0e-9));
+      peak = Max(peak, luminance);
+      count++;
+    }
+  }
+  VkrBakeryJson *region =
+      ops_luminance_json(ctx, vkr_bakery_json_object(arena),
+                         count ? sum / (float64_t)count : 0.0, exposure);
+  ops_set(ctx, region, "log_average",
+          vkr_bakery_json_float(arena, count ? exp2(log_sum / (float64_t)count)
+                                             : 0.0));
+  ops_set(ctx, region, "peak", vkr_bakery_json_float(arena, peak));
+  ops_set(ctx, region, "pixels", vkr_bakery_json_int(arena, (int64_t)count));
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "width",
+          vkr_bakery_json_int(arena, item->width));
+  ops_set(ctx, ctx->call->result, "height",
+          vkr_bakery_json_int(arena, item->height));
+  ops_set(ctx, ctx->call->result, "exposure",
+          vkr_bakery_json_float(arena, exposure));
+  ops_set(ctx, ctx->call->result, "region", region);
+  ops_set(ctx, ctx->call->result, "marks", marks);
+  return true_v;
+}
+
+static VkrEditorOpStatus ops_run_capture(OpsContext *ctx);
+
+/* query.luminance: a capture of the Scene's HDR colour from the current or
+   a given view, measured instead of written. */
+static VkrEditorOpStatus ops_run_luminance(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  if (call->stage == 0u) {
+    if (vkr_bakery_json_get(call->args, "views") ||
+        vkr_bakery_json_get(call->args, "area")) {
+      ops_fail(ctx, OPS_INVALID, "query.luminance measures one Scene view");
+      return VKR_EDITOR_OP_DONE;
+    }
+    float32_t region[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+    bool8_t has_region = false_v;
+    if (!ops_arg_floats(ctx, call->args, "region", region, 4u, &has_region)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!(region[0] >= 0.0f && region[1] >= 0.0f && region[2] <= 1.0f &&
+          region[3] <= 1.0f && region[0] < region[2] &&
+          region[1] < region[3])) {
+      ops_fail(ctx, OPS_INVALID,
+               "'region' is [x0, y0, x1, y1] in fractions of the image, "
+               "x0 < x1 and y0 < y1");
+      return VKR_EDITOR_OP_DONE;
+    }
+    const VkrEditorOpStatus status = ops_run_capture(ctx);
+    OpsPendingCapture *pending = call->state;
+    if (pending && call->stage == 1u) {
+      pending->luminance = true_v;
+      MemCopy(pending->region, region, sizeof(region));
+    }
+    return status;
+  }
+  return ops_run_capture(ctx);
+}
+
 static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
   VkrEditorOpCall *call = ctx->call;
   const VkrSampleUiFrame *frame = ctx->frame;
@@ -7936,7 +8111,8 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
         first->request.frame_box ||
         first->request.value.camera_view != frame->view_state.camera_view ||
         first->request.value.grid_labels != frame->view_state.grid_labels ||
-        first->request.value.grid_enabled != frame->view_state.grid_enabled;
+        first->request.value.grid_enabled != frame->view_state.grid_enabled ||
+        first->request.value.render_mode != frame->view_state.render_mode;
     ops_capture_view_apply(frame, first);
     pending->view_since = vkr_platform_get_absolute_time();
     call->state = pending;
@@ -7968,7 +8144,9 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
         frame->view_projection;
     call->token = ++ctx->ops->next_token;
     *frame->capture_request =
-        (VkrSampleCaptureRequest){.request = true_v, .token = call->token};
+        (VkrSampleCaptureRequest){.request = true_v,
+                                  .token = call->token,
+                                  .scene_hdr = pending->luminance};
     call->stage = 2u;
     call->frames = 0u;
     return VKR_EDITOR_OP_WAIT;
@@ -7984,6 +8162,8 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
     }
     if (ready->failed || !ready->item) {
       ops_fail(ctx, OPS_CAPTURE, "The renderer could not capture the window");
+    } else if (pending->luminance) {
+      (void)ops_luminance_measure(ctx, pending, ready->item);
     } else if (ops_capture_keep(ctx, pending, ready->item)) {
       if (++pending->view_index < pending->view_count) {
         ops_capture_view_apply(frame, &pending->views[pending->view_index]);
@@ -9723,6 +9903,11 @@ static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
 #define OPS_CAPTURE_VIEW_SCHEMA                                                \
   "{\"type\":\"string\",\"enum\":[\"current\",\"perspective\",\"top\","        \
   "\"left\",\"right\",\"bottom\"]}"
+#define OPS_CAPTURE_MODE_SCHEMA                                                \
+  "{\"type\":\"string\",\"enum\":[\"lit\",\"unlit\",\"detail-lighting\","      \
+  "\"lighting-only\",\"wireframe\",\"base-color\",\"roughness\","              \
+  "\"metallic\",\"normals\",\"material-cost\",\"texel-density\","              \
+  "\"exposure\"]}"
 #define OPS_CAPTURE_FOCUS_SCHEMA                                               \
   "{\"oneOf\":[" OPS_ENTITY_SCHEMA ",{\"type\":\"object\",\"properties\":{"    \
   "\"min\":" OPS_VEC3_SCHEMA ",\"max\":" OPS_VEC3_SCHEMA "},\"required\":["    \
@@ -12819,14 +13004,18 @@ static const OpsDef s_ops[] = {
      "{point, label}) as numbered crosses with their labels in every view, "
      "magenta where the camera sees them and blue behind collision, and "
      "answers each one's pixel ('at') and 'hidden', or null where it lies "
-     "outside the view.",
+     "outside the view. 'mode' renders a view in a render mode, such as the "
+     "artist views base-color, roughness, metallic, normals, material-cost, "
+     "texel-density and exposure (false colour by stops).",
      "{\"type\":\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
      ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
      "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA
+     ",\"mode\":" OPS_CAPTURE_MODE_SCHEMA
      ",\"views\":{\"type\":\"array\",\"maxItems\":4,\"items\":{\"type\":"
      "\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
      ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
      "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA
+     ",\"mode\":" OPS_CAPTURE_MODE_SCHEMA
      "}}},\"max_width\":{\"type\":\"integer\",\"minimum\":64,\"maximum\":"
      "8192},\"marks\":{\"type\":\"array\",\"maxItems\":32,\"items\":{"
      "\"oneOf\":[" OPS_VEC3_SCHEMA ",{\"type\":\"object\",\"properties\":{"
@@ -12836,6 +13025,24 @@ static const OpsDef s_ops[] = {
      "\"window\"],\"description\":\"The Scene image (default) or the whole "
      "editor window\"}," OPS_SETTLE_SCHEMA "}}",
      ops_run_capture, NULL, OPS_SETTLES},
+    {"query.luminance",
+     "Measure the Scene's scene-linear HDR colour from the current view or "
+     "one given as view.capture takes it ('view', 'focus', 'eye' and "
+     "'target', 'mode'): at up to 32 'marks' (world points or {point, "
+     "label}) and over 'region' ([x0, y0, x1, y1] fractions of the image, "
+     "default the whole image). Each answers 'luminance', 'ev100' and "
+     "'stops' from middle grey after the frame's exposure; the region adds "
+     "'log_average' and 'peak'. A mark outside the view answers null.",
+     "{\"type\":\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
+     ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"eye\":" OPS_VEC3_SCHEMA
+     ",\"target\":" OPS_VEC3_SCHEMA ",\"mode\":" OPS_CAPTURE_MODE_SCHEMA
+     ",\"region\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},"
+     "\"minItems\":4,\"maxItems\":4},\"marks\":{\"type\":\"array\","
+     "\"maxItems\":32,\"items\":{\"oneOf\":[" OPS_VEC3_SCHEMA
+     ",{\"type\":\"object\",\"properties\":{\"point\":" OPS_VEC3_SCHEMA
+     ",\"label\":{\"type\":\"string\",\"maxLength\":15}},\"required\":["
+     "\"point\"]}]}}," OPS_SETTLE_SCHEMA "}}",
+     ops_run_luminance, NULL, OPS_SETTLES},
     {"view.camera",
      "Place the perspective Scene camera at 'eye' looking at 'target'; "
      "'far' sets the far plane in metres. 'glide' moves it as free flight "

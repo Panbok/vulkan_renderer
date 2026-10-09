@@ -88,11 +88,17 @@ const char *const vkr_editor_cmd_camera_views[] = {
     "perspective", "top", "left", "right", "bottom", "front", "back", NULL};
 
 const char *const vkr_editor_cmd_render_modes[] = {
-    "lit", "unlit", "detail-lighting", "lighting-only", "wireframe", NULL};
+    "lit",       "unlit",         "detail-lighting", "lighting-only",
+    "wireframe", "base-color",    "roughness",       "metallic",
+    "normals",   "material-cost", "texel-density",   "exposure",
+    NULL};
 const VkrRenderMode vkr_editor_cmd_render_mode_values[] = {
-    VKR_RENDER_MODE_DEFAULT, VKR_RENDER_MODE_UNLIT,
+    VKR_RENDER_MODE_DEFAULT,         VKR_RENDER_MODE_UNLIT,
     VKR_RENDER_MODE_DETAIL_LIGHTING, VKR_RENDER_MODE_LIGHTING_ONLY,
-    VKR_RENDER_MODE_WIREFRAME};
+    VKR_RENDER_MODE_WIREFRAME,       VKR_RENDER_MODE_BASE_COLOR,
+    VKR_RENDER_MODE_ROUGHNESS,       VKR_RENDER_MODE_METALLIC,
+    VKR_RENDER_MODE_NORMAL,          VKR_RENDER_MODE_MATERIAL_COST,
+    VKR_RENDER_MODE_TEXEL_DENSITY,   VKR_RENDER_MODE_EXPOSURE};
 
 const char *const vkr_editor_cmd_tools[] = {"select", "move", "rotate", "scale",
                                             NULL};

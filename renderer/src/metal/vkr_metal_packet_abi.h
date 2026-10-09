@@ -657,6 +657,8 @@ enum {
   VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR = 1u << 7u,
   /* The pass adds the bound bloom level to the scene it samples. */
   VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM = 1u << 8u,
+  /* The exposed scene shows in false colour by stops (ADR-099). */
+  VKR_METAL_PACKET_TONEMAP_FLAG_FALSE_COLOR = 1u << 9u,
 };
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {

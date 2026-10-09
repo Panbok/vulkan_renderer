@@ -127,7 +127,8 @@ vkr_metal_tiled_sky_background(constant VkrMetalTiledSkyRoot &root,
 fragment float4 vkr_metal_tiled_sky_fragment(
     VkrMetalTiledSkyOutput input [[stage_in]],
     constant VkrMetalTiledSkyRoot &root [[buffer(1)]]) {
-  if (root.frame->render_mode == 9u || root.frame->render_mode == 12u)
+  if (root.frame->render_mode == 9u || root.frame->render_mode == 12u ||
+      vkr_editor_data_view(root.frame->render_mode))
     return float4(0.0f);
   return float4(vkr_metal_tiled_sky_background(root, uint2(input.position.xy)),
                 0.0f);
@@ -219,7 +220,8 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
     float4 destination [[color(0)]]) {
   constant VkrMetalPacketFrameRoot *frame = root.frame;
   uint2 pixel = uint2(input.position.xy);
-  if (frame->render_mode == 9u || frame->render_mode == 12u)
+  if (frame->render_mode == 9u || frame->render_mode == 12u ||
+      vkr_editor_data_view(frame->render_mode))
     discard_fragment();
   const float depth = root.depth.read(pixel);
   const float surface = depth >= 1.0f ? 0.0f : saturate(destination.a);
@@ -840,26 +842,86 @@ template <typename Graph> struct VkrMetalCustomSurface {
   }
 };
 
-// The editor's unlit and wireframe modes, which replace shading; false for
-// the modes that shade. Unlit shows the base colour and the pre-exposed
-// emission; wireframe draws one-pixel edges over a dark fill, as the
-// visibility-buffer resolve does.
+// Texture samples a pixel of `material` takes: its base colour, each map
+// its flags enable, and a layered or terrain material's layers and mask.
+static float vkr_metal_tiled_material_samples(
+    const device VkrMetalPacketMaterial &material) {
+  return 1.0f + float(popcount(material.flags & 0x7FFu)) +
+         ((material.flags & 2048u) != 0u ? 10.0f : 0.0f);
+}
+
+// The base colour texture's texels per metre on the surface: its texel
+// footprint over the pixel's world footprint, along both screen axes.
+static float vkr_metal_tiled_texel_density(
+    thread const VkrMetalTiledVertexOutput &input,
+    const device VkrMetalPacketMaterial &material) {
+  const float2 size = float2(material.base_color_texture.get_width(),
+                             material.base_color_texture.get_height());
+  const float texels = length(dfdx(input.texcoord) * size) +
+                       length(dfdy(input.texcoord) * size);
+  const float metres = length(dfdx(input.world_position)) +
+                       length(dfdy(input.world_position));
+  return metres > 0.0f ? texels / metres : 0.0f;
+}
+
+// The editor's modes that replace shading; false for the modes that shade.
+// Unlit shows the base colour and the pre-exposed emission; wireframe draws
+// one-pixel edges over a dark fill, as the visibility-buffer resolve does.
+// The artist data views (ADR-099) write their value pre-exposed, which the
+// tonemap shows without exposure or the tone curve: the shading normal,
+// base colour, roughness, metallic, the material's texture samples, and the
+// base colour texture's texels per metre against art.lint's default range.
+// A Custom graph's pixels show the cost of their fallback, tinted magenta.
 static bool vkr_metal_tiled_inspect(
     thread const VkrMetalTiledVertexOutput &input,
     constant VkrMetalPacketFrameRoot *frame,
     const device VkrMetalPacketMaterial &material,
     thread const VkrMetalTiledSurface &surface, float3 barycentric,
-    thread float3 &out_color) {
-  if (frame->render_mode == 12u) {
+    bool front_facing, thread float3 &out_color) {
+  const uint mode = frame->render_mode;
+  if (mode == 12u) {
     out_color = vkr_editor_wire_color(barycentric, dfdx(barycentric),
                                       dfdy(barycentric));
     return true;
   }
-  if (frame->render_mode == 3u) {
+  if (mode == 3u) {
     out_color = surface.base.rgb + surface.emissive * frame->pre_exposure;
     return true;
   }
-  return false;
+  if (!vkr_editor_data_view(mode)) {
+    return false;
+  }
+  float3 value = float3(0.0f);
+  if (mode == 2u) {
+    float3 normal =
+        normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f);
+    if (surface.normal_mapped) {
+      float3 tangent = normalize(input.world_tangent.xyz);
+      tangent = normalize(tangent - dot(tangent, normal) * normal);
+      const float3 bitangent =
+          normalize(cross(normal, tangent)) * input.world_tangent.w;
+      normal = normalize(tangent * surface.tangent_normal.x +
+                         bitangent * surface.tangent_normal.y +
+                         normal * surface.tangent_normal.z);
+    }
+    value = normal * 0.5f + 0.5f;
+  } else if (mode == 13u) {
+    value = surface.base.rgb;
+  } else if (mode == 14u) {
+    value = float3(surface.feedback_roughness);
+  } else if (mode == 15u) {
+    value = float3(surface.metallic);
+  } else if (mode == 16u) {
+    value = vkr_editor_cost_color(vkr_metal_tiled_material_samples(material));
+    if (((material.flags >> 24u) & 63u) != 0u) {
+      value = 0.5f * value + float3(0.5f, 0.0f, 0.5f);
+    }
+  } else {
+    value = vkr_editor_density_color(
+        vkr_metal_tiled_texel_density(input, material), 128.0f, 2048.0f);
+  }
+  out_color = value * frame->pre_exposure;
+  return true;
 }
 
 // Shades the opaque pass. Opaque draws never discard, so hidden-surface
@@ -892,7 +954,7 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
   if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
     float3 inspected;
     if (vkr_metal_tiled_inspect(input, frame, material, surface, barycentric,
-                                inspected))
+                                front_facing, inspected))
       return float4(inspected, coverage);
   }
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
@@ -1290,7 +1352,7 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
     float3 inspected;
     if (vkr_metal_tiled_inspect(input, frame, material, surface, barycentric,
-                                inspected)) {
+                                front_facing, inspected)) {
       output.color = float4(inspected * alpha, 0.0f);
       output.behind = float4(1.0f - alpha);
       return output;
