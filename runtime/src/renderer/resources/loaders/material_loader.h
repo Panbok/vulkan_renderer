@@ -10,6 +10,9 @@
 typedef enum VkrMaterialTextureColorSpace {
   VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR = 0,
   VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB = 1,
+  /* A tangent-space normal map in a Custom texture slot, whose class the
+     slot does not give. */
+  VKR_MATERIAL_TEXTURE_COLORSPACE_NORMAL = 2,
 } VkrMaterialTextureColorSpace;
 
 /**
@@ -44,6 +47,12 @@ typedef struct VkrParsedMaterialData {
   uint8_t layer_mask;
   Vec2 layer_mask_range;
   char layer_paths[VKR_MATERIAL_TERRAIN_LAYERS - 1u][VKR_MATERIAL_PATH_MAX];
+  /** A Custom graph's function (`custom_function=`) and parameters
+   * (`custom_param<k>=`); its textures fill the Custom texture slots
+   * (`custom<k>_texture=`, with `custom<k>_colorspace=` or
+   * `custom<k>_normal=true`). */
+  char custom_function[VKR_MATERIAL_CUSTOM_FUNCTION_CAPACITY];
+  Vec4 custom_params[VKR_MATERIAL_CUSTOM_PARAMS];
 
   // Texture paths as fixed buffers (thread-safe for parallel parsing)
   char texture_paths[VKR_TEXTURE_SLOT_COUNT][VKR_MATERIAL_PATH_MAX];

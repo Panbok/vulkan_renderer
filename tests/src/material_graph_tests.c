@@ -1,5 +1,6 @@
 #include "material_graph_tests.h"
 
+#include "assets/vkr_material_codegen.h"
 #include "assets/vkr_material_graph.h"
 #include "level/vkr_surface.h"
 #include "memory/vkr_arena_allocator.h"
@@ -248,30 +249,31 @@ static void test_graph_tiers(VkrAllocator *allocator) {
   static const struct {
     const char *json;
     const char *node;
+    VkrMaterialTier tier;
   } cases[] = {
       /* Roughness reads green; red is occlusion. */
       {"{\"version\":1,\"nodes\":[{\"id\":\"orm\",\"type\":\"texture\","
        "\"path\":\"a.png\"},{\"id\":\"out\",\"type\":\"surface_output\","
        "\"inputs\":{\"roughness\":\"orm.r\"}}]}",
-       "orm"},
+       "orm", VKR_MATERIAL_TIER_CUSTOM},
       /* Two textures multiplied blend, which a Standard graph cannot. */
       {"{\"version\":1,\"nodes\":[{\"id\":\"a\",\"type\":\"texture\","
        "\"path\":\"a.png\"},{\"id\":\"b\",\"type\":\"texture\",\"path\":"
        "\"b.png\"},{\"id\":\"m\",\"type\":\"multiply\",\"inputs\":{\"a\":"
        "\"a.rgb\",\"b\":\"b.rgb\"}},{\"id\":\"out\",\"type\":"
        "\"surface_output\",\"inputs\":{\"base_color\":\"m\"}}]}",
-       "b"},
+       "b", VKR_MATERIAL_TIER_CUSTOM},
       /* A texture without a file lowers to nothing. */
       {"{\"version\":1,\"nodes\":[{\"id\":\"t\",\"type\":\"texture\"},"
        "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
        "{\"base_color\":\"t.rgb\"}}]}",
-       "t"},
+       "t", VKR_MATERIAL_TIER_UNSUPPORTED},
       /* Metallic and roughness share one slot, so one file. */
       {"{\"version\":1,\"nodes\":[{\"id\":\"m\",\"type\":\"texture\","
        "\"path\":\"m.png\"},{\"id\":\"r\",\"type\":\"texture\",\"path\":"
        "\"r.png\"},{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
        "{\"metallic\":\"m.b\",\"roughness\":\"r.g\"}}]}",
-       "r"},
+       "r", VKR_MATERIAL_TIER_CUSTOM},
   };
   VkrMaterialGraph *graph = malloc(sizeof(*graph));
   assert(graph);
@@ -281,9 +283,13 @@ static void test_graph_tiers(VkrAllocator *allocator) {
                                    error, sizeof(error)));
     VkrMaterialLowering lowering;
     String8 definition = {0};
-    assert(!vkr_material_graph_lower(graph, graph_test_str("g.mtg"), NULL, 0u,
-                                     allocator, &definition, &lowering));
-    assert(lowering.tier == VKR_MATERIAL_TIER_UNSUPPORTED);
+    const bool8_t lowered =
+        vkr_material_graph_lower(graph, graph_test_str("g.mtg"), NULL, 0u,
+                                 allocator, &definition, &lowering);
+    /* A graph the Standard tier refuses is Custom when it generates; either
+       way the answer names the node the Standard tier stopped at. */
+    assert(lowered == (cases[i].tier == VKR_MATERIAL_TIER_CUSTOM));
+    assert(lowering.tier == cases[i].tier);
     assert(strcmp(lowering.node, cases[i].node) == 0);
     assert(lowering.reason[0]);
   }
@@ -485,6 +491,157 @@ static void test_graph_layers(VkrAllocator *allocator) {
   printf("  test_graph_layers PASSED\n");
 }
 
+/* The Custom tier: equal graphs share one function whatever their node ids
+   and positions, a changed constant changes it, textures bind by what they
+   feed (normal map, colour, data), exposed constants take an instance's
+   values, the fallback comes from constant outputs, and a graph that mixes
+   two- and three-component values or drives a lobe outside the core
+   outputs has no Custom form. */
+static const char s_custom_graph[] =
+    "{\"version\":1,\"nodes\":["
+    "{\"id\":\"planar\",\"type\":\"world_planar\",\"value\":2},"
+    "{\"id\":\"albedo\",\"type\":\"texture\",\"path\":\"./stone.png\","
+    "\"inputs\":{\"uv\":\"planar.uv\"}},"
+    "{\"id\":\"tint\",\"type\":\"color\",\"parameter\":\"tint\","
+    "\"value\":[1,0.5,0.25]},"
+    "{\"id\":\"base\",\"type\":\"multiply\",\"inputs\":{\"a\":\"albedo.rgb\","
+    "\"b\":\"tint.value\"}},"
+    "{\"id\":\"bumps\",\"type\":\"texture\",\"path\":\"./stone_n.png\"},"
+    "{\"id\":\"normal\",\"type\":\"normal_map\",\"inputs\":{\"texture\":"
+    "\"bumps.rgb\"}},"
+    "{\"id\":\"mask\",\"type\":\"texture\",\"path\":\"./mask.png\"},"
+    "{\"id\":\"clock\",\"type\":\"time\"},"
+    "{\"id\":\"wave\",\"type\":\"sine\",\"inputs\":{\"x\":\"clock.seconds\"}},"
+    "{\"id\":\"pulse\",\"type\":\"multiply\",\"inputs\":{\"a\":\"wave\","
+    "\"b\":\"mask.r\"}},"
+    "{\"id\":\"ember\",\"type\":\"color\",\"value\":[1,0.4,0.1]},"
+    "{\"id\":\"glow\",\"type\":\"multiply\",\"inputs\":{\"a\":\"pulse\","
+    "\"b\":\"ember\"}},"
+    "{\"id\":\"metal\",\"type\":\"scalar\",\"value\":0},"
+    "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":{"
+    "\"base_color\":\"base\",\"normal\":\"normal\",\"emissive\":\"glow\","
+    "\"metallic\":\"metal\"}}]}";
+
+/* Whether the Custom texture slot that holds `path` in definition `text`
+   has the key `class` (such as "normal=true"). */
+static bool8_t graph_test_custom_class(const char *text, const char *path,
+                                       const char *class) {
+  for (uint32_t slot = 0; slot < VKR_MATERIAL_CUSTOM_TEXTURE_MAX; ++slot) {
+    char line[256];
+    snprintf(line, sizeof(line), "custom%u_texture=%s\n", slot, path);
+    if (strstr(text, line)) {
+      snprintf(line, sizeof(line), "custom%u_%s\n", slot, class);
+      return strstr(text, line) != NULL;
+    }
+  }
+  return false_v;
+}
+
+static void test_graph_custom(VkrAllocator *allocator) {
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  VkrMaterialGraph *again = malloc(sizeof(*again));
+  assert(graph && again);
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  if (!vkr_material_graph_read(graph_test_str(s_custom_graph), graph, error,
+                               sizeof(error))) {
+    printf("    custom graph: %s\n", error);
+    assert(false);
+  }
+  VkrMaterialLowering lowering = {0};
+  String8 definition = {0};
+  const VkrMaterialParam red = {.name = "tint", .value = "1,0,0"};
+  assert(vkr_material_graph_lower(graph,
+                                  graph_test_str("assets/materials/c/g.mtg"),
+                                  &red, 1u, allocator, &definition, &lowering));
+  assert(lowering.tier == VKR_MATERIAL_TIER_CUSTOM);
+  assert(strncmp(lowering.function, "vkr_custom_", 11) == 0 &&
+         strlen(lowering.function) == 27u);
+  assert(lowering.samples == 3u);
+  const char *text = (const char *)definition.str;
+  /* The instance's tint, the texture bindings by use, the fallback. */
+  assert(strstr(text, "custom_param0=1,0,0\n"));
+  assert(graph_test_custom_class(text, "assets/materials/c/stone.png",
+                                 "colorspace=srgb"));
+  assert(graph_test_custom_class(text, "assets/materials/c/stone_n.png",
+                                 "normal=true"));
+  assert(graph_test_custom_class(text, "assets/materials/c/mask.png",
+                                 "colorspace=linear"));
+  assert(strstr(text, "metallic=0\n"));
+  char function[VKR_MATERIAL_GRAPH_ID_CAPACITY];
+  snprintf(function, sizeof(function), "%s", lowering.function);
+
+  /* The loader reads the definition back: function, parameter, and each
+     Custom slot's class. */
+  VkrParsedMaterialData parsed;
+  graph_test_parse(allocator, "assets/materials/c/inst.mt", definition,
+                   &parsed);
+  assert(strcmp(parsed.custom_function, function) == 0);
+  assert(parsed.custom_params[0].x == 1.0f &&
+         parsed.custom_params[0].y == 0.0f);
+  uint32_t srgb = 0u;
+  uint32_t normal = 0u;
+  uint32_t data = 0u;
+  for (uint32_t slot = VKR_TEXTURE_SLOT_CUSTOM0;
+       slot <= VKR_TEXTURE_SLOT_CUSTOM7; ++slot) {
+    if (!parsed.texture_paths[slot][0]) {
+      continue;
+    }
+    srgb +=
+        parsed.texture_colorspace[slot] == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB;
+    normal += parsed.texture_colorspace[slot] ==
+              VKR_MATERIAL_TEXTURE_COLORSPACE_NORMAL;
+    data += parsed.texture_colorspace[slot] ==
+            VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+  }
+  assert(srgb == 1u && normal == 1u && data == 1u);
+
+  /* Renamed and moved nodes give the same function; another constant
+     gives another. */
+  String8 json = {0};
+  assert(vkr_material_graph_write(graph, allocator, &json));
+  assert(vkr_material_graph_read(json, again, error, sizeof(error)));
+  for (uint32_t i = 0; i < again->node_count; ++i) {
+    again->nodes[i].position = vec2_new((float32_t)i * 37.0f, 5.0f);
+  }
+  const uint32_t metal =
+      vkr_material_graph_find(again, graph_test_str("metal"));
+  snprintf(again->nodes[metal].id, sizeof(again->nodes[metal].id), "m2");
+  assert(vkr_material_graph_lower(again, graph_test_str("x.mtg"), NULL, 0u,
+                                  allocator, &definition, &lowering));
+  assert(strcmp(lowering.function, function) == 0);
+  again->nodes[metal].value.x = 0.5f;
+  assert(vkr_material_graph_lower(again, graph_test_str("x.mtg"), NULL, 0u,
+                                  allocator, &definition, &lowering));
+  assert(strcmp(lowering.function, function) != 0);
+
+  /* UVs plus a colour mix two and three components. */
+  const char *mixed =
+      "{\"version\":1,\"nodes\":[{\"id\":\"uv\",\"type\":\"uv\"},"
+      "{\"id\":\"c\",\"type\":\"color\",\"value\":[1,1,1]},"
+      "{\"id\":\"sum\",\"type\":\"add\",\"inputs\":{\"a\":\"uv\",\"b\":\"c\"}},"
+      "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
+      "{\"base_color\":\"sum\"}}]}";
+  assert(vkr_material_graph_read(graph_test_str(mixed), again, error,
+                                 sizeof(error)));
+  assert(!vkr_material_graph_lower(again, graph_test_str("x.mtg"), NULL, 0u,
+                                   allocator, &definition, &lowering));
+  assert(lowering.tier == VKR_MATERIAL_TIER_UNSUPPORTED &&
+         strcmp(lowering.node, "sum") == 0);
+  /* Clearcoat stays a Standard lobe. */
+  const char *coated =
+      "{\"version\":1,\"nodes\":[{\"id\":\"clock\",\"type\":\"time\"},"
+      "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
+      "{\"clearcoat\":\"clock.seconds\"}}]}";
+  assert(vkr_material_graph_read(graph_test_str(coated), again, error,
+                                 sizeof(error)));
+  assert(!vkr_material_graph_lower(again, graph_test_str("x.mtg"), NULL, 0u,
+                                   allocator, &definition, &lowering));
+  assert(strcmp(lowering.node, "out") == 0);
+  free(graph);
+  free(again);
+  printf("  test_graph_custom PASSED\n");
+}
+
 /* A PBR definition becomes a graph that lowers back to the same material:
    one with every key the importers write, then every `.mt` under
    assets/materials, such as Bistro's. */
@@ -626,6 +783,7 @@ bool32_t run_material_graph_tests(void) {
   test_graph_tiers(&allocator);
   test_graph_art_metadata(&allocator);
   test_graph_layers(&allocator);
+  test_graph_custom(&allocator);
   test_graph_round_trip(&allocator);
   arena_destroy(arena);
   printf("--- Material Graph Tests Completed ---\n");

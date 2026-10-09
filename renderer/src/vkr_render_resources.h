@@ -122,8 +122,25 @@ typedef enum VkrTextureSlot {
   /* A layered material's mask: its RGBA weigh layers 0 to 3 when the mask
      source is VKR_MATERIAL_LAYER_MASK_TEXTURE. */
   VKR_TEXTURE_SLOT_LAYER_MASK = 23,
+  /* A Custom graph's textures (vkr_material_codegen.h), in its binding's
+     order; their class comes from the material file, not the slot. */
+  VKR_TEXTURE_SLOT_CUSTOM0 = 24,
+  VKR_TEXTURE_SLOT_CUSTOM1 = 25,
+  VKR_TEXTURE_SLOT_CUSTOM2 = 26,
+  VKR_TEXTURE_SLOT_CUSTOM3 = 27,
+  VKR_TEXTURE_SLOT_CUSTOM4 = 28,
+  VKR_TEXTURE_SLOT_CUSTOM5 = 29,
+  VKR_TEXTURE_SLOT_CUSTOM6 = 30,
+  VKR_TEXTURE_SLOT_CUSTOM7 = 31,
   VKR_TEXTURE_SLOT_COUNT
 } VkrTextureSlot;
+
+/* Custom graph textures and parameters a material holds. */
+#define VKR_MATERIAL_CUSTOM_TEXTURES 8u
+#define VKR_MATERIAL_CUSTOM_PARAMS 8u
+/* A Custom graph's surface function name: `vkr_custom_` and 16 hex
+   digits. */
+#define VKR_MATERIAL_CUSTOM_FUNCTION_CAPACITY 32u
 
 /* What weighs a layered material's layers. The values match the shared
    kernel's VKR_LAYER_MASK_* (shaders/shared/terrain_kernel.slangh). */
@@ -279,6 +296,13 @@ typedef struct VkrMaterial {
   VkrMaterialLayer layers[VKR_MATERIAL_TERRAIN_LAYERS - 1u];
   uint8_t layer_mask;
   Vec2 layer_mask_range;
+
+  /* A Custom material shades with the surface function its graph generated
+     (`custom_function`, empty for Standard), reading `custom_params` and the
+     Custom texture slots; until the backend has its pipelines it draws as
+     the Standard fallback the rest of this material describes. */
+  char custom_function[VKR_MATERIAL_CUSTOM_FUNCTION_CAPACITY];
+  Vec4 custom_params[VKR_MATERIAL_CUSTOM_PARAMS];
 } VkrMaterial;
 
 Array(VkrMaterial);

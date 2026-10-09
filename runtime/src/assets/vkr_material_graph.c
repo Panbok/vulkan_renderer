@@ -1,5 +1,6 @@
 #include "assets/vkr_material_graph.h"
 
+#include "assets/vkr_material_codegen.h"
 #include "core/vkr_json.h"
 #include "filesystem/vkr_asset_path.h"
 
@@ -25,6 +26,10 @@ static const VkrMaterialPortDesc s_texture_out[] = {
 };
 _Static_assert(ArrayCount(s_texture_out) == VKR_MATERIAL_GRAPH_OUTPUT_MAX,
                "a texture has the most outputs");
+/* A texture samples at its own UVs when they connect (Custom tier), else at
+   the mesh's. */
+static const VkrMaterialPortDesc s_texture_in[] = {
+    {"uv", "UV", VKR_MATERIAL_VALUE_VEC2}};
 /* Multiply takes and gives scalars or colours; graph_output_type resolves
    its output from its inputs. */
 static const VkrMaterialPortDesc s_multiply_in[] = {
@@ -48,6 +53,60 @@ static const VkrMaterialPortDesc s_layer_blend_in[] = {
 };
 static const VkrMaterialPortDesc s_layer_blend_out[] = {
     {"layers", "Layers", VKR_MATERIAL_VALUE_LAYERS}};
+
+/* Custom-tier ports. Generic math takes and gives scalars, two- and
+   three-component values (vkr_material_graph_output_type). */
+static const VkrMaterialPortDesc s_uv_out[] = {
+    {"uv", "UV", VKR_MATERIAL_VALUE_VEC2}};
+static const VkrMaterialPortDesc s_vertex_color_out[] = {
+    {"rgb", "RGB", VKR_MATERIAL_VALUE_COLOR},
+    {"a", "A", VKR_MATERIAL_VALUE_SCALAR},
+};
+static const VkrMaterialPortDesc s_position_out[] = {
+    {"position", "Position", VKR_MATERIAL_VALUE_COLOR}};
+static const VkrMaterialPortDesc s_world_normal_out[] = {
+    {"normal", "Normal", VKR_MATERIAL_VALUE_COLOR}};
+static const VkrMaterialPortDesc s_seconds_out[] = {
+    {"seconds", "Seconds", VKR_MATERIAL_VALUE_SCALAR}};
+static const VkrMaterialPortDesc s_meters_out[] = {
+    {"meters", "Meters", VKR_MATERIAL_VALUE_SCALAR}};
+static const VkrMaterialPortDesc s_binary_in[] = {
+    {"a", "A", VKR_MATERIAL_VALUE_COLOR},
+    {"b", "B", VKR_MATERIAL_VALUE_COLOR},
+};
+static const VkrMaterialPortDesc s_unary_in[] = {
+    {"x", "X", VKR_MATERIAL_VALUE_COLOR}};
+static const VkrMaterialPortDesc s_generic_out[] = {
+    {"value", "Result", VKR_MATERIAL_VALUE_COLOR}};
+static const VkrMaterialPortDesc s_lerp_in[] = {
+    {"a", "A", VKR_MATERIAL_VALUE_COLOR},
+    {"b", "B", VKR_MATERIAL_VALUE_COLOR},
+    {"t", "T", VKR_MATERIAL_VALUE_SCALAR},
+};
+static const VkrMaterialPortDesc s_power_in[] = {
+    {"x", "X", VKR_MATERIAL_VALUE_COLOR},
+    {"exponent", "Exponent", VKR_MATERIAL_VALUE_SCALAR},
+};
+static const VkrMaterialPortDesc s_dot_in[] = {
+    {"a", "A", VKR_MATERIAL_VALUE_COLOR},
+    {"b", "B", VKR_MATERIAL_VALUE_COLOR},
+};
+static const VkrMaterialPortDesc s_split_in[] = {
+    {"rgb", "RGB", VKR_MATERIAL_VALUE_COLOR}};
+static const VkrMaterialPortDesc s_split_out[] = {
+    {"r", "R", VKR_MATERIAL_VALUE_SCALAR},
+    {"g", "G", VKR_MATERIAL_VALUE_SCALAR},
+    {"b", "B", VKR_MATERIAL_VALUE_SCALAR},
+};
+static const VkrMaterialPortDesc s_combine_in[] = {
+    {"r", "R", VKR_MATERIAL_VALUE_SCALAR},
+    {"g", "G", VKR_MATERIAL_VALUE_SCALAR},
+    {"b", "B", VKR_MATERIAL_VALUE_SCALAR},
+};
+static const VkrMaterialPortDesc s_combine_out[] = {
+    {"rgb", "RGB", VKR_MATERIAL_VALUE_COLOR}};
+static const VkrMaterialPortDesc s_tile_in[] = {
+    {"uv", "UV", VKR_MATERIAL_VALUE_VEC2}};
 
 const char *const vkr_material_graph_mask_names[] = {"vertex_color", "texture",
                                                      "slope", "height", NULL};
@@ -148,14 +207,16 @@ static const VkrMaterialNodeDesc s_nodes[VKR_MATERIAL_NODE_KIND_COUNT] = {
     [VKR_MATERIAL_NODE_COLOR] = {"color", "Colour", "A constant linear colour",
                                  NULL, 0, s_color_out, 1, 0, 0},
     [VKR_MATERIAL_NODE_TEXTURE] = {"texture", "Texture",
-                                   "A texture file: its colour and channels",
-                                   NULL, 0, s_texture_out,
-                                   ArrayCount(s_texture_out), 1, 0},
+                                   "A texture file: its colour and channels, "
+                                   "at its own UVs when they connect",
+                                   s_texture_in, ArrayCount(s_texture_in),
+                                   s_texture_out, ArrayCount(s_texture_out), 1,
+                                   0},
     [VKR_MATERIAL_NODE_MULTIPLY] = {"multiply", "Multiply",
                                     "A times B; a texture times a constant "
                                     "scales the texture",
                                     s_multiply_in, ArrayCount(s_multiply_in),
-                                    s_multiply_out, 1, 0, 1},
+                                    s_multiply_out, 1, 0, 1, true_v},
     [VKR_MATERIAL_NODE_NORMAL_MAP] = {"normal_map", "Normal map",
                                       "A tangent-space normal map from a "
                                       "texture's RGB, with a strength",
@@ -176,6 +237,71 @@ static const VkrMaterialNodeDesc s_nodes[VKR_MATERIAL_NODE_KIND_COUNT] = {
                                           "The material model's inputs",
                                           s_surface_in, SURFACE_INPUT_COUNT,
                                           NULL, 0, 0, 0},
+#define CUSTOM_NODE(kind, name, label, tooltip, in, out, alu, generic)         \
+  [kind] = {name, label, tooltip, in,    ArrayCount(in), out, ArrayCount(out), \
+            0,    alu,   generic, true_v}
+#define CUSTOM_INPUT(kind, name, label, tooltip, out, alu)                     \
+  [kind] = {name, label, tooltip, NULL,  0, out, ArrayCount(out),              \
+            0,    alu,   false_v, true_v}
+    CUSTOM_INPUT(VKR_MATERIAL_NODE_UV, "uv", "UV",
+                 "The mesh's texture "
+                 "coordinates",
+                 s_uv_out, 0),
+    CUSTOM_INPUT(VKR_MATERIAL_NODE_VERTEX_COLOR, "vertex_color",
+                 "Vertex colour", "The mesh's vertex colour and alpha",
+                 s_vertex_color_out, 0),
+    CUSTOM_INPUT(VKR_MATERIAL_NODE_WORLD_POSITION, "world_position",
+                 "World position", "The shaded point in world meters",
+                 s_position_out, 0),
+    CUSTOM_INPUT(VKR_MATERIAL_NODE_WORLD_NORMAL, "world_normal", "World normal",
+                 "The surface's unit normal in world space", s_world_normal_out,
+                 1),
+    CUSTOM_INPUT(VKR_MATERIAL_NODE_TIME, "time", "Time",
+                 "Seconds the frame clock has run", s_seconds_out, 0),
+    CUSTOM_INPUT(VKR_MATERIAL_NODE_CAMERA_DISTANCE, "camera_distance",
+                 "Camera distance", "Meters from the camera", s_meters_out, 1),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_ADD, "add", "Add", "A plus B", s_binary_in,
+                s_generic_out, 1, true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_SUBTRACT, "subtract", "Subtract", "A minus B",
+                s_binary_in, s_generic_out, 1, true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_DIVIDE, "divide", "Divide",
+                "A over B; a zero B gives zero", s_binary_in, s_generic_out, 2,
+                true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_MIN, "min", "Min", "The smaller of A and B",
+                s_binary_in, s_generic_out, 1, true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_MAX, "max", "Max", "The larger of A and B",
+                s_binary_in, s_generic_out, 1, true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_LERP, "lerp", "Lerp",
+                "A to B as T goes from 0 to 1", s_lerp_in, s_generic_out, 2,
+                true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_POWER, "power", "Power",
+                "X to the exponent; X below zero counts as zero", s_power_in,
+                s_generic_out, 4, true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_ONE_MINUS, "one_minus", "One minus",
+                "1 minus X", s_unary_in, s_generic_out, 1, true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_SATURATE, "saturate", "Saturate",
+                "X clamped to 0 to 1", s_unary_in, s_generic_out, 1, true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_ABS, "abs", "Abs", "X without its sign",
+                s_unary_in, s_generic_out, 1, true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_SINE, "sine", "Sine", "The sine of X radians",
+                s_unary_in, s_generic_out, 4, true_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_DOT, "dot", "Dot",
+                "The dot product of two three-component values", s_dot_in,
+                s_scalar_out, 2, false_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_SPLIT, "split", "Split",
+                "A three-component value's components", s_split_in, s_split_out,
+                0, false_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_COMBINE, "combine", "Combine",
+                "Three scalars as one value", s_combine_in, s_combine_out, 0,
+                false_v),
+    CUSTOM_NODE(VKR_MATERIAL_NODE_TILE_OFFSET, "tile_offset", "Tile and offset",
+                "UVs times the tiling (value x, y) plus the offset (z, w)",
+                s_tile_in, s_uv_out, 2, false_v),
+    CUSTOM_INPUT(VKR_MATERIAL_NODE_WORLD_PLANAR, "world_planar", "World planar",
+                 "UVs from the world X and Z, one repeat per value x meters",
+                 s_uv_out, 2),
+#undef CUSTOM_NODE
+#undef CUSTOM_INPUT
 };
 
 const VkrMaterialNodeDesc *vkr_material_node_desc(VkrMaterialNodeKind kind) {
@@ -269,37 +395,58 @@ static bool8_t graph_name_valid(const char *name) {
   return true_v;
 }
 
-/* The value output `port` of node `index` carries; a multiply carries a
-   colour when either input is one. `depth` bounds the walk on a cycle. */
+/* Components of a scalar, two- or three-component value; zero for the
+   other types. */
+static uint32_t graph_components(VkrMaterialValueType type) {
+  return type == VKR_MATERIAL_VALUE_SCALAR  ? 1u
+         : type == VKR_MATERIAL_VALUE_VEC2  ? 2u
+         : type == VKR_MATERIAL_VALUE_COLOR ? 3u
+                                            : 0u;
+}
+
+/* The value output `port` of node `index` carries; a generic node's has the
+   most components of its inputs typed colour. `depth` bounds the walk on a
+   cycle. */
 static VkrMaterialValueType graph_output_type(const VkrMaterialGraph *graph,
                                               uint32_t index, uint32_t port,
                                               uint32_t depth) {
   const VkrMaterialNode *node = &graph->nodes[index];
-  if (node->kind != VKR_MATERIAL_NODE_MULTIPLY) {
-    return vkr_material_node_desc(node->kind)->outputs[port].type;
+  const VkrMaterialNodeDesc *desc = vkr_material_node_desc(node->kind);
+  if (!desc->generic) {
+    return desc->outputs[port].type;
   }
   if (depth > VKR_MATERIAL_GRAPH_NODE_MAX) {
     return VKR_MATERIAL_VALUE_SCALAR;
   }
-  for (uint32_t i = 0; i < ArrayCount(s_multiply_in); ++i) {
+  VkrMaterialValueType widest = VKR_MATERIAL_VALUE_SCALAR;
+  for (uint32_t i = 0; i < desc->input_count; ++i) {
     const VkrMaterialLink link = node->inputs[i];
-    if (link.node &&
-        graph_output_type(graph, link.node - 1u, link.port, depth + 1u) ==
-            VKR_MATERIAL_VALUE_COLOR) {
-      return VKR_MATERIAL_VALUE_COLOR;
+    if (!link.node || desc->inputs[i].type != VKR_MATERIAL_VALUE_COLOR) {
+      continue;
+    }
+    const VkrMaterialValueType type =
+        graph_output_type(graph, link.node - 1u, link.port, depth + 1u);
+    if (graph_components(type) > graph_components(widest)) {
+      widest = type;
     }
   }
-  return VKR_MATERIAL_VALUE_SCALAR;
+  return widest;
+}
+
+VkrMaterialValueType
+vkr_material_graph_output_type(const VkrMaterialGraph *graph, uint32_t index,
+                               uint32_t port) {
+  return graph_output_type(graph, index, port, 0u);
 }
 
 /* Whether a `from` value may feed a `to` input: the same type, or a scalar
-   into a multiply's colour input. */
-static bool8_t graph_types_fit(VkrMaterialNodeKind kind,
+   or two-component value into a generic node's colour input. */
+static bool8_t graph_types_fit(const VkrMaterialNodeDesc *desc,
                                VkrMaterialValueType from,
                                VkrMaterialValueType to) {
-  return from == to || (kind == VKR_MATERIAL_NODE_MULTIPLY &&
-                        from == VKR_MATERIAL_VALUE_SCALAR &&
-                        to == VKR_MATERIAL_VALUE_COLOR);
+  return from == to || (desc->generic && to == VKR_MATERIAL_VALUE_COLOR &&
+                        (from == VKR_MATERIAL_VALUE_SCALAR ||
+                         from == VKR_MATERIAL_VALUE_VEC2));
 }
 
 bool8_t vkr_material_graph_validate(const VkrMaterialGraph *graph, char *error,
@@ -425,8 +572,9 @@ bool8_t vkr_material_graph_validate(const VkrMaterialGraph *graph, char *error,
       }
       const VkrMaterialValueType from =
           graph_output_type(graph, link.node - 1u, link.port, 0u);
-      if (!graph_types_fit(node->kind, from, desc->inputs[port].type)) {
-        static const char *const types[] = {"scalar", "colour", "normal"};
+      if (!graph_types_fit(desc, from, desc->inputs[port].type)) {
+        static const char *const types[VKR_MATERIAL_VALUE_TYPE_COUNT] = {
+            "scalar", "colour", "normal", "layer", "layers", "UV"};
         return graph_fail(error, capacity,
                           "Node '%s': input '%s' takes a %s, not a %s",
                           node->id, desc->inputs[port].name,
@@ -463,6 +611,10 @@ uint32_t vkr_material_graph_add(VkrMaterialGraph *graph,
   } else if (kind == VKR_MATERIAL_NODE_LAYER_BLEND) {
     /* Slope: layer 1 covers what faces up past about 45 degrees. */
     node->value = vec4_new(0.6f, 0.8f, 0.0f, 0.0f);
+  } else if (kind == VKR_MATERIAL_NODE_TILE_OFFSET) {
+    node->value = vec4_new(1.0f, 1.0f, 0.0f, 0.0f);
+  } else if (kind == VKR_MATERIAL_NODE_WORLD_PLANAR) {
+    node->value.x = 4.0f;
   }
   return graph->node_count++;
 }
@@ -796,6 +948,8 @@ bool8_t vkr_material_graph_read(String8 json, VkrMaterialGraph *out,
                              ? json_floats(&member, &node->value.x, 3u)
                          : node->kind == VKR_MATERIAL_NODE_LAYER_BLEND
                              ? json_floats(&member, &node->value.x, 2u)
+                         : node->kind == VKR_MATERIAL_NODE_TILE_OFFSET
+                             ? json_floats(&member, &node->value.x, 4u)
                              : vkr_json_parse_float(&member, &node->value.x) &&
                                    isfinite(node->value.x);
       if (!ok) {
@@ -873,8 +1027,15 @@ bool8_t vkr_material_graph_write(const VkrMaterialGraph *graph,
     if (node->parameter[0]) {
       text_append(&text, ", \"parameter\": \"%s\"", node->parameter);
     }
-    if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
+    if (node->kind == VKR_MATERIAL_NODE_SCALAR ||
+        node->kind == VKR_MATERIAL_NODE_WORLD_PLANAR) {
       text_append(&text, ", \"value\": " GRAPH_FLOAT, (double)node->value.x);
+    } else if (node->kind == VKR_MATERIAL_NODE_TILE_OFFSET) {
+      text_append(&text,
+                  ", \"value\": [" GRAPH_FLOAT ", " GRAPH_FLOAT ", " GRAPH_FLOAT
+                  ", " GRAPH_FLOAT "]",
+                  (double)node->value.x, (double)node->value.y,
+                  (double)node->value.z, (double)node->value.w);
     } else if (node->kind == VKR_MATERIAL_NODE_COLOR) {
       text_append(&text,
                   ", \"value\": [" GRAPH_FLOAT ", " GRAPH_FLOAT
@@ -1063,6 +1224,10 @@ static bool8_t lower_source(LowerContext *context, VkrMaterialLink link,
                         "Two textures multiply; blending textures needs a "
                         "Layered or Custom graph");
     }
+    if (node->inputs[0].node) {
+      return lower_fail(context, node,
+                        "A texture at UVs of its own needs a Custom graph");
+    }
     out->texture = node;
     out->port = link.port;
     return true_v;
@@ -1197,12 +1362,185 @@ static bool8_t lower_layers(LowerContext *context, GraphText *text,
   return true_v;
 }
 
+static bool8_t lower_standard(const VkrMaterialGraph *graph, String8 graph_path,
+                              const VkrMaterialParam *params,
+                              uint32_t param_count, VkrAllocator *allocator,
+                              String8 *out_definition,
+                              VkrMaterialLowering *out);
+
+/* Whether a graph uses a node only the Custom tier evaluates. */
+static bool8_t graph_needs_custom(const VkrMaterialGraph *graph) {
+  for (uint32_t i = 0; i < graph->node_count; ++i) {
+    const VkrMaterialNode *node = &graph->nodes[i];
+    if (vkr_material_node_desc(node->kind)->custom ||
+        (node->kind == VKR_MATERIAL_NODE_TEXTURE && node->inputs[0].node)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* A Custom graph's definition: the Standard fallback its constant outputs
+   give, its function, and its parameters and textures as row data. */
+static bool8_t lower_custom(const VkrMaterialGraph *graph, String8 graph_path,
+                            const VkrMaterialParam *params,
+                            uint32_t param_count, VkrAllocator *allocator,
+                            String8 *out_definition, VkrMaterialLowering *out) {
+  VkrMaterialCustomBinding binding;
+  String8 source = {0};
+  if (!vkr_material_codegen_msl(graph, allocator, &source, &binding, out)) {
+    return false_v;
+  }
+  LowerContext context = {
+      .graph = graph,
+      .graph_path = graph_path,
+      .params = params,
+      .param_count = param_count,
+      .allocator = allocator,
+      .result = out,
+  };
+  for (uint32_t i = 0; i < param_count; ++i) {
+    bool8_t found = false_v;
+    for (uint32_t n = 0; n < graph->node_count && !found; ++n) {
+      found = strcmp(graph->nodes[n].parameter, params[i].name) == 0;
+    }
+    if (!found) {
+      return lower_fail(&context, NULL, "The graph has no parameter '%s'",
+                        params[i].name);
+    }
+  }
+  GraphText text = {.allocator = allocator};
+  text_append(&text, "type=pbr\n");
+  /* The fallback: each core output fed straight by a constant. */
+  const VkrMaterialNode *output = NULL;
+  for (uint32_t i = 0; i < graph->node_count; ++i) {
+    if (graph->nodes[i].kind == VKR_MATERIAL_NODE_SURFACE_OUTPUT) {
+      output = &graph->nodes[i];
+    }
+  }
+  static const uint32_t fallbacks[] = {SURFACE_BASE_COLOR, SURFACE_METALLIC,
+                                       SURFACE_ROUGHNESS, SURFACE_EMISSIVE};
+  for (uint32_t f = 0; output && f < ArrayCount(fallbacks); ++f) {
+    const SurfaceInput *spec = &s_surface[fallbacks[f]];
+    const VkrMaterialLink link = output->inputs[fallbacks[f]];
+    const VkrMaterialNode *constant =
+        link.node ? &graph->nodes[link.node - 1u] : NULL;
+    Vec4 value = {0};
+    if (!constant ||
+        (constant->kind != VKR_MATERIAL_NODE_SCALAR &&
+         constant->kind != VKR_MATERIAL_NODE_COLOR) ||
+        !lower_constant(&context, constant, &value)) {
+      continue;
+    }
+    if (constant->kind == VKR_MATERIAL_NODE_SCALAR) {
+      value = vec4_new(value.x, value.x, value.x, 0.0f);
+    }
+    if (fallbacks[f] == SURFACE_BASE_COLOR) {
+      text_append(&text,
+                  "base_color=" GRAPH_FLOAT "," GRAPH_FLOAT "," GRAPH_FLOAT
+                  ",1\n",
+                  (double)value.x, (double)value.y, (double)value.z);
+    } else if (spec->port.type == VKR_MATERIAL_VALUE_COLOR) {
+      text_append(&text, "%s=" GRAPH_FLOAT "," GRAPH_FLOAT "," GRAPH_FLOAT "\n",
+                  spec->factor, (double)value.x, (double)value.y,
+                  (double)value.z);
+    } else {
+      text_append(&text, "%s=" GRAPH_FLOAT "\n", spec->factor, (double)value.x);
+    }
+  }
+  text_append(&text, "custom_function=%s\n", out->function);
+  for (uint32_t i = 0; i < binding.param_count; ++i) {
+    const VkrMaterialNode *node = &graph->nodes[binding.param_nodes[i]];
+    Vec4 value = {0};
+    if (!lower_constant(&context, node, &value)) {
+      return false_v;
+    }
+    if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
+      value = vec4_new(value.x, 0.0f, 0.0f, 0.0f);
+    }
+    text_append(&text,
+                "custom_param%u=" GRAPH_FLOAT "," GRAPH_FLOAT "," GRAPH_FLOAT
+                "\n",
+                i, (double)value.x, (double)value.y, (double)value.z);
+  }
+  for (uint32_t i = 0; i < binding.texture_count; ++i) {
+    const VkrMaterialNode *node = &graph->nodes[binding.texture_nodes[i]];
+    const char *path = lower_texture_path(&context, node);
+    if (!path) {
+      return lower_fail(&context, node, "The texture path '%s' is not valid",
+                        node->path);
+    }
+    text_append(&text, "custom%u_texture=%s\n", i, path);
+    if (binding.texture_normal[i]) {
+      text_append(&text, "custom%u_normal=true\n", i);
+    } else {
+      text_append(&text, "custom%u_colorspace=%s\n", i,
+                  binding.texture_srgb[i] ? "srgb" : "linear");
+    }
+  }
+  const VkrMaterialGraphSettings *settings = &graph->settings;
+  if (settings->alpha_mode != VKR_MATERIAL_GRAPH_ALPHA_INFER) {
+    text_append(&text, "alpha_mode=%s\n", s_alpha_names[settings->alpha_mode]);
+  }
+  if (settings->alpha_cutoff >= 0.0f) {
+    text_append(&text, "alpha_cutoff=" GRAPH_FLOAT "\n",
+                (double)settings->alpha_cutoff);
+  }
+  text_append(&text, "double_sided=%s\n",
+              settings->double_sided ? "true" : "false");
+  if (settings->world_size.x > 0.0f) {
+    text_append(&text, "world_size=" GRAPH_FLOAT "," GRAPH_FLOAT "\n",
+                (double)settings->world_size.x, (double)settings->world_size.y);
+  }
+  if (settings->surface[0]) {
+    text_append(&text, "surface=%s\n", settings->surface);
+  }
+  if (!text_finish(&text, out_definition)) {
+    return lower_fail(&context, NULL, "Out of memory for the definition");
+  }
+  out->tier = VKR_MATERIAL_TIER_CUSTOM;
+  return true_v;
+}
+
 bool8_t vkr_material_graph_lower(const VkrMaterialGraph *graph,
                                  String8 graph_path,
                                  const VkrMaterialParam *params,
                                  uint32_t param_count, VkrAllocator *allocator,
                                  String8 *out_definition,
                                  VkrMaterialLowering *out) {
+  /* Standard first; a graph it refuses becomes Custom when it generates.
+     A graph of Standard nodes alone that does not generate keeps the
+     Standard reason, which says what to change. */
+  if (!graph_needs_custom(graph) &&
+      lower_standard(graph, graph_path, params, param_count, allocator,
+                     out_definition, out)) {
+    return true_v;
+  }
+  const VkrMaterialLowering standard = *out;
+  if (lower_custom(graph, graph_path, params, param_count, allocator,
+                   out_definition, out)) {
+    /* Why the graph costs a shader: what the Standard tier refused. */
+    if (!graph_needs_custom(graph)) {
+      snprintf(out->reason, sizeof(out->reason), "%s", standard.reason);
+      snprintf(out->node, sizeof(out->node), "%s", standard.node);
+    } else {
+      snprintf(out->reason, sizeof(out->reason),
+               "It uses nodes only a Custom graph evaluates");
+      out->node[0] = '\0';
+    }
+    return true_v;
+  }
+  if (!graph_needs_custom(graph) && standard.reason[0]) {
+    *out = standard;
+  }
+  return false_v;
+}
+
+static bool8_t lower_standard(const VkrMaterialGraph *graph, String8 graph_path,
+                              const VkrMaterialParam *params,
+                              uint32_t param_count, VkrAllocator *allocator,
+                              String8 *out_definition,
+                              VkrMaterialLowering *out) {
   *out = (VkrMaterialLowering){.tier = VKR_MATERIAL_TIER_STANDARD};
   LowerContext context = {
       .graph = graph,

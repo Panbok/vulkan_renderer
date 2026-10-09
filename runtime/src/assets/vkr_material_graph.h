@@ -39,6 +39,9 @@ typedef enum VkrMaterialValueType {
   /* A layer material, and the layers a blend mixes over the surface. */
   VKR_MATERIAL_VALUE_LAYER,
   VKR_MATERIAL_VALUE_LAYERS,
+  /* Two components: texture coordinates. */
+  VKR_MATERIAL_VALUE_VEC2,
+  VKR_MATERIAL_VALUE_TYPE_COUNT,
 } VkrMaterialValueType;
 
 typedef enum VkrMaterialNodeKind {
@@ -59,6 +62,34 @@ typedef enum VkrMaterialNodeKind {
      `value` x to y. */
   VKR_MATERIAL_NODE_LAYER_BLEND,
   VKR_MATERIAL_NODE_SURFACE_OUTPUT,
+  /* Custom-tier nodes (proposal part 3): a graph that uses one generates a
+     surface function of its own. Inputs from the shaded point: */
+  VKR_MATERIAL_NODE_UV,
+  VKR_MATERIAL_NODE_VERTEX_COLOR,
+  VKR_MATERIAL_NODE_WORLD_POSITION,
+  VKR_MATERIAL_NODE_WORLD_NORMAL,
+  VKR_MATERIAL_NODE_TIME,
+  VKR_MATERIAL_NODE_CAMERA_DISTANCE,
+  /* Math on scalars, two- and three-component values; the result has the
+     most components of the inputs. */
+  VKR_MATERIAL_NODE_ADD,
+  VKR_MATERIAL_NODE_SUBTRACT,
+  VKR_MATERIAL_NODE_DIVIDE,
+  VKR_MATERIAL_NODE_MIN,
+  VKR_MATERIAL_NODE_MAX,
+  VKR_MATERIAL_NODE_LERP,
+  VKR_MATERIAL_NODE_POWER,
+  VKR_MATERIAL_NODE_ONE_MINUS,
+  VKR_MATERIAL_NODE_SATURATE,
+  VKR_MATERIAL_NODE_ABS,
+  VKR_MATERIAL_NODE_SINE,
+  VKR_MATERIAL_NODE_DOT,
+  VKR_MATERIAL_NODE_SPLIT,
+  VKR_MATERIAL_NODE_COMBINE,
+  /* Coordinates: UVs times `value` xy plus zw; world XZ over `value` x
+     meters a repeat. */
+  VKR_MATERIAL_NODE_TILE_OFFSET,
+  VKR_MATERIAL_NODE_WORLD_PLANAR,
   VKR_MATERIAL_NODE_KIND_COUNT,
 } VkrMaterialNodeKind;
 
@@ -79,6 +110,11 @@ typedef struct VkrMaterialNodeDesc {
   /* Texture samples and arithmetic the node costs per pixel. */
   uint32_t samples;
   uint32_t alu;
+  /* Its inputs typed colour take scalars, two- and three-component values,
+     and its output has the most components of what it takes. */
+  bool8_t generic;
+  /* Only the Custom tier evaluates it. */
+  bool8_t custom;
 } VkrMaterialNodeDesc;
 
 /* An input's source: output `port` of node `node - 1`; node 0 is none. */
@@ -155,11 +191,13 @@ typedef struct VkrMaterialGraph {
   VkrMaterialNode nodes[VKR_MATERIAL_GRAPH_NODE_MAX];
 } VkrMaterialGraph;
 
-/* How a graph lowers. Phase 2 lowers Standard graphs only; another graph
-   reports why it is not Standard. */
+/* How a graph lowers: Standard to row data alone; Custom to a generated
+   surface function (vkr_material_codegen.h) with a Standard fallback; or
+   not at all, with the reason. */
 typedef enum VkrMaterialTier {
   VKR_MATERIAL_TIER_STANDARD = 0,
   VKR_MATERIAL_TIER_UNSUPPORTED,
+  VKR_MATERIAL_TIER_CUSTOM,
 } VkrMaterialTier;
 
 typedef struct VkrMaterialLowering {
@@ -172,6 +210,9 @@ typedef struct VkrMaterialLowering {
   uint32_t alu;
   /* Layers blended over the surface (0 to 3). */
   uint32_t layers;
+  /* A Custom graph's surface function, `vkr_custom_<16 hex digits>` of its
+     generated source; empty for Standard. */
+  char function[VKR_MATERIAL_GRAPH_ID_CAPACITY];
 } VkrMaterialLowering;
 
 /* One instance override: a parameter name and its `.mt` value text. */
@@ -195,6 +236,11 @@ typedef struct VkrMaterialInstance {
 /* The node type registry; NULL past the last kind. */
 const VkrMaterialNodeDesc *vkr_material_node_desc(VkrMaterialNodeKind kind);
 bool8_t vkr_material_node_find(String8 name, VkrMaterialNodeKind *out);
+/* The value output `port` of node `index` carries: a generic node's has the
+   most components of its inputs. */
+VkrMaterialValueType
+vkr_material_graph_output_type(const VkrMaterialGraph *graph, uint32_t index,
+                               uint32_t port);
 /* The input or output port named `name` of `kind`, or UINT32_MAX. */
 uint32_t vkr_material_node_input(VkrMaterialNodeKind kind, String8 name);
 uint32_t vkr_material_node_output(VkrMaterialNodeKind kind, String8 name);

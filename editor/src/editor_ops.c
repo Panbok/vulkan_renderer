@@ -9740,13 +9740,21 @@ static VkrBakeryJson *ops_material_lowering(OpsContext *ctx,
       graph, string8_create_from_cstr((const uint8_t *)graph_path,
                                       strlen(graph_path)),
       params, param_count, &allocator, &text, &lowering);
+  const bool8_t custom = lowered && lowering.tier == VKR_MATERIAL_TIER_CUSTOM;
   ops_set(ctx, report, "tier",
-          vkr_bakery_json_cstr(arena, lowered ? "standard" : "unsupported"));
-  if (!lowered) {
+          vkr_bakery_json_cstr(arena, !lowered ? "unsupported"
+                                      : custom ? "custom"
+                                               : "standard"));
+  /* Why a graph is not Standard: what stopped it, or what it uses. */
+  if (!lowered || custom) {
     ops_set(ctx, report, "reason", vkr_bakery_json_cstr(arena, lowering.reason));
     if (lowering.node[0]) {
       ops_set(ctx, report, "node", vkr_bakery_json_cstr(arena, lowering.node));
     }
+  }
+  if (custom) {
+    ops_set(ctx, report, "function",
+            vkr_bakery_json_cstr(arena, lowering.function));
   }
   ops_set(ctx, report, "samples", vkr_bakery_json_int(arena, lowering.samples));
   ops_set(ctx, report, "alu", vkr_bakery_json_int(arena, lowering.alu));
@@ -10278,6 +10286,19 @@ static bool8_t ops_material_node_fields(OpsContext *ctx,
         return false_v;
       }
       node->value = vec4_new(range[0], range[1], 0.0f, 0.0f);
+    } else if (node->kind == VKR_MATERIAL_NODE_TILE_OFFSET) {
+      float32_t tile[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+      if (!ops_arg_floats(ctx, edit, "value", tile, 4u, NULL)) {
+        return false_v;
+      }
+      node->value = vec4_new(tile[0], tile[1], tile[2], tile[3]);
+    } else if (node->kind == VKR_MATERIAL_NODE_WORLD_PLANAR) {
+      float64_t meters = 0.0;
+      if (!ops_arg_number(edit, "value", &meters) || !(meters > 0.0)) {
+        return ops_fail(ctx, OPS_INVALID,
+                        "World planar's value is meters a repeat, above zero");
+      }
+      node->value.x = (float32_t)meters;
     } else {
       return ops_fail(ctx, OPS_INVALID,
                       "Only scalars, colours and layer blends (a [from, to] "
@@ -12332,10 +12353,14 @@ static const OpsDef s_ops[] = {
     {"material.patch",
      "Edit a graph (.mtg) as one undo step: 'edits' in order, each an 'op': "
      "add {type, id?, value?, path?, parameter?, color_space?, mask?, "
-     "position?} (types: scalar, color, texture, multiply, normal_map, layer "
-     "(path to a layer .mt), layer_blend (mask vertex_color, texture with "
-     "path, slope or height with value [from, to]; into output.layers), "
-     "surface_output), "
+     "position?} (types: scalar, color, texture (input uv), multiply, "
+     "normal_map, layer (path to a layer .mt), layer_blend (mask "
+     "vertex_color, texture with path, slope or height with value [from, "
+     "to]; into output.layers), surface_output; Custom-tier nodes, which "
+     "cost a shader: uv, vertex_color, world_position, world_normal, time, "
+     "camera_distance, add, subtract, divide, min, max, lerp, power, "
+     "one_minus, saturate, abs, sine, dot, split, combine, tile_offset "
+     "(value [tile x, y, offset x, y]), world_planar (value meters)), "
      "remove {id}, connect {from: \"node.output\", to: \"node.input\"}, "
      "disconnect {to}, set {id, value?, path?, parameter?, color_space?, "
      "position?, rename?} or settings {alpha_mode?, alpha_cutoff?, "

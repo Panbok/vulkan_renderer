@@ -1204,10 +1204,12 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
       continue;
     }
     /* A surface tag does not change light. A layered material bakes as its
-       layer 0: the bake does not evaluate layer masks. */
+       layer 0, and a Custom material as its Standard fallback: the bake
+       evaluates neither layer masks nor generated surface functions. */
     if (key == "surface" || key == "layer1" || key == "layer2" ||
         key == "layer3" || key == "layer_mask" || key == "layer_mask_range" ||
-        key == "layer_mask_texture") {
+        key == "layer_mask_texture" || key == "custom_function" ||
+        key.rfind("custom", 0) == 0) {
       continue;
     }
     if (key == "world_size") {

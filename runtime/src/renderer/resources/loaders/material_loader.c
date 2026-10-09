@@ -378,7 +378,9 @@ vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
 
 vkr_internal const char *
 vkr_material_colorspace_to_string(VkrMaterialTextureColorSpace colorspace) {
-  return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB ? "srgb" : "linear";
+  return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB     ? "srgb"
+         : colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_NORMAL ? "normal"
+                                                                : "linear";
 }
 
 vkr_internal const char *
@@ -415,6 +417,15 @@ vkr_material_texture_class_query_suffix(VkrMaterialTextureClass texture_class) {
 
 vkr_internal VkrMaterialTextureClass vkr_material_texture_class_from_slot(
     VkrTextureSlot slot, VkrMaterialTextureColorSpace colorspace) {
+  /* A Custom slot's class is what its graph uses it for: colour, a normal
+     map or data. */
+  if (slot >= VKR_TEXTURE_SLOT_CUSTOM0 && slot <= VKR_TEXTURE_SLOT_CUSTOM7) {
+    return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB
+               ? VKR_MATERIAL_TEXTURE_CLASS_COLOR_SRGB
+           : colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_NORMAL
+               ? VKR_MATERIAL_TEXTURE_CLASS_NORMAL_RG
+               : VKR_MATERIAL_TEXTURE_CLASS_DATA_MASK;
+  }
   switch (slot) {
   case VKR_TEXTURE_SLOT_DIFFUSE:
   case VKR_TEXTURE_SLOT_EMISSION:
@@ -499,6 +510,22 @@ vkr_internal const char *vkr_material_slot_name(VkrTextureSlot slot) {
     return "layer3_orm";
   case VKR_TEXTURE_SLOT_LAYER_MASK:
     return "layer_mask";
+  case VKR_TEXTURE_SLOT_CUSTOM0:
+    return "custom0";
+  case VKR_TEXTURE_SLOT_CUSTOM1:
+    return "custom1";
+  case VKR_TEXTURE_SLOT_CUSTOM2:
+    return "custom2";
+  case VKR_TEXTURE_SLOT_CUSTOM3:
+    return "custom3";
+  case VKR_TEXTURE_SLOT_CUSTOM4:
+    return "custom4";
+  case VKR_TEXTURE_SLOT_CUSTOM5:
+    return "custom5";
+  case VKR_TEXTURE_SLOT_CUSTOM6:
+    return "custom6";
+  case VKR_TEXTURE_SLOT_CUSTOM7:
+    return "custom7";
   default:
     return "unknown";
   }
@@ -934,6 +961,10 @@ vkr_material_loader_init_from_parsed(VkrMaterial *material,
     material->alpha_cutoff = VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
   }
   vkr_material_loader_init_layers(material, parsed, material_system);
+  MemCopy(material->custom_function, parsed->custom_function,
+          sizeof(material->custom_function));
+  MemCopy(material->custom_params, parsed->custom_params,
+          sizeof(material->custom_params));
   if (material->alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT &&
       material->alpha_cutoff <= 0.0f) {
     material->alpha_cutoff = VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
@@ -1863,6 +1894,26 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_state_key(
   return VKR_MATERIAL_KEY_MATCHED;
 }
 
+/* Whether `key` is `prefix`, one decimal slot and `suffix` exactly, and the
+   slot. */
+vkr_internal bool8_t vkr_material_custom_key(String8 key, const char *prefix,
+                                             const char *suffix,
+                                             uint32_t *out_slot) {
+  const uint64_t prefix_length = string_length(prefix);
+  const uint64_t suffix_length = string_length(suffix);
+  if (key.length != prefix_length + 1u + suffix_length ||
+      MemCompare(key.str, prefix, prefix_length) != 0 ||
+      MemCompare(key.str + prefix_length + 1u, suffix, suffix_length) != 0) {
+    return false_v;
+  }
+  const uint8_t digit = key.str[prefix_length];
+  if (digit < '0' || digit > '9') {
+    return false_v;
+  }
+  *out_slot = (uint32_t)(digit - '0');
+  return true_v;
+}
+
 /* Applies one `key = value` line. False rejects the material with
  * `parse_error` set; unknown keys are ignored. */
 vkr_internal bool8_t vkr_material_loader_parse_key(
@@ -1899,6 +1950,81 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
       return false_v;
     }
     out_data->world_size = size;
+    return true_v;
+  }
+
+  /* A Custom graph's function, parameters and textures. */
+  if (vkr_string8_equals_cstr_i(&key, "custom_function")) {
+    if (value.length < 12u ||
+        value.length >= VKR_MATERIAL_CUSTOM_FUNCTION_CAPACITY ||
+        MemCompare(value.str, "vkr_custom_", 11u) != 0) {
+      log_error("Material: custom_function names a vkr_custom_ function in "
+                "'%.*s'",
+                (int)path.length, path.str);
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    MemCopy(out_data->custom_function, value.str, value.length);
+    out_data->custom_function[value.length] = '\0';
+    out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+    return true_v;
+  }
+  uint32_t slot = 0u;
+  if (vkr_material_custom_key(key, "custom_param", "", &slot)) {
+    Vec3 values = {0};
+    float32_t scalar = 0.0f;
+    if (slot >= VKR_MATERIAL_CUSTOM_PARAMS) {
+      log_error("Material: custom_param slots run 0 to %u in '%.*s'",
+                VKR_MATERIAL_CUSTOM_PARAMS - 1u, (int)path.length, path.str);
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    if (!string8_to_vec3(&value, &values)) {
+      if (!string8_to_f32(&value, &scalar)) {
+        log_error("Material: custom_param%u is a number or x,y,z in '%.*s'",
+                  slot, (int)path.length, path.str);
+        out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        return false_v;
+      }
+      values = vec3_new(scalar, 0.0f, 0.0f);
+    }
+    out_data->custom_params[slot] =
+        vec4_new(values.x, values.y, values.z, 0.0f);
+    return true_v;
+  }
+  const bool8_t texture =
+      vkr_material_custom_key(key, "custom", "_texture", &slot);
+  const bool8_t space =
+      !texture && vkr_material_custom_key(key, "custom", "_colorspace", &slot);
+  const bool8_t normal =
+      !texture && !space &&
+      vkr_material_custom_key(key, "custom", "_normal", &slot);
+  if (texture || space || normal) {
+    if (slot >= VKR_MATERIAL_CUSTOM_TEXTURES) {
+      log_error("Material: Custom texture slots run 0 to %u in '%.*s'",
+                VKR_MATERIAL_CUSTOM_TEXTURES - 1u, (int)path.length, path.str);
+      out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    const VkrTextureSlot texture_slot =
+        (VkrTextureSlot)(VKR_TEXTURE_SLOT_CUSTOM0 + slot);
+    if (texture && value.length > 0 && value.length < VKR_MATERIAL_PATH_MAX) {
+      MemCopy(out_data->texture_paths[texture_slot], value.str,
+              (size_t)value.length);
+      out_data->texture_paths[texture_slot][value.length] = '\0';
+    } else if (space) {
+      out_data->texture_colorspace[texture_slot] =
+          vkr_string8_equals_cstr_i(&value, "srgb")
+              ? VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB
+              : VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+    } else if (normal) {
+      bool8_t is_normal = false_v;
+      (void)string8_to_bool(&value, &is_normal);
+      if (is_normal) {
+        out_data->texture_colorspace[texture_slot] =
+            VKR_MATERIAL_TEXTURE_COLORSPACE_NORMAL;
+      }
+    }
     return true_v;
   }
 
@@ -2058,8 +2184,10 @@ vkr_material_loader_validate_parsed(VkrParsedMaterialData *out_data) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
   }
 
+  /* Custom slots take their class from the file, so they are not checked
+     against a slot's intent. */
   for (uint32_t slot = VKR_TEXTURE_SLOT_CLEARCOAT;
-       slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+       slot <= VKR_TEXTURE_SLOT_LAYER_MASK; ++slot) {
     String8 texture_path =
         string8_create_from_cstr((const uint8_t *)out_data->texture_paths[slot],
                                  string_length(out_data->texture_paths[slot]));
@@ -2803,6 +2931,10 @@ vkr_internal bool8_t vkr_material_batch_create_material(
     material->alpha_cutoff = VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
   }
   vkr_material_loader_init_layers(material, parsed, mat_sys);
+  MemCopy(material->custom_function, parsed->custom_function,
+          sizeof(material->custom_function));
+  MemCopy(material->custom_params, parsed->custom_params,
+          sizeof(material->custom_params));
 
   for (uint32_t t = 0; t < textures->count; t++) {
     if (textures->material_index[t] == material_index &&

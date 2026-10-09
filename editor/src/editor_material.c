@@ -1032,6 +1032,7 @@ typedef struct MaterialNodeEdit {
   uint32_t color_space;
   uint32_t mask;
   Vec2 range;
+  Vec4 tile;
 } MaterialNodeEdit;
 
 static const char *const s_mask_labels[] = {"Vertex colour", "Mask texture",
@@ -1051,6 +1052,7 @@ enum {
   NODE_EDIT_COLOR_SPACE,
   NODE_EDIT_MASK,
   NODE_EDIT_RANGE,
+  NODE_EDIT_TILE,
 };
 
 static const VkrPropertyDesc s_node_edit_properties[] = {
@@ -1109,6 +1111,12 @@ static const VkrPropertyDesc s_node_edit_properties[] = {
                          .offset = offsetof(MaterialNodeEdit, range),
                          .kind = VKR_PROPERTY_VEC2,
                          .step = 0.01f},
+    [NODE_EDIT_TILE] = {.name = "tile",
+                        .label = "Tile, offset",
+                        .tooltip = "UVs times x and y, plus z and w",
+                        .offset = offsetof(MaterialNodeEdit, tile),
+                        .kind = VKR_PROPERTY_VEC4,
+                        .step = 0.01f},
 };
 
 /* Only the fields a node kind has show; `context` is the kind. */
@@ -1125,7 +1133,11 @@ static VkrPropertyState node_edit_state(const void *value, uint32_t property,
             kind == VKR_MATERIAL_NODE_LAYER;
     break;
   case NODE_EDIT_VALUE:
-    shown = kind == VKR_MATERIAL_NODE_SCALAR;
+    shown = kind == VKR_MATERIAL_NODE_SCALAR ||
+            kind == VKR_MATERIAL_NODE_WORLD_PLANAR;
+    break;
+  case NODE_EDIT_TILE:
+    shown = kind == VKR_MATERIAL_NODE_TILE_OFFSET;
     break;
   case NODE_EDIT_COLOR:
     shown = kind == VKR_MATERIAL_NODE_COLOR;
@@ -1456,6 +1468,7 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
         .color_space = (uint32_t)node->color_space,
         .mask = (uint32_t)node->mask,
         .range = vec2_new(node->value.x, node->value.y),
+        .tile = node->value,
     };
     snprintf(edit.id, sizeof(edit.id), "%s", node->id);
     snprintf(edit.parameter, sizeof(edit.parameter), "%s", node->parameter);
@@ -1480,6 +1493,8 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
               ? vec4_new(edit.color.x, edit.color.y, edit.color.z, 0.0f)
           : node->kind == VKR_MATERIAL_NODE_LAYER_BLEND
               ? vec4_new(edit.range.x, edit.range.y, 0.0f, 0.0f)
+          : node->kind == VKR_MATERIAL_NODE_TILE_OFFSET
+              ? edit.tile
               : vec4_new(edit.value, 0.0f, 0.0f, 0.0f);
       panel_save_graph(editor, frame);
     }
@@ -1645,6 +1660,13 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
              "Binds %u of %u surface tags \xc2\xb7 faces of a bound tag "
              "show its material unless they have their own",
              bound, VKR_SURFACE_COUNT - 1u);
+  } else if (panel->lowered &&
+             panel->lowering.tier == VKR_MATERIAL_TIER_CUSTOM) {
+    snprintf(status, sizeof(status),
+             "Custom \xc2\xb7 %u sample%s \xc2\xb7 %s \xc2\xb7 %s",
+             panel->lowering.samples, panel->lowering.samples == 1u ? "" : "s",
+             panel->lowering.function, panel->lowering.reason);
+    status_color = theme->warning;
   } else if (panel->lowered) {
     snprintf(status, sizeof(status),
              "Standard \xc2\xb7 %u sample%s \xc2\xb7 %u layer%s \xc2\xb7 +0 "
@@ -1711,17 +1733,71 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
   }
 }
 
+/* The add-node menu; the Custom groups hold the nodes only Custom graphs
+   evaluate. */
 static const VkrEditorGraphChoice s_choices[] = {
-    {"Scalar", "Inputs"},      {"Colour", "Inputs"},
-    {"Texture", "Inputs"},     {"Layer", "Inputs"},
-    {"Multiply", "Math"},      {"Normal map", "Math"},
-    {"Layer blend", "Layers"}, {"Surface output", "Output"},
+    {"Scalar", "Inputs"},
+    {"Colour", "Inputs"},
+    {"Texture", "Inputs"},
+    {"Layer", "Inputs"},
+    {"Multiply", "Math"},
+    {"Normal map", "Math"},
+    {"Layer blend", "Layers"},
+    {"Surface output", "Output"},
+    {"UV", "Custom inputs"},
+    {"Vertex colour", "Custom inputs"},
+    {"World position", "Custom inputs"},
+    {"World normal", "Custom inputs"},
+    {"Time", "Custom inputs"},
+    {"Camera distance", "Custom inputs"},
+    {"Add", "Custom math"},
+    {"Subtract", "Custom math"},
+    {"Divide", "Custom math"},
+    {"Min", "Custom math"},
+    {"Max", "Custom math"},
+    {"Lerp", "Custom math"},
+    {"Power", "Custom math"},
+    {"One minus", "Custom math"},
+    {"Saturate", "Custom math"},
+    {"Abs", "Custom math"},
+    {"Sine", "Custom math"},
+    {"Dot", "Custom math"},
+    {"Split", "Custom math"},
+    {"Combine", "Custom math"},
+    {"Tile and offset", "Custom coordinates"},
+    {"World planar", "Custom coordinates"},
 };
 static const VkrMaterialNodeKind s_choice_kinds[] = {
-    VKR_MATERIAL_NODE_SCALAR,      VKR_MATERIAL_NODE_COLOR,
-    VKR_MATERIAL_NODE_TEXTURE,     VKR_MATERIAL_NODE_LAYER,
-    VKR_MATERIAL_NODE_MULTIPLY,    VKR_MATERIAL_NODE_NORMAL_MAP,
-    VKR_MATERIAL_NODE_LAYER_BLEND, VKR_MATERIAL_NODE_SURFACE_OUTPUT,
+    VKR_MATERIAL_NODE_SCALAR,
+    VKR_MATERIAL_NODE_COLOR,
+    VKR_MATERIAL_NODE_TEXTURE,
+    VKR_MATERIAL_NODE_LAYER,
+    VKR_MATERIAL_NODE_MULTIPLY,
+    VKR_MATERIAL_NODE_NORMAL_MAP,
+    VKR_MATERIAL_NODE_LAYER_BLEND,
+    VKR_MATERIAL_NODE_SURFACE_OUTPUT,
+    VKR_MATERIAL_NODE_UV,
+    VKR_MATERIAL_NODE_VERTEX_COLOR,
+    VKR_MATERIAL_NODE_WORLD_POSITION,
+    VKR_MATERIAL_NODE_WORLD_NORMAL,
+    VKR_MATERIAL_NODE_TIME,
+    VKR_MATERIAL_NODE_CAMERA_DISTANCE,
+    VKR_MATERIAL_NODE_ADD,
+    VKR_MATERIAL_NODE_SUBTRACT,
+    VKR_MATERIAL_NODE_DIVIDE,
+    VKR_MATERIAL_NODE_MIN,
+    VKR_MATERIAL_NODE_MAX,
+    VKR_MATERIAL_NODE_LERP,
+    VKR_MATERIAL_NODE_POWER,
+    VKR_MATERIAL_NODE_ONE_MINUS,
+    VKR_MATERIAL_NODE_SATURATE,
+    VKR_MATERIAL_NODE_ABS,
+    VKR_MATERIAL_NODE_SINE,
+    VKR_MATERIAL_NODE_DOT,
+    VKR_MATERIAL_NODE_SPLIT,
+    VKR_MATERIAL_NODE_COMBINE,
+    VKR_MATERIAL_NODE_TILE_OFFSET,
+    VKR_MATERIAL_NODE_WORLD_PLANAR,
 };
 _Static_assert(ArrayCount(s_choices) == ArrayCount(s_choice_kinds),
                "one node kind per add-node choice");
@@ -1729,7 +1805,9 @@ _Static_assert(ArrayCount(s_choices) == ArrayCount(s_choice_kinds),
 /* The canvas port type of a value type; a multiply's inputs take any. */
 static uint32_t panel_port_type(VkrMaterialNodeKind kind, bool8_t input,
                                 VkrMaterialValueType type) {
-  if (kind == VKR_MATERIAL_NODE_MULTIPLY && input) {
+  /* A generic node's colour inputs take scalars, UVs and colours. */
+  if (input && vkr_material_node_desc(kind)->generic &&
+      type == VKR_MATERIAL_VALUE_COLOR) {
     return VKR_EDITOR_GRAPH_PORT_ANY;
   }
   return (uint32_t)type;

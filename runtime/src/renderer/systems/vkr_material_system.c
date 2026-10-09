@@ -850,6 +850,10 @@ static void vkr_material_system_apply_replacement(VkrMaterialSystem *system,
   material->terrain = definition->terrain;
   material->layer_mask = definition->layer_mask;
   material->layer_mask_range = definition->layer_mask_range;
+  MemCopy(material->custom_function, definition->custom_function,
+          sizeof(material->custom_function));
+  MemCopy(material->custom_params, definition->custom_params,
+          sizeof(material->custom_params));
   MemCopy(material->layers, definition->layers, sizeof(material->layers));
   MemCopy(material->textures, definition->textures, sizeof(material->textures));
   for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
