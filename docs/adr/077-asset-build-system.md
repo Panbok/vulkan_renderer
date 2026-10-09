@@ -209,7 +209,8 @@ from it.
 - **Daemon.** `vkr_bakery serve --root <dir> [--socket <path>] [--idle-exit
   <s>]` ([daemon](../../tools/bakery/vkr_bakery_serve.c)) accepts version 1
   newline-delimited JSON requests on a local socket: `run` (the `cook`,
-  `build`, `shaders`, `status`, `inspect`, `explain` and `gc` commands, with
+  `build`, `shaders`, `materials`, `status`, `inspect`, `explain` and `gc`
+  commands, with
   interactive requests ahead of watch rebuilds), `watch` (paths, with an
   optional command rerun after each settled change), `unwatch`, `cancel`,
   `ping` and `shutdown`. Events carry the request (`req`) or watch (`watch`)
@@ -226,9 +227,15 @@ from it.
   reruns a rebuild the exit interrupted, and shuts it down on close. It
   deviates from the proposal's per-project socket in the workspace: watches
   already scope work to the open project, and a per-process socket needs no
-  cross-editor ownership rule. Two watches use it:
+  cross-editor ownership rule. Three watches use it:
   - Shader sources recompile the catalog this editor loaded; the Console asks
     for a restart because the renderer has no pipeline hot reload.
+  - The content root's `assets/` and the catalog's `metal/library.metal`
+    rerun `vkr_bakery materials` on Metal hosts.
+    When it compiled the project's Custom material library, the renderer
+    reloads it ([ADR-096](096-custom-material-graphs.md)). Its failures are
+    `VKR-MAT-0001`, and a project past the Custom graph budget is
+    `VKR-MAT-0002`.
   - The open project's directory marks a Content item Changed or Missing when
     its source or artifact changes on disk after the listing was read. An
     edited source of an asset in the open scene queues that asset's Rebuild

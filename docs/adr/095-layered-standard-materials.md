@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: implemented
 updated: 2026-10-09
 authority: adr
 ---

@@ -90,7 +90,7 @@ The tiled pipeline ([ADR-087](087-gpu-class-graphics-pipelines.md)) runs only
 on Metal. It shares kernels and host records with the desktop pipeline:
 
 - **Changed contracts.**
-  - The 576-byte Metal frame root carries `lightmap` at byte 544, the address
+  - The Metal frame root carries `lightmap` at byte 544, the address
     of a 96-byte `VkrMetalPacketLightmap`, `terrain_materials` at byte 552
     and `transmission_materials` at byte 560; the tiled sky root is 128
     bytes. Both are pinned in
@@ -101,6 +101,12 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     `VkrMetalPacketDecal` rows and the decal grid's cell masks, or zero on
     frames without decals. MSL reads the rows; the Slang mirror keeps their
     address ([ADR-092](092-projected-decals.md)).
+  - The frame root grew to 592 bytes for Custom material graphs
+    ([ADR-096](096-custom-material-graphs.md)): `custom_materials` at byte
+    576 addresses the 256-byte `VkrMetalPacketCustomMaterial` rows, and
+    `custom_time` at byte 292 takes the first reserved point-light word. The
+    GPU draw root's `custom_compaction` at byte 184, its former reserved
+    word, addresses the frame's 4,240-byte `VkrMetalCustomCompaction`.
   - The tiled resolve kernel leaves in the resolved colour's alpha the share
     of each pixel's resolve weight that surfaces hold, as the sky writes
     alpha zero. The atmosphere draw reads it through programmable blending
@@ -166,6 +172,22 @@ borrow the existing visible-draw buffer at graph binding 11, without new images.
 restrictions and offline transport. The 2026-09-12 Windows sweep passes a Debug
 synchronization-validation resize; Vulkan output checks of front/back energy,
 tint, absorption, shadow occlusion and cutout coverage are pending.
+
+## Custom material graph evidence state
+
+Custom material graphs ([ADR-096](096-custom-material-graphs.md)) run only
+on the tiled pipeline. Their generated MSL instantiates the tiled forward
+template with `VkrMetalCustomSurface`, and the GPU draw kernels bucket the
+camera's Custom draws per graph. The host rows, the 592-byte frame root and
+the compaction table are pinned in `vkr_metal_packet_abi.c` and
+`vkr_metal_packet_abi.h`. On 2026-10-09 the Metal tiled pipeline:
+- drew eight Custom graphs on Bistro brushes with no late draw after
+  creation;
+- matched a Standard graph bit for bit in the Unlit view;
+- passed Metal API validation.
+
+Vulkan draws each Custom material's Standard fallback. Its classification
+and per-graph resolve wait for a Windows host.
 
 ## Terrain layer evidence state
 
@@ -648,6 +670,7 @@ domain under the [evidence rules](#evidence-rules).
 | Culling, draw encoding and geometry decode | Shared | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang` |
 | Geometry LOD and terrain geomorph | Shared | `shared/lod_kernel.slangh`, `terrain_kernel.slangh`, `gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal`, `metal/msl/world/tiled.metal`, `metal/slang/world/default.slang` | `vulkan/slang/world/deferred.slang`, `common/vertex.slangh` |
 | Terrain and layered material blend | Shared | `shared/terrain_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
+| Custom material graphs | Tiled | — | `metal/msl/world/tiled.metal`, `metal/msl/world/gpu_draws.metal`, generated `project_materials.metal` | — (draws the Standard fallback) |
 | Tiled forward, atmosphere and blend | Tiled | shared material, light, fog, atmosphere and transmission kernels below | `metal/msl/world/tiled.metal`, `lighting.metalh`, `metal/msl/shadow/sampling.metalh` | — |
 | Projected decals | Shared semantics, one implementation per backend | — | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
 | Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |

@@ -13,8 +13,9 @@ set dressing. Part 1 is implemented and recorded in ADR-084, the
 Standard tier of Parts 2 and 5 in
 [ADR-093](../adr/093-material-graphs-and-art-workbench.md), the bindings,
 world size and lint of Part 6 in
-[ADR-094](../adr/094-surface-themes-and-art-pass.md), and layered Standard
-materials in [ADR-095](../adr/095-layered-standard-materials.md); this
+[ADR-094](../adr/094-surface-themes-and-art-pass.md), layered Standard
+materials in [ADR-095](../adr/095-layered-standard-materials.md), and Custom
+graphs on Metal in [ADR-096](../adr/096-custom-material-graphs.md); this
 proposal keeps their remaining scope and the other parts:
 
 1. Surface tags and fixed greybox looks with measurement aids in the level
@@ -377,6 +378,10 @@ the layer UV sources and mask selectors in its cold segment.
 
 ### Custom tier
 
+ADR-096 implements this tier on Metal. It generates MSL directly rather than
+Slang, because the tiled forward shader is MSL. Vulkan draws each Custom
+material's fallback, and the desktop design below remains.
+
 Bakery generates a Slang surface function for a Custom graph. The function
 maps the surface inputs to the material model outputs, and its name carries
 the graph's content hash. Bakery compiles it into the project's shader
@@ -403,8 +408,9 @@ How each backend adds a surface function:
 | Blended | 10 (8 packaged) | 1 forward blend |
 
 **Budget.** A project setting sets the maximum number of Custom graphs. The
-starting value is 32. Phase 4 measures pipeline creation time and replaces
-this value with a measured one. With 32 opaque Custom graphs, a packaged game
+starting value is 32, a constant in ADR-096 until project settings hold it.
+Phase 4 measured creation on the M1 Pro: up to 4.3 s cold and 0.16 s warm
+for each of 7 graphs created in parallel. With 32 opaque Custom graphs, a packaged game
 on Metal adds 512 pipeline states to the 50 it has today. The editor warns
 when a change would pass the budget. Bakery refuses to package a project
 over its budget.
@@ -449,10 +455,11 @@ render thread: swap on next frame
   frame through `vkr_material_loader_replace_live`.
 - **Scene load.** The scene's material list gives its Custom graphs. The
   renderer creates their pipelines on workers before the scene reports
-  ready.
+  ready (ADR-096: a background queue, and readiness waits for them).
 - **World partition.** A cell's manifest lists its Custom graphs. The
   renderer creates their pipelines before the cell activates
-  ([ADR-086](../adr/086-world-partition.md)).
+  ([ADR-086](../adr/086-world-partition.md)). Not implemented: a cell's
+  Custom materials draw their fallback until ready.
 - **Late pipeline.** A draw whose pipeline does not exist yet draws with the
   graph's Standard fallback. It never waits. The fallback is a Standard
   material that Bakery derives from the graph's constant outputs, and the
@@ -542,9 +549,9 @@ as on scenes (settled 2026-10-09).
 Implemented on 2026-10-09 and recorded in ADR-094: themes and their
 selection by container over the World's, the look order, `world_size` on
 brush faces, theme editing in the Material panel and the Art palette,
-`surface.*` operations and `art.lint` (its Custom-budget check waits for
-Part 3). Remaining here: the density range as a project setting, and
-themes reaching bakes from the World.
+`surface.*` operations and `art.lint`. Remaining here: the density range as
+a project setting, themes reaching bakes from the World, and an `art.lint`
+check of the Custom graph budget (Bakery reports it, ADR-096).
 
 ### Surface bindings
 
@@ -695,7 +702,7 @@ Each phase is usable on its own and keeps the rules of Goals and limits.
 | 1. Surface tags and greybox | Implemented (ADR-084) | Recorded in ADR-084 |
 | 2. Graph documents and the Art workbench | Implemented (ADR-093); material functions, the Lookdev scene and the Details picker remain | Recorded in ADR-093 |
 | 3. Layered Standard and the art pass | Implemented: themes and bindings, `world_size`, face overrides and `art.lint` (ADR-094); layer blends by vertex colour, mask texture, slope or height (ADR-095) | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
-| 4. Custom graphs | Code generation, the project shader library, Metal per-graph variants, Vulkan classification and per-graph resolve, the budget, pipeline creation at scene and cell load, the late-draw fallback and `pipelines_late` | `pipelines_late` is zero over the Bistro glide camera with 8 Custom graphs assigned. Cold and warm pipeline creation time per graph on the M1 Pro. A Custom graph that reproduces a Standard material gives an equal snapshot. Vulkan native checks wait for a Windows host |
+| 4. Custom graphs | Implemented on Metal (ADR-096): code generation, the project library, per-graph variants and buckets, the budget, creation before scene readiness, the fallback and `pipelines.late`. Remaining: Vulkan classification and per-graph resolve, creation at cell load, inspection variants left out of packages | Recorded in ADR-096. Vulkan native checks wait for a Windows host |
 | 5. Lighting and look | Environment panel and presets, look volumes, light gizmos and list, probe and volume creation, bake settings, time scrubber, artist view modes, `query.luminance` | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |
 | 6. Dressing | Decal tool and outline, scatter painting | Captures on Bistro; scatter stays within the 4,096-copy bound |
 
@@ -704,9 +711,9 @@ from the level toolkit.
 
 ## Risks
 
-- **Pipeline creation time on Metal.** Each opaque Custom graph adds 16 to
-  20 pipeline states. Creation time from a warm `MTL4Archive` is unmeasured.
-  Phase 4 measures it and sets the budget from it.
+- **Pipeline creation time on Metal.** Each Custom graph adds 40 pipeline
+  states (ADR-096). On the M1 Pro, creation took up to 4.3 s cold and up to
+  0.16 s warm a graph. Other GPUs are unmeasured.
 - **Classification cost on Vulkan.** Per-graph resolve adds a
   classification pass and one indirect dispatch per visible Custom graph.
   That cost needs native measurement on a Windows host.

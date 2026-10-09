@@ -16,10 +16,11 @@ the Art workbench, keeps material files in a document journal that undoes
 in order with scene edits, and agents drive every step through `material.*`
 operations. Surface themes ([ADR-094](094-surface-themes-and-art-pass.md))
 and layered Standard graphs
-([ADR-095](095-layered-standard-materials.md)) followed; Custom graphs
-with generated shaders, look volumes and the other later parts of
-[the artist toolkit proposal](../proposals/artist-toolkit.md) are not
-implemented.
+([ADR-095](095-layered-standard-materials.md)) followed, and Custom graphs
+with generated shaders on the Metal tiled pipeline
+([ADR-096](096-custom-material-graphs.md)). Look volumes and the other later
+parts of [the artist toolkit proposal](../proposals/artist-toolkit.md) are
+not implemented.
 
 ## Context
 
@@ -54,7 +55,7 @@ consumer that chose a shader or pipeline.
    clearcoat, sheen, anisotropy, transmission, thickness and attenuation
    inputs, IOR, subsurface and diffuse transmission. Layer and layer blend
    nodes (ADR-095) feed its `layers` input. Nodes outside the Standard tier
-   arrive with the Custom tier.
+   belong to the Custom tier (ADR-096).
 3. **Standard lowering.** `vkr_material_graph_lower` writes `.mt` lines: a
    surface input takes a constant, a texture output or a multiply of one
    constant and one texture output (two constants fold); a normal input
@@ -136,8 +137,9 @@ consumer that chose a shader or pipeline.
 
 - Standard graphs and instances add no shader and no pipeline: lowering ends
   in the same material rows a hand-written `.mt` gives.
-- A graph that does not lower loads as no material (the loader reports the
-  reason) until the Custom tier exists.
+- A graph that neither tier lowers loads as no material (the loader reports
+  the reason); a graph the Standard tier refuses lowers to the Custom tier
+  (ADR-096).
 - Graph edits reach every loaded instance by file index; materials outside
   `assets/` of the content root are not indexed.
 - Material documents have no unsaved state: every committed edit is on disk
@@ -175,8 +177,8 @@ consumer that chose a shader or pipeline.
 
 - **A shader per graph.** Rejected for the Standard tier: instances and most
   environment materials need no code, and per-graph shaders are the
-  permutation growth the owner rejected. Custom graphs will compile to
-  shaders under a budget (proposal, Part 3).
+  permutation growth the owner rejected. Custom graphs compile to
+  shaders under a budget (ADR-096).
 - **Interpreting graphs at runtime.** Rejected: lowering to the existing
   definition reuses one parser, one material row and every published
   contract.
@@ -185,5 +187,4 @@ consumer that chose a shader or pipeline.
 
 ## Revisit when
 
-- The layered Standard tier or Custom graphs land (proposal phases 3 and 4).
 - Materials live outside the content root's `assets/` and need indexing.

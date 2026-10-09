@@ -7,8 +7,9 @@ description: Author VKR materials and do the art pass through the editor's agent
 
 [docs/proposals/artist-toolkit.md](../../../docs/proposals/artist-toolkit.md),
 [ADR-093](../../../docs/adr/093-material-graphs-and-art-workbench.md),
-[ADR-094](../../../docs/adr/094-surface-themes-and-art-pass.md) and
-[ADR-095](../../../docs/adr/095-layered-standard-materials.md) define the
+[ADR-094](../../../docs/adr/094-surface-themes-and-art-pass.md),
+[ADR-095](../../../docs/adr/095-layered-standard-materials.md) and
+[ADR-096](../../../docs/adr/096-custom-material-graphs.md) define the
 model; `ops.list` returns every
 operation's schema. This skill sets the order of work and the checks.
 
@@ -75,6 +76,29 @@ material, not a second texture multiplied in:
   `world_size`. Bakes see layer 0 only.
 - `lowering.layers` counts them; each layer adds three samples.
 
+## Custom graphs
+
+Make a Custom graph only for what the Standard tier cannot express:
+animation over `time`, `world_position` or `world_normal` effects, tiling
+math on `uv`, `world_planar` projection or arithmetic between textures.
+Each Custom graph costs 40 pipelines (`lowering.pipelines`), counts against
+the project budget of 32 and takes seconds to compile, so:
+
+- Vary instances, not graphs. Expose a constant as a `parameter` (up to 8)
+  and texture paths per instance; a changed literal is a new graph.
+- Wire the constants an artist should see before the pipelines exist
+  straight to the surface output: they form the fallback look.
+- Outputs are base colour, opacity, metallic, roughness, occlusion, normal
+  and emissive. Clearcoat, sheen, anisotropy and transmission stay
+  Standard. There is no vertex offset and no code node.
+- After a write, Bakery recompiles the project library and the renderer
+  reloads it; the material shows its fallback meanwhile. Wait with
+  `wait.scene` (it waits while `stats.pending_pipelines` is above zero)
+  before captures. `stats.pipelines_late` counts camera draws that used a
+  fallback.
+- Custom graphs draw only on Metal: Vulkan shows the fallback, and so do
+  blended Custom materials.
+
 ## Bind tags first
 
 A theme (`.surfaces`) binds each surface tag to a material for every face
@@ -109,8 +133,9 @@ unique look.
 
 ## Check, then report
 
-1. `material.compile` each graph and instance you changed: `tier` standard,
-   `pipelines` 0, and `samples` within your budget.
+1. `material.compile` each graph and instance you changed: `tier` standard
+   with `pipelines` 0, or `custom` only where the section above allows it,
+   and `samples` within your budget.
 2. `art.lint` the container: no `unbound_tag` the level shows, no
    `missing_material`, `missing_texture` or `uncooked_texture`; fix
    `texel_density` (default 128 to 2048 px/m; pass the project's range) by
@@ -122,5 +147,6 @@ unique look.
    `changes.list` with their `document`; the designer accepts or rejects
    them. `undo` takes only your own steps, documents included; name yourself
    in the request or it refuses.
-5. Report the documents you created or changed, their tiers, the themes
+5. Report the documents you created or changed, their tiers (with each
+   Custom graph's reason), the themes
    each container takes, what `art.lint` still reports and the change ids.
