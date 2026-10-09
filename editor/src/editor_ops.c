@@ -6048,6 +6048,16 @@ static VkrEditorOpStatus ops_run_get(OpsContext *ctx) {
   if (vkr_scene_get_typed(scene, ref.entity, &vkr_scene_brush_type)) {
     ops_set(ctx, result, "brush", ops_brush_summary(ctx, scene, ref.entity));
   }
+  /* A spline mesh's or scatter's placed copies and why it placed fewer. */
+  if (vkr_scene_get_typed(scene, ref.entity, &vkr_scene_spline_mesh_type) ||
+      vkr_scene_get_typed(scene, ref.entity, &vkr_scene_scatter_type)) {
+    const char *status = vkr_scene_population_status(scene, ref.entity);
+    ops_set(ctx, result, "copies",
+            vkr_bakery_json_int(
+                arena, vkr_scene_population_instances(scene, ref.entity)));
+    ops_set(ctx, result, "status",
+            vkr_bakery_json_cstr(arena, status ? status : "placed"));
+  }
   ctx->call->result = result;
   return VKR_EDITOR_OP_DONE;
 }
@@ -9084,6 +9094,137 @@ static bool8_t ops_build_spline_create(OpsContext *ctx,
     return false_v;
   }
   batch->op_item[batch->op_count] = spline_item;
+  return true_v;
+}
+
+/* Points of a brush stroke: `points` as up to 256 world positions. */
+#define OPS_SCATTER_POINT_MAX 256u
+
+/* scatter.paint (ADR-102): painted areas under a scatter at each point of
+   a stroke, or with 'erase' the deletion of its areas under the brush. */
+static bool8_t ops_build_scatter_paint(OpsContext *ctx,
+                                       const VkrBakeryJson *args,
+                                       OpsBatch *batch) {
+  OpsRef ref;
+  if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, "scatter"), "scatter",
+               &ref)) {
+    return false_v;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, ref.container);
+  const SceneTransform *parent =
+      ref.item < 0 && scene ? ops_transform(scene, ref.entity) : NULL;
+  if (!parent ||
+      !vkr_scene_get_typed(scene, ref.entity, &vkr_scene_scatter_type)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'scatter' must name an existing entity with a scatter "
+                    "component");
+  }
+  Vec3 points[OPS_SCATTER_POINT_MAX];
+  const uint32_t count =
+      ops_arg_points(ctx, args, "points", points, 1u, OPS_SCATTER_POINT_MAX);
+  if (!count) {
+    return false_v;
+  }
+  SceneScatterArea area;
+  vkr_type_defaults(&vkr_scene_scatter_area_type, &area);
+  float64_t number = 0.0;
+  if (ops_arg_number(args, "radius", &number)) {
+    area.radius = (float32_t)number;
+  }
+  if (ops_arg_number(args, "density", &number)) {
+    area.density = (float32_t)number;
+  }
+  if (ops_arg_number(args, "spacing", &number)) {
+    area.spacing = (float32_t)number;
+  }
+  char error[160] = {0};
+  if (!vkr_type_validate(&vkr_scene_scatter_area_type, &area, error,
+                         sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "scatter_area: %s", error);
+  }
+  uint32_t child_count = 0u;
+  const VkrEntityId *children =
+      vkr_scene_get_children(scene, ref.entity, &child_count);
+  batch->op_target[batch->op_count] = ref.entity;
+  /* New areas come after every existing one. */
+  uint32_t next_order = 0u;
+  for (uint32_t c = 0; c < child_count; ++c) {
+    const SceneScatterArea *existing =
+        vkr_scene_get_typed(scene, children[c], &vkr_scene_scatter_area_type);
+    if (existing && existing->order >= next_order) {
+      next_order = existing->order + 1u;
+    }
+  }
+
+  if (ops_arg_bool(args, "erase", false_v)) {
+    /* Areas whose centre lies within the brush of a point, across the
+       ground. */
+    uint32_t erased = 0u;
+    for (uint32_t c = 0; c < child_count; ++c) {
+      const SceneTransform *child = ops_transform(scene, children[c]);
+      if (!child || !vkr_scene_get_typed(scene, children[c],
+                                         &vkr_scene_scatter_area_type)) {
+        continue;
+      }
+      const Vec3 center = mat4_position(child->world);
+      bool8_t under = false_v;
+      for (uint32_t i = 0; i < count && !under; ++i) {
+        const float32_t dx = center.x - points[i].x;
+        const float32_t dz = center.z - points[i].z;
+        under = dx * dx + dz * dz <= area.radius * area.radius;
+      }
+      if (!under) {
+        continue;
+      }
+      VkrSampleEditBatchItem *item =
+          ops_batch_add(ctx, batch, ref.container, VKR_SCENE_EDIT_DELETE);
+      if (!item) {
+        return false_v;
+      }
+      item->request.entity = children[c];
+      erased++;
+    }
+    return erased ||
+           ops_fail(ctx, OPS_NOT_FOUND, "No painted area lies under the brush");
+  }
+
+  /* Children sit in the scatter's space; seeds follow the point and the
+     scatter's area count, so a repeated stroke lands the same way. */
+  const Mat4 to_local = mat4_inverse(parent->world);
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrSampleEditBatchItem *item =
+        ops_batch_add(ctx, batch, ref.container, VKR_SCENE_EDIT_CREATE);
+    if (!item) {
+      return false_v;
+    }
+    item->request.parent = ref.entity;
+    VkrSceneEditValues *values = &item->request.values;
+    values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM |
+                     VKR_SCENE_EDIT_COMPONENT;
+    snprintf(values->name, sizeof(values->name), "Area");
+    values->position = mat4_mul_vec3(to_local, points[i]);
+    values->rotation = vkr_quat_identity();
+    values->scale = vec3_one();
+    const int32_t key[4] = {(int32_t)lroundf(points[i].x * 1000.0f),
+                            (int32_t)lroundf(points[i].y * 1000.0f),
+                            (int32_t)lroundf(points[i].z * 1000.0f),
+                            (int32_t)(child_count + i)};
+    uint32_t seed = 2166136261u;
+    const uint8_t *bytes = (const uint8_t *)key;
+    for (uint32_t b = 0; b < sizeof(key); ++b) {
+      seed = (seed ^ bytes[b]) * 16777619u;
+    }
+    area.seed = seed ? seed : 1u;
+    area.order = next_order + i;
+    values->component_type = &vkr_scene_scatter_area_type;
+    MemCopy(values->component, &area, sizeof(area));
+    if (i == 0u) {
+      batch->op_item[batch->op_count] = batch->count - 1u;
+    }
+    if (!ops_validate_values(ctx, values)) {
+      return false_v;
+    }
+  }
   return true_v;
 }
 
@@ -12419,7 +12560,8 @@ static const OpsDef s_ops[] = {
      "summarise\"}," OPS_SETTLE_OFF_SCHEMA "}}",
      ops_run_describe, NULL, OPS_QUICK},
     {"entity.get",
-     "One entity: pose, children, bounds, tags and every component's values.",
+     "One entity: pose, children, bounds, tags and every component's values; "
+     "a spline mesh or scatter adds its placed 'copies' and 'status'.",
      "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
      "," OPS_SETTLE_OFF_SCHEMA "},\"required\":[\"entity\"]}",
      ops_run_get, NULL, OPS_QUICK},
@@ -12913,6 +13055,21 @@ static const OpsDef s_ops[] = {
      ",\"name\":{\"type\":\"string\"},\"values\":{\"type\":\"object\"},"
      "\"container\":" OPS_CONTAINER_SCHEMA "," OPS_REVIEW_SCHEMA "}}",
      NULL, ops_build_scatter_create},
+    {"scatter.paint",
+     "Paint a scatter: one scatter_area child per world point of 'points' "
+     "(up to 256), each filling a disc of 'radius' metres (default 2) with "
+     "'density' copies per square metre (default 1), leaving out copies "
+     "within 'spacing' metres (default 0) of earlier ones. Once a scatter "
+     "has areas it places copies only in them. With 'erase' it deletes the "
+     "areas whose centre lies within 'radius' of a point instead. One undo "
+     "step.",
+     "{\"type\":\"object\",\"properties\":{\"scatter\":" OPS_ENTITY_SCHEMA
+     ",\"points\":{\"type\":\"array\",\"items\":" OPS_VEC3_SCHEMA
+     "},\"radius\":{\"type\":\"number\"},\"density\":{\"type\":"
+     "\"number\"},\"spacing\":{\"type\":\"number\"},\"erase\":{\"type\":"
+     "\"boolean\"}," OPS_REVIEW_SCHEMA "},\"required\":[\"scatter\","
+     "\"points\"]}",
+     NULL, ops_build_scatter_paint},
     {"terrain.road",
      "Shape a road 'width' metres wide (default 6) along an existing "
      "spline, following its heights plus 'offset', blending over "

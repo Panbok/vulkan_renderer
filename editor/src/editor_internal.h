@@ -309,6 +309,9 @@ bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
    along the normal and its image's top (local +Z) up a wall, or along
    `facing` on a floor or ceiling, then `angle` radians about the normal. */
 VkrQuat vkr_editor_decal_orientation(Vec3 normal, Vec3 facing, float32_t angle);
+/* The scatter the scatter paint tool paints: the selected scatter, or the
+   parent of a selected scatter area; invalid otherwise (ADR-102). */
+VkrEntityId vkr_editor_scatter_target(const VkrSampleUiFrame *frame);
 /* Rests an existing object on what lies below it under the Snapping
    settings: the first collision surface, else the ground plane (Surface), the
    nearest grid point (Grid) or the ground plane (Free). Requests an undoable

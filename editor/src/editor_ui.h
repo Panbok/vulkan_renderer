@@ -236,6 +236,8 @@ typedef struct VkrEditorPlacement {
 
 /* Objects one selection holds: the primary and the extra ones. */
 #define VKR_EDITOR_SELECTION_MAX 16u
+/* Dabs one scatter paint stroke holds. */
+#define VKR_EDITOR_SCATTER_DAB_MAX 128u
 
 /* Workbenches (ADR-089): the tabs under the top bar. Each holds a dock
    layout, the floating windows open in it and the Scene's editing mode for
@@ -266,6 +268,8 @@ typedef enum VkrEditorSceneTool {
   VKR_EDITOR_SCENE_TOOL_MEASURE,
   /* Clicks on surfaces place decals facing them (ADR-101). */
   VKR_EDITOR_SCENE_TOOL_DECAL,
+  /* Strokes paint the selected scatter's areas (ADR-102). */
+  VKR_EDITOR_SCENE_TOOL_SCATTER,
   VKR_EDITOR_SCENE_TOOL_COUNT,
 } VkrEditorSceneTool;
 
@@ -627,6 +631,21 @@ typedef struct VkrEditorUi {
   Vec3 decal_hover;
   Vec3 decal_hover_normal;
   Vec3 decal_hover_facing;
+  /* The scatter paint tool (ADR-102): the brush's radius in metres, the
+     density in copies per square metre and the spacing between copies its
+     areas ask for; the stroke's dabs on surfaces, sent as one
+     scatter.paint when the button is released, erasing when Shift held
+     at the press; and the surface point under the pointer. */
+  bool8_t scatter_tool;
+  float32_t scatter_radius;
+  float32_t scatter_density;
+  float32_t scatter_spacing;
+  bool8_t scatter_stroking;
+  bool8_t scatter_erasing;
+  uint32_t scatter_dab_count;
+  Vec3 scatter_dabs[VKR_EDITOR_SCATTER_DAB_MAX];
+  bool8_t scatter_hover_valid;
+  Vec3 scatter_hover;
   /* The scale figure, for this session: the player's capsule standing on
      the surface under the pointer while it rests over the Scene. */
   bool8_t scale_figure;

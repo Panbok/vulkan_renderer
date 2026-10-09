@@ -1192,7 +1192,9 @@ mesh index), each with a rotation in the copy's frame and a scale:
   box: each drops straight down from the box's top onto the first physics
   surface, upright or leaning to the surface's normal, with a random yaw
   and a scale between `scale_min` and `scale_max`. A column that meets
-  nothing places no copy.
+  nothing places no copy. A scatter with painted `scatter_area` children
+  places its copies in them instead
+  ([ADR-102](102-scatter-painting.md)).
 
 The scene owns the copies
 ([vkr_scene_population.c](../../runtime/src/renderer/systems/vkr_scene_population.c)):

@@ -156,6 +156,20 @@ level):
 - The image's top points up a wall. On a floor it points along `facing`,
   which defaults to the ray. Capture each decal to check it.
 
+## Scatter
+
+- Dress a street with clutter by painting a scatter, not by placing copies
+  one by one. Create the rule with `scatter.create` (mesh, scale range,
+  `align_to_surface`, `random_yaw`), then `scatter.paint` with `scatter`,
+  world `points` along the stroke, `radius`, `density` (copies per square
+  metre) and `spacing`. Once a scatter has painted areas it places copies
+  only in them.
+- `erase` with points deletes the areas under them. Each call is one undo
+  step.
+- Copies need collision or terrain below. `entity.get` on the scatter
+  answers `copies` and a `status` that says how many found no ground or no
+  room. A scene holds at most 4,096 copies, and a scatter 2,048.
+
 ## Lights and bakes
 
 - `lighting.list` returns the scene's and the World's lights (`kind`,

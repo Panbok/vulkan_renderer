@@ -53,6 +53,7 @@ extern const VkrTypeDesc vkr_scene_spline_type;
 extern const VkrTypeDesc vkr_scene_spline_point_type;
 extern const VkrTypeDesc vkr_scene_spline_mesh_type;
 extern const VkrTypeDesc vkr_scene_scatter_type;
+extern const VkrTypeDesc vkr_scene_scatter_area_type;
 /* World partition (ADR-086). */
 extern const VkrTypeDesc vkr_scene_world_partition_type;
 extern const VkrTypeDesc vkr_scene_always_loaded_type;

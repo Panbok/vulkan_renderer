@@ -334,16 +334,17 @@ static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg);
 static bool8_t cmd_run_brush_draw(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
   /* value 0 switches drawing, 1 the clip tool, 2 terrain sculpting, 3 the
-     stairs tool, 4 the corridor tool, 5 the measure tool and 6 the decal
-     tool. One tool holds the Scene mouse at a time. */
+     stairs tool, 4 the corridor tool, 5 the measure tool, 6 the decal tool
+     and 7 the scatter paint tool. One tool holds the Scene mouse at a
+     time. */
   static const VkrEditorSceneTool tools[] = {
       VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW, VKR_EDITOR_SCENE_TOOL_CLIP,
       VKR_EDITOR_SCENE_TOOL_TERRAIN,    VKR_EDITOR_SCENE_TOOL_STAIRS,
       VKR_EDITOR_SCENE_TOOL_CORRIDOR,   VKR_EDITOR_SCENE_TOOL_MEASURE,
-      VKR_EDITOR_SCENE_TOOL_DECAL};
+      VKR_EDITOR_SCENE_TOOL_DECAL,      VKR_EDITOR_SCENE_TOOL_SCATTER};
   static const char *const names[] = {
       "Brush drawing", "Brush clipping", "Terrain sculpting", "Stairs tool",
-      "Corridor tool", "Measure tool",   "Decal tool"};
+      "Corridor tool", "Measure tool",   "Decal tool",        "Scatter paint"};
   const VkrEditorSceneTool tool = tools[def->value];
   bool8_t next = false_v;
   if (!cmd_switch(ctx, cmd_split(arg, NULL),
@@ -2254,6 +2255,10 @@ static const CmdDef cmd_defs[] = {
      "Place decals by clicking surfaces in the Scene, sized and turned by "
      "the Art palette",
      cmd_run_brush_draw, CMD_COUNT, 6u},
+    {"scatter.tool", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Paint the selected scatter's areas by dragging over surfaces; Shift "
+     "at the press erases",
+     cmd_run_brush_draw, CMD_COUNT, 7u},
     {"partition.load", CMD_ARG_TEXT, "<x0> <z0> [<x1> <z1>]",
      "Load and pin world partition cells for editing", cmd_run_partition,
      CMD_COUNT, 0u},

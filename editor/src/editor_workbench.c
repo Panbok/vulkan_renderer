@@ -47,8 +47,8 @@ static const struct {
 };
 
 static const char *const s_scene_tools[VKR_EDITOR_SCENE_TOOL_COUNT] = {
-    "none",   "brush_draw", "clip",    "terrain",
-    "stairs", "corridor",   "measure", "decal"};
+    "none",     "brush_draw", "clip",  "terrain", "stairs",
+    "corridor", "measure",    "decal", "scatter"};
 static const char *const s_snap_targets[VKR_EDITOR_SNAP_COUNT] = {
     "free", "surface", "grid"};
 
@@ -1367,7 +1367,28 @@ static void workbench_art_palette(VkrEditorUi *editor,
     vkr_editor_scene_tool_set(editor, decal_tool ? VKR_EDITOR_SCENE_TOOL_NONE
                                                  : VKR_EDITOR_SCENE_TOOL_DECAL);
   }
+  const bool8_t scatter_tool =
+      vkr_editor_scene_tool(editor) == VKR_EDITOR_SCENE_TOOL_SCATTER;
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("art.scatter"), "Scatter paint",
+          VKR_UI_ICON_TREE,
+          string8_lit("Drag over surfaces to paint the selected scatter's "
+                      "copies; Shift-drag erases"),
+          scatter_tool, false_v)) {
+    vkr_editor_scene_tool_set(editor, scatter_tool
+                                          ? VKR_EDITOR_SCENE_TOOL_NONE
+                                          : VKR_EDITOR_SCENE_TOOL_SCATTER);
+  }
   vkr_editor_palette_end(&palette);
+  if (scatter_tool) {
+    workbench_slider_row(&palette, string8_lit("art.scatter_radius"), "Radius",
+                         "m", &editor->scatter_radius, 0.25f, 20.0f);
+    workbench_slider_row(&palette, string8_lit("art.scatter_density"),
+                         "Density", "/m\xc2\xb2", &editor->scatter_density,
+                         0.01f, 10.0f);
+    workbench_slider_row(&palette, string8_lit("art.scatter_spacing"),
+                         "Spacing", "m", &editor->scatter_spacing, 0.0f, 5.0f);
+  }
   if (decal_tool) {
     workbench_slider_row(&palette, string8_lit("art.decal_size"), "Size", "m",
                          &editor->decal_size, 0.1f, 8.0f);

@@ -1066,6 +1066,9 @@ VkrEditorSceneTool vkr_editor_scene_tool(const VkrEditorUi *editor) {
   if (editor->decal_tool) {
     return VKR_EDITOR_SCENE_TOOL_DECAL;
   }
+  if (editor->scatter_tool) {
+    return VKR_EDITOR_SCENE_TOOL_SCATTER;
+  }
   return editor->path_tool;
 }
 
@@ -1093,6 +1096,10 @@ void vkr_editor_scene_tool_set(VkrEditorUi *editor, VkrEditorSceneTool tool) {
   editor->measure_hover_valid = false_v;
   editor->decal_tool = tool == VKR_EDITOR_SCENE_TOOL_DECAL;
   editor->decal_hover_valid = false_v;
+  editor->scatter_tool = tool == VKR_EDITOR_SCENE_TOOL_SCATTER;
+  editor->scatter_stroking = false_v;
+  editor->scatter_dab_count = 0u;
+  editor->scatter_hover_valid = false_v;
 }
 
 /* The `container` argument of an operation that creates in the container
@@ -1463,7 +1470,7 @@ static void viewport_face_tools(VkrEditorUi *editor,
       (editor->brush_draw &&
        (editor->brush_dragging || editor->brush_raising)) ||
       editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE || editor->measure_tool ||
-      editor->decal_tool) {
+      editor->decal_tool || editor->scatter_tool) {
     editor->face_dragging = false_v;
     editor->face_handle_hot = -1;
     vkr_editor_brush_grid_update(editor, frame, NULL, VKR_ENTITY_ID_INVALID,
@@ -1956,6 +1963,129 @@ static void viewport_decal_tool(VkrEditorUi *editor,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
+VkrEntityId vkr_editor_scatter_target(const VkrSampleUiFrame *frame) {
+  const VkrEntityId selected = frame->selected_entity;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, selected);
+  if (!scene || !vkr_scene_entity_alive(scene, selected)) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  if (vkr_scene_get_typed(scene, selected, &vkr_scene_scatter_type)) {
+    return selected;
+  }
+  const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+      scene->world, selected, scene->comp_transform);
+  if (transform && transform->parent.u64 &&
+      vkr_scene_get_typed(scene, selected, &vkr_scene_scatter_area_type) &&
+      vkr_scene_get_typed(scene, transform->parent, &vkr_scene_scatter_type)) {
+    return transform->parent;
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+/* Sends the stroke's dabs as one scatter.paint, which adds an area per dab
+   or, erasing, deletes the areas under them. */
+static void viewport_scatter_send(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame,
+                                  VkrEntityId target) {
+  VkrUiSystem *ui = frame->ui;
+  const uint64_t capacity = 512u + (uint64_t)editor->scatter_dab_count * 64u;
+  char *line = vkr_allocator_alloc(ui->frame_allocator, capacity,
+                                   VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!line || !editor->agent || !editor->scatter_dab_count) {
+    return;
+  }
+  int32_t written =
+      snprintf(line, capacity,
+               "{\"v\":1,\"id\":\"scatter\",\"op\":\"scatter.paint\",\"args\":{"
+               "\"scatter\":\"%u:%u:%u\",\"radius\":%g,\"density\":%g,"
+               "\"spacing\":%g,\"erase\":%s,\"review\":false,\"points\":[",
+               (unsigned)target.parts.world, (unsigned)target.parts.index,
+               (unsigned)target.parts.generation, editor->scatter_radius,
+               editor->scatter_density, editor->scatter_spacing,
+               editor->scatter_erasing ? "true" : "false");
+  for (uint32_t i = 0; i < editor->scatter_dab_count && written > 0 &&
+                       (uint64_t)written < capacity;
+       ++i) {
+    const Vec3 dab = editor->scatter_dabs[i];
+    written += snprintf(line + written, capacity - (uint64_t)written,
+                        "%s[%g,%g,%g]", i ? "," : "", dab.x, dab.y, dab.z);
+  }
+  if (written > 0 && (uint64_t)written + 4u < capacity) {
+    (void)snprintf(line + written, capacity - (uint64_t)written, "]}}");
+    (void)vkr_editor_agent_submit(editor->agent, line);
+  }
+}
+
+/* The scatter paint tool: a drag over surfaces lays a dab every half
+   radius along the stroke, and the release sends the stroke as one
+   scatter.paint, so it undoes in one step. Shift at the press erases the
+   areas under the stroke instead. Escape drops a stroke, then stops the
+   tool. */
+static void viewport_scatter_tool(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  editor->scatter_hover_valid = false_v;
+  if (!editor->scatter_tool || frame->scene_rendering_stopped ||
+      frame->mouse_captured) {
+    return;
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  (void)vkr_ui_input_layer_register(
+      ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
+      (VkrUiRect){image.x, image.y, image.z, image.w});
+  if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
+    if (editor->scatter_stroking) {
+      editor->scatter_stroking = false_v;
+      editor->scatter_dab_count = 0u;
+    } else {
+      vkr_editor_scene_tool_set(editor, VKR_EDITOR_SCENE_TOOL_NONE);
+    }
+    return;
+  }
+  const VkrEntityId target = vkr_editor_scatter_target(frame);
+  const bool8_t held = input_is_button_down(frame->input, BUTTON_LEFT);
+  if (editor->scatter_stroking && !held) {
+    if (target.u64) {
+      viewport_scatter_send(editor, frame, target);
+    }
+    editor->scatter_stroking = false_v;
+    editor->scatter_dab_count = 0u;
+  }
+  if (!editor->scene_pointer_free && !editor->scatter_stroking) {
+    return;
+  }
+  const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
+  Vec3 point = {0};
+  if (!viewport_surface_point(frame, mouse, false_v, &point, NULL)) {
+    return;
+  }
+  editor->scatter_hover = point;
+  editor->scatter_hover_valid = true_v;
+  if (!target.u64 || editor->menu != VKR_EDITOR_MENU_NONE) {
+    return;
+  }
+  if (ui->mouse_pressed && editor->scene_pointer_free) {
+    editor->scatter_stroking = true_v;
+    editor->scatter_erasing = input_is_key_down(frame->input, KEY_SHIFT) ||
+                              input_is_key_down(frame->input, KEY_LSHIFT) ||
+                              input_is_key_down(frame->input, KEY_RSHIFT);
+    editor->scatter_dab_count = 0u;
+  }
+  if (!editor->scatter_stroking ||
+      editor->scatter_dab_count >= VKR_EDITOR_SCATTER_DAB_MAX) {
+    return;
+  }
+  const float32_t step = Max(editor->scatter_radius * 0.5f, 0.05f);
+  if (editor->scatter_dab_count) {
+    const Vec3 gap =
+        vec3_sub(point, editor->scatter_dabs[editor->scatter_dab_count - 1u]);
+    if (vec3_length(gap) < step) {
+      return;
+    }
+  }
+  editor->scatter_dabs[editor->scatter_dab_count++] = point;
+}
+
 /* The scale figure stands on the surface under the pointer while it rests
    over the Scene, and hides while a button is held, as during a gizmo or
    face drag, or while the camera flies. On a wall it stands a radius out
@@ -2031,6 +2161,18 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
                ? "Click to start a new measurement. Esc clears it."
                : "Click a surface to measure from; Shift snaps to the grid. "
                  "Esc stops.";
+    break;
+  case VKR_EDITOR_SCENE_TOOL_SCATTER:
+    hint = !vkr_editor_scatter_target(frame).u64
+               ? "Select a scatter to paint it (Level palette, Scatter). Esc "
+                 "stops."
+           : editor->scatter_stroking
+               ? (editor->scatter_erasing
+                      ? "Release to erase the areas under the stroke. Esc "
+                        "cancels."
+                      : "Release to paint the stroke. Esc cancels.")
+               : "Drag over surfaces to paint the scatter; Shift-drag "
+                 "erases. Esc stops.";
     break;
   case VKR_EDITOR_SCENE_TOOL_DECAL:
     hint = "Click a surface to place a decal; the Art palette sets its size, "
@@ -2142,6 +2284,7 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
   viewport_path_tool(editor, frame);
   viewport_measure_tool(editor, frame);
   viewport_decal_tool(editor, frame);
+  viewport_scatter_tool(editor, frame);
   viewport_scale_figure(editor, frame);
   /* Face handles find the one under the pointer before drawing reads it, so
      a press on a handle drags the face instead of starting a box. */

@@ -335,10 +335,51 @@ static uint32_t population_spline_models(const VkrScene *scene,
   return sampled;
 }
 
+/* Drops one copy straight down from `top` to `bottom` onto the first
+   surface between them, turned and scaled from `seed` and `index` as the
+   rule asks; false when the column meets nothing. A streamed terrain has
+   collision only near its streaming sources, so terrain samples answer
+   where they lie above what the ray met. */
+static bool8_t population_drop(VkrScene *scene, const SceneScatter *rule,
+                               Vec3 top, Vec3 bottom, uint32_t seed,
+                               uint32_t index, Vec3 *out_position,
+                               Mat4 *out_model) {
+  VkrPhysicsRayHit hit = {0};
+  const bool8_t struck =
+      vkr_scene_physics_raycast(scene, top, vec3_sub(bottom, top), &hit);
+  Vec3 position = vec3_new(hit.position[0], hit.position[1], hit.position[2]);
+  Vec3 normal = vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
+  Vec3 ground = vec3_zero();
+  Vec3 ground_normal = vec3_zero();
+  if (vkr_scene_terrain_ground(scene, top, bottom.y, &ground, &ground_normal) &&
+      (!struck || ground.y > position.y + POPULATION_GROUND_TOLERANCE)) {
+    position = ground;
+    normal = ground_normal;
+  } else if (!struck) {
+    return false_v;
+  }
+  Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
+  if (rule->align_to_surface && vec3_length(normal) > 1.0e-4f) {
+    up = vec3_normalize(normal);
+  }
+  const float32_t yaw =
+      rule->random_yaw ? population_random(seed, index, 2u) * 6.28318530718f
+                       : 0.0f;
+  const float32_t lo = Min(rule->scale_min, rule->scale_max);
+  const float32_t hi = Max(rule->scale_min, rule->scale_max);
+  const float32_t scale = lo + (hi - lo) * population_random(seed, index, 3u);
+  Vec3 right;
+  Vec3 forward;
+  population_axes(up, yaw, &right, &forward);
+  *out_position = position;
+  *out_model = population_frame(position, right, up, forward, rule->rotation,
+                                vec3_new(scale, scale, scale));
+  return true_v;
+}
+
 /* Seeded copies in the scatter's box, each dropped straight down onto the
    first surface below the box's top; a column that meets nothing places
-   none. A streamed terrain has collision only near its streaming sources,
-   so terrain samples answer where they lie above what the ray met. */
+   none. */
 static uint32_t population_scatter_models(VkrScene *scene, VkrEntityId entity,
                                           const SceneScatter *rule, Mat4 *out,
                                           uint32_t capacity) {
@@ -358,40 +399,125 @@ static uint32_t population_scatter_models(VkrScene *scene, VkrEntityId entity,
     const Vec3 bottom = mat4_mul_vec3(
         transform->world,
         vec3_new(u * rule->extents.x, -rule->extents.y, v * rule->extents.z));
-    VkrPhysicsRayHit hit = {0};
-    const bool8_t struck =
-        vkr_scene_physics_raycast(scene, top, vec3_sub(bottom, top), &hit);
-    Vec3 position = vec3_new(hit.position[0], hit.position[1], hit.position[2]);
-    Vec3 normal = vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
-    Vec3 ground = vec3_zero();
-    Vec3 ground_normal = vec3_zero();
-    if (vkr_scene_terrain_ground(scene, top, bottom.y, &ground,
-                                 &ground_normal) &&
-        (!struck || ground.y > position.y + POPULATION_GROUND_TOLERANCE)) {
-      position = ground;
-      normal = ground_normal;
-    } else if (!struck) {
-      continue;
+    Vec3 position;
+    if (population_drop(scene, rule, top, bottom, rule->seed, i, &position,
+                        &out[placed])) {
+      placed++;
     }
-    Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
-    if (rule->align_to_surface && vec3_length(normal) > 1.0e-4f) {
-      up = vec3_normalize(normal);
-    }
-    const float32_t yaw =
-        rule->random_yaw ? population_random(rule->seed, i, 2u) * 6.28318530718f
-                         : 0.0f;
-    const float32_t lo = Min(rule->scale_min, rule->scale_max);
-    const float32_t hi = Max(rule->scale_min, rule->scale_max);
-    const float32_t scale =
-        lo + (hi - lo) * population_random(rule->seed, i, 3u);
-    Vec3 right;
-    Vec3 forward;
-    population_axes(up, yaw, &right, &forward);
-    out[placed++] =
-        population_frame(position, right, up, forward, rule->rotation,
-                         vec3_new(scale, scale, scale));
   }
   return placed;
+}
+
+/* Copies an area asks for: its density over its disc, the fraction kept by
+   chance so small areas still place some. */
+static uint32_t population_area_count(const SceneScatterArea *area) {
+  const float32_t expected =
+      area->density * 3.14159265f * area->radius * area->radius;
+  const float32_t whole = floorf(expected);
+  return (uint32_t)whole +
+         (population_random(area->seed, 0xFFFFu, 7u) < expected - whole ? 1u
+                                                                        : 0u);
+}
+
+/* The scatter's painted areas in ascending order, ties in child order:
+   each fills its disc with its own seeded copies, dropped from a column a
+   radius and a metre above and below its position. Copies within an
+   area's spacing of an earlier copy are left out, so later strokes never
+   move earlier copies, and an undo that brings an area back keeps its
+   place. `wanted` counts every copy the areas ask for. */
+static uint32_t population_area_models(VkrScene *scene, VkrEntityId entity,
+                                       const SceneScatter *rule,
+                                       VkrAllocator *scratch, Mat4 *out,
+                                       uint32_t capacity, uint32_t *wanted) {
+  uint32_t child_count = 0u;
+  const VkrEntityId *children =
+      vkr_scene_get_children(scene, entity, &child_count);
+  Vec3 *positions =
+      vkr_allocator_alloc(scratch, sizeof(Vec3) * capacity, POPULATION_TAG);
+  uint32_t *sorted = vkr_allocator_alloc(
+      scratch, sizeof(uint32_t) * Max(child_count, 1u), POPULATION_TAG);
+  *wanted = 0u;
+  if (!positions || !sorted) {
+    return 0u;
+  }
+  /* Insertion keeps equal orders in child order. */
+  uint32_t area_count = 0u;
+  for (uint32_t c = 0; c < child_count; ++c) {
+    const SceneScatterArea *area =
+        vkr_scene_get_typed(scene, children[c], &vkr_scene_scatter_area_type);
+    if (!area) {
+      continue;
+    }
+    uint32_t at = area_count++;
+    while (at > 0u) {
+      const SceneScatterArea *before = vkr_scene_get_typed(
+          scene, children[sorted[at - 1u]], &vkr_scene_scatter_area_type);
+      if (before->order <= area->order) {
+        break;
+      }
+      sorted[at] = sorted[at - 1u];
+      at--;
+    }
+    sorted[at] = c;
+  }
+  uint32_t placed = 0u;
+  for (uint32_t a = 0; a < area_count; ++a) {
+    const VkrEntityId child = children[sorted[a]];
+    const SceneScatterArea *area =
+        vkr_scene_get_typed(scene, child, &vkr_scene_scatter_area_type);
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, child, scene->comp_transform);
+    if (!transform) {
+      continue;
+    }
+    const Vec3 center = mat4_position(transform->world);
+    const float32_t reach = area->radius + 1.0f;
+    const uint32_t count = population_area_count(area);
+    *wanted += count;
+    /* No area tries more columns than the rule may hold, so a huge
+       density costs bounded raycasts. */
+    const uint32_t tries = Min(count, capacity);
+    for (uint32_t i = 0; i < tries && placed < capacity; ++i) {
+      const float32_t angle =
+          population_random(area->seed, i, 0u) * 6.28318530718f;
+      const float32_t distance =
+          area->radius * sqrtf(population_random(area->seed, i, 1u));
+      const Vec3 column = vec3_new(center.x + cosf(angle) * distance, center.y,
+                                   center.z + sinf(angle) * distance);
+      Vec3 position;
+      Mat4 model;
+      if (!population_drop(scene, rule, vec3_add(column, vec3_new(0, reach, 0)),
+                           vec3_sub(column, vec3_new(0, reach, 0)), area->seed,
+                           i, &position, &model)) {
+        continue;
+      }
+      bool8_t crowded = false_v;
+      const float32_t spacing_sq = area->spacing * area->spacing;
+      for (uint32_t p = 0; spacing_sq > 0.0f && p < placed && !crowded; ++p) {
+        const Vec3 gap = vec3_sub(positions[p], position);
+        crowded = vec3_dot(gap, gap) < spacing_sq;
+      }
+      if (crowded) {
+        continue;
+      }
+      positions[placed] = position;
+      out[placed++] = model;
+    }
+  }
+  return placed;
+}
+
+/* Whether the scatter has painted areas, which replace its box. */
+static bool8_t population_painted(const VkrScene *scene, VkrEntityId entity) {
+  uint32_t child_count = 0u;
+  const VkrEntityId *children =
+      vkr_scene_get_children(scene, entity, &child_count);
+  for (uint32_t c = 0; c < child_count; ++c) {
+    if (vkr_scene_get_typed(scene, children[c], &vkr_scene_scatter_area_type)) {
+      return true_v;
+    }
+  }
+  return false_v;
 }
 
 /* Inputs the rule's copies follow; a different value rebuilds them. */
@@ -421,6 +547,21 @@ static uint64_t population_signature(const VkrScene *scene,
   } else {
     const uint64_t revision = vkr_scene_terrain_revision(scene);
     hash = population_hash(hash, &revision, sizeof(revision));
+    /* Painted areas: each one's values and world position. */
+    uint32_t child_count = 0u;
+    const VkrEntityId *children =
+        vkr_scene_get_children(scene, rule->entity, &child_count);
+    for (uint32_t c = 0; c < child_count; ++c) {
+      const SceneScatterArea *area =
+          vkr_scene_get_typed(scene, children[c], &vkr_scene_scatter_area_type);
+      const SceneTransform *child = vkr_entity_get_component(
+          scene->world, children[c], scene->comp_transform);
+      if (area && child) {
+        const Vec3 center = mat4_position(child->world);
+        hash = population_hash(hash, area, sizeof(*area));
+        hash = population_hash(hash, &center, sizeof(center));
+      }
+    }
   }
   return hash ? hash : 1u;
 }
@@ -539,18 +680,27 @@ static void population_build(VkrScene *scene, PopulationRule *rule,
   Mat4 *models = vkr_allocator_alloc(&assets->scratch_allocator,
                                      sizeof(Mat4) * room, POPULATION_TAG);
   uint32_t count = 0u;
-  if (models) {
+  /* A spline's count follows its length; a painted scatter's its areas. */
+  uint32_t wanted = scatter ? scatter->count : 0u;
+  const bool8_t painted = scatter && population_painted(scene, rule->entity);
+  if (models && spline_mesh) {
+    count = population_spline_models(scene, rule->entity, spline_mesh,
+                                     &assets->scratch_allocator, models, room);
+    wanted = count;
+  } else if (models && painted) {
+    count = population_area_models(scene, rule->entity, scatter,
+                                   &assets->scratch_allocator, models, room,
+                                   &wanted);
+  } else if (models) {
     count =
-        spline_mesh
-            ? population_spline_models(scene, rule->entity, spline_mesh,
-                                       &assets->scratch_allocator, models, room)
-            : population_scatter_models(scene, rule->entity, scatter, models,
-                                        room);
+        population_scatter_models(scene, rule->entity, scatter, models, room);
   }
-  const uint32_t wanted =
-      scatter ? scatter->count
-              : count; /* A spline's count follows its length. */
-  if (scatter && count < Min(wanted, room)) {
+  if (painted && count < Min(wanted, room)) {
+    snprintf(rule->status, sizeof(rule->status),
+             "%u of %u copies found ground in the areas and room by their "
+             "spacing",
+             count, wanted);
+  } else if (scatter && count < Min(wanted, room)) {
     snprintf(rule->status, sizeof(rule->status),
              "%u of %u copies found ground below the box", count, wanted);
   } else if (wanted > room || (spline_mesh && count == room)) {

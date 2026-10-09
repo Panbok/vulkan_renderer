@@ -734,7 +734,7 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
   if (type == &vkr_scene_spline_type || type == &vkr_scene_spline_mesh_type ||
       type == &vkr_scene_spline_point_type)
     return VKR_UI_ICON_PENCIL_LINE;
-  if (type == &vkr_scene_scatter_type)
+  if (type == &vkr_scene_scatter_type || type == &vkr_scene_scatter_area_type)
     return VKR_UI_ICON_TREE;
   if (type == &vkr_scene_tags_type)
     return VKR_UI_ICON_TAG;

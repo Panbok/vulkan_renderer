@@ -52,6 +52,7 @@ static bool8_t editor_label_iconless(const VkrTypeDesc *type) {
          type == &vkr_scene_io_connection_type ||
          type == &vkr_scene_terrain_type ||
          type == &vkr_scene_spline_point_type ||
+         type == &vkr_scene_scatter_area_type ||
          type == &vkr_scene_spline_mesh_type || type == &vkr_scene_tags_type ||
          vkr_scene_world_type_registered(type);
 }

@@ -21,8 +21,9 @@ and presets in [ADR-098](../adr/098-environment-panel-and-presets.md), the
 artist views and `query.luminance` on Metal in
 [ADR-099](../adr/099-artist-views-and-luminance-queries.md), and the bake
 settings, time scrubber, outlines and Lights window in
-[ADR-100](../adr/100-lighting-tools.md), and the decal tool in
-[ADR-101](../adr/101-decal-placement.md); this
+[ADR-100](../adr/100-lighting-tools.md), the decal tool in
+[ADR-101](../adr/101-decal-placement.md), and scatter painting in
+[ADR-102](../adr/102-scatter-painting.md); this
 proposal keeps their remaining scope and the other parts:
 
 1. Surface tags and fixed greybox looks with measurement aids in the level
@@ -660,9 +661,10 @@ Implemented on the tiled pipeline in ADR-099; the desktop column remains.
 - **Decal tool.** Implemented in ADR-101: a click places a decal facing
   the surface, and a selected decal draws its box (ADR-100). Decal
   materials as graphs with the `decal` domain remain.
-- **Scatter painting.** A brush paints scatter rules onto surfaces with
-  density and radius. Splines, spline meshes and `terrain.road` stay in the
-  level toolkit, because they define layout. Clutter scatter is art.
+- **Scatter painting.** Implemented in ADR-102 with painted areas: a brush
+  paints a scatter's areas onto surfaces with a density and a radius.
+  Splines, spline meshes and `terrain.road` stay in the level toolkit,
+  because they define layout. Clutter scatter is art.
 - **Vertex paint.** Later work. Layered Standard materials on meshes need
   painted weights. Brush faces use mask, height, slope and world-height
   sources instead.
@@ -680,6 +682,7 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 | `material.*` | `list`, `create`, `describe`, `patch`, `set_param`, `assign`, `compile` and `open` are implemented; `preview` remains, and `cost` is part of each lowering answer | Documents and scene |
 | `look.*` | `volume` is implemented (ADR-097) | Scene |
 | `decal.*` | `place` is implemented (ADR-101) | Scene |
+| `scatter.*` | `paint` is implemented (ADR-102) | Scene |
 | `env.*` | `describe`, `preset.save` and `preset.apply` are implemented (ADR-098) | Scene and documents |
 | `lighting.*` | `list`, `group`, `time` and `bake` with settings are implemented (ADR-100) | Live state and bake jobs |
 | Reads | `query.luminance` and `view.capture` with a `mode` (ADR-099), `query.measure`, `view.greybox` and `art.lint` are implemented | — |
@@ -722,7 +725,7 @@ Each phase is usable on its own and keeps the rules of Goals and limits.
 | 3. Layered Standard and the art pass | Implemented: themes and bindings, `world_size`, face overrides and `art.lint` (ADR-094); layer blends by vertex colour, mask texture, slope or height (ADR-095) | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
 | 4. Custom graphs | Implemented on Metal (ADR-096): code generation, the project library, per-graph variants and buckets, the budget, creation before scene readiness, the fallback and `pipelines.late`. Remaining: Vulkan classification and per-graph resolve, creation at cell load, inspection variants left out of packages | Recorded in ADR-096. Vulkan native checks wait for a Windows host |
 | 5. Lighting and look | Look volumes (ADR-097), the environment panel and presets (ADR-098), artist views and `query.luminance` on Metal (ADR-099), bake settings, the time scrubber, outlines and the Lights window (ADR-100) implemented. Remaining: probe and volume creation, outline handles, the Scene toolbar time control, desktop artist views | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |
-| 6. Dressing | Decal tool and outline implemented (ADR-100, ADR-101). Remaining: scatter painting | Captures on Bistro; scatter stays within the 4,096-copy bound |
+| 6. Dressing | Decal tool and outline (ADR-100, ADR-101) and scatter painting (ADR-102) implemented | Captures on Bistro; scatter stays within the 4,096-copy bound |
 
 Phase 1 shipped before the other phases and removed the paintable materials
 from the level toolkit.

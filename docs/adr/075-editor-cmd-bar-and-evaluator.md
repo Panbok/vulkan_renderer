@@ -100,6 +100,7 @@ dependable channel for scripts.
 | `brush.clip_tool` | `[on\|off\|toggle]` | The clip tool in the Scene (ADR-084); it and brush drawing exclude each other |
 | `terrain.tool` | `[on\|off\|toggle]` | The terrain sculpt tool in the Scene (ADR-084); it, the clip tool and brush drawing exclude each other |
 | `decal.tool` | `[on\|off\|toggle]` | The Decal Scene tool: clicks on surfaces place decals facing them (ADR-101) |
+| `scatter.tool` | `[on\|off\|toggle]` | The Scatter paint Scene tool: drags over surfaces paint the selected scatter's areas, Shift-drags erase them (ADR-102) |
 | `io.trace`, `io.fire` | `[on\|off\|toggle]`, `<object> <input> [value]` | Entity IO during Play (ADR-084): the `[io]` line of each delivery, and an input sent as a connection would; a name with spaces is quoted |
 | `op` | `<operation> [json object]` | Run an operation of the agent table (ADR-084); its result prints as an `[agent]` log line, and the queue holds until it does, except for `op cmd`, which itself waits for the queue |
 | `grid.spacing` | `<units>` | Grid cell size (shows the grid) |

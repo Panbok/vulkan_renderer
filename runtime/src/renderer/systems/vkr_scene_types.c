@@ -2619,6 +2619,64 @@ const VkrTypeDesc vkr_scene_scatter_type = {
     .defaults = scatter_defaults,
 };
 
+static const VkrPropertyDesc s_scatter_area_properties[] = {
+    {.name = "radius",
+     .label = "Radius",
+     .unit = "m",
+     .tooltip = "Copies fill a disc this wide about the area's position",
+     .offset = TYPE_OFFSET(SceneScatterArea, radius),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.05f,
+     .max = 100.0f,
+     .step = 0.1f},
+    {.name = "density",
+     .label = "Density",
+     .unit = "/m\xc2\xb2",
+     .tooltip = "Copies per square metre",
+     .offset = TYPE_OFFSET(SceneScatterArea, density),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.001f,
+     .max = 100.0f,
+     .step = 0.05f},
+    {.name = "spacing",
+     .label = "Spacing",
+     .unit = "m",
+     .tooltip = "A copy this close to an earlier copy of the scatter is "
+                "left out",
+     .offset = TYPE_OFFSET(SceneScatterArea, spacing),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 100.0f,
+     .step = 0.05f},
+    {.name = "seed",
+     .label = "Seed",
+     .tooltip = "Another seed places the area's copies anew",
+     .offset = TYPE_OFFSET(SceneScatterArea, seed),
+     .kind = VKR_PROPERTY_U32},
+    {.name = "order",
+     .label = "Order",
+     .tooltip = "Areas place copies from the lowest order up; later ones "
+                "leave room for earlier copies",
+     .offset = TYPE_OFFSET(SceneScatterArea, order),
+     .kind = VKR_PROPERTY_U32},
+};
+
+static void scatter_area_defaults(void *value) {
+  *(SceneScatterArea *)value =
+      (SceneScatterArea){.radius = 2.0f, .density = 1.0f, .seed = 1u};
+}
+
+const VkrTypeDesc vkr_scene_scatter_area_type = {
+    .name = "scatter_area",
+    .label = "Scatter area",
+    .category = "Level",
+    .properties = s_scatter_area_properties,
+    .property_count = ArrayCount(s_scatter_area_properties),
+    .size = sizeof(SceneScatterArea),
+    .align = _Alignof(SceneScatterArea),
+    .defaults = scatter_area_defaults,
+};
+
 // =============================================================================
 // Entity IO (ADR-084)
 // =============================================================================
@@ -3874,6 +3932,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_tags_type,
     &vkr_scene_material_override_type,
     &vkr_scene_surface_theme_type,
+    &vkr_scene_scatter_area_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -3950,6 +4009,7 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_spline_point_type ||
          type == &vkr_scene_spline_mesh_type ||
          type == &vkr_scene_scatter_type ||
+         type == &vkr_scene_scatter_area_type ||
          type == &vkr_scene_world_partition_type ||
          type == &vkr_scene_always_loaded_type ||
          type == &vkr_scene_free_placement_type ||

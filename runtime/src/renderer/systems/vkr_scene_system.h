@@ -423,6 +423,21 @@ typedef struct SceneScatter {
   bool8_t random_yaw;
 } SceneScatter;
 
+/* A painted area of the scatter that is its parent (ADR-102): copies fill a
+   disc of `radius` metres about the entity's world position, `density`
+   copies per square metre, seeded by `seed`, each dropped onto the first
+   surface below. Areas place their copies in ascending `order`, so an
+   area painted later never moves earlier copies: a copy closer than
+   `spacing` metres to an earlier copy of the scatter is left out. A
+   scatter with areas places copies only in them, not in its box. */
+typedef struct SceneScatterArea {
+  float32_t radius;
+  float32_t density;
+  float32_t spacing;
+  uint32_t seed;
+  uint32_t order;
+} SceneScatterArea;
+
 /* Entity IO (ADR-084): engine components whose outputs connections wire to
  * other entities' inputs. The script host's router runs them during a
  * session; their runtime state lives there, not in the component. */

@@ -1093,6 +1093,45 @@ static void physics_decal_preview(VkrEditorUi *editor,
                vec3_add(center, half[2]), color, capacity);
 }
 
+/* The scatter paint tool: the painted scatter's areas, the stroke's dabs
+   and the brush under the pointer, red while erasing. */
+static void physics_scatter_paint(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame,
+                                  uint32_t capacity) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const bool8_t erasing =
+      editor->scatter_stroking
+          ? editor->scatter_erasing
+          : input_is_key_down(frame->input, KEY_SHIFT) ||
+                input_is_key_down(frame->input, KEY_LSHIFT) ||
+                input_is_key_down(frame->input, KEY_RSHIFT);
+  const Vec4 brush = erasing ? theme->error : theme->success;
+  const VkrEntityId target = vkr_editor_scatter_target(frame);
+  const VkrScene *scene =
+      target.u64 ? vkr_editor_entity_scene(frame, target) : NULL;
+  uint32_t child_count = 0u;
+  const VkrEntityId *children =
+      scene ? vkr_scene_get_children(scene, target, &child_count) : NULL;
+  for (uint32_t c = 0; c < child_count; ++c) {
+    const SceneScatterArea *area =
+        vkr_scene_get_typed(scene, children[c], &vkr_scene_scatter_area_type);
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        scene->world, children[c], scene->comp_transform);
+    if (area && transform) {
+      physics_ring(editor, frame, mat4_position(transform->world), area->radius,
+                   vkr_ui_color_alpha(theme->success, 0.35f), capacity);
+    }
+  }
+  for (uint32_t i = 0; i < editor->scatter_dab_count; ++i) {
+    physics_ring(editor, frame, editor->scatter_dabs[i], editor->scatter_radius,
+                 vkr_ui_color_alpha(brush, 0.6f), capacity);
+  }
+  if (editor->scatter_hover_valid) {
+    physics_ring(editor, frame, editor->scatter_hover, editor->scatter_radius,
+                 brush, capacity);
+  }
+}
+
 static void physics_level_tools(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 uint32_t capacity) {
@@ -1278,6 +1317,10 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
            : 0u) +
       (editor->terrain_tool && editor->terrain_hit_valid ? 1u : 0u) +
       (editor->decal_tool && editor->decal_hover_valid ? 1u : 0u) +
+      (editor->scatter_tool &&
+               (editor->scatter_hover_valid || editor->scatter_dab_count)
+           ? 1u
+           : 0u) +
       (editor->face_handle_count ? 1u : 0u) +
       vkr_editor_brush_grid_lines(editor, NULL) +
       vkr_editor_blockout_lines(editor, NULL) +
@@ -1350,6 +1393,9 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
     physics_level_tools(editor, frame, capacity);
     if (editor->decal_tool && editor->decal_hover_valid) {
       physics_decal_preview(editor, frame, capacity);
+    }
+    if (editor->scatter_tool) {
+      physics_scatter_paint(editor, frame, capacity);
     }
     physics_measure_lines(editor, frame, capacity);
     if (editor->scale_figure_valid) {
