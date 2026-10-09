@@ -1,6 +1,7 @@
 #include "editor_ops.h"
 
 #include "editor_agent.h"
+#include "editor_environment.h"
 #include "editor_internal.h"
 #include "editor_material.h"
 #include "editor_workbench.h"
@@ -11167,6 +11168,185 @@ static VkrEditorOpStatus ops_run_surface_list(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+// =============================================================================
+// Environment (ADR-098)
+// =============================================================================
+
+/* An environment preset path in `args["path"]`. */
+static bool8_t ops_environment_path(OpsContext *ctx, const VkrBakeryJson *args,
+                                    char out[VKR_EDITOR_MATERIAL_PATH]) {
+  out[0] = '\0';
+  if (!ops_arg_string(ctx, args, "path", out, VKR_EDITOR_MATERIAL_PATH)) {
+    return false_v;
+  }
+  if (!ops_content_path(out, VKR_EDITOR_ENVIRONMENT_EXTENSION,
+                        VKR_EDITOR_MATERIAL_PATH)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'path' is a content-root relative environment preset "
+                    "(.environment)");
+  }
+  return true_v;
+}
+
+/* env.describe: each part of a container's environment, where it comes
+   from and its values. */
+static VkrEditorOpStatus ops_run_env_describe(OpsContext *ctx) {
+  uint16_t container = 0u;
+  if (!ops_arg_container(ctx, ctx->call->args, &container)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrEditorEnvironmentSource *sources =
+      arena_alloc(arena, sizeof(*sources) * VKR_EDITOR_ENVIRONMENT_PART_COUNT,
+                  ARENA_MEMORY_TAG_STRUCT);
+  if (!sources ||
+      !vkr_editor_environment_resolve(ctx->frame, container, sources)) {
+    ops_fail(ctx, OPS_NOT_FOUND, "The container is not loaded");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrBakeryJson *parts = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < VKR_EDITOR_ENVIRONMENT_PART_COUNT; ++i) {
+    const VkrEditorEnvironmentPart part = (VkrEditorEnvironmentPart)i;
+    const VkrEditorEnvironmentSource *source = &sources[i];
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    ops_set(ctx, entry, "part",
+            vkr_bakery_json_cstr(arena, vkr_editor_environment_key(part)));
+    ops_set(ctx, entry, "label",
+            vkr_bakery_json_cstr(arena, vkr_editor_environment_label(part)));
+    const char *from = !source->entity.u64                    ? "unset"
+                       : source->from_world                   ? "world"
+                       : container == VKR_SCENE_WORLD_ROOT_ID ? "world"
+                                                              : "container";
+    ops_set(ctx, entry, "from", vkr_bakery_json_cstr(arena, from));
+    if (source->entity.u64) {
+      ops_set(ctx, entry, "entity",
+              ops_entity(ctx, source->owner, source->entity));
+    }
+    ops_set(ctx, entry, "values",
+            ops_component_json(ctx, vkr_editor_environment_type(part),
+                               source->value));
+    vkr_bakery_json_append(parts, entry);
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "container",
+          vkr_bakery_json_int(arena, container));
+  ops_set(ctx, ctx->call->result, "parts", parts);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* env.preset.save: the container's resolved environment as a preset
+   document, through the document journal. */
+static VkrEditorOpStatus ops_run_env_preset_save(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  uint16_t container = 0u;
+  VkrAllocator allocator;
+  if (!ops_environment_path(ctx, args, path) ||
+      !ops_arg_container(ctx, args, &container) ||
+      !ops_allocator(ctx, &allocator)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  String8 existing = {0};
+  if (vkr_editor_material_read(&allocator, path, &existing) &&
+      !ops_arg_bool(args, "overwrite", false_v)) {
+    ops_fail(ctx, OPS_REJECTED, "'%s' exists; pass \"overwrite\": true", path);
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrEditorEnvironmentSource *sources =
+      arena_alloc(arena, sizeof(*sources) * VKR_EDITOR_ENVIRONMENT_PART_COUNT,
+                  ARENA_MEMORY_TAG_STRUCT);
+  VkrEditorEnvironmentPreset *preset =
+      arena_alloc(arena, sizeof(*preset), ARENA_MEMORY_TAG_STRUCT);
+  String8 text = {0};
+  if (!sources || !preset ||
+      !vkr_editor_environment_resolve(ctx->frame, container, sources)) {
+    ops_fail(ctx, OPS_NOT_FOUND, "The container is not loaded");
+    return VKR_EDITOR_OP_DONE;
+  }
+  vkr_editor_environment_capture(sources, preset);
+  char label[96];
+  snprintf(label, sizeof(label), "Save environment %.60s", path);
+  if (!vkr_editor_environment_write(preset, &allocator, &text)) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ops_material_write(ctx, path, text, false_v, label)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->call->result) {
+    ctx->call->result = vkr_bakery_json_object(arena);
+  }
+  VkrBakeryJson *saved = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < VKR_EDITOR_ENVIRONMENT_PART_COUNT; ++i) {
+    if (preset->parts & (1u << i)) {
+      vkr_bakery_json_append(
+          saved, vkr_bakery_json_cstr(arena, vkr_editor_environment_key(
+                                                 (VkrEditorEnvironmentPart)i)));
+    }
+  }
+  ops_set(ctx, ctx->call->result, "path", vkr_bakery_json_cstr(arena, path));
+  ops_set(ctx, ctx->call->result, "parts", saved);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* env.preset.apply: copies a preset into a container as edits of this
+   batch. */
+static bool8_t ops_build_env_preset_apply(OpsContext *ctx,
+                                          const VkrBakeryJson *args,
+                                          OpsBatch *batch) {
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  uint16_t container = 0u;
+  VkrAllocator allocator;
+  String8 text = {0};
+  if (!ops_environment_path(ctx, args, path) ||
+      !ops_arg_container(ctx, args, &container) ||
+      !ops_allocator(ctx, &allocator)) {
+    return false_v;
+  }
+  if (!vkr_editor_material_read(&allocator, path, &text)) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not open", path);
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrEditorEnvironmentPreset *preset =
+      arena_alloc(arena, sizeof(*preset), ARENA_MEMORY_TAG_STRUCT);
+  VkrSampleEditBatchItem *items =
+      arena_alloc(arena, sizeof(*items) * VKR_EDITOR_ENVIRONMENT_PART_COUNT,
+                  ARENA_MEMORY_TAG_STRUCT);
+  char error[192] = {0};
+  if (!preset || !items) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  if (!vkr_editor_environment_read(text, arena, preset, error, sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "'%s': %s", path, error);
+  }
+  uint32_t skipped = 0u;
+  const uint32_t count = vkr_editor_environment_apply_items(
+      ctx->frame, container, preset, items, VKR_EDITOR_ENVIRONMENT_PART_COUNT,
+      &skipped);
+  if (count == 0u) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "Nothing of '%s' applies to this container", path);
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrSampleEditBatchItem *item =
+        ops_batch_add(ctx, batch, container, items[i].request.action);
+    if (!item) {
+      return false_v;
+    }
+    const VkrEntityRef ref = item->request.values.ref;
+    item->request = items[i].request;
+    if (item->request.action == VKR_SCENE_EDIT_CREATE) {
+      item->request.values.ref = ref;
+    }
+    if (!ops_validate_values(ctx, &item->request.values)) {
+      return false_v;
+    }
+  }
+  batch->op_item[batch->op_count] = batch->count - 1u;
+  return true_v;
+}
+
 /* surface.theme.create: a new theme document. */
 static VkrEditorOpStatus ops_run_theme_create(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
@@ -12573,6 +12753,31 @@ static const OpsDef s_ops[] = {
      "\"string\"},\"container\":" OPS_CONTAINER_SCHEMA "," OPS_REVIEW_SCHEMA
      "},\"required\":[\"theme\"]}",
      NULL, ops_build_theme_select},
+    {"env.describe",
+     "A container's environment by part (environment, atmosphere, clouds, "
+     "fog, volumetric_fog, post_process, time_of_day, sun, moon): whether "
+     "the container, the World or nothing sets it, the entity and the "
+     "values.",
+     "{\"type\":\"object\",\"properties\":{\"container\":" OPS_CONTAINER_SCHEMA
+     "}}",
+     ops_run_env_describe, NULL, OPS_QUICK},
+    {"env.preset.save",
+     "Save a container's resolved environment, World values included, as a "
+     "preset document (.environment); 'overwrite' replaces one.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"},\"container\":" OPS_CONTAINER_SCHEMA
+     ",\"overwrite\":{\"type\":\"boolean\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"path\"]}",
+     ops_run_env_preset_save, NULL},
+    {"env.preset.apply",
+     "Copy a preset's values into a container: each part onto the "
+     "container's own entity that holds it, else onto a new entity. The "
+     "time of day applies to the World only, a sky light only where one "
+     "exists.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
+     "\"string\"},\"container\":" OPS_CONTAINER_SCHEMA "," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"path\"]}",
+     NULL, ops_build_env_preset_apply},
     {"art.lint",
      "The art pass's problems in a container: tags no theme binds, "
      "materials that do not open or parse, missing or uncooked textures, "

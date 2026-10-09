@@ -119,6 +119,17 @@ unique look.
   counts repeats of it, so leave faces at 1 unless one needs a different
   scale. Set `surface` on materials meshes use, so they share the tags.
 
+## Environment
+
+- `env.describe` lists each part of a container's environment (sky light,
+  atmosphere, clouds, fog, volumetric_fog, post_process, time_of_day, sun,
+  moon) with where it comes from: the `container`, the `world` or `unset`.
+  Read it before changing the look; World parts are shared by every level.
+- `env.preset.apply` (`path` to a `.environment`) copies a preset's values
+  into the container as one undoable batch; `env.preset.save` saves the
+  current one. Presets are copies: put values every level shares in the
+  World instead.
+
 ## Look volumes
 
 Give a room, tunnel or district its own exposure and grading with a look

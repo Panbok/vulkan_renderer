@@ -1043,6 +1043,10 @@ static void workbench_lighting_palette(VkrEditorUi *editor,
                             "directional_light");
   vkr_editor_palette_heading(&palette, string8_lit("lighting.environment"),
                              string8_lit("ENVIRONMENT"));
+  vkr_editor_palette_command(
+      &palette, string8_lit("lighting.environment_window"), "Environment",
+      VKR_UI_ICON_PLANET, CMD_ENVIRONMENT,
+      editor->windows[VKR_EDITOR_WINDOW_ENVIRONMENT].visible);
   vkr_editor_palette_create(&palette, string8_lit("lighting.sky"), "Sky",
                             VKR_UI_ICON_PLANET, "atmosphere");
   vkr_editor_palette_create(&palette, string8_lit("lighting.clouds"), "Clouds",

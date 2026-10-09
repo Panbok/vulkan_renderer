@@ -49,6 +49,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_TERRAIN,
   /* World partition cells (ADR-086). */
   VKR_EDITOR_WINDOW_PARTITION,
+  /* The scene's environment and its presets (ADR-098). */
+  VKR_EDITOR_WINDOW_ENVIRONMENT,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -718,6 +720,19 @@ typedef struct VkrEditorUi {
   VkrEditorDetails preferences_details;
   float32_t preferences_scroll;
   float32_t preferences_height;
+  /* Environment window (ADR-098): rows, scroll, collapsed parts, the
+     preset documents listed under assets/environments, the edits an Apply
+     lends to the runtime until it dispatches them, and the last outcome. */
+  VkrEditorDetails environment_details;
+  float32_t environment_scroll;
+  float32_t environment_height;
+  bool8_t environment_collapsed[9];
+  char environment_presets[32][256];
+  uint32_t environment_preset_count;
+  float64_t environment_listed_at;
+  VkrSampleEditBatchItem environment_items[9];
+  uint64_t environment_batch_token;
+  char environment_message[192];
   VkrEditorAnimation animation;
   /* Additive scene path and sidecar a Cmd request borrows until the
      runtime consumes it (ADR-076). */

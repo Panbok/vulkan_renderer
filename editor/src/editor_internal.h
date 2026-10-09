@@ -71,6 +71,8 @@ typedef enum EditorCommand {
   CMD_TERRAIN,
   /* The World Partition window. */
   CMD_PARTITION,
+  /* The Environment window (ADR-098). */
+  CMD_ENVIRONMENT,
   /* Scene transform tools. */
   CMD_TOOL_SELECT,
   CMD_TOOL_MOVE,
