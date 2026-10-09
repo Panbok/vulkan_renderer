@@ -222,6 +222,47 @@ typedef struct SceneDecal {
   bool8_t enabled;
 } SceneDecal;
 
+/**
+ * A `look_volume` component (ADR-097): the entity's world transform places a
+ * box whose inside is [-0.5, 0.5] on each axis. Inside it, and fading over
+ * `blend_distance` metres outside it, each value whose override is on
+ * replaces the look the scene's `post_process`, height `fog` and sky light
+ * give. Volumes containing the camera blend in ascending priority, the
+ * highest last (vkr_scene_look.h). The CPU blends them once a frame, so they
+ * add no pass and work on both pipelines.
+ */
+typedef struct SceneLookVolume {
+  bool8_t enabled;
+  int32_t priority;
+  float32_t blend_distance;
+  bool8_t override_exposure;
+  float32_t exposure_compensation_ev;
+  /** The EV range automatic exposure may settle in. */
+  bool8_t override_metering;
+  float32_t metering_min_ev;
+  float32_t metering_max_ev;
+  bool8_t override_white_balance;
+  float32_t white_balance_temperature;
+  float32_t white_balance_tint;
+  bool8_t override_contrast;
+  float32_t contrast;
+  bool8_t override_saturation;
+  float32_t saturation;
+  bool8_t override_bloom;
+  float32_t bloom_intensity;
+  bool8_t override_fog_color;
+  Vec3 fog_color;
+  bool8_t override_fog_density;
+  float32_t fog_density;
+  /** The sky light's (`environment`) intensity. */
+  bool8_t override_sky_light;
+  float32_t sky_light_intensity;
+} SceneLookVolume;
+
+/** Look volumes a scene and its World apply at once; further ones are
+    ignored in entity order. */
+#define VKR_SCENE_LOOK_VOLUME_MAX 64u
+
 /** Bytes of one material path in a `material_override` component, its
     terminator included. */
 #define SCENE_MATERIAL_OVERRIDE_PATH_CAPACITY 112u
@@ -1045,6 +1086,12 @@ typedef struct VkrSceneWorldState {
   VkrEntityId surface_theme_entity;
   uint32_t probe_count;
   SceneReflectionProbeSettings probes[VKR_SCENE_REFLECTION_PROBE_MAX];
+  /** Directory indices of the `look_volume` entities, the scene's own first
+      and then, after `look_volume_own_count`, the root World's. The frame
+      reads their components and transforms live (vkr_scene_look.h). */
+  uint32_t look_volume_indices[VKR_SCENE_LOOK_VOLUME_MAX];
+  uint32_t look_volume_count;
+  uint32_t look_volume_own_count;
 } VkrSceneWorldState;
 
 /** Entity-id world field of the root World container (ADR-076). Scenes the

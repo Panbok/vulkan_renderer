@@ -94,6 +94,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_atmosphere_bake_dark_tests),
     VKR_TEST_SUITE(run_lighting_system_tests),
     VKR_TEST_SUITE(run_decal_tests),
+    VKR_TEST_SUITE(run_look_volume_tests),
     VKR_TEST_SUITE(run_local_shadow_tests),
     VKR_TEST_SUITE(run_local_socket_tests),
     VKR_TEST_SUITE(run_texture_vkt_tests),

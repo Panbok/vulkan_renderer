@@ -1,0 +1,418 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": true,
+    "intensity": 1.0,
+    "diffuse_intensity": 1.0,
+    "specular_intensity": 1.0
+  },
+  "atmosphere": {
+    "enabled": true,
+    "sun_direction": [
+      0.57735,
+      0.57735,
+      0.57735
+    ]
+  },
+  "clouds": {
+    "enabled": true,
+    "base_altitude_m": 1500,
+    "top_altitude_m": 4000,
+    "coverage": 0.45,
+    "density": 0.02,
+    "wind_mps": [
+      10,
+      0
+    ]
+  },
+  "reflection_probes": [
+    {
+      "enabled": true,
+      "center": [
+        -7.5,
+        2.2,
+        9.0
+      ],
+      "extents": [
+        5.5,
+        2.5,
+        8.0
+      ],
+      "blend_distance": 0.75,
+      "intensity": 1.0,
+      "diffuse_intensity": 1.0,
+      "specular_intensity": 0.0,
+      "cubemap": {
+        "base_path": "assets/textures/bistro_indoor_probe",
+        "extension": "png"
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "SceneRoot",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "directional_light": {
+        "enabled": true,
+        "color": [
+          0.77092856,
+          0.9677925,
+          1.0
+        ],
+        "intensity": 1.91198,
+        "direction_local": [
+          -0.57735,
+          -0.57735,
+          -0.57735
+        ],
+        "atmosphere_sun": true
+      }
+    },
+    {
+      "name": "Bistro Lights",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "path": "assets/models/bistro-lights-main.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Look volume 0",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -2.0,
+          13.0,
+          6.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          20.0,
+          16.0,
+          20.0
+        ]
+      },
+      "components": {
+        "look_volume": {
+          "enabled": true,
+          "priority": 0,
+          "blend_distance": 4.0,
+          "override_exposure": true,
+          "exposure_compensation_ev": 0.0,
+          "override_contrast": true,
+          "contrast": 1.0,
+          "override_saturation": true,
+          "saturation": 1.0
+        }
+      }
+    },
+    {
+      "name": "Look volume 1",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -7.272,
+          13.0,
+          18.728
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          20.0,
+          16.0,
+          20.0
+        ]
+      },
+      "components": {
+        "look_volume": {
+          "enabled": true,
+          "priority": 1,
+          "blend_distance": 4.0,
+          "override_exposure": true,
+          "exposure_compensation_ev": 0.0,
+          "override_contrast": true,
+          "contrast": 1.0,
+          "override_saturation": true,
+          "saturation": 1.0
+        }
+      }
+    },
+    {
+      "name": "Look volume 2",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -20.0,
+          13.0,
+          24.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          20.0,
+          16.0,
+          20.0
+        ]
+      },
+      "components": {
+        "look_volume": {
+          "enabled": true,
+          "priority": 2,
+          "blend_distance": 4.0,
+          "override_exposure": true,
+          "exposure_compensation_ev": 0.0,
+          "override_contrast": true,
+          "contrast": 1.0,
+          "override_saturation": true,
+          "saturation": 1.0
+        }
+      }
+    },
+    {
+      "name": "Look volume 3",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -32.728,
+          13.0,
+          18.728
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          20.0,
+          16.0,
+          20.0
+        ]
+      },
+      "components": {
+        "look_volume": {
+          "enabled": true,
+          "priority": 3,
+          "blend_distance": 4.0,
+          "override_exposure": true,
+          "exposure_compensation_ev": 0.0,
+          "override_contrast": true,
+          "contrast": 1.0,
+          "override_saturation": true,
+          "saturation": 1.0
+        }
+      }
+    },
+    {
+      "name": "Look volume 4",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -38.0,
+          13.0,
+          6.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          20.0,
+          16.0,
+          20.0
+        ]
+      },
+      "components": {
+        "look_volume": {
+          "enabled": true,
+          "priority": 4,
+          "blend_distance": 4.0,
+          "override_exposure": true,
+          "exposure_compensation_ev": 0.0,
+          "override_contrast": true,
+          "contrast": 1.0,
+          "override_saturation": true,
+          "saturation": 1.0
+        }
+      }
+    },
+    {
+      "name": "Look volume 5",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -32.728,
+          13.0,
+          -6.728
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          20.0,
+          16.0,
+          20.0
+        ]
+      },
+      "components": {
+        "look_volume": {
+          "enabled": true,
+          "priority": 5,
+          "blend_distance": 4.0,
+          "override_exposure": true,
+          "exposure_compensation_ev": 0.0,
+          "override_contrast": true,
+          "contrast": 1.0,
+          "override_saturation": true,
+          "saturation": 1.0
+        }
+      }
+    },
+    {
+      "name": "Look volume 6",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -20.0,
+          13.0,
+          -12.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          20.0,
+          16.0,
+          20.0
+        ]
+      },
+      "components": {
+        "look_volume": {
+          "enabled": true,
+          "priority": 6,
+          "blend_distance": 4.0,
+          "override_exposure": true,
+          "exposure_compensation_ev": 0.0,
+          "override_contrast": true,
+          "contrast": 1.0,
+          "override_saturation": true,
+          "saturation": 1.0
+        }
+      }
+    },
+    {
+      "name": "Look volume 7",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -7.272,
+          13.0,
+          -6.728
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          20.0,
+          16.0,
+          20.0
+        ]
+      },
+      "components": {
+        "look_volume": {
+          "enabled": true,
+          "priority": 7,
+          "blend_distance": 4.0,
+          "override_exposure": true,
+          "exposure_compensation_ev": 0.0,
+          "override_contrast": true,
+          "contrast": 1.0,
+          "override_saturation": true,
+          "saturation": 1.0
+        }
+      }
+    }
+  ]
+}

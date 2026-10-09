@@ -40,6 +40,7 @@ extern const VkrTypeDesc vkr_scene_animation_type;
 /** Player Start (ADR-079): the spawn pose a game script reads. */
 extern const VkrTypeDesc vkr_scene_player_start_type;
 extern const VkrTypeDesc vkr_scene_decal_type;
+extern const VkrTypeDesc vkr_scene_look_volume_type;
 /** Per-entity submesh materials of a mesh instance (SceneMaterialOverride). */
 extern const VkrTypeDesc vkr_scene_material_override_type;
 extern const VkrTypeDesc vkr_scene_surface_theme_type;

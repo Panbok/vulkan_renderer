@@ -116,8 +116,8 @@ vkr_exposure_gpu_metering(const VkrExposureMeteringConfig *config,
       .low_percentile = config->low_percentile,
       .high_percentile = config->high_percentile,
       .log_middle_gray = log2f(config->middle_gray) + stops,
-      .min_ev = config->min_ev,
-      .max_ev = config->max_ev,
+      .min_ev = frame->min_ev < frame->max_ev ? frame->min_ev : config->min_ev,
+      .max_ev = frame->min_ev < frame->max_ev ? frame->max_ev : config->max_ev,
       .brighten_rate_per_second = config->brighten_rate_per_second,
       .darken_rate_per_second = config->darken_rate_per_second,
       .compensation_ev = frame->compensation_ev,
@@ -147,6 +147,8 @@ VkrExposureFrame vkr_exposure_prepare(const VkrExposureState *state,
       .compensation_ev = input->mode == VKR_EXPOSURE_MODE_AUTOMATIC
                              ? input->compensation_ev
                              : 0.0f,
+      .min_ev = input->min_ev,
+      .max_ev = input->max_ev,
       .reset_reasons =
           (input->temporal_reset_reasons & VKR_EXPOSURE_RESET_TEMPORAL_MASK) |
           input->explicit_reset_reasons,

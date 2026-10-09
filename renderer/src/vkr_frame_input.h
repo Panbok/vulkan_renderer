@@ -26,7 +26,7 @@
 #include "vkr_ui_draw_types.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 52u
+#define VKR_FRAME_INPUT_VERSION 53u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -103,6 +103,11 @@ typedef struct VkrFrameGlobals {
   float32_t manual_exposure;
   /** Additive EV bias. Automatic mode only; manual mode ignores it. */
   float32_t exposure_compensation_ev;
+  /** The EV range automatic exposure settles in, as look volumes set it
+      (packet 53, ADR-097); equal values keep the renderer's metering
+      range. */
+  float32_t exposure_min_ev;
+  float32_t exposure_max_ev;
   /** Presentation transform selected for the fullscreen tonemap pass. */
   uint32_t display_transform;
   /** White balance offsets normalized to [-1, 1]. */

@@ -29,6 +29,7 @@
 #include "json_test.h"
 #include "json_writer_test.h"
 #include "lighting_system_tests.h"
+#include "look_volume_tests.h"
 #include "mat_test.h"
 #include "material_pbr_tests.h"
 #include "math_test.h"

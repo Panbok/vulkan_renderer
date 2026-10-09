@@ -2315,6 +2315,116 @@ static bool8_t ops_box_add(OpsContext *ctx, OpsBatch *batch,
                        vkr_quat_identity(), planes, count, looks, out_item);
 }
 
+/* look.volume: a look volume over a world box (ADR-097). Each key of
+   'look' sets that value and turns its override on. */
+static bool8_t ops_build_look_volume(OpsContext *ctx, const VkrBakeryJson *args,
+                                     OpsBatch *batch) {
+  uint16_t container = 0u;
+  Vec3 min = {0};
+  Vec3 max = {0};
+  VkrQuat rotation = vkr_quat_identity();
+  if (!ops_arg_container(ctx, args, &container) ||
+      !ops_arg_box(ctx, args, 0.0f, &min, &max) ||
+      !ops_arg_rotation(ctx, args, &rotation)) {
+    return false_v;
+  }
+  SceneLookVolume volume;
+  vkr_type_defaults(&vkr_scene_look_volume_type, &volume);
+  float64_t number = 0.0;
+  if (ops_arg_number(args, "priority", &number)) {
+    volume.priority = (int32_t)number;
+  }
+  if (ops_arg_number(args, "blend_distance", &number)) {
+    volume.blend_distance = (float32_t)number;
+  }
+  const VkrBakeryJson *look = vkr_bakery_json_get(args, "look");
+  if (!look || look->type != VKR_BAKERY_JSON_OBJECT || look->count == 0u) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'look' must name at least one value to override");
+  }
+  /* Scalar overrides: key, flag and value. */
+  const struct {
+    const char *key;
+    bool8_t *flag;
+    float32_t *value;
+  } scalars[] = {
+      {"exposure_compensation_ev", &volume.override_exposure,
+       &volume.exposure_compensation_ev},
+      {"contrast", &volume.override_contrast, &volume.contrast},
+      {"saturation", &volume.override_saturation, &volume.saturation},
+      {"bloom_intensity", &volume.override_bloom, &volume.bloom_intensity},
+      {"fog_density", &volume.override_fog_density, &volume.fog_density},
+      {"sky_light_intensity", &volume.override_sky_light,
+       &volume.sky_light_intensity},
+  };
+  uint32_t known = 0u;
+  for (uint32_t i = 0; i < ArrayCount(scalars); ++i) {
+    if (vkr_bakery_json_get(look, scalars[i].key)) {
+      if (!ops_arg_number(look, scalars[i].key, &number) || !isfinite(number)) {
+        return ops_fail(ctx, OPS_INVALID, "'look.%s' must be a number",
+                        scalars[i].key);
+      }
+      *scalars[i].flag = true_v;
+      *scalars[i].value = (float32_t)number;
+      known++;
+    }
+  }
+  float32_t pair[2] = {0};
+  bool8_t present = false_v;
+  if (!ops_arg_floats(ctx, look, "metering", pair, 2u, &present)) {
+    return false_v;
+  }
+  if (present) {
+    volume.override_metering = true_v;
+    volume.metering_min_ev = pair[0];
+    volume.metering_max_ev = pair[1];
+    known++;
+  }
+  if (!ops_arg_floats(ctx, look, "white_balance", pair, 2u, &present)) {
+    return false_v;
+  }
+  if (present) {
+    volume.override_white_balance = true_v;
+    volume.white_balance_temperature = pair[0];
+    volume.white_balance_tint = pair[1];
+    known++;
+  }
+  if (!ops_arg_vec3(ctx, look, "fog_color", &volume.fog_color, &present)) {
+    return false_v;
+  }
+  if (present) {
+    volume.override_fog_color = true_v;
+    known++;
+  }
+  if (known != look->count) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'look' takes exposure_compensation_ev, metering [min, "
+                    "max], white_balance [temperature, tint], contrast, "
+                    "saturation, bloom_intensity, fog_color, fog_density "
+                    "and sky_light_intensity");
+  }
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, container, VKR_SCENE_EDIT_CREATE);
+  if (!item) {
+    return false_v;
+  }
+  VkrSceneEditValues *values = &item->request.values;
+  values->fields =
+      VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
+  snprintf(values->name, sizeof(values->name), "Look volume");
+  if (!ops_arg_string(ctx, args, "name", values->name, sizeof(values->name))) {
+    return false_v;
+  }
+  /* The unit box scaled to the corners, turned about its center. */
+  values->position = vec3_scale(vec3_add(min, max), 0.5f);
+  values->rotation = rotation;
+  values->scale = vec3_sub(max, min);
+  values->component_type = &vkr_scene_look_volume_type;
+  MemCopy(values->component, &volume, sizeof(volume));
+  batch->op_item[batch->op_count] = batch->count - 1u;
+  return ops_validate_values(ctx, values);
+}
+
 static bool8_t ops_build_brush_box(OpsContext *ctx, const VkrBakeryJson *args,
                                    OpsBatch *batch) {
   OpsBrushArgs brush;
@@ -11734,6 +11844,21 @@ static const OpsDef s_ops[] = {
      ",\"type\":{\"type\":\"string\"}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"entity\",\"type\"]}",
      NULL, ops_build_component_remove},
+    {"look.volume",
+     "Create a look volume between two world corners, turned by 'rotation' "
+     "(degrees XYZ) about its center: inside it, fading over "
+     "'blend_distance' metres (default 1) outside, each value 'look' names "
+     "replaces the scene's: exposure_compensation_ev, metering [min, max] "
+     "EV, white_balance [temperature, tint], contrast, saturation, "
+     "bloom_intensity, fog_color, fog_density, sky_light_intensity. "
+     "Overlapping volumes blend in ascending 'priority'.",
+     "{\"type\":\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
+     ",\"max\":" OPS_VEC3_SCHEMA ",\"rotation\":" OPS_VEC3_SCHEMA
+     ",\"name\":{\"type\":\"string\"},\"container\":" OPS_CONTAINER_SCHEMA
+     ",\"priority\":{\"type\":\"integer\"},\"blend_distance\":{\"type\":"
+     "\"number\"},\"look\":{\"type\":\"object\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"min\",\"max\",\"look\"]}",
+     NULL, ops_build_look_volume},
     {"brush.box",
      "Create a box brush between two corners, snapped to 'grid' (default "
      "1/16 m), turned by 'rotation' (degrees XYZ) about its center; with "

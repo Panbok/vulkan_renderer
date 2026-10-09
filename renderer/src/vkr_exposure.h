@@ -126,6 +126,10 @@ typedef struct VkrExposureFrameInput {
   /** Validated linear multiplier; manual output and automatic fallback. */
   float32_t manual_exposure;
   float32_t compensation_ev;
+  /** The metered EV's clamp for this frame; equal values keep the
+      renderer's VkrExposureMeteringConfig range. */
+  float32_t min_ev;
+  float32_t max_ev;
   float64_t delta_time;
   /** Newest completed automatic exposure multiplier, or zero when none has
       completed since the mode was selected. */
@@ -146,6 +150,9 @@ typedef struct VkrExposureFrame {
   uint32_t mode;
   float32_t manual;
   float32_t compensation_ev;
+  /** The metered EV's clamp; equal values keep the renderer's range. */
+  float32_t min_ev;
+  float32_t max_ev;
   /** Adaptation step, clamped to [0, VKR_EXPOSURE_MAX_DELTA_SECONDS]. */
   float32_t delta_seconds;
   uint32_t reset_reasons;

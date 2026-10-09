@@ -24,6 +24,7 @@
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_decal.h"
 #include "renderer/systems/vkr_scene_frame.h"
+#include "renderer/systems/vkr_scene_look.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_skybox_system.h"
 #include "renderer/systems/vkr_ui_system.h"
@@ -245,6 +246,8 @@ typedef struct VkrStandardSceneRuntime {
   VkrLightingSystem lighting_system;
   /* This frame's decals, collected with its world payload (ADR-092). */
   VkrSceneDecalFrame decal_frame;
+  /** The frame's look volumes, reused each frame (ADR-097). */
+  VkrLookVolume look_volumes[VKR_SCENE_LOOK_VOLUME_MAX];
   VkrShadowSystem shadow_system;
   VkrUiSystem ui_system;
   /* Editor selection whose meshes are outlined over the Scene image; the

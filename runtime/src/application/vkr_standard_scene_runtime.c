@@ -1670,6 +1670,38 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
     base.gtao_radius = post->gtao_radius;
     base.gtao_power = post->gtao_power;
   }
+  /* Look volumes at the camera override part of that look, the height fog
+     and the sky light (ADR-097). */
+  const VkrExposureMeteringConfig metering =
+      vkr_exposure_metering_config_default();
+  VkrLook look = {
+      .exposure_compensation_ev = base.exposure_compensation_ev,
+      .metering_min_ev = metering.min_ev,
+      .metering_max_ev = metering.max_ev,
+      .white_balance_temperature = base.white_balance_temperature,
+      .white_balance_tint = base.white_balance_tint,
+      .contrast = base.color_contrast,
+      .saturation = base.color_saturation,
+      .bloom_intensity = base.bloom_intensity,
+      .fog_color = active_scene ? active_scene->world_state.fog.color
+                                : vkr_fog_settings_defaults().color,
+      .fog_density = active_scene ? active_scene->world_state.fog.density
+                                  : vkr_fog_settings_defaults().density,
+      .sky_light_intensity = draw->frame_lighting.ibl_intensity,
+  };
+  VkrLookVolume *volumes = application->look_volumes;
+  const uint32_t volume_count = vkr_scene_look_volumes(
+      active_scene, volumes, ArrayCount(application->look_volumes));
+  if (volume_count > 0u) {
+    vkr_look_blend(&look, volumes, volume_count, base.view_position);
+    base.exposure_compensation_ev = look.exposure_compensation_ev;
+    base.white_balance_temperature = look.white_balance_temperature;
+    base.white_balance_tint = look.white_balance_tint;
+    base.color_contrast = look.contrast;
+    base.color_saturation = look.saturation;
+    base.bloom_intensity = look.bloom_intensity;
+    draw->frame_lighting.ibl_intensity = look.sky_light_intensity;
+  }
   const VkrFrameGlobals *globals = &base;
   VkrFrameInput packet = {
       .animation_preview =
@@ -1695,6 +1727,8 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
               .exposure_mode = (uint32_t)globals->exposure_mode,
               .manual_exposure = globals->manual_exposure,
               .exposure_compensation_ev = globals->exposure_compensation_ev,
+              .exposure_min_ev = look.metering ? look.metering_min_ev : 0.0f,
+              .exposure_max_ev = look.metering ? look.metering_max_ev : 0.0f,
               .display_transform = (uint32_t)globals->display_transform,
               .white_balance_temperature = globals->white_balance_temperature,
               .white_balance_tint = globals->white_balance_tint,
@@ -1746,6 +1780,8 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
     box->minimum = vec3_sub(box->minimum, active_scene->origin_offset);
     box->maximum = vec3_sub(box->maximum, active_scene->origin_offset);
   }
+  packet.globals.fog.color = look.fog_color;
+  packet.globals.fog.density = look.fog_density;
   if (application->disable_fog)
     packet.globals.fog.enabled = false_v;
   if (application->disable_volumetric_fog ||

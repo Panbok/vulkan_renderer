@@ -1055,6 +1055,9 @@ static void workbench_lighting_palette(VkrEditorUi *editor,
   vkr_editor_palette_create(&palette, string8_lit("lighting.post"),
                             "Post process", VKR_UI_ICON_PALETTE,
                             "post_process");
+  vkr_editor_palette_create(&palette, string8_lit("lighting.look"),
+                            "Look volume", VKR_UI_ICON_BOUNDING_BOX,
+                            "look_volume");
 
   /* View modes set the render mode directly, as Cmd view.mode does. */
   vkr_editor_palette_heading(&palette, string8_lit("lighting.view"),

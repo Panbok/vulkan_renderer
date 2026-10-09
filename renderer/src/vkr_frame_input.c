@@ -229,6 +229,12 @@ vkr_internal VkrRendererError vkr_frame_input_validate_exposure_and_grading(
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.exposure_compensation_ev",
                       "must be finite");
+  if (!isfinite(packet->globals.exposure_min_ev) ||
+      !isfinite(packet->globals.exposure_max_ev) ||
+      packet->globals.exposure_min_ev > packet->globals.exposure_max_ev)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.exposure_min_ev",
+                      "must be finite and at most exposure_max_ev");
   if (packet->globals.display_transform >= VKR_DISPLAY_TRANSFORM_COUNT)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.display_transform",

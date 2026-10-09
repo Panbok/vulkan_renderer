@@ -345,7 +345,7 @@ typedef struct SceneWorldGather {
   VkrEntityId best;
   bool8_t best_enabled;
   uint8_t *best_value;
-  /* Collections: entity indices and values in index order. */
+  /* Collections: entity indices, and values when given, in index order. */
   uint32_t *indices;
   uint8_t *values;
   uint32_t count;
@@ -394,10 +394,12 @@ static void scene_world_gather(const VkrScene *scene,
     if (!value || !vkr_scene_entity_visible(scene, entity)) {
       continue;
     }
-    if (gather->values) {
+    if (gather->indices) {
       if (gather->count < gather->capacity) {
-        MemCopy(gather->values + (uint64_t)gather->count * gather->type->size,
-                value, gather->type->size);
+        if (gather->values) {
+          MemCopy(gather->values + (uint64_t)gather->count * gather->type->size,
+                  value, gather->type->size);
+        }
         gather->indices[gather->count] = i;
         gather->count++;
       }
@@ -716,6 +718,22 @@ bool8_t vkr_scene_resolve_world(VkrScene *scene) {
     box_count += root_boxes.count;
   }
   state->froxel_fog.box_count = box_count;
+
+  /* Look volumes: the scene's own, then the root World's. */
+  SceneWorldGather looks = {.type = &vkr_scene_look_volume_type,
+                            .indices = state->look_volume_indices,
+                            .capacity = VKR_SCENE_LOOK_VOLUME_MAX};
+  scene_world_gather(scene, &looks);
+  state->look_volume_own_count = looks.count;
+  if (scene->world_fallback && looks.count < VKR_SCENE_LOOK_VOLUME_MAX) {
+    SceneWorldGather root_looks = {
+        .type = &vkr_scene_look_volume_type,
+        .indices = state->look_volume_indices + looks.count,
+        .capacity = VKR_SCENE_LOOK_VOLUME_MAX - looks.count};
+    scene_world_gather(scene->world_fallback, &root_looks);
+    looks.count += root_looks.count;
+  }
+  state->look_volume_count = looks.count;
 
   scene_world_lower(scene, had_atmosphere);
   return true_v;

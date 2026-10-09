@@ -819,6 +819,8 @@ static const EditorObjectKind s_object_kinds[] = {
      &vkr_scene_fog_box_type, false_v, "Environment"},
     {"post_process", "Post Process", VKR_UI_ICON_PALETTE,
      &vkr_scene_post_process_type, false_v, "Environment"},
+    {"look_volume", "Look Volume", VKR_UI_ICON_BOUNDING_BOX,
+     &vkr_scene_look_volume_type, false_v, "Environment"},
     {"time_of_day", "Time of Day", VKR_UI_ICON_CLOCK,
      &vkr_scene_time_of_day_type, false_v, "Environment"},
     {"physics_settings", "Physics Settings", VKR_UI_ICON_PHYSICS,
@@ -1281,8 +1283,12 @@ bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
   /* A shape is centred on its origin, so it rests half its height above the
      snap point; a text's center rises an em above it. */
   const bool8_t text = object->type == &vkr_scene_text_type;
+  /* A look volume starts room-sized, standing on the snap point. */
+  const bool8_t look = object->type == &vkr_scene_look_volume_type;
+  const Vec3 look_size = vec3_new(8.0f, 4.0f, 8.0f);
   const float32_t base =
-      object->type == &vkr_scene_shape_type
+      look ? look_size.y * 0.5f
+      : object->type == &vkr_scene_shape_type
           ? ((const SceneShapeSettings *)values.component)->dimensions.y * 0.5f
       : text ? ((const SceneTextSettings *)values.component)->size
              : 0.0f;
@@ -1295,7 +1301,7 @@ bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
     values.fields |= VKR_SCENE_EDIT_TRANSFORM;
     values.position = pose.position;
     values.rotation = pose.rotation;
-    values.scale = vec3_one();
+    values.scale = look ? look_size : vec3_one();
     if (text) {
       editor_place_text(&values, &pose);
     }

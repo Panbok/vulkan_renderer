@@ -1911,6 +1911,213 @@ const VkrTypeDesc vkr_scene_decal_type = {
     .validate = decal_validate,
 };
 
+/* ---- Look volumes ---- */
+
+static const VkrPropertyDesc s_look_volume_properties[] = {
+    {.name = "enabled",
+     .label = "Enabled",
+     .offset = TYPE_OFFSET(SceneLookVolume, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "priority",
+     .label = "Priority",
+     .tooltip = "Overlapping volumes blend in ascending priority, the "
+                "highest last",
+     .offset = TYPE_OFFSET(SceneLookVolume, priority),
+     .kind = VKR_PROPERTY_I32,
+     .min = -1000.0f,
+     .max = 1000.0f,
+     .step = 1.0f},
+    {.name = "blend_distance",
+     .label = "Blend distance",
+     .tooltip = "Distance outside the box over which the volume fades out",
+     .unit = "m",
+     .offset = TYPE_OFFSET(SceneLookVolume, blend_distance),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = FLT_MAX,
+     .step = 0.05f},
+    {.name = "override_exposure",
+     .label = "Override exposure",
+     .tooltip = "Replace the post process exposure compensation",
+     .offset = TYPE_OFFSET(SceneLookVolume, override_exposure),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "exposure_compensation_ev",
+     .label = "Compensation",
+     .unit = "EV",
+     .offset = TYPE_OFFSET(SceneLookVolume, exposure_compensation_ev),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = -6.0f,
+     .max = 6.0f,
+     .step = 0.01f},
+    {.name = "override_metering",
+     .label = "Override metering range",
+     .tooltip = "Limit the EV automatic exposure settles at",
+     .offset = TYPE_OFFSET(SceneLookVolume, override_metering),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "metering_min_ev",
+     .label = "Metering minimum",
+     .unit = "EV",
+     .offset = TYPE_OFFSET(SceneLookVolume, metering_min_ev),
+     .kind = VKR_PROPERTY_F32,
+     .min = -16.0f,
+     .max = 32.0f,
+     .step = 0.1f},
+    {.name = "metering_max_ev",
+     .label = "Metering maximum",
+     .unit = "EV",
+     .offset = TYPE_OFFSET(SceneLookVolume, metering_max_ev),
+     .kind = VKR_PROPERTY_F32,
+     .min = -16.0f,
+     .max = 32.0f,
+     .step = 0.1f},
+    {.name = "override_white_balance",
+     .label = "Override white balance",
+     .tooltip = "Replace the post process white balance",
+     .offset = TYPE_OFFSET(SceneLookVolume, override_white_balance),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "white_balance_temperature",
+     .label = "Temperature",
+     .offset = TYPE_OFFSET(SceneLookVolume, white_balance_temperature),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = -1.0f,
+     .max = 1.0f,
+     .step = 0.01f},
+    {.name = "white_balance_tint",
+     .label = "Tint",
+     .offset = TYPE_OFFSET(SceneLookVolume, white_balance_tint),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = -1.0f,
+     .max = 1.0f,
+     .step = 0.01f},
+    {.name = "override_contrast",
+     .label = "Override contrast",
+     .tooltip = "Replace the post process contrast",
+     .offset = TYPE_OFFSET(SceneLookVolume, override_contrast),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "contrast",
+     .label = "Contrast",
+     .unit = "x",
+     .offset = TYPE_OFFSET(SceneLookVolume, contrast),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 0.5f,
+     .max = 1.5f,
+     .step = 0.01f},
+    {.name = "override_saturation",
+     .label = "Override saturation",
+     .tooltip = "Replace the post process saturation",
+     .offset = TYPE_OFFSET(SceneLookVolume, override_saturation),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "saturation",
+     .label = "Saturation",
+     .unit = "x",
+     .offset = TYPE_OFFSET(SceneLookVolume, saturation),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 0.0f,
+     .max = 1.5f,
+     .step = 0.01f},
+    {.name = "override_bloom",
+     .label = "Override bloom",
+     .tooltip = "Replace the post process bloom intensity",
+     .offset = TYPE_OFFSET(SceneLookVolume, override_bloom),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "bloom_intensity",
+     .label = "Bloom intensity",
+     .offset = TYPE_OFFSET(SceneLookVolume, bloom_intensity),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 0.0f,
+     .max = 1.0f,
+     .step = 0.01f},
+    {.name = "override_fog_color",
+     .label = "Override fog colour",
+     .tooltip = "Replace the height fog colour",
+     .offset = TYPE_OFFSET(SceneLookVolume, override_fog_color),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "fog_color",
+     .label = "Fog colour",
+     .offset = TYPE_OFFSET(SceneLookVolume, fog_color),
+     .kind = VKR_PROPERTY_COLOR},
+    {.name = "override_fog_density",
+     .label = "Override fog density",
+     .tooltip = "Replace the height fog density",
+     .offset = TYPE_OFFSET(SceneLookVolume, override_fog_density),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "fog_density",
+     .label = "Fog density",
+     .offset = TYPE_OFFSET(SceneLookVolume, fog_density),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = FLT_MAX,
+     .step = 0.0005f},
+    {.name = "override_sky_light",
+     .label = "Override sky light",
+     .tooltip = "Replace the sky light intensity",
+     .offset = TYPE_OFFSET(SceneLookVolume, override_sky_light),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "sky_light_intensity",
+     .label = "Sky light intensity",
+     .offset = TYPE_OFFSET(SceneLookVolume, sky_light_intensity),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = FLT_MAX,
+     .step = 0.01f},
+};
+
+static void look_volume_defaults(void *value) {
+  SceneLookVolume *volume = value;
+  MemZero(volume, sizeof(*volume));
+  const ScenePostProcess post = vkr_scene_post_process_defaults();
+  const VkrFogSettings fog = vkr_fog_settings_defaults();
+  const VkrExposureMeteringConfig metering =
+      vkr_exposure_metering_config_default();
+  volume->enabled = true_v;
+  volume->blend_distance = 1.0f;
+  volume->exposure_compensation_ev = post.exposure_compensation_ev;
+  volume->metering_min_ev = metering.min_ev;
+  volume->metering_max_ev = metering.max_ev;
+  volume->white_balance_temperature = post.white_balance_temperature;
+  volume->white_balance_tint = post.white_balance_tint;
+  volume->contrast = post.contrast;
+  volume->saturation = post.saturation;
+  volume->bloom_intensity = post.bloom_intensity;
+  volume->fog_color = fog.color;
+  volume->fog_density = fog.density;
+  volume->sky_light_intensity = 1.0f;
+}
+
+static bool8_t look_volume_validate(const void *value, char *error,
+                                    uint32_t capacity) {
+  const SceneLookVolume *volume = value;
+  if (!(volume->blend_distance >= 0.0f) || !(volume->fog_density >= 0.0f) ||
+      !(volume->sky_light_intensity >= 0.0f)) {
+    snprintf(error, capacity,
+             "Blend distance, fog density and sky light are not negative.");
+    return false_v;
+  }
+  if (!(volume->metering_min_ev < volume->metering_max_ev)) {
+    snprintf(error, capacity, "The metering minimum lies below its maximum.");
+    return false_v;
+  }
+  return true_v;
+}
+
+const VkrTypeDesc vkr_scene_look_volume_type = {
+    .name = "look_volume",
+    .label = "Look volume",
+    .category = "Camera",
+    .properties = s_look_volume_properties,
+    .property_count = ArrayCount(s_look_volume_properties),
+    .size = sizeof(SceneLookVolume),
+    .align = AlignOf(SceneLookVolume),
+    .defaults = look_volume_defaults,
+    .validate = look_volume_validate,
+};
+
 /* ---- Material overrides ---- */
 
 /* One path per submesh, `material_0` naming submesh 0's material. */
@@ -3645,6 +3852,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_animation_type,
     &vkr_scene_player_start_type,
     &vkr_scene_decal_type,
+    &vkr_scene_look_volume_type,
     &vkr_scene_brush_type,
     &vkr_scene_brush_face_type,
     &vkr_scene_trigger_type,
@@ -3730,7 +3938,7 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_animation_settings_type ||
          type == &vkr_scene_time_of_day_type || type == &vkr_scene_shape_type ||
          type == &vkr_scene_text_type || type == &vkr_scene_player_start_type ||
-         type == &vkr_scene_decal_type ||
+         type == &vkr_scene_decal_type || type == &vkr_scene_look_volume_type ||
          type == &vkr_scene_material_override_type ||
          type == &vkr_scene_surface_theme_type ||
          type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "performance.bistro.look_volumes_orbit_1440",
+  "suite": "performance",
+  "description": "The Bistro material orbit with eight look volumes along the camera path (ADR-097). Their overrides equal the defaults, so the image matches the material orbit and the difference is the CPU blend of the volumes each frame.",
+  "scene": "assets/scenes/fixtures/bistro_look_volumes.scene.json",
+  "seed": 1,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 120,
+    "measure": 300
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "orbit",
+    "speed": "medium",
+    "center": [
+      -20,
+      6,
+      6
+    ],
+    "radius": 18,
+    "height": 7,
+    "revolutions": 1.4,
+    "duration_seconds": 7,
+    "start_angle_degrees": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    }
+  ]
+}
