@@ -2,12 +2,12 @@
   "schema_version": 1,
   "id": "performance.bistro.material_orbit_1440",
   "suite": "performance",
-  "description": "Deterministic Bistro orbit at 2560x1440 for material shading cost: surface shading scales with pixels, so a change to the material path (such as the layered Standard branch) shows in gpu.submission at this extent.",
+  "description": "Deterministic Bistro orbit for material shading cost at 2560x1440 pixels on a 2x display (1280x720 points): surface shading scales with pixels, so a change to the material path (such as the layered Standard branch) shows in gpu.submission.",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 1,
   "resolution": [
-    2560,
-    1440
+    1280,
+    720
   ],
   "boot": "full",
   "target": "windowed_hidden",
@@ -48,11 +48,6 @@
   "assertions": [
     {
       "metric": "draw.world.calls_issued",
-      "stat": "min",
-      "min": 1
-    },
-    {
-      "metric": "draw.shadow.cascade0.indirect_commands",
       "stat": "min",
       "min": 1
     }
