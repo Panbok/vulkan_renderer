@@ -11,7 +11,11 @@
 #include <stdlib.h>
 
 #define VKR_MATERIAL_SYSTEM_ASYNC_DMEMORY_INITIAL MB(1)
-#define VKR_MATERIAL_SYSTEM_ASYNC_DMEMORY_RESERVE MB(16)
+/* Every material load in flight holds a payload of about 56 KB (its parsed
+   definition and a texture request per slot, 32 slots since ADR-096), and
+   the texture streams live here too. Bistro starts 254 loads at once; past
+   the reserve a load fails as out of memory. */
+#define VKR_MATERIAL_SYSTEM_ASYNC_DMEMORY_RESERVE MB(32)
 #define VKR_MATERIAL_TEXTURE_STREAM_DEFAULT_BUDGET UINT64_MAX
 
 VkrMaterialAlphaMode
