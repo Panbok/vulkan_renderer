@@ -169,11 +169,19 @@ tint, absorption, shadow occlusion and cutout coverage are pending.
 
 ## Terrain layer evidence state
 
-The terrain material blend ([ADR-084](084-agent-channel-and-level-design-toolkit.md#terrain))
-is shared. The Vulkan G-buffer resolve and the Metal tiled forward shader call
-the shared `terrain_kernel.slangh` for weights, per-layer surfaces and the
-blend; each samples its own terrain segment. Common material rows are
-unchanged. The terrain segment rows are 192 bytes on Metal and 144 on Vulkan.
+The layer blend of terrain materials
+([ADR-084](084-agent-channel-and-level-design-toolkit.md#terrain)) and
+layered Standard materials ([ADR-095](095-layered-standard-materials.md)) is
+shared. The Vulkan G-buffer resolve and the Metal tiled forward shader call
+the shared `terrain_kernel.slangh` for the mask weights
+(`vkr_layer_mask_weights`: vertex colour, mask texture, slope or height),
+per-layer surfaces and the blend; each samples its own terrain segment.
+Common material rows are unchanged. The terrain segment rows are 240 bytes on
+Metal and 176 on Vulkan since ADR-095 added the mask texture, sampler,
+source and range. On 2026-10-09 the Metal tiled pipeline showed the slope,
+height and texture masks on Bistro brushes and passed Metal API validation;
+Vulkan native execution and `spirv-val` of the changed resolve modules wait
+for a Windows host.
 The Vulkan resolve root reuses its reserved address at byte 16, and the tiled
 shader reads the rows through the Metal frame root's `terrain_materials`.
 Native evidence: Vulkan execution passed on Windows (2026-10-04), and the four
@@ -639,7 +647,7 @@ domain under the [evidence rules](#evidence-rules).
 | Compute skinning | Shared | `shared/skinning_kernel.slangh` | `metal/msl/world/skinning.metal` | `vulkan/slang/world/skinning.slang` |
 | Culling, draw encoding and geometry decode | Shared | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang` |
 | Geometry LOD and terrain geomorph | Shared | `shared/lod_kernel.slangh`, `terrain_kernel.slangh`, `gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal`, `metal/msl/world/tiled.metal`, `metal/slang/world/default.slang` | `vulkan/slang/world/deferred.slang`, `common/vertex.slangh` |
-| Terrain layer blend | Shared | `shared/terrain_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
+| Terrain and layered material blend | Shared | `shared/terrain_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
 | Tiled forward, atmosphere and blend | Tiled | shared material, light, fog, atmosphere and transmission kernels below | `metal/msl/world/tiled.metal`, `lighting.metalh`, `metal/msl/shadow/sampling.metalh` | — |
 | Projected decals | Shared semantics, one implementation per backend | — | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
 | Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |

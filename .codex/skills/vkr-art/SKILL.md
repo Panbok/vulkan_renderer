@@ -6,8 +6,9 @@ description: Author VKR materials and do the art pass through the editor's agent
 # VKR art pass through the agent channel
 
 [docs/proposals/artist-toolkit.md](../../../docs/proposals/artist-toolkit.md),
-[ADR-093](../../../docs/adr/093-material-graphs-and-art-workbench.md) and
-[ADR-094](../../../docs/adr/094-surface-themes-and-art-pass.md) define the
+[ADR-093](../../../docs/adr/093-material-graphs-and-art-workbench.md),
+[ADR-094](../../../docs/adr/094-surface-themes-and-art-pass.md) and
+[ADR-095](../../../docs/adr/095-layered-standard-materials.md) define the
 model; `ops.list` returns every
 operation's schema. This skill sets the order of work and the checks.
 
@@ -56,6 +57,23 @@ shader and no pipeline. `material.patch`, `material.describe` and
 - Two textures multiplied, other channels or other node chains are not
   Standard; fix the graph by the `reason` and `node` the answer names.
 - Expose a value as a `parameter` only when instances vary it.
+
+## Layers
+
+Weathering (moss on tops, grime low on walls, wear patterns) is a layered
+material, not a second texture multiplied in:
+
+- Make each layer an ordinary `.mt` (an instance is fine) with its base
+  colour, normal and ORM. Add a `layer` node (`path` to it) per layer, up to
+  three, into a `layer_blend` node, and connect `blend.layers` to
+  `output.layers`.
+- Pick the blend's `mask`: `slope` with `value` [from, to] in world normal Y
+  (0.6 to 0.8 puts layer 1 on what faces up), `height` with [from, to] in
+  world meters, `texture` with `path` to a mask whose RGBA weigh layers 0 to
+  3, or `vertex_color` for painted meshes.
+- Layered materials are opaque. Layers share the base's UVs and its
+  `world_size`. Bakes see layer 0 only.
+- `lowering.layers` counts them; each layer adds three samples.
 
 ## Bind tags first
 

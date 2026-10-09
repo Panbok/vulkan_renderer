@@ -11,8 +11,9 @@ the shared source and is tracked in
 used by every Metal and Vulkan material path, including two-channel BC5 and EAC
 RG11 sources.
 
-`terrain_kernel.slangh` owns the terrain material's layer blend: weights from
-the vertex color, each layer's surface from its samples and factors, and the
+`terrain_kernel.slangh` owns the layer blend of terrain and layered Standard
+materials: weights from the mask source (the vertex color, a mask texture,
+slope or height), each layer's surface from its samples and factors, and the
 weighted sum. Both G-buffer resolves sample their own terrain segment and call
 it.
 

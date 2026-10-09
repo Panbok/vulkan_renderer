@@ -11,10 +11,11 @@ toolkit designs and structures a level. The artist toolkit gives the
 finished layout its look: materials, lighting, sky, fog, post-processing and
 set dressing. Part 1 is implemented and recorded in ADR-084, the
 Standard tier of Parts 2 and 5 in
-[ADR-093](../adr/093-material-graphs-and-art-workbench.md), and the
-bindings, world size and lint of Part 6 in
-[ADR-094](../adr/094-surface-themes-and-art-pass.md); this proposal keeps
-their remaining scope and the other parts:
+[ADR-093](../adr/093-material-graphs-and-art-workbench.md), the bindings,
+world size and lint of Part 6 in
+[ADR-094](../adr/094-surface-themes-and-art-pass.md), and layered Standard
+materials in [ADR-095](../adr/095-layered-standard-materials.md); this
+proposal keeps their remaining scope and the other parts:
 
 1. Surface tags and fixed greybox looks with measurement aids in the level
    toolkit.
@@ -359,7 +360,9 @@ from row data:
 - UV0, UV1, world-planar or triplanar coordinates;
 - tint and scalar parameters;
 - up to four layers blended by vertex colour, a mask texture channel, height,
-  slope or world height;
+  slope or world height (implemented in ADR-095 for vertex colour, mask
+  texture, slope and world height; height blending by layer heights and
+  per-layer UV transforms remain);
 - one detail normal map;
 - the material model outputs that exist today.
 
@@ -691,7 +694,7 @@ Each phase is usable on its own and keeps the rules of Goals and limits.
 |---|---|---|
 | 1. Surface tags and greybox | Implemented (ADR-084) | Recorded in ADR-084 |
 | 2. Graph documents and the Art workbench | Implemented (ADR-093); material functions, the Lookdev scene and the Details picker remain | Recorded in ADR-093 |
-| 3. Layered Standard and the art pass | Themes and bindings, `world_size`, face overrides and `art.lint` are implemented (ADR-094); remaining: layer blend with mask sources | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
+| 3. Layered Standard and the art pass | Implemented: themes and bindings, `world_size`, face overrides and `art.lint` (ADR-094); layer blends by vertex colour, mask texture, slope or height (ADR-095) | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
 | 4. Custom graphs | Code generation, the project shader library, Metal per-graph variants, Vulkan classification and per-graph resolve, the budget, pipeline creation at scene and cell load, the late-draw fallback and `pipelines_late` | `pipelines_late` is zero over the Bistro glide camera with 8 Custom graphs assigned. Cold and warm pipeline creation time per graph on the M1 Pro. A Custom graph that reproduces a Standard material gives an equal snapshot. Vulkan native checks wait for a Windows host |
 | 5. Lighting and look | Environment panel and presets, look volumes, light gizmos and list, probe and volume creation, bake settings, time scrubber, artist view modes, `query.luminance` | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |
 | 6. Dressing | Decal tool and outline, scatter painting | Captures on Bistro; scatter stays within the 4,096-copy bound |

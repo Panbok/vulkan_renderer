@@ -14,8 +14,10 @@ reads, in the Standard tier only: a Standard graph costs no shader and no
 pipeline. The editor edits graphs on a node canvas in the Material panel of
 the Art workbench, keeps material files in a document journal that undoes
 in order with scene edits, and agents drive every step through `material.*`
-operations. Layered Standard graphs, Custom graphs with generated shaders,
-themes, look volumes and the other later parts of
+operations. Surface themes ([ADR-094](094-surface-themes-and-art-pass.md))
+and layered Standard graphs
+([ADR-095](095-layered-standard-materials.md)) followed; Custom graphs
+with generated shaders, look volumes and the other later parts of
 [the artist toolkit proposal](../proposals/artist-toolkit.md) are not
 implemented.
 
@@ -50,8 +52,9 @@ consumer that chose a shader or pipeline.
    inputs are the material model's: base colour, opacity, metallic,
    roughness, occlusion, normal, emissive, dielectric specular, the
    clearcoat, sheen, anisotropy, transmission, thickness and attenuation
-   inputs, IOR, subsurface and diffuse transmission. Nodes outside the
-   Standard tier arrive with the layered and Custom tiers.
+   inputs, IOR, subsurface and diffuse transmission. Layer and layer blend
+   nodes (ADR-095) feed its `layers` input. Nodes outside the Standard tier
+   arrive with the Custom tier.
 3. **Standard lowering.** `vkr_material_graph_lower` writes `.mt` lines: a
    surface input takes a constant, a texture output or a multiply of one
    constant and one texture output (two constants fold); a normal input
@@ -134,7 +137,7 @@ consumer that chose a shader or pipeline.
 - Standard graphs and instances add no shader and no pipeline: lowering ends
   in the same material rows a hand-written `.mt` gives.
 - A graph that does not lower loads as no material (the loader reports the
-  reason) until the layered and Custom tiers exist.
+  reason) until the Custom tier exists.
 - Graph edits reach every loaded instance by file index; materials outside
   `assets/` of the content root are not indexed.
 - Material documents have no unsaved state: every committed edit is on disk

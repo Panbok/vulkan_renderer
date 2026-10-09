@@ -11,8 +11,9 @@ authority: adr
 Accepted (partial). A surface theme binds surface tags to materials for a
 container's brush faces. A material's `world_size` sets how large its
 texture lies on those faces. `art.lint` reports what the art pass still
-lacks. Layered Standard materials, project tags and per-region themes in
-world-partition cells are not implemented
+lacks. Layered Standard materials followed in
+[ADR-095](095-layered-standard-materials.md); project tags and per-region
+themes in world-partition cells are not implemented
 ([the artist toolkit proposal](../proposals/artist-toolkit.md), Part 6 and
 Phase 3).
 
@@ -162,4 +163,3 @@ container; world-partition cells may add regions later.
 
 - World-partition cells need their own themes (per-region themes).
 - Project settings gain art rules (tags, density range).
-- Layered Standard materials land (proposal Phase 3, layering).

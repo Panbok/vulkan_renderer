@@ -1117,7 +1117,10 @@ and ORM maps into nine texture slots of their own
 (`VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR` onward), which stream like any
 material's. An unnamed layer 0 is the untagged floor greybox look and an
 unnamed later layer plain white; `terrain.create` names the floor greybox
-looks of no tag, grass, dirt and rock by default. Each backend publishes the extra layers in a cold terrain segment of
+looks of no tag, grass, dirt and rock by default. Any opaque Standard
+material can blend layers the same way, by other mask sources
+([ADR-095](095-layered-standard-materials.md)); a terrain's vertex colours
+weigh its layers. Each backend publishes the extra layers in a cold terrain segment of
 its material table, beside the transmission segment, and flags the common row.
 The desktop G-buffer resolve
 ([deferred.slang](../../renderer/src/shaders/vulkan/slang/world/deferred.slang))
