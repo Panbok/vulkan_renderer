@@ -47,7 +47,8 @@ static const struct {
 };
 
 static const char *const s_scene_tools[VKR_EDITOR_SCENE_TOOL_COUNT] = {
-    "none", "brush_draw", "clip", "terrain", "stairs", "corridor", "measure"};
+    "none",   "brush_draw", "clip",    "terrain",
+    "stairs", "corridor",   "measure", "decal"};
 static const char *const s_snap_targets[VKR_EDITOR_SNAP_COUNT] = {
     "free", "surface", "grid"};
 
@@ -1226,6 +1227,33 @@ static void workbench_selected_container(const VkrSampleUiFrame *frame,
   }
 }
 
+/* A labelled slider row of the palette: the value with its unit above a
+   slider from `minimum` to `maximum`. */
+static void workbench_slider_row(VkrEditorPalette *palette, String8 id,
+                                 const char *label, const char *unit,
+                                 float32_t *value, float32_t minimum,
+                                 float32_t maximum) {
+  VkrUiSystem *ui = palette->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t inner = palette->width - PALETTE_PAD_PT * 2.0f;
+  (void)vkr_ui_push_id_label(ui, id);
+  VkrUiWidgetConfig text =
+      vkr_editor_details_widget(PALETTE_PAD_PT, palette->y, inner, 18.0f);
+  text.style.font_size_pt = theme->font_caption;
+  text.style.text_color = theme->text_secondary;
+  vkr_ui_label(ui, string8_lit("label"),
+               string8_create_formatted(ui->frame_allocator, "%s  %.2f %s",
+                                        label, (float64_t)*value, unit),
+               &text);
+  palette->y += 18.0f;
+  VkrUiWidgetConfig slider =
+      vkr_editor_details_widget(PALETTE_PAD_PT, palette->y, inner, 22.0f);
+  (void)vkr_ui_slider_f32(ui, string8_lit("slider"), value, minimum, maximum,
+                          &slider);
+  (void)vkr_ui_pop_id(ui);
+  palette->y += 26.0f;
+}
+
 static void workbench_art_palette(VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame,
                                   VkrUiRect bounds) {
@@ -1324,6 +1352,29 @@ static void workbench_art_palette(VkrEditorUi *editor,
     workbench_selected_container(frame, container, sizeof(container));
     vkr_editor_material_new_theme(
         editor, frame, frame->selected_entity.u64 ? container : "primary");
+  }
+
+  /* Dressing (ADR-101): decals placed by clicking surfaces. */
+  vkr_editor_palette_heading(&palette, string8_lit("art.dressing"),
+                             string8_lit("DRESSING"));
+  const bool8_t decal_tool =
+      vkr_editor_scene_tool(editor) == VKR_EDITOR_SCENE_TOOL_DECAL;
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("art.decal"), "Decal", VKR_UI_ICON_TEXTURE,
+          string8_lit("Click surfaces to place decals facing them, with the "
+                      "open material or the default decal"),
+          decal_tool, false_v)) {
+    vkr_editor_scene_tool_set(editor, decal_tool ? VKR_EDITOR_SCENE_TOOL_NONE
+                                                 : VKR_EDITOR_SCENE_TOOL_DECAL);
+  }
+  vkr_editor_palette_end(&palette);
+  if (decal_tool) {
+    workbench_slider_row(&palette, string8_lit("art.decal_size"), "Size", "m",
+                         &editor->decal_size, 0.1f, 8.0f);
+    workbench_slider_row(&palette, string8_lit("art.decal_depth"), "Depth", "m",
+                         &editor->decal_depth, 0.05f, 4.0f);
+    workbench_slider_row(&palette, string8_lit("art.decal_angle"), "Turn",
+                         "\xc2\xb0", &editor->decal_angle, 0.0f, 360.0f);
   }
   vkr_editor_palette_heading(&palette, string8_lit("art.view"),
                              string8_lit("VIEW"));

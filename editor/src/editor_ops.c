@@ -2429,6 +2429,114 @@ static bool8_t ops_build_look_volume(OpsContext *ctx, const VkrBakeryJson *args,
   return ops_validate_values(ctx, values);
 }
 
+/* decal.place: a decal box centred on a surface point and facing it
+   (ADR-101), at 'position' and 'normal' or where a ray from 'origin' along
+   'direction' first meets collision. */
+static bool8_t ops_build_decal_place(OpsContext *ctx, const VkrBakeryJson *args,
+                                     OpsBatch *batch) {
+  uint16_t container = 0u;
+  Vec3 position = {0};
+  Vec3 normal = vec3_new(0.0f, 1.0f, 0.0f);
+  Vec3 facing = vec3_new(0.0f, 0.0f, -1.0f);
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  bool8_t has_position = false_v;
+  bool8_t has_normal = false_v;
+  bool8_t has_origin = false_v;
+  bool8_t has_direction = false_v;
+  bool8_t has_facing = false_v;
+  if (!ops_arg_container(ctx, args, &container) ||
+      !ops_arg_vec3(ctx, args, "position", &position, &has_position) ||
+      !ops_arg_vec3(ctx, args, "normal", &normal, &has_normal) ||
+      !ops_arg_vec3(ctx, args, "origin", &origin, &has_origin) ||
+      !ops_arg_vec3(ctx, args, "direction", &direction, &has_direction) ||
+      !ops_arg_vec3(ctx, args, "facing", &facing, &has_facing)) {
+    return false_v;
+  }
+  if (has_position == (has_origin && has_direction) ||
+      has_position != has_normal) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "decal.place takes 'position' and 'normal', or 'origin' "
+                    "and 'direction' to place it where that ray meets a "
+                    "surface");
+  }
+  if (!has_position) {
+    if (vec3_length(direction) < 1.0e-6f) {
+      return ops_fail(ctx, OPS_INVALID, "'direction' must be nonzero");
+    }
+    /* Physics queries take a mutable scene but change none of its state. */
+    VkrScene *scene = (VkrScene *)ops_scene(ctx->frame, container);
+    VkrPhysicsQueryFilter filter = {.mask = UINT16_MAX};
+    VkrPhysicsRayHit hit = {0};
+    if (!scene ||
+        !vkr_scene_physics_raycast_query(
+            scene, origin, vec3_scale(vec3_normalize(direction), 1000.0f),
+            &filter, &hit)) {
+      return ops_fail(ctx, OPS_NOT_FOUND,
+                      "The ray meets no collision surface within 1000 m");
+    }
+    position = vec3_new(hit.position[0], hit.position[1], hit.position[2]);
+    normal = vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
+    if (!has_facing) {
+      facing = direction;
+    }
+  }
+  if (vec3_length(normal) < 1.0e-6f) {
+    return ops_fail(ctx, OPS_INVALID, "'normal' must be nonzero");
+  }
+  /* 'size' is the width and height across the surface, one number for a
+     square. */
+  float32_t size[2] = {1.0f, 1.0f};
+  float64_t number = 0.0;
+  bool8_t has_size = false_v;
+  if (ops_arg_number(args, "size", &number)) {
+    size[0] = size[1] = (float32_t)number;
+  } else if (!ops_arg_floats(ctx, args, "size", size, 2u, &has_size)) {
+    return false_v;
+  }
+  float64_t depth = 0.5;
+  float64_t angle = 0.0;
+  (void)ops_arg_number(args, "depth", &depth);
+  (void)ops_arg_number(args, "angle", &angle);
+  if (!(size[0] > 0.0f) || !(size[1] > 0.0f) || !isfinite(size[0]) ||
+      !isfinite(size[1]) || !(depth > 0.0) || !isfinite(depth) ||
+      !isfinite(angle)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'size' and 'depth' must be positive metres and 'angle' "
+                    "finite degrees");
+  }
+  SceneDecal decal;
+  vkr_type_defaults(&vkr_scene_decal_type, &decal);
+  if (!ops_component_read(ctx, &vkr_scene_decal_type,
+                          vkr_bakery_json_get(args, "values"), &decal) ||
+      !ops_arg_string(ctx, args, "material", decal.material,
+                      sizeof(decal.material))) {
+    return false_v;
+  }
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, container, VKR_SCENE_EDIT_CREATE);
+  if (!item) {
+    return false_v;
+  }
+  VkrSceneEditValues *values = &item->request.values;
+  values->fields =
+      VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
+  snprintf(values->name, sizeof(values->name), "Decal");
+  if (!ops_arg_string(ctx, args, "name", values->name, sizeof(values->name))) {
+    return false_v;
+  }
+  /* The unit box: X across, Y along the normal (it projects along -Y), Z
+     toward the image's top. */
+  values->position = position;
+  values->rotation = vkr_editor_decal_orientation(
+      normal, facing, (float32_t)angle * (VKR_PI / 180.0f));
+  values->scale = vec3_new(size[0], (float32_t)depth, size[1]);
+  values->component_type = &vkr_scene_decal_type;
+  MemCopy(values->component, &decal, sizeof(decal));
+  batch->op_item[batch->op_count] = batch->count - 1u;
+  return ops_validate_values(ctx, values);
+}
+
 static bool8_t ops_build_brush_box(OpsContext *ctx, const VkrBakeryJson *args,
                                    OpsBatch *batch) {
   OpsBrushArgs brush;
@@ -5420,6 +5528,18 @@ static VkrEditorOpStatus ops_run_status(OpsContext *ctx) {
           ops_number(ctx, frame->view_state.grid_spacing));
   ops_set(ctx, view, "grid_height",
           ops_number(ctx, frame->view_state.grid_height));
+  /* The Scene image in window points, where ui.click reaches it. */
+  if (frame->mapping_valid && frame->ui && frame->ui->content_scale > 0.0f) {
+    const Vec4 image = frame->mapping.image_rect_px;
+    const float32_t scale = frame->ui->content_scale;
+    VkrBakeryJson *rect = vkr_bakery_json_array(arena);
+    const float32_t parts[4] = {image.x / scale, image.y / scale,
+                                image.z / scale, image.w / scale};
+    for (uint32_t i = 0; i < 4u; ++i) {
+      vkr_bakery_json_append(rect, ops_number(ctx, parts[i]));
+    }
+    ops_set(ctx, view, "image", rect);
+  }
   ops_set(ctx, result, "view", view);
   const uint32_t active = ctx->editor->workbenches.active;
   ops_set(ctx, result, "workbench",
@@ -12378,6 +12498,24 @@ static const OpsDef s_ops[] = {
      "\"number\"},\"look\":{\"type\":\"object\"}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"min\",\"max\",\"look\"]}",
      NULL, ops_build_look_volume},
+    {"decal.place",
+     "Place a decal facing a surface: centred on 'position' with the "
+     "surface's 'normal', or where a ray from 'origin' along 'direction' "
+     "first meets collision. 'size' is its width and height across the "
+     "surface (metres, one number for a square, default 1), 'depth' its "
+     "reach along the normal (default 0.5). The image's top points up a "
+     "wall, or along 'facing' (default the ray, else -Z) on a floor; "
+     "'angle' turns it about the normal in degrees. 'material' is a .mt "
+     "file (empty: the default decal) and 'values' other decal fields "
+     "(opacity, sort_order, fade_angle_start, fade_angle_end, depth_fade).",
+     "{\"type\":\"object\",\"properties\":{\"position\":" OPS_VEC3_SCHEMA
+     ",\"normal\":" OPS_VEC3_SCHEMA ",\"origin\":" OPS_VEC3_SCHEMA
+     ",\"direction\":" OPS_VEC3_SCHEMA ",\"facing\":" OPS_VEC3_SCHEMA
+     ",\"size\":{},\"depth\":{\"type\":\"number\"},\"angle\":{\"type\":"
+     "\"number\"},\"material\":{\"type\":\"string\"},\"values\":{\"type\":"
+     "\"object\"},\"name\":{\"type\":\"string\"},"
+     "\"container\":" OPS_CONTAINER_SCHEMA "," OPS_REVIEW_SCHEMA "}}",
+     NULL, ops_build_decal_place},
     {"brush.box",
      "Create a box brush between two corners, snapped to 'grid' (default "
      "1/16 m), turned by 'rotation' (degrees XYZ) about its center; with "

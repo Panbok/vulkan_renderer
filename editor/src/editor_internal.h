@@ -305,6 +305,10 @@ void vkr_editor_view_fit_grid(const VkrSampleUiFrame *frame);
 bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame, Vec2 pixel,
                                   float32_t base, VkrEditorDropPose *out);
+/* A decal's rotation on a surface of `normal` (ADR-101): its box's +Y
+   along the normal and its image's top (local +Z) up a wall, or along
+   `facing` on a floor or ceiling, then `angle` radians about the normal. */
+VkrQuat vkr_editor_decal_orientation(Vec3 normal, Vec3 facing, float32_t angle);
 /* Rests an existing object on what lies below it under the Snapping
    settings: the first collision surface, else the ground plane (Surface), the
    nearest grid point (Grid) or the ground plane (Free). Requests an undoable

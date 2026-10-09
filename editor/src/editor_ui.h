@@ -264,6 +264,8 @@ typedef enum VkrEditorSceneTool {
   VKR_EDITOR_SCENE_TOOL_CORRIDOR,
   /* Two clicks on surfaces: the distance between them. */
   VKR_EDITOR_SCENE_TOOL_MEASURE,
+  /* Clicks on surfaces place decals facing them (ADR-101). */
+  VKR_EDITOR_SCENE_TOOL_DECAL,
   VKR_EDITOR_SCENE_TOOL_COUNT,
 } VkrEditorSceneTool;
 
@@ -613,6 +615,18 @@ typedef struct VkrEditorUi {
   Vec3 measure_points[2];
   Vec3 measure_hover;
   bool8_t measure_hover_valid;
+  /* The decal tool (ADR-101): the box a click places, in metres (width
+     and height across the surface, depth along its normal) and degrees
+     about the normal, and the surface point under the pointer with its
+     normal and the view's forward, which orients a decal on a floor. */
+  bool8_t decal_tool;
+  float32_t decal_size;
+  float32_t decal_depth;
+  float32_t decal_angle;
+  bool8_t decal_hover_valid;
+  Vec3 decal_hover;
+  Vec3 decal_hover_normal;
+  Vec3 decal_hover_facing;
   /* The scale figure, for this session: the player's capsule standing on
      the surface under the pointer while it rests over the Scene. */
   bool8_t scale_figure;

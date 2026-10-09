@@ -14,7 +14,8 @@ inside it before lighting, in the tiled pipeline's forward shader and in the
 desktop pipeline's G-buffer resolve. Decals change base colour only; normal,
 roughness, metalness, occlusion and emissive decals are future work. A
 selected decal draws its box and projection arrow
-([ADR-100](100-lighting-tools.md)).
+([ADR-100](100-lighting-tools.md)), and the Decal tool and `decal.place`
+place decals facing a surface ([ADR-101](101-decal-placement.md)).
 
 ## Context
 

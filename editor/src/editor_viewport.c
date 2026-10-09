@@ -3,6 +3,7 @@
 #include "editor_brush_grid.h"
 #include "editor_internal.h"
 #include "editor_level.h"
+#include "editor_material.h"
 #include "editor_ops.h"
 #include "editor_projects.h"
 
@@ -1062,6 +1063,9 @@ VkrEditorSceneTool vkr_editor_scene_tool(const VkrEditorUi *editor) {
   if (editor->measure_tool) {
     return VKR_EDITOR_SCENE_TOOL_MEASURE;
   }
+  if (editor->decal_tool) {
+    return VKR_EDITOR_SCENE_TOOL_DECAL;
+  }
   return editor->path_tool;
 }
 
@@ -1087,6 +1091,8 @@ void vkr_editor_scene_tool_set(VkrEditorUi *editor, VkrEditorSceneTool tool) {
   editor->measure_tool = tool == VKR_EDITOR_SCENE_TOOL_MEASURE;
   editor->measure_count = 0u;
   editor->measure_hover_valid = false_v;
+  editor->decal_tool = tool == VKR_EDITOR_SCENE_TOOL_DECAL;
+  editor->decal_hover_valid = false_v;
 }
 
 /* The `container` argument of an operation that creates in the container
@@ -1456,7 +1462,8 @@ static void viewport_face_tools(VkrEditorUi *editor,
       editor->cmd_active || editor->menu != VKR_EDITOR_MENU_NONE ||
       (editor->brush_draw &&
        (editor->brush_dragging || editor->brush_raising)) ||
-      editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE || editor->measure_tool) {
+      editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE || editor->measure_tool ||
+      editor->decal_tool) {
     editor->face_dragging = false_v;
     editor->face_handle_hot = -1;
     vkr_editor_brush_grid_update(editor, frame, NULL, VKR_ENTITY_ID_INVALID,
@@ -1885,6 +1892,70 @@ static void viewport_measure_tool(VkrEditorUi *editor,
   editor->measure_count = 1u;
 }
 
+/* The decal tool: the surface under the pointer shows the box a click
+   places there, facing the surface, through decal.place with the Art
+   palette's size, depth and angle and the Material panel's open material.
+   Escape turns the tool off. */
+static void viewport_decal_tool(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  editor->decal_hover_valid = false_v;
+  if (!editor->decal_tool || frame->scene_rendering_stopped ||
+      frame->mouse_captured) {
+    return;
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  (void)vkr_ui_input_layer_register(
+      ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
+      (VkrUiRect){image.x, image.y, image.z, image.w});
+  if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
+    vkr_editor_scene_tool_set(editor, VKR_EDITOR_SCENE_TOOL_NONE);
+    return;
+  }
+  if (!editor->scene_pointer_free) {
+    return;
+  }
+  const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  Vec3 point = {0};
+  Vec3 normal = {0};
+  if (!viewport_ray(frame, mouse, &origin, &direction) ||
+      !viewport_surface_point(frame, mouse, false_v, &point, &normal)) {
+    return;
+  }
+  editor->decal_hover = point;
+  editor->decal_hover_normal = normal;
+  editor->decal_hover_facing = direction;
+  editor->decal_hover_valid = true_v;
+  if (!ui->mouse_pressed || editor->menu != VKR_EDITOR_MENU_NONE ||
+      !editor->agent) {
+    return;
+  }
+  char target[16];
+  if (!viewport_target(frame, target, sizeof(target))) {
+    return;
+  }
+  /* Faces, meshes and decals take material files, not graphs. */
+  const char *open = vkr_editor_material_open_path(editor->materials);
+  const VkrEditorMaterialKind kind =
+      open[0] ? vkr_editor_material_kind(ui->frame_allocator, open)
+              : VKR_EDITOR_MATERIAL_NONE;
+  const bool8_t material = kind == VKR_EDITOR_MATERIAL_INSTANCE ||
+                           kind == VKR_EDITOR_MATERIAL_DEFINITION;
+  char line[768];
+  snprintf(line, sizeof(line),
+           "{\"v\":1,\"id\":\"decal\",\"op\":\"decal.place\",\"args\":{"
+           "\"position\":[%g,%g,%g],\"normal\":[%g,%g,%g],"
+           "\"facing\":[%g,%g,%g],\"size\":%g,\"depth\":%g,\"angle\":%g,"
+           "\"material\":\"%s\",\"container\":%s,\"review\":false,"
+           "\"select\":true}}",
+           point.x, point.y, point.z, normal.x, normal.y, normal.z, direction.x,
+           direction.y, direction.z, editor->decal_size, editor->decal_depth,
+           editor->decal_angle, material ? open : "", target);
+  (void)vkr_editor_agent_submit(editor->agent, line);
+}
+
 /* The scale figure stands on the surface under the pointer while it rests
    over the Scene, and hides while a button is held, as during a gizmo or
    face drag, or while the camera flies. On a wall it stands a radius out
@@ -1960,6 +2031,10 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
                ? "Click to start a new measurement. Esc clears it."
                : "Click a surface to measure from; Shift snaps to the grid. "
                  "Esc stops.";
+    break;
+  case VKR_EDITOR_SCENE_TOOL_DECAL:
+    hint = "Click a surface to place a decal; the Art palette sets its size, "
+           "depth and turn, the Material panel its material. Esc stops.";
     break;
   case VKR_EDITOR_SCENE_TOOL_CORRIDOR:
     hint = editor->path_count >= 2u
@@ -2066,6 +2141,7 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
   viewport_clip_tool(editor, frame);
   viewport_path_tool(editor, frame);
   viewport_measure_tool(editor, frame);
+  viewport_decal_tool(editor, frame);
   viewport_scale_figure(editor, frame);
   /* Face handles find the one under the pointer before drawing reads it, so
      a press on a handle drags the face instead of starting a box. */
@@ -2920,6 +2996,27 @@ static VkrQuat place_orientation(Vec3 normal, float32_t yaw) {
   const Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
   return vkr_quat_normalize(
       vkr_quat_mul(place_tilt(up, normal), vkr_quat_from_axis_angle(up, yaw)));
+}
+
+VkrQuat vkr_editor_decal_orientation(Vec3 normal, Vec3 facing,
+                                     float32_t angle) {
+  const Vec3 n = vec3_length(normal) > 1.0e-4f ? vec3_normalize(normal)
+                                               : vec3_new(0.0f, 1.0f, 0.0f);
+  /* The image's top (local +Z) points up a wall; on a floor or ceiling it
+     points along `facing`, else -Z. */
+  Vec3 top = fabsf(n.y) < 0.9f ? vec3_new(0.0f, 1.0f, 0.0f) : facing;
+  top = vec3_sub(top, vec3_scale(n, vec3_dot(top, n)));
+  if (vec3_length(top) < 1.0e-3f) {
+    top = vec3_sub(vec3_new(0.0f, 0.0f, -1.0f),
+                   vec3_scale(n, vec3_dot(vec3_new(0.0f, 0.0f, -1.0f), n)));
+  }
+  if (vec3_length(top) < 1.0e-3f) {
+    top = vec3_new(1.0f, 0.0f, 0.0f);
+  }
+  /* look_at maps -Z to its forward and +Y to its up. */
+  const VkrQuat frame = vkr_quat_look_at(vec3_negate(top), n);
+  return vkr_quat_normalize(
+      vkr_quat_mul(vkr_quat_from_axis_angle(n, angle), frame));
 }
 
 /* True when `entity` is `root` or one of its descendants. */

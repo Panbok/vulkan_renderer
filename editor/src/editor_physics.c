@@ -1056,6 +1056,43 @@ static void physics_measure_labels(VkrEditorUi *editor,
   physics_measure_label(editor, frame, vec3_scale(vec3_add(a, b), 0.5f), text);
 }
 
+/* The box the decal tool would place under the pointer, and a tick from
+   its center toward the image's top. */
+static void physics_decal_preview(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame,
+                                  uint32_t capacity) {
+  const VkrQuat rotation = vkr_editor_decal_orientation(
+      editor->decal_hover_normal, editor->decal_hover_facing,
+      editor->decal_angle * (3.14159265f / 180.0f));
+  const Vec3 center = editor->decal_hover;
+  const Vec3 half[3] = {
+      vec3_scale(vkr_quat_rotate_vec3(rotation, vec3_new(1, 0, 0)),
+                 editor->decal_size * 0.5f),
+      vec3_scale(vkr_quat_rotate_vec3(rotation, vec3_new(0, 1, 0)),
+                 editor->decal_depth * 0.5f),
+      vec3_scale(vkr_quat_rotate_vec3(rotation, vec3_new(0, 0, 1)),
+                 editor->decal_size * 0.5f),
+  };
+  const Vec4 color = {1.0f, 0.45f, 0.8f, 1.0f};
+  for (uint32_t corner = 0; corner < 8; ++corner) {
+    Vec3 from = center;
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      from = vec3_add(
+          from, vec3_scale(half[axis], (corner & (1u << axis)) ? 1.0f : -1.0f));
+    }
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      if (corner & (1u << axis)) {
+        continue;
+      }
+      physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from,
+                   vec3_add(from, vec3_scale(half[axis], 2.0f)), color,
+                   capacity);
+    }
+  }
+  physics_line(editor, frame, VKR_ENTITY_ID_INVALID, center,
+               vec3_add(center, half[2]), color, capacity);
+}
+
 static void physics_level_tools(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 uint32_t capacity) {
@@ -1240,6 +1277,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
            ? 1u
            : 0u) +
       (editor->terrain_tool && editor->terrain_hit_valid ? 1u : 0u) +
+      (editor->decal_tool && editor->decal_hover_valid ? 1u : 0u) +
       (editor->face_handle_count ? 1u : 0u) +
       vkr_editor_brush_grid_lines(editor, NULL) +
       vkr_editor_blockout_lines(editor, NULL) +
@@ -1310,6 +1348,9 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       physics_brush_draft(editor, frame, capacity);
     }
     physics_level_tools(editor, frame, capacity);
+    if (editor->decal_tool && editor->decal_hover_valid) {
+      physics_decal_preview(editor, frame, capacity);
+    }
     physics_measure_lines(editor, frame, capacity);
     if (editor->scale_figure_valid) {
       physics_scale_figure(editor, frame, capacity);

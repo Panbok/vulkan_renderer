@@ -146,6 +146,16 @@ level):
 - Volumes apply at the camera, so check each with a capture from inside it
   and one past its blend distance.
 
+## Decals
+
+- `decal.place` puts a decal facing a surface: `position` and `normal`, or
+  `origin` and `direction` to place it where that ray meets collision
+  (imported meshes such as Bistro's have none; brushes and terrain do).
+  `size` is the width and height across the surface, `depth` its reach
+  along the normal, `angle` a turn in degrees, and `material` a `.mt` file.
+- The image's top points up a wall. On a floor it points along `facing`,
+  which defaults to the ray. Capture each decal to check it.
+
 ## Lights and bakes
 
 - `lighting.list` returns the scene's and the World's lights (`kind`,

@@ -76,6 +76,13 @@ answers its `world_position` (the feet); its rotation stays authored, so
 track the yaw from the looks you sent, starting at the Player Start's facing.
 `sim.stop` resets the scene.
 
+## Click the Scene
+
+`editor.status` answers `view.image`, the Scene image's [x, y, width,
+height] in window points. Aim `ui.click` at points inside it, for example
+to use a Scene tool such as `decal.tool`, and move the pointer with
+`ui.look` to see a tool's preview.
+
 ## Read results
 
 Each statement prints `[cmd] > <statement>` and then `[cmd] <result>` or
