@@ -52,6 +52,10 @@ void vkr_editor_projects_scene_action(VkrEditorProjects *projects,
                                       VkrEditorUi *editor,
                                       const VkrSampleUiFrame *frame);
 
+/* Whether the open primary scene is the writable managed scene of the
+   project, whose document holds its reflection probes (ADR-103). */
+bool8_t vkr_editor_projects_managed_scene(const VkrEditorProjects *projects,
+                                          const VkrSampleUiFrame *frame);
 bool8_t vkr_editor_projects_can_add_entity(const VkrEditorProjects *projects,
                                            VkrEditorUi *editor,
                                            const VkrSampleUiFrame *frame);

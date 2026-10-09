@@ -107,7 +107,9 @@ vkr_require_declared_c_functions(vkr_harness)
 vkr_set_main_stack_reserve(vkr_harness)
 vkr_configure_installed_rpath(vkr_harness)
 
-target_link_libraries(vkr_harness PRIVATE vkr_harness_core)
+# Children register the built-in script modules' component types, as the
+# editor does, so project scenes load.
+target_link_libraries(vkr_harness PRIVATE vkr_harness_core vkr_script_fps)
 target_compile_definitions(vkr_harness PRIVATE
     VKR_HARNESS_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
     VKR_HARNESS_COMPILER="${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}"

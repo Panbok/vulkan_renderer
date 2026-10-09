@@ -2429,6 +2429,65 @@ static bool8_t ops_build_look_volume(OpsContext *ctx, const VkrBakeryJson *args,
   return ops_validate_values(ctx, values);
 }
 
+/* probe.create: a reflection probe for the next bake (ADR-103). Probes are
+   load-baked into the project scene's document, so only a managed scene
+   takes one; its save writes the document's probes back. */
+static bool8_t ops_build_probe_create(OpsContext *ctx,
+                                      const VkrBakeryJson *args,
+                                      OpsBatch *batch) {
+  const VkrSampleUiFrame *frame = ctx->frame;
+  if (!vkr_editor_projects_managed_scene(ctx->editor->projects, frame)) {
+    return ops_fail(ctx, OPS_REJECTED,
+                    "Reflection probes are baked into a project scene: open "
+                    "one to add a probe");
+  }
+  if (vkr_scene_find_typed(frame->scene, &vkr_scene_reflection_probe_type, NULL,
+                           0u) >= VKR_SCENE_REFLECTION_PROBE_MAX) {
+    return ops_fail(ctx, OPS_LIMIT, "A scene holds at most %u probes",
+                    VKR_SCENE_REFLECTION_PROBE_MAX);
+  }
+  SceneReflectionProbeSettings probe;
+  vkr_type_defaults(&vkr_scene_reflection_probe_type, &probe);
+  probe.extents = vec3_new(4.0f, 2.5f, 4.0f);
+  bool8_t has_center = false_v;
+  bool8_t has_extents = false_v;
+  Vec3 center = {0};
+  Vec3 extents = {0};
+  if (!ops_arg_vec3(ctx, args, "center", &center, &has_center) ||
+      !ops_arg_vec3(ctx, args, "extents", &extents, &has_extents) ||
+      !ops_component_read(ctx, &vkr_scene_reflection_probe_type,
+                          vkr_bakery_json_get(args, "values"), &probe)) {
+    return false_v;
+  }
+  if (!has_center) {
+    return ops_fail(ctx, OPS_INVALID, "'center' is the probe's world center");
+  }
+  probe.center = center;
+  if (has_extents) {
+    probe.extents = extents;
+  }
+  char error[160] = {0};
+  if (!vkr_type_validate(&vkr_scene_reflection_probe_type, &probe, error,
+                         sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "reflection_probe: %s", error);
+  }
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, 0u, VKR_SCENE_EDIT_CREATE);
+  if (!item) {
+    return false_v;
+  }
+  VkrSceneEditValues *values = &item->request.values;
+  values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_COMPONENT;
+  snprintf(values->name, sizeof(values->name), "Reflection Probe");
+  if (!ops_arg_string(ctx, args, "name", values->name, sizeof(values->name))) {
+    return false_v;
+  }
+  values->component_type = &vkr_scene_reflection_probe_type;
+  MemCopy(values->component, &probe, sizeof(probe));
+  batch->op_item[batch->op_count] = batch->count - 1u;
+  return true_v;
+}
+
 /* decal.place: a decal box centred on a surface point and facing it
    (ADR-101), at 'position' and 'normal' or where a ray from 'origin' along
    'direction' first meets collision. */
@@ -12640,6 +12699,18 @@ static const OpsDef s_ops[] = {
      "\"number\"},\"look\":{\"type\":\"object\"}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"min\",\"max\",\"look\"]}",
      NULL, ops_build_look_volume},
+    {"probe.create",
+     "Add a reflection probe to the open project scene: a world 'center', "
+     "half 'extents' (default [4, 2.5, 4]) and 'values' (blend_distance, "
+     "intensity, diffuse_intensity, specular_intensity). It shows its box "
+     "at once and reflects after the scene is saved and Bake lighting "
+     "captures it; a scene holds at most 16. Move or delete it as an "
+     "entity; component.set edits its values.",
+     "{\"type\":\"object\",\"properties\":{\"center\":" OPS_VEC3_SCHEMA
+     ",\"extents\":" OPS_VEC3_SCHEMA ",\"values\":{\"type\":\"object\"},"
+     "\"name\":{\"type\":\"string\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"center\"]}",
+     NULL, ops_build_probe_create},
     {"decal.place",
      "Place a decal facing a surface: centred on 'position' with the "
      "surface's 'normal', or where a ray from 'origin' along 'direction' "

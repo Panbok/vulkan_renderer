@@ -1402,6 +1402,34 @@ bool8_t vkr_project_has_unbuilt(const VkrBakeryJson *assets) {
   return false_v;
 }
 
+void vkr_project_probe_destination(VkrProjectJob *job, VkrBakeryJson *probe) {
+  Arena *arena = job->arena;
+  char asset_id[37];
+  vkr_project_uuid4(asset_id);
+  VkrBakeryJson *record = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, record, "id",
+                      vkr_bakery_json_cstr(arena, asset_id));
+  vkr_bakery_json_set(arena, record, "kind",
+                      vkr_bakery_json_cstr(arena, "probe-cube"));
+  vkr_bakery_json_set(arena, record, "name",
+                      vkr_bakery_json_cstr(arena, "Reflection probe"));
+  vkr_bakery_json_set(arena, record, "import_id",
+                      vkr_bakery_json_cstr(arena, asset_id));
+  vkr_bakery_json_set(arena, record, "source", vkr_bakery_json_null(arena));
+  vkr_bakery_json_set(arena, record, "artifacts", vkr_bakery_json_array(arena));
+  VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, recipe, "tool",
+                      vkr_bakery_json_cstr(arena, "reflection"));
+  vkr_bakery_json_set(arena, recipe, "version", vkr_bakery_json_int(arena, 1));
+  vkr_bakery_json_set(arena, record, "recipe", recipe);
+  vkr_bakery_json_set(arena, record, "source_kind",
+                      vkr_bakery_json_cstr(arena, "cubemap"));
+  vkr_bakery_json_append(job->assets, record);
+  vkr_bakery_json_set(
+      arena, probe, "asset",
+      vkr_project_reference(job, "scene", asset_id, "probe-cube"));
+}
+
 VkrBakeryJson *vkr_project_create(VkrProjectJob *job) {
   Arena *arena = job->arena;
   if (vkr_project_exists(job->final_path)) {
@@ -1493,32 +1521,7 @@ VkrBakeryJson *vkr_project_create(VkrProjectJob *job) {
         vkr_project_truthy(vkr_bakery_json_get(probe, "asset"))) {
       continue;
     }
-    char asset_id[37];
-    vkr_project_uuid4(asset_id);
-    VkrBakeryJson *record = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(arena, record, "id",
-                        vkr_bakery_json_cstr(arena, asset_id));
-    vkr_bakery_json_set(arena, record, "kind",
-                        vkr_bakery_json_cstr(arena, "probe-cube"));
-    vkr_bakery_json_set(arena, record, "name",
-                        vkr_bakery_json_cstr(arena, "Reflection probe"));
-    vkr_bakery_json_set(arena, record, "import_id",
-                        vkr_bakery_json_cstr(arena, asset_id));
-    vkr_bakery_json_set(arena, record, "source", vkr_bakery_json_null(arena));
-    vkr_bakery_json_set(arena, record, "artifacts",
-                        vkr_bakery_json_array(arena));
-    VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(arena, recipe, "tool",
-                        vkr_bakery_json_cstr(arena, "reflection"));
-    vkr_bakery_json_set(arena, recipe, "version",
-                        vkr_bakery_json_int(arena, 1));
-    vkr_bakery_json_set(arena, record, "recipe", recipe);
-    vkr_bakery_json_set(arena, record, "source_kind",
-                        vkr_bakery_json_cstr(arena, "cubemap"));
-    vkr_bakery_json_append(job->assets, record);
-    vkr_bakery_json_set(
-        arena, probe, "asset",
-        vkr_project_reference(job, "scene", asset_id, "probe-cube"));
+    vkr_project_probe_destination(job, probe);
   }
   const char *font_source = vkr_project_json_text(job->request, "font_source");
   if (font_source && font_source[0]) {

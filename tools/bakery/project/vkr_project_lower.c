@@ -241,9 +241,12 @@ vkr_internal bool8_t vkr_project_lower_cube(VkrProjectLowering *lowering,
   VkrBakeryJson *reference = vkr_bakery_json_get(component, "asset");
   const bool8_t legacy = vkr_bakery_json_get(component, "cubemap") != NULL;
   if (!reference) {
+    /* A probe the editor added waits for its first bake: it lowers without
+       a cubemap and marked pending, so the runtime keeps it off rather than
+       reflecting the environment (ADR-103). */
     if (vkr_project_truthy(vkr_bakery_json_get(component, "enabled"))) {
-      return vkr_project_fail(job, "Enabled probe has no cubemap asset; bake "
-                                   "it or disable the probe");
+      vkr_bakery_json_set(job->arena, component, "bake_pending",
+                          vkr_bakery_json_bool(job->arena, true_v));
     }
     if (legacy) {
       return vkr_project_fail(job,

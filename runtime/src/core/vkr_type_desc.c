@@ -428,6 +428,24 @@ static uint32_t property_storage_size(const VkrPropertyDesc *property) {
   }
 }
 
+void vkr_type_keep_transient(const VkrTypeDesc *type, void *value,
+                             const void *from) {
+  for (uint32_t i = 0; i < type->property_count; ++i) {
+    const VkrPropertyDesc *property = &type->properties[i];
+    if (property->flags & VKR_PROPERTY_FLAG_TRANSIENT) {
+      MemCopy((uint8_t *)value + property->offset,
+              (const uint8_t *)from + property->offset,
+              property_storage_size(property));
+    }
+  }
+}
+
+void vkr_type_reset_transient(const VkrTypeDesc *type, void *value) {
+  _Alignas(16) uint8_t defaults[VKR_TYPE_VALUE_MAX];
+  vkr_type_defaults(type, defaults);
+  vkr_type_keep_transient(type, value, defaults);
+}
+
 bool8_t vkr_property_equal(const VkrPropertyDesc *property, const void *a,
                            const void *b) {
   if (property->kind == VKR_PROPERTY_STRING) {

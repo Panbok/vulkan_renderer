@@ -22,8 +22,10 @@ artist views and `query.luminance` on Metal in
 [ADR-099](../adr/099-artist-views-and-luminance-queries.md), and the bake
 settings, time scrubber, outlines and Lights window in
 [ADR-100](../adr/100-lighting-tools.md), the decal tool in
-[ADR-101](../adr/101-decal-placement.md), and scatter painting in
-[ADR-102](../adr/102-scatter-painting.md); this
+[ADR-101](../adr/101-decal-placement.md), scatter painting in
+[ADR-102](../adr/102-scatter-painting.md), and probe and volume authoring,
+outline handles and the toolbar time chip in
+[ADR-103](../adr/103-probe-and-volume-authoring.md); this
 proposal keeps their remaining scope and the other parts:
 
 1. Surface tags and fixed greybox looks with measurement aids in the level
@@ -635,14 +637,9 @@ fog override on the desktop pipeline.
 
 Outlines of point range, spot cones, rectangle lights and volume boxes, the
 Lights window, the bake settings form and the Lighting palette's time
-scrubber are implemented in ADR-100. Remaining:
-
-- Creation and box handles for reflection probes and diffuse volumes, which
-  the editor cannot create today. Probes load from a scene's
-  `reflection_probes` array, which the bake also reads, so the bake must
-  take probe components first.
-- Drag handles on the light outlines.
-- A time control on the Scene toolbar.
+scrubber are implemented in ADR-100. Probe creation, the diffuse volume
+box, drag handles on the outlines and the Scene toolbar's time chip are
+implemented in ADR-103.
 
 ### View modes for artists
 
@@ -685,6 +682,7 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 | `scatter.*` | `paint` is implemented (ADR-102) | Scene |
 | `env.*` | `describe`, `preset.save` and `preset.apply` are implemented (ADR-098) | Scene and documents |
 | `lighting.*` | `list`, `group`, `time` and `bake` with settings are implemented (ADR-100) | Live state and bake jobs |
+| `probe.*` | `create` is implemented (ADR-103) | Scene and its document |
 | Reads | `query.luminance` and `view.capture` with a `mode` (ADR-099), `query.measure`, `view.greybox` and `art.lint` are implemented | — |
 
 The operations that matter most for agents:
@@ -724,7 +722,7 @@ Each phase is usable on its own and keeps the rules of Goals and limits.
 | 2. Graph documents and the Art workbench | Implemented (ADR-093); material functions, the Lookdev scene and the Details picker remain | Recorded in ADR-093 |
 | 3. Layered Standard and the art pass | Implemented: themes and bindings, `world_size`, face overrides and `art.lint` (ADR-094); layer blends by vertex colour, mask texture, slope or height (ADR-095) | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
 | 4. Custom graphs | Implemented on Metal (ADR-096): code generation, the project library, per-graph variants and buckets, the budget, creation before scene readiness, the fallback and `pipelines.late`. Remaining: Vulkan classification and per-graph resolve, creation at cell load, inspection variants left out of packages | Recorded in ADR-096. Vulkan native checks wait for a Windows host |
-| 5. Lighting and look | Look volumes (ADR-097), the environment panel and presets (ADR-098), artist views and `query.luminance` on Metal (ADR-099), bake settings, the time scrubber, outlines and the Lights window (ADR-100) implemented. Remaining: probe and volume creation, outline handles, the Scene toolbar time control, desktop artist views | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |
+| 5. Lighting and look | Look volumes (ADR-097), the environment panel and presets (ADR-098), artist views and `query.luminance` on Metal (ADR-099), bake settings, the time scrubber, outlines and the Lights window (ADR-100), probe and volume authoring, outline handles and the toolbar time chip (ADR-103) implemented. Remaining: desktop artist views | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |
 | 6. Dressing | Decal tool and outline (ADR-100, ADR-101) and scatter painting (ADR-102) implemented | Captures on Bistro; scatter stays within the 4,096-copy bound |
 
 Phase 1 shipped before the other phases and removed the paintable materials

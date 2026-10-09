@@ -1272,6 +1272,11 @@ static const VkrPropertyDesc s_probe_properties[] = {
      .offset = TYPE_OFFSET(SceneReflectionProbeSettings, slot),
      .kind = VKR_PROPERTY_U32,
      .flags = VKR_PROPERTY_FLAG_TRANSIENT | VKR_PROPERTY_FLAG_HIDDEN},
+    {.name = "source",
+     .label = "Document entry",
+     .offset = TYPE_OFFSET(SceneReflectionProbeSettings, source),
+     .kind = VKR_PROPERTY_U32,
+     .flags = VKR_PROPERTY_FLAG_TRANSIENT | VKR_PROPERTY_FLAG_HIDDEN},
 };
 
 static bool8_t probe_validate(const void *value, char *error,
@@ -1294,6 +1299,7 @@ static void probe_defaults(void *value) {
   probe->diffuse_intensity = 1.0f;
   probe->specular_intensity = 1.0f;
   probe->slot = UINT32_MAX;
+  probe->source = UINT32_MAX;
 }
 
 const VkrTypeDesc vkr_scene_reflection_probe_type = {

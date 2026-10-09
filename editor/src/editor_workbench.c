@@ -1043,6 +1043,14 @@ static void workbench_lighting_palette(VkrEditorUi *editor,
   vkr_editor_palette_create(&palette, string8_lit("lighting.directional"),
                             "Directional", VKR_UI_ICON_DIRECTIONAL_LIGHT,
                             "directional_light");
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("lighting.probe"), "Probe", VKR_UI_ICON_PROBE,
+          string8_lit("Add a reflection probe to the project scene; save, then "
+                      "Bake lighting captures it"),
+          false_v,
+          !vkr_editor_projects_managed_scene(editor->projects, frame))) {
+    vkr_editor_lighting_create_probe(editor, frame);
+  }
   vkr_editor_palette_command(&palette, string8_lit("lighting.list"),
                              "Light list", VKR_UI_ICON_LIST, CMD_LIGHTS,
                              editor->windows[VKR_EDITOR_WINDOW_LIGHTS].visible);

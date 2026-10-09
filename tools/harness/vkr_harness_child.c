@@ -14,6 +14,7 @@
 #include "filesystem/vkr_vfs.h"
 
 #include "application/vkr_standard_scene_runtime.h"
+#include "fps_module.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
 #include "renderer/resources/vkr_resources.h"
@@ -24,6 +25,7 @@
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
+#include "script/vkr_script_host.h"
 #include "vkr_gtao.h"
 #include "vkr_ssgi.h"
 #include "vkr_temporal.h"
@@ -2330,6 +2332,22 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   vkr_content_codec_install();
   if (!vkr_vfs_mount_startup()) {
     vkr_harness_stderr("Cannot mount the requested content archives\n");
+    return VKR_HARNESS_EXIT_ERROR;
+  }
+  /* Project scenes carry the built-in script modules' components, which
+     the editor and the player register before any scene; the child runs no
+     scripts, so a probe bake or a level capture still loads them. The host
+     lives for the process, as registered scene types do. */
+  static VkrScriptHost scripts;
+  static VkrAllocator script_allocator;
+  Arena *script_arena = arena_create(MB(1), KB(64));
+  script_allocator = (VkrAllocator){.ctx = script_arena};
+  const char *script_error = NULL;
+  if (!script_arena || !vkr_allocator_arena(&script_allocator) ||
+      !vkr_script_host_init(&scripts, &script_allocator) ||
+      !vkr_script_host_add_module(&scripts, vkr_module_fps, &script_error)) {
+    vkr_harness_stderr("Cannot register the built-in script components: %s\n",
+                       script_error ? script_error : "out of memory");
     return VKR_HARNESS_EXIT_ERROR;
   }
   VkrHarnessError error = {0};

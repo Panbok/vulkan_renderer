@@ -33,7 +33,15 @@ typedef struct VkrEditorDiffuseSettings {
   uint32_t seed;
   uint32_t photons;
   float32_t photon_radius;
+  /* The world box the volume covers; an empty box covers the whole
+     scene. */
+  Vec3 bounds_min;
+  Vec3 bounds_max;
 } VkrEditorDiffuseSettings;
+
+/** Whether `settings` sets a diffuse volume box: max above min on every
+    axis. */
+bool8_t vkr_editor_diffuse_bounds_set(const VkrEditorDiffuseSettings *settings);
 
 typedef struct VkrEditorBakeSettings {
   VkrEditorLightmapSettings lightmap;
@@ -58,6 +66,18 @@ void vkr_editor_bake_settings_window_build(VkrEditorUi *editor,
                                            const VkrSampleUiFrame *frame,
                                            VkrUiRect bounds);
 
+/** The World's enabled time of day and, in `out_entity`, its entity; NULL
+    without one or without an open scene. */
+const SceneTimeOfDay *vkr_editor_lighting_clock(const VkrSampleUiFrame *frame,
+                                                VkrEntityId *out_entity);
+/** `hour` as "HH:MM", wrapped into a day. */
+void vkr_editor_lighting_hour_text(float64_t hour, char out[8]);
+/** Runs the live clock from `hour` until the simulation resets. */
+void vkr_editor_lighting_scrub(const VkrSampleUiFrame *frame, float64_t hour);
+/** Makes the hour the scene shows the World's starting hour, as an
+    undoable edit. */
+void vkr_editor_lighting_keep_hour(const VkrSampleUiFrame *frame);
+
 /** The Lighting palette's TIME rows: the hour the scene shows, a slider
     that moves the live clock, and Keep, which makes it the World's
     starting hour. */
@@ -79,6 +99,27 @@ uint32_t vkr_editor_lighting_lines(const VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame,
                                    VkrEditorBrushGridLine *out,
                                    uint32_t capacity);
+
+/** Drag handles on the selected object's outline (ADR-100): a point or
+    spot light's range, a spot's cone, a rectangle light's width and
+    height, and the faces of a look volume's, decal's or reflection probe's
+    box. A drag edits the value live as one undo step; Escape puts it back.
+    `entity` is the object the Select tool has selected, or invalid. */
+void vkr_editor_lighting_handles_update(VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        VkrEntityId entity, Vec3 origin,
+                                        Vec3 direction, bool8_t has_ray,
+                                        bool8_t inside);
+/** Whether the pointer is over a handle or a drag runs. */
+bool8_t vkr_editor_lighting_handles_busy(const VkrEditorUi *editor);
+/** What a press on the hot handle, or the running drag, does; or NULL. */
+const char *vkr_editor_lighting_handles_hint(const VkrEditorUi *editor);
+void vkr_editor_lighting_handles_destroy(VkrEditorUi *editor);
+
+/** Adds a reflection probe where the Scene's center meets a surface,
+    through probe.create, in a project scene; elsewhere it says why not. */
+void vkr_editor_lighting_create_probe(VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame);
 
 /** The Lights window body: light groups with live intensity sliders, the
     selected light's rows, and every light of the scene and the World with

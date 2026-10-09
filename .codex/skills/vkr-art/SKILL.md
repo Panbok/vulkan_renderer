@@ -182,6 +182,12 @@ level):
   `lighting.bake` on a project scene. Its `lightmap_settings` and
   `diffuse_settings` hold only the values to change; 0 keeps Bakery's
   default.
+- In a project scene, `probe.create` (`center`, half `extents`) adds a
+  reflection probe for each room or street whose reflections should
+  differ. Save the scene, then `lighting.bake` captures it; move or resize
+  it later with `component.set` on `reflection_probe`. A scene holds 16.
+- `diffuse_settings` `bounds_min` and `bounds_max` limit the diffuse volume
+  to a box around the interior; both zero bake the whole scene.
 - `lighting.time` (`hour`) and `lighting.group` (`group`, `intensity`)
   change the live clock and a group's level until the simulation resets.
   Use them to preview and capture a mood. To keep an hour, set the World's

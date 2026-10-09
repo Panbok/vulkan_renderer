@@ -798,8 +798,10 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
     if (!vkr_project_make_dirs(job, bake_root)) {
       return NULL;
     }
+    /* The runtime loads scenes named *.scene.json, as a probe capture
+       does through the harness. */
     const char *runtime_path =
-        vkr_project_printf(job, "%s/scene.json", bake_root);
+        vkr_project_printf(job, "%s/bake.scene.json", bake_root);
     if (!vkr_project_atomic_json(job, runtime_path, runtime)) {
       return NULL;
     }
@@ -910,7 +912,7 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
   }
   vkr_project_lift_world_blocks(job, runtime, world_first, world_end);
   const char *runtime_path =
-      vkr_project_printf(job, "%s/scene.json", bake_root);
+      vkr_project_printf(job, "%s/bake.scene.json", bake_root);
   if (!vkr_project_atomic_json(job, runtime_path, runtime)) {
     return NULL;
   }
@@ -985,6 +987,11 @@ vkr_internal bool8_t vkr_project_bake_probes(VkrProjectJob *job,
     const VkrBakeryJson *enabled = vkr_bakery_json_get(probe, "enabled");
     if (enabled && !vkr_project_truthy(enabled)) {
       continue;
+    }
+    /* A probe the editor added has no destination until its first bake
+       (ADR-103). */
+    if (!vkr_project_truthy(vkr_bakery_json_get(probe, "asset"))) {
+      vkr_project_probe_destination(job, probe);
     }
     const VkrBakeryJson *reference = vkr_bakery_json_get(probe, "asset");
     if (!vkr_project_truthy(reference) ||

@@ -255,6 +255,15 @@ bool8_t vkr_type_validate(const VkrTypeDesc *type, const void *value,
 /** Default value of a type: its defaults hook, or zero bytes. */
 void vkr_type_defaults(const VkrTypeDesc *type, void *value);
 
+/** Copies every TRANSIENT property of `from` into `value`: runtime state an
+ * edit of the authored properties must leave as it is. */
+void vkr_type_keep_transient(const VkrTypeDesc *type, void *value,
+                             const void *from);
+
+/** Puts every TRANSIENT property of `value` back to the type's default, as
+ * for a copy that owns none of the original's runtime state. */
+void vkr_type_reset_transient(const VkrTypeDesc *type, void *value);
+
 /** Presentation state of one property; NONE without a state hook. */
 VkrPropertyState vkr_type_property_state(const VkrTypeDesc *type,
                                          const void *value, uint32_t property,

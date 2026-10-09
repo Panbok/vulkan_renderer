@@ -3,6 +3,7 @@
 #include "editor_brush_grid.h"
 #include "editor_internal.h"
 #include "editor_level.h"
+#include "editor_lighting.h"
 #include "editor_material.h"
 #include "editor_ops.h"
 #include "editor_projects.h"
@@ -29,6 +30,8 @@ enum {
   VIEW_POPUP_SPEED,
   /* Where spawned objects land. */
   VIEW_POPUP_SNAP,
+  /* The time of day: a scrubber and Keep (ADR-100). */
+  VIEW_POPUP_TIME,
   VIEW_POPUP_COUNT,
 };
 
@@ -310,8 +313,10 @@ typedef struct ViewHeaderLayout {
   Vec4 left;
   Vec4 right;
   float32_t chips[VIEW_LEFT_CHIPS];
-  /* Widths of the snapping and camera speed chips on the right. */
+  /* Widths of the snapping, time of day and camera speed chips on the
+     right; the time chip is zero without a World time of day. */
   float32_t snap;
+  float32_t time;
   float32_t speed;
   bool8_t compact;
   bool8_t show_right;
@@ -347,8 +352,15 @@ static ViewHeaderLayout view_header_layout(const VkrEditorUi *editor,
     layout.speed = view_chip_width(frame->ui, speed, false_v);
     layout.snap = view_chip_width(
         frame->ui, view_snap_targets[editor->placement.target], layout.compact);
-    const float32_t right =
-        right_width + 10.0f + layout.snap + layout.speed + 2.0f * 3.0f;
+    char hour[8];
+    vkr_editor_lighting_hour_text(frame->scene ? frame->scene->clock.hour : 0.0,
+                                  hour);
+    layout.time = vkr_editor_lighting_clock(frame, NULL)
+                      ? view_chip_width(frame->ui, hour, layout.compact)
+                      : 0.0f;
+    const float32_t right = right_width + 10.0f + layout.snap + layout.speed +
+                            2.0f * 3.0f +
+                            (layout.time > 0.0f ? layout.time + 2.0f : 0.0f);
     layout.show_right = width + right + 12.0f <= available;
     layout.left = (Vec4){scene.x + left_inset, scene.y + VIEW_INSET_PT,
                          Min(width, available), VIEW_CHIP_HEIGHT_PT + 6.0f};
@@ -613,6 +625,30 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
                               .maximum = 2.0f};
     break;
   }
+  case VIEW_POPUP_TIME: {
+    /* Rows: the hour header, its slider, Keep, then back to the start. */
+    const SceneTimeOfDay *authored = vkr_editor_lighting_clock(frame, NULL);
+    if (!authored) {
+      break;
+    }
+    const float64_t hour = frame->scene->clock.hour;
+    char text[8];
+    vkr_editor_lighting_hour_text(hour, text);
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text),
+             "Time of day  %s  (starts %.2f h)", text, (double)authored->hour);
+    rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
+                              .value = (float32_t)fmod(hour, 24.0),
+                              .minimum = 0.0f,
+                              .maximum = 24.0f};
+    rows[count] = (ViewRow){.icon = VKR_UI_ICON_CHECK};
+    snprintf(rows[count++].text, sizeof(rows[0].text),
+             "Keep %s as the World's starting hour", text);
+    rows[count] = (ViewRow){.icon = VKR_UI_ICON_RESET};
+    snprintf(rows[count++].text, sizeof(rows[0].text),
+             "Back to the starting hour");
+    break;
+  }
   case VIEW_POPUP_SPEED: {
     const float32_t speed = state->camera_speed;
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
@@ -861,7 +897,8 @@ static void viewport_brush_draw_flat(VkrEditorUi *editor,
         editor->menu != VKR_EDITOR_MENU_NONE || editor->face_dragging ||
         editor->face_handle_hot >= 0 || alt ||
         vkr_editor_brush_grid_busy(editor) ||
-        vkr_editor_blockout_busy(editor)) {
+        vkr_editor_blockout_busy(editor) ||
+        vkr_editor_lighting_handles_busy(editor)) {
       return;
     }
     vkr_editor_magnet_begin(editor, frame);
@@ -982,7 +1019,8 @@ static void viewport_brush_draw(VkrEditorUi *editor,
                         input_is_key_down(frame->input, KEY_RMENU);
     if (editor->face_dragging || editor->face_handle_hot >= 0 || alt ||
         vkr_editor_brush_grid_busy(editor) ||
-        vkr_editor_blockout_busy(editor)) {
+        vkr_editor_blockout_busy(editor) ||
+        vkr_editor_lighting_handles_busy(editor)) {
       return;
     }
     if (ui->mouse_pressed && inside && editor->menu == VKR_EDITOR_MENU_NONE &&
@@ -1076,7 +1114,8 @@ bool8_t vkr_editor_viewport_escape_armed(const VkrEditorUi *editor) {
   return vkr_editor_scene_tool(editor) != VKR_EDITOR_SCENE_TOOL_NONE ||
          editor->face_dragging || editor->view_popup != VIEW_POPUP_NONE ||
          vkr_editor_brush_grid_escape_pending(editor) ||
-         vkr_editor_blockout_busy(editor) || editor->io_pick.u64 ||
+         vkr_editor_blockout_busy(editor) ||
+         vkr_editor_lighting_handles_busy(editor) || editor->io_pick.u64 ||
          editor->color_picker.open;
 }
 
@@ -1476,6 +1515,9 @@ static void viewport_face_tools(VkrEditorUi *editor,
     vkr_editor_brush_grid_update(editor, frame, NULL, VKR_ENTITY_ID_INVALID,
                                  VKR_EDITOR_BRUSH_GRID_EDIT, vec3_zero(),
                                  vec3_zero(), false_v, false_v, true_v);
+    vkr_editor_lighting_handles_update(editor, frame, VKR_ENTITY_ID_INVALID,
+                                       vec3_zero(), vec3_zero(), false_v,
+                                       false_v);
     return;
   }
   const bool8_t alt = input_is_key_down(frame->input, KEY_LMENU) ||
@@ -1496,6 +1538,8 @@ static void viewport_face_tools(VkrEditorUi *editor,
                                  vkr_editor_entity_scene(frame, brush), brush,
                                  VKR_EDITOR_BRUSH_GRID_CLIP, origin, direction,
                                  has_ray, inside, false_v);
+    vkr_editor_lighting_handles_update(editor, frame, VKR_ENTITY_ID_INVALID,
+                                       origin, direction, false_v, false_v);
     return;
   }
   if (alt && inside && !editor->face_dragging) {
@@ -1524,6 +1568,15 @@ static void viewport_face_tools(VkrEditorUi *editor,
           ? selected
           : VKR_ENTITY_ID_INVALID,
       origin, direction, has_ray, inside && !alt);
+  /* A light or volume selected with the Select tool shows the handles of
+     its outline. */
+  vkr_editor_lighting_handles_update(
+      editor, frame,
+      frame->view_state.gizmo_tool == VKR_GIZMO_MODE_NONE && alive
+          ? selected
+          : VKR_ENTITY_ID_INVALID,
+      origin, direction, has_ray,
+      inside && !alt && !vkr_editor_blockout_busy(editor));
   /* A brush, or a corridor's wall, selected with the Select tool shows its
      grid; the transform tools keep their gizmo instead. */
   const bool8_t brush_selected =
@@ -1547,7 +1600,8 @@ static void viewport_face_tools(VkrEditorUi *editor,
                          : VKR_EDITOR_BRUSH_GRID_EDIT,
       origin, direction, has_ray, inside,
       alt || editor->face_handle_hot >= 0 || editor->face_dragging ||
-          vkr_editor_blockout_busy(editor));
+          vkr_editor_blockout_busy(editor) ||
+          vkr_editor_lighting_handles_busy(editor));
   if (!scene_focus && ui->focused_id != VKR_UI_ID_NONE) {
     return;
   }
@@ -2190,6 +2244,9 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
   default:
     hint = vkr_editor_blockout_hint(editor);
     if (!hint) {
+      hint = vkr_editor_lighting_handles_hint(editor);
+    }
+    if (!hint) {
       hint = vkr_editor_brush_grid_hint(editor);
     }
     if (!hint) {
@@ -2475,6 +2532,17 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
       editor->placement.turn_steps = !editor->placement.turn_steps;
     }
     return true_v;
+  case VIEW_POPUP_TIME: {
+    const SceneTimeOfDay *authored = vkr_editor_lighting_clock(frame, NULL);
+    if (index == 2u) {
+      vkr_editor_lighting_keep_hour(frame);
+      return false_v;
+    }
+    if (index == 3u && authored) {
+      vkr_editor_lighting_scrub(frame, (float64_t)authored->hour);
+    }
+    return true_v;
+  }
   case VIEW_POPUP_SPEED:
     /* Rows: speed header and slider, sensitivity header and slider, then
        Invert mouse Y, a machine-local Graphics setting. */
@@ -2528,6 +2596,11 @@ static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     /* The icon distance, the Show menu's one slider, in 5 m steps. */
     editor->labels_max_distance =
         vkr_editor_label_distance(roundf(value / 5.0f) * 5.0f);
+    return;
+  }
+  if (popup == VIEW_POPUP_TIME) {
+    /* Whole minutes. */
+    vkr_editor_lighting_scrub(frame, roundf(value * 60.0f) / 60.0f);
     return;
   }
   if (popup == VIEW_POPUP_SPEED) {
@@ -2603,6 +2676,9 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                                        "mouse movement")
                      : popup == VIEW_POPUP_SPEED
                          ? string8_lit("Free-camera flight speed")
+                     : popup == VIEW_POPUP_TIME
+                         ? string8_lit("Run the scene's clock from this hour "
+                                       "until the simulation resets")
                      : popup == VIEW_POPUP_SNAP
                          ? string8_lit("How a placed object turns and sits "
                                        "relative to its snap point")
@@ -2648,6 +2724,38 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   if (changed)
     view_request(frame, next);
   (void)vkr_ui_panel_end(ui);
+}
+
+/* The time of day: a clock and the hour the scene shows, highlighted while
+   it differs from the World's starting hour; its dropdown scrubs and keeps
+   the hour, and the wheel over it steps a quarter hour. */
+static void view_time_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                            uint32_t column, bool8_t compact,
+                            bool8_t disabled) {
+  VkrUiSystem *ui = frame->ui;
+  const SceneTimeOfDay *authored = vkr_editor_lighting_clock(frame, NULL);
+  if (!authored) {
+    return;
+  }
+  const float64_t hour = frame->scene->clock.hour;
+  char text[8];
+  vkr_editor_lighting_hour_text(hour, text);
+  const float64_t gap = fabs(fmod(hour - (float64_t)authored->hour, 24.0));
+  (void)vkr_ui_push_id_label(ui, string8_lit("time"));
+  const VkrUiId chip_id =
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("chip"));
+  (void)vkr_ui_pop_id(ui);
+  (void)view_chip(editor, ui, "time", column, VKR_UI_ICON_CLOCK, text,
+                  editor->view_popup == VIEW_POPUP_TIME,
+                  gap > 1.0 / 120.0 && gap < 24.0 - 1.0 / 120.0, disabled,
+                  compact,
+                  "Time of day the scene shows (scroll to step a quarter "
+                  "hour)",
+                  VIEW_POPUP_TIME);
+  if (!disabled && ui->mouse_wheel && ui->hot_id == chip_id) {
+    const float64_t step = 0.25 * (float64_t)ui->mouse_wheel;
+    vkr_editor_lighting_scrub(frame, floor(hour * 4.0 + 0.5) / 4.0 + step);
+  }
 }
 
 /* Camera speed: the icon and current speed; its dropdown holds a
@@ -2745,10 +2853,13 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
         {.value = 10.0f, .unit = VKR_UI_TRACK_PX},
         {.value = layout.snap, .unit = VKR_UI_TRACK_PX},
         {.value = layout.speed, .unit = VKR_UI_TRACK_PX},
+        {.value = layout.time, .unit = VKR_UI_TRACK_PX},
     };
     VkrUiPanelConfig right = view_panel(layout.right);
     right.columns = right_columns;
-    right.column_count = ArrayCount(right_columns);
+    /* The time chip's column exists only with a World time of day. */
+    right.column_count =
+        ArrayCount(right_columns) - (layout.time > 0.0f ? 0u : 1u);
     right.rows = &chip_row;
     right.row_count = 1u;
     if (vkr_ui_panel_begin(ui, string8_lit("editor.viewport.tools"), &right)) {
@@ -2820,6 +2931,10 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
                       "ground plane",
                       VIEW_POPUP_SNAP);
       view_speed_build(editor, frame, ArrayCount(view_tools) + 3u, disabled);
+      if (layout.time > 0.0f) {
+        view_time_build(editor, frame, ArrayCount(view_tools) + 4u,
+                        layout.compact, disabled);
+      }
       (void)vkr_ui_panel_end(ui);
     }
   }

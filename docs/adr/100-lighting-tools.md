@@ -13,6 +13,8 @@ lighting job and scrubs the time of day from the Lighting palette. It draws
 the reach and shape of the selected lights and the boxes of selected
 volumes. The Lights window lists every light and edits it in place. Agents
 get the same controls through `lighting.*` operations.
+[ADR-103](103-probe-and-volume-authoring.md) adds probe creation, outline
+handles, the diffuse volume box and the Scene toolbar's time control.
 
 ## Context
 
@@ -137,8 +139,4 @@ tree):
 
 ## Revisit when
 
-- Reflection probes and diffuse volumes can be created in the editor.
-  Probes load from a scene's `reflection_probes`, and the bake reads that
-  array, so creation needs the bake to take probe components.
 - Projects store bake settings.
-- The Scene toolbar gets a time control.

@@ -341,6 +341,10 @@ VkrBakeryJson *vkr_project_record_by_id(const VkrBakeryJson *records,
 /** Unlinks `record` from the `records` array. */
 void vkr_project_remove_record(VkrBakeryJson *records,
                                const VkrBakeryJson *record);
+/** A scene-owned `probe-cube` record in the job's assets, without
+    artifacts until a bake fills it, and the probe's `asset` reference to
+    it. */
+void vkr_project_probe_destination(VkrProjectJob *job, VkrBakeryJson *probe);
 /** Asset reference {scope, id, role}. */
 VkrBakeryJson *vkr_project_reference(VkrProjectJob *job, const char *scope,
                                      const char *id, const char *role);

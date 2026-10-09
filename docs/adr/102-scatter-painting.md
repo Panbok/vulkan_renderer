@@ -139,10 +139,11 @@ under the street provided collision, and the scatter placed Bistro's
   the new type registered. `run_local_socket_tests` was left out of that
   run: its `stale_and_live` case fails on this host, with and without the
   sandbox.
-- **Not run:** a save and reload of a painted scene. Areas use only number
-  properties and a parent, which the scene document tests cover. Timing was
-  not measured. Painting changes copies only when a stroke lands, and the
-  copies draw as the existing population instances do.
+- **Save and reload.** On a Bistro copy, a scatter painted with 6 areas and
+  27 copies was saved and reopened with the same 6 areas and 27 copies
+  (`phase7_scatter_save.py`, ADR-103).
+- **Not run:** timing. Painting changes copies only when a stroke lands,
+  and the copies draw as the existing population instances do.
 
 ## Alternatives considered
 

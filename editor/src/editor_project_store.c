@@ -8,6 +8,7 @@
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
+#include "vkr_bakery_json.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -2186,6 +2187,170 @@ uint32_t vkr_editor_project_world_meshes(const char *world_path,
   return count;
 }
 
+/* Where a save puts each probe entity: its component and its index in the
+   rewritten `reflection_probes`. */
+typedef struct ProjectProbePlace {
+  SceneReflectionProbeSettings *probe;
+  uint32_t index;
+} ProjectProbePlace;
+
+typedef struct ProjectProbePlan {
+  String8 json;
+  ProjectProbePlace *places;
+  uint32_t count;
+  uint64_t entries;
+} ProjectProbePlan;
+
+/* One document entry: `previous`'s other members, such as its baked
+   `asset`, under the probe's values. */
+static VkrBakeryJson *
+project_probe_entry(Arena *arena, const VkrBakeryJson *previous,
+                    const SceneReflectionProbeSettings *probe) {
+  VkrBakeryJson *entry = previous && previous->type == VKR_BAKERY_JSON_OBJECT
+                             ? vkr_bakery_json_clone(arena, previous)
+                             : vkr_bakery_json_object(arena);
+  const Vec3 vectors[2] = {probe->center, probe->extents};
+  const char *const vector_names[2] = {"center", "extents"};
+  for (uint32_t v = 0; v < 2u; ++v) {
+    VkrBakeryJson *values = vkr_bakery_json_array(arena);
+    for (uint32_t c = 0; c < 3u; ++c) {
+      vkr_bakery_json_append(
+          values, vkr_bakery_json_float(arena, vectors[v].elements[c]));
+    }
+    vkr_bakery_json_set(arena, entry, vector_names[v], values);
+  }
+  vkr_bakery_json_set(arena, entry, "enabled",
+                      vkr_bakery_json_bool(arena, probe->enabled));
+  const struct {
+    const char *name;
+    float32_t value;
+  } scalars[] = {{"blend_distance", probe->blend_distance},
+                 {"intensity", probe->intensity},
+                 {"diffuse_intensity", probe->diffuse_intensity},
+                 {"specular_intensity", probe->specular_intensity}};
+  for (uint32_t i = 0; i < ArrayCount(scalars); ++i) {
+    vkr_bakery_json_set(arena, entry, scalars[i].name,
+                        vkr_bakery_json_float(arena, scalars[i].value));
+  }
+  return entry;
+}
+
+/* The document's `reflection_probes` rebuilt from the scene's probes
+   (ADR-103), which the editor creates, moves, resizes and deletes as
+   entities. In document order, an entry a probe stands for
+   (`reflection_probe_entries`) takes the probe's values and keeps its other
+   members, such as its baked `asset`, or drops out when the probe was
+   deleted; an entry no probe stands for, such as one past the runtime's
+   probe limit, stays as it is. Created probes follow in entity order and
+   get new entries, which their first bake gives destinations. `plan->json`
+   is empty when the scene and the document hold no probes. */
+static bool8_t project_probes_json(String8 document, VkrScene *scene,
+                                   VkrAllocator *allocator,
+                                   ProjectProbePlan *plan,
+                                   VkrEditorProjectError *error) {
+  *plan = (ProjectProbePlan){0};
+  Arena *arena = arena_create(MB(4), MB(4));
+  if (!arena) {
+    return project_error(error, "Out of memory writing reflection probes");
+  }
+  bool8_t ok = false_v;
+  const VkrBakeryJson *root =
+      vkr_bakery_json_parse(arena, document.str, document.length, 256u, NULL);
+  const VkrBakeryJson *entries =
+      root ? vkr_bakery_json_get(root, "reflection_probes") : NULL;
+  const uint32_t entry_count =
+      entries && entries->type == VKR_BAKERY_JSON_ARRAY ? entries->count : 0u;
+  const VkrComponentTypeId id =
+      vkr_scene_type_id(scene, &vkr_scene_reflection_probe_type);
+  const uint32_t found =
+      vkr_scene_find_typed(scene, &vkr_scene_reflection_probe_type, NULL, 0u);
+  VkrEntityId *ids = found ? arena_alloc(arena, sizeof(VkrEntityId) * found,
+                                         ARENA_MEMORY_TAG_ARRAY)
+                           : NULL;
+  ProjectProbePlace *places =
+      found ? vkr_allocator_alloc(allocator, sizeof(*places) * found,
+                                  VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+            : NULL;
+  if (!root || (found && (!ids || !places))) {
+    project_error(error, "Cannot read the scene's reflection probes");
+    goto done;
+  }
+  if (!found && !entry_count) {
+    ok = true_v;
+    goto done;
+  }
+  (void)vkr_scene_find_typed(scene, &vkr_scene_reflection_probe_type, ids,
+                             found);
+  for (uint32_t i = 0; i < found; ++i) {
+    places[i] = (ProjectProbePlace){
+        .probe = vkr_entity_get_component_mut(scene->world, ids[i], id),
+        .index = UINT32_MAX};
+  }
+  VkrBakeryJson *array = vkr_bakery_json_array(arena);
+  uint64_t stands = 0u;
+  for (uint32_t e = 0; e < entry_count; ++e) {
+    const VkrBakeryJson *previous = vkr_bakery_json_at(entries, e);
+    const bool8_t claimed =
+        e < 64u && (scene->reflection_probe_entries & (1ull << e));
+    if (!claimed) {
+      vkr_bakery_json_append(array, vkr_bakery_json_clone(arena, previous));
+      continue;
+    }
+    for (uint32_t i = 0; i < found; ++i) {
+      if (places[i].probe && places[i].probe->source == e) {
+        places[i].index = array->count;
+        stands |= array->count < 64u ? 1ull << array->count : 0u;
+        vkr_bakery_json_append(
+            array, project_probe_entry(arena, previous, places[i].probe));
+        break;
+      }
+    }
+  }
+  for (uint32_t i = 0; i < found; ++i) {
+    if (places[i].probe && places[i].index == UINT32_MAX) {
+      places[i].index = array->count;
+      stands |= array->count < 64u ? 1ull << array->count : 0u;
+      vkr_bakery_json_append(array,
+                             project_probe_entry(arena, NULL, places[i].probe));
+    }
+  }
+  String8 text = {0};
+  if (!vkr_bakery_json_write(arena, array, VKR_BAKERY_JSON_COMPACT, &text)) {
+    project_error(error, "Cannot write the scene's reflection probes");
+    goto done;
+  }
+  uint8_t *bytes = vkr_allocator_alloc(allocator, text.length,
+                                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!bytes) {
+    project_error(error, "Out of memory writing reflection probes");
+    goto done;
+  }
+  MemCopy(bytes, text.str, text.length);
+  *plan =
+      (ProjectProbePlan){.json = (String8){.str = bytes, .length = text.length},
+                         .places = places,
+                         .count = found,
+                         .entries = stands};
+  ok = true_v;
+done:
+  arena_destroy(arena);
+  return ok;
+}
+
+/* After the document is published, each probe stands for its new entry. */
+static void project_probes_placed(VkrScene *scene,
+                                  const ProjectProbePlan *plan) {
+  if (!plan->json.length) {
+    return;
+  }
+  for (uint32_t i = 0; i < plan->count; ++i) {
+    if (plan->places[i].probe) {
+      plan->places[i].probe->source = plan->places[i].index;
+    }
+  }
+  scene->reflection_probe_entries = plan->entries;
+}
+
 bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
                                               uint64_t *expected_fingerprint,
                                               VkrSceneEditState *edits,
@@ -2225,6 +2390,7 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
   char overlay_path[VKR_EDITOR_PROJECT_PATH_CAPACITY] = {0};
   char staged_path[VKR_EDITOR_PROJECT_PATH_CAPACITY] = {0};
   FilePath staged = {0};
+  ProjectProbePlan probes = {0};
   if (!vkr_editor_project_json_read_file(manifest_path, scratch_allocator,
                                          &document, &original_hash, error)) {
     goto cleanup;
@@ -2285,6 +2451,19 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
           error)) {
     goto cleanup;
   }
+  /* The document, not the overlay, holds reflection probes (ADR-103). */
+  if (!project_probes_json(updated, scene, scratch_allocator, &probes, error)) {
+    goto cleanup;
+  }
+  if (probes.json.length) {
+    String8 with_probes = {0};
+    if (!vkr_editor_project_json_replace_member(
+            scratch_allocator, updated, "reflection_probes", probes.json,
+            &with_probes, error)) {
+      goto cleanup;
+    }
+    updated = with_probes;
+  }
   int32_t length = snprintf(staged_path, sizeof(staged_path), "%s.tmp.%s",
                             manifest_path, revision_id);
   if (length <= 0 || length >= sizeof(staged_path)) {
@@ -2321,6 +2500,7 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
     goto cleanup;
   }
   *expected_fingerprint = project_fingerprint(updated);
+  project_probes_placed(scene, &probes);
   success = true_v;
 cleanup:
   file_close(&output);

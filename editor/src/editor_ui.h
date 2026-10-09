@@ -601,6 +601,8 @@ typedef struct VkrEditorUi {
   struct VkrEditorMagnet *magnet;
   /* Handles of the selected blockout shape (editor_blockout.h). */
   struct VkrEditorBlockout *blockout;
+  /* Drag handles on light and volume outlines (editor_lighting.c). */
+  struct VkrEditorLightingHandles *lighting_handles;
   /* Terrain sculpting (editor_terrain.h): the tool, its settings, the
      stroke in progress and the ground under the pointer. */
   bool8_t terrain_tool;

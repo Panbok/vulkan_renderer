@@ -178,7 +178,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Look volumes | `look_volume` components gathered at world resolution and blended at the camera each frame into the post-process globals, height fog, sky light and the metering range ([ADR-097](adr/097-look-volumes.md)) | `runtime/src/renderer/systems/vkr_scene_look.c`, `runtime/src/application/vkr_standard_scene_runtime.c` |
 | Environment panel | The environment parts of a container with their sources, the Environment window, `.environment` presets and the `env.*` operations ([ADR-098](adr/098-environment-panel-and-presets.md)) | `editor/src/editor_environment.c`, `editor/src/editor_ops.c` |
 | Artist views | The tiled inspection variant's data views and the tonemap's exposure false colour, `view.capture` modes and `query.luminance` over the HDR capture ([ADR-099](adr/099-artist-views-and-luminance-queries.md)) | `renderer/src/shaders/metal/msl/world/tiled.metal`, `renderer/src/shaders/metal/msl/post/tonemap.metal`, `renderer/src/shaders/shared/editor_view.slangh`, `editor/src/editor_ops.c` |
-| Lighting tools | Bake settings and their request members, the time scrubber, selection outlines of lights and volumes, the Lights window and the `lighting.*` operations ([ADR-100](adr/100-lighting-tools.md)) | `editor/src/editor_lighting.c`, `editor/src/editor_physics.c`, `editor/src/editor_ops.c` |
+| Lighting tools | Bake settings and their request members, the time scrubber and toolbar time chip, selection outlines and drag handles of lights and volumes, the diffuse volume box, probe creation, the Lights window and the `lighting.*` operations ([ADR-100](adr/100-lighting-tools.md), [ADR-103](adr/103-probe-and-volume-authoring.md)) | `editor/src/editor_lighting.c`, `editor/src/editor_physics.c`, `editor/src/editor_ops.c` |
 | Decal placement | The decal orientation rule, the Decal Scene tool and its preview box, and `decal.place` ([ADR-101](adr/101-decal-placement.md)) | `editor/src/editor_viewport.c`, `editor/src/editor_physics.c`, `editor/src/editor_ops.c` |
 | Agent channel | Editor socket, operation table, batches, review, captures; `vkr_mcp` adapter | `editor/src/editor_agent.c`, `editor/src/editor_ops.c`, `tools/agent/vkr_mcp.c` |
 | Physics adapter | Jolt world/body lifetime, native contact response/joints, sweeps and bounded contact/sensor events behind C types | `runtime/src/physics/vkr_physics.cpp` |
@@ -975,6 +975,10 @@ area-shadow pass, while the offline baker traces rectangle visibility and transp
 baker transport and native-evidence limits.
 
 Scene-captured reflection probes persist as portable one-mip RGBA16F KTX2 assets.
+A scene document's `reflection_probes` array holds them; in a project scene
+the editor creates and edits probes as entities and rewrites that array on
+save, and Bake lighting captures new ones
+([ADR-103](adr/103-probe-and-volume-authoring.md)).
 The offline baker captures six scene-linear views and records source provenance;
 normal scene loading uploads the cube and prepares SH/prefilter once. Ready local
 probes work without a global environment. Local shadows are a persistent

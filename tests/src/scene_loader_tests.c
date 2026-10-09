@@ -1,4 +1,5 @@
 #include "scene_loader_tests.h"
+#include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_types.h"
 
 #include "assets/vkr_mesh_cook_source.h"
@@ -737,6 +738,67 @@ test_scene_loader_reflection_probe_missing_cubemap_disables_probe(void) {
   scene_loader_test_context_shutdown(&ctx);
   printf("  test_scene_loader_reflection_probe_missing_cubemap_disables_probe "
          "PASSED\n");
+}
+
+/* An edit of a probe's authored values through the edit layer, as an
+   overlay or Details applies one from type defaults, keeps its runtime slot
+   and document entry
+   (ADR-103); a probe without a cubemap keeps its authored enabled state
+   while the runtime leaves it off. */
+vkr_internal void test_scene_loader_reflection_probe_edit_keeps_runtime(void) {
+  printf(
+      "  Running test_scene_loader_reflection_probe_edit_keeps_runtime...\n");
+
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  String8 json =
+      string8_lit("{\"version\":2,"
+                  "\"reflection_probes\":["
+                  "{\"enabled\":false,\"center\":[9,9,9],\"extents\":[1,1,1]},"
+                  "{\"enabled\":true,\"center\":[0,0,0],\"extents\":[2,2,2]}],"
+                  "\"entities\":[]}");
+  VkrSceneLoadResult result = {0};
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json, &ctx.allocator,
+                                  &result, &error));
+  VkrEntityId probes[2];
+  assert(vkr_scene_find_typed(&ctx.scene, &vkr_scene_reflection_probe_type,
+                              probes, 2u) == 2u);
+  const SceneReflectionProbeSettings *second = NULL;
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  for (uint32_t i = 0; i < 2u; ++i) {
+    const SceneReflectionProbeSettings *probe = vkr_scene_get_typed(
+        &ctx.scene, probes[i], &vkr_scene_reflection_probe_type);
+    if (probe->source == 1u) {
+      second = probe;
+      entity = probes[i];
+    }
+  }
+  assert(second && second->slot == 1u && second->enabled == true_v);
+
+  SceneReflectionProbeSettings edited;
+  vkr_type_defaults(&vkr_scene_reflection_probe_type, &edited);
+  assert(edited.slot == UINT32_MAX && edited.source == UINT32_MAX);
+  edited.center = second->center;
+  edited.extents = vec3_new(3.0f, 2.0f, 2.0f);
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, &ctx.allocator, 1u);
+  VkrSceneEditValues values = {.fields = VKR_SCENE_EDIT_COMPONENT,
+                               .component_type =
+                                   &vkr_scene_reflection_probe_type};
+  MemCopy(values.component, &edited, sizeof(edited));
+  assert(vkr_scene_edit_apply(&state, &ctx.scene, entity, &values));
+  const SceneReflectionProbeSettings *after =
+      vkr_scene_get_typed(&ctx.scene, entity, &vkr_scene_reflection_probe_type);
+  assert(after->slot == 1u && after->source == 1u);
+  assert(after->extents.x == 3.0f && after->enabled == true_v);
+
+  (void)vkr_scene_resolve_world(&ctx.scene);
+  assert(ctx.scene.reflection_probes[1].extents.x == 3.0f);
+  assert(ctx.scene.reflection_probes[1].enabled == false_v);
+
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_reflection_probe_edit_keeps_runtime PASSED\n");
 }
 
 vkr_internal void test_scene_loader_instantiates_cooked_punctual_lights(void) {
@@ -1496,6 +1558,7 @@ bool32_t run_scene_loader_tests(void) {
   test_scene_loader_reflection_probes_parse_valid_block();
   test_scene_loader_reflection_probe_invalid_entries_skipped();
   test_scene_loader_reflection_probe_missing_cubemap_disables_probe();
+  test_scene_loader_reflection_probe_edit_keeps_runtime();
   test_scene_loader_instantiates_cooked_punctual_lights();
   test_scene_loader_async_light_source_contract();
   test_scene_loader_sync_light_source_contract();

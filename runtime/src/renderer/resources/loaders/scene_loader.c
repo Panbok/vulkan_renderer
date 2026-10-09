@@ -152,6 +152,11 @@ typedef struct SceneReflectionProbeImport {
   String8 cubemap_path;
   String8 cubemap_base_path;
   String8 cubemap_extension;
+  /* The entry's index in the document's `reflection_probes`. */
+  uint32_t source;
+  /* A project probe waiting for its first bake: without a cubemap it stays
+     off instead of reflecting the scene environment (ADR-103). */
+  bool8_t bake_pending;
 } SceneReflectionProbeImport;
 
 typedef struct SceneEntityImport {
@@ -1925,6 +1930,8 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
     SceneReflectionProbeImport import =
         scene_reflection_probe_import_defaults();
     (void)scene_json_read_bool_field(&probe_object, "enabled", &import.enabled);
+    (void)scene_json_read_bool_field(&probe_object, "bake_pending",
+                                     &import.bake_pending);
     (void)scene_json_read_float_field(&probe_object, "blend_distance",
                                       &import.blend_distance);
     import.blend_distance = Max(import.blend_distance, 0.0f);
@@ -2003,6 +2010,7 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
       }
     }
 
+    import.source = input_index;
     out_imports[import_count++] = import;
     input_index++;
   }
@@ -2165,6 +2173,8 @@ scene_loader_reset_scene_reflection_probes(VkrScene *scene,
   }
 
   scene->reflection_probe_count = 0;
+
+  scene->reflection_probe_entries = 0u;
   for (uint32_t i = 0; i < VKR_SCENE_REFLECTION_PROBE_MAX; ++i) {
     scene->reflection_probes[i] = (VkrSceneReflectionProbe){
         .enabled = false_v,
@@ -2290,7 +2300,7 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
                 import->cubemap_base_path.str, (int)err_str.length,
                 err_str.str);
           }
-        } else if (environment_source_valid) {
+        } else if (environment_source_valid && !import->bake_pending) {
           source_cubemap = environment_source;
           vkr_texture_system_add_ref_by_handle(&assets->texture_system,
                                                source_cubemap);
@@ -4861,9 +4871,13 @@ scene_loader_create_world_entities(VkrSceneLoaderAsyncPayload *payload) {
     probe.specular_intensity = import->specular_intensity;
     probe.sh_deringing = import->sh_deringing;
     probe.slot = i < scene->reflection_probe_count ? i : UINT32_MAX;
-    /* A probe whose source failed to load starts disabled, as at runtime. */
-    probe.enabled = probe.slot != UINT32_MAX &&
-                    scene->reflection_probes[probe.slot].enabled;
+    probe.source = import->source;
+    if (import->source < 64u) {
+      scene->reflection_probe_entries |= 1ull << import->source;
+    }
+    /* The component keeps the authored state; the world update leaves a
+       probe whose source failed to load off. */
+    probe.enabled = import->enabled;
     if (import->has_cubemap) {
       scene_loader_copy_text(probe.cubemap, sizeof(probe.cubemap),
                              import->cubemap_path.length

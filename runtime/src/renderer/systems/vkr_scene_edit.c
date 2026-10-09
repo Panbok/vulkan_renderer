@@ -424,9 +424,20 @@ static void edit_commit(VkrScene *scene, EditPrepared *p) {
     *vkr_scene_get_directional_light(scene, entity) = v->directional_light;
   if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)
     *vkr_scene_get_rectangle_light(scene, entity) = v->rectangle_light;
-  /* Preparation proved the component exists, so this overwrites in place. */
-  if (v->fields & VKR_SCENE_EDIT_COMPONENT)
-    (void)vkr_scene_set_typed(scene, entity, v->component_type, v->component);
+  /* Preparation proved the component exists, so this overwrites in place.
+     An edit carries authored values only: runtime state, such as a probe's
+     slot, stays as the scene holds it, while a value read back from an
+     overlay or a Details row carries its defaults (ADR-103). */
+  if (v->fields & VKR_SCENE_EDIT_COMPONENT) {
+    const void *existing =
+        vkr_scene_get_typed(scene, entity, v->component_type);
+    _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
+    MemCopy(value, v->component, v->component_type->size);
+    if (existing) {
+      vkr_type_keep_transient(v->component_type, value, existing);
+    }
+    (void)vkr_scene_set_typed(scene, entity, v->component_type, value);
+  }
 }
 
 static bool8_t edit_write(VkrScene *scene, VkrEntityId entity,
@@ -1600,7 +1611,10 @@ static bool8_t edit_object_from_values(const VkrSceneEditValues *v,
     o->parts |= EDIT_OBJECT_RECTANGLE_LIGHT;
   }
   if (v->fields & VKR_SCENE_EDIT_COMPONENT) {
-    if (!vkr_scene_world_type_live(v->component_type)) {
+    /* A reflection probe is load-baked, but the editor creates one for the
+       next bake; its document block, not the overlay, keeps it (ADR-103). */
+    if (!vkr_scene_world_type_live(v->component_type) &&
+        v->component_type != &vkr_scene_reflection_probe_type) {
       return false_v;
     }
     o->types[0] = v->component_type;
@@ -1754,6 +1768,12 @@ static VkrEntityId edit_duplicate_subtree(VkrSceneEditState *s, VkrScene *scene,
   /* The copy belongs to no document entity and has its own id. */
   structure->object.parts &= ~(uint32_t)EDIT_OBJECT_SOURCE;
   MemZero(&structure->object.source, sizeof(structure->object.source));
+  /* The copy owns none of the original's runtime state, such as a probe's
+     slot and document entry. */
+  for (uint32_t i = 0; i < structure->object.component_count; ++i) {
+    vkr_type_reset_transient(structure->object.types[i],
+                             structure->object.components[i]);
+  }
   vkr_scene_entity_ref_generate(&structure->object.ref);
   if (name) {
     snprintf(structure->object.name, sizeof(structure->object.name), "%s",
@@ -2667,6 +2687,30 @@ static bool8_t write_created(VkrJsonWriter *w, const VkrSceneEditState *s,
          write_components(w, scene, entity) && vkr_json_writer_end_object(w);
 }
 
+/* The overlay never writes a record its reader rejects. A project scene
+   binds records through its document ids, which name document entities
+   only: an entity the loader made from a document block, such as a
+   reflection probe, has none, and the document block itself holds it. */
+static bool8_t edit_overlay_identity(const VkrScene *scene,
+                                     const SceneSourceIdentity *source) {
+  return !scene->document_id_count ||
+         source->scene_entity_index < scene->document_id_count;
+}
+
+/* A created entity carrying a load-baked component, such as a reflection
+   probe the editor added, cannot load from an overlay; its document block
+   holds it (ADR-103). */
+static bool8_t edit_overlay_creatable(const VkrScene *scene,
+                                      VkrEntityId entity) {
+  for (uint32_t i = 0; i < scene->type_count; ++i) {
+    if (!vkr_scene_world_type_live(scene->types[i].type) &&
+        vkr_entity_get_component(scene->world, entity, scene->types[i].id)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 /* Whether the overlay itself writes created entity `index`: dead ones
    (undone creations) are skipped, and in a partitioned scene those
    streaming with a cell go to its document. */
@@ -2677,6 +2721,7 @@ static bool8_t edit_overlay_holds(const VkrSceneEditState *s,
   const VkrEntityId entity = s->created[index].entity;
   VkrScenePartitionCell cell;
   return vkr_scene_entity_alive(scene, entity) &&
+         edit_overlay_creatable(scene, entity) &&
          !(partitioned &&
            vkr_scene_partition_entity_cell(scene, settings, entity, &cell));
 }
@@ -2699,6 +2744,9 @@ static uint32_t edit_overlay_created_count(const VkrSceneEditState *s,
 static bool8_t write_structure(VkrJsonWriter *w, const VkrSceneEditState *s,
                                const VkrScene *scene) {
   for (uint32_t i = 0; i < s->deleted_count; ++i) {
+    if (!edit_overlay_identity(scene, &s->deleted[i])) {
+      continue;
+    }
     if (!vkr_json_writer_begin_object(w) ||
         !write_identity(w, &s->deleted[i]) ||
         !vkr_json_writer_name(w, string8_lit("deleted")) ||
@@ -2796,6 +2844,9 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
   if (!vkr_scene_terrain_save(scene, s->status, sizeof(s->status))) {
     return false_v;
   }
+  /* Touched load-baked objects of a project scene other than probes, which
+     the document's block holds as loaded, such as the diffuse volume. */
+  uint32_t unsaved_blocks = 0u;
   VkrJsonFileWriter file = {0};
   if (!vkr_json_file_writer_begin(&file, path))
     goto failed;
@@ -2818,6 +2869,11 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
         scene->world, entity, scene->comp_source_identity);
     if (!source || !vkr_scene_edit_read(scene, entity, &values))
       goto failed;
+    if (!edit_overlay_identity(scene, source)) {
+      unsaved_blocks +=
+          !vkr_scene_get_typed(scene, entity, &vkr_scene_reflection_probe_type);
+      continue;
+    }
     if (!vkr_json_writer_begin_object(w) || !write_identity(w, source) ||
         !write_parent(w, s, scene, entity) || !write_values(w, &values) ||
         !write_components(w, scene, entity) || !vkr_json_writer_end_object(w))
@@ -2845,8 +2901,15 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
     return false_v;
   }
   s->saved_revision = s->revision;
-  snprintf(s->status, sizeof(s->status), "Saved %u node overrides.",
-           s->touched_count);
+  if (unsaved_blocks) {
+    snprintf(s->status, sizeof(s->status),
+             "Saved %u node overrides; %u load-baked objects keep their "
+             "document values.",
+             s->touched_count - unsaved_blocks, unsaved_blocks);
+  } else {
+    snprintf(s->status, sizeof(s->status), "Saved %u node overrides.",
+             s->touched_count);
+  }
   log_info("Saved editor overrides to %.*s", (int)path.length, path.str);
   return true_v;
 failed:
@@ -5377,7 +5440,9 @@ static bool8_t edit_cell_member(const VkrScene *scene,
                                 VkrEntityId entity,
                                 VkrScenePartitionCell cell) {
   VkrScenePartitionCell at;
+  /* The document, not a cell, holds a created load-baked object. */
   return vkr_scene_entity_alive(scene, entity) &&
+         edit_overlay_creatable(scene, entity) &&
          vkr_scene_partition_entity_cell(scene, settings, entity, &at) &&
          edit_cell_same(at, cell);
 }
@@ -5524,6 +5589,7 @@ bool8_t vkr_scene_edit_cells_track(VkrSceneEditState *s, VkrScene *scene) {
   for (uint32_t i = 0; i < s->created_count; ++i) {
     VkrScenePartitionCell cell;
     if (!vkr_scene_entity_alive(scene, s->created[i].entity) ||
+        !edit_overlay_creatable(scene, s->created[i].entity) ||
         !vkr_scene_partition_entity_cell(scene, &settings, s->created[i].entity,
                                          &cell)) {
       continue;
@@ -5691,6 +5757,7 @@ static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
   for (uint32_t i = 0; ok && i < s->created_count; ++i) {
     VkrScenePartitionCell cell;
     if (vkr_scene_entity_alive(scene, s->created[i].entity) &&
+        edit_overlay_creatable(scene, s->created[i].entity) &&
         vkr_scene_partition_entity_cell(scene, &settings, s->created[i].entity,
                                         &cell)) {
       members[count++] = (EditCellMember){cell, i};

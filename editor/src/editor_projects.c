@@ -3753,6 +3753,15 @@ bool8_t vkr_editor_projects_dialog_contains(const VkrEditorProjects *projects,
          y_px < rect.y + rect.height;
 }
 
+bool8_t vkr_editor_projects_managed_scene(const VkrEditorProjects *projects,
+                                          const VkrSampleUiFrame *frame) {
+  return projects && !projects->read_only && projects->scene_manifest_path[0] &&
+         frame->scene && frame->scene_path.length &&
+         frame->scene_path.length == strlen(projects->runtime_path) &&
+         MemCompare(frame->scene_path.str, projects->runtime_path,
+                    frame->scene_path.length) == 0;
+}
+
 bool8_t vkr_editor_projects_can_add_entity(const VkrEditorProjects *projects,
                                            VkrEditorUi *editor,
                                            const VkrSampleUiFrame *frame) {

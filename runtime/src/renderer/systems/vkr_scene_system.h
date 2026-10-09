@@ -944,6 +944,10 @@ typedef struct SceneReflectionProbeSettings {
   float32_t sh_deringing;
   char cubemap[256];
   uint32_t slot;
+  /* Runtime: the entry of the document's `reflection_probes` the probe
+     loaded from, UINT32_MAX for one the editor created; the editor writes
+     the array back from the probes (ADR-103). */
+  uint32_t source;
 } SceneReflectionProbeSettings;
 
 /** Baked diffuse irradiance volume; `path` applies on the next load. */
@@ -1356,6 +1360,10 @@ typedef struct VkrScene {
   VkrSubsurfaceBinding subsurface;
   VkrSceneReflectionProbe reflection_probes[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t reflection_probe_count;
+  /* Entries of the document's `reflection_probes` that probe entities
+     stand for, a bit per index: the loader's, then the editor's after a
+     save. A save keeps the others as they are (ADR-103). */
+  uint64_t reflection_probe_entries;
   /** Engine text fonts the scene's text uses past the default, one
       reference each until shutdown; a font whose load failed is marked and
       not retried. */

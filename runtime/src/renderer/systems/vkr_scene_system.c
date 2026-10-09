@@ -614,7 +614,9 @@ static void scene_world_lower(VkrScene *scene, bool8_t had_atmosphere) {
       continue;
     }
     VkrSceneReflectionProbe *runtime = &scene->reflection_probes[probe->slot];
-    runtime->enabled = probe->enabled;
+    /* The component keeps the authored state; a probe without a source
+       cubemap stays off. */
+    runtime->enabled = probe->enabled && runtime->source_cubemap.id != 0u;
     runtime->center = probe->center;
     runtime->extents = probe->extents;
     runtime->blend_distance = probe->blend_distance;
@@ -1823,6 +1825,7 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       .texture = VKR_TEXTURE_HANDLE_INVALID,
   };
   scene->reflection_probe_count = 0;
+  scene->reflection_probe_entries = 0u;
   for (uint32_t i = 0; i < VKR_SCENE_REFLECTION_PROBE_MAX; ++i) {
     scene_reset_reflection_probe_runtime(&scene->reflection_probes[i]);
   }
@@ -1956,6 +1959,7 @@ vkr_internal void scene_environment_shutdown(VkrScene *scene,
     scene_reset_reflection_probe_runtime(probe);
   }
   scene->reflection_probe_count = 0;
+  scene->reflection_probe_entries = 0u;
   scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
   scene->environment.enabled = false_v;
   scene->atmosphere = (VkrSceneAtmosphere){
