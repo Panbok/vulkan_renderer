@@ -178,6 +178,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Look volumes | `look_volume` components gathered at world resolution and blended at the camera each frame into the post-process globals, height fog, sky light and the metering range ([ADR-097](adr/097-look-volumes.md)) | `runtime/src/renderer/systems/vkr_scene_look.c`, `runtime/src/application/vkr_standard_scene_runtime.c` |
 | Environment panel | The environment parts of a container with their sources, the Environment window, `.environment` presets and the `env.*` operations ([ADR-098](adr/098-environment-panel-and-presets.md)) | `editor/src/editor_environment.c`, `editor/src/editor_ops.c` |
 | Artist views | The tiled inspection variant's data views and the tonemap's exposure false colour, `view.capture` modes and `query.luminance` over the HDR capture ([ADR-099](adr/099-artist-views-and-luminance-queries.md)) | `renderer/src/shaders/metal/msl/world/tiled.metal`, `renderer/src/shaders/metal/msl/post/tonemap.metal`, `renderer/src/shaders/shared/editor_view.slangh`, `editor/src/editor_ops.c` |
+| Lighting tools | Bake settings and their request members, the time scrubber, selection outlines of lights and volumes, the Lights window and the `lighting.*` operations ([ADR-100](adr/100-lighting-tools.md)) | `editor/src/editor_lighting.c`, `editor/src/editor_physics.c`, `editor/src/editor_ops.c` |
 | Agent channel | Editor socket, operation table, batches, review, captures; `vkr_mcp` adapter | `editor/src/editor_agent.c`, `editor/src/editor_ops.c`, `tools/agent/vkr_mcp.c` |
 | Physics adapter | Jolt world/body lifetime, native contact response/joints, sweeps and bounded contact/sensor events behind C types | `runtime/src/physics/vkr_physics.cpp` |
 | Production shaders | Shared math and native bindings/entry points | `renderer/src/shaders/` |
@@ -1364,7 +1365,7 @@ These are limits of current code or retained acceptance, not scheduled promises:
   16 GiB host, and Apple ASan does not support leak detection.
 
 - Projected decals ([ADR-092](adr/092-projected-decals.md)) change base colour
-  only, and the editor draws no decal box outline. Project packaging does not
+  only. Project packaging does not
   lower or package a material path inside a component, for decals and brush
   faces alike. The desktop decal cost has local, non-authoritative
   measurements only.

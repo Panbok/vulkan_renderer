@@ -3,6 +3,7 @@
 #include "editor_agent.h"
 #include "editor_internal.h"
 #include "editor_level.h"
+#include "editor_lighting.h"
 #include "editor_material.h"
 #include "editor_projects.h"
 
@@ -1041,6 +1042,9 @@ static void workbench_lighting_palette(VkrEditorUi *editor,
   vkr_editor_palette_create(&palette, string8_lit("lighting.directional"),
                             "Directional", VKR_UI_ICON_DIRECTIONAL_LIGHT,
                             "directional_light");
+  vkr_editor_palette_command(&palette, string8_lit("lighting.list"),
+                             "Light list", VKR_UI_ICON_LIST, CMD_LIGHTS,
+                             editor->windows[VKR_EDITOR_WINDOW_LIGHTS].visible);
   vkr_editor_palette_heading(&palette, string8_lit("lighting.environment"),
                              string8_lit("ENVIRONMENT"));
   vkr_editor_palette_command(
@@ -1062,6 +1066,11 @@ static void workbench_lighting_palette(VkrEditorUi *editor,
   vkr_editor_palette_create(&palette, string8_lit("lighting.look"),
                             "Look volume", VKR_UI_ICON_BOUNDING_BOX,
                             "look_volume");
+
+  /* The time of day: scrub the live clock, keep an hour (ADR-100). */
+  vkr_editor_palette_heading(&palette, string8_lit("lighting.time"),
+                             string8_lit("TIME"));
+  vkr_editor_lighting_time_rows(editor, frame, palette.width, &palette.y);
 
   /* View modes set the render mode directly, as Cmd view.mode does. */
   vkr_editor_palette_heading(&palette, string8_lit("lighting.view"),
@@ -1100,6 +1109,10 @@ static void workbench_lighting_palette(VkrEditorUi *editor,
   vkr_editor_palette_command(&palette, string8_lit("lighting.bake_button"),
                              "Bake lighting", VKR_UI_ICON_BAKERY,
                              CMD_SCENE_BAKE, false_v);
+  vkr_editor_palette_command(
+      &palette, string8_lit("lighting.bake_settings"), "Bake settings",
+      VKR_UI_ICON_GRAPHICS, CMD_BAKE_SETTINGS,
+      editor->windows[VKR_EDITOR_WINDOW_BAKE_SETTINGS].visible);
   vkr_editor_palette_command(&palette, string8_lit("lighting.preferences"),
                              "Preferences", VKR_UI_ICON_GRAPHICS, CMD_GRAPHICS,
                              false_v);

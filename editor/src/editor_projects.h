@@ -86,6 +86,12 @@ bool8_t vkr_editor_projects_bake_lighting(VkrEditorProjects *projects,
                                           VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame,
                                           bool8_t lightmap, uint32_t samples);
+/* The bake settings every Bake lighting job sends (ADR-100); the project
+   window owns them for the session. */
+struct VkrEditorBakeSettings;
+struct VkrEditorBakeSettings *
+vkr_editor_projects_bake_settings(VkrEditorProjects *projects);
+
 /* The outcome of the last bake vkr_editor_projects_bake_lighting started,
    taken once its job and the reload after it settle; a job that ended
    without recording one reports the status line as a failure. */

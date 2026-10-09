@@ -3,10 +3,13 @@
 #include "editor_agent.h"
 #include "editor_environment.h"
 #include "editor_internal.h"
+#include "editor_lighting.h"
 #include "editor_material.h"
+#include "editor_projects.h"
 #include "editor_workbench.h"
 #include "editor_level.h"
 
+#include "assets/vkr_light_layers.h"
 #include "assets/vkr_material_codegen.h"
 #include "core/logger.h"
 #include "core/vkr_json.h"
@@ -11532,6 +11535,157 @@ static bool8_t ops_build_env_preset_apply(OpsContext *ctx,
   return true_v;
 }
 
+// =============================================================================
+// Lighting (ADR-100)
+// =============================================================================
+
+/* lighting.time: runs the live clock from 'hour', as Cmd time.hour does,
+   until the simulation resets. */
+static VkrEditorOpStatus ops_run_lighting_time(OpsContext *ctx) {
+  float64_t hour = 0.0;
+  if (!ops_arg_number(ctx->call->args, "hour", &hour) || !isfinite(hour)) {
+    ops_fail(ctx, OPS_INVALID, "'hour' is a number of hours");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->frame->time_of_day_request) {
+    ops_fail(ctx, OPS_INVALID, "The time of day is not available");
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->frame->time_of_day_request->set_hour = true_v;
+  ctx->frame->time_of_day_request->hour = hour;
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "hour",
+          vkr_bakery_json_float(ops_arena(ctx),
+                                fmod(fmod(hour, 24.0) + 24.0, 24.0)));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* lighting.list: the primary scene's and the World's lights with their
+   values, and the scene's light groups with their live intensities. */
+static VkrEditorOpStatus ops_run_lighting_list(OpsContext *ctx) {
+  const VkrSampleUiFrame *frame = ctx->frame;
+  VkrAllocator allocator;
+  if (!frame->scene) {
+    ops_fail(ctx, OPS_NOT_FOUND, "No scene is open");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ops_allocator(ctx, &allocator)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  static const char *const kinds[] = {"directional", "point", "spot",
+                                      "rectangle"};
+  Arena *arena = ops_arena(ctx);
+  VkrEditorLight *lights = NULL;
+  const uint32_t count = vkr_editor_lighting_list(frame, &allocator, &lights);
+  VkrBakeryJson *list = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrTypeDesc *type = vkr_editor_light_type(lights[i].kind);
+    const void *value = vkr_editor_light_value(&lights[i]);
+    if (!value) {
+      continue;
+    }
+    VkrBakeryJson *entry = ops_entity(ctx, lights[i].scene, lights[i].entity);
+    ops_set(ctx, entry, "kind",
+            vkr_bakery_json_cstr(arena, kinds[lights[i].kind]));
+    ops_set(ctx, entry, "from",
+            vkr_bakery_json_cstr(
+                arena, lights[i].scene == frame->world ? "world" : "scene"));
+    ops_set(ctx, entry, "values", ops_component_json(ctx, type, value));
+    vkr_bakery_json_append(list, entry);
+  }
+  VkrBakeryJson *groups = vkr_bakery_json_array(arena);
+  const VkrSceneLightGroups *registry = &frame->scene->light_groups;
+  for (uint32_t i = 0; i < registry->count; ++i) {
+    VkrBakeryJson *group = vkr_bakery_json_object(arena);
+    ops_set(ctx, group, "name",
+            vkr_bakery_json_cstr(arena, registry->names[i]));
+    ops_set(ctx, group, "intensity",
+            vkr_bakery_json_float(arena, registry->intensities[i]));
+    ops_set(ctx, group, "factor",
+            vkr_bakery_json_float(arena, registry->factors[i]));
+    vkr_bakery_json_append(groups, group);
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "lights", list);
+  ops_set(ctx, ctx->call->result, "groups", groups);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* lighting.group: a light group's live intensity in every loaded
+   container, as scripts set it, until the simulation resets. */
+static VkrEditorOpStatus ops_run_lighting_group(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char group[VKR_LIGHT_GROUP_NAME_BYTES] = {0};
+  float64_t intensity = 0.0;
+  if (!ops_arg_string(ctx, args, "group", group, sizeof(group))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!group[0] || !vkr_light_group_name_valid(group, strlen(group))) {
+    ops_fail(ctx, OPS_INVALID, "'group' is a light group name");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ops_arg_number(args, "intensity", &intensity) || !isfinite(intensity) ||
+      intensity < 0.0) {
+    ops_fail(ctx, OPS_INVALID, "'intensity' is a number of at least 0");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->frame->time_of_day_request) {
+    ops_fail(ctx, OPS_INVALID, "Light groups are not available");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrSampleTimeOfDayRequest *request = ctx->frame->time_of_day_request;
+  request->set_group = true_v;
+  snprintf(request->group, sizeof(request->group), "%s", group);
+  request->intensity = (float32_t)intensity;
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "group",
+          vkr_bakery_json_cstr(ops_arena(ctx), group));
+  ops_set(ctx, ctx->call->result, "intensity",
+          vkr_bakery_json_float(ops_arena(ctx), intensity));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* lighting.bake: the project scene's Bake lighting job with the given
+   settings, which also become the Bake settings window's. */
+static VkrEditorOpStatus ops_run_lighting_bake(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  VkrEditorBakeSettings *settings =
+      vkr_editor_projects_bake_settings(ctx->editor->projects);
+  if (!settings) {
+    ops_fail(ctx, OPS_INVALID, "Baking needs a project");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrEditorBakeSettings next = *settings;
+  if (!ops_component_read(ctx, &vkr_editor_lightmap_settings_type,
+                          vkr_bakery_json_get(args, "lightmap_settings"),
+                          &next.lightmap) ||
+      !ops_component_read(ctx, &vkr_editor_diffuse_settings_type,
+                          vkr_bakery_json_get(args, "diffuse_settings"),
+                          &next.diffuse)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  *settings = next;
+  if (!vkr_editor_projects_bake_lighting(
+          ctx->editor->projects, ctx->editor, ctx->frame,
+          ops_arg_bool(args, "lightmap",
+                       vkr_editor_bakery_lightmap(ctx->editor->bakery)),
+          0u)) {
+    ops_fail(ctx, OPS_REJECTED, "%s",
+             vkr_editor_projects_message(ctx->editor->projects));
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "started",
+          vkr_bakery_json_bool(ops_arena(ctx), true_v));
+  ops_set(ctx, ctx->call->result, "lightmap_settings",
+          ops_component_json(ctx, &vkr_editor_lightmap_settings_type,
+                             &settings->lightmap));
+  ops_set(ctx, ctx->call->result, "diffuse_settings",
+          ops_component_json(ctx, &vkr_editor_diffuse_settings_type,
+                             &settings->diffuse));
+  return VKR_EDITOR_OP_DONE;
+}
+
 /* surface.theme.create: a new theme document. */
 static VkrEditorOpStatus ops_run_theme_create(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
@@ -12938,6 +13092,41 @@ static const OpsDef s_ops[] = {
      "\"string\"},\"container\":" OPS_CONTAINER_SCHEMA "," OPS_REVIEW_SCHEMA
      "},\"required\":[\"theme\"]}",
      NULL, ops_build_theme_select},
+    {"lighting.time",
+     "Run the live time of day from 'hour' until the simulation resets, as "
+     "Cmd time.hour does; to keep an hour, set the World's time_of_day "
+     "component.",
+     "{\"type\":\"object\",\"properties\":{\"hour\":{\"type\":"
+     "\"number\"}},\"required\":[\"hour\"]}",
+     ops_run_lighting_time, NULL, OPS_QUICK},
+    {"lighting.list",
+     "The open scene's and the World's lights (kind directional, point, "
+     "spot or rectangle; 'from' scene or world; component values, with "
+     "mobility and light_group) and the scene's light groups with their "
+     "live intensity and current factor.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_lighting_list, NULL,
+     OPS_QUICK},
+    {"lighting.group",
+     "Set light group 'group' to 'intensity' (0 switches its lights off) "
+     "live in every loaded container, as scripts do, until the simulation "
+     "resets.",
+     "{\"type\":\"object\",\"properties\":{\"group\":{\"type\":"
+     "\"string\"},\"intensity\":{\"type\":\"number\"}},"
+     "\"required\":[\"group\",\"intensity\"]}",
+     ops_run_lighting_group, NULL, OPS_QUICK},
+    {"lighting.bake",
+     "Start the open project scene's Bake lighting job: reflection probes, "
+     "the diffuse volume and, with 'lightmap' (default the Bakery panel's "
+     "option), lightmaps. 'lightmap_settings' (samples, max_depth, seed, "
+     "page_size, texels_per_unit, denoise default|on|off, "
+     "denoise_iterations, indirect_clamp) and 'diffuse_settings' "
+     "(voxel_size, face_size, samples, max_depth, seed, photons, "
+     "photon_radius) replace the Bake settings window's values; 0 keeps "
+     "Bakery's default.",
+     "{\"type\":\"object\",\"properties\":{\"lightmap\":{\"type\":"
+     "\"boolean\"},\"lightmap_settings\":{\"type\":\"object\"},"
+     "\"diffuse_settings\":{\"type\":\"object\"}}}",
+     ops_run_lighting_bake, NULL},
     {"env.describe",
      "A container's environment by part (environment, atmosphere, clouds, "
      "fog, volumetric_fog, post_process, time_of_day, sun, moon): whether "

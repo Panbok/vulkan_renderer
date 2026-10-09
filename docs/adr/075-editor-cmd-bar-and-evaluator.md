@@ -78,7 +78,7 @@ dependable channel for scripts.
 | `visibility.toggle` | | Hide or show the selection in the game too: its saved Visibility, undoable |
 | `hide`, `isolate`, `unhide` | | Hide the selection, show only it, or show everything hidden, in the editor only (H, Shift+H, Alt+H; ADR-084) |
 | `panel` | `<outliner\|details\|console\|bakery\|content\|build\|tools\|level_checks\|script\|terrain> [on\|off\|toggle]` | Docked panels; `window level`, `window script` and `window terrain` show a docked tab instead of the window (ADR-089) |
-| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes\|level\|terrain> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window, `level` the Level checks window and `terrain` the Terrain window (ADR-084) |
+| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes\|level\|terrain\|partition\|environment\|bake\|lights> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window, `level` the Level checks window and `terrain` the Terrain window (ADR-084); `environment` is the Environment window (ADR-098), `bake` Bake settings and `lights` the Lights window (ADR-100) |
 | `build.game`, `build.run` | `[profile]` | Package the project with a build profile (quoted when it has spaces; the selected profile by default), then for `build.run` run the game ([ADR-078](078-project-build-and-packaging.md)) |
 | `build.settings`, `build.open` | | Build Settings window; the last package's folder |
 | `layout.reset` | | The active workbench's default dock layout (ADR-089); restores a maximized Scene |

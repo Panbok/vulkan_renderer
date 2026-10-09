@@ -51,6 +51,10 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_PARTITION,
   /* The scene's environment and its presets (ADR-098). */
   VKR_EDITOR_WINDOW_ENVIRONMENT,
+  /* Lightmap and diffuse volume bake settings (ADR-100). */
+  VKR_EDITOR_WINDOW_BAKE_SETTINGS,
+  /* The scene's lights and light groups (ADR-100). */
+  VKR_EDITOR_WINDOW_LIGHTS,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -733,6 +737,13 @@ typedef struct VkrEditorUi {
   VkrSampleEditBatchItem environment_items[9];
   uint64_t environment_batch_token;
   char environment_message[192];
+  /* Bake settings window rows and collapsed groups (ADR-100). */
+  VkrEditorDetails bake_settings_details;
+  bool8_t bake_settings_collapsed[2];
+  /* Lights window: the selected light's rows, scroll and content height. */
+  VkrEditorDetails lights_details;
+  float32_t lights_scroll;
+  float32_t lights_height;
   VkrEditorAnimation animation;
   /* Additive scene path and sidecar a Cmd request borrows until the
      runtime consumes it (ADR-076). */

@@ -90,8 +90,8 @@ sets.
   empty gather.
 - Volumetric fog keeps its own density boxes; look volumes change only the
   analytic height fog.
-- The volumes' boxes are not drawn in the viewport yet; the selection
-  outline and Details show them.
+- A selected volume draws its box and its blend box in the viewport
+  ([ADR-100](100-lighting-tools.md)).
 - Each frame copies up to 64 component values and inverts their boxes; the
   timing below measures eight.
 

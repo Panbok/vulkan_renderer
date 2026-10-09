@@ -1,8 +1,10 @@
 #include "editor_projects.h"
+
 #include "editor_build.h"
 #include "editor_content.h"
 #include "editor_install.h"
 #include "editor_internal.h"
+#include "editor_lighting.h"
 #include "editor_project_store.h"
 #include "editor_scene_panels.h"
 #include <ctype.h>
@@ -280,8 +282,10 @@ struct VkrEditorProjects {
   bool8_t bake_diffuse;
   bool8_t bake_lightmap;
   /* Lightmap samples per texel a Cmd bake asks for; zero keeps the
-     baker's default. */
+     settings' count. */
   uint32_t bake_lightmap_samples;
+  /* The Bake settings window's values every bake sends (ADR-100). */
+  VkrEditorBakeSettings bake_settings;
   /* Model imports and rebuilds cook lightmap UVs (the Bakery setting). */
   bool8_t lightmap_uvs;
   bool8_t prepare_assets;
@@ -1877,14 +1881,8 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
          project_json_bool(writer, "diffuse", projects->bake_diffuse) &&
          project_json_bool(writer, "lightmap", projects->bake_lightmap) &&
          vkr_json_writer_end_object(writer);
-    if (projects->bake_lightmap_samples) {
-      ok = ok &&
-           vkr_json_writer_name(writer, string8_lit("lightmap_settings")) &&
-           vkr_json_writer_begin_object(writer) &&
-           vkr_json_writer_name(writer, string8_lit("samples")) &&
-           vkr_json_writer_u64(writer, projects->bake_lightmap_samples) &&
-           vkr_json_writer_end_object(writer);
-    }
+    ok = ok && vkr_editor_bake_settings_write(writer, &projects->bake_settings,
+                                              projects->bake_lightmap_samples);
   }
   if (projects->operation[0]) {
     ok = ok && project_json_text(writer, "name", projects->action_name) &&
@@ -7317,6 +7315,11 @@ bool8_t vkr_editor_projects_create_scene(VkrEditorProjects *projects,
   snprintf(projects->scene_name, sizeof(projects->scene_name), "%s", name);
   project_create(projects, editor, frame);
   return projects->job_id != 0;
+}
+
+VkrEditorBakeSettings *
+vkr_editor_projects_bake_settings(VkrEditorProjects *projects) {
+  return projects ? &projects->bake_settings : NULL;
 }
 
 bool8_t vkr_editor_projects_bake_lighting(VkrEditorProjects *projects,

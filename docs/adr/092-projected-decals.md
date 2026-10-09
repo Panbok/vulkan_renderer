@@ -12,8 +12,9 @@ Accepted (partial). Both pipelines draw projected decals: a `decal`
 component's box lays its material's base colour over the opaque surfaces
 inside it before lighting, in the tiled pipeline's forward shader and in the
 desktop pipeline's G-buffer resolve. Decals change base colour only; normal,
-roughness, metalness, occlusion and emissive decals are future work. The
-editor shows a decal's icon but no box outline.
+roughness, metalness, occlusion and emissive decals are future work. A
+selected decal draws its box and projection arrow
+([ADR-100](100-lighting-tools.md)).
 
 ## Context
 

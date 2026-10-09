@@ -2,6 +2,7 @@
 #include "editor_environment.h"
 #include "editor_internal.h"
 #include "editor_level.h"
+#include "editor_lighting.h"
 #include "editor_material.h"
 #include "editor_ops.h"
 #include "editor_partition.h"
@@ -148,6 +149,8 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_TERRAIN] = {"Terrain", VKR_UI_ICON_WAVES, false_v},
     [CMD_PARTITION] = {"World partition", VKR_UI_ICON_GRID, false_v},
     [CMD_ENVIRONMENT] = {"Environment", VKR_UI_ICON_PLANET, false_v},
+    [CMD_BAKE_SETTINGS] = {"Bake settings", VKR_UI_ICON_BAKERY, false_v},
+    [CMD_LIGHTS] = {"Lights", VKR_UI_ICON_POINT_LIGHT, false_v},
     [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, false_v},
     [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, false_v},
     [CMD_SIM_PAUSE] = {"Pause simulation", VKR_UI_ICON_PAUSE, false_v},
@@ -624,6 +627,10 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor->windows[VKR_EDITOR_WINDOW_PARTITION].visible;
   case CMD_ENVIRONMENT:
     return editor->windows[VKR_EDITOR_WINDOW_ENVIRONMENT].visible;
+  case CMD_BAKE_SETTINGS:
+    return editor->windows[VKR_EDITOR_WINDOW_BAKE_SETTINGS].visible;
+  case CMD_LIGHTS:
+    return editor->windows[VKR_EDITOR_WINDOW_LIGHTS].visible;
   case CMD_PHYSICS:
     return editor->windows[VKR_EDITOR_WINDOW_PHYSICS].visible;
   case CMD_GRAPHICS:
@@ -757,6 +764,12 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
   case CMD_ENVIRONMENT:
     editor->environment_listed_at = 0.0;
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_ENVIRONMENT);
+    break;
+  case CMD_BAKE_SETTINGS:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_BAKE_SETTINGS);
+    break;
+  case CMD_LIGHTS:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_LIGHTS);
     break;
   case CMD_GRAPHICS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_GRAPHICS);
@@ -964,6 +977,8 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_TERRAIN},
     {CMD_PARTITION},
     {CMD_ENVIRONMENT},
+    {CMD_BAKE_SETTINGS},
+    {CMD_LIGHTS},
     {CMD_GRAPHICS},
     {CMD_LABELS, true_v},
     {CMD_LABELS_DIRECTIONAL, false_v, true_v},
@@ -1945,6 +1960,14 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     title_text = string8_lit("Environment");
     title_icon = VKR_UI_ICON_PLANET;
     break;
+  case VKR_EDITOR_WINDOW_BAKE_SETTINGS:
+    title_text = string8_lit("Bake settings");
+    title_icon = VKR_UI_ICON_BAKERY;
+    break;
+  case VKR_EDITOR_WINDOW_LIGHTS:
+    title_text = string8_lit("Lights");
+    title_icon = VKR_UI_ICON_POINT_LIGHT;
+    break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");
     title_icon = VKR_UI_ICON_ADD;
@@ -2211,6 +2234,20 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     if (editor_window_body_begin(ui, window, string8_lit("environment.body"),
                                  &bounds)) {
       vkr_editor_environment_window_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
+  } else if (kind == VKR_EDITOR_WINDOW_BAKE_SETTINGS) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("bake.body"),
+                                 &bounds)) {
+      vkr_editor_bake_settings_window_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
+  } else if (kind == VKR_EDITOR_WINDOW_LIGHTS) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("lights.body"),
+                                 &bounds)) {
+      vkr_editor_lights_window_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
   } else if (kind == VKR_EDITOR_WINDOW_LEVEL) {

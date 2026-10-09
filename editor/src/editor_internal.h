@@ -73,6 +73,10 @@ typedef enum EditorCommand {
   CMD_PARTITION,
   /* The Environment window (ADR-098). */
   CMD_ENVIRONMENT,
+  /* The Bake settings window (ADR-100). */
+  CMD_BAKE_SETTINGS,
+  /* The Lights window (ADR-100). */
+  CMD_LIGHTS,
   /* Scene transform tools. */
   CMD_TOOL_SELECT,
   CMD_TOOL_MOVE,

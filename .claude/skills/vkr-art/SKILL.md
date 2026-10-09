@@ -146,6 +146,23 @@ level):
 - Volumes apply at the camera, so check each with a capture from inside it
   and one past its blend distance.
 
+## Lights and bakes
+
+- `lighting.list` returns the scene's and the World's lights (`kind`,
+  `from`, component values with `mobility`, `light_group` and intensity)
+  and the scene's light groups. Read it before relighting. Edit a light
+  with `component.set` on its `point_light`, `rectangle_light` or
+  `directional_light`.
+- Static lights bake into lightmaps, and the tiled pipeline adds no
+  runtime light for them. After changing static lights, run
+  `lighting.bake` on a project scene. Its `lightmap_settings` and
+  `diffuse_settings` hold only the values to change; 0 keeps Bakery's
+  default.
+- `lighting.time` (`hour`) and `lighting.group` (`group`, `intensity`)
+  change the live clock and a group's level until the simulation resets.
+  Use them to preview and capture a mood. To keep an hour, set the World's
+  `time_of_day` `hour`.
+
 ## Assign
 
 - `material.assign` gives a `face`, a `brush` (all faces, or those `faces`

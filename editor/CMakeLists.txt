@@ -20,6 +20,7 @@ add_executable(vkr_editor
     src/editor_io.c
     src/editor_partition.c
     src/editor_environment.c
+    src/editor_lighting.c
     src/editor_terrain.c
     src/editor_ops.c
     src/editor_viewport.c
