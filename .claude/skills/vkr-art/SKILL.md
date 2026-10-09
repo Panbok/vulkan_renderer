@@ -119,6 +119,22 @@ unique look.
   counts repeats of it, so leave faces at 1 unless one needs a different
   scale. Set `surface` on materials meshes use, so they share the tags.
 
+## Look volumes
+
+Give a room, tunnel or district its own exposure and grading with a look
+volume, not by editing the scene's `post_process` (which changes the whole
+level):
+
+- `look.volume` takes world `min` and `max` corners, `blend_distance` in
+  metres (fade outside the box, default 1), `priority` and a `look` object.
+  Name only the values to change: `exposure_compensation_ev`, `metering`
+  [min, max] EV, `white_balance` [temperature, tint], `contrast`,
+  `saturation`, `bloom_intensity`, `fog_color`, `fog_density`,
+  `sky_light_intensity`.
+- Nest volumes by priority: the room's above the district's.
+- Volumes apply at the camera, so check each with a capture from inside it
+  and one past its blend distance.
+
 ## Assign
 
 - `material.assign` gives a `face`, a `brush` (all faces, or those `faces`

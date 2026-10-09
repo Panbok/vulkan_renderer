@@ -14,8 +14,9 @@ Standard tier of Parts 2 and 5 in
 [ADR-093](../adr/093-material-graphs-and-art-workbench.md), the bindings,
 world size and lint of Part 6 in
 [ADR-094](../adr/094-surface-themes-and-art-pass.md), layered Standard
-materials in [ADR-095](../adr/095-layered-standard-materials.md), and Custom
-graphs on Metal in [ADR-096](../adr/096-custom-material-graphs.md); this
+materials in [ADR-095](../adr/095-layered-standard-materials.md), Custom
+graphs on Metal in [ADR-096](../adr/096-custom-material-graphs.md), and look
+volumes in [ADR-097](../adr/097-look-volumes.md); this
 proposal keeps their remaining scope and the other parts:
 
 1. Surface tags and fixed greybox looks with measurement aids in the level
@@ -601,6 +602,9 @@ choice 6).
 
 ### Look volumes
 
+Implemented in ADR-097, as below; the viewport does not draw their boxes
+yet.
+
 A `look_volume` component overrides part of the look inside a box. The box
 comes from the entity transform. Each volume has a priority and a blend
 distance. A volume can override these values:
@@ -661,7 +665,7 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 | `brush.*` | `set_surface` (implemented; it sets the surface, the mark or both) | Scene |
 | `face.*` | `set_material` (implemented; an empty `material` clears the override) | Scene |
 | `material.*` | `list`, `create`, `describe`, `patch`, `set_param`, `assign`, `compile` and `open` are implemented; `preview` remains, and `cost` is part of each lowering answer | Documents and scene |
-| `look.*` | `volume` (intent: a look volume from a box and overrides) | Scene |
+| `look.*` | `volume` is implemented (ADR-097) | Scene |
 | `env.*` | `describe`, `preset.save`, `preset.apply` | Scene |
 | `lighting.*` | `bake` with settings, `time` | Scene and bake jobs |
 | Reads | `query.luminance`, `view.capture` with a `mode`; `query.measure`, `view.greybox` and `art.lint` are implemented | — |
@@ -703,7 +707,7 @@ Each phase is usable on its own and keeps the rules of Goals and limits.
 | 2. Graph documents and the Art workbench | Implemented (ADR-093); material functions, the Lookdev scene and the Details picker remain | Recorded in ADR-093 |
 | 3. Layered Standard and the art pass | Implemented: themes and bindings, `world_size`, face overrides and `art.lint` (ADR-094); layer blends by vertex colour, mask texture, slope or height (ADR-095) | Release Metal timing of Bistro at 2560×1440 on the M1 Pro before and after, with layering compiled in and unused: no regression beyond the run spread. Register counts of the forward variants. A layered test material on Bistro brushes in a capture |
 | 4. Custom graphs | Implemented on Metal (ADR-096): code generation, the project library, per-graph variants and buckets, the budget, creation before scene readiness, the fallback and `pipelines.late`. Remaining: Vulkan classification and per-graph resolve, creation at cell load, inspection variants left out of packages | Recorded in ADR-096. Vulkan native checks wait for a Windows host |
-| 5. Lighting and look | Environment panel and presets, look volumes, light gizmos and list, probe and volume creation, bake settings, time scrubber, artist view modes, `query.luminance` | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |
+| 5. Lighting and look | Look volumes implemented (ADR-097). Remaining: environment panel and presets, light gizmos and list, probe and volume creation, bake settings, time scrubber, artist view modes, `query.luminance` | CPU test of look volume blending at boundaries and priorities. Release Bistro timing unchanged with 8 volumes. Captures of each view mode on Metal |
 | 6. Dressing | Decal tool and outline, scatter painting | Captures on Bistro; scatter stays within the 4,096-copy bound |
 
 Phase 1 shipped before the other phases and removed the paintable materials
