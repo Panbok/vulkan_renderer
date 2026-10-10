@@ -219,6 +219,12 @@ _Static_assert(sizeof(VkrGpuGeometryLodRow) == 128,
 #define VKR_GPU_LOD_VIEW_CONSTANT 0x1u
 /* A view morphs terrain grids toward their next level (the camera). */
 #define VKR_GPU_LOD_VIEW_MORPH 0x2u
+/* A local-shadow view draws only the static casters, the candidates below
+   the culling root's static count (a static square), or only the dynamic
+   ones (a dynamic square over a copy of its static square). Without either
+   bit it draws every caster. */
+#define VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY 0x4u
+#define VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY 0x8u
 /* A level begins morphing toward the next at this share of the distance at
    which the next level takes over. */
 #define VKR_GPU_LOD_MORPH_START 0.75f
@@ -353,6 +359,18 @@ typedef struct VkrGpuVisibleDrawRow {
  * is 32-bit. */
 #define VKR_LOCAL_SHADOW_ATLAS_SIZE 4096u
 #define VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX 32u
+/* Faces drawn per frame into a dynamic square: a copy of the face's static
+ * square, which holds the static casters, plus the dynamic casters. Each
+ * takes a render slot. The squares fill a band of trailing atlas layers that
+ * holds no static square; this many faces of the largest size fill it. */
+#define VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX 16u
+#define VKR_LOCAL_SHADOW_DYNAMIC_LAYER_COUNT 1u
+/* Baked lamps a frame shadows with its moving casters on the desktop
+ * pipeline (ADR-104): those whose light at the moving casters in their range
+ * is strongest. Their static squares fill one atlas layer of their
+ * own, before the dynamic band, while the scene has baked lamps and moving
+ * casters; this many lamps of the largest size fill at most that layer. */
+#define VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX 2u
 #define VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX 512u
 /* Texels per transmission array: 32 faces at 512 squared. The arrays hold one
  * layer per face of the face budget, for the most important lights; larger
@@ -370,6 +388,21 @@ typedef struct VkrGpuVisibleDrawRow {
 _Static_assert(VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX <= 64u,
                "local shadow render slot and transmission layer masks are "
                "64-bit");
+_Static_assert(
+    (uint64_t)VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX
+            *VKR_LOCAL_SHADOW_MAP_SIZE_MAX *VKR_LOCAL_SHADOW_MAP_SIZE_MAX <=
+        (uint64_t)VKR_LOCAL_SHADOW_DYNAMIC_LAYER_COUNT *
+            VKR_LOCAL_SHADOW_ATLAS_SIZE * VKR_LOCAL_SHADOW_ATLAS_SIZE,
+    "the dynamic band holds the largest dynamic squares");
+_Static_assert(VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX <
+                   VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
+               "dynamic squares leave render slots for static squares");
+_Static_assert((uint64_t)VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX * 6u *
+                       VKR_LOCAL_SHADOW_MAP_SIZE_MAX *
+                       VKR_LOCAL_SHADOW_MAP_SIZE_MAX <=
+                   (uint64_t)VKR_LOCAL_SHADOW_ATLAS_SIZE *
+                       VKR_LOCAL_SHADOW_ATLAS_SIZE,
+               "one layer holds the baked lamps' static squares");
 
 /** Bits of `count` consecutive render slots or layers starting at `first`;
  * the whole word when they cover all 64 bits. */

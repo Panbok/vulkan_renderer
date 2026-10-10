@@ -726,6 +726,34 @@ vkr_internal bool8_t vkr_renderer_metrics_register_shadows(
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_F64(shadow_sdsm_linear_far, "draw.shadow.sdsm.linear_far",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(shadow_local_faces_static,
+                            "draw.local_shadow.faces_static",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(shadow_local_faces_dynamic,
+                            "draw.local_shadow.faces_dynamic",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(shadow_local_faces_copied,
+                            "draw.local_shadow.faces_copied",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(shadow_local_faces_full, "draw.local_shadow.faces_full",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(shadow_local_copy_texels, "draw.local_shadow.copy_texels",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(shadow_local_dynamic_faces_wanted,
+                   "draw.local_shadow.dynamic_faces_wanted",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(shadow_local_dynamic_faces_dropped,
+                   "draw.local_shadow.dynamic_faces_dropped",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(shadow_local_dynamic_layers,
+                   "draw.local_shadow.dynamic_layers", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(shadow_baked_lamps_selected,
+                            "lighting.baked_shadow.lamps_selected",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(shadow_baked_lamp_candidates,
+                   "lighting.baked_shadow.lamp_candidates",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   return true_v;
 }
 
@@ -1767,6 +1795,18 @@ vkr_renderer_metrics_collect_shadows(VkrMetrics *metrics,
   VKR_SET_U64(shadow_sdsm_occupied_pixels, shadow->sdsm_occupied_count);
   VKR_SET_F64(shadow_sdsm_linear_near, shadow->sdsm_linear_near);
   VKR_SET_F64(shadow_sdsm_linear_far, shadow->sdsm_linear_far);
+  VKR_SET_U64(shadow_local_faces_static, shadow->local_faces_static);
+  VKR_SET_U64(shadow_local_faces_dynamic, shadow->local_faces_dynamic);
+  VKR_SET_U64(shadow_local_faces_copied, shadow->local_faces_copied);
+  VKR_SET_U64(shadow_local_faces_full, shadow->local_faces_full);
+  VKR_SET_U64(shadow_local_copy_texels, shadow->local_copy_texels);
+  VKR_SET_U64(shadow_local_dynamic_faces_wanted,
+              shadow->local_dynamic_faces_wanted);
+  VKR_SET_U64(shadow_local_dynamic_faces_dropped,
+              shadow->local_dynamic_faces_dropped);
+  VKR_SET_U64(shadow_local_dynamic_layers, shadow->local_dynamic_layers);
+  VKR_SET_U64(shadow_baked_lamps_selected, shadow->baked_lamps_selected);
+  VKR_SET_U64(shadow_baked_lamp_candidates, shadow->baked_lamp_candidates);
 }
 
 vkr_internal void
@@ -2214,6 +2254,21 @@ vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
     if (vkr_metrics_frame_read_f64(frame, ids->shadow_sdsm_linear_far,
                                    &sdsm_value))
       shadow->sdsm_linear_far = (float32_t)sdsm_value;
+    VKR_READ_U32(shadow->local_faces_static, ids->shadow_local_faces_static);
+    VKR_READ_U32(shadow->local_faces_dynamic, ids->shadow_local_faces_dynamic);
+    VKR_READ_U32(shadow->local_faces_copied, ids->shadow_local_faces_copied);
+    VKR_READ_U32(shadow->local_faces_full, ids->shadow_local_faces_full);
+    VKR_READ_U64(shadow->local_copy_texels, ids->shadow_local_copy_texels);
+    VKR_READ_U32(shadow->local_dynamic_faces_wanted,
+                 ids->shadow_local_dynamic_faces_wanted);
+    VKR_READ_U32(shadow->local_dynamic_faces_dropped,
+                 ids->shadow_local_dynamic_faces_dropped);
+    VKR_READ_U32(shadow->local_dynamic_layers,
+                 ids->shadow_local_dynamic_layers);
+    VKR_READ_U32(shadow->baked_lamps_selected,
+                 ids->shadow_baked_lamps_selected);
+    VKR_READ_U32(shadow->baked_lamp_candidates,
+                 ids->shadow_baked_lamp_candidates);
   }
 
   if (out_visibility) {

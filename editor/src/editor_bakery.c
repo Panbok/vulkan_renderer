@@ -268,11 +268,12 @@ static void *editor_bakery_worker(void *argument) {
     arguments[count++] = job->output;
     arguments[count++] = "--manifest";
     arguments[count++] = manifest;
-    /* No --grid: the baker fits the probe grid to the scene (ADR-054). */
+    /* The baker places probe bricks over the scene's bounds at its default
+       1 m spacing. */
     arguments[count++] = "--face-size";
-    arguments[count++] = "16";
+    arguments[count++] = "8";
     arguments[count++] = "--samples";
-    arguments[count++] = "64";
+    arguments[count++] = "4";
     arguments[count++] = "--max-depth";
     arguments[count++] = "12";
     arguments[count++] = "--seed";

@@ -103,7 +103,6 @@ typedef enum VkrBakeIntegratorError {
   VKR_BAKE_INTEGRATOR_ERROR_INVALID_SCENE,
   VKR_BAKE_INTEGRATOR_ERROR_MEDIUM_STACK_OVERFLOW,
   VKR_BAKE_INTEGRATOR_ERROR_MEDIUM_STACK_MISMATCH,
-  VKR_BAKE_INTEGRATOR_ERROR_TRANSPARENT_LAYER_LIMIT,
   VKR_BAKE_INTEGRATOR_ERROR_NONFINITE_TRANSPORT,
 } VkrBakeIntegratorError;
 
@@ -130,6 +129,21 @@ bool8_t vkr_bake_integrator_trace(const VkrBakeIntegrator *integrator,
                                   Vec3 origin, Vec3 direction, uint64_t seed,
                                   VkrBakeIntegratorResult *out_result,
                                   VkrBakeIntegratorError *out_error);
+
+/*
+ * L1 SH (E/pi; per color row linear x, y, z, then constant) of the direct
+ * light the integrator's lights give a free-space point, the light a probe
+ * has from lamps no ray can hit. Each light is shadowed as a lightmap
+ * texel's light is, near clip included; a rectangle light averages
+ * `rectangle_samples` samples. A light of normal-incidence irradiance E from
+ * direction w projects to constant E / (4 pi) and linear E w / (2 pi), the
+ * clamped cosine's first two bands.
+ */
+bool8_t vkr_bake_integrator_direct_l1(const VkrBakeIntegrator *integrator,
+                                      Vec3 position, uint64_t seed,
+                                      uint32_t rectangle_samples,
+                                      float32_t out_sh[3][4],
+                                      VkrBakeIntegratorError *out_error);
 
 bool8_t vkr_bake_integrator_photon_map_reset(
     const VkrBakeIntegrator *integrator, VkrBakePhotonSettings settings,

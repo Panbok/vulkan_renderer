@@ -27,14 +27,38 @@ vkr_internal INLINE Mat4 vkr_metal_packet_slang_draw_matrix(Mat4 matrix) {
   return mat4_transpose(matrix);
 }
 
-/** Values shared by every indexed draw encoded for one pass. */
+/** Sparse diffuse volume (DVOL v3); mirrors VkrMetalPacketDiffuseVolume in
+    common/draw.metalh and draw.slangh: the indirection, probe, moment and
+    composed SH texture IDs, the origin with the finest probe spacing in w,
+    the SH scale and the moment atlas's tile rows in params, and the
+    indirection dimensions. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolume {
+  uint64_t indirection;
+  uint64_t probes;
+  uint64_t moments;
+  uint64_t sh;
   Vec4 origin;
-  Vec4 inverse_spacing;
+  Vec4 params;
   uint32_t dimensions[4];
 } VkrMetalPacketDiffuseVolume;
-_Static_assert(sizeof(VkrMetalPacketDiffuseVolume) == 48u,
+_Static_assert(sizeof(VkrMetalPacketDiffuseVolume) == 80u,
                "Metal diffuse volume parameters ABI drift");
+
+/** Composition of a diffuse volume's active light layers into its SH
+    texture; mirrors VkrMetalPacketDiffuseVolumeComposeRoot in
+    msl/world/diffuse_volume.metal. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolumeComposeRoot {
+  uint64_t layer_sh;
+  uint64_t sh;
+  uint32_t probe_count;
+  uint32_t rows;
+  uint32_t active_layer_count;
+  uint32_t reserved;
+  uint32_t active_layers[8];
+  float32_t active_weights[8];
+} VkrMetalPacketDiffuseVolumeComposeRoot;
+_Static_assert(sizeof(VkrMetalPacketDiffuseVolumeComposeRoot) == 96u,
+               "Metal diffuse volume compose root ABI drift");
 
 /** Frame lightmap record (ADR-088); mirrors VkrMetalPacketLightmap in
     common/draw.metalh and draw.slangh. `texture_id` is a 2D array whose slice
@@ -235,7 +259,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t local_shadow_texture_id;
   uint64_t local_shadow_views;
   uint64_t dfg_texture_id;
-  uint64_t diffuse_volume_texture_id;
+  uint64_t diffuse_volume_reserved;
   uint64_t diffuse_volume_params;
   uint64_t ltc;
   uint64_t fog;
@@ -433,6 +457,10 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   uint32_t icb_view_group_size;
   /** The camera view's VkrMetalCustomCompaction (ADR-096). */
   uint64_t custom_compaction;
+  /** Candidates below it are static; a local face view whose LOD flags
+      select one mobility skips the others. */
+  uint32_t static_candidate_count;
+  uint32_t reserved_3;
 } VkrMetalPacketGpuDrawRoot;
 
 /* Custom graph slots: slot 0 is the Standard tier; graphs take 1 onward
@@ -475,8 +503,8 @@ enum {
       VKR_METAL_PACKET_DRAW_ROOT_STRIDE,
 };
 
-_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 192,
-               "Metal GPU draw root ABI must remain 192 bytes");
+_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 208,
+               "Metal GPU draw root ABI must remain 208 bytes");
 
 /** One HZB base/reduction dispatch over explicit source/destination views. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
@@ -821,6 +849,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT,
   VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT,
   VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT,
+  VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME_COMPOSE_ROOT,
   VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT,
   VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT,
   VKR_METAL_PACKET_ABI_TILED_SKY_ROOT,

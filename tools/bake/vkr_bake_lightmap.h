@@ -117,6 +117,22 @@ bool vkr_bake_lightmap_compose_page(
     uint32_t dilation_passes, std::vector<float32_t> *out_rgba);
 
 /*
+ * Writes a lamp layer's direction page (ADR-104) into
+ * `out_rgba` as vkr_bake_lightmap_compose_page lays a page out: each texel's
+ * world-space mean incident direction d from `directions` becomes
+ * rgb = 0.5 * normalize(d) + 0.5 and alpha = min(|d|, 1), its
+ * directionality. A texel with no direction (|d| near zero or not finite) is
+ * the neutral (0.5, 0.5, 0.5, 0). Uncovered rectangle texels dilate and fill
+ * as in compose_page; texels outside every rectangle, and rectangles no
+ * texel covers, are neutral.
+ */
+bool vkr_bake_lightmap_compose_direction_page(
+    const VkrBakeLightmapLayout &layout, uint32_t page,
+    const std::vector<VkrBakeLightmapTexel> &texels,
+    const std::vector<Vec3> &directions, uint32_t dilation_passes,
+    std::vector<float32_t> *out_rgba);
+
+/*
  * Same-surface neighbors of a page's texels: for texel i, the entries
  * [first[i], first[i + 1]) of `indices` name the covered texels among its
  * eight around it on the page whose positions lie within `max_distance`
@@ -238,5 +254,16 @@ bool vkr_bake_lightmap_encode_astc_hdr(const std::vector<float32_t> &rgba,
 /* Decodes blocks written by vkr_bake_lightmap_encode_astc_hdr to RGBA floats,
    to measure the encoding error. */
 bool vkr_bake_lightmap_decode_astc_hdr(const std::vector<uint8_t> &blocks,
+                                       uint32_t size,
+                                       std::vector<float32_t> *out_rgba);
+
+/* As vkr_bake_lightmap_encode_astc_hdr in the linear LDR profile: every
+   channel in [0, 1], for direction pages. */
+bool vkr_bake_lightmap_encode_astc_ldr(const std::vector<float32_t> &rgba,
+                                       uint32_t size, float32_t effort,
+                                       uint32_t threads,
+                                       std::vector<uint8_t> *out_blocks);
+
+bool vkr_bake_lightmap_decode_astc_ldr(const std::vector<uint8_t> &blocks,
                                        uint32_t size,
                                        std::vector<float32_t> *out_rgba);

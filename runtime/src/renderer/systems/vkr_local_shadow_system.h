@@ -15,8 +15,23 @@ typedef struct VkrLocalShadowCacheInput {
   /** When valid, fresh and newer than the last snap, ranks lights by measured
    * visible contribution instead of distance. May be NULL. */
   const VkrLocalLightContributionSample *feedback;
-  /** Per light index: a dynamic caster may reach the light's faces. */
-  const bool8_t *dynamic_overlap;
+  /** Per light index: faces, a bit each, that a dynamic caster may reach.
+   * May be NULL when no dynamic caster reaches any light. */
+  const uint8_t *dynamic_faces;
+  /** Per light index: a dynamic refractive caster may reach the light, so
+   * its faces draw every caster and stay stale while it does. May be NULL. */
+  const bool8_t *dynamic_refractive;
+  /** The world has dynamic shadow casters, so the atlas keeps a band of
+   * dynamic squares after the static ones. */
+  bool8_t dynamic_casters;
+  /** The last this many lights are baked lamps whose moving-caster shadows
+   * the frame subtracts from their baked light. */
+  uint32_t baked_light_count;
+  /** The scene has baked lamps the frame may shadow, so the atlas keeps a
+   * layer for their static squares before the dynamic band. */
+  bool8_t baked_lamps_possible;
+  /** Baked lamps the selection considered, for the payload's metric. */
+  uint32_t baked_lamp_candidates;
   VkrRetainedLocalShadowToken token;
   uint64_t static_generation;
   /** VkrWorldPassPayload.static_changes: content of an older static
@@ -60,3 +75,15 @@ void vkr_local_shadow_cache_commit(
 /** Power-of-two face side for a light range, clamped to [128, map_size]. */
 uint32_t vkr_local_shadow_face_size_for_range(float32_t range,
                                               uint32_t map_size);
+
+/** Faces, a bit each, of a valid shadow-casting `light` whose frustum the
+ * sphere at `center` of `radius` may meet; conservative near the edges. A
+ * spot light has one face. Range is not tested. */
+uint32_t vkr_local_shadow_sphere_faces(const VkrPointLight *light, Vec3 center,
+                                       float32_t radius);
+
+/** Faces, a bit each, of a valid shadow-casting `light` whose pyramid out to
+ * its range the camera of `view` and `projection` may see; every face for
+ * an all-zero projection. */
+uint32_t vkr_local_shadow_camera_faces(const VkrPointLight *light, Mat4 view,
+                                       Mat4 projection);

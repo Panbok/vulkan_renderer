@@ -1129,6 +1129,7 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
     return vkr_vk_fail_after_submit(renderer,
                                     "the anisotropy upload could not retire");
   vkr_vk_commit_cloud_noise(renderer, slot);
+  vkr_vk_commit_diffuse_volume_compose(renderer, slot);
   if (slot->candidate_residency_pending) {
     slot->candidate_residency = slot->pending_candidate_residency;
     slot->candidate_residency_pending = false_v;

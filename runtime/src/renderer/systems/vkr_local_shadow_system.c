@@ -1,5 +1,6 @@
 #include "renderer/systems/vkr_local_shadow_system.h"
 
+#include "math/vkr_frustum.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "vkr_temporal.h"
 
@@ -83,6 +84,23 @@ typedef struct VkrLocalShadowCandidate {
   /** Faces, a bit each, whose content predates static changes that do not
    * reach the light; their history moves to the current generation. */
   uint32_t static_advance;
+  /** The light's faces draw every caster: the atlas has no dynamic band, the
+   * contents are unstable, or a dynamic refractive caster reaches it. */
+  bool8_t all_casters;
+  /** Faces, a bit each, that a dynamic caster may reach and the camera may
+   * see, while the light's static squares hold the static casters only. */
+  uint32_t dynamic_wanted;
+  /** Faces that show a dynamic square this frame, its cell and the index of
+   * the companion view of the static square. */
+  uint32_t dynamic_mask;
+  uint32_t dynamic_cells[6];
+  uint32_t companion_views[6];
+  /** A baked lamp: its static squares take the baked layer, it draws first
+   * and takes no transmission or filter place, and it publishes as a baked
+   * lamp instead of a light of the table. */
+  bool8_t baked;
+  /** First receiver view the light publishes. */
+  uint32_t first_view;
 } VkrLocalShadowCandidate;
 
 static const Vec3 s_face_direction[6] = {
@@ -113,6 +131,103 @@ vkr_internal bool8_t vkr_local_shadow_light_valid(const VkrPointLight *light,
   *out_face_count = face_count;
   *out_half_fov = half_fov;
   return true_v;
+}
+
+/* Basis of face `face`'s view: right, up and forward, as its view matrix
+ * builds them. */
+vkr_internal void vkr_local_shadow_face_basis(const VkrPointLight *light,
+                                              uint32_t face, Vec3 *out_right,
+                                              Vec3 *out_up, Vec3 *out_forward) {
+  const Vec3 forward = light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
+                           ? vec3_normalize(light->direction)
+                           : s_face_direction[face];
+  const Vec3 up = fabsf(forward.y) > 0.99f ? (Vec3){0, 0, 1} : (Vec3){0, 1, 0};
+  const Vec3 right = vec3_normalize(vec3_cross(forward, up));
+  *out_right = right;
+  *out_up = vec3_cross(right, forward);
+  *out_forward = forward;
+}
+
+uint32_t vkr_local_shadow_sphere_faces(const VkrPointLight *light, Vec3 center,
+                                       float32_t radius) {
+  uint32_t face_count;
+  float32_t half_fov;
+  if (!vkr_local_shadow_light_valid(light, &face_count, &half_fov))
+    return 0u;
+  const uint32_t all_faces = (UINT32_C(1) << face_count) - 1u;
+  if (!isfinite(center.x) || !isfinite(center.y) || !isfinite(center.z) ||
+      !isfinite(radius) || radius < 0.0f)
+    return all_faces;
+
+  /* A side plane of a face's square pyramid keeps the points whose
+     component along the face axis, times the sine of the half angle, is at
+     least their side component times its cosine; the sphere may meet the
+     pyramid while its center lies within `radius` of every side plane. */
+  const Vec3 delta = vec3_sub(center, light->position);
+  const float32_t sine = sinf(half_fov);
+  const float32_t cosine = cosf(half_fov);
+  uint32_t faces = 0u;
+  for (uint32_t face = 0u; face < face_count; ++face) {
+    Vec3 right;
+    Vec3 up;
+    Vec3 forward;
+    vkr_local_shadow_face_basis(light, face, &right, &up, &forward);
+    const float32_t reach = vec3_dot(delta, forward) * sine + radius;
+    if (reach >= fabsf(vec3_dot(delta, right)) * cosine &&
+        reach >= fabsf(vec3_dot(delta, up)) * cosine)
+      faces |= UINT32_C(1) << face;
+  }
+  return faces;
+}
+
+/* Faces, a bit each, whose pyramid out to the light's range may meet the
+ * camera frustum: those not wholly outside one of its side planes. Faces
+ * receivers cannot show take no dynamic square. */
+vkr_internal uint32_t vkr_local_shadow_visible_faces(const VkrPointLight *light,
+                                                     uint32_t face_count,
+                                                     float32_t half_fov,
+                                                     const VkrFrustum *camera) {
+  const float32_t extent = light->range * tanf(half_fov);
+  uint32_t faces = 0u;
+  for (uint32_t face = 0u; face < face_count; ++face) {
+    Vec3 right;
+    Vec3 up;
+    Vec3 forward;
+    vkr_local_shadow_face_basis(light, face, &right, &up, &forward);
+    const Vec3 far_center =
+        vec3_add(light->position, vec3_scale(forward, light->range));
+    Vec3 corners[5] = {light->position};
+    for (uint32_t corner = 0u; corner < 4u; ++corner) {
+      const float32_t x = (corner & 1u) ? extent : -extent;
+      const float32_t y = (corner & 2u) ? extent : -extent;
+      corners[corner + 1u] = vec3_add(
+          far_center, vec3_add(vec3_scale(right, x), vec3_scale(up, y)));
+    }
+    bool8_t visible = true_v;
+    for (uint32_t plane = VKR_FRUSTUM_PLANE_LEFT;
+         visible && plane <= VKR_FRUSTUM_PLANE_TOP; ++plane) {
+      const VkrPlane *side = &camera->planes[plane];
+      bool8_t outside = true_v;
+      for (uint32_t corner = 0u; outside && corner < 5u; ++corner)
+        outside = vec3_dot(side->normal, corners[corner]) + side->d < 0.0f;
+      visible = !outside;
+    }
+    if (visible)
+      faces |= UINT32_C(1) << face;
+  }
+  return faces;
+}
+
+uint32_t vkr_local_shadow_camera_faces(const VkrPointLight *light, Mat4 view,
+                                       Mat4 projection) {
+  uint32_t face_count;
+  float32_t half_fov;
+  if (!vkr_local_shadow_light_valid(light, &face_count, &half_fov))
+    return 0u;
+  if (MemCompare(&projection, &(Mat4){0}, sizeof(Mat4)) == 0)
+    return (UINT32_C(1) << face_count) - 1u;
+  const VkrFrustum camera = vkr_frustum_from_view_projection(view, projection);
+  return vkr_local_shadow_visible_faces(light, face_count, half_fov, &camera);
 }
 
 vkr_internal bool8_t vkr_local_shadow_map_size_valid(uint32_t map_size) {
@@ -195,6 +310,8 @@ vkr_internal uint64_t vkr_local_shadow_candidate_cells(
     const VkrLocalShadowCandidate *candidates, uint32_t candidate_count) {
   uint64_t cells = 0u;
   for (uint32_t i = 0u; i < candidate_count; ++i) {
+    if (candidates[i].baked)
+      continue;
     const uint64_t side =
         candidates[i].face_size / VKR_LOCAL_SHADOW_FACE_SIZE_MIN;
     cells += (uint64_t)candidates[i].face_count * side * side;
@@ -213,7 +330,8 @@ vkr_local_shadow_fit_atlas(VkrLocalShadowCandidate *candidates,
          capacity) {
     uint32_t weakest = UINT32_MAX;
     for (uint32_t i = 0u; i < candidate_count; ++i) {
-      if (candidates[i].face_size > VKR_LOCAL_SHADOW_FACE_SIZE_MIN &&
+      if (!candidates[i].baked &&
+          candidates[i].face_size > VKR_LOCAL_SHADOW_FACE_SIZE_MIN &&
           (weakest == UINT32_MAX ||
            candidates[i].score <= candidates[weakest].score))
         weakest = i;
@@ -231,14 +349,16 @@ vkr_local_shadow_fit_atlas(VkrLocalShadowCandidate *candidates,
  * squares in descending size. If that leaves no room, the leaving lights give
  * up their squares, and if there is still none, every casting light is packed
  * afresh. Removes the leaving lights left without squares and returns the
- * remaining candidate count. */
+ * remaining candidate count. Static squares take the first
+ * `static_layer_count` layers; the dynamic band follows them. */
 vkr_internal uint32_t vkr_local_shadow_pack_atlas(
     const VkrLocalShadowCache *cache, VkrLocalShadowCandidate *candidates,
-    uint32_t shown_count, uint32_t candidate_count, uint32_t layer_count) {
+    uint32_t shown_count, uint32_t candidate_count, uint32_t layer_count,
+    uint32_t static_layer_count) {
   const bool8_t keep = cache->valid && cache->atlas_layer_count == layer_count;
-  bool8_t placed[VKR_MAX_SCENE_POINT_LIGHTS];
+  bool8_t placed[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
   for (uint32_t attempt = 0u; attempt < 3u; ++attempt) {
-    VkrLocalShadowAtlas atlas = {.layer_count = layer_count};
+    VkrLocalShadowAtlas atlas = {.layer_count = static_layer_count};
     MemZero(placed, sizeof(placed));
     const uint32_t kept_count = !keep           ? 0u
                                 : attempt == 0u ? candidate_count
@@ -246,7 +366,7 @@ vkr_internal uint32_t vkr_local_shadow_pack_atlas(
                                                 : 0u;
     for (uint32_t i = 0u; i < kept_count; ++i) {
       VkrLocalShadowCandidate *candidate = &candidates[i];
-      if (candidate->previous == 0u)
+      if (candidate->previous == 0u || candidate->baked)
         continue;
       const VkrLocalShadowCacheLight *previous =
           &cache->lights[candidate->previous - 1u];
@@ -276,7 +396,7 @@ vkr_internal uint32_t vkr_local_shadow_pack_atlas(
          complete && size >= VKR_LOCAL_SHADOW_FACE_SIZE_MIN; size /= 2u) {
       for (uint32_t i = 0u; complete && i < shown_count; ++i) {
         VkrLocalShadowCandidate *candidate = &candidates[i];
-        if (placed[i] || candidate->face_size != size)
+        if (placed[i] || candidate->baked || candidate->face_size != size)
           continue;
         for (uint32_t face = 0u; complete && face < candidate->face_count;
              ++face)
@@ -298,6 +418,69 @@ vkr_internal uint32_t vkr_local_shadow_pack_atlas(
   return count;
 }
 
+/* Atlas rect of the square of side `face_size` at `cell`: its origin and side
+ * in atlas UV and its layer. */
+vkr_internal Vec4 vkr_local_shadow_cell_rect(uint32_t cell,
+                                             uint32_t face_size) {
+  const float32_t cell_uv = (float32_t)VKR_LOCAL_SHADOW_FACE_SIZE_MIN /
+                            (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
+  return (Vec4){(float32_t)(cell & 0xFFu) * cell_uv,
+                (float32_t)((cell >> 8u) & 0xFFu) * cell_uv,
+                (float32_t)face_size / (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE,
+                (float32_t)(cell >> 16u)};
+}
+
+/* Places the baked lamps' static squares in the layer at `layer`: a lamp
+ * keeps its previous squares there when they are free, the others take the
+ * first free ones, largest first. Returns false when one does not fit. */
+vkr_internal bool8_t vkr_local_shadow_place_baked(
+    const VkrLocalShadowCache *cache, VkrLocalShadowCandidate *candidates,
+    uint32_t candidate_count, uint32_t layer) {
+  VkrLocalShadowAtlas atlas = {.layer_count = 1u};
+  bool8_t placed[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX] = {0};
+  for (uint32_t i = 0u; i < candidate_count; ++i) {
+    VkrLocalShadowCandidate *candidate = &candidates[i];
+    if (!candidate->baked || candidate->previous == 0u)
+      continue;
+    const VkrLocalShadowCacheLight *previous =
+        &cache->lights[candidate->previous - 1u];
+    if (previous->face_size != candidate->face_size)
+      continue;
+    const uint32_t cells =
+        candidate->face_size / VKR_LOCAL_SHADOW_FACE_SIZE_MIN;
+    VkrLocalShadowAtlas trial = atlas;
+    bool8_t fits = true_v;
+    for (uint32_t face = 0u; fits && face < candidate->face_count; ++face) {
+      const uint32_t cell = previous->face_cells[face];
+      fits = (cell >> 16u) == layer &&
+             vkr_local_shadow_atlas_free(&trial, cell & 0xFFFFu, cells);
+      if (fits)
+        vkr_local_shadow_atlas_mark(&trial, cell & 0xFFFFu, cells);
+    }
+    if (!fits)
+      continue;
+    atlas = trial;
+    placed[i] = true_v;
+    MemCopy(candidate->face_cells, previous->face_cells,
+            sizeof(candidate->face_cells));
+  }
+  for (uint32_t size = VKR_LOCAL_SHADOW_MAP_SIZE_MAX;
+       size >= VKR_LOCAL_SHADOW_FACE_SIZE_MIN; size /= 2u) {
+    for (uint32_t i = 0u; i < candidate_count; ++i) {
+      VkrLocalShadowCandidate *candidate = &candidates[i];
+      if (!candidate->baked || placed[i] || candidate->face_size != size)
+        continue;
+      for (uint32_t face = 0u; face < candidate->face_count; ++face) {
+        uint32_t cell = 0u;
+        if (!vkr_local_shadow_atlas_allocate(&atlas, size, &cell))
+          return false_v;
+        candidate->face_cells[face] = cell | (layer << 16u);
+      }
+    }
+  }
+  return true_v;
+}
+
 /* `source_radius` is the emitter radius receivers use for contact-hardening,
  * zero for the fixed filter. Receivers scale this per-face UV footprint by
  * blocker and receiver distances along the face axis. */
@@ -311,8 +494,6 @@ vkr_internal void vkr_local_shadow_write_views(
       reduced ? 0.0f : source_radius / (2.0f * tan_half_fov);
   const Mat4 projection = mat4_perspective(2.0f * candidate->half_fov, 1.0f,
                                            near_clip, light->range);
-  const float32_t cell_uv = (float32_t)VKR_LOCAL_SHADOW_FACE_SIZE_MIN /
-                            (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
   for (uint32_t face = 0u; face < candidate->face_count; ++face) {
     const Vec3 direction = light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
                                ? vec3_normalize(light->direction)
@@ -334,11 +515,7 @@ vkr_internal void vkr_local_shadow_write_views(
         .shadow_params = {strength,
                           (float32_t)candidate->transmission_layers[face],
                           reduced ? 1.0f : 0.0f, source_radius_uv},
-        .atlas_rect = {(float32_t)(cell & 0xFFu) * cell_uv,
-                       (float32_t)((cell >> 8u) & 0xFFu) * cell_uv,
-                       (float32_t)candidate->face_size /
-                           (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE,
-                       (float32_t)(cell >> 16u)},
+        .atlas_rect = vkr_local_shadow_cell_rect(cell, candidate->face_size),
     };
   }
 }
@@ -470,8 +647,8 @@ vkr_internal uint32_t vkr_local_shadow_gather_candidates(
     VkrLocalShadowCandidate *candidates) {
   const VkrLocalShadowCamera *camera = input->camera;
   uint32_t candidate_count = 0u;
-  for (uint32_t i = 0u; i < Min(input->light_count, VKR_MAX_SCENE_POINT_LIGHTS);
-       ++i) {
+  for (uint32_t i = 0u;
+       i < Min(input->light_count, VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX); ++i) {
     const VkrPointLight *light = &input->lights[i];
     uint32_t face_count;
     float32_t half_fov;
@@ -486,8 +663,12 @@ vkr_internal uint32_t vkr_local_shadow_gather_candidates(
     const float32_t luminance = light->color.x * 0.2126f +
                                 light->color.y * 0.7152f +
                                 light->color.z * 0.0722f;
+    /* A baked lamp the frame shadows draws first: the selection only
+       picks lamps whose moving casters show. */
+    const bool8_t baked = i + input->baked_light_count >= input->light_count;
     float32_t score =
-        feedback
+        baked ? FLT_MAX
+        : feedback
             ? vkr_local_shadow_feedback_score(feedback, i, light->render_id)
             : Max(luminance, 0.0f) * Max(light->intensity, 0.0f) *
                   light->range * light->range /
@@ -504,6 +685,7 @@ vkr_internal uint32_t vkr_local_shadow_gather_candidates(
         .distance_fade = distance_fade,
         .face_size =
             vkr_local_shadow_face_size_for_range(light->range, input->map_size),
+        .baked = baked,
     };
   }
   return candidate_count;
@@ -524,15 +706,15 @@ vkr_internal uint32_t vkr_local_shadow_gather_leaving(
     return candidate_count;
   }
 
-  bool8_t claimed[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+  bool8_t claimed[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX] = {0};
   for (uint32_t i = 0u; i < candidate_count; ++i) {
     if (candidates[i].previous != 0u) {
       claimed[candidates[i].previous - 1u] = true_v;
     }
   }
 
-  for (uint32_t i = 0u; i < Min(input->light_count, VKR_MAX_SCENE_POINT_LIGHTS);
-       ++i) {
+  for (uint32_t i = 0u;
+       i < Min(input->light_count, VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX); ++i) {
     const VkrPointLight *light = &input->lights[i];
     if (light->casts_shadow || light->render_id == 0u) {
       continue;
@@ -589,6 +771,12 @@ vkr_local_shadow_static_reached(const VkrLocalShadowCacheInput *input,
                                         light->range);
 }
 
+/* Faces of the light at `light_index` that a dynamic caster may reach. */
+vkr_internal uint32_t vkr_local_shadow_reached_faces(
+    const VkrLocalShadowCacheInput *input, uint32_t light_index) {
+  return input->dynamic_faces ? input->dynamic_faces[light_index] : 0u;
+}
+
 /* Content is invalid once its projection, square or pool changed, and
  * stale while a dynamic caster, a publication or a static-world change may
  * have altered it. Stale content still shows while it waits to redraw. */
@@ -605,9 +793,12 @@ vkr_internal void vkr_local_shadow_classify_content(
         candidate->previous ? &cache->lights[candidate->previous - 1u] : NULL;
     bool8_t opaque_valid = previous != NULL;
     bool8_t transmission_valid = candidate->transmission_layers[0] != 0u;
-    bool8_t stale = input->contents_unstable ||
-                    (input->dynamic_overlap &&
-                     input->dynamic_overlap[candidate->light_index]);
+    /* A static square holds the static casters only, so a dynamic caster
+       stales only the faces of a light that draws every caster. */
+    bool8_t stale =
+        input->contents_unstable ||
+        (candidate->all_casters &&
+         vkr_local_shadow_reached_faces(input, candidate->light_index) != 0u);
     for (uint32_t face = 0u; previous && face < candidate->face_count; ++face) {
       const VkrLocalShadowFaceHistory *history = &previous->faces[face];
       const uint32_t layer = candidate->face_cells[face] >> 16u;
@@ -645,8 +836,42 @@ vkr_internal void vkr_local_shadow_classify_content(
   }
 }
 
+/* Places the dynamic squares in the band layer at `band_layer`, largest
+ * first. A face keeps its dynamic square only while its light publishes
+ * views and its static square holds valid content or draws this frame. */
+vkr_internal void vkr_local_shadow_place_dynamic(
+    VkrLocalShadowCandidate *candidates, uint32_t candidate_count,
+    const float32_t *strengths, uint32_t band_layer) {
+  VkrLocalShadowAtlas band = {.layer_count = 1u};
+  for (uint32_t size = VKR_LOCAL_SHADOW_MAP_SIZE_MAX;
+       size >= VKR_LOCAL_SHADOW_FACE_SIZE_MIN; size /= 2u) {
+    for (uint32_t i = 0u; i < candidate_count; ++i) {
+      VkrLocalShadowCandidate *candidate = &candidates[i];
+      if (candidate->dynamic_mask == 0u || candidate->face_size != size)
+        continue;
+      const bool8_t published =
+          strengths[i] * candidate->distance_fade > 0.0f || candidate->render;
+      if (!published || !(candidate->opaque_valid || candidate->render)) {
+        candidate->dynamic_mask = 0u;
+        continue;
+      }
+      for (uint32_t face = 0u; face < candidate->face_count; ++face) {
+        if ((candidate->dynamic_mask & (UINT32_C(1) << face)) == 0u)
+          continue;
+        uint32_t cell = 0u;
+        /* The band holds the capped count at the largest size. */
+        if (!vkr_local_shadow_atlas_allocate(&band, size, &cell)) {
+          candidate->dynamic_mask &= ~(UINT32_C(1) << face);
+          continue;
+        }
+        candidate->dynamic_cells[face] = cell | (band_layer << 16u);
+      }
+    }
+  }
+}
+
 /* Publishes the shown lights' views; render slots list drawn faces with
- * transmission first. */
+ * transmission first and dynamic squares last. */
 vkr_internal void vkr_local_shadow_publish(
     const VkrLocalShadowCache *cache, VkrLocalShadowCache *next,
     const VkrLocalShadowCacheInput *input, VkrLocalShadowCandidate *candidates,
@@ -708,9 +933,41 @@ vkr_internal void vkr_local_shadow_publish(
             : 0.0f;
     vkr_local_shadow_write_views(light, candidate, strength, reduced[i],
                                  source_radius, &out->views[first_view]);
-    out->light_first_view[candidate->light_index] = first_view + 1u;
+    candidate->first_view = first_view;
+    out->view_count += candidate->face_count;
+    if (!candidate->baked) {
+      out->light_first_view[candidate->light_index] = first_view + 1u;
+      continue;
+    }
+    /* A baked lamp's static block repeats its views, whose squares are all
+       static until the dynamic squares replace the composite ones. */
+    MemCopy(&out->views[out->view_count], &out->views[first_view],
+            candidate->face_count * sizeof(*out->views));
+    out->baked_lamps[out->baked_lamp_count++] = (VkrLocalShadowBakedLamp){
+        .light = *light,
+        .composite_first_view = first_view,
+        .static_first_view = out->view_count,
+    };
     out->view_count += candidate->face_count;
   }
+
+  /* Receivers of a face with a dynamic square sample it; a companion view
+     after the receiver views keeps the face's static square, which its
+     render slot draws and the copy reads. */
+  for (uint32_t i = 0u; i < candidate_count; ++i) {
+    VkrLocalShadowCandidate *candidate = &candidates[i];
+    for (uint32_t face = 0u; candidate->dynamic_mask && face < 6u; ++face) {
+      if ((candidate->dynamic_mask & (UINT32_C(1) << face)) == 0u)
+        continue;
+      const uint32_t view = candidate->first_view + face;
+      const uint32_t companion = out->view_count + out->companion_view_count++;
+      out->views[companion] = out->views[view];
+      out->views[view].atlas_rect = vkr_local_shadow_cell_rect(
+          candidate->dynamic_cells[face], candidate->face_size);
+      candidate->companion_views[face] = companion;
+    }
+  }
+
   for (uint32_t pass = 0u; pass < 2u; ++pass) {
     const bool8_t transmission_pass = pass == 0u;
     for (uint32_t i = 0u; i < candidate_count; ++i) {
@@ -718,13 +975,23 @@ vkr_internal void vkr_local_shadow_publish(
       if (!candidate->render ||
           (candidate->transmission_layers[0] != 0u) != transmission_pass)
         continue;
-      const uint32_t first_view =
-          out->light_first_view[candidate->light_index] - 1u;
+      const uint32_t first_view = candidate->first_view;
       /* A light drawn only for its transmission layers keeps its opaque
          faces and their history. */
       const bool8_t retained =
           transmission_pass && candidate->previous && candidate->opaque_current;
+      const bool8_t static_only_contents =
+          !input->contents_unstable &&
+          (!candidate->all_casters ||
+           vkr_local_shadow_reached_faces(input, candidate->light_index) == 0u);
       for (uint32_t face = 0u; face < candidate->face_count; ++face) {
+        /* The slot draws the face's static square. */
+        const uint32_t view =
+            (candidate->dynamic_mask & (UINT32_C(1) << face)) != 0u
+                ? candidate->companion_views[face]
+                : first_view + face;
+        if (!candidate->all_casters)
+          out->static_render_mask |= UINT64_C(1) << out->render_count;
         if (retained) {
           out->retained_opaque_mask |= UINT64_C(1) << out->render_count;
           VkrLocalShadowFaceHistory history =
@@ -733,26 +1000,23 @@ vkr_internal void vkr_local_shadow_publish(
           MemCopy(history.transmission_resource_generations,
                   input->token.transmission_resource_generations,
                   sizeof(history.transmission_resource_generations));
-          out->render_views[out->render_count++] = first_view + face;
+          out->render_views[out->render_count++] = view;
           pending->faces[pending->face_count++] = (VkrLocalShadowPendingFace){
               .light = i, .face = face, .history = history};
           continue;
         }
-        out->render_views[out->render_count++] = first_view + face;
+        out->render_views[out->render_count++] = view;
         pending->faces[pending->face_count++] = (VkrLocalShadowPendingFace){
             .light = i,
             .face = face,
             .history =
                 {
-                    .view = out->views[first_view + face],
+                    .view = out->views[view],
                     .static_generation = input->static_generation,
                     .publication_generation = input->publication_generation,
                     .resource_generation = input->token.resource_generation,
                     .transmission_layer = candidate->transmission_layers[face],
-                    .static_only_contents =
-                        !input->contents_unstable &&
-                        !(input->dynamic_overlap &&
-                          input->dynamic_overlap[candidate->light_index]),
+                    .static_only_contents = static_only_contents,
                 },
         };
         MemCopy(pending->faces[pending->face_count - 1u]
@@ -762,6 +1026,21 @@ vkr_internal void vkr_local_shadow_publish(
       }
       if (transmission_pass)
         out->transmission_render_count = out->render_count;
+    }
+  }
+
+  /* Dynamic squares draw last, after the static squares they copy; their
+     content lasts one frame, so they commit no history. */
+  for (uint32_t i = 0u; i < candidate_count; ++i) {
+    const VkrLocalShadowCandidate *candidate = &candidates[i];
+    for (uint32_t face = 0u; candidate->dynamic_mask && face < 6u; ++face) {
+      if ((candidate->dynamic_mask & (UINT32_C(1) << face)) == 0u)
+        continue;
+      out->render_views[out->render_count] = candidate->first_view + face;
+      out->dynamic_source_views[out->render_count] =
+          candidate->companion_views[face];
+      out->render_count++;
+      out->dynamic_render_count++;
     }
   }
 }
@@ -817,7 +1096,7 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
       use_feedback ? VKR_LOCAL_SHADOW_FEEDBACK_INCUMBENT_BONUS
                    : VKR_LOCAL_SHADOW_INCUMBENT_BONUS;
 
-  VkrLocalShadowCandidate candidates[VKR_MAX_SCENE_POINT_LIGHTS];
+  VkrLocalShadowCandidate candidates[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
   uint32_t candidate_count = vkr_local_shadow_gather_candidates(
       input, use_feedback ? feedback : NULL, candidates);
   vkr_local_shadow_sort_candidates_by_render_id(candidates, candidate_count);
@@ -838,12 +1117,58 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
   /* Face sizes follow the light's range, so camera motion never resizes a
    * face; the layer count follows the resident faces. */
   vkr_local_shadow_fit_atlas(candidates, candidate_count);
-  const uint32_t layer_count =
-      Max((uint32_t)((vkr_local_shadow_candidate_cells(candidates,
-                                                       candidate_count) +
-                      VKR_LOCAL_SHADOW_LAYER_CELLS - 1u) /
+  const uint64_t static_cells =
+      vkr_local_shadow_candidate_cells(candidates, candidate_count);
+  /* While the scene has baked lamps the frame may shadow, their static
+   * squares take a layer of their own after the static layers, so selecting
+   * a lamp never repacks the others. */
+  const bool8_t baked_layer =
+      input->baked_lamps_possible && input->dynamic_casters;
+  const uint32_t static_layer_count =
+      Max((uint32_t)((static_cells + VKR_LOCAL_SHADOW_LAYER_CELLS - 1u) /
                      VKR_LOCAL_SHADOW_LAYER_CELLS),
-          1u);
+          baked_layer ? 0u : 1u);
+  /* While the world has dynamic casters, a band of trailing layers holds
+   * the frame's dynamic squares. The band follows the casters' presence, not
+   * their motion, so the atlas is not recreated as they move. Without room
+   * for it every face draws every caster. */
+  const uint32_t dynamic_layer_count =
+      input->dynamic_casters && static_layer_count + (baked_layer ? 1u : 0u) +
+                                        VKR_LOCAL_SHADOW_DYNAMIC_LAYER_COUNT <=
+                                    VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX
+          ? VKR_LOCAL_SHADOW_DYNAMIC_LAYER_COUNT
+          : 0u;
+  const uint32_t baked_layer_count =
+      baked_layer && dynamic_layer_count != 0u ? 1u : 0u;
+  const uint32_t layer_count =
+      static_layer_count + baked_layer_count + dynamic_layer_count;
+  /* Static squares hold the static casters only while the dynamic casters
+     are known; a light a dynamic refractive caster reaches draws them all,
+     since its transmission layers follow that caster. */
+  const bool8_t split = dynamic_layer_count != 0u && !input->contents_unstable;
+
+  /* A baked lamp shows its moving casters' shadow as the difference of its
+     static and composite squares, which needs the split and its layer;
+     without them it leaves the frame. */
+  const bool8_t baked_shown =
+      split && baked_layer_count != 0u &&
+      vkr_local_shadow_place_baked(cache, candidates, candidate_count,
+                                   static_layer_count);
+  if (!baked_shown) {
+    uint32_t kept = 0u;
+    for (uint32_t i = 0u; i < candidate_count; ++i) {
+      if (!candidates[i].baked)
+        candidates[kept++] = candidates[i];
+    }
+    candidate_count = kept;
+  }
+  for (uint32_t i = 0u; i < candidate_count; ++i) {
+    VkrLocalShadowCandidate *candidate = &candidates[i];
+    candidate->all_casters =
+        !candidate->baked &&
+        (!split || (input->dynamic_refractive &&
+                    input->dynamic_refractive[candidate->light_index]));
+  }
 
   /* Lights that stopped casting fade their shadows out in the squares they
    * hold, which the casting lights take only when they need the room. */
@@ -853,8 +1178,11 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
         cache, input, layer_count, candidates, candidate_count);
   }
   candidate_count = vkr_local_shadow_pack_atlas(cache, candidates, shown_count,
-                                                candidate_count, layer_count);
+                                                candidate_count, layer_count,
+                                                static_layer_count);
   out->atlas_layer_count = layer_count;
+  out->dynamic_layer_count = dynamic_layer_count;
+  out->baked_lamp_candidates = baked_shown ? input->baked_lamp_candidates : 0u;
 
   /* An atlas of another layer count is replaced this frame, so none of its
    * layers holds content. Layers without retained content clear whole. */
@@ -878,8 +1206,8 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
 
   /* The most important lights, incumbents weighted, hold transmission layers
    * for every face; glass does not shadow the others. */
-  float32_t keys[VKR_MAX_SCENE_POINT_LIGHTS];
-  uint32_t order[VKR_MAX_SCENE_POINT_LIGHTS];
+  float32_t keys[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
+  uint32_t order[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
   uint64_t used_transmission = 0u;
   if (input->refractive_casters) {
     for (uint32_t i = 0u; i < candidate_count; ++i) {
@@ -897,7 +1225,8 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
     uint32_t layers = 0u;
     for (uint32_t i = 0u; i < candidate_count; ++i) {
       VkrLocalShadowCandidate *candidate = &candidates[order[i]];
-      if (candidate->leaving || layers + candidate->face_count > face_budget)
+      if (candidate->leaving || candidate->baked ||
+          layers + candidate->face_count > face_budget)
         continue;
       candidate->wants_transmission = true_v;
       layers += candidate->face_count;
@@ -922,12 +1251,51 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
   vkr_local_shadow_classify_content(cache, input, candidates, candidate_count,
                                     valid_layers, transmission_layer_count);
 
-  /* Faces draw in complete lights within the face budget: invalid lights,
-   * then lights waiting for transmission, then stale content, each by
-   * importance, lights whose shadow has faded out by distance last. */
+  /* Faces a dynamic caster may reach and the camera may see take dynamic
+   * squares, by light importance, up to the cap; the rest show their static
+   * squares. Their render slots come first out of the slot capacity. */
   for (uint32_t i = 0u; i < candidate_count; ++i)
     keys[i] = candidates[i].score;
   vkr_local_shadow_order_by_key(keys, candidate_count, order);
+  uint32_t dynamic_faces = 0u;
+  if (split) {
+    const bool8_t camera_projection =
+        MemCompare(&camera->projection, &(Mat4){0}, sizeof(Mat4)) != 0;
+    const VkrFrustum camera_frustum =
+        camera_projection
+            ? vkr_frustum_from_view_projection(camera->view, camera->projection)
+            : (VkrFrustum){0};
+    for (uint32_t i = 0u; i < candidate_count; ++i) {
+      VkrLocalShadowCandidate *candidate = &candidates[order[i]];
+      const uint32_t reached =
+          vkr_local_shadow_reached_faces(input, candidate->light_index);
+      if (candidate->leaving || candidate->all_casters || reached == 0u ||
+          candidate->distance_fade <= 0.0f)
+        continue;
+      candidate->dynamic_wanted =
+          camera_projection
+              ? reached & vkr_local_shadow_visible_faces(
+                              &input->lights[candidate->light_index],
+                              candidate->face_count, candidate->half_fov,
+                              &camera_frustum)
+              : reached;
+      for (uint32_t face = 0u; face < candidate->face_count; ++face) {
+        if ((candidate->dynamic_wanted & (UINT32_C(1) << face)) == 0u)
+          continue;
+        out->dynamic_faces_wanted++;
+        if (dynamic_faces == VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX)
+          continue;
+        candidate->dynamic_mask |= UINT32_C(1) << face;
+        dynamic_faces++;
+      }
+    }
+  }
+  const uint32_t render_budget =
+      Min(face_budget, VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX - dynamic_faces);
+
+  /* Faces draw in complete lights within the face budget: invalid lights,
+   * then lights waiting for transmission, then stale content, each by
+   * importance, lights whose shadow has faded out by distance last. */
   uint32_t render_faces = 0u;
   for (uint32_t faded = 0u; faded < 2u; ++faded) {
     for (uint32_t render_class = VKR_LOCAL_SHADOW_RENDER_INVALID;
@@ -936,7 +1304,7 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
         VkrLocalShadowCandidate *candidate = &candidates[order[i]];
         if (candidate->leaving || candidate->render_class != render_class ||
             (candidate->distance_fade <= 0.0f) != (faded != 0u) ||
-            render_faces + candidate->face_count > face_budget)
+            render_faces + candidate->face_count > render_budget)
           continue;
         candidate->render = true_v;
         render_faces += candidate->face_count;
@@ -978,7 +1346,7 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
    * leaving light's falls while its faces stay valid. The most important
    * shown lights keep the full filter, a light that had it with the
    * incumbent bonus; a leaving light keeps its filter and takes no place. */
-  float32_t strengths[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+  float32_t strengths[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX] = {0};
   for (uint32_t i = 0u; i < candidate_count; ++i) {
     const VkrLocalShadowCandidate *candidate = &candidates[i];
     const VkrLocalShadowCacheLight *previous =
@@ -995,15 +1363,16 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
     const bool8_t incumbent_full =
         previous && previous->strength * previous->distance_fade > 0.0f &&
         !previous->reduced;
-    keys[i] = !shown || candidate->distance_fade <= 0.0f ? -FLT_MAX
+    keys[i] = !shown || candidate->distance_fade <= 0.0f || candidate->baked
+                  ? -FLT_MAX
               : incumbent_full
                   ? candidate->score * VKR_LOCAL_SHADOW_INCUMBENT_BONUS
                   : candidate->score;
   }
   vkr_local_shadow_order_by_key(keys, candidate_count, order);
-  bool8_t reduced[VKR_MAX_SCENE_POINT_LIGHTS];
+  bool8_t reduced[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
   const uint32_t full_filter_count =
-      input->full_filter_all ? VKR_MAX_SCENE_POINT_LIGHTS
+      input->full_filter_all ? VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX
                              : VKR_LOCAL_SHADOW_FULL_FILTER_LIGHT_COUNT;
   for (uint32_t i = 0u; i < candidate_count; ++i)
     reduced[order[i]] = i >= full_filter_count;
@@ -1011,8 +1380,13 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
     if (candidates[i].leaving) {
       reduced[i] = cache->lights[candidates[i].previous - 1u].reduced;
     }
+    if (candidates[i].baked) {
+      reduced[i] = false_v;
+    }
   }
 
+  vkr_local_shadow_place_dynamic(candidates, candidate_count, strengths,
+                                 static_layer_count + baked_layer_count);
   vkr_local_shadow_publish(cache, scratch, input, candidates, candidate_count,
                            strengths, reduced, feedback_after_frame,
                            layer_count, identity_valid, pending, out);

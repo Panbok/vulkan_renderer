@@ -6,12 +6,14 @@
  * scene and a renderer or GPU, so they run as explicit commands rather than
  * cached producers. */
 
-/** Exit status of `bake diffuse` when no interpolation cell lies inside a
- * closed room; nothing is published (ADR-054). */
-#define VKR_BAKERY_BAKE_NO_ROOM_CELLS 3
+/** Exit status of `bake diffuse` when the scene has no geometry to place
+ * probe bricks near; nothing is published (ADR-054). */
+#define VKR_BAKERY_BAKE_NO_VOLUME 3
 
-/** Exit status of `bake lightmap` when no scene model carries lightmap UVs;
- * nothing is published (ADR-087). */
+/** Exit status of `bake lightmap` when there is nothing to bake on this host:
+ * no scene model carries lightmap UVs (ADR-087), or the host's desktop
+ * pipeline bakes only lamp light and the scene has no static lamps
+ * (ADR-104); nothing is published. */
 #define VKR_BAKERY_BAKE_NO_LIGHTMAPPED_INSTANCES 4
 
 /** `argv[0]` is "diffuse", "probe", "lightmap" or "proxies"; the remaining

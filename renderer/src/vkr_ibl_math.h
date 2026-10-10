@@ -2,6 +2,10 @@
 
 #include "defines.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /** Shipping IBL target contract shared by every renderer implementation. */
 #define VKR_IBL_PREFILTER_SIZE 256u
 #define VKR_IBL_PREFILTER_MIP_COUNT 9u
@@ -11,6 +15,16 @@ uint16_t vkr_float32_to_float16(float32_t value);
 
 /** Converts IEEE-754 binary16 to binary32 exactly. */
 float32_t vkr_float16_to_float32(uint16_t value);
+
+/** Packs non-negative linear RGB into the shared-exponent RGB9E5 texel
+ * (EXT_texture_shared_exponent): nine mantissa bits per channel in bits
+ * 0-26 and the exponent in bits 27-31, rounding to nearest. Negative and
+ * NaN channels pack as zero; channels past the largest finite value
+ * clamp to it. */
+uint32_t vkr_rgb9e5_from_float3(float32_t r, float32_t g, float32_t b);
+
+/** Unpacks an RGB9E5 texel into linear RGB. */
+void vkr_rgb9e5_to_float3(uint32_t packed, float32_t out_rgb[3]);
 
 /*
  * Second-order spherical-harmonic diffuse response (ADR-038).
@@ -76,3 +90,7 @@ float32_t vkr_ibl_sh_window_factor(uint32_t band, float32_t deringing);
 bool8_t vkr_ibl_sh_projection_mip(uint32_t source_face_size,
                                   uint32_t source_mip_count, uint32_t *out_mip,
                                   uint32_t *out_face_size);
+
+#ifdef __cplusplus
+}
+#endif

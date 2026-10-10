@@ -482,6 +482,8 @@ typedef struct VkrDeviceInformation {
   VkrSurfaceColorSpace actual_color_space;
   VkrDisplayOutputParams display_output;
   VkrWorldRendererTopology actual_world_renderer_topology;
+  /** The pipeline class the backend runs (ADR-087). */
+  VkrGraphicsPipelineClass graphics_pipeline;
 } VkrDeviceInformation;
 
 // ============================================================================
@@ -598,6 +600,12 @@ typedef enum VkrTextureFormat {
   /** Half-float ASTC 4x4 HDR for baked lightmap pages (ADR-088); needs
    * supports_texture_astc_hdr. */
   VKR_TEXTURE_FORMAT_ASTC_4x4_HDR,
+  /** Shared-exponent RGB for the desktop pipeline's baked lamp pages
+   * (ADR-104); sampled with filtering everywhere. */
+  VKR_TEXTURE_FORMAT_RGB9E5_UFLOAT,
+  /** Unsigned half-float BC6H for the desktop pipeline's baked lamp
+   * pages. */
+  VKR_TEXTURE_FORMAT_BC6H_UFLOAT,
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;

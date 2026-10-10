@@ -25,8 +25,10 @@
 #define VKR_PROJECT_MAX_MODEL_BYTES (256ull * 1024ull * 1024ull)
 #define VKR_PROJECT_MAX_ENTITIES 65536u
 /* bake_diffuse_volume status: no closed-room cell, so no volume published. */
-#define VKR_PROJECT_DIFFUSE_NO_ROOM_CELLS 3
-/* bake lightmap status: no model carries lightmap UVs (ADR-087). */
+#define VKR_PROJECT_DIFFUSE_NO_VOLUME 3
+/* bake lightmap status: nothing to bake on this host, no model carries
+   lightmap UVs (ADR-087) or a desktop host's scene has no static lamps
+   (ADR-104). */
 #define VKR_PROJECT_LIGHTMAP_NO_INSTANCES 4
 #define VKR_PROJECT_UNREFERENCED_GRACE_SECONDS (24 * 60 * 60)
 #define VKR_PROJECT_ORPHAN_GRACE_SECONDS (60 * 60)

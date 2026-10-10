@@ -243,8 +243,8 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, local_shadow_views,
                   "local_shadow_views", 464),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, dfg_texture_id, "dfg_lut", 472),
-    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, diffuse_volume_texture_id,
-                  "diffuse_volume", 480),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, diffuse_volume_reserved,
+                  "diffuse_volume_reserved", 480),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, diffuse_volume_params,
                   "diffuse_volume_params", 488),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ltc, "ltc", 496),
@@ -337,6 +337,23 @@ vkr_global const VkrMetalPacketAbiField vkr_cloud_trace_root_fields[] = {
                   "history_pre_exposure_scale", 128),
 };
 
+vkr_global const VkrMetalPacketAbiField
+    vkr_diffuse_volume_compose_root_fields[] = {
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, layer_sh,
+                      "layer_sh", 0),
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, sh, "sh", 8),
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, probe_count,
+                      "probe_count", 16),
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, rows, "rows",
+                      20),
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot,
+                      active_layer_count, "active_layer_count", 24),
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, active_layers,
+                      "active_layers", 32),
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, active_weights,
+                      "active_weights", 64),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_cloud_sky_light_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketCloudSkyLightRoot, sky, "sky", 0),
     VKR_ABI_FIELD(VkrMetalPacketCloudSkyLightRoot, frame, "frame", 8),
@@ -418,10 +435,14 @@ vkr_global const VkrMetalPacketAbiField vkr_sheen_fields[] = {
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_diffuse_volume_fields[] = {
-    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, origin, "origin", 0),
-    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, inverse_spacing,
-                  "inverse_spacing", 16),
-    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, dimensions, "dimensions", 32),
+    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, indirection, "indirection",
+                  0),
+    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, probes, "probes", 8),
+    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, moments, "moments", 16),
+    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, sh, "sh", 24),
+    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, origin, "origin", 32),
+    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, params, "params", 48),
+    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, dimensions, "dimensions", 64),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_lightmap_fields[] = {
@@ -635,6 +656,9 @@ vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_root_fields[] = {
                   "icb_view_group_size", 180),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, custom_compaction,
                   "custom_compaction", 184),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, static_candidate_count,
+                  "static_candidate_count", 192),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_3, "reserved_3", 196),
 };
 
 vkr_global const VkrMetalPacketAbiField
@@ -829,7 +853,7 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketAnisotropy, "VkrMetalPacketAnisotropy",
                            32, 16, vkr_anisotropy_fields),
         [VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME] = VKR_ABI_RECORD(
-            VkrMetalPacketDiffuseVolume, "VkrMetalPacketDiffuseVolume", 48, 16,
+            VkrMetalPacketDiffuseVolume, "VkrMetalPacketDiffuseVolume", 80, 16,
             vkr_diffuse_volume_fields),
         [VKR_METAL_PACKET_ABI_LIGHTMAP] =
             VKR_ABI_RECORD(VkrMetalPacketLightmap, "VkrMetalPacketLightmap", 96,
@@ -887,7 +911,7 @@ vkr_global const VkrMetalPacketAbiRecord
             VkrMetalPacketGpuDrawView, "VkrMetalPacketGpuDrawView", 112, 16,
             vkr_gpu_draw_view_fields),
         [VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT] = VKR_ABI_RECORD(
-            VkrMetalPacketGpuDrawRoot, "VkrMetalPacketGpuDrawRoot", 192, 16,
+            VkrMetalPacketGpuDrawRoot, "VkrMetalPacketGpuDrawRoot", 208, 16,
             vkr_gpu_draw_root_fields),
         [VKR_METAL_PACKET_ABI_ANIMATION_PREVIEW_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketAnimationPreviewRoot,
@@ -926,6 +950,10 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketCloudSkyLightRoot, "VkrMetalPacketCloudSkyLightRoot",
             80, 16, vkr_cloud_sky_light_root_fields),
+        [VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME_COMPOSE_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketDiffuseVolumeComposeRoot,
+            "VkrMetalPacketDiffuseVolumeComposeRoot", 96, 16,
+            vkr_diffuse_volume_compose_root_fields),
         [VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketHzbBuildRoot, "VkrMetalPacketHzbBuildRoot", 48, 16,
             vkr_hzb_build_root_fields),

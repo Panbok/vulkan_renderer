@@ -393,15 +393,14 @@ void ssgi_temporal_compute(uint3 thread_id : SV_DispatchThreadID)
     g_storage_uint2_2d[root.output_identity_texture][pixel] = identity;
 }
 
-bool vkr_vk_ssgi_volume_valid(VkrVulkanPacketFrameRoot* frame, float3 world)
+// SSGI adds nothing where the volume covers the pixel: the bake already
+// holds that bounce (ADR-060). The test is the lighting lookup's own.
+bool vkr_vk_ssgi_volume_valid(VkrVulkanPacketFrameRoot* frame, float3 world,
+                              float3 normal)
 {
-    if (frame.diffuse_volume_texture == 0u)
-        return false;
-    VkrDiffuseVolumeCell cell = vkr_diffuse_volume_cell(
-        world, frame.diffuse_volume_origin.xyz, frame.diffuse_volume_inverse_spacing.xyz,
-        frame.diffuse_volume_dimensions.xyz);
-    return cell.valid &&
-        g_textures[frame.diffuse_volume_texture].Load(int3(7, int(cell.row), 0)).y > 0.0f;
+    float3 unused_response;
+    return packet_diffuse_volume_response(frame, world, normal, true,
+                                          unused_response);
 }
 
 float vkr_vk_ssgi_filtered_roughness(VkrVkSsgiCompositeRoot root, uint2 pixel,
@@ -436,14 +435,14 @@ void ssgi_composite_compute(uint3 thread_id : SV_DispatchThreadID)
     float2 ndc = (float2(pixel) + 0.5f) / float2(source_extent) * 2.0f - 1.0f;
     float4 world_h = mul(root.inverse_view_projection, float4(ndc, device_depth, 1.0f));
     float3 world = world_h.xyz / (max(abs(world_h.w), 1e-7f) * (world_h.w < 0.0f ? -1.0f : 1.0f));
-    if (vkr_vk_ssgi_volume_valid(root.frame, world))
-        return;
     VkrSsrParams screen = vkr_ssgi_screen_trace_params(root.params);
     float current_depth = vkr_vk_ssgi_positive_depth(screen, pixel, device_depth, source_extent);
     if (!vkr_ssr_valid_depth(current_depth))
         return;
     float3 normal = vkr_vk_octahedral_decode(
         g_textures[root.normal_texture].Load(int3(pixel, 0)).xy);
+    if (vkr_vk_ssgi_volume_valid(root.frame, world, normal))
+        return;
     float2 trace_coordinate = (float2(pixel) + 0.5f) / float2(source_extent) *
                               float2(root.params.trace_width, root.params.trace_height) - 0.5f;
     int2 first = int2(floor(trace_coordinate));

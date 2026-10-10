@@ -283,7 +283,7 @@ def main():
         if args.diffuse_baker:
             import subprocess
             check = subprocess.run([*tool_command(Path(args.diffuse_baker).resolve(), 'diffuse-baker'), '--scene', effective_node['runtime_path'],
-                '--inspect', '--manifest', str(root / 'edited-light.json'), '--grid', '2', '2', '2',
+                '--inspect', '--manifest', str(root / 'edited-light.json'), '--spacing', '1', '--levels', '1',
                 '--bounds', '-1', '-1', '-1', '10', '10', '10'], capture_output=True, text=True)
             assert check.returncode == 0, check.stdout + check.stderr
             assert 'lights=1 ' in check.stdout, 'Source punctual was duplicated or edited light omitted'
@@ -401,7 +401,7 @@ def main():
             import subprocess
             inspect_path = root / 'diffuse.manifest.json'
             command = [*tool_command(Path(args.diffuse_baker).resolve(), 'diffuse-baker'), '--scene', str(legacy),
-                       '--inspect', '--manifest', str(inspect_path), '--grid', '2', '2', '2',
+                       '--inspect', '--manifest', str(inspect_path), '--spacing', '1', '--levels', '1',
                        '--bounds', '-1', '-1', '-1', '2', '2', '2']
             # A managed material and its identity/remap sidecar are read through
             # the shared decoder, without invoking transport or a GPU.

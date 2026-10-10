@@ -3,16 +3,19 @@
 extern "C" {
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
+#include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 }
+#include "bake/vkr_bake_bricks.h"
 #include "bake/vkr_bake_bvh.h"
+#include "bake/vkr_bake_integrator.h"
 #include "bake/vkr_bake_lightmap.h"
 #include "bake/vkr_bake_material.h"
 #include "bake/vkr_bake_mesh_decode.h"
 #include "bake/vkr_bake_scene.h"
-#include "bake/vkr_bake_voxels.h"
+#include "bake/vkr_bake_sh.h"
 #include "mesh_cooked_tests.h"
 
 #include <assert.h>
@@ -21,7 +24,6 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 
-#include <set>
 #include <string>
 #include <vector>
 
@@ -31,8 +33,10 @@ extern "C" {
  * texel is claimed once. Page composition keeps each rectangle's fill inside
  * it, the page encoding keeps HDR values above one, and a lightmap set file
  * round-trips while a corrupted payload or malformed table is rejected. A
- * scene's blockout stairs load as bake geometry. A diffuse-volume grid fitted
- * to a level's bounds finds an interpolation cell in every room. */
+ * scene's blockout stairs load as bake geometry. A sparse diffuse volume
+ * round-trips and rejects inconsistent bricks, its probe visibility is the
+ * same for any worker count and leaves no valid probe inside a wall, and a
+ * Lambert furnace keeps its analytic radiance through the L1 projection. */
 
 namespace {
 
@@ -332,8 +336,8 @@ void test_astc_hdr_round_trip_keeps_range() {
          largest);
 }
 
-/* Writes a two-layer, one-page set with distinct payload bytes the way a
-   producer streams it: payload CRC first, prefix last. */
+/* Writes a one-page set with distinct payload bytes the way a producer
+   streams it: payload CRC first, prefix last. */
 std::vector<uint8_t> write_lightmap_set(const VkrLightmapSet &set) {
   uint64_t payload_offset = 0u;
   uint64_t file_size = 0u;
@@ -366,13 +370,23 @@ void test_lightmap_set_round_trip_and_rejects() {
        4u,
        12u,
        12u}};
+  /* Every layer's ASTC irradiance, and the lamp groups' RGB9E5 for the
+     desktop pipeline. */
+  const VkrLightmapPlane planes[] = {
+      {0u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
+      {1u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
+      {1u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_RGB9E5},
+      {2u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
+      {2u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_RGB9E5}};
   VkrLightmapSet set = {};
   set.page_size = 16u;
   set.page_count = 1u;
   set.layer_count = 3u;
+  set.plane_count = 5u;
   set.instance_count = 3u;
   set.texels_per_unit = 8.0f;
   set.layers = layers;
+  set.planes = planes;
   set.instances = instances;
   const std::vector<uint8_t> file = write_lightmap_set(set);
   assert(file.size() % 4u == 0u);
@@ -391,9 +405,28 @@ void test_lightmap_set_round_trip_and_rejects() {
   assert(decoded.instances[2].width == 12u);
   assert(decoded.instances[2].document_id[0] == 0xabu &&
          decoded.instances[2].document_id[15] == 0x7fu);
-  const uint64_t page_bytes = vkr_lightmap_set_page_bytes(16u);
-  assert(page_bytes == 16u * 16u);
-  assert(decoded.payload + 3u * page_bytes == file.data() + file.size());
+  assert(decoded.plane_count == 5u &&
+         decoded.planes[4].format == VKR_LIGHTMAP_FORMAT_RGB9E5);
+  const uint64_t astc_bytes =
+      vkr_lightmap_set_plane_bytes(VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR, 16u);
+  const uint64_t rgb9e5_bytes =
+      vkr_lightmap_set_plane_bytes(VKR_LIGHTMAP_FORMAT_RGB9E5, 16u);
+  assert(astc_bytes == 16u * 16u && rgb9e5_bytes == 16u * 16u * 4u);
+  assert(vkr_lightmap_set_page_stride(&decoded) ==
+         3u * astc_bytes + 2u * rgb9e5_bytes);
+  assert(decoded.payload + vkr_lightmap_set_page_stride(&decoded) ==
+         file.data() + file.size());
+  assert(vkr_lightmap_set_plane_offset(&decoded, 0u, 4u) ==
+         2u * astc_bytes + rgb9e5_bytes + astc_bytes);
+  /* The tiled pipeline finds every layer's ASTC plane, the desktop one only
+     the lamp groups' RGB9E5 planes. */
+  assert(vkr_lightmap_set_find_plane(
+             &decoded, 0u, VKR_LIGHTMAP_PLANE_IRRADIANCE, false_v) == 0u);
+  assert(vkr_lightmap_set_find_plane(&decoded, 0u,
+                                     VKR_LIGHTMAP_PLANE_IRRADIANCE,
+                                     true_v) == UINT32_MAX);
+  assert(vkr_lightmap_set_find_plane(
+             &decoded, 2u, VKR_LIGHTMAP_PLANE_IRRADIANCE, true_v) == 4u);
 
   std::vector<uint8_t> corrupt = file;
   corrupt[corrupt.size() - 1u] ^= 1u;
@@ -427,8 +460,63 @@ void test_lightmap_set_round_trip_and_rejects() {
   strcpy(named[2].name, "street_lamps");
   strcpy(named[0].name, "sun");
   assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  set.layers = layers;
+
+  /* Desktop planes belong to lamp groups; planes are in (layer, kind,
+     format) order with one tiled and one desktop encoding of a kind; a
+     direction is never stored as HDR irradiance. */
+  VkrLightmapPlane bad[] = {planes[0], planes[1], planes[2], planes[3],
+                            planes[4]};
+  bad[0].format = VKR_LIGHTMAP_FORMAT_RGB9E5;
+  set.planes = bad;
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  bad[0] = planes[0];
+  bad[1] = planes[2];
+  bad[2] = planes[1];
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  bad[1] = planes[1];
+  bad[2] = planes[2];
+  bad[2].format = VKR_LIGHTMAP_FORMAT_BC6H;
+  bad[1].format = VKR_LIGHTMAP_FORMAT_RGB9E5;
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  bad[1] = planes[1];
+  bad[2] = planes[2];
+  bad[4].kind = VKR_LIGHTMAP_PLANE_DIRECTION;
+  bad[4].format = VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR;
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  set.planes = planes;
+  assert(vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
   arena_destroy(arena);
   printf("  test_lightmap_set_round_trip_and_rejects PASSED\n");
+}
+
+/* RGB9E5 keeps exact powers of two and values on its mantissa grid, rounds
+   others to within half a step of the brightest channel's exponent, clamps
+   past 65408 and stores negatives and NaN as zero. */
+void test_rgb9e5_round_trip() {
+  float32_t rgb[3];
+  vkr_rgb9e5_to_float3(vkr_rgb9e5_from_float3(1.0f, 0.5f, 0.25f), rgb);
+  assert(rgb[0] == 1.0f && rgb[1] == 0.5f && rgb[2] == 0.25f);
+  vkr_rgb9e5_to_float3(vkr_rgb9e5_from_float3(1.0e6f, -2.0f, NAN), rgb);
+  assert(rgb[0] == 65408.0f && rgb[1] == 0.0f && rgb[2] == 0.0f);
+  vkr_rgb9e5_to_float3(vkr_rgb9e5_from_float3(0.0f, 0.0f, 0.0f), rgb);
+  assert(rgb[0] == 0.0f && rgb[1] == 0.0f && rgb[2] == 0.0f);
+  uint32_t state = 12345u;
+  for (uint32_t i = 0u; i < 10000u; ++i) {
+    float32_t source[3];
+    for (uint32_t c = 0u; c < 3u; ++c) {
+      state = state * 1664525u + 1013904223u;
+      source[c] = ldexpf((float32_t)(state >> 8) / 16777216.0f,
+                         (int32_t)(state % 24u) - 12);
+    }
+    vkr_rgb9e5_to_float3(
+        vkr_rgb9e5_from_float3(source[0], source[1], source[2]), rgb);
+    const float32_t brightest = fmaxf(source[0], fmaxf(source[1], source[2]));
+    for (uint32_t c = 0u; c < 3u; ++c) {
+      assert(fabsf(rgb[c] - source[c]) <= brightest / 512.0f);
+    }
+  }
+  printf("  test_rgb9e5_round_trip PASSED\n");
 }
 
 /* Sun-key weights follow the sun around the daily circle: a sun on a key
@@ -469,56 +557,122 @@ void test_light_layer_sun_weights() {
   printf("  test_light_layer_sun_weights PASSED\n");
 }
 
-/* A layered DVOL v2 volume round-trips every probe's SH per layer and its
-   layer names; an invalid layer table is refused. */
-void test_diffuse_volume_layers_round_trip() {
-  VkrLightLayer layers[3] = {};
+void store_half_le(uint8_t *dst, float32_t value) {
+  const uint16_t half = vkr_float32_to_float16(value);
+  dst[0] = (uint8_t)(half & 0xffu);
+  dst[1] = (uint8_t)(half >> 8u);
+}
+
+/* A two-level DVOL v3 volume: one level-1 brick over a 3 x 3 x 3 grid with
+   one corner entry refined by a level-0 brick. It round-trips byte for byte
+   with its layer names, and the decoder refuses an entry naming a brick of
+   another level, an offset past half the probe spacing, a validity that is
+   neither zero nor one, a scale that is not a power of two, a corrupted
+   payload and an invalid layer table. */
+void test_diffuse_volume_v3_round_trip_and_rejects() {
+  printf("  test_diffuse_volume_v3_round_trip_and_rejects...\n");
+  VkrLightLayer layers[2] = {};
   layers[0].kind = VKR_LIGHT_LAYER_SUN_KEY;
   layers[0].sun_direction = vec3_new(0.0f, 1.0f, 0.0f);
-  layers[1].kind = VKR_LIGHT_LAYER_SUN_KEY;
-  layers[1].index = 1u;
-  layers[1].sun_direction = vec3_new(1.0f, 0.0f, 0.0f);
-  layers[2].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
-  strcpy(layers[2].name, "street");
-  uint32_t regions[8];
-  std::vector<VkrShL2Packed> sh(8u * 3u);
-  for (uint32_t probe = 0u; probe < 8u; ++probe) {
-    regions[probe] = 1u;
-    for (uint32_t layer = 0u; layer < 3u; ++layer)
-      for (uint32_t v = 0u; v < VKR_SH_PACKED_VECTOR_COUNT; ++v)
-        for (uint32_t c = 0u; c < 4u; ++c)
-          sh[probe * 3u + layer].v[v][c] =
-              (float32_t)(probe * 100u + layer * 10u + v) + 0.25f * c;
+  layers[1].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
+  strcpy(layers[1].name, "street");
+  const VkrDiffuseVolumeBrick bricks[2] = {{{0u, 0u, 0u}, 1u},
+                                           {{0u, 0u, 0u}, 0u}};
+  std::vector<uint8_t> entries(27u * sizeof(uint32_t));
+  for (uint32_t i = 0u; i < 27u; ++i) {
+    const uint32_t entry =
+        i == 0u ? 1u : (1u << VKR_DIFFUSE_VOLUME_ENTRY_LEVEL_SHIFT) | 0u;
+    vkr_store_le_u32(entries.data() + i * sizeof(uint32_t), entry);
   }
-  uint32_t cells[1] = {1u};
+  const uint32_t probe_count = 2u * VKR_DIFFUSE_VOLUME_BRICK_PROBES;
+  std::vector<uint8_t> aux(probe_count * VKR_DIFFUSE_VOLUME_AUX_BYTES);
+  std::vector<uint8_t> moments(probe_count * VKR_DIFFUSE_VOLUME_MOMENT_BYTES);
+  /* Two layers, then the lamp group's direct band. */
+  std::vector<uint8_t> sh(probe_count * 3u * VKR_DIFFUSE_VOLUME_SH_BYTES);
+  for (uint32_t p = 0u; p < probe_count; ++p) {
+    uint8_t *record = aux.data() + p * VKR_DIFFUSE_VOLUME_AUX_BYTES;
+    store_half_le(record, 0.25f);
+    store_half_le(record + 2u, -0.125f);
+    store_half_le(record + 4u, 0.0f);
+    store_half_le(record + 6u, p % 7u == 0u ? 0.0f : 1.0f);
+    for (uint32_t t = 0u; t < VKR_DIFFUSE_VOLUME_MOMENT_TEXELS; ++t) {
+      uint8_t *texel =
+          moments.data() + p * VKR_DIFFUSE_VOLUME_MOMENT_BYTES + t * 4u;
+      store_half_le(texel, 1.5f);
+      store_half_le(texel + 2u, 2.5f);
+    }
+  }
+  for (uint32_t i = 0u; i < probe_count * 3u * 12u; ++i) {
+    store_half_le(sh.data() + i * 2u, (float32_t)(i % 97u) * 0.5f - 10.0f);
+  }
   VkrDiffuseVolume volume = {};
   volume.origin = vec3_new(-1.0f, 0.0f, 2.0f);
-  volume.spacing = vec3_new(2.0f, 1.0f, 2.0f);
-  volume.dimensions[0] = volume.dimensions[1] = volume.dimensions[2] = 2u;
-  volume.probe_region_ids = regions;
-  volume.probe_sh = sh.data();
-  volume.probe_count = 8u;
+  volume.spacing = 1.0f;
+  volume.sh_scale = 4.0f;
+  volume.level_count = 2u;
+  volume.dimensions[0] = volume.dimensions[1] = volume.dimensions[2] = 3u;
+  volume.entries = entries.data();
+  volume.entry_count = 27u;
+  volume.bricks = bricks;
+  volume.brick_count = 2u;
+  volume.probe_count = probe_count;
+  volume.probe_aux = aux.data();
+  volume.moments = moments.data();
+  volume.layer_sh = sh.data();
   volume.layers = layers;
-  volume.layer_count = 3u;
-  volume.cell_region_ids = cells;
-  volume.cell_count = 1u;
-  Arena *arena = arena_create(KB(64), KB(64));
+  volume.layer_count = 2u;
+  volume.lamp_direct_count = 1u;
+
+  Arena *arena = arena_create(MB(4), MB(1));
   assert(arena);
   const uint8_t *bytes = NULL;
   uint64_t size = 0u;
-  assert(vkr_diffuse_volume_encode(&volume, arena, &bytes, &size));
+  bool8_t ok = vkr_diffuse_volume_encode(&volume, arena, &bytes, &size);
+  assert(ok);
   VkrDiffuseVolume decoded = {};
-  assert(vkr_diffuse_volume_decode(bytes, size, arena, &decoded));
-  assert(decoded.layer_count == 3u && decoded.probe_count == 8u);
-  assert(strcmp(decoded.layers[2].name, "street") == 0);
-  assert(decoded.layers[1].sun_direction.x == 1.0f);
-  for (uint32_t i = 0u; i < 8u * 3u; ++i) {
-    assert(memcmp(&decoded.probe_sh[i], &sh[i], sizeof(VkrShL2Packed)) == 0);
-  }
-  strcpy(layers[2].name, "two words");
+  ok = vkr_diffuse_volume_decode(bytes, size, arena, &decoded);
+  assert(ok);
+  assert(decoded.layer_count == 2u && decoded.brick_count == 2u &&
+         decoded.probe_count == probe_count && decoded.sh_scale == 4.0f &&
+         decoded.lamp_direct_count == 1u &&
+         vkr_diffuse_volume_sh_band_count(&decoded) == 3u);
+  assert(strcmp(decoded.layers[1].name, "street") == 0);
+  assert(decoded.bricks[0].level == 1u && decoded.bricks[1].level == 0u);
+  assert(vkr_diffuse_volume_entry(&decoded, 0u) == 1u);
+  assert(memcmp(decoded.layer_sh, sh.data(), sh.size()) == 0);
+  const uint8_t *again = NULL;
+  uint64_t again_size = 0u;
+  ok = vkr_diffuse_volume_encode(&decoded, arena, &again, &again_size);
+  assert(ok && again_size == size && memcmp(again, bytes, size) == 0);
+
+  std::vector<uint8_t> corrupt(bytes, bytes + size);
+  corrupt[size - 1u] ^= 0x40u;
+  assert(!vkr_diffuse_volume_decode(corrupt.data(), size, arena, &decoded));
+
+  /* Entry 0 names brick 1 (level 0) as if it were level 1. */
+  vkr_store_le_u32(entries.data(),
+                   (1u << VKR_DIFFUSE_VOLUME_ENTRY_LEVEL_SHIFT) | 1u);
   assert(!vkr_diffuse_volume_encode(&volume, arena, &bytes, &size));
+  vkr_store_le_u32(entries.data(), 1u);
+  /* A level-0 probe moved 0.75 m at 1 m spacing. */
+  store_half_le(aux.data() + 64u * VKR_DIFFUSE_VOLUME_AUX_BYTES, 0.75f);
+  assert(!vkr_diffuse_volume_encode(&volume, arena, &bytes, &size));
+  store_half_le(aux.data() + 64u * VKR_DIFFUSE_VOLUME_AUX_BYTES, 0.25f);
+  store_half_le(aux.data() + 6u, 0.5f);
+  assert(!vkr_diffuse_volume_encode(&volume, arena, &bytes, &size));
+  store_half_le(aux.data() + 6u, 0.0f);
+  volume.sh_scale = 3.0f;
+  assert(!vkr_diffuse_volume_encode(&volume, arena, &bytes, &size));
+  volume.sh_scale = 4.0f;
+  /* One lamp group cannot have two direct bands. */
+  volume.lamp_direct_count = 2u;
+  assert(!vkr_diffuse_volume_encode(&volume, arena, &bytes, &size));
+  volume.lamp_direct_count = 1u;
+  strcpy(layers[1].name, "two words");
+  assert(!vkr_diffuse_volume_encode(&volume, arena, &bytes, &size));
+  (void)ok;
   arena_destroy(arena);
-  printf("  test_diffuse_volume_layers_round_trip PASSED\n");
+  printf("  test_diffuse_volume_v3_round_trip_and_rejects PASSED\n");
 }
 
 /* Outlier rejection replaces a lone firefly on a smooth surface with its
@@ -1011,40 +1165,9 @@ void append_box(std::vector<VkrBakeTriangle> *triangles, Vec3 min, Vec3 max) {
   }
 }
 
-/* Classifies rooms on `desc` with the baker's default voxel size and returns
-   the valid interpolation cells, collecting their room regions. */
-uint32_t count_valid_room_cells(const VkrBakeBvh *bvh,
-                                VkrBakeVoxelGridDesc desc, Arena *arena,
-                                std::set<uint32_t> *out_regions) {
-  const bool8_t blocks_rooms[1] = {true_v};
-  const Vec3 extent = vec3_sub(desc.bounds.max, desc.bounds.min);
-  desc.voxel_size = fminf(extent.x / desc.probe_dimensions[0],
-                          fminf(extent.y / desc.probe_dimensions[1],
-                                extent.z / desc.probe_dimensions[2])) *
-                    VKR_BAKE_VOXEL_DEFAULT_SIZE_FRACTION;
-  VkrBakeVoxelResult rooms = {};
-  const bool8_t built =
-      vkr_bake_voxels_build(bvh, blocks_rooms, 1u, desc, arena, &rooms);
-  assert(built);
-  (void)built;
-
-  uint32_t valid = 0u;
-  for (uint32_t cell = 0u; cell < rooms.cell_count; ++cell) {
-    if (rooms.cell_region_ids[cell]) {
-      ++valid;
-      out_regions->insert(rooms.cell_region_ids[cell]);
-    }
-  }
-  return valid;
-}
-
-/* Four 12 m rooms in a row, 4 m tall behind 0.2 m walls, stand for a large
-   indoor level. The grid fitted to the level's bounds puts an interpolation
-   cell inside every room. The fixed 4 x 4 x 4 grid it replaced spaced probes
-   a room apart, so no cell had its eight probes in one room and the bake
-   skipped the volume. */
-void test_fitted_volume_grid_finds_every_room() {
-  printf("  test_fitted_volume_grid_finds_every_room...\n");
+/* Four 12 m rooms in a row, 4 m tall behind 0.2 m walls, stand for an
+   indoor level; a solid 2 m column stands in the first room. */
+std::vector<VkrBakeTriangle> four_rooms() {
   const float32_t wall = 0.2f;
   const float32_t length = 48.0f;
   const float32_t height = 4.0f;
@@ -1065,48 +1188,343 @@ void test_fitted_volume_grid_finds_every_room() {
     append_box(&triangles, vec3_new(low, 0.0f, 0.0f),
                vec3_new(high, height, depth));
   }
+  append_box(&triangles, vec3_new(4.0f, wall, 4.0f),
+             vec3_new(6.0f, height - wall, 6.0f));
+  return triangles;
+}
 
+/* Whether a point lies strictly inside one of the four rooms' solid slabs
+   or the column. */
+bool8_t inside_four_rooms_solid(Vec3 p) {
+  const float32_t wall = 0.2f;
+  if (p.x > 4.0f && p.x < 6.0f && p.z > 4.0f && p.z < 6.0f && p.y > 0.0f &&
+      p.y < 4.0f) {
+    return true_v;
+  }
+  if (p.x <= 0.0f || p.x >= 48.0f || p.y <= 0.0f || p.y >= 4.0f ||
+      p.z <= 0.0f || p.z >= 12.0f) {
+    return false_v;
+  }
+  if (p.y < wall || p.y > 4.0f - wall || p.z < wall || p.z > 12.0f - wall) {
+    return true_v;
+  }
+  for (uint32_t i = 0u; i <= 4u; ++i) {
+    if (fabsf(p.x - 12.0f * (float32_t)i) < 0.5f * wall) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Bricks over the four rooms cover every indirection entry, refine near
+   the walls, and keep coarse bricks well above them. Probe visibility is
+   the same with one worker as with three, every probe in room air stays
+   valid and unmoved, no valid probe ends up inside a wall slab or the
+   column, the column's inner probes, half a meter deep, are invalid, and
+   dropping bricks without a valid probe leaves every entry naming a stored
+   brick. */
+void test_sparse_bricks_place_and_relocate() {
+  printf("  test_sparse_bricks_place_and_relocate...\n");
+  std::vector<VkrBakeTriangle> triangles = four_rooms();
   Arena *arena = arena_create(MB(64), MB(1));
   VkrBakeBvh bvh = {};
-  const VkrBakeGeometry geometry = {triangles.data(),
-                                    (uint32_t)triangles.size()};
-  const bool8_t built = vkr_bake_bvh_build(geometry, arena, &bvh);
-  assert(built);
-  (void)built;
+  bool8_t ok = vkr_bake_bvh_build(
+      {triangles.data(), (uint32_t)triangles.size()}, arena, &bvh);
+  assert(ok);
+  const VkrBakeBrickMaterial materials[1] = {{true_v, false_v}};
 
-  VkrBakeVoxelGridDesc fitted = {};
-  fitted.bounds = bvh.nodes[0].bounds;
-  const bool8_t fit =
-      vkr_bake_voxels_fit_grid(fitted.bounds, fitted.probe_dimensions);
-  assert(fit);
-  (void)fit;
-  const uint32_t probes = fitted.probe_dimensions[0] *
-                          fitted.probe_dimensions[1] *
-                          fitted.probe_dimensions[2];
-  assert(probes <= VKR_BAKE_VOXEL_MAX_PROBES);
-  (void)probes;
-  std::set<uint32_t> fitted_regions;
-  const uint32_t fitted_cells =
-      count_valid_room_cells(&bvh, fitted, arena, &fitted_regions);
-  assert(fitted_cells > 0u);
-  assert(fitted_regions.size() == 4u);
-  (void)fitted_cells;
+  VkrBakeBrickDesc desc = {};
+  desc.bounds = bvh.nodes[0].bounds;
+  desc.bounds.max.y += 30.0f;
+  desc.spacing = 1.0f;
+  desc.level_count = 2u;
+  desc.margin_spans = 1.0f;
+  VkrBakeBrickLayout layout = {};
+  ok = vkr_bake_bricks_place(&bvh, materials, 1u, desc, arena, &layout);
+  assert(ok);
+  uint32_t level_bricks[2] = {0u, 0u};
+  for (uint32_t b = 0u; b < layout.brick_count; ++b) {
+    ++level_bricks[layout.bricks[b].level];
+  }
+  assert(level_bricks[0] > 0u && level_bricks[1] > 0u);
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    assert(layout.dimensions[axis] % 3u == 0u);
+  }
+  for (uint32_t i = 0u; i < layout.entry_count; ++i) {
+    assert(layout.entries[i] != VKR_DIFFUSE_VOLUME_ENTRY_EMPTY);
+  }
+  /* The air near the top of the bounds is far from every surface. */
+  const uint32_t top =
+      layout.entries[layout.dimensions[0] * (layout.dimensions[1] - 1u)];
+  assert((top >> VKR_DIFFUSE_VOLUME_ENTRY_LEVEL_SHIFT) == 1u);
 
-  VkrBakeVoxelGridDesc fixed = fitted;
-  fixed.probe_dimensions[0] = 4u;
-  fixed.probe_dimensions[1] = 4u;
-  fixed.probe_dimensions[2] = 4u;
-  std::set<uint32_t> fixed_regions;
-  const uint32_t fixed_cells =
-      count_valid_room_cells(&bvh, fixed, arena, &fixed_regions);
-  assert(fixed_cells == 0u);
-  (void)fixed_cells;
+  std::vector<VkrBakeBrickVisibility> serial(layout.probe_count);
+  std::vector<VkrBakeBrickVisibility> parallel(layout.probe_count);
+  ok = vkr_bake_bricks_visibility(&bvh, materials, 1u, &layout, 1u,
+                                  serial.data()) &&
+       vkr_bake_bricks_visibility(&bvh, materials, 1u, &layout, 3u,
+                                  parallel.data());
+  assert(ok);
+  assert(memcmp(serial.data(), parallel.data(),
+                serial.size() * sizeof(VkrBakeBrickVisibility)) == 0);
+  uint32_t air = 0u;
+  uint32_t invalid = 0u;
+  for (uint32_t p = 0u; p < layout.probe_count; ++p) {
+    const Vec3 lattice = vkr_bake_bricks_probe_position(&layout, p);
+    const Vec3 final_position = vec3_add(lattice, serial[p].offset);
+    if (serial[p].valid) {
+      assert(!inside_four_rooms_solid(final_position));
+    } else {
+      ++invalid;
+    }
+    /* Half a meter inside the column, past the reach of relocation. */
+    if (lattice.x > 4.4f && lattice.x < 5.6f && lattice.z > 4.4f &&
+        lattice.z < 5.6f && lattice.y > 0.7f && lattice.y < 3.3f) {
+      assert(!serial[p].valid);
+    }
+    /* Well inside a room's air, more than half a meter from every
+       surface. */
+    const float32_t room_x = fmodf(lattice.x, 12.0f);
+    const bool8_t near_column = lattice.x > 3.4f && lattice.x < 6.6f &&
+                                lattice.z > 3.4f && lattice.z < 6.6f;
+    if (lattice.y > 0.7f && lattice.y < 3.3f && lattice.z > 0.7f &&
+        lattice.z < 11.3f && lattice.x > 0.0f && lattice.x < 48.0f &&
+        room_x > 0.6f && room_x < 11.4f && !near_column) {
+      ++air;
+      assert(serial[p].valid);
+      assert(serial[p].offset.x == 0.0f && serial[p].offset.y == 0.0f &&
+             serial[p].offset.z == 0.0f);
+    }
+  }
+  assert(air > 0u && invalid > 0u);
 
+  const uint32_t placed = layout.brick_count;
+  vkr_bake_bricks_drop_invalid(&layout, serial.data());
+  assert(layout.brick_count > 0u && layout.brick_count <= placed);
+  for (uint32_t i = 0u; i < layout.entry_count; ++i) {
+    const uint32_t entry = layout.entries[i];
+    assert(entry == VKR_DIFFUSE_VOLUME_ENTRY_EMPTY ||
+           (entry & VKR_DIFFUSE_VOLUME_ENTRY_BRICK_MASK) < layout.brick_count);
+  }
+  (void)ok;
+  (void)top;
+  (void)placed;
+  (void)air;
+  (void)invalid;
   arena_destroy(arena);
-  printf("  test_fitted_volume_grid_finds_every_room PASSED\n");
+  printf("  test_sparse_bricks_place_and_relocate PASSED\n");
+}
+
+/* A closed box of double-sided Lambert surfaces with emission 1 and albedo
+   0.5 sends radiance sum(0.5^k, k < depth) from every direction: 1 at depth
+   1 and 1.75 at depth 3. Projected to L1, the constant term is that radiance
+   and the linear terms vanish. */
+void test_l1_lambert_furnace() {
+  printf("  test_l1_lambert_furnace...\n");
+  std::vector<VkrBakeTriangle> triangles;
+  append_box(&triangles, vec3_new(-1.0f, -1.0f, -1.0f),
+             vec3_new(1.0f, 1.0f, 1.0f));
+  /* Base color multiplies the vertex color, which append_box leaves
+     black. */
+  for (VkrBakeTriangle &triangle : triangles) {
+    for (VkrBakeVertex &vertex : triangle.vertex) {
+      vertex.color = vec4_new(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+  }
+  Arena *arena = arena_create(MB(16), MB(1));
+  VkrBakeBvh bvh = {};
+  bool8_t ok = vkr_bake_bvh_build(
+      {triangles.data(), (uint32_t)triangles.size()}, arena, &bvh);
+  assert(ok);
+  VkrBakeMaterial material = {};
+  material.alpha_mode = VKR_BAKE_MATERIAL_ALPHA_OPAQUE;
+  material.double_sided = true_v;
+  material.base_color = vec4_new(0.5f, 0.5f, 0.5f, 1.0f);
+  material.roughness = 1.0f;
+  material.normal_scale = 1.0f;
+  material.occlusion_strength = 1.0f;
+  material.emissive_factor = vec3_new(1.0f, 1.0f, 1.0f);
+  material.ior = 1.5f;
+  material.attenuation_color = vec3_new(1.0f, 1.0f, 1.0f);
+  material.attenuation_distance = INFINITY;
+  material.diffuse_transmission_color = vec3_new(1.0f, 1.0f, 1.0f);
+
+  const uint32_t face_size = 4u;
+  const float32_t expected[2] = {1.0f, 1.75f};
+  const uint32_t depths[2] = {1u, 3u};
+  for (uint32_t d = 0u; d < 2u; ++d) {
+    VkrBakeIntegratorSettings settings = {};
+    settings.scene.bvh = &bvh;
+    settings.scene.materials = &material;
+    settings.scene.material_count = 1u;
+    settings.max_depth = depths[d];
+    settings.max_transparent_layers =
+        VKR_BAKE_INTEGRATOR_MAX_TRANSPARENT_LAYERS;
+    settings.ray_epsilon = 0.00001f;
+    VkrBakeIntegrator integrator = {};
+    VkrBakeIntegratorError error = {};
+    ok = vkr_bake_integrator_init(&settings, &integrator, &error);
+    assert(ok);
+    std::vector<Vec3> radiance(6u * face_size * face_size);
+    for (uint32_t face = 0u; face < 6u; ++face)
+      for (uint32_t y = 0u; y < face_size; ++y)
+        for (uint32_t x = 0u; x < face_size; ++x) {
+          const Vec3 direction = vkr_bake_cube_direction(
+              face, 2.0f * (x + 0.5f) / face_size - 1.0f,
+              2.0f * (y + 0.5f) / face_size - 1.0f);
+          VkrBakeIntegratorResult traced = {};
+          ok = vkr_bake_integrator_trace(&integrator, vec3_zero(), direction,
+                                         (face * 64u + y * 8u + x) + 1u,
+                                         &traced, &error);
+          assert(ok);
+          radiance[(face * face_size + y) * face_size + x] = traced.radiance;
+        }
+    float32_t sh[3][4];
+    ok = vkr_bake_sh_project_l1(radiance.data(), face_size, 0.0f, sh);
+    assert(ok);
+    for (uint32_t c = 0u; c < 3u; ++c) {
+      assert(fabsf(sh[c][3] - expected[d]) < 1.0e-4f);
+      for (uint32_t k = 0u; k < 3u; ++k) {
+        assert(fabsf(sh[c][k]) < 1.0e-4f);
+      }
+    }
+  }
+  (void)ok;
+  (void)expected;
+  arena_destroy(arena);
+  printf("  test_l1_lambert_furnace PASSED\n");
+}
+
+/* A point lamp 2 m above a probe projects its direct light, I / d^2 from
+   straight above, into exactly constant E / (4 pi) and linear y E / (2 pi).
+   A 3 cm socket box around the lamp lies inside the runtime's local-shadow
+   near clip and does not shadow it, as a Bistro lantern's bulb mesh must
+   not; a wall between them does. */
+void test_point_lamp_direct_l1() {
+  printf("  test_point_lamp_direct_l1...\n");
+  const Vec3 lamp = vec3_new(0.0f, 2.0f, 0.0f);
+  std::vector<VkrBakeTriangle> triangles;
+  append_box(&triangles, vec3_new(-0.03f, 1.97f, -0.03f),
+             vec3_new(0.03f, 2.03f, 0.03f));
+  Arena *arena = arena_create(MB(16), MB(1));
+  VkrBakeMaterial material = {};
+  material.alpha_mode = VKR_BAKE_MATERIAL_ALPHA_OPAQUE;
+  material.double_sided = true_v;
+  material.base_color = vec4_new(0.5f, 0.5f, 0.5f, 1.0f);
+  material.roughness = 1.0f;
+  material.normal_scale = 1.0f;
+  material.occlusion_strength = 1.0f;
+  material.ior = 1.5f;
+  material.attenuation_color = vec3_new(1.0f, 1.0f, 1.0f);
+  material.attenuation_distance = INFINITY;
+  material.diffuse_transmission_color = vec3_new(1.0f, 1.0f, 1.0f);
+  VkrBakeSceneLight light = {};
+  light.kind = VkrBakeSceneLightKind::Point;
+  light.position = lamp;
+  light.color = vec3_new(1.0f, 0.5f, 0.25f);
+  light.intensity = 8.0f;
+  light.enabled = true_v;
+
+  const float32_t pi = 3.14159265358979f;
+  const float32_t irradiance = light.intensity / 4.0f;
+  for (uint32_t blocked = 0u; blocked < 2u; ++blocked) {
+    if (blocked) {
+      append_box(&triangles, vec3_new(-1.0f, 0.9f, -1.0f),
+                 vec3_new(1.0f, 1.1f, 1.0f));
+    }
+    VkrBakeBvh bvh = {};
+    bool8_t ok = vkr_bake_bvh_build(
+        {triangles.data(), (uint32_t)triangles.size()}, arena, &bvh);
+    assert(ok);
+    VkrBakeIntegratorSettings settings = {};
+    settings.scene.bvh = &bvh;
+    settings.scene.materials = &material;
+    settings.scene.material_count = 1u;
+    settings.scene.lights = &light;
+    settings.scene.light_count = 1u;
+    settings.max_depth = 1u;
+    settings.max_transparent_layers =
+        VKR_BAKE_INTEGRATOR_MAX_TRANSPARENT_LAYERS;
+    settings.ray_epsilon = 0.00001f;
+    VkrBakeIntegrator integrator = {};
+    VkrBakeIntegratorError error = {};
+    ok = vkr_bake_integrator_init(&settings, &integrator, &error);
+    assert(ok);
+    float32_t sh[3][4] = {};
+    ok = vkr_bake_integrator_direct_l1(&integrator, vec3_zero(), 1u, 16u, sh,
+                                       &error);
+    assert(ok);
+    for (uint32_t c = 0u; c < 3u; ++c) {
+      const float32_t e = blocked ? 0.0f : irradiance * light.color.elements[c];
+      assert(fabsf(sh[c][3] - e / (4.0f * pi)) < 1.0e-5f);
+      assert(fabsf(sh[c][1] - e / (2.0f * pi)) < 1.0e-5f);
+      assert(fabsf(sh[c][0]) < 1.0e-6f && fabsf(sh[c][2]) < 1.0e-6f);
+    }
+    (void)ok;
+  }
+  arena_destroy(arena);
+  printf("  test_point_lamp_direct_l1 PASSED\n");
 }
 
 } // namespace
+
+/* A lamp layer's direction page: a covered texel's direction becomes
+   0.5 * normalize(d) + 0.5 with its length as alpha, clamped to one; a texel
+   with no direction is the neutral (0.5, 0.5, 0.5, 0); the rectangle's
+   uncovered texels take its covered texels' mean as irradiance does, and
+   texels outside every rectangle or in a rectangle nothing covers are
+   neutral, not compose_page's black. */
+void test_compose_direction_page_encodes_and_stays_neutral() {
+  VkrBakeLightmapLayout layout;
+  layout.page_size = 8u;
+  layout.page_count = 1u;
+  /* The second rectangle holds no covered texel. */
+  layout.rects = {{0u, 0u, 0u, 0u, 4u, 4u}, {1u, 0u, 4u, 4u, 4u, 4u}};
+  layout.rect_by_instance = {0u, 1u};
+  std::vector<VkrBakeLightmapTexel> texels(3u);
+  texels[0].x = 1u;
+  texels[0].y = 1u;
+  texels[1].x = 2u;
+  texels[1].y = 1u;
+  texels[2].x = 1u;
+  texels[2].y = 2u;
+  const std::vector<Vec3> directions = {vec3_new(0.0f, 0.6f, 0.0f), vec3_zero(),
+                                        vec3_new(3.0f, 0.0f, 0.0f)};
+  std::vector<float32_t> rgba;
+  assert(vkr_bake_lightmap_compose_direction_page(layout, 0u, texels,
+                                                  directions, 1u, &rgba));
+  assert(rgba.size() == 8u * 8u * 4u);
+  const float32_t expected[3][4] = {{0.5f, 1.0f, 0.5f, 0.6f},
+                                    {0.5f, 0.5f, 0.5f, 0.0f},
+                                    {1.0f, 0.5f, 0.5f, 1.0f}};
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    const float32_t *texel = &rgba[4u * (texels[i].y * 8u + texels[i].x)];
+    for (uint32_t c = 0u; c < 4u; ++c) {
+      assert(fabsf(texel[c] - expected[i][c]) < 1.0e-6f);
+    }
+  }
+  /* (3, 3) has no covered or first-ring neighbor, so it takes the mean of
+     the covered texels. */
+  const float32_t *corner = &rgba[4u * (3u * 8u + 3u)];
+  for (uint32_t c = 0u; c < 4u; ++c) {
+    const float32_t mean =
+        (expected[0][c] + expected[1][c] + expected[2][c]) / 3.0f;
+    assert(fabsf(corner[c] - mean) < 1.0e-6f);
+  }
+  for (uint32_t y = 0u; y < 8u; ++y) {
+    for (uint32_t x = 0u; x < 8u; ++x) {
+      if (x < 4u && y < 4u) {
+        continue;
+      }
+      const float32_t *texel = &rgba[4u * (y * 8u + x)];
+      assert(texel[0] == 0.5f && texel[1] == 0.5f && texel[2] == 0.5f &&
+             texel[3] == 0.0f);
+    }
+  }
+  assert(!vkr_bake_lightmap_compose_direction_page(
+      layout, 0u, texels, std::vector<Vec3>(2u), 1u, &rgba));
+  printf("  test_compose_direction_page_encodes_and_stays_neutral PASSED\n");
+}
 
 bool32_t run_lightmap_bake_tests(void) {
   printf("--- Starting Lightmap Bake Tests ---\n");
@@ -1117,15 +1535,19 @@ bool32_t run_lightmap_bake_tests(void) {
   test_compose_fills_each_rect_alone();
   test_astc_hdr_round_trip_keeps_range();
   test_lightmap_set_round_trip_and_rejects();
+  test_rgb9e5_round_trip();
   test_light_layer_sun_weights();
-  test_diffuse_volume_layers_round_trip();
+  test_diffuse_volume_v3_round_trip_and_rejects();
   test_lightmap_denoise_stays_on_surfaces();
   test_lightmap_denoise_atrous_keeps_edges();
   test_lightmap_fill_buried_texels();
   test_bake_material_accepts_roughness_bound();
   test_bake_scene_builds_blockout_stairs();
   test_bake_scene_leaves_out_moving_brushes();
-  test_fitted_volume_grid_finds_every_room();
+  test_sparse_bricks_place_and_relocate();
+  test_l1_lambert_furnace();
+  test_point_lamp_direct_l1();
+  test_compose_direction_page_encodes_and_stays_neutral();
   printf("--- Lightmap Bake Tests Completed ---\n");
   return true_v;
 }

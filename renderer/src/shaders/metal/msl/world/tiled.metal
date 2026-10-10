@@ -658,7 +658,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     baked_occlusion = lightmap.a;
   } else {
     float4 volume =
-        vkr_metal_packet_diffuse_volume(frame, input.world_position, normal);
+        vkr_metal_packet_diffuse_volume(frame, input.world_position, normal,
+                                        view);
     diffuse_light = volume.rgb;
     environment_diffuse = volume.w == 0.0f;
   }

@@ -36,6 +36,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"clearcoat_enabled", VKR_RG_JSON_CONDITION_CLEARCOAT_ENABLED},
     {"sheen_enabled", VKR_RG_JSON_CONDITION_SHEEN_ENABLED},
     {"anisotropy_enabled", VKR_RG_JSON_CONDITION_ANISOTROPY_ENABLED},
+    {"baked_lamps_enabled", VKR_RG_JSON_CONDITION_BAKED_LAMPS_ENABLED},
+    {"diffuse_volume_enabled", VKR_RG_JSON_CONDITION_DIFFUSE_VOLUME_ENABLED},
     {"editor_enabled && lighting_layers_enabled",
      VKR_RG_JSON_CONDITION_EDITOR_ENABLED_LIGHTING_LAYERS},
     {"!editor_enabled && lighting_layers_enabled",
@@ -59,6 +61,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_LOCAL_SHADOW_TRANSMISSION_ACTIVE},
     {"local_shadow_atlas_clear",
      VKR_RG_JSON_CONDITION_LOCAL_SHADOW_ATLAS_CLEAR},
+    {"baked_lamp_shadows_active",
+     VKR_RG_JSON_CONDITION_BAKED_LAMP_SHADOWS_ACTIVE},
     {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
     {"shadow_evsm_active", VKR_RG_JSON_CONDITION_SHADOW_EVSM_ACTIVE},
     {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
@@ -2030,6 +2034,10 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->sheen_enabled;
   case VKR_RG_JSON_CONDITION_ANISOTROPY_ENABLED:
     return frame->anisotropy_enabled;
+  case VKR_RG_JSON_CONDITION_BAKED_LAMPS_ENABLED:
+    return frame->baked_lamps_enabled;
+  case VKR_RG_JSON_CONDITION_DIFFUSE_VOLUME_ENABLED:
+    return frame->diffuse_volume_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_LIGHTING_LAYERS:
     return frame->editor_enabled && frame->lighting_layers_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_LIGHTING_LAYERS:
@@ -2063,6 +2071,9 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_ATLAS_CLEAR:
     return frame->local_shadow_view_count > 0u &&
            frame->local_shadow_atlas_clear_mask != 0u;
+  case VKR_RG_JSON_CONDITION_BAKED_LAMP_SHADOWS_ACTIVE:
+    return frame->baked_lamps_enabled && frame->local_shadow_view_count > 0u &&
+           frame->local_shadow_baked_lamp_count > 0u;
   case VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE:
     return frame->shadow_cascade_count > 0u;
   case VKR_RG_JSON_CONDITION_SHADOW_EVSM_ACTIVE:
@@ -2220,6 +2231,16 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
                                 "local_shadow_transmission_render_count")) {
     *out_count = frame->local_shadow_transmission_render_count;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "local_shadow_static_render_count")) {
+    *out_count = frame->local_shadow_static_render_count;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "local_shadow_dynamic_render_count")) {
+    *out_count = frame->local_shadow_dynamic_render_count;
     return true_v;
   }
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
@@ -2600,6 +2621,22 @@ vkr_rg_resolve_index(const VkrRgJsonIndex *index, uint32_t fallback,
                                 "${local_shadow_render_atlas_layer}")) {
     return frame && fallback < frame->local_shadow_render_count
                ? frame->local_shadow_render_atlas_layers[fallback]
+               : UINT32_MAX;
+  }
+  /* Dynamic slot i copies a static square from one layer into its dynamic
+   * square on a band layer, then draws there; it follows the static
+   * slots. */
+  if (vkr_string8_equals_cstr_i(&index->token,
+                                "${local_shadow_dynamic_atlas_layer}")) {
+    return frame && fallback < frame->local_shadow_dynamic_render_count
+               ? frame->local_shadow_render_atlas_layers
+                     [frame->local_shadow_static_render_count + fallback]
+               : UINT32_MAX;
+  }
+  if (vkr_string8_equals_cstr_i(&index->token,
+                                "${local_shadow_copy_source_layer}")) {
+    return frame && fallback < frame->local_shadow_dynamic_render_count
+               ? frame->local_shadow_copy_source_layers[fallback]
                : UINT32_MAX;
   }
 

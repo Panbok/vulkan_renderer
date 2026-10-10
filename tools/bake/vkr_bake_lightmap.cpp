@@ -725,9 +725,13 @@ bool vkr_bake_lightmap_denoise(uint32_t page_size,
             }
           }
           if (weight > 0.0f) {
-            (*values)[i] = vec3_scale(sum, 1.0f / weight);
+            /* Divided, not scaled by the reciprocal: a denormal weight sum,
+               where every tap lies far off the center's plane, overflows
+               1 / weight to infinity. */
+            (*values)[i] =
+                vec3_new(sum.x / weight, sum.y / weight, sum.z / weight);
             if (variance) {
-              next_variance[i] = variance_sum / (weight * weight);
+              next_variance[i] = variance_sum / weight / weight;
             }
           } else if (variance) {
             next_variance[i] = current_variance[i];
@@ -742,6 +746,78 @@ bool vkr_bake_lightmap_denoise(uint32_t page_size,
   } catch (const std::bad_alloc &) {
     return false;
   } catch (const std::system_error &) {
+    return false;
+  }
+}
+
+bool vkr_bake_lightmap_compose_direction_page(
+    const VkrBakeLightmapLayout &layout, uint32_t page,
+    const std::vector<VkrBakeLightmapTexel> &texels,
+    const std::vector<Vec3> &directions, uint32_t dilation_passes,
+    std::vector<float32_t> *out_rgba) {
+  if (!out_rgba || page >= layout.page_count ||
+      directions.size() != texels.size()) {
+    return false;
+  }
+  try {
+    std::vector<Vec3> encoded(texels.size());
+    std::vector<float32_t> directionality(texels.size(), 0.0f);
+    for (size_t i = 0u; i < texels.size(); ++i) {
+      const Vec3 d = directions[i];
+      const float32_t length = vec3_length(d);
+      if (!(length > 1.0e-6f) || !std::isfinite(length)) {
+        encoded[i] = vec3_new(0.5f, 0.5f, 0.5f);
+        continue;
+      }
+      const Vec3 unit = vec3_scale(d, 1.0f / length);
+      encoded[i] = vec3_new(0.5f * unit.x + 0.5f, 0.5f * unit.y + 0.5f,
+                            0.5f * unit.z + 0.5f);
+      directionality[i] = std::fmin(length, 1.0f);
+    }
+    if (!vkr_bake_lightmap_compose_page(layout, page, texels, encoded,
+                                        &directionality, dilation_passes,
+                                        out_rgba)) {
+      return false;
+    }
+    /* compose_page leaves texels outside every rectangle black with alpha
+       one, and a rectangle no triangle covers black with alpha one; a
+       direction page holds no direction there. */
+    const size_t size = layout.page_size;
+    std::vector<uint8_t> covered(size * size, 0u);
+    for (const VkrBakeLightmapTexel &texel : texels) {
+      covered[(size_t)texel.y * size + texel.x] = 1u;
+    }
+    std::vector<uint8_t> inside(size * size, 0u);
+    for (const VkrBakeLightmapRect &rect : layout.rects) {
+      if (rect.page != page) {
+        continue;
+      }
+      bool any_covered = false;
+      for (uint32_t y = rect.y; !any_covered && y < rect.y + rect.height; ++y) {
+        const auto row = covered.begin() + (ptrdiff_t)(y * size + rect.x);
+        any_covered =
+            std::find(row, row + rect.width, (uint8_t)1u) != row + rect.width;
+      }
+      if (!any_covered) {
+        continue;
+      }
+      for (uint32_t y = rect.y; y < rect.y + rect.height; ++y) {
+        std::fill_n(inside.begin() + (ptrdiff_t)(y * size + rect.x), rect.width,
+                    (uint8_t)1u);
+      }
+    }
+    float32_t *rgba = out_rgba->data();
+    for (size_t i = 0u; i < size * size; ++i) {
+      if (inside[i]) {
+        continue;
+      }
+      rgba[4u * i + 0u] = 0.5f;
+      rgba[4u * i + 1u] = 0.5f;
+      rgba[4u * i + 2u] = 0.5f;
+      rgba[4u * i + 3u] = 0.0f;
+    }
+    return true;
+  } catch (const std::bad_alloc &) {
     return false;
   }
 }
@@ -889,18 +965,20 @@ bool run_astc_workers(astcenc_context *context, uint32_t threads, Work work) {
 
 } // namespace
 
-bool vkr_bake_lightmap_encode_astc_hdr(const std::vector<float32_t> &rgba,
-                                       uint32_t size, float32_t effort,
-                                       uint32_t threads,
-                                       std::vector<uint8_t> *out_blocks) {
+namespace {
+
+/* Encodes a page of RGBA floats to ASTC 4x4 blocks in `profile`. */
+bool encode_astc(const std::vector<float32_t> &rgba, uint32_t size,
+                 float32_t effort, uint32_t threads, astcenc_profile profile,
+                 std::vector<uint8_t> *out_blocks) {
   if (!out_blocks || size == 0u || size % 4u != 0u ||
       rgba.size() != (size_t)size * size * 4u || !(effort >= 0.0f) ||
       effort > 100.0f) {
     return false;
   }
   astcenc_config config;
-  if (astcenc_config_init(ASTCENC_PRF_HDR_RGB_LDR_A, 4u, 4u, 1u, effort, 0u,
-                          &config) != ASTCENC_SUCCESS) {
+  if (astcenc_config_init(profile, 4u, 4u, 1u, effort, 0u, &config) !=
+      ASTCENC_SUCCESS) {
     return false;
   }
   const uint32_t workers = std::max(1u, threads);
@@ -928,16 +1006,16 @@ bool vkr_bake_lightmap_encode_astc_hdr(const std::vector<float32_t> &rgba,
   return encoded;
 }
 
-bool vkr_bake_lightmap_decode_astc_hdr(const std::vector<uint8_t> &blocks,
-                                       uint32_t size,
-                                       std::vector<float32_t> *out_rgba) {
+/* Decodes ASTC 4x4 blocks in `profile` to RGBA floats. */
+bool decode_astc(const std::vector<uint8_t> &blocks, uint32_t size,
+                 astcenc_profile profile, std::vector<float32_t> *out_rgba) {
   if (!out_rgba || size == 0u || size % 4u != 0u ||
       blocks.size() != (size_t)(size / 4u) * (size / 4u) * 16u) {
     return false;
   }
   astcenc_config config;
-  if (astcenc_config_init(ASTCENC_PRF_HDR_RGB_LDR_A, 4u, 4u, 1u,
-                          ASTCENC_PRE_FASTEST, ASTCENC_FLG_DECOMPRESS_ONLY,
+  if (astcenc_config_init(profile, 4u, 4u, 1u, ASTCENC_PRE_FASTEST,
+                          ASTCENC_FLG_DECOMPRESS_ONLY,
                           &config) != ASTCENC_SUCCESS) {
     return false;
   }
@@ -959,4 +1037,33 @@ bool vkr_bake_lightmap_decode_astc_hdr(const std::vector<uint8_t> &blocks,
   }
   astcenc_context_free(context);
   return decoded;
+}
+
+} // namespace
+
+bool vkr_bake_lightmap_encode_astc_hdr(const std::vector<float32_t> &rgba,
+                                       uint32_t size, float32_t effort,
+                                       uint32_t threads,
+                                       std::vector<uint8_t> *out_blocks) {
+  return encode_astc(rgba, size, effort, threads, ASTCENC_PRF_HDR_RGB_LDR_A,
+                     out_blocks);
+}
+
+bool vkr_bake_lightmap_decode_astc_hdr(const std::vector<uint8_t> &blocks,
+                                       uint32_t size,
+                                       std::vector<float32_t> *out_rgba) {
+  return decode_astc(blocks, size, ASTCENC_PRF_HDR_RGB_LDR_A, out_rgba);
+}
+
+bool vkr_bake_lightmap_encode_astc_ldr(const std::vector<float32_t> &rgba,
+                                       uint32_t size, float32_t effort,
+                                       uint32_t threads,
+                                       std::vector<uint8_t> *out_blocks) {
+  return encode_astc(rgba, size, effort, threads, ASTCENC_PRF_LDR, out_blocks);
+}
+
+bool vkr_bake_lightmap_decode_astc_ldr(const std::vector<uint8_t> &blocks,
+                                       uint32_t size,
+                                       std::vector<float32_t> *out_rgba) {
+  return decode_astc(blocks, size, ASTCENC_PRF_LDR, out_rgba);
 }

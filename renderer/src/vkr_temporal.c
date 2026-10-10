@@ -176,13 +176,18 @@ vkr_internal void temporal_scene_lighting(VkrTemporalSceneSignature *signature,
       temporal_scene_floats(signature, light->outer_cone_angle, 0.0f);
       temporal_scene_pair(signature, light->kind, light->render_id);
     }
-    temporal_scene_pair(signature, lighting->diffuse_volume.texture.id,
-                        lighting->diffuse_volume.texture.generation);
-    temporal_scene_vec3(signature, lighting->diffuse_volume.origin);
-    temporal_scene_vec3(signature, lighting->diffuse_volume.inverse_spacing);
-    temporal_scene_pair(signature, lighting->diffuse_volume.dimensions[0],
-                        lighting->diffuse_volume.dimensions[1]);
-    temporal_scene_lane(signature, lighting->diffuse_volume.dimensions[2]);
+    /* The composed SH changes in place, so its composition stands for its
+       contents. */
+    const VkrDiffuseVolumeBinding *volume = &lighting->diffuse_volume;
+    temporal_scene_pair(signature, volume->indirection.id,
+                        volume->indirection.generation);
+    temporal_scene_pair(signature, volume->sh.id, volume->sh.generation);
+    temporal_scene_pair(signature, volume->composition, volume->probe_count);
+    temporal_scene_vec3(signature, volume->origin);
+    temporal_scene_floats(signature, volume->spacing, volume->sh_scale);
+    temporal_scene_pair(signature, volume->dimensions[0],
+                        volume->dimensions[1]);
+    temporal_scene_lane(signature, volume->dimensions[2]);
     temporal_scene_lane(signature, lighting->ibl_probe_count);
     for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
       const VkrFrameIblProbe *probe = &lighting->ibl_probes[i];

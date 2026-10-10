@@ -27,10 +27,12 @@ enum {
   VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY = 64,
   /* All main-graph feature conditions at their bounded repeat maxima, with
      opaque and three transmitting local shadow passes for each of the 64
-     local faces, the local shadow mask and the layered deferred-lighting
-     kernel, total 411 passes without temporal upscaling. This path retains
-     the 15-pass HZB build, so it exceeds the FSR31 variant. */
-  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 411,
+     local faces (a face drawn into a dynamic square takes a copy and a draw
+     and no transmission, so it never adds passes), the local shadow mask, the
+     layered deferred-lighting kernel and the diffuse-volume composition, total
+     412 passes without temporal upscaling. This path retains the 15-pass HZB
+     build, so it exceeds the FSR31 variant. */
+  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 415,
   VKR_RENDERER_IMPL_MAX_PASS_TIMINGS = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
   VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT = VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
   VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT = 8,

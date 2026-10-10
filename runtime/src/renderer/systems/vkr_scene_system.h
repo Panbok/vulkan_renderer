@@ -34,6 +34,7 @@
 // Forward declarations
 struct VkrRenderAssets;
 struct VkrMeshLoadDesc;
+struct VkrTextureSystem;
 typedef struct SceneChildIndexSlot SceneChildIndexSlot;
 
 // ============================================================================
@@ -1009,41 +1010,61 @@ typedef struct VkrSceneLightGroups {
   uint32_t count;
 } VkrSceneLightGroups;
 
-/** A diffuse volume's light layers (ADR-054, ADR-090): each probe's SH per
- * layer and the region texel of its row, kept so the scene can recompose the
- * published texture as the sun turns and light group factors change.
- * Heap-owned by the scene; `probe_sh` and `probe_regions` are malloc'd. */
-typedef struct VkrSceneDiffuseVolumeLayers {
+/** A scene's sparse diffuse volume (ADR-054, ADR-090): its published
+ * textures, placement and light layers. The renderer composes `sh` from
+ * `layer_sh` with `weights` whenever `composition` advances, which happens
+ * when the sun turns or a light group factor changes. Heap-owned by the
+ * scene; the scene holds one reference to each texture. */
+typedef struct VkrSceneDiffuseVolume {
+  VkrTextureHandle indirection;
+  VkrTextureHandle probes;
+  VkrTextureHandle moments;
+  VkrTextureHandle layer_sh;
+  VkrTextureHandle sh;
+  /** Document-space origin of indirection entry (0, 0, 0). */
+  Vec3 origin;
+  float32_t spacing;
+  float32_t sh_scale;
+  uint32_t dimensions[3];
+  uint32_t probe_count;
   VkrLightLayer layers[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
   uint32_t layer_count;
-  uint32_t probe_count;
-  /** probe_count * layer_count SH, probe-major. */
-  VkrShL2Packed *probe_sh;
-  /** Texel 7 of each probe's row: probe region, lower-corner cell region. */
-  float32_t *probe_regions;
-  /** Weights of the published texture. */
+  /** Lamp direct bands after the layers: zero or one per lamp group. */
+  uint32_t lamp_direct_count;
+  /** Weights of the current composition. */
   float32_t weights[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
   float64_t since_compose;
-  uint32_t version;
-  /** Texture name stem: the volume's path. */
-  char name[256];
-} VkrSceneDiffuseVolumeLayers;
+  uint32_t composition;
+} VkrSceneDiffuseVolume;
 
 /** Lightmap instances one scene binds: slots travel as exact floats in the
     prepared instance row (VkrPreparedInstanceGPU). */
 #define VKR_SCENE_LIGHTMAP_MAX_INSTANCES (1u << 24)
 
 /** A scene's lightmap set (ADR-088): the layers, each instance's matching
- * key and page rectangle, and the texture of every layer page. The scene
- * gives each matched mesh instance its lightmap slot (instance index + 1)
- * and weighs the layers each frame. Heap-owned by the scene; `instances`,
- * `rects` and `bound` are malloc'd. */
+ * key and page rectangle, and the texture of the irradiance planes the
+ * renderer's pipeline class samples: every layer's ASTC plane on the tiled
+ * pipeline, the lamp groups' desktop planes on the desktop pipeline (desktop
+ * baked lamps proposal). Slice page * slice_layer_count + i of the texture
+ * holds layer slice_layers[i] of that page. The scene gives each matched
+ * mesh instance its lightmap slot (instance index + 1) and weighs the layers
+ * each frame. Heap-owned by the scene; `instances`, `rects` and `bound` are
+ * malloc'd. */
 typedef struct VkrSceneLightmaps {
   VkrTextureHandle texture;
+  VkrTextureFormat format;
+  /** The lamp groups' dominant-direction planes in the slices of
+      `texture`, invalid without them (desktop pipeline only). */
+  VkrTextureHandle direction;
   uint32_t page_size;
   uint32_t page_count;
   uint32_t layer_count;
   VkrLightLayer layers[VKR_LIGHTMAP_SET_MAX_LAYERS];
+  uint32_t slice_layers[VKR_LIGHTMAP_SET_MAX_LAYERS];
+  uint32_t slice_layer_count;
+  /** Every lamp group's light is in the texture, so static lamps leave the
+      runtime light lists. */
+  bool8_t lamps_baked;
   uint32_t instance_count;
   VkrLightmapInstance *instances;
   /** One per instance: the frame's rectangle table. */
@@ -1348,10 +1369,8 @@ typedef struct VkrScene {
   /** Effective world settings, resolved from components once per change. */
   VkrSceneWorldState world_state;
   VkrSceneSettings settings;
-  /** Scene-owned baked diffuse-volume texture and lattice mapping. */
-  VkrDiffuseVolumeBinding diffuse_volume;
-  /** The volume's layers, or NULL; see VkrSceneDiffuseVolumeLayers. */
-  VkrSceneDiffuseVolumeLayers *diffuse_volume_layers;
+  /** The scene's baked diffuse volume, or NULL; see VkrSceneDiffuseVolume. */
+  VkrSceneDiffuseVolume *diffuse_volume;
   /** The scene's lightmap set, or NULL; see VkrSceneLightmaps. */
   VkrSceneLightmaps *lightmaps;
   /** Advances whenever an entity gains a mesh renderer or a generated mesh,
@@ -1463,17 +1482,10 @@ void vkr_scene_set_world_fallback(VkrScene *scene, const VkrScene *root);
 bool8_t vkr_scene_singleton_active(const VkrScene *scene, VkrEntityId entity,
                                    const struct VkrTypeDesc *type);
 
-/** Releases the scene's diffuse-volume texture and layers and disables
-    volume sampling. */
+/** Releases the scene's diffuse-volume textures and disables volume
+    sampling. */
 void vkr_scene_reset_diffuse_volume(VkrScene *scene,
                                     struct VkrRenderAssets *assets);
-
-/** The upload of a diffuse-volume texture: 8-by-probe-count RGBA32F rows of
-    `layers` weighted by `weights` (one per layer), in malloc'd storage that
-    vkr_texture_system_release_prepared_load frees. */
-bool8_t vkr_scene_diffuse_volume_prepare_texture(
-    const VkrSceneDiffuseVolumeLayers *layers, const float32_t *weights,
-    struct VkrTexturePreparedLoad *out_prepared);
 
 /** The weights of `layers` for the scene's current sun and light group
     factors: sun keys by vkr_light_layers_sun_weights, lamp groups by their
@@ -1483,14 +1495,19 @@ void vkr_scene_light_layer_weights(const VkrScene *scene,
                                    uint32_t layer_count,
                                    float32_t *out_weights);
 
-/** Recomposes the volume texture when a layer weight has moved by more than
-    one percent since the last composition, at most every
-    VKR_SCENE_SUN_REFRESH_SECONDS, replacing the texture and releasing the
-    previous one. Call once per frame after vkr_scene_sync_sun on the thread
-    that finalizes textures. */
-void vkr_scene_update_diffuse_volume(VkrScene *scene,
-                                     struct VkrRenderAssets *assets,
-                                     float64_t delta_seconds);
+/** Takes the current layer weights as a new composition when one has moved
+    by more than one percent since the last, at most every
+    VKR_SCENE_SUN_REFRESH_SECONDS; the renderer recomposes the volume's SH
+    texture in place. Call once per frame after vkr_scene_sync_sun. */
+void vkr_scene_update_diffuse_volume(VkrScene *scene, float64_t delta_seconds);
+
+/** The frame binding of the scene's diffuse volume: its textures once every
+    one is published, its placement in document space, and the layers of its
+    current composition with nonzero weight. Empty without a volume or
+    before its textures are confirmed. */
+void vkr_scene_diffuse_volume_binding(const VkrScene *scene,
+                                      struct VkrTextureSystem *texture_system,
+                                      VkrDiffuseVolumeBinding *out_binding);
 
 /** Clears the lightmap slots the scene gave, releases its lightmap texture
     and set, and disables lightmap sampling. */

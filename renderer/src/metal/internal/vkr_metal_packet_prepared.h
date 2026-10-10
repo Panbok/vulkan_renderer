@@ -73,9 +73,21 @@ typedef struct VkrMetalPacketBufferCopy {
 
 /* Two candidate ranges, each with its candidate and instance rows, then the
    zeroed compaction state. */
+/** A region copy between two slices of one texture. */
+typedef struct VkrMetalPacketTextureCopy {
+  id<MTLTexture> texture;
+  NSUInteger source_slice;
+  NSUInteger destination_slice;
+  MTLOrigin source_origin;
+  MTLOrigin destination_origin;
+  MTLSize size;
+} VkrMetalPacketTextureCopy;
+
 typedef struct VkrMetalPacketTransferPass {
   VkrMetalPacketBufferCopy buffers[5];
   uint32_t buffer_count;
+  VkrMetalPacketTextureCopy texture_copy;
+  bool8_t has_texture_copy;
 } VkrMetalPacketTransferPass;
 
 typedef struct VkrMetalPacketPreparedPass {
@@ -105,6 +117,10 @@ typedef struct VkrMetalPacketPreparedPass {
       uint64_t root;
       uint32_t extent;
     } cloud_sky_light;
+    struct {
+      uint64_t root;
+      uint32_t probe_count;
+    } diffuse_volume_compose;
     struct {
       VkrMetalPacketGpuEncodeGroup
           groups[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];

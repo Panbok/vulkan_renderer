@@ -164,10 +164,15 @@ struct alignas(16) VkrMetalPacketLtc {
   uint reserved;
 };
 
-struct VkrMetalPacketDiffuseVolume {
-    float4 origin;
-    float4 inverse_spacing;
-    uint4 dimensions;
+// Sparse diffuse volume (DVOL v3); see VkrDiffuseVolumeBinding.
+struct alignas(16) VkrMetalPacketDiffuseVolume {
+  texture2d<uint, access::read> indirection;
+  texture2d<float, access::read> probes;
+  texture2d<float, access::sample> moments;
+  texture2d<float, access::read> sh;
+  float4 origin;
+  float4 params;
+  uint4 dimensions;
 };
 
 // A lightmapped instance's page rectangle in texels: x and y in `origin`,
@@ -324,7 +329,7 @@ struct VkrMetalPacketFrameRoot {
   depth2d_array<float, access::sample> local_shadow_map;
   device VkrLocalShadowView *local_shadow_views;
   texture2d<float, access::sample> dfg_lut;
-  texture2d<float, access::read> diffuse_volume;
+  ulong diffuse_volume_reserved;
   constant VkrMetalPacketDiffuseVolume *diffuse_volume_params;
   constant VkrMetalPacketLtc *ltc;
   constant VkrFogParams *fog;

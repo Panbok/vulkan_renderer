@@ -3,17 +3,19 @@
 extern "C" {
 #include "assets/vkr_lightmap_set.h"
 #include "core/logger.h"
+#include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
 #include "memory/vkr_arena_allocator.h"
 }
 #include "bake/vkr_bake_atmosphere.h"
 #include "bake/vkr_bake_bvh.h"
+#include "bake/vkr_bake_gpu.h"
 #include "bake/vkr_bake_integrator.h"
 #include "bake/vkr_bake_layers.h"
 #include "bake/vkr_bake_lightmap.h"
-#include "bake/vkr_bake_metal.h"
 #include "bake/vkr_bake_scene.h"
 #include "filesystem/vkr_filesystem_cpp.h"
+#include "vkr_ibl_math.h"
 
 #include <algorithm>
 #include <atomic>
@@ -24,6 +26,7 @@ extern "C" {
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <new>
 #include <sstream>
 #include <string>
@@ -34,13 +37,15 @@ extern "C" {
  * Static-light lightmap baker (ADR-087, docs/proposals/tiled-pipeline.md).
  * It packs and rasterizes the scene's lightmapped instances. The CPU mode
  * gathers cosine-weighted samples per texel through the ADR-054 integrator and
- * reports throughput. `--gpu trace` measures Metal ray throughput; `--gpu
- * gather` bakes the layer irradiance on Metal and checks it against the CPU
+ * reports throughput. `--gpu trace` measures GPU ray throughput (Metal ray
+ * tracing on Apple hosts, Vulkan ray queries elsewhere); `--gpu gather`
+ * bakes the layer irradiance on the GPU and checks it against the CPU
  * integrator, and counts each layer's outlier texels. `--output` bakes the
- * scene's lightmap set (VKLM) on Metal, filling texels buried in solids and
+ * scene's lightmap set (VKLM) on the GPU, filling texels buried in solids and
  * denoising each layer's indirect light before encoding (ADR-088), and
  * `--manifest` writes the bake's source closure for `vkr_bakery bake lightmap`;
- * `--inspect` stops after the manifest.
+ * `--inspect` stops after the manifest. A set holds only what the host's
+ * pipeline class samples (PipelineClass).
  */
 
 namespace {
@@ -67,7 +72,7 @@ constexpr uint32_t kRussianRouletteDepth = 2u;
    its same-surface neighbors' light instead of its own. */
 constexpr float32_t kBuriedBackfaceFraction = 0.5f;
 /* World distance within which a first bounce occludes for the ambient
-   occlusion every layer's alpha carries (ADR-088). */
+   occlusion every tiled layer's alpha carries (ADR-088). */
 constexpr float32_t kOcclusionRadius = 1.0f;
 
 enum class GpuMode : uint8_t {
@@ -75,6 +80,35 @@ enum class GpuMode : uint8_t {
   Trace,
   Gather,
 };
+
+/* Encoding of the lamp groups' desktop planes: RGB9E5 irradiance and RGBA8
+   direction, or BC6H and BC7, a quarter of the size, from the Vulkan
+   device's compute encoders (vkr_bake_gpu_encode_bc6h). Automatic is BC
+   where the device has the encoders and uncompressed elsewhere. */
+enum class DesktopEncoding : uint8_t {
+  Automatic,
+  Uncompressed,
+  Bc,
+};
+
+/* The pipeline class a set is baked for (ADR-087). Each platform bakes,
+   packages and tests on its own machine (owner decision 2026-10-09), so a
+   set holds only what its class samples: the desktop class each lamp
+   group's irradiance and incident direction in the desktop encoding, and no
+   sun key; the tiled class every layer's ASTC 4x4 HDR irradiance, and no
+   direction, which it does not sample yet. The host picks the class as the
+   runtime picks its backend: Metal, the tiled class, on Apple hosts and
+   Vulkan, the desktop class, elsewhere. */
+enum class PipelineClass : uint8_t {
+  Desktop,
+  Tiled,
+};
+
+#if defined(__APPLE__)
+constexpr PipelineClass kHostPipeline = PipelineClass::Tiled;
+#else
+constexpr PipelineClass kHostPipeline = PipelineClass::Desktop;
+#endif
 
 /* Which transport the CPU parity check compares; emission is always in. Sun
    is the directional lights and lamps the other lights, both without sky. */
@@ -103,6 +137,8 @@ struct Options {
   CheckTransport check_transport = CheckTransport::All;
   /* astcenc effort for the layer pages, 0 (fastest) to 100. */
   float32_t astc_effort = 10.0f;
+  DesktopEncoding desktop_encoding = DesktopEncoding::Automatic;
+  PipelineClass pipeline = kHostPipeline;
   uint32_t dilation_passes = 4u;
   /* Outlier rejection ratio for published layers without denoising; zero
      keeps every texel. */
@@ -139,6 +175,7 @@ void usage() {
       "[--pages <n>] [--threads <n>] [--seed <n>] [--gpu <trace|gather>] "
       "[--check-texels <n>] [--check-samples <n>] "
       "[--check-transport <all|sky|sun|lamps>] [--astc-effort <0-100>] "
+      "[--desktop-encoding <uncompressed|bc>] [--pipeline <desktop|tiled>] "
       "[--dilation <passes>] [--outlier-ratio <ratio, 0 off>] "
       "[--smooth <passes>] [--ao-radius <world units, 0 off>] "
       "[--denoise <0|1>] [--denoise-iterations <n>] "
@@ -222,6 +259,22 @@ bool parse(int argc, char **argv, Options *options) {
       }
     } else if (std::strcmp(flag, "--astc-effort") == 0) {
       options->astc_effort = std::strtof(value, nullptr);
+    } else if (std::strcmp(flag, "--desktop-encoding") == 0) {
+      if (std::strcmp(value, "uncompressed") == 0) {
+        options->desktop_encoding = DesktopEncoding::Uncompressed;
+      } else if (std::strcmp(value, "bc") == 0) {
+        options->desktop_encoding = DesktopEncoding::Bc;
+      } else {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--pipeline") == 0) {
+      if (std::strcmp(value, "desktop") == 0) {
+        options->pipeline = PipelineClass::Desktop;
+      } else if (std::strcmp(value, "tiled") == 0) {
+        options->pipeline = PipelineClass::Tiled;
+      } else {
+        return false;
+      }
     } else if (std::strcmp(flag, "--dilation") == 0) {
       if (!parse_u32(value, &options->dilation_passes)) {
         return false;
@@ -304,6 +357,11 @@ bool parse(int argc, char **argv, Options *options) {
   if (options->output && options->gpu != GpuMode::Off) {
     return false;
   }
+  /* A tiled set has no desktop planes to encode. */
+  if (options->pipeline == PipelineClass::Tiled &&
+      options->desktop_encoding != DesktopEncoding::Automatic) {
+    return false;
+  }
   return options->scene && options->samples > 0u &&
          options->astc_effort >= 0.0f && options->astc_effort <= 100.0f &&
          options->check_samples > 0u && options->max_depth > 0u &&
@@ -364,12 +422,12 @@ constexpr uint32_t kCpuCheckTexels = 20000u;
 int run_gpu_benchmark(const Options &options, VkrBakeScene &scene,
                       const VkrBakeBvh &bvh,
                       const VkrBakeLightmapLayout &layout) {
-  if (!vkr_bake_metal_available()) {
-    std::fprintf(stderr, "Metal ray tracing is unavailable on this host\n");
+  if (!vkr_bake_gpu_available()) {
+    std::fprintf(stderr, "GPU ray tracing is unavailable on this host\n");
     return 3;
   }
   const auto setup_start = std::chrono::steady_clock::now();
-  VkrBakeMetalContext *gpu = vkr_bake_metal_create(scene);
+  VkrBakeGpuContext *gpu = vkr_bake_gpu_create(scene);
   if (!gpu) {
     return 1;
   }
@@ -383,15 +441,15 @@ int run_gpu_benchmark(const Options &options, VkrBakeScene &scene,
     if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
                                           (uint32_t)scene.triangles.size(),
                                           layout, page, &texels)) {
-      vkr_bake_metal_destroy(gpu);
+      vkr_bake_gpu_destroy(gpu);
       return 1;
     }
     std::vector<float32_t> hit_fraction;
     double gpu_seconds = 0.0;
-    if (!vkr_bake_metal_trace_benchmark(gpu, texels, options.samples,
-                                        options.seed, &hit_fraction,
-                                        &gpu_seconds)) {
-      vkr_bake_metal_destroy(gpu);
+    if (!vkr_bake_gpu_trace_benchmark(gpu, texels, options.samples,
+                                      options.seed, &hit_fraction,
+                                      &gpu_seconds)) {
+      vkr_bake_gpu_destroy(gpu);
       return 1;
     }
     const uint32_t check =
@@ -436,7 +494,7 @@ int run_gpu_benchmark(const Options &options, VkrBakeScene &scene,
                 page_end, (unsigned long long)rays_total, gpu_seconds_total,
                 rays_total / gpu_seconds_total, max_check_difference);
   }
-  vkr_bake_metal_destroy(gpu);
+  vkr_bake_gpu_destroy(gpu);
   return 0;
 }
 
@@ -452,7 +510,7 @@ uint32_t rr_start_depth(const Options &options) {
 }
 
 /* A gathered layer's direct plus indirect light per texel. */
-std::vector<Vec3> gathered_total(const VkrBakeMetalGatherResult &result) {
+std::vector<Vec3> gathered_total(const VkrBakeGpuGatherResult &result) {
   std::vector<Vec3> total(result.indirect.size());
   for (size_t i = 0u; i < total.size(); ++i) {
     total[i] = vec3_add(result.direct[i], result.indirect[i]);
@@ -589,7 +647,7 @@ bool report_encoding(const Options &options,
 }
 
 /*
- * Bakes three layers on Metal per page: the parity layer (every light, the
+ * Bakes three layers on the GPU per page: the parity layer (every light, the
  * sky and emission, no texel direct term: what one integrator path carries),
  * sun key 0 (directional lights and sky, bounce only) and lamp group 0 (the
  * other lights and emission, texel direct included). On page 0 it compares
@@ -598,12 +656,12 @@ bool report_encoding(const Options &options,
 int run_gpu_gather(const Options &options, VkrBakeScene &scene,
                    const VkrBakeIntegrator &integrator,
                    const VkrBakeLightmapLayout &layout) {
-  if (!vkr_bake_metal_available()) {
-    std::fprintf(stderr, "Metal ray tracing is unavailable on this host\n");
+  if (!vkr_bake_gpu_available()) {
+    std::fprintf(stderr, "GPU ray tracing is unavailable on this host\n");
     return 3;
   }
   const auto setup_start = std::chrono::steady_clock::now();
-  VkrBakeMetalContext *gpu = vkr_bake_metal_create(scene);
+  VkrBakeGpuContext *gpu = vkr_bake_gpu_create(scene);
   if (!gpu) {
     return 1;
   }
@@ -611,9 +669,9 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
 
   const bool sky = scene.environment.enabled &&
                    scene.environment.kind != VkrBakeSceneEnvironmentKind::None;
-  VkrBakeMetalLayer parity;
-  VkrBakeMetalLayer sun_key;
-  VkrBakeMetalLayer lamps;
+  VkrBakeGpuLayer parity;
+  VkrBakeGpuLayer sun_key;
+  VkrBakeGpuLayer lamps;
   for (uint32_t i = 0u; i < scene.lights.size(); ++i) {
     parity.lights.push_back(i);
     if (scene.lights[i].kind == VkrBakeSceneLightKind::Directional) {
@@ -628,14 +686,14 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
   lamps.emission = true;
   lamps.texel_direct = true;
   /* The lamp layer split: its lights alone, and surface emission alone. */
-  VkrBakeMetalLayer lamp_lights = lamps;
+  VkrBakeGpuLayer lamp_lights = lamps;
   lamp_lights.emission = false;
-  VkrBakeMetalLayer emission;
+  VkrBakeGpuLayer emission;
   emission.emission = true;
   std::printf("layers sun_key_lights=%zu lamp_lights=%zu sky=%d\n",
               sun_key.lights.size(), lamps.lights.size(), sky ? 1 : 0);
 
-  VkrBakeMetalGatherSettings settings;
+  VkrBakeGpuGatherSettings settings;
   settings.samples = options.samples;
   settings.max_depth = options.max_depth;
   settings.rr_start_depth = rr_start_depth(options);
@@ -643,7 +701,7 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
 
   struct NamedLayer {
     const char *name;
-    const VkrBakeMetalLayer *layer;
+    const VkrBakeGpuLayer *layer;
     double seconds;
     uint64_t texels;
   };
@@ -658,21 +716,21 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
     if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
                                           (uint32_t)scene.triangles.size(),
                                           layout, page, &texels)) {
-      vkr_bake_metal_destroy(gpu);
+      vkr_bake_gpu_destroy(gpu);
       return 1;
     }
     VkrBakeLightmapNeighbors neighbors;
     if (!vkr_bake_lightmap_neighbors(
             layout.page_size, texels,
             kOutlierNeighborTexels / options.texels_per_unit, &neighbors)) {
-      vkr_bake_metal_destroy(gpu);
+      vkr_bake_gpu_destroy(gpu);
       return 1;
     }
     for (NamedLayer &named : layers) {
-      VkrBakeMetalGatherResult gathered;
-      if (!vkr_bake_metal_gather(gpu, texels, *named.layer, settings,
-                                 &gathered)) {
-        vkr_bake_metal_destroy(gpu);
+      VkrBakeGpuGatherResult gathered;
+      if (!vkr_bake_gpu_gather(gpu, texels, *named.layer, settings,
+                               &gathered)) {
+        vkr_bake_gpu_destroy(gpu);
         return 1;
       }
       std::vector<Vec3> irradiance = gathered_total(gathered);
@@ -708,7 +766,7 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
       std::fflush(stdout);
       if (!report_encoding(options, layout, page, texels, irradiance,
                            named.name)) {
-        vkr_bake_metal_destroy(gpu);
+        vkr_bake_gpu_destroy(gpu);
         return 1;
       }
     }
@@ -721,10 +779,10 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
     for (size_t i = 0u; i < check; ++i) {
       subset[i] = texels[i * texels.size() / check];
     }
-    VkrBakeMetalGatherSettings check_settings = settings;
+    VkrBakeGpuGatherSettings check_settings = settings;
     check_settings.samples = options.check_samples;
     /* The check layer and a CPU integrator restricted to the same transport. */
-    VkrBakeMetalLayer check_layer = parity;
+    VkrBakeGpuLayer check_layer = parity;
     VkrBakeIntegrator check_integrator = integrator;
     std::vector<VkrBakeSceneLight> check_lights;
     if (options.check_transport == CheckTransport::Sky) {
@@ -744,10 +802,10 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
           (uint32_t)check_lights.size();
       check_integrator.settings.environment_radiance = nullptr;
     }
-    VkrBakeMetalGatherResult check_gathered;
-    if (!vkr_bake_metal_gather(gpu, subset, check_layer, check_settings,
-                               &check_gathered)) {
-      vkr_bake_metal_destroy(gpu);
+    VkrBakeGpuGatherResult check_gathered;
+    if (!vkr_bake_gpu_gather(gpu, subset, check_layer, check_settings,
+                             &check_gathered)) {
+      vkr_bake_gpu_destroy(gpu);
       return 1;
     }
     const std::vector<Vec3> gpu_values = gathered_total(check_gathered);
@@ -757,7 +815,7 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
     if (!cpu_reference(options, check_integrator, subset, &cpu_values,
                        &variance)) {
       std::fprintf(stderr, "CPU reference transport failed\n");
-      vkr_bake_metal_destroy(gpu);
+      vkr_bake_gpu_destroy(gpu);
       return 1;
     }
     /* Means over the subset, the standard error of their difference (both
@@ -799,15 +857,15 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
     }
     /* The layers partition the parity transport: sun key plus lamps without
        their texel direct term carry every light, the sky and emission once. */
-    VkrBakeMetalLayer lamps_bounce = lamps;
+    VkrBakeGpuLayer lamps_bounce = lamps;
     lamps_bounce.texel_direct = false;
-    VkrBakeMetalGatherResult sun_gathered;
-    VkrBakeMetalGatherResult lamp_gathered;
-    if (!vkr_bake_metal_gather(gpu, subset, sun_key, check_settings,
-                               &sun_gathered) ||
-        !vkr_bake_metal_gather(gpu, subset, lamps_bounce, check_settings,
-                               &lamp_gathered)) {
-      vkr_bake_metal_destroy(gpu);
+    VkrBakeGpuGatherResult sun_gathered;
+    VkrBakeGpuGatherResult lamp_gathered;
+    if (!vkr_bake_gpu_gather(gpu, subset, sun_key, check_settings,
+                             &sun_gathered) ||
+        !vkr_bake_gpu_gather(gpu, subset, lamps_bounce, check_settings,
+                             &lamp_gathered)) {
+      vkr_bake_gpu_destroy(gpu);
       return 1;
     }
     const std::vector<Vec3> sun_values = gathered_total(sun_gathered);
@@ -833,7 +891,7 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
                   (double)named.texels * options.samples / named.seconds);
     }
   }
-  vkr_bake_metal_destroy(gpu);
+  vkr_bake_gpu_destroy(gpu);
   return 0;
 }
 
@@ -881,8 +939,55 @@ bool write_atomic(const char *path, const std::string &bytes) {
  * `vkr_bakery bake` validates: dependencies, atmosphere provenance and the
  * counts that decide whether anything is lightmapped.
  */
+/* Whether a layer the host's pipeline class bakes holds any light: every
+   layer on the tiled class, which keeps the full layer table, and on the
+   desktop class a lamp group with static lights, emission the scene has, or
+   the sky. The default group exists for emission alone, so without this a
+   scene with neither lamps nor emission baked one black layer. */
+bool host_bakes_layer(const VkrBakeScene &scene, const VkrBakeLayerPlan &plan,
+                      bool desktop) {
+  if (!desktop) {
+    return true;
+  }
+  if (plan.record.kind != VKR_LIGHT_LAYER_LAMP_GROUP) {
+    return false;
+  }
+  if (!plan.lights.empty() || plan.sky) {
+    return true;
+  }
+  if (plan.emission) {
+    for (const VkrBakeMaterial &material : scene.materials) {
+      const Vec3 emission = material.emissive_factor;
+      if (emission.x > 0.0f || emission.y > 0.0f || emission.z > 0.0f) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool write_manifest(const Options &options, const VkrBakeScene &scene,
                     const VkrBakeLightmapLayout &layout) {
+  /* The layers this host's pipeline class bakes: every layer on the tiled
+     class, the lamp groups on the desktop class. */
+  std::vector<Vec3> sun_keys;
+  if (scene.atmosphere.enabled &&
+      scene.atmosphere_light < scene.lights.size()) {
+    sun_keys = vkr_bake_sun_key_directions(scene);
+  }
+  std::vector<VkrBakeLayerPlan> plans;
+  std::string plan_error;
+  if (!vkr_bake_plan_layers(scene, sun_keys, &plans, &plan_error)) {
+    std::fprintf(stderr, "%s\n", plan_error.c_str());
+    return false;
+  }
+  const bool desktop = options.pipeline == PipelineClass::Desktop;
+  size_t baked_layers = 0u;
+  for (const VkrBakeLayerPlan &plan : plans) {
+    if (host_bakes_layer(scene, plan, desktop)) {
+      ++baked_layers;
+    }
+  }
   std::ostringstream manifest;
   manifest << "{\"version\":1,\"dependencies\":[";
   for (size_t i = 0u; i < scene.dependency_paths.size(); ++i) {
@@ -904,6 +1009,8 @@ bool write_manifest(const Options &options, const VkrBakeScene &scene,
            << ",\"materials\":" << scene.materials.size()
            << ",\"lights\":" << scene.lights.size()
            << ",\"lightmap_instances\":" << layout.rects.size()
+           << ",\"pipeline\":\"" << (desktop ? "desktop" : "tiled") << '"'
+           << ",\"baked_layers\":" << baked_layers
            << ",\"pages\":" << layout.page_count
            << ",\"page_size\":" << layout.page_size << "}\n";
   return write_atomic(options.manifest, manifest.str());
@@ -913,13 +1020,13 @@ bool write_manifest(const Options &options, const VkrBakeScene &scene,
    for a sun key the index of its atmosphere. */
 struct BakeLayer {
   VkrLightLayer record;
-  VkrBakeMetalLayer transport;
+  VkrBakeGpuLayer transport;
   int32_t sun_key = -1;
 };
 
-/* A planned layer as the Metal baker gathers it: lamp groups also hold their
+/* A planned layer as the GPU baker gathers it: lamp groups also hold their
    lights' direct term at the texel. */
-BakeLayer metal_layer(const VkrBakeLayerPlan &plan) {
+BakeLayer gpu_layer(const VkrBakeLayerPlan &plan) {
   BakeLayer layer = {};
   layer.record = plan.record;
   layer.transport.lights = plan.lights;
@@ -946,7 +1053,7 @@ bool finish_layer(const Options &options, uint32_t page_size,
                   const VkrBakeLightmapNeighbors &neighbors,
                   const std::vector<uint8_t> &valid,
                   const VkrBakeLightmapFill &fill,
-                  VkrBakeMetalGatherResult *gathered,
+                  VkrBakeGpuGatherResult *gathered,
                   std::vector<Vec3> *out_irradiance,
                   VkrBakeLightmapOutliers *out_outliers) {
   vkr_bake_lightmap_apply_fill(fill, &gathered->direct);
@@ -985,28 +1092,172 @@ bool finish_layer(const Options &options, uint32_t page_size,
 bool dump_layer(std::ofstream *dump, uint32_t page, uint32_t layer,
                 const std::vector<VkrBakeLightmapTexel> &texels,
                 const std::vector<uint8_t> &valid,
-                const VkrBakeMetalGatherResult &gathered,
-                const std::vector<Vec3> &irradiance) {
-  char line[512];
+                const VkrBakeGpuGatherResult &gathered,
+                const std::vector<Vec3> &irradiance,
+                const std::vector<Vec3> *directions) {
+  char line[640];
   for (size_t i = 0u; i < texels.size(); ++i) {
     const VkrBakeLightmapTexel &texel = texels[i];
+    const Vec3 direction = directions ? (*directions)[i] : vec3_zero();
     const Vec3 direct = gathered.direct[i];
     const Vec3 indirect = gathered.indirect[i];
     const Vec3 total = irradiance[i];
     const int length = std::snprintf(
         line, sizeof(line),
         "%u,%u,%u,%u,%.6g,%.6g,%.6g,%.4g,%.4g,%.4g,%u,%.6g,%.6g,%.6g,%.6g,"
-        "%.6g,%.6g,%.6g,%.6g,%.6g\n",
+        "%.6g,%.6g,%.6g,%.6g,%.6g,%.4g,%.4g,%.4g,%.4g\n",
         page, layer, texel.x, texel.y, texel.position.x, texel.position.y,
         texel.position.z, texel.normal.x, texel.normal.y, texel.normal.z,
         (unsigned)valid[i], direct.x, direct.y, direct.z, indirect.x,
-        indirect.y, indirect.z, total.x, total.y, total.z);
+        indirect.y, indirect.z, total.x, total.y, total.z, direction.x,
+        direction.y, direction.z, vec3_length(direction));
     if (length <= 0 || (size_t)length >= sizeof(line)) {
       return false;
     }
     dump->write(line, length);
   }
   return (bool)*dump;
+}
+
+/* Packs a composed float RGBA page into little-endian RGB9E5 texels; alpha,
+   the ambient visibility, stays in the ASTC plane only. */
+void encode_rgb9e5(const std::vector<float32_t> &rgba,
+                   std::vector<uint8_t> *out_bytes) {
+  const size_t texels = rgba.size() / 4u;
+  out_bytes->resize(texels * 4u);
+  for (size_t i = 0u; i < texels; ++i) {
+    vkr_store_le_u32(out_bytes->data() + i * 4u,
+                     vkr_rgb9e5_from_float3(rgba[i * 4u], rgba[i * 4u + 1u],
+                                            rgba[i * 4u + 2u]));
+  }
+}
+
+/* One BC plane's encode time and its error against the page it encodes,
+   measured on the GPU's decode of its blocks. */
+struct BcReport {
+  /* Wall time of the encode, upload and readback included, and the GPU
+     time of its dispatches. */
+  double encode_seconds = 0.0;
+  double gpu_seconds = 0.0;
+  /* BC6H: RMS over RGB in linear units, and relative to the page's RMS
+     value. BC7: RMS over RGBA in UNORM units, and the largest error in
+     1/255 steps. */
+  float64_t rms = 0.0;
+  float64_t relative_rms = 0.0;
+  uint32_t max_steps = 0u;
+};
+
+/* Packs a composed float RGBA page into BC6H blocks on the GPU; alpha, the
+   ambient visibility, is not encoded. */
+bool encode_bc6h(VkrBakeGpuContext *gpu, const std::vector<float32_t> &rgba,
+                 uint32_t page_size, std::vector<uint8_t> *out_blocks,
+                 BcReport *out_report) {
+  const auto start = std::chrono::steady_clock::now();
+  if (!vkr_bake_gpu_encode_bc6h(gpu, rgba.data(), page_size, page_size,
+                                out_blocks, &out_report->gpu_seconds)) {
+    return false;
+  }
+  out_report->encode_seconds = seconds_since(start);
+  std::vector<float32_t> decoded;
+  if (!vkr_bake_gpu_decode_bc(gpu, VkrBakeGpuBcFormat::Bc6hUfloat,
+                              out_blocks->data(), page_size, page_size,
+                              &decoded)) {
+    return false;
+  }
+  /* Against the values the encoder takes: negative and NaN as zero, the
+     rest at most the largest half float. */
+  float64_t error = 0.0;
+  float64_t signal = 0.0;
+  const size_t texels = rgba.size() / 4u;
+  for (size_t i = 0u; i < texels; ++i) {
+    for (size_t c = 0u; c < 3u; ++c) {
+      const float32_t value = rgba[i * 4u + c];
+      const float64_t source = value > 0.0f ? std::fmin(value, 65504.0f) : 0.0;
+      const float64_t difference = (float64_t)decoded[i * 4u + c] - source;
+      error += difference * difference;
+      signal += source * source;
+    }
+  }
+  out_report->rms = texels ? std::sqrt(error / (float64_t)(texels * 3u)) : 0.0;
+  out_report->relative_rms = signal > 0.0 ? std::sqrt(error / signal) : 0.0;
+  return true;
+}
+
+/* Packs an RGBA8 page into BC7 blocks on the GPU. */
+bool encode_bc7(VkrBakeGpuContext *gpu, const std::vector<uint8_t> &rgba8,
+                uint32_t page_size, std::vector<uint8_t> *out_blocks,
+                BcReport *out_report) {
+  const auto start = std::chrono::steady_clock::now();
+  if (!vkr_bake_gpu_encode_bc7(gpu, rgba8.data(), page_size, page_size,
+                               out_blocks, &out_report->gpu_seconds)) {
+    return false;
+  }
+  out_report->encode_seconds = seconds_since(start);
+  std::vector<float32_t> decoded;
+  if (!vkr_bake_gpu_decode_bc(gpu, VkrBakeGpuBcFormat::Bc7, out_blocks->data(),
+                              page_size, page_size, &decoded)) {
+    return false;
+  }
+  float64_t error = 0.0;
+  uint32_t max_steps = 0u;
+  for (size_t i = 0u; i < rgba8.size(); ++i) {
+    const float64_t value = decoded[i] * 255.0;
+    const float64_t difference = value - (float64_t)rgba8[i];
+    error += difference * difference;
+    max_steps =
+        std::max(max_steps, (uint32_t)std::lround(std::fabs(difference)));
+  }
+  out_report->rms =
+      rgba8.empty() ? 0.0 : std::sqrt(error / (float64_t)rgba8.size()) / 255.0;
+  out_report->max_steps = max_steps;
+  return true;
+}
+
+/* Packs a composed float RGBA page in [0, 1] into RGBA8 texels, R, G, B, A
+   in byte order. */
+void encode_rgba8(const std::vector<float32_t> &rgba,
+                  std::vector<uint8_t> *out_bytes) {
+  out_bytes->resize(rgba.size());
+  for (size_t i = 0u; i < rgba.size(); ++i) {
+    const float32_t value = std::fmin(std::fmax(rgba[i], 0.0f), 1.0f);
+    (*out_bytes)[i] = (uint8_t)std::lround(value * 255.0f);
+  }
+}
+
+/*
+ * A lamp layer's per-texel mean incident direction (desktop baked lamps
+ * proposal): the gathered luminance-weighted direction sum over its luminance
+ * sum, zero where nothing lit the texel. Buried texels take their neighbors'
+ * directions and the direct light's smoothing passes run over the vectors,
+ * whose length, the directionality, shrinks where neighbors disagree.
+ * Returns the mean directionality.
+ */
+bool finish_directions(const Options &options,
+                       const std::vector<VkrBakeLightmapTexel> &texels,
+                       const VkrBakeLightmapNeighbors &neighbors,
+                       const VkrBakeLightmapFill &fill,
+                       const VkrBakeGpuGatherResult &gathered,
+                       std::vector<Vec3> *out_directions,
+                       float64_t *out_mean_directionality) {
+  out_directions->assign(texels.size(), vec3_zero());
+  for (size_t i = 0u; i < texels.size(); ++i) {
+    const Vec4 sum = gathered.direction[i];
+    if (sum.w > 1.0e-12f && std::isfinite(sum.w)) {
+      (*out_directions)[i] =
+          vec3_scale(vec3_new(sum.x, sum.y, sum.z), 1.0f / sum.w);
+    }
+  }
+  vkr_bake_lightmap_apply_fill(fill, out_directions);
+  if (!vkr_bake_lightmap_smooth(neighbors, texels, options.smooth_passes,
+                                out_directions)) {
+    return false;
+  }
+  float64_t sum = 0.0;
+  for (const Vec3 &direction : *out_directions) {
+    sum += std::fmin(vec3_length(direction), 1.0f);
+  }
+  *out_mean_directionality = texels.empty() ? 0.0 : sum / texels.size();
+  return true;
 }
 
 /*
@@ -1021,8 +1272,8 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     std::fprintf(stderr, "The scene has no lightmapped instances\n");
     return 1;
   }
-  if (!vkr_bake_metal_available()) {
-    std::fprintf(stderr, "Lightmap bakes need Metal ray tracing, which this "
+  if (!vkr_bake_gpu_available()) {
+    std::fprintf(stderr, "Lightmap bakes need GPU ray tracing, which this "
                          "host does not have\n");
     return 1;
   }
@@ -1031,10 +1282,16 @@ int bake_set(const Options &options, VkrBakeScene &scene,
      layer of every page. */
   std::vector<Vec3> sun_keys;
   std::vector<VkrBakeAtmosphere> key_atmospheres;
+  /* The keys' directions decide which lights the lamp groups hold, so both
+     classes plan with them; only the tiled class bakes the keys and needs
+     their atmospheres. */
+  const bool desktop = options.pipeline == PipelineClass::Desktop;
   if (scene.atmosphere.enabled &&
       scene.atmosphere_light < scene.lights.size()) {
-    const auto atmosphere_start = std::chrono::steady_clock::now();
     sun_keys = vkr_bake_sun_key_directions(scene);
+  }
+  if (!desktop && !sun_keys.empty()) {
+    const auto atmosphere_start = std::chrono::steady_clock::now();
     key_atmospheres.resize(sun_keys.size());
     for (size_t k = 0u; k < sun_keys.size(); ++k) {
       if (!vkr_bake_scene_build_sun_atmosphere(&scene, sun_keys[k],
@@ -1055,7 +1312,15 @@ int bake_set(const Options &options, VkrBakeScene &scene,
   }
   std::vector<BakeLayer> layers;
   for (const VkrBakeLayerPlan &plan : plans) {
-    layers.push_back(metal_layer(plan));
+    if (host_bakes_layer(scene, plan, desktop)) {
+      layers.push_back(gpu_layer(plan));
+    }
+  }
+  if (layers.empty()) {
+    std::fprintf(stderr,
+                 "The scene has no static lamps or emission, so a desktop "
+                 "lightmap set has nothing to hold\n");
+    return 3;
   }
   std::vector<VkrLightLayer> layer_records;
   for (const BakeLayer &layer : layers) {
@@ -1093,13 +1358,60 @@ int bake_set(const Options &options, VkrBakeScene &scene,
               return a.instance_index < b.instance_index;
             });
 
+  const auto setup_start = std::chrono::steady_clock::now();
+  std::unique_ptr<VkrBakeGpuContext, decltype(&vkr_bake_gpu_destroy)> gpu(
+      vkr_bake_gpu_create(scene), vkr_bake_gpu_destroy);
+  if (!gpu) {
+    return 1;
+  }
+  std::printf("gpu_setup_s=%.2f layers=%zu\n", seconds_since(setup_start),
+              layers.size());
+  bool desktop_bc = false;
+  if (desktop) {
+    const bool bc_available = vkr_bake_gpu_bc_available(gpu.get());
+    if (options.desktop_encoding == DesktopEncoding::Bc && !bc_available) {
+      std::fprintf(stderr,
+                   "--desktop-encoding bc needs the Vulkan BC encoders, which "
+                   "this host's GPU does not run; bake with "
+                   "--desktop-encoding uncompressed\n");
+      return 1;
+    }
+    desktop_bc = options.desktop_encoding == DesktopEncoding::Bc ||
+                 (options.desktop_encoding == DesktopEncoding::Automatic &&
+                  bc_available);
+  }
+  std::printf("pipeline=%s desktop_encoding=%s\n",
+              desktop ? "desktop" : "tiled",
+              desktop ? (desktop_bc ? "bc" : "uncompressed") : "none");
+
+  /* The planes of the set's pipeline class (PipelineClass), each page in
+     this order: on the tiled class every layer's ASTC 4x4 HDR irradiance;
+     on the desktop class, whose layers are the lamp groups, each one's
+     irradiance (RGB9E5 or BC6H) and incident direction (RGBA8 or BC7;
+     ADR-104). */
+  std::vector<VkrLightmapPlane> planes;
+  for (uint32_t l = 0u; l < layer_records.size(); ++l) {
+    if (!desktop) {
+      planes.push_back(
+          {l, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR});
+      continue;
+    }
+    planes.push_back(
+        {l, VKR_LIGHTMAP_PLANE_IRRADIANCE,
+         desktop_bc ? VKR_LIGHTMAP_FORMAT_BC6H : VKR_LIGHTMAP_FORMAT_RGB9E5});
+    planes.push_back(
+        {l, VKR_LIGHTMAP_PLANE_DIRECTION,
+         desktop_bc ? VKR_LIGHTMAP_FORMAT_BC7 : VKR_LIGHTMAP_FORMAT_RGBA8});
+  }
   VkrLightmapSet set = {};
   set.page_size = layout.page_size;
   set.page_count = layout.page_count;
   set.layer_count = (uint32_t)layer_records.size();
+  set.plane_count = (uint32_t)planes.size();
   set.instance_count = (uint32_t)instances.size();
   set.texels_per_unit = options.texels_per_unit;
   set.layers = layer_records.data();
+  set.planes = planes.data();
   set.instances = instances.data();
   uint64_t payload_offset = 0u;
   uint64_t file_size = 0u;
@@ -1120,14 +1432,7 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     return 1;
   }
 
-  const auto setup_start = std::chrono::steady_clock::now();
-  VkrBakeMetalContext *gpu = vkr_bake_metal_create(scene);
-  if (!gpu) {
-    return 1;
-  }
-  std::printf("gpu_setup_s=%.2f layers=%zu\n", seconds_since(setup_start),
-              layers.size());
-  VkrBakeMetalGatherSettings settings;
+  VkrBakeGpuGatherSettings settings;
   settings.samples = options.samples;
   settings.max_depth = options.max_depth;
   settings.rr_start_depth = rr_start_depth(options);
@@ -1142,7 +1447,8 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     dump.open(vkr_filesystem_native_utf8_path(options.dump_texels),
               std::ios::binary | std::ios::trunc);
     dump << "page,layer,x,y,px,py,pz,nx,ny,nz,valid,direct_r,direct_g,"
-            "direct_b,indirect_r,indirect_g,indirect_b,r,g,b\n";
+            "direct_b,indirect_r,indirect_g,indirect_b,r,g,b,dir_x,dir_y,"
+            "dir_z,directionality\n";
   }
 
   uint32_t payload_crc = VKR_CRC32_INITIAL;
@@ -1168,22 +1474,26 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     std::vector<float32_t> occlusion;
     std::vector<uint8_t> valid(texels.size(), 1u);
     VkrBakeLightmapFill fill;
-    const bool bake_occlusion = options.ao_radius > 0.0f;
+    /* Occlusion rides in the ASTC planes' alpha; desktop planes have
+       none. */
+    const bool bake_occlusion = !desktop && options.ao_radius > 0.0f;
     const bool find_buried = options.buried_backface > 0.0f;
     for (uint32_t l = 0u; ok && l < layers.size(); ++l) {
       if (layers[l].sun_key >= 0) {
         vkr_bake_scene_use_atmosphere(
             &scene, key_atmospheres[(size_t)layers[l].sun_key]);
-        ok = vkr_bake_metal_update_lighting(gpu, scene);
+        ok = vkr_bake_gpu_update_lighting(gpu.get(), scene);
         if (!ok) {
           break;
         }
       }
       settings.occlusion = bake_occlusion && l == 0u;
       settings.backface = find_buried && l == 0u;
-      VkrBakeMetalGatherResult gathered;
-      ok = vkr_bake_metal_gather(gpu, texels, layers[l].transport, settings,
-                                 &gathered);
+      /* Every desktop layer is a lamp group with a direction plane. */
+      settings.direction = desktop;
+      VkrBakeGpuGatherResult gathered;
+      ok = vkr_bake_gpu_gather(gpu.get(), texels, layers[l].transport, settings,
+                               &gathered);
       gpu_seconds += gathered.gpu_seconds;
       if (ok && l == 0u) {
         uint64_t buried = 0u;
@@ -1221,12 +1531,20 @@ int bake_set(const Options &options, VkrBakeScene &scene,
                               valid, fill, &gathered, &irradiance, &outliers);
       cleanup_seconds += seconds_since(cleanup_start);
       const auto encode_start = std::chrono::steady_clock::now();
+      BcReport irradiance_bc;
       ok = ok &&
            vkr_bake_lightmap_compose_page(layout, page, texels, irradiance,
                                           bake_occlusion ? &occlusion : nullptr,
-                                          options.dilation_passes, &rgba) &&
-           vkr_bake_lightmap_encode_astc_hdr(
-               rgba, layout.page_size, options.astc_effort, threads, &blocks);
+                                          options.dilation_passes, &rgba);
+      if (ok && !desktop) {
+        ok = vkr_bake_lightmap_encode_astc_hdr(
+            rgba, layout.page_size, options.astc_effort, threads, &blocks);
+      } else if (ok && desktop_bc) {
+        ok = encode_bc6h(gpu.get(), rgba, layout.page_size, &blocks,
+                         &irradiance_bc);
+      } else if (ok) {
+        encode_rgb9e5(rgba, &blocks);
+      }
       encode_seconds += seconds_since(encode_start);
       if (!ok) {
         break;
@@ -1234,9 +1552,37 @@ int bake_set(const Options &options, VkrBakeScene &scene,
       payload_crc =
           vkr_crc32_update(payload_crc, blocks.data(), (uint64_t)blocks.size());
       stream.write((const char *)blocks.data(), (std::streamsize)blocks.size());
+      std::vector<Vec3> directions;
+      float64_t mean_directionality = 0.0;
+      BcReport direction_bc;
+      if (desktop) {
+        const auto direction_start = std::chrono::steady_clock::now();
+        std::vector<uint8_t> rgba8;
+        ok = finish_directions(options, texels, neighbors, fill, gathered,
+                               &directions, &mean_directionality) &&
+             vkr_bake_lightmap_compose_direction_page(
+                 layout, page, texels, directions, options.dilation_passes,
+                 &rgba);
+        if (ok) {
+          encode_rgba8(rgba, &rgba8);
+        }
+        if (ok && desktop_bc) {
+          ok = encode_bc7(gpu.get(), rgba8, layout.page_size, &blocks,
+                          &direction_bc);
+          rgba8.swap(blocks);
+        }
+        encode_seconds += seconds_since(direction_start);
+        if (!ok) {
+          break;
+        }
+        payload_crc =
+            vkr_crc32_update(payload_crc, rgba8.data(), (uint64_t)rgba8.size());
+        stream.write((const char *)rgba8.data(), (std::streamsize)rgba8.size());
+      }
       ok = (bool)stream;
       if (ok && options.dump_texels) {
-        ok = dump_layer(&dump, page, l, texels, valid, gathered, irradiance);
+        ok = dump_layer(&dump, page, l, texels, valid, gathered, irradiance,
+                        desktop ? &directions : nullptr);
       }
       float64_t luminance_sum = 0.0;
       for (const Vec3 &value : irradiance) {
@@ -1255,10 +1601,28 @@ int bake_set(const Options &options, VkrBakeScene &scene,
           texels.size(), gathered.gpu_seconds,
           texels.empty() ? 0.0 : luminance_sum / texels.size(),
           (unsigned long long)outliers.texels, outliers.energy_fraction);
+      if (desktop) {
+        std::printf("direction page=%u/%u layer=%u/%zu lamp_group=%s "
+                    "mean_directionality=%.4f\n",
+                    page + 1u, layout.page_count, l + 1u, layers.size(),
+                    record.name, mean_directionality);
+      }
+      if (desktop_bc) {
+        std::printf("bc page=%u/%u layer=%u/%zu lamp_group=%s "
+                    "bc6h_encode_s=%.2f bc6h_gpu_s=%.3f bc6h_rms=%.4g "
+                    "bc6h_relative_rms=%.4f bc7_encode_s=%.2f "
+                    "bc7_gpu_s=%.3f bc7_rms=%.4f bc7_max_steps=%u\n",
+                    page + 1u, layout.page_count, l + 1u, layers.size(),
+                    record.name, irradiance_bc.encode_seconds,
+                    irradiance_bc.gpu_seconds, irradiance_bc.rms,
+                    irradiance_bc.relative_rms, direction_bc.encode_seconds,
+                    direction_bc.gpu_seconds, direction_bc.rms,
+                    direction_bc.max_steps);
+      }
       std::fflush(stdout);
     }
   }
-  vkr_bake_metal_destroy(gpu);
+  gpu.reset();
 
   ok = ok && vkr_lightmap_set_write_prefix(&set, ~payload_crc, prefix.data(),
                                            prefix.size());

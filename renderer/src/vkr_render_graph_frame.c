@@ -49,6 +49,16 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->anisotropy_enabled =
       packet->scene_rendering &&
       (material_features & VKR_WORLD_MATERIAL_FEATURE_ANISOTROPY) != 0u;
+  frame->baked_lamps_enabled =
+      packet->scene_rendering && packet->input.lighting &&
+      packet->input.lighting->lightmap.texture.id != 0u &&
+      packet->input.lighting->lightmap.texture.generation != VKR_INVALID_ID &&
+      packet->input.lighting->lightmap.active_layer_count > 0u;
+  frame->diffuse_volume_enabled =
+      packet->scene_rendering && packet->input.lighting &&
+      packet->input.lighting->diffuse_volume.indirection.id != 0u &&
+      packet->input.lighting->diffuse_volume.indirection.generation !=
+          VKR_INVALID_ID;
   frame->lighting_layers_enabled = frame->clearcoat_enabled ||
                                    frame->sheen_enabled ||
                                    frame->anisotropy_enabled;
@@ -152,6 +162,21 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       frame->local_shadow_transmission_layer_count > 0u
           ? local_shadow->transmission_render_count
           : 0u;
+  frame->local_shadow_dynamic_render_count =
+      local_shadow ? local_shadow->dynamic_render_count : 0u;
+  frame->local_shadow_baked_lamp_count = local_shadow && !packet->tiled_pipeline
+                                             ? local_shadow->baked_lamp_count
+                                             : 0u;
+  frame->local_shadow_static_render_count =
+      frame->local_shadow_render_count -
+      frame->local_shadow_dynamic_render_count;
+  for (uint32_t i = 0u; i < frame->local_shadow_dynamic_render_count; ++i) {
+    const uint32_t source =
+        local_shadow
+            ->dynamic_source_views[frame->local_shadow_static_render_count + i];
+    frame->local_shadow_copy_source_layers[i] =
+        (uint32_t)local_shadow->views[source].atlas_rect.w;
+  }
   for (uint32_t slot = 0u; slot < frame->local_shadow_render_count; ++slot) {
     frame->local_shadow_render_atlas_layers[slot] =
         vkr_local_shadow_render_atlas_layer(local_shadow, slot);
@@ -277,6 +302,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
         {"pass.local_shadow.transmission1", VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW] =
         {"pass.local_shadow.transmission_overflow", VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_LOCAL_SHADOW_COPY] = {"pass.local_shadow.copy",
+                                           VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC] = {"pass.local_shadow.dynamic",
+                                              VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_PICKING] = {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_PICKING_DEPTH_SEED] = {"pass.picking.depth_seed",
                                             VKR_RG_PASS_TYPE_TRANSFER},
@@ -363,6 +392,14 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                      VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT] = {"pass.clouds.sky_light",
                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE] = {"pass.diffuse_volume.compose",
+                                                VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_SAMPLE] = {"pass.diffuse_volume.sample",
+                                               VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_UPSAMPLE] = {
+        "pass.diffuse_volume.upsample", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_FALLBACK] = {
+        "pass.diffuse_volume.fallback", VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TEMPORAL_RESOLVE] = {"pass.temporal.resolve",
                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM] = {"pass.exposure.histogram",

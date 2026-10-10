@@ -1067,6 +1067,11 @@ vkr_metal_packet_create_environment_pipelines(VkrMetalPacketRenderer *renderer,
           renderer, fragment, "vkr_metal_packet_cloud_sky_light_mips",
           VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT, false_v,
           @"VKR Metal packet cloud sky-light chain");
+  renderer->diffuse_volume_compose_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_diffuse_volume_compose",
+          VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME_COMPOSE_ROOT, false_v,
+          @"VKR Metal packet diffuse volume composition");
 }
 
 /* Creates the zeroed SH coefficient pool buffer. */

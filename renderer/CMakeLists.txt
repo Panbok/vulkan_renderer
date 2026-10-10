@@ -7,6 +7,7 @@ project(renderer_lib)
 add_library(vkr_render_contracts STATIC src/vkr_packed_geometry.c
     src/vkr_geometry_data.c
     src/vkr_color_transfer.c
+    src/vkr_ibl_math.c
     src/vkr_subsurface.c)
 vkr_configure_library(vkr_render_contracts)
 target_include_directories(vkr_render_contracts PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -28,6 +29,7 @@ list(REMOVE_ITEM LIB_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_packed_geometry.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_geometry_data.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_color_transfer.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_ibl_math.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vkr_subsurface.c")
 
 # Create a static library

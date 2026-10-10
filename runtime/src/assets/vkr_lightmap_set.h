@@ -18,29 +18,64 @@ extern "C" {
 #endif
 
 /*
- * Baked lightmap set (ADR-087, docs/proposals/tiled-pipeline.md): every
- * layer of a scene's lightmap pages as ASTC 4x4 blocks (HDR RGB, LDR alpha),
- * the layers' meanings and each lightmapped instance's page rectangle.
+ * Baked lightmap set (ADR-087, ADR-088, ADR-104): the
+ * scene's lightmap pages in one or more planes per light layer, the layers'
+ * meanings and each lightmapped instance's page rectangle.
  *
- * VKLM v3 writes every scalar explicitly in little-endian order: a fixed
- * header, the layer table (vkr_light_layers.h records), the instance table,
- * padding to VKR_LIGHTMAP_SET_PAYLOAD_ALIGNMENT, then one page image per page
- * and layer, page-major. Producers stream the payload and write the prefix
- * last, so a set never needs to be held in memory whole.
+ * A plane is one layer's irradiance or dominant direction in one encoding.
+ * A bake gives every layer an ASTC 4x4 HDR irradiance plane, which the tiled
+ * pipeline samples, and each lamp-group layer planes in encodings desktop
+ * GPUs sample (RGB9E5 or BC6H irradiance, RGBA8 or BC7 direction).
+ * Packaging may leave out the planes a platform does not sample; a runtime
+ * publishes only the planes its pipeline class samples.
+ *
+ * VKLM v4 writes every scalar explicitly in little-endian order: a fixed
+ * header, the layer table (vkr_light_layers.h records), the plane table, the
+ * instance table, padding to VKR_LIGHTMAP_SET_PAYLOAD_ALIGNMENT, then for
+ * each page one image per plane in table order. Producers stream the payload
+ * and write the prefix last, so a set never needs to be held in memory
+ * whole. Version 3 (ASTC irradiance only) is refused.
  */
 
 #define VKR_LIGHTMAP_SET_MAGIC 0x4d4c4b56u /* "VKLM" in little-endian. */
-#define VKR_LIGHTMAP_SET_VERSION 3u
+#define VKR_LIGHTMAP_SET_VERSION 4u
 #define VKR_LIGHTMAP_SET_ENDIAN_TAG 0x01020304u
 #define VKR_LIGHTMAP_SET_HEADER_BYTES 128u
+#define VKR_LIGHTMAP_SET_PLANE_BYTES 16u
 #define VKR_LIGHTMAP_SET_INSTANCE_BYTES 44u
 #define VKR_LIGHTMAP_SET_PAYLOAD_ALIGNMENT 256u
 #define VKR_LIGHTMAP_SET_BLOCK_BYTES 16u
-/* ASTC 4x4 blocks in the HDR RGB, LDR alpha profile. */
-#define VKR_LIGHTMAP_SET_FORMAT_ASTC_4X4_HDR 1u
 #define VKR_LIGHTMAP_SET_MAX_PAGE_SIZE 8192u
 #define VKR_LIGHTMAP_SET_MAX_PAGES 64u
 #define VKR_LIGHTMAP_SET_MAX_LAYERS 32u
+#define VKR_LIGHTMAP_SET_MAX_PLANES 128u
+
+/* What a plane holds. Irradiance is RGB irradiance with ambient visibility
+   in alpha where the encoding has alpha; direction is the luminance-weighted
+   mean incident direction, encoded as 0.5 * d + 0.5 in RGB with its length,
+   the directionality, in alpha. */
+typedef enum VkrLightmapPlaneKind {
+  VKR_LIGHTMAP_PLANE_IRRADIANCE = 0,
+  VKR_LIGHTMAP_PLANE_DIRECTION = 1,
+} VkrLightmapPlaneKind;
+
+/* Plane encodings. ASTC planes are the tiled pipeline's; the others are the
+   desktop pipeline's. Block encodings store 16-byte 4x4 blocks, the others
+   4 bytes per texel. */
+typedef enum VkrLightmapPlaneFormat {
+  VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR = 1,
+  VKR_LIGHTMAP_FORMAT_RGB9E5 = 2,
+  VKR_LIGHTMAP_FORMAT_BC6H = 3,
+  VKR_LIGHTMAP_FORMAT_ASTC_4X4_LDR = 4,
+  VKR_LIGHTMAP_FORMAT_RGBA8 = 5,
+  VKR_LIGHTMAP_FORMAT_BC7 = 6,
+} VkrLightmapPlaneFormat;
+
+typedef struct VkrLightmapPlane {
+  uint32_t layer;
+  VkrLightmapPlaneKind kind;
+  VkrLightmapPlaneFormat format;
+} VkrLightmapPlane;
 
 /*
  * The rectangle in texels of one instance of a scene entity: the entity's
@@ -73,15 +108,36 @@ typedef struct VkrLightmapSet {
   uint32_t page_size;
   uint32_t page_count;
   uint32_t layer_count;
+  uint32_t plane_count;
   uint32_t instance_count;
   float32_t texels_per_unit;
   const VkrLightLayer *layers;
+  /** Sorted by layer, then kind, then format, without duplicates. */
+  const VkrLightmapPlane *planes;
   const VkrLightmapInstance *instances;
   const uint8_t *payload;
 } VkrLightmapSet;
 
-/* Bytes of one page image: (page_size / 4)^2 blocks. */
-uint64_t vkr_lightmap_set_page_bytes(uint32_t page_size);
+/* Whether the desktop pipeline samples a plane encoding; the tiled pipeline
+   samples the others. */
+bool8_t vkr_lightmap_format_desktop(VkrLightmapPlaneFormat format);
+
+/* Bytes of one page image of a plane encoding, zero for an unknown one. */
+uint64_t vkr_lightmap_set_plane_bytes(VkrLightmapPlaneFormat format,
+                                      uint32_t page_size);
+
+/* Bytes of one page's images of every plane. */
+uint64_t vkr_lightmap_set_page_stride(const VkrLightmapSet *set);
+
+/* Offset in the payload of one page's image of one plane. */
+uint64_t vkr_lightmap_set_plane_offset(const VkrLightmapSet *set, uint32_t page,
+                                       uint32_t plane);
+
+/* Index of the layer's plane of `kind` in the desktop encodings (`desktop`)
+   or the tiled ones, or UINT32_MAX without one. */
+uint32_t vkr_lightmap_set_find_plane(const VkrLightmapSet *set, uint32_t layer,
+                                     VkrLightmapPlaneKind kind,
+                                     bool8_t desktop);
 
 /*
  * Validates a producer's set (everything but `payload`) and reports the
@@ -101,9 +157,11 @@ bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
                                       uint64_t prefix_size);
 
 /*
- * Validates and decodes a complete VKLM v3 file: header, table and payload
- * checksums, sizes and offsets, layer meanings and names, and every rectangle
- * lying on whole blocks within its page.
+ * Validates and decodes a complete VKLM v4 file: header, table and payload
+ * checksums, sizes and offsets, layer meanings and names, the plane table
+ * (known encodings of a kind they can hold, canonical order, desktop planes
+ * only on lamp groups), and every rectangle lying on whole blocks within its
+ * page.
  */
 bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
                                 Arena *arena, VkrLightmapSet *out_set);

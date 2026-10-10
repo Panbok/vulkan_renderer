@@ -1188,7 +1188,7 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
       vkr_bakery_json_get(job->request, "diffuse_settings");
   VkrBakeryJson *settings = requested ? vkr_bakery_json_clone(arena, requested)
                                       : vkr_bakery_json_object(arena);
-  static const char *const lists[] = {"bounds", "grid"};
+  static const char *const lists[] = {"bounds"};
   for (uint32_t l = 0u; l < ArrayCount(lists); ++l) {
     const VkrBakeryJson *values = vkr_bakery_json_get(settings, lists[l]);
     if (!vkr_project_truthy(values)) {
@@ -1202,9 +1202,9 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
           job, &arguments, vkr_project_argument(job, value)));
     }
   }
-  static const char *const scalars[] = {"voxel_size",   "face_size", "samples",
-                                        "max_depth",    "seed",      "photons",
-                                        "photon_radius"};
+  static const char *const scalars[] = {
+      "spacing",   "levels", "margin",  "face_size",    "samples",
+      "max_depth", "seed",   "photons", "photon_radius"};
   for (uint32_t s = 0u; s < ArrayCount(scalars); ++s) {
     const VkrBakeryJson *value = vkr_bakery_json_get(settings, scalars[s]);
     if (!value) {
@@ -1223,24 +1223,24 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
         job, &arguments, vkr_project_argument(job, value)));
   }
   int32_t code = 0;
-  VKR_PROJECT_TRY(vkr_project_run_bakery(
-      job, arguments.items, arguments.count, "Baking diffuse volume", "diffuse",
-      VKR_PROJECT_DIFFUSE_NO_ROOM_CELLS, &code));
+  VKR_PROJECT_TRY(vkr_project_run_bakery(job, arguments.items, arguments.count,
+                                         "Baking diffuse volume", "diffuse",
+                                         VKR_PROJECT_DIFFUSE_NO_VOLUME, &code));
   const VkrBakeryJson *previous_reference = vkr_bakery_json_get(
       vkr_bakery_json_get(scene, "diffuse_volume"), "asset");
   VkrBakeryJson *previous = vkr_project_record_by_id(
       job->assets, vkr_project_json_text(previous_reference, "id"));
-  if (code == VKR_PROJECT_DIFFUSE_NO_ROOM_CELLS) {
-    /* An all-invalid volume renders like no volume (ADR-054). A previous
-       volume describes other geometry, so it is dropped. */
+  if (code == VKR_PROJECT_DIFFUSE_NO_VOLUME) {
+    /* A scene without geometry has no volume. A previous volume describes
+       other geometry, so it is dropped. */
     (void)vkr_project_remove_tree(directory);
     if (previous) {
       vkr_project_remove_record(job->assets, previous);
     }
     vkr_bakery_json_remove(scene, "diffuse_volume");
     const char *warning =
-        "Diffuse volume skipped: no interpolation cell lies inside a closed "
-        "room, so the scene keeps environment and reflection-probe diffuse "
+        "Diffuse volume skipped: the scene has no geometry to place probes "
+        "near, so it keeps environment and reflection-probe diffuse "
         "lighting";
     vkr_bakery_json_append(job->warnings, vkr_bakery_json_cstr(arena, warning));
     printf("Warning: %s\n", warning);
@@ -1349,8 +1349,10 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
     }
     vkr_bakery_json_remove(scene, "lightmaps");
     const char *warning =
-        "Lightmaps skipped: no scene model carries lightmap UVs; turn on "
-        "Lightmap UVs in Bakery and rebuild the scene's models";
+        "Lightmaps skipped: nothing to bake on this platform. Either no "
+        "scene model carries lightmap UVs (turn on Lightmap UVs in Bakery "
+        "and rebuild the scene's models), or the scene has no static lamps "
+        "or emission, the only light a desktop bake holds";
     vkr_bakery_json_append(job->warnings, vkr_bakery_json_cstr(arena, warning));
     printf("Warning: %s\n", warning);
     fflush(stdout);

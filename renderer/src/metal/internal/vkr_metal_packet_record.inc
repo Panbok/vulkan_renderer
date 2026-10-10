@@ -201,6 +201,21 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
                      visibilityOptions:MTL4VisibilityOptionDevice];
     break;
   }
+  case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
+    /* Later passes in this encoder and later encoders read the composed SH,
+       which no graph resource orders. */
+    [renderer->argument_table setAddress:pass->diffuse_volume_compose.root
+                                 atIndex:0u];
+    [encoder setComputePipelineState:renderer->diffuse_volume_compose_pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder
+          dispatchThreads:MTLSizeMake(pass->diffuse_volume_compose.probe_count,
+                                      1u, 1u)
+        threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    [encoder barrierAfterEncoderStages:MTLStageDispatch
+                   beforeEncoderStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    break;
   case VKR_RG_EXECUTOR_PICKING_READBACK:
     [encoder copyFromTexture:pass->picking_readback.source
                      sourceSlice:0u
@@ -407,6 +422,7 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     break;
   case VKR_RG_EXECUTOR_SHADOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC:
   case VKR_RG_EXECUTOR_TILED_PICKING:
     vkr_metal_packet_record_indirect_pass(renderer, encoder, pass);
     break;

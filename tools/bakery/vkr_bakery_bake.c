@@ -346,7 +346,7 @@ vkr_internal bool8_t vkr_bake_run(
 }
 
 // =============================================================================
-// Diffuse volumes (ADR-054)
+// Diffuse volumes (ADR-054, sparse bricks)
 // =============================================================================
 
 typedef struct VkrBakeDiffuse {
@@ -358,11 +358,11 @@ typedef struct VkrBakeDiffuse {
   bool8_t check;
   bool8_t has_bounds;
   float64_t bounds[6];
-  /* Without --grid the baker fits the grid to the bounds (ADR-054). */
-  bool8_t has_grid;
-  int64_t grid[3];
-  bool8_t has_voxel_size;
-  float64_t voxel_size;
+  /* The finest probe spacing, the brick levels and how far from geometry
+     the finest bricks reach, in brick spans. */
+  float64_t spacing;
+  int64_t levels;
+  float64_t margin;
   int64_t face_size;
   int64_t samples;
   int64_t max_depth;
@@ -370,6 +370,9 @@ typedef struct VkrBakeDiffuse {
   int64_t photons;
   bool8_t has_photon_radius;
   float64_t photon_radius;
+  /* Probes bake on the CPU integrator even where the GPU probe gather is
+     available. */
+  bool8_t cpu;
 } VkrBakeDiffuse;
 
 typedef struct VkrBakeArguments {
@@ -414,17 +417,15 @@ vkr_internal bool8_t vkr_bake_validate_recipe(VkrBake *bake,
       }
     }
   }
-  if (args->has_grid) {
-    const int64_t probes = args->grid[0] * args->grid[1] * args->grid[2];
-    if (args->grid[0] < 2 || args->grid[1] < 2 || args->grid[2] < 2 ||
-        probes > 256) {
-      return vkr_bake_fail(bake, "--grid dimensions must be at least 2 with "
-                                 "at most 256 probes");
-    }
+  if (!isfinite(args->spacing) || args->spacing < 0.05 ||
+      args->spacing > 100.0) {
+    return vkr_bake_fail(bake, "--spacing must be from 0.05 through 100");
   }
-  if (args->has_voxel_size &&
-      (!isfinite(args->voxel_size) || args->voxel_size <= 0.0)) {
-    return vkr_bake_fail(bake, "--voxel-size must be finite and positive");
+  if (args->levels < 1 || args->levels > 3) {
+    return vkr_bake_fail(bake, "--levels must be from 1 through 3");
+  }
+  if (!isfinite(args->margin) || args->margin < 0.0 || args->margin > 4.0) {
+    return vkr_bake_fail(bake, "--margin must be from 0 through 4");
   }
   if (args->face_size < 1 || args->face_size > 32) {
     return vkr_bake_fail(bake, "--face-size must be from 1 through 32");
@@ -456,23 +457,18 @@ vkr_internal bool8_t vkr_bake_recipe_arguments(VkrBake *bake,
   vkr_bake_push(out, "diffuse-baker");
   vkr_bake_push(out, "--scene");
   vkr_bake_push(out, scene);
-  if (args->has_grid) {
-    vkr_bake_push(out, "--grid");
-    for (uint32_t i = 0u; i < 3u; ++i) {
-      vkr_bake_push(out,
-                    vkr_bake_printf(bake, "%lld", (long long)args->grid[i]));
-    }
-  }
   if (args->has_bounds) {
     vkr_bake_push(out, "--bounds");
     for (uint32_t i = 0u; i < 6u; ++i) {
       vkr_bake_push(out, vkr_bake_printf(bake, "%.9g", args->bounds[i]));
     }
   }
-  if (args->has_voxel_size) {
-    vkr_bake_push(out, "--voxel-size");
-    vkr_bake_push(out, vkr_bake_printf(bake, "%.9g", args->voxel_size));
-  }
+  vkr_bake_push(out, "--spacing");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%.9g", args->spacing));
+  vkr_bake_push(out, "--levels");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->levels));
+  vkr_bake_push(out, "--margin");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%.9g", args->margin));
   vkr_bake_push(out, "--face-size");
   vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->face_size));
   vkr_bake_push(out, "--samples");
@@ -486,6 +482,9 @@ vkr_internal bool8_t vkr_bake_recipe_arguments(VkrBake *bake,
   if (photon_radius && args->has_photon_radius) {
     vkr_bake_push(out, "--photon-radius");
     vkr_bake_push(out, vkr_bake_printf(bake, "%.9g", args->photon_radius));
+  }
+  if (args->cpu) {
+    vkr_bake_push(out, "--cpu");
   }
   return true_v;
 }
@@ -574,8 +573,7 @@ typedef struct VkrBakeKind {
 } VkrBakeKind;
 
 vkr_internal const char *const vkr_bake_diffuse_counts[] = {
-    "triangles",    "materials", "lights",     "probes",
-    "valid_probes", "cells",     "valid_cells"};
+    "triangles", "materials", "lights", "bricks", "probes", "entries"};
 vkr_internal const VkrBakeKind vkr_bake_diffuse_kind = {
     "Diffuse-volume", vkr_bake_diffuse_counts,
     ArrayCount(vkr_bake_diffuse_counts)};
@@ -720,20 +718,23 @@ vkr_internal VkrBakeryJson *vkr_bake_verify_dvol(VkrBake *bake,
                       vkr_bakery_json_cstr(arena, digest));
   VkrBakeryJson *dimension_list = vkr_bakery_json_array(arena);
   VkrBakeryJson *origin_list = vkr_bakery_json_array(arena);
-  VkrBakeryJson *spacing_list = vkr_bakery_json_array(arena);
   for (uint32_t i = 0u; i < 3u; ++i) {
     vkr_bakery_json_append(dimension_list,
                            vkr_bakery_json_int(arena, volume.dimensions[i]));
     vkr_bakery_json_append(
         origin_list,
         vkr_bakery_json_float(arena, (float64_t)volume.origin.elements[i]));
-    vkr_bakery_json_append(
-        spacing_list,
-        vkr_bakery_json_float(arena, (float64_t)volume.spacing.elements[i]));
   }
   vkr_bakery_json_set(arena, result, "dimensions", dimension_list);
   vkr_bakery_json_set(arena, result, "origin", origin_list);
-  vkr_bakery_json_set(arena, result, "spacing", spacing_list);
+  vkr_bakery_json_set(arena, result, "spacing",
+                      vkr_bakery_json_float(arena, (float64_t)volume.spacing));
+  vkr_bakery_json_set(arena, result, "levels",
+                      vkr_bakery_json_int(arena, volume.level_count));
+  vkr_bakery_json_set(arena, result, "bricks",
+                      vkr_bakery_json_int(arena, volume.brick_count));
+  vkr_bakery_json_set(arena, result, "probes",
+                      vkr_bakery_json_int(arena, volume.probe_count));
   vkr_bakery_json_set(arena, result, "layers",
                       vkr_bakery_json_int(arena, volume.layer_count));
 cleanup:
@@ -854,19 +855,6 @@ vkr_internal bool8_t vkr_bake_manifest_spacing(VkrBake *bake,
       return true_v;
     }
   }
-  if (args->has_bounds && args->has_grid) {
-    float64_t spacing[3];
-    bool8_t valid = true_v;
-    for (uint32_t i = 0u; i < 3u; ++i) {
-      spacing[i] = (args->bounds[i + 3u] - args->bounds[i]) /
-                   (float64_t)(args->grid[i] - 1);
-      valid = valid && spacing[i] > 0.0 && isfinite(spacing[i]);
-    }
-    if (valid) {
-      *out = fmin(spacing[0], fmin(spacing[1], spacing[2]));
-      return true_v;
-    }
-  }
   return vkr_bake_fail(bake, "Inspect manifest lacks probe spacing for the "
                              "default photon radius");
 }
@@ -917,19 +905,12 @@ vkr_internal VkrBakeryJson *vkr_bake_recipe_record(VkrBake *bake,
   } else {
     vkr_bakery_json_set(arena, recipe, "bounds", vkr_bakery_json_null(arena));
   }
-  if (args->has_grid) {
-    VkrBakeryJson *grid = vkr_bakery_json_array(arena);
-    for (uint32_t i = 0u; i < 3u; ++i) {
-      vkr_bakery_json_append(grid, vkr_bakery_json_int(arena, args->grid[i]));
-    }
-    vkr_bakery_json_set(arena, recipe, "grid", grid);
-  } else {
-    vkr_bakery_json_set(arena, recipe, "grid", vkr_bakery_json_null(arena));
-  }
-  vkr_bakery_json_set(arena, recipe, "voxel_size",
-                      args->has_voxel_size
-                          ? vkr_bakery_json_float(arena, args->voxel_size)
-                          : vkr_bakery_json_null(arena));
+  vkr_bakery_json_set(arena, recipe, "spacing",
+                      vkr_bakery_json_float(arena, args->spacing));
+  vkr_bakery_json_set(arena, recipe, "levels",
+                      vkr_bakery_json_int(arena, args->levels));
+  vkr_bakery_json_set(arena, recipe, "margin",
+                      vkr_bakery_json_float(arena, args->margin));
   vkr_bakery_json_set(arena, recipe, "face_size",
                       vkr_bakery_json_int(arena, args->face_size));
   vkr_bakery_json_set(arena, recipe, "samples",
@@ -940,6 +921,8 @@ vkr_internal VkrBakeryJson *vkr_bake_recipe_record(VkrBake *bake,
                       vkr_bakery_json_int(arena, args->seed));
   vkr_bakery_json_set(arena, recipe, "photons",
                       vkr_bakery_json_int(arena, args->photons));
+  vkr_bakery_json_set(arena, recipe, "cpu",
+                      vkr_bakery_json_bool(arena, args->cpu));
   vkr_bakery_json_set(arena, recipe, "photon_radius",
                       vkr_bakery_json_float(arena, photon_radius));
   return recipe;
@@ -1022,7 +1005,7 @@ vkr_internal bool8_t vkr_bake_publish(VkrBake *bake,
 vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
                                       const char *output, const char *sidecar,
                                       const char *manifest_destination,
-                                      bool8_t *out_no_room) {
+                                      bool8_t *out_no_volume) {
   char scene[VKR_BAKE_PATH];
   char job[VKR_BAKE_PATH];
   char inspect_path[VKR_BAKE_PATH];
@@ -1051,27 +1034,17 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   VKR_BAKE_TRY(vkr_bake_protect(
       bake, dependencies, targets, ArrayCount(targets),
       "Output, metadata, or manifest would overwrite a bake source asset"));
-  /* The baker refuses an all-invalid volume; do not repeat room detection to
-     reach that refusal. An all-invalid volume renders like no volume. */
-  int64_t valid_cells = 0;
-  int64_t valid_probes = 0;
-  int64_t probes = 0;
-  int64_t cells = 0;
-  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "valid_cells"), &valid_cells);
-  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "valid_probes"),
-                     &valid_probes);
-  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "probes"), &probes);
-  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "cells"), &cells);
-  if (!valid_cells) {
-    *out_no_room = true_v;
-    return vkr_bake_fail(
-        bake,
-        "no interpolation cell lies inside a closed room (valid probes "
-        "%lld/%lld, valid cells 0/%lld). Open and exterior scenes keep "
-        "environment and reflection-probe diffuse lighting; for an interior, "
-        "use a finer --grid, --bounds around the room, or close geometry "
-        "gaps. Inspection: %s",
-        (long long)valid_probes, (long long)probes, (long long)cells, job);
+  /* A scene without geometry places no brick; it keeps environment and
+     reflection-probe diffuse lighting. */
+  int64_t bricks = 0;
+  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "bricks"), &bricks);
+  if (!bricks) {
+    *out_no_volume = true_v;
+    return vkr_bake_fail(bake,
+                         "the scene has no geometry to place probes near, so "
+                         "it keeps environment and reflection-probe diffuse "
+                         "lighting. Inspection: %s",
+                         job);
   }
   char output_directory[VKR_BAKE_PATH];
   vkr_bakery_path_parent(output_directory, sizeof(output_directory), output);
@@ -1307,15 +1280,17 @@ vkr_internal const char *vkr_bake_value(char **argv, int argc, int *index) {
 }
 
 vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
-  VkrBakeDiffuse args = {.face_size = 16,
-                         .samples = 64,
+  VkrBakeDiffuse args = {.spacing = 1.0,
+                         .levels = 3,
+                         .margin = 1.0,
+                         .face_size = 8,
+                         .samples = 4,
                          .max_depth = 12,
                          .seed = 1,
                          .photons = 1000000};
   for (int i = 1; i < argc; ++i) {
     const char *flag = argv[i];
     bool8_t ok = true_v;
-    int64_t grid[3];
     if (!strcmp(flag, "--scene")) {
       ok = (args.scene = vkr_bake_value(argv, argc, &i)) != NULL;
     } else if (!strcmp(flag, "--workspace-root")) {
@@ -1334,14 +1309,12 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
     } else if (!strcmp(flag, "--bounds")) {
       ok = args.has_bounds =
           vkr_bake_parse_numbers(argv, argc, &i, 6u, args.bounds);
-    } else if (!strcmp(flag, "--grid")) {
-      ok = args.has_grid = vkr_bake_parse_integer(argv, argc, &i, &grid[0]) &&
-                           vkr_bake_parse_integer(argv, argc, &i, &grid[1]) &&
-                           vkr_bake_parse_integer(argv, argc, &i, &grid[2]);
-      MemCopy(args.grid, grid, sizeof(grid));
-    } else if (!strcmp(flag, "--voxel-size")) {
-      ok = args.has_voxel_size =
-          vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.voxel_size);
+    } else if (!strcmp(flag, "--spacing")) {
+      ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.spacing);
+    } else if (!strcmp(flag, "--levels")) {
+      ok = vkr_bake_parse_integer(argv, argc, &i, &args.levels);
+    } else if (!strcmp(flag, "--margin")) {
+      ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.margin);
     } else if (!strcmp(flag, "--face-size")) {
       ok = vkr_bake_parse_integer(argv, argc, &i, &args.face_size);
     } else if (!strcmp(flag, "--samples")) {
@@ -1355,6 +1328,8 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
     } else if (!strcmp(flag, "--photon-radius")) {
       ok = args.has_photon_radius =
           vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.photon_radius);
+    } else if (!strcmp(flag, "--cpu")) {
+      args.cpu = true_v;
     } else {
       ok = false_v;
     }
@@ -1409,17 +1384,17 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
     (void)snprintf(joined, sizeof(joined), "%s.manifest.json", output);
     (void)vkr_bake_resolve(joined, manifest);
   }
-  bool8_t no_room = false_v;
-  const bool8_t ok =
-      args.inspect
-          ? vkr_bake_diffuse_inspect(bake, &args, manifest)
-          : vkr_bake_diffuse(bake, &args, output, sidecar, manifest, &no_room);
+  bool8_t no_volume = false_v;
+  const bool8_t ok = args.inspect
+                         ? vkr_bake_diffuse_inspect(bake, &args, manifest)
+                         : vkr_bake_diffuse(bake, &args, output, sidecar,
+                                            manifest, &no_volume);
   if (ok) {
     return 0;
   }
-  if (no_room) {
+  if (no_volume) {
     fprintf(stderr, "Diffuse-volume bake skipped: %s\n", bake->error);
-    return VKR_BAKERY_BAKE_NO_ROOM_CELLS;
+    return VKR_BAKERY_BAKE_NO_VOLUME;
   }
   fprintf(stderr, "Diffuse-volume bake failed: %s\n", bake->error);
   return 1;
@@ -1567,6 +1542,8 @@ vkr_internal VkrBakeryJson *vkr_bake_verify_vklm(VkrBake *bake,
                       vkr_bakery_json_int(arena, set.page_count));
   vkr_bakery_json_set(arena, result, "layers",
                       vkr_bakery_json_int(arena, set.layer_count));
+  vkr_bakery_json_set(arena, result, "planes",
+                      vkr_bakery_json_int(arena, set.plane_count));
   vkr_bakery_json_set(arena, result, "instances",
                       vkr_bakery_json_int(arena, set.instance_count));
 cleanup:
@@ -1617,6 +1594,20 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
     return vkr_bake_fail(bake,
                          "no scene model carries lightmap UVs; cook meshes "
                          "with lightmap_texels_per_unit. Inspection: %s",
+                         job);
+  }
+  /* A desktop host bakes only lamp groups (ADR-104), so a scene without
+     static lamps has nothing to bake there. */
+  int64_t baked_layers = 1;
+  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "baked_layers"),
+                     &baked_layers);
+  if (baked_layers == 0) {
+    *out_nothing = true_v;
+    return vkr_bake_fail(bake,
+                         "the scene has no static lamps or emission, and "
+                         "this host's desktop pipeline bakes only their "
+                         "light. "
+                         "Inspection: %s",
                          job);
   }
 

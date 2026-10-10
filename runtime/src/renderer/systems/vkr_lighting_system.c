@@ -185,9 +185,13 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     const float32_t group =
         vkr_scene_light_group_factor(scene, lights[i].light_group_slot);
     if (!lights[i].enabled || group <= 0.0f ||
-        (ctx->system->static_lights_baked &&
-         lights[i].mobility == VKR_LIGHT_MOBILITY_STATIC) ||
         !vkr_scene_entity_visible(scene, entities[i]))
+      continue;
+    const bool8_t baked = ctx->system->static_lights_baked &&
+                          lights[i].mobility == VKR_LIGHT_MOBILITY_STATIC;
+    VkrLightingSystem *system = ctx->system;
+    if (baked && (!lights[i].casts_shadow ||
+                  system->baked_lamp_count >= ArrayCount(system->baked_lamps)))
       continue;
 
     // Get world position from transform
@@ -195,23 +199,28 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
     const Vec3 direction =
         vkr_quat_rotate_vec3(transforms[i].rotation, lights[i].direction_local);
-    point_light_insert_stable(
-        ctx, (VkrPointLight){
-                 .position = world_position,
-                 .color = lights[i].color,
-                 .intensity = lights[i].intensity * group,
-                 .constant = lights[i].constant,
-                 .linear = lights[i].linear,
-                 .quadratic = lights[i].quadratic,
-                 .range = lights[i].range,
-                 .direction = direction,
-                 .inner_cone_angle = lights[i].inner_cone_angle,
-                 .outer_cone_angle = lights[i].outer_cone_angle,
-                 .kind = lights[i].kind,
-                 .render_id = render_id,
-                 .source_radius = lights[i].source_radius,
-                 .casts_shadow = lights[i].casts_shadow,
-             });
+    const VkrPointLight light = {
+        .position = world_position,
+        .color = lights[i].color,
+        .intensity = lights[i].intensity * group,
+        .constant = lights[i].constant,
+        .linear = lights[i].linear,
+        .quadratic = lights[i].quadratic,
+        .range = lights[i].range,
+        .direction = direction,
+        .inner_cone_angle = lights[i].inner_cone_angle,
+        .outer_cone_angle = lights[i].outer_cone_angle,
+        .kind = lights[i].kind,
+        .render_id = render_id,
+        .source_radius = lights[i].source_radius,
+        .casts_shadow = lights[i].casts_shadow,
+    };
+    /* A baked lamp lights through the lightmap only; it stays a candidate
+       for its moving casters' shadows. */
+    if (baked)
+      system->baked_lamps[system->baked_lamp_count++] = light;
+    else
+      point_light_insert_stable(ctx, light);
   }
 }
 
@@ -302,6 +311,7 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
   system->point_light_count = 0;
   system->point_light_dropped_count = 0;
   system->rectangle_light_count = 0;
+  system->baked_lamp_count = 0u;
 
   /* An enabled atmosphere turns the sun light into its sun (ADR-058): the
      published atmosphere sun replaces this empty record, so the light, sky

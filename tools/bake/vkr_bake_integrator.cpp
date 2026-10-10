@@ -617,8 +617,11 @@ VkrBakeRayEvent next_surface(const VkrBakeIntegrator *integrator,
                       mul(ray->direction, integrator->settings.ray_epsilon));
     ray->t_min = integrator->settings.ray_epsilon;
   }
-  set_error(VKR_BAKE_INTEGRATOR_ERROR_TRANSPARENT_LAYER_LIMIT, out_error);
-  return VkrBakeRayEvent::Error;
+  /* A path through more cutout or blended layers than the limit, as in
+     Bistro's stacked foliage, ends dark rather than failing the bake: it
+     carries nothing further and its escape adds no sky. */
+  *in_out_throughput = vec3_new(0, 0, 0);
+  return VkrBakeRayEvent::Miss;
 }
 
 float32_t medium_ior(const VkrBakeMediumStack *media) {
@@ -789,6 +792,29 @@ bool8_t sample_rectangle_light(const VkrBakeSceneLight &light, Vec3 position,
   return true_v;
 }
 
+/* Length of a punctual light's shadow segment, next to the light, that no
+   occluder blocks: the runtime's local shadow maps clip it as their near
+   plane (vkr_local_shadow_system.c), so the bulb or socket mesh around an
+   imported lamp does not shadow it. Directional and rectangle lights have
+   none. */
+float32_t punctual_occluder_clip(const VkrBakeSceneLight &light) {
+  if (light.kind == VkrBakeSceneLightKind::Directional ||
+      light.kind == VkrBakeSceneLightKind::Rectangle)
+    return 0.0f;
+  return light.range > 0.0f ? std::fmin(0.05f, light.range * 0.01f) : 0.05f;
+}
+
+/* The segment of a light's shadow ray that occluders can block, from a
+   point `ray_epsilon` off the receiver; zero when none is left. */
+float32_t light_shadow_distance(const VkrBakeIntegrator *integrator,
+                                const VkrBakeSceneLight &light,
+                                float32_t distance) {
+  if (distance >= k_ray_max)
+    return k_ray_max;
+  return distance - integrator->settings.ray_epsilon -
+         punctual_occluder_clip(light);
+}
+
 bool8_t shadow_transmittance(const VkrBakeIntegrator *integrator,
                              Vec3 origin, Vec3 direction, float32_t distance,
                              VkrBakeMediumStack media, Vec3 *out_transmittance,
@@ -868,8 +894,10 @@ bool8_t shadow_transmittance(const VkrBakeIntegrator *integrator,
       ray.t_max = distance;
     }
   }
-  set_error(VKR_BAKE_INTEGRATOR_ERROR_TRANSPARENT_LAYER_LIMIT, out_error);
-  return false_v;
+  /* Past the layer limit the light counts as blocked, as a path there ends
+     dark. */
+  *out_transmittance = vec3_new(0, 0, 0);
+  return true_v;
 }
 
 bool8_t direct_lighting(const VkrBakeIntegrator *integrator,
@@ -919,14 +947,14 @@ bool8_t direct_lighting(const VkrBakeIntegrator *integrator,
       return false_v;
     Vec3 visibility = vec3_new(1, 1, 1);
     // Baked lights are static and always shadowed (vkr_bake_metal.mm).
-    if (!shadow_transmittance(
+    const float32_t shadow_distance =
+        light_shadow_distance(integrator, light, distance);
+    if (shadow_distance > 0.0f &&
+        !shadow_transmittance(
             integrator,
             add(surface->position,
                 mul(wi_world, integrator->settings.ray_epsilon)),
-            wi_world,
-            distance < k_ray_max ? distance - integrator->settings.ray_epsilon
-                                 : k_ray_max,
-            shadow_media, &visibility, out_error))
+            wi_world, shadow_distance, shadow_media, &visibility, out_error))
       return false_v;
     result = add(result,
                  mul(mul(mul(evaluation.f, light_radiance), visibility),
@@ -1263,14 +1291,14 @@ bool8_t subsurface_direct_irradiance(const VkrBakeIntegrator *integrator,
       continue;
     Vec3 visibility = vec3_new(1, 1, 1);
     // Baked lights are static and always shadowed (vkr_bake_metal.mm).
-    if (!shadow_transmittance(
+    const float32_t shadow_distance =
+        light_shadow_distance(integrator, light, distance);
+    if (shadow_distance > 0.0f &&
+        !shadow_transmittance(
             integrator,
             add(entry->position,
                 mul(direction, integrator->settings.ray_epsilon)),
-            direction,
-            distance < k_ray_max ? distance - integrator->settings.ray_epsilon
-                                 : k_ray_max,
-            *media, &visibility, out_error))
+            direction, shadow_distance, *media, &visibility, out_error))
       return false_v;
     result = add(result, mul(mul(radiance, visibility), cosine * light_weight));
   }
@@ -1375,6 +1403,72 @@ extern "C" bool8_t vkr_bake_integrator_init(
     return false_v;
   }
   out_integrator->settings = *settings;
+  return true_v;
+}
+
+extern "C" bool8_t vkr_bake_integrator_direct_l1(
+    const VkrBakeIntegrator *integrator, Vec3 position, uint64_t seed,
+    uint32_t rectangle_samples, float32_t out_sh[3][4],
+    VkrBakeIntegratorError *out_error) {
+  set_error(VKR_BAKE_INTEGRATOR_ERROR_NONE, out_error);
+  if (!integrator || !out_sh || !finite3(position) || rectangle_samples == 0u) {
+    set_error(VKR_BAKE_INTEGRATOR_ERROR_INVALID_ARGUMENT, out_error);
+    return false_v;
+  }
+  VkrBakePcg32 rng = {};
+  pcg_seed(&rng, seed);
+  float64_t sum[3][4] = {};
+  const VkrBakeIntegratorScene &scene = integrator->settings.scene;
+  for (uint32_t index = 0u; index < scene.light_count; ++index) {
+    const VkrBakeSceneLight &light = scene.lights[index];
+    const bool8_t rectangle = light.kind == VkrBakeSceneLightKind::Rectangle;
+    const uint32_t samples = rectangle ? rectangle_samples : 1u;
+    for (uint32_t sample_index = 0u; sample_index < samples; ++sample_index) {
+      Vec3 direction = {};
+      Vec3 irradiance = {};
+      float32_t distance = 0.0f;
+      if (rectangle) {
+        VkrBakeRectangleLightSample sample = {};
+        if (!sample_rectangle_light(light, position, &rng, &sample))
+          continue;
+        direction = sample.direction;
+        irradiance = mul(sample.radiance,
+                         1.0f / (sample.solid_angle_pdf * (float32_t)samples));
+        distance = sample.distance;
+      } else if (!evaluate_light(light, position, &direction, &irradiance,
+                                 &distance)) {
+        continue;
+      }
+      Vec3 visibility = vec3_new(1, 1, 1);
+      const float32_t shadow_distance =
+          light_shadow_distance(integrator, light, distance);
+      if (shadow_distance > 0.0f &&
+          !shadow_transmittance(
+              integrator,
+              add(position, mul(direction, integrator->settings.ray_epsilon)),
+              direction, shadow_distance, VkrBakeMediumStack{}, &visibility,
+              out_error))
+        return false_v;
+      const Vec3 light_irradiance = mul(irradiance, visibility);
+      const float64_t channels[3] = {light_irradiance.x, light_irradiance.y,
+                                     light_irradiance.z};
+      for (uint32_t c = 0u; c < 3u; ++c) {
+        sum[c][0] += channels[c] * direction.x / (2.0 * (float64_t)k_pi);
+        sum[c][1] += channels[c] * direction.y / (2.0 * (float64_t)k_pi);
+        sum[c][2] += channels[c] * direction.z / (2.0 * (float64_t)k_pi);
+        sum[c][3] += channels[c] / (4.0 * (float64_t)k_pi);
+      }
+    }
+  }
+  for (uint32_t c = 0u; c < 3u; ++c) {
+    for (uint32_t k = 0u; k < 4u; ++k) {
+      out_sh[c][k] = (float32_t)sum[c][k];
+      if (!std::isfinite(out_sh[c][k])) {
+        set_error(VKR_BAKE_INTEGRATOR_ERROR_NONFINITE_TRANSPORT, out_error);
+        return false_v;
+      }
+    }
+  }
   return true_v;
 }
 

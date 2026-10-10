@@ -84,6 +84,9 @@ typedef struct VkrTextureSystem {
   // refused with an instruction to rebuild it on this host.
   bool8_t supports_texture_astc_4x4; // ASTC LDR, every block size
   bool8_t supports_texture_astc_hdr; // ASTC 4x4 HDR
+  /** The renderer's pipeline class, which decides the encodings scene
+      lightmaps publish. */
+  VkrGraphicsPipelineClass graphics_pipeline;
   bool8_t supports_texture_bc7;
   bool8_t supports_texture_bc5;
 } VkrTextureSystem;

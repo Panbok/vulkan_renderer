@@ -197,7 +197,7 @@ add_library(vkr_bake_core STATIC
     bake/vkr_bake_material.cpp
     bake/vkr_bake_bsdf.cpp
     bake/vkr_bake_bvh.cpp
-    bake/vkr_bake_voxels.cpp
+    bake/vkr_bake_bricks.cpp
     bake/vkr_bake_sh.cpp
     bake/vkr_bake_integrator.cpp
     bake/vkr_bake_layers.cpp
@@ -215,7 +215,14 @@ target_compile_features(vkr_bake_core PRIVATE cxx_std_17)
 target_include_directories(vkr_bake_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
     PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src" "${CMAKE_SOURCE_DIR}/vendor" ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(vkr_bake_core PUBLIC vkr_asset_formats PRIVATE ktx vkr_image_decode)
-# Metal ray-traced lightmap transport on Apple hosts; others bake on the CPU.
+# GPU ray-traced lightmap transport (bake/vkr_bake_gpu.h): Metal ray tracing
+# on Apple hosts, Vulkan ray queries elsewhere. The Vulkan kernels compile
+# from Slang at build time and are embedded in the tool; the Vulkan loader is
+# opened at run time, so a host without one still bakes on the CPU. The
+# Vulkan side also carries the BC6H and BC7 page encoders: DirectXTex's
+# compute kernels (vendor/directxtex.md), whose HLSL Slang compiles with the
+# D3D registers shifted to the bindings vkr_bake_vulkan.cpp declares (b0 to
+# 0, t0-t1 to 1-2, u0 to 3).
 if(APPLE)
     target_sources(vkr_bake_core PRIVATE bake/vkr_bake_metal.mm)
     set_source_files_properties(bake/vkr_bake_metal.mm PROPERTIES
@@ -223,7 +230,67 @@ if(APPLE)
     target_link_libraries(vkr_bake_core PUBLIC "-framework Metal"
         "-framework Foundation")
 else()
-    target_sources(vkr_bake_core PRIVATE bake/vkr_bake_metal_stub.cpp)
+    set(VKR_BAKE_SPIRV_DIR "${CMAKE_CURRENT_BINARY_DIR}/bake_spirv")
+    set(VKR_BAKE_SPIRV_SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/bake/vkr_bake_lightmap.slang")
+    set(VKR_BAKE_SPIRV_HEADER "${VKR_BAKE_SPIRV_DIR}/vkr_bake_vulkan_spirv.h")
+    set(VKR_BAKE_SPIRV_MODULES "")
+    set(VKR_BAKE_SPIRV_ARRAYS "")
+    # Each item is <source>|<entry>|<array name>|<flag set>: ray-query
+    # kernels, plain compute, or vendored HLSL with its D3D registers
+    # shifted.
+    set(_vkr_directxtex_shaders "${CMAKE_SOURCE_DIR}/vendor/directxtex/Shaders")
+    set(_vkr_flags_ray_query -profile spirv_1_5+spvRayQueryKHR)
+    set(_vkr_flags_compute -profile spirv_1_5)
+    set(_vkr_flags_hlsl -profile spirv_1_5 -fvk-b-shift 0 0 -fvk-t-shift 1 0
+        -fvk-u-shift 3 0 -warnings-disable 30081,30056)
+    set(_vkr_bake_kernels
+        "${VKR_BAKE_SPIRV_SOURCE}|lightmap_trace_benchmark|k_lightmap_trace_benchmark_spirv|ray_query"
+        "${VKR_BAKE_SPIRV_SOURCE}|lightmap_gather|k_lightmap_gather_spirv|ray_query"
+        "${VKR_BAKE_SPIRV_SOURCE}|probe_gather|k_probe_gather_spirv|ray_query"
+        "${CMAKE_CURRENT_SOURCE_DIR}/bake/vkr_bake_bc.slang|bc_decode|k_bc_decode_spirv|compute"
+        "${_vkr_directxtex_shaders}/BC6HEncode.hlsl|TryModeG10CS|k_bc6h_try_mode_g10_spirv|hlsl"
+        "${_vkr_directxtex_shaders}/BC6HEncode.hlsl|TryModeLE10CS|k_bc6h_try_mode_le10_spirv|hlsl"
+        "${_vkr_directxtex_shaders}/BC6HEncode.hlsl|EncodeBlockCS|k_bc6h_encode_block_spirv|hlsl"
+        "${_vkr_directxtex_shaders}/BC7Encode.hlsl|TryMode456CS|k_bc7_try_mode_456_spirv|hlsl"
+        "${_vkr_directxtex_shaders}/BC7Encode.hlsl|TryMode137CS|k_bc7_try_mode_137_spirv|hlsl"
+        "${_vkr_directxtex_shaders}/BC7Encode.hlsl|EncodeBlockCS|k_bc7_encode_block_spirv|hlsl")
+    foreach(kernel IN LISTS _vkr_bake_kernels)
+        string(REPLACE "|" ";" fields "${kernel}")
+        list(GET fields 0 source)
+        list(GET fields 1 entry)
+        list(GET fields 2 array)
+        list(GET fields 3 flag_set)
+        set(flags ${_vkr_flags_${flag_set}})
+        set(module "${VKR_BAKE_SPIRV_DIR}/${array}.spv")
+        add_custom_command(
+            OUTPUT "${module}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${VKR_BAKE_SPIRV_DIR}"
+            COMMAND "${VKR_SLANGC_EXECUTABLE}" "${source}"
+                    -target spirv ${flags} -O2
+                    -fvk-use-entrypoint-name -entry ${entry} -stage compute
+                    -o "${module}"
+            DEPENDS "${source}"
+            COMMENT "Compiling the bake ${entry} kernel"
+            VERBATIM)
+        list(APPEND VKR_BAKE_SPIRV_MODULES "${module}")
+        list(APPEND VKR_BAKE_SPIRV_ARRAYS "${array}=${module}")
+    endforeach()
+    # The embed script takes the arrays as one comma-separated argument.
+    string(REPLACE ";" "," _vkr_bake_spirv_arrays "${VKR_BAKE_SPIRV_ARRAYS}")
+    add_custom_command(
+        OUTPUT "${VKR_BAKE_SPIRV_HEADER}"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DVKR_SPIRV_ARRAYS=${_vkr_bake_spirv_arrays}"
+                "-DVKR_SPIRV_OUTPUT=${VKR_BAKE_SPIRV_HEADER}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/bake/vkr_bake_spirv_embed.cmake"
+        DEPENDS ${VKR_BAKE_SPIRV_MODULES}
+                "${CMAKE_CURRENT_SOURCE_DIR}/bake/vkr_bake_spirv_embed.cmake"
+        COMMENT "Embedding the bake kernels"
+        VERBATIM)
+    target_sources(vkr_bake_core PRIVATE bake/vkr_bake_vulkan.cpp
+        "${VKR_BAKE_SPIRV_HEADER}")
+    target_include_directories(vkr_bake_core PRIVATE "${VKR_BAKE_SPIRV_DIR}")
 endif()
 add_library(vkr_diffuse_baker STATIC vkr_diffuse_baker.cpp)
 vkr_configure_cooker_target(vkr_diffuse_baker)

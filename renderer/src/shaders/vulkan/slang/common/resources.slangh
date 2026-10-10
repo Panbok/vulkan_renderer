@@ -150,6 +150,19 @@ struct VkrVulkanIblProbe
     float4 extents_weight;
     float4 intensity_box;
 };
+// Mirrors VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV in vkr_gpu_abi.h.
+static const uint VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV = 2u;
+
+// A lightmapped instance's page rectangle in texels: x and y in `origin`,
+// width and height in `extent`, low 16 bits first. Mirrors VkrLightmapRect.
+struct VkrLightmapRect
+{
+    uint page;
+    uint origin;
+    uint extent;
+    uint reserved;
+};
+
 struct VkrGpuRectangleLightRow
 {
     float4 center_half_width;
@@ -296,10 +309,15 @@ struct VkrVulkanPacketFrameRoot
     uint local_shadow_reserved;
     uint dfg_texture;
     uint dfg_sampler;
-    uint diffuse_volume_texture;
-    uint3 diffuse_volume_reserved;
+    // Sparse diffuse volume: indirection, probe, moment and SH texture
+    // slots (zero without a volume); origin with the finest spacing in w;
+    // params.x the SH scale, params.y the moment atlas's tile rows and
+    // params.z the row offset of the lamp groups' SH part, zero when they
+    // join the sum;
+    // indirection dimensions with the moment sampler in w.
+    uint4 diffuse_volume_textures;
     float4 diffuse_volume_origin;
-    float4 diffuse_volume_inverse_spacing;
+    float4 diffuse_volume_params;
     uint4 diffuse_volume_dimensions;
     VkrVulkanLtc* ltc;
     VkrFogParams* fog;
@@ -523,6 +541,7 @@ struct VkrVulkanUiOutput
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 [[vk::binding(0, 0)]] Texture2D<float> g_depth_textures[];
+[[vk::binding(0, 0)]] Texture2D<uint> g_uint_textures[];
 [[vk::binding(0, 0)]] Texture2D<uint2> g_uint2_textures[];
 [[vk::binding(0, 0)]] Texture2D<uint4> g_uint4_textures[];
 [[vk::binding(0, 0)]] TextureCube<float4> g_cube_textures[];

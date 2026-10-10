@@ -603,6 +603,8 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
           renderer->prepared_frame.local_shadow_refractive_casters
               ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
               : 0u,
+      .static_candidate_count =
+          transmission ? 0u : slot->gpu_static_candidate_count,
   };
   /* A retained cascade draws nothing this frame: its view still counts
      casters for the cascade metrics, but encodes no commands. */
@@ -1107,7 +1109,7 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedRaster *prepared,
                                        const VkrRgPass *pass, bool8_t shadow,
                                        bool8_t transmission,
-                                       bool8_t local_shadow) {
+                                       uint32_t local_shadow_slot) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   VkrVulkanGraphBufferInstance *visible =
@@ -1119,10 +1121,11 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
   if (!visible || !states || !commands)
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
-  /* A local face's repeat index is its render slot and culling view; the
-     slot names the view it draws. */
+  /* A local face draws with the culling view of its render slot, which
+     names the view it draws; UINT32_MAX marks other passes. */
+  const bool8_t local_shadow = local_shadow_slot != UINT32_MAX;
   const uint32_t layer =
-      local_shadow ? pass->desc.repeat_index
+      local_shadow ? local_shadow_slot
                    : pass->desc.depth_attachment.desc.slice.base_layer;
   const uint32_t view_index =
       shadow ? 1u + layer +
@@ -1434,6 +1437,33 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       .decals = slot->decals,
       .decal_masks = slot->decal_masks,
   };
+  /* Baked lamps (ADR-104): the resolve sums the
+     active lamp layers of each lightmapped draw's rectangle. */
+  root.baked_lamps_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  root.baked_direction_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  root.lightmap_direction_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 16u, 0u)) {
+    if (!vkr_vk_deferred_storage_index(renderer, pass, 16u,
+                                       &root.baked_lamps_texture) ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 17u,
+                                       &root.baked_direction_texture))
+      return false_v;
+    const VkrLightmapBinding *lightmap = &packet->input.lighting->lightmap;
+    if (slot->lightmap_rects != 0u) {
+      root.lightmap_rects = slot->lightmap_rects;
+      root.lightmap_texture = slot->lightmap_texture;
+      root.lightmap_sampler = slot->lightmap_sampler;
+      root.lightmap_direction_texture = slot->lightmap_direction_texture;
+      root.lightmap_rect_count = lightmap->rect_count;
+      root.lightmap_layer_count = lightmap->layer_count;
+      root.lightmap_active_count = lightmap->active_layer_count;
+      root.lightmap_inverse_page_size = 1.0f / (float32_t)lightmap->page_size;
+      for (uint32_t i = 0u; i < lightmap->active_layer_count; ++i) {
+        root.lightmap_active_layers[i] = lightmap->active_layers[i];
+        root.lightmap_active_weights[i] = lightmap->active_weights[i];
+      }
+    }
+  }
   if (slot->decal_count) {
     const VkrDecalGrid *grid = packet->input.world->decal_grid;
     root.decal_grid_origin_cell_size =
@@ -1467,6 +1497,104 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
 
 /* Shadow.LocalMask shares the lighting root; it binds only the visibility
    inputs and the mask it writes. */
+/* The sparse volume's response for deferred lighting, which reads it in
+   place of its own lookup: the eight-probe walk in the lighting kernel cost
+   more than here. The sample pass looks the volume up at half resolution;
+   the upsample takes each pixel's matching half-resolution texels and
+   lists the pixels none matches, which the fallback pass looks up one by
+   one, so neither kernel that covers the screen carries the lookup at full
+   resolution (ADR-054). */
+bool8_t vkr_vk_prepare_diffuse_volume_sample(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
+    const VkrRgPass *pass, VkrVulkanDiffuseVolumeStage stage) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  const bool8_t upsample = stage == VKR_VULKAN_DIFFUSE_VOLUME_UPSAMPLE;
+  const bool8_t fallback = stage == VKR_VULKAN_DIFFUSE_VOLUME_FALLBACK;
+  uint32_t vbuffer = 0u;
+  uint32_t depth = 0u;
+  uint32_t normal = 0u;
+  uint32_t output = 0u;
+  uint32_t guide = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  uint32_t half = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  uint32_t baked_lamps = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  VkrVulkanGraphBufferInstance *arguments =
+      vkr_vk_deferred_buffer(renderer, pass, 22u);
+  VkrVulkanGraphBufferInstance *pixels =
+      fallback || upsample ? vkr_vk_deferred_buffer(renderer, pass, 23u)
+                           : NULL;
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 16u, &output) ||
+      (!fallback &&
+       !vkr_vk_deferred_storage_index(renderer, pass, upsample ? 21u : 17u,
+                                      &guide)) ||
+      (upsample &&
+       !vkr_vk_deferred_storage_index(renderer, pass, 20u, &half)) ||
+      (vkr_rg_pass_find_image_use(&pass->desc, 18u, 0u) &&
+       !vkr_vk_deferred_storage_index(renderer, pass, 18u, &baked_lamps)) ||
+      !arguments || ((fallback || upsample) && !pixels))
+    return false_v;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
+                                        packet->input.globals.view);
+  const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  uint64_t frame_address = 0u;
+  VkrVulkanPacketFrameRoot *frame_root =
+      vkr_vk_packet_frame_root(slot, &frame_address);
+  if (!frame_root)
+    return false_v;
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &frame, slot->gpu_candidate_instances,
+      view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
+  /* The graph's viewport divisor rounds down, at least one texel. */
+  const uint32_t width = renderer->prepared_frame.viewport_width;
+  const uint32_t height = renderer->prepared_frame.viewport_height;
+  const VkrVulkanDiffuseVolumeSampleRoot root = {
+      .frame = frame_address,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .vbuffer_texture = vbuffer,
+      .depth_texture = depth,
+      .normal_texture = normal,
+      .baked_lamps_texture = baked_lamps,
+      .extent = {width, height},
+      .half_extent = {ClampBot(width / 2u, 1u), ClampBot(height / 2u, 1u)},
+      .output_texture = output,
+      .guide_texture = guide,
+      .half_texture = half,
+      .fallback_arguments = arguments->buffer.address,
+      .fallback_pixels = pixels ? pixels->buffer.address : 0u,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanDiffuseVolumeSampleRoot),
+                                 &prepared->root_address))
+    return false_v;
+  if (fallback) {
+    /* The upsample's count sizes the dispatch, 64 listed pixels a group. */
+    prepared->pipelines[0] =
+        renderer->deferred_pipelines
+            [VKR_VULKAN_DEFERRED_PIPELINE_DIFFUSE_VOLUME_FALLBACK];
+    prepared->indirect_buffer = arguments->buffer.handle;
+    prepared->indirect_offset = pass->desc.dispatch.indirect_offset;
+    prepared->dispatch_count = 1u;
+    return true_v;
+  }
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines
+          [upsample ? VKR_VULKAN_DEFERRED_PIPELINE_DIFFUSE_VOLUME_UPSAMPLE
+                    : VKR_VULKAN_DEFERRED_PIPELINE_DIFFUSE_VOLUME_SAMPLE];
+  const uint32_t *dispatch = upsample ? root.extent : root.half_extent;
+  prepared->groups[prepared->dispatch_count][0] = (dispatch[0] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][1] = (dispatch[1] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  return true_v;
+}
+
 bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass) {
@@ -1499,6 +1627,36 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
       renderer, frame_root, slot, &frame, slot->gpu_candidate_instances,
       view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
       VKR_VULKAN_SENTINEL_SLOT_INDEX, local_shadow_texture, true_v);
+  /* The selected baked lamps' rows, with their static and composite views;
+     their irradiance hidden by moving casters goes to binding 21. */
+  const VkrLocalShadowPassPayload *local = packet->input.local_shadow;
+  const uint32_t baked_lamp_count =
+      renderer->prepared_frame.local_shadow_baked_lamp_count;
+  uint32_t baked_lamp_shadow = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  uint32_t baked_lamps_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  uint64_t baked_lamps_address = 0u;
+  if (baked_lamp_count != 0u) {
+    if (!local ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 21u,
+                                       &baked_lamp_shadow) ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 18u,
+                                       &baked_lamps_texture))
+      return false_v;
+    VkrVulkanBakedShadowLamp *lamps = vkr_vk_frame_upload_allocate(
+        slot, baked_lamp_count * sizeof(*lamps),
+        _Alignof(VkrVulkanBakedShadowLamp), &baked_lamps_address, NULL);
+    if (!lamps)
+      return false_v;
+    for (uint32_t i = 0u; i < baked_lamp_count; ++i) {
+      const VkrLocalShadowBakedLamp *baked = &local->baked_lamps[i];
+      lamps[i] = (VkrVulkanBakedShadowLamp){
+          .static_first_view = baked->static_first_view,
+          .composite_first_view = baked->composite_first_view,
+      };
+      vkr_point_light_pack(&baked->light, packet->exposure.pre_exposure,
+                           &lamps[i].light);
+    }
+  }
   const VkrVulkanLocalShadowMaskRoot root = {
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -1514,18 +1672,27 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                        VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD
                                  : 0u,
       .temporal_filter = packet->temporal.enabled ? 1u : 0u,
+      .baked_lamp_shadow_texture = baked_lamp_shadow,
+      .baked_lamp_count = baked_lamp_count,
+      .baked_lamps = baked_lamps_address,
+      .baked_lamps_texture = baked_lamps_texture,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLocalShadowMaskRoot),
                                  &prepared->root_address))
     return false_v;
-  /* Contact shadows are a separate kernel so the default one does not carry
-     the march's registers. */
+  /* Contact shadows and the baked lamps' hidden light are separate kernels
+     so the default one does not carry their registers. */
+  const bool8_t contact = renderer->prepared_frame.local_shadow_contact;
+  const VkrVulkanDeferredPipeline mask_pipeline =
+      baked_lamp_count != 0u
+          ? (contact
+                 ? VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT_BAKED
+                 : VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_BAKED)
+          : (contact ? VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT
+                     : VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK);
   prepared->pipelines[prepared->dispatch_count] =
-      renderer->deferred_pipelines
-          [renderer->prepared_frame.local_shadow_contact
-               ? VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT
-               : VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK];
+      renderer->deferred_pipelines[mask_pipeline];
   prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][2] = 1u;
@@ -1567,6 +1734,20 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   uint32_t shadow_moments = UINT32_MAX;
   if (vkr_rg_pass_find_image_use(&pass->desc, 17u, 0u) &&
       !vkr_vk_deferred_sampled_index(renderer, pass, 17u, &shadow_moments))
+    return false_v;
+  uint32_t diffuse_volume = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 20u, 0u) &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 20u, &diffuse_volume))
+    return false_v;
+  uint32_t baked_lamp_shadow = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 21u, 0u) &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 21u, &baked_lamp_shadow))
+    return false_v;
+  uint32_t baked_lamps = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  uint32_t baked_direction = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 18u, 0u) &&
+      (!vkr_vk_deferred_storage_index(renderer, pass, 18u, &baked_lamps) ||
+       !vkr_vk_deferred_storage_index(renderer, pass, 19u, &baked_direction)))
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
@@ -1646,6 +1827,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
           renderer->prepared_frame.lighting_layers_enabled ? 1u : 0u,
       .local_shadow_mask_texture = local_shadow_mask,
       .shadow_moments_texture = shadow_moments,
+      .baked_lamps_texture = baked_lamps,
+      .baked_direction_texture = baked_direction,
+      .diffuse_volume_texture = diffuse_volume,
+      .baked_lamp_shadow_texture = baked_lamp_shadow,
       .visible_rows = visible->buffer.address,
       .light_contribution = slot->light_contribution_requested
                                 ? slot->light_contribution.address
@@ -4589,7 +4774,7 @@ bool8_t vkr_vk_prepare_deferred_transmission(VkrVulkanRenderer *renderer,
                                 view_projection, shadow_texture,
                                 VKR_VULKAN_SENTINEL_SLOT_INDEX,
                                 local_shadow_texture, true_v);
-  const VkrVulkanTransmissionRoot root = {
+  VkrVulkanTransmissionRoot root = {
       .visible_rows = visible->buffer.address,
       .materials = renderer->materials.address,
       .transmission_materials =
@@ -4641,6 +4826,24 @@ bool8_t vkr_vk_prepare_deferred_transmission(VkrVulkanRenderer *renderer,
       .compact_layer = layer,
       .compact_enabled = compact,
   };
+  /* Baked lamps (ADR-104) on lightmapped transmissive draws: the resolve's
+     lightmap binding, present on frames that sample baked lamps. */
+  root.lightmap_direction_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (slot->lightmap_rects != 0u) {
+    const VkrLightmapBinding *lightmap = &packet->input.lighting->lightmap;
+    root.lightmap_rects = slot->lightmap_rects;
+    root.lightmap_texture = slot->lightmap_texture;
+    root.lightmap_sampler = slot->lightmap_sampler;
+    root.lightmap_direction_texture = slot->lightmap_direction_texture;
+    root.lightmap_rect_count = lightmap->rect_count;
+    root.lightmap_layer_count = lightmap->layer_count;
+    root.lightmap_active_count = lightmap->active_layer_count;
+    root.lightmap_inverse_page_size = 1.0f / (float32_t)lightmap->page_size;
+    for (uint32_t i = 0u; i < lightmap->active_layer_count; ++i) {
+      root.lightmap_active_layers[i] = lightmap->active_layers[i];
+      root.lightmap_active_weights[i] = lightmap->active_weights[i];
+    }
+  }
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanTransmissionRoot),
                                  &prepared->root_address))

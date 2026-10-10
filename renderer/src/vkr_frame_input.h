@@ -462,24 +462,78 @@ typedef struct VkrShadowReceiverPacketData {
   float32_t fade_end;
 } VkrShadowReceiverPacketData;
 
+/** One baked lamp whose moving-caster shadows a frame subtracts from its
+ * baked light (ADR-104). The lamp is not in the frame's
+ * light table: its light shades only through the lightmap. Its composite
+ * views name each face's dynamic square where a moving caster reaches the
+ * face and its static square otherwise; its static views name the static
+ * squares. Both are blocks of the lamp's face count among the receiver
+ * views, so receivers take the moving casters' visibility from the
+ * difference of the two. */
+/* Receiver views of the scene's lights and two blocks of six per baked
+   lamp, then the companion views. */
+#define VKR_LOCAL_SHADOW_VIEW_CAPACITY                                         \
+  (VKR_LOCAL_SHADOW_FACE_COUNT_MAX +                                           \
+   12u * VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX +                               \
+   VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX)
+
+typedef struct VkrLocalShadowBakedLamp {
+  VkrPointLight light;
+  uint32_t composite_first_view;
+  uint32_t static_first_view;
+} VkrLocalShadowBakedLamp;
+
 /** Fixed application-owned frame payload, borrowed until render returns.
  * First-view entries encode index+1; zero means the light is unshadowed this
  * frame. Views are the resident cache faces whose content is valid after this
- * submission; they need not keep their indices between frames. */
+ * submission; they need not keep their indices between frames.
+ *
+ * A face's static square holds the static casters only, or every caster
+ * when the slot that drew it was not static-only. A face that a dynamic
+ * caster may reach and the camera may see takes a dynamic square for the
+ * frame: a copy of its static square plus the dynamic casters. Its view then
+ * names the dynamic square, and a companion view after `view_count` names
+ * the static square. */
 typedef struct VkrLocalShadowPassPayload {
   uint32_t view_count;
+  /** Companion views at `view_count` and after: the static squares of the
+   * faces whose views name dynamic squares. Receivers never sample them;
+   * render slots draw and copy them. */
+  uint32_t companion_view_count;
   uint32_t map_size;
   /** Render slots drawn at most per frame and transmission array layers. */
   uint32_t face_budget;
   /** Layers of the shared atlas; a different count recreates it. */
   uint32_t atlas_layer_count;
+  /** The trailing atlas layers that hold dynamic squares, and nothing else;
+   * zero while the world has no dynamic caster. */
+  uint32_t dynamic_layer_count;
+  /** The last this many render slots draw dynamic squares:
+   * Shadow.Local.Copy fills each from the static square of companion view
+   * `dynamic_source_views[slot]`, then the slot draws only the dynamic
+   * casters over it, without a clear. They draw no transmission. */
+  uint32_t dynamic_render_count;
+  /** Render slots before the dynamic ones that draw only the static casters;
+   * the others draw every caster. */
+  uint64_t static_render_mask;
+  /** Faces that wanted a dynamic square this frame; those past
+   * VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX show their static square. */
+  uint32_t dynamic_faces_wanted;
+  /** Baked lamps whose moving-caster shadows this frame shows, and the baked
+   * lamps whose range held a moving caster in view (the selection's
+   * candidates). */
+  uint32_t baked_lamp_count;
+  uint32_t baked_lamp_candidates;
+  VkrLocalShadowBakedLamp baked_lamps[VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX];
   /** Atlas layers without retained contents, cleared whole before any face
    * draws. Faces of a cleared layer that are not drawn this submission are
    * not views. */
   uint32_t atlas_clear_mask;
-  /** Faces drawn this submission. Render slot i draws view render_views[i]
-   * with opaque culling view i; slots below `transmission_render_count` also
-   * draw the view's transmission layer with transmission culling view i. */
+  /** Faces drawn this submission. Render slot i draws view render_views[i],
+   * a companion view for the static square of a face that shows a dynamic
+   * one, with opaque culling view i; slots below `transmission_render_count`
+   * also draw the view's transmission layer with transmission culling view
+   * i. */
   uint32_t render_count;
   uint32_t transmission_render_count;
   /** Transmission layers receivers may sample; every layer below it has been
@@ -495,8 +549,16 @@ typedef struct VkrLocalShadowPassPayload {
    * layer. */
   uint64_t retained_opaque_mask;
   uint32_t light_first_view[VKR_MAX_SCENE_POINT_LIGHTS];
-  VkrLocalShadowView views[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
+  uint32_t dynamic_source_views[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
+  VkrLocalShadowView views[VKR_LOCAL_SHADOW_VIEW_CAPACITY];
 } VkrLocalShadowPassPayload;
+
+/** First render slot that draws a dynamic square; `render_count` without
+ * one. */
+static inline uint32_t vkr_local_shadow_dynamic_render_first(
+    const VkrLocalShadowPassPayload *payload) {
+  return payload->render_count - payload->dynamic_render_count;
+}
 
 /** Atlas layer of the face render slot `slot` draws. */
 static inline uint32_t

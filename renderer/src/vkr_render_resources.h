@@ -38,16 +38,6 @@ typedef struct VkrTextureHandle {
 } VkrTextureHandle;
 Array(VkrTextureHandle);
 
-/** Borrowed scene-owned diffuse volume. An invalid texture disables sampling.
- * Lattice positions are origin + index / inverse_spacing; room validity and
- * packed SH live in the immutable 8-by-probe-count RGBA32F texture. */
-typedef struct VkrDiffuseVolumeBinding {
-  VkrTextureHandle texture;
-  Vec3 origin;
-  Vec3 inverse_spacing;
-  uint32_t dimensions[3];
-} VkrDiffuseVolumeBinding;
-
 /** Most lightmap layers one frame samples: the two sun keys nearest the sun
  * and every lamp group (ADR-088). */
 #define VKR_LIGHTMAP_MAX_ACTIVE_LAYERS 6u
@@ -70,6 +60,9 @@ typedef struct VkrLightmapRect {
  * layers, each scaled by its weight. */
 typedef struct VkrLightmapBinding {
   VkrTextureHandle texture;
+  /** The desktop pipeline's dominant-direction pages in the slices of
+      `texture` (RGB: 0.5 * d + 0.5, A: directionality), or invalid. */
+  VkrTextureHandle direction;
   uint32_t page_size;
   uint32_t layer_count;
   const VkrLightmapRect *rects;
@@ -78,6 +71,60 @@ typedef struct VkrLightmapBinding {
   uint32_t active_layers[VKR_LIGHTMAP_MAX_ACTIVE_LAYERS];
   float32_t active_weights[VKR_LIGHTMAP_MAX_ACTIVE_LAYERS];
 } VkrLightmapBinding;
+
+/** Most light layers one frame composes into a diffuse volume, as for
+ * lightmaps: the two sun keys nearest the sun and every lamp group. */
+#define VKR_DIFFUSE_VOLUME_MAX_ACTIVE_LAYERS VKR_LIGHTMAP_MAX_ACTIVE_LAYERS
+/* Direct bands a volume holds at most, one per lamp group
+   (VKR_LIGHT_LAYER_MAX_LAMP_GROUPS). */
+#define VKR_DIFFUSE_VOLUME_MAX_DIRECT_BANDS 4u
+/* An active layer without a direct band. */
+#define VKR_DIFFUSE_VOLUME_NO_BAND 0xffffffffu
+/** Probes per row of a diffuse volume's probe and SH textures. */
+#define VKR_DIFFUSE_VOLUME_ROW_PROBES 1024u
+/** Probes per row of a diffuse volume's moment atlas, one tile each. */
+#define VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES 512u
+/** Texels per side of a probe's moment tile. */
+#define VKR_DIFFUSE_VOLUME_MOMENT_TILE 10u
+
+/** Borrowed scene-owned sparse diffuse volume (DVOL v3). An invalid
+ * indirection disables sampling. Probe p is texel (p % 1024, p / 1024) of
+ * `probes` (RGBA16F: relocation offset, validity), texels 3 (p % 1024) + c of
+ * row p / 1024 of `sh` (RGBA16F: L1 SH of red, green, blue), and tile
+ * (p % 512, p / 512) of the 512-tile-wide RG16F `moments` atlas. `layer_sh`
+ * holds `band_count` SH bands in that layout, band b in rows
+ * [b * rows, (b + 1) * rows) with rows = ceil(probe_count / 1024): the
+ * layers, then the lamp groups' direct light at the probes, which their
+ * layers leave out. `sh` has 2 * rows rows: the renderer writes the active
+ * layers' weighted sum into the first `rows` whenever `composition`
+ * changes, except on frames that sample baked lamps, which take the active
+ * lamp groups (bits of `active_lamp_mask`) with their direct bands
+ * (`active_direct_bands`) into the second `rows` apart, because a
+ * lightmapped surface already holds their light and only a surface without
+ * a lightmap reads them (ADR-104). SH is
+ * stored divided by `sh_scale`. `indirection` is
+ * R32_UINT, dimensions[0] wide and dimensions[1] * dimensions[2] high, with
+ * one entry per level-0 brick span of 3 * spacing from `origin`. */
+typedef struct VkrDiffuseVolumeBinding {
+  VkrTextureHandle indirection;
+  VkrTextureHandle probes;
+  VkrTextureHandle moments;
+  VkrTextureHandle layer_sh;
+  VkrTextureHandle sh;
+  Vec3 origin;
+  float32_t spacing;
+  float32_t sh_scale;
+  uint32_t dimensions[3];
+  uint32_t probe_count;
+  uint32_t layer_count;
+  uint32_t band_count;
+  uint32_t active_layer_count;
+  uint32_t active_layers[VKR_DIFFUSE_VOLUME_MAX_ACTIVE_LAYERS];
+  float32_t active_weights[VKR_DIFFUSE_VOLUME_MAX_ACTIVE_LAYERS];
+  uint32_t active_direct_bands[VKR_DIFFUSE_VOLUME_MAX_ACTIVE_LAYERS];
+  uint32_t active_lamp_mask;
+  uint32_t composition;
+} VkrDiffuseVolumeBinding;
 
 /** Borrowed scene-owned 65-by-8 RGBA32F diffusion bank; zero count disables. */
 typedef struct VkrSubsurfaceBinding {

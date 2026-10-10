@@ -489,28 +489,70 @@ void vkr_metal_packet_punctual_layered(
   }
 }
 
-// w is one only where baked room coverage is valid. RGB is scene-linear E/pi.
+// Sparse diffuse volume lookup (DVOL v3), as packet_diffuse_volume_response
+// on the desktop pipeline: the eight probes around the receiver, weighted by
+// trilinear position, back-face and Chebyshev visibility. w is one where the
+// volume covers the receiver; RGB is pre-exposed E/pi.
 static float4 vkr_metal_packet_diffuse_volume(
-    constant VkrMetalPacketFrameRoot *frame, float3 world_position, float3 normal) {
+    constant VkrMetalPacketFrameRoot *frame, float3 world_position,
+    float3 normal, float3 to_viewer) {
   if (frame->diffuse_volume_params == nullptr)
     return float4(0.0f);
-  uint3 dimensions = frame->diffuse_volume_params->dimensions.xyz;
-  VkrDiffuseVolumeCell cell = vkr_diffuse_volume_cell(world_position,
-      frame->diffuse_volume_params->origin.xyz, frame->diffuse_volume_params->inverse_spacing.xyz, dimensions);
-  if (!cell.valid || frame->diffuse_volume.read(uint2(7u, cell.row)).y == 0.0f)
+  constant VkrMetalPacketDiffuseVolume &volume = *frame->diffuse_volume_params;
+  float3 origin = volume.origin.xyz;
+  float spacing = volume.origin.w;
+  uint3 dimensions = volume.dimensions.xyz;
+  uint3 entry = vkr_diffuse_volume_entry(world_position, origin, spacing,
+                                         dimensions);
+  if (!vkr_diffuse_volume_entry_inside(entry, dimensions))
     return float4(0.0f);
-  VkrShL2Packed packed;
-  for (uint coefficient = 0u; coefficient < 7u; ++coefficient)
-    packed.v[coefficient] = float4(0.0f);
+  uint value =
+      volume.indirection.read(vkr_diffuse_volume_entry_texel(entry, dimensions)).x;
+  if (value == VKR_DIFFUSE_VOLUME_ENTRY_EMPTY)
+    return float4(0.0f);
+  float bias =
+      VKR_DIFFUSE_VOLUME_BIAS * vkr_diffuse_volume_entry_step(value, spacing);
+  float3 biased = world_position + (normal * 0.2f + to_viewer * 0.8f) * bias;
+  VkrDiffuseVolumeCell cell =
+      vkr_diffuse_volume_brick_cell(value, entry, biased, origin, spacing);
+  constexpr sampler moment_sampler(coord::normalized, address::clamp_to_edge,
+                                   filter::linear);
+  float4 red = float4(0.0f);
+  float4 green = float4(0.0f);
+  float4 blue = float4(0.0f);
+  float total = 0.0f;
   for (uint corner = 0u; corner < 8u; ++corner) {
-    uint3 offset = vkr_diffuse_volume_corner(corner);
-    uint row = vkr_diffuse_volume_node_index(cell.base + offset, dimensions);
-    float weight = vkr_diffuse_volume_weight(offset, cell.fraction);
-    for (uint coefficient = 0u; coefficient < 7u; ++coefficient)
-      packed.v[coefficient] += frame->diffuse_volume.read(uint2(coefficient, row)) * weight;
+    uint probe = vkr_diffuse_volume_corner_probe(cell, corner);
+    float4 record = volume.probes.read(vkr_diffuse_volume_probe_texel(probe));
+    if (record.w <= 0.0f)
+      continue;
+    float3 probe_position =
+        vkr_diffuse_volume_corner_position(cell, corner) + record.xyz;
+    float3 to_probe = probe_position - world_position;
+    float weight = vkr_diffuse_volume_backface(
+        normal, to_probe * rsqrt(max(dot(to_probe, to_probe), 1.0e-8f)));
+    float3 from_probe = biased - probe_position;
+    float distance = length(from_probe);
+    float2 moments =
+        volume.moments
+            .sample(moment_sampler,
+                    vkr_diffuse_volume_moment_uv(
+                        probe, from_probe / max(distance, 1.0e-6f),
+                        volume.params.y),
+                    level(0.0f))
+            .xy;
+    weight *= vkr_diffuse_volume_chebyshev(moments, distance);
+    weight = vkr_diffuse_volume_crush(weight) *
+             vkr_diffuse_volume_trilinear(corner, cell.fraction);
+    red += weight * volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 0u, 0u));
+    green += weight * volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 1u, 0u));
+    blue += weight * volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 2u, 0u));
+    total += weight;
   }
-  return float4(vkr_sh_l2_evaluate(packed, vkr_sh_l2_prepare_evaluation(normal)) *
-                    frame->pre_exposure,
+  if (total < VKR_DIFFUSE_VOLUME_MIN_WEIGHT)
+    return float4(0.0f);
+  return float4(vkr_diffuse_volume_l1(red, green, blue, normal) *
+                    (volume.params.x * frame->pre_exposure / total),
                 1.0f);
 }
 

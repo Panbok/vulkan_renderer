@@ -126,6 +126,10 @@
   "packet.local_shadow_mask.comp.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_COMP_SPV                   \
   "packet.local_shadow_mask_contact.comp.spv"
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_BAKED_COMP_SPV                     \
+  "packet.local_shadow_mask_baked.comp.spv"
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_BAKED_COMP_SPV             \
+  "packet.local_shadow_mask_contact_baked.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV                           \
   "packet.deferred_lighting.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV                   \
@@ -207,6 +211,14 @@
   "packet.cloud_sky_light_sh.comp.spv"
 #define VKR_VULKAN_PACKET_CLOUD_SKY_LIGHT_MIPS_COMP_SPV                        \
   "packet.cloud_sky_light_mips.comp.spv"
+#define VKR_VULKAN_PACKET_DIFFUSE_VOLUME_COMPOSE_COMP_SPV                      \
+  "packet.diffuse_volume_compose.comp.spv"
+#define VKR_VULKAN_PACKET_DIFFUSE_VOLUME_SAMPLE_COMP_SPV                       \
+  "packet.diffuse_volume_sample.comp.spv"
+#define VKR_VULKAN_PACKET_DIFFUSE_VOLUME_UPSAMPLE_COMP_SPV                     \
+  "packet.diffuse_volume_upsample.comp.spv"
+#define VKR_VULKAN_PACKET_DIFFUSE_VOLUME_FALLBACK_COMP_SPV                     \
+  "packet.diffuse_volume_fallback.comp.spv"
 #define VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV "packet.bloom_combine.comp.spv"
 #define VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV                             \
   "packet.picking_resolve.comp.spv"
@@ -388,6 +400,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE_DEBUG,
   VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK,
   VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT,
+  VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_BAKED,
+  VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT_BAKED,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,
@@ -419,6 +433,10 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SKY_LIGHT,
   VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SKY_LIGHT_SH,
   VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SKY_LIGHT_MIPS,
+  VKR_VULKAN_DEFERRED_PIPELINE_DIFFUSE_VOLUME_COMPOSE,
+  VKR_VULKAN_DEFERRED_PIPELINE_DIFFUSE_VOLUME_SAMPLE,
+  VKR_VULKAN_DEFERRED_PIPELINE_DIFFUSE_VOLUME_UPSAMPLE,
+  VKR_VULKAN_DEFERRED_PIPELINE_DIFFUSE_VOLUME_FALLBACK,
   VKR_VULKAN_DEFERRED_PIPELINE_SDSM,
   VKR_VULKAN_DEFERRED_PIPELINE_PICKING,
   VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION,
@@ -599,6 +617,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCullRoot {
   /** Views, a bit each below 32, of retained cascades: classification still
       counts their casters, but encoding writes no commands. */
   uint32_t encode_idle_view_mask;
+  /** Candidates below it are static; a local face view whose LOD flags
+      select one mobility skips the others. */
+  uint32_t static_candidate_count;
   /** One VkrGpuLodView per culling view, and the geometry rows whose
       decode records lead to LOD rows (ADR-084). */
   uint64_t lod_views;
@@ -708,6 +729,27 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint64_t decal_masks;
   Vec4 decal_grid_origin_cell_size;
   uint32_t decal_grid_dimensions_count[4];
+  /** The frame's baked lamp lightmaps (ADR-104): the
+      rectangle table, the texture array whose slice
+      page * lightmap_layer_count + layer holds one lamp layer of a page,
+      its sampler, and the active layers with their weights. A zero
+      rectangle count leaves the output unwritten. */
+  uint64_t lightmap_rects;
+  uint32_t lightmap_texture;
+  uint32_t lightmap_sampler;
+  uint32_t lightmap_rect_count;
+  uint32_t lightmap_layer_count;
+  uint32_t lightmap_active_count;
+  uint32_t baked_lamps_texture;
+  float32_t lightmap_inverse_page_size;
+  /** The lamp layers' dominant-direction texture array in the same slices,
+      or the sentinel without direction planes. */
+  uint32_t lightmap_direction_texture;
+  uint32_t lightmap_active_layers[8];
+  float32_t lightmap_active_weights[8];
+  /** The resolve's dominant-direction output for deferred lighting. */
+  uint32_t baked_direction_texture;
+  uint32_t lightmap_reserved[3];
 } VkrVulkanResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
@@ -814,7 +856,18 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
    * zero when this frame does not measure them. */
   uint64_t light_contribution;
   uint32_t shadow_moments_sampler;
-  uint32_t light_contribution_reserved;
+  /** The G-buffer resolve's baked lamp irradiance and dominant direction,
+      or the sentinel slot without baked lamps. */
+  uint32_t baked_lamps_texture;
+  uint32_t baked_direction_texture;
+  /** DiffuseVolume.Sample's per-pixel volume response, or the sentinel slot
+      without a volume. */
+  uint32_t diffuse_volume_texture;
+  /** Shadow.LocalMask's irradiance of the selected baked lamps their moving
+      casters hide, subtracted from the baked lamp light; the sentinel slot
+      without a selected lamp. */
+  uint32_t baked_lamp_shadow_texture;
+  uint32_t baked_reserved;
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        184u &&
@@ -825,6 +878,59 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
 /** Shadow.LocalMask inputs: the G-buffer surface, its camera reconstruction,
  * the noise index that varies the contact-shadow march and tap rotation
  * between frames, and the temporal filter selection. */
+/** DiffuseVolume.Sample and DiffuseVolume.Upsample inputs; mirrors
+    VkrVkDiffuseVolumeSampleRoot in world/deferred.slang. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanDiffuseVolumeSampleRoot {
+  uint64_t frame;
+  uint64_t frame_padding;
+  Mat4 inverse_view_projection;
+  uint32_t vbuffer_texture;
+  uint32_t depth_texture;
+  uint32_t normal_texture;
+  /* The G-buffer resolve's baked lamp irradiance, whose alpha marks a
+     lightmapped pixel; the sentinel slot without baked lamps. */
+  uint32_t baked_lamps_texture;
+  /* Full-resolution extent, and the half-resolution images' extent. */
+  uint32_t extent[2];
+  uint32_t half_extent[2];
+  /* RGBA16F: the volume's response (E/pi) and one where it is valid; half
+     resolution for the sample pass, full for the upsample. */
+  uint32_t output_texture;
+  /* RGBA16F half-resolution guide: the representative pixel's normal and
+     camera distance, negative where its lightmap holds the baked lamps;
+     the sample pass writes it and the upsample reads it. */
+  uint32_t guide_texture;
+  /* The sample pass's half-resolution response, which the upsample reads;
+     the sentinel slot in the sample pass. */
+  uint32_t half_texture;
+  uint32_t reserved;
+  /* Indirect arguments of DiffuseVolume.Fallback: groups x, y, z, then the
+     count of `fallback_pixels`, each a pixel's x | y << 16 that no
+     half-resolution texel matched. The sample pass resets them, the
+     upsample appends. */
+  uint64_t fallback_arguments;
+  uint64_t fallback_pixels;
+} VkrVulkanDiffuseVolumeSampleRoot;
+_Static_assert(sizeof(VkrVulkanDiffuseVolumeSampleRoot) == 144u &&
+                   offsetof(VkrVulkanDiffuseVolumeSampleRoot,
+                            vbuffer_texture) == 80u &&
+                   offsetof(VkrVulkanDiffuseVolumeSampleRoot, extent) == 96u &&
+                   offsetof(VkrVulkanDiffuseVolumeSampleRoot,
+                            output_texture) == 112u,
+               "Vulkan diffuse-volume sample root ABI drift");
+
+/** A baked lamp whose moving casters Shadow.LocalMask shadows: its light
+ * row, pre-exposed as the table's, and its static and composite first
+ * views (ADR-104). */
+typedef struct VKR_SIMD_ALIGN VkrVulkanBakedShadowLamp {
+  VkrGpuPointLightRow light;
+  uint32_t static_first_view;
+  uint32_t composite_first_view;
+  uint32_t reserved[2];
+} VkrVulkanBakedShadowLamp;
+_Static_assert(sizeof(VkrVulkanBakedShadowLamp) == 80u,
+               "Vulkan baked shadow lamp ABI drift");
+
 typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
   uint64_t frame;
   uint64_t frame_padding;
@@ -842,10 +948,19 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
   /* Nonzero under temporal reconstruction: fully filtered lights take the
    * rotated temporal taps. */
   uint32_t temporal_filter;
-  uint32_t reserved[2];
+  /* RGBA16F: the pre-exposed irradiance the selected baked lamps' moving
+   * casters hide; the sentinel slot without a selected lamp. */
+  uint32_t baked_lamp_shadow_texture;
+  uint32_t baked_lamp_count;
+  /* VkrVulkanBakedShadowLamp rows, `baked_lamp_count` of them. */
+  uint64_t baked_lamps;
+  /* The G-buffer resolve's baked lamp irradiance, whose alpha marks the
+   * lightmapped pixels that alone take the baked lamps' work. */
+  uint32_t baked_lamps_texture;
+  uint32_t baked_reserved;
 } VkrVulkanLocalShadowMaskRoot;
 _Static_assert(
-    sizeof(VkrVulkanLocalShadowMaskRoot) == 128u &&
+    sizeof(VkrVulkanLocalShadowMaskRoot) == 144u &&
         offsetof(VkrVulkanLocalShadowMaskRoot, visible_rows) == 80u &&
         offsetof(VkrVulkanLocalShadowMaskRoot, contact_noise_index) == 112u &&
         offsetof(VkrVulkanLocalShadowMaskRoot, temporal_filter) == 116u,
@@ -1132,6 +1247,32 @@ _Static_assert(offsetof(VkrVulkanCloudSkyLightRoot, source_texture) == 32u,
 _Static_assert(sizeof(VkrVulkanCloudTraceRoot) == 128u,
                "Vulkan cloud trace root ABI drift");
 
+/** Composition of a sparse diffuse volume's active light layers into its SH
+    texture; mirrors VkrVulkanDiffuseVolumeComposeRoot in
+    world/diffuse_volume.slang. */
+typedef struct VkrVulkanDiffuseVolumeComposeRoot {
+  uint32_t layer_sh_texture;
+  uint32_t sh_storage;
+  uint32_t probe_count;
+  uint32_t rows;
+  uint32_t active_layer_count;
+  /** Row offset of the lamp groups' part, zero when the composition does
+      not keep it apart; bit i of `lamp_mask` marks active layer i a lamp
+      group. */
+  uint32_t lamp_rows;
+  uint32_t lamp_mask;
+  uint32_t reserved;
+  uint32_t active_layers[8];
+  float32_t active_weights[8];
+  /** Band of an active lamp group's direct light, which joins its part
+      only when kept apart; VKR_DIFFUSE_VOLUME_NO_BAND without. */
+  uint32_t active_direct[8];
+} VkrVulkanDiffuseVolumeComposeRoot;
+_Static_assert(sizeof(VkrVulkanDiffuseVolumeComposeRoot) == 128u,
+               "Vulkan diffuse-volume compose root ABI drift");
+_Static_assert(VKR_DIFFUSE_VOLUME_MAX_ACTIVE_LAYERS <= 8u,
+               "The compose root holds eight active layers");
+
 typedef struct VKR_SIMD_ALIGN VkrVulkanFroxelInjectRoot {
   uint64_t frame;
   uint64_t params;
@@ -1363,6 +1504,19 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionRoot {
   uint32_t compact_layer;
   uint32_t compact_enabled;
   uint32_t reserved;
+  /* Baked lamps (ADR-104): the G-buffer resolve's lightmap binding, so a
+     lightmapped transmissive draw shades them too; zero rects without. */
+  uint64_t lightmap_rects;
+  uint32_t lightmap_texture;
+  uint32_t lightmap_sampler;
+  uint32_t lightmap_rect_count;
+  uint32_t lightmap_layer_count;
+  uint32_t lightmap_active_count;
+  float32_t lightmap_inverse_page_size;
+  uint32_t lightmap_direction_texture;
+  uint32_t lightmap_reserved[3];
+  uint32_t lightmap_active_layers[8];
+  float32_t lightmap_active_weights[8];
 } VkrVulkanTransmissionRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionCompactRoot {
@@ -1562,10 +1716,13 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint32_t local_shadow_reserved;
   uint32_t dfg_texture;
   uint32_t dfg_sampler;
-  uint32_t diffuse_volume_texture;
-  uint32_t diffuse_volume_reserved[3];
+  /* Sparse diffuse volume (DVOL v3): sampled slots of its indirection,
+     probe, moment and composed SH textures, zero without a volume; the
+     origin with the finest probe spacing in w; the SH scale in params.x;
+     the indirection dimensions with the moment sampler slot in w. */
+  uint32_t diffuse_volume_textures[4];
   Vec4 diffuse_volume_origin;
-  Vec4 diffuse_volume_inverse_spacing;
+  Vec4 diffuse_volume_params;
   uint32_t diffuse_volume_dimensions[4];
   uint64_t ltc;
   uint64_t fog;
@@ -1798,9 +1955,11 @@ _Static_assert(VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX <=
                    VKR_LOCAL_SHADOW_MASK_LAYER_COUNT <=
                        VKR_VULKAN_GRAPH_LAYER_MAX,
                "a layered local shadow graph image exceeds the graph layers");
-_Static_assert(sizeof(VkrVulkanCullRoot) == 208u,
+_Static_assert(sizeof(VkrVulkanCullRoot) == 224u,
                "Deferred cull-root ABI size drift");
-_Static_assert(offsetof(VkrVulkanCullRoot, lod_views) == 192u,
+_Static_assert(offsetof(VkrVulkanCullRoot, static_candidate_count) == 192u,
+               "Vulkan cull root mobility ABI drift");
+_Static_assert(offsetof(VkrVulkanCullRoot, lod_views) == 200u,
                "Vulkan cull root LOD view ABI drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, view_projections) == 48u,
                "Deferred cull-root address ABI drift");
@@ -1827,8 +1986,17 @@ _Static_assert(
     "Local shadow transmission sampling ABI drift");
 _Static_assert(sizeof(VkrVulkanTemporalTransformRoot) == 32u,
                "Temporal transform-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanResolveRoot) == 464u,
+_Static_assert(sizeof(VkrVulkanResolveRoot) == 592u,
                "Deferred resolve-root ABI size drift");
+_Static_assert(
+    offsetof(VkrVulkanResolveRoot, lightmap_rects) == 464u &&
+        offsetof(VkrVulkanResolveRoot, lightmap_texture) == 472u &&
+        offsetof(VkrVulkanResolveRoot, baked_lamps_texture) == 492u &&
+        offsetof(VkrVulkanResolveRoot, lightmap_active_layers) == 504u &&
+        offsetof(VkrVulkanResolveRoot, lightmap_active_weights) == 536u,
+    "Deferred resolve-root baked lamp ABI drift");
+_Static_assert(VKR_LIGHTMAP_MAX_ACTIVE_LAYERS <= 8u,
+               "The resolve root holds eight active lightmap layers");
 _Static_assert(offsetof(VkrVulkanResolveRoot, decals) == 416u &&
                    offsetof(VkrVulkanResolveRoot,
                             decal_grid_origin_cell_size) == 432u &&
@@ -1857,7 +2025,7 @@ _Static_assert(
         offsetof(VkrVulkanTemporalResolveRoot, history_pre_exposure_scale) ==
             144u,
     "Temporal resolve-root scene/jitter ABI drift");
-_Static_assert(sizeof(VkrVulkanLightingRoot) == 208u,
+_Static_assert(sizeof(VkrVulkanLightingRoot) == 224u,
                "Deferred lighting-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, light_contribution) == 192u,
                "Deferred lighting-root contribution ABI drift");
@@ -1881,7 +2049,7 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, shadow_moments_texture) ==
                        172u &&
                    offsetof(VkrVulkanLightingRoot, shadow_moments_sampler) ==
                        200u &&
-                   sizeof(VkrVulkanLightingRoot) == 208u,
+                   sizeof(VkrVulkanLightingRoot) == 224u,
                "Deferred lighting-root EVSM moments ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");
@@ -2013,7 +2181,11 @@ _Static_assert(sizeof(VkrVulkanSdsmState) == VKR_VULKAN_SDSM_STATE_SIZE,
 _Static_assert(sizeof(VkrVulkanPickingRoot) == 80u &&
                    offsetof(VkrVulkanPickingRoot, depth_output) == 64u,
                "Deferred picking-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanTransmissionRoot) == 464u,
+_Static_assert(sizeof(VkrVulkanTransmissionRoot) == 576u &&
+                   offsetof(VkrVulkanTransmissionRoot, lightmap_rects) ==
+                       464u &&
+                   offsetof(VkrVulkanTransmissionRoot,
+                            lightmap_active_layers) == 512u,
                "Deferred transmission-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanTransmissionRoot, geometry_rows) == 32u,
                "Deferred transmission-root address ABI drift");
@@ -2085,15 +2257,15 @@ _Static_assert(offsetof(VkrVulkanPacketFrameRoot, dfg_texture) == 488u,
                "Vulkan DFG texture ABI offset drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, dfg_sampler) == 492u,
                "Vulkan DFG sampler ABI offset drift");
-_Static_assert(offsetof(VkrVulkanPacketFrameRoot, diffuse_volume_texture) ==
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, diffuse_volume_textures) ==
                    496u,
                "Vulkan diffuse-volume texture ABI offset drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, diffuse_volume_origin) ==
                    512u,
                "Vulkan diffuse-volume origin ABI offset drift");
-_Static_assert(offsetof(VkrVulkanPacketFrameRoot,
-                        diffuse_volume_inverse_spacing) == 528u,
-               "Vulkan diffuse-volume spacing ABI offset drift");
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, diffuse_volume_params) ==
+                   528u,
+               "Vulkan diffuse-volume parameter ABI offset drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, diffuse_volume_dimensions) ==
                    544u,
                "Vulkan diffuse-volume dimensions ABI offset drift");
@@ -2493,10 +2665,19 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphBufferInstance *gpu_compaction_state;
   VkrVulkanGraphBufferInstance *transmission_gpu_compaction_state;
   uint32_t gpu_candidate_count;
+  /** Packed static candidates, which precede the dynamic ones. */
+  uint32_t gpu_static_candidate_count;
   uint32_t transmission_gpu_candidate_count;
   uint64_t gpu_world_epoch;
   uint64_t point_light_data;
   uint64_t point_light_masks;
+  /** This frame's baked lamp lightmaps for the G-buffer resolve: the
+      texture's sampled and sampler slots and the rectangle table, zero
+      without baked lamps. */
+  uint32_t lightmap_texture;
+  uint32_t lightmap_sampler;
+  uint32_t lightmap_direction_texture;
+  uint64_t lightmap_rects;
   /** This frame's decal rows and grid masks (ADR-092), zero without decals. */
   uint64_t decals;
   uint64_t decal_masks;
@@ -2519,9 +2700,9 @@ typedef struct VkrVulkanFrameSlot {
   int32_t ibl_radiance_stops;
   bool8_t ibl_ready;
   uint32_t subsurface_texture;
-  uint32_t diffuse_volume_texture;
+  uint32_t diffuse_volume_textures[4];
   Vec4 diffuse_volume_origin;
-  Vec4 diffuse_volume_inverse_spacing;
+  Vec4 diffuse_volume_params;
   uint32_t diffuse_volume_dimensions[4];
   uint64_t ltc;
   uint64_t sheen;
@@ -2598,6 +2779,13 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphImageInstance *cloud_history_output;
   /* Set when this slot's IBL bake recorded the one-time cloud noise. */
   bool8_t cloud_noise_recorded;
+  /** The diffuse-volume composition this frame records, committed to the
+      renderer once the frame is submitted. */
+  bool8_t diffuse_volume_compose_pending;
+  VkrTextureHandle diffuse_volume_compose_sh;
+  uint32_t diffuse_volume_compose_revision;
+  bool8_t diffuse_volume_compose_split;
+  VkImage diffuse_volume_compose_image;
   /* Lowered once from the selected temporal consumer's predecessor. */
   Mat4 temporal_previous_view_projection;
   uint64_t temporal_previous_frame_index;
@@ -3068,6 +3256,11 @@ struct VkrVulkanRenderer {
   VkSampler cloud_noise_sampler;
   VkrGpuSlotHandle cloud_noise_sampler_slot;
   bool8_t cloud_noise_pending;
+  /** The diffuse-volume SH texture and composition the last submitted frame
+      wrote; a frame whose binding differs composes again. */
+  VkrTextureHandle diffuse_volume_composed_sh;
+  uint32_t diffuse_volume_composition;
+  bool8_t diffuse_volume_composed_split;
   /** Immutable matrix/amplitude RGBA16F tables. One shared staging buffer
       retires after their first successful upload; descriptor rows and images
       remain renderer-owned for the device lifetime. */
@@ -3317,6 +3510,23 @@ bool8_t vkr_vk_prepare_cloud_shadow(VkrVulkanRenderer *renderer,
                                     const VkrRgPass *pass);
 /* The cloud-lit sky light (ADR-074); moves the frame's global SH slot to
    this frame slot's cloud slot for every frame root prepared after it. */
+/* Sampled slot and sampler slot of a published texture for this frame,
+   extending its last use to this submission. */
+bool8_t vkr_vk_resolve_sampled_pair(VkrVulkanRenderer *renderer,
+                                    VkrTextureHandle handle,
+                                    uint32_t *out_texture,
+                                    uint32_t *out_sampler);
+bool8_t vkr_vk_resolve_diffuse_volume(VkrVulkanRenderer *renderer,
+                                      const VkrDiffuseVolumeBinding *volume,
+                                      VkrVulkanFrameSlot *slot);
+bool8_t vkr_vk_prepare_diffuse_volume_compose(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
+    const VkrRgPass *pass);
+void vkr_vk_record_diffuse_volume_compose(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrVulkanPreparedCompute *prepared);
+void vkr_vk_commit_diffuse_volume_compose(VkrVulkanRenderer *renderer,
+                                          VkrVulkanFrameSlot *slot);
 bool8_t vkr_vk_prepare_cloud_sky_light(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedCompute *prepared,
                                        const VkrRgPass *pass);
@@ -3354,13 +3564,24 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedRaster *prepared,
                                        const VkrRgPass *pass, bool8_t shadow,
                                        bool8_t transmission,
-                                       bool8_t local_shadow);
+                                       uint32_t local_shadow_slot);
 bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
                                           VkrVulkanPreparedCompute *prepared,
                                           const VkrRgPass *pass);
+/* DiffuseVolume's three per-pixel passes (vkr_vk_prepare_diffuse_volume_
+   sample). */
+typedef enum VkrVulkanDiffuseVolumeStage {
+  VKR_VULKAN_DIFFUSE_VOLUME_SAMPLE = 0,
+  VKR_VULKAN_DIFFUSE_VOLUME_UPSAMPLE,
+  VKR_VULKAN_DIFFUSE_VOLUME_FALLBACK,
+} VkrVulkanDiffuseVolumeStage;
+
+bool8_t vkr_vk_prepare_diffuse_volume_sample(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
+    const VkrRgPass *pass, VkrVulkanDiffuseVolumeStage stage);
 bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass);

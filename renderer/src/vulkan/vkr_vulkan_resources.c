@@ -76,6 +76,10 @@ VkFormat vkr_vk_texture_format(VkrTextureFormat format) {
     return VK_FORMAT_ASTC_6x6_SRGB_BLOCK;
   case VKR_TEXTURE_FORMAT_ASTC_4x4_HDR:
     return VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK;
+  case VKR_TEXTURE_FORMAT_RGB9E5_UFLOAT:
+    return VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
+  case VKR_TEXTURE_FORMAT_BC6H_UFLOAT:
+    return VK_FORMAT_BC6H_UFLOAT_BLOCK;
   case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return VK_FORMAT_EAC_R11G11_UNORM_BLOCK;
   case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:
@@ -135,6 +139,7 @@ bool8_t vkr_vk_format_block_info(VkFormat format, uint32_t *out_width,
   case VK_FORMAT_R16G16_SFLOAT:
   case VK_FORMAT_R32_SFLOAT:
   case VK_FORMAT_R32_UINT:
+  case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
     bytes = 4u;
     break;
   case VK_FORMAT_R32G32_UINT:
@@ -145,6 +150,7 @@ bool8_t vkr_vk_format_block_info(VkFormat format, uint32_t *out_width,
   case VK_FORMAT_R32G32B32A32_UINT:
     bytes = 16u;
     break;
+  case VK_FORMAT_BC6H_UFLOAT_BLOCK:
   case VK_FORMAT_BC7_UNORM_BLOCK:
   case VK_FORMAT_BC7_SRGB_BLOCK:
   case VK_FORMAT_BC5_UNORM_BLOCK:

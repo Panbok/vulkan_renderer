@@ -766,6 +766,7 @@ bool8_t vkr_texture_system_init(const VkrDeviceInformation *device_info,
       device_info->supports_texture_astc_4x4;
   out_system->supports_texture_astc_hdr =
       device_info->supports_texture_astc_hdr;
+  out_system->graphics_pipeline = device_info->graphics_pipeline;
   out_system->supports_texture_bc7 = device_info->supports_texture_bc7;
   out_system->supports_texture_bc5 = device_info->supports_texture_bc5;
 

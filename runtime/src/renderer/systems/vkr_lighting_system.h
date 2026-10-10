@@ -44,6 +44,11 @@ typedef struct VkrLightingSystem {
      volumes, so the tables keep the dynamic lights (the tiled pipeline,
      ADR-087 and ADR-088). Read by the scene syncs. */
   bool8_t static_lights_baked;
+  /* The shadow-casting static lamps the table leaves out for being baked:
+     the desktop pipeline shadows its moving casters under the nearest of
+     them (ADR-104). */
+  VkrPointLight baked_lamps[VKR_MAX_SCENE_POINT_LIGHTS];
+  uint32_t baked_lamp_count;
   VkrPointLightGrid point_light_grid;
 
   VkrRectangleLight rectangle_lights[VKR_MAX_SCENE_RECTANGLE_LIGHTS];

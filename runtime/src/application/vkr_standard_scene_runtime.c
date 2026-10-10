@@ -64,6 +64,10 @@ typedef struct VkrStandardSceneRuntimeDrawContext {
   /* Source cubemap of each probe; its SH slot resolves after acquisition. */
   VkrTextureHandle frame_ibl_probe_sources[VKR_FRAME_IBL_PROBE_MAX];
   VkrFrameLighting frame_lighting;
+  /* The desktop pipeline's baked lamps, candidates for their moving
+     casters' shadows; none on the tiled pipeline. */
+  const VkrPointLight *baked_lamps;
+  uint32_t baked_lamp_count;
   VkrAnimationPreviewInput animation_preview;
   bool8_t has_animation_preview;
 } VkrStandardSceneRuntimeDrawContext;
@@ -1084,6 +1088,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
       application->shadow_system.initialized) {
     const VkrLocalShadowCamera camera = {
         .view = frame->packet.globals.view,
+        .projection = frame->packet.globals.projection,
         .position = frame->packet.globals.view_position,
         .delta_seconds = (float32_t)input->delta,
         .frame_index = setup->number,
@@ -1099,8 +1104,8 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     vkr_shadow_system_resolve_local_shadows(
         &application->shadow_system, setup->retained_local_shadow,
         &draw->world_payload, draw->frame_lighting.point_lights,
-        draw->frame_lighting.point_light_count, &camera,
-        &draw->local_shadow_payload);
+        draw->frame_lighting.point_light_count, draw->baked_lamps,
+        draw->baked_lamp_count, &camera, &draw->local_shadow_payload);
   }
 
   const VkrShadowFrameData *shadow_frame = &draw->shadow_frame;
@@ -1626,14 +1631,18 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
                             application->globals.projection.m33 == 0.0f
                         ? active_scene->subsurface
                         : (VkrSubsurfaceBinding){0},
-      .diffuse_volume =
-          active_scene && active_scene->world_state.diffuse_volume.enabled
-              ? active_scene->diffuse_volume
-              : (VkrDiffuseVolumeBinding){0},
   };
   vkr_scene_lightmap_binding(active_scene, &draw->frame_lighting.lightmap);
-  /* The baked volume is placed in document space (ADR-086). */
-  if (active_scene) {
+  const bool8_t desktop =
+      application->renderer.graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED;
+  draw->baked_lamps = desktop ? application->lighting_system.baked_lamps : NULL;
+  draw->baked_lamp_count =
+      desktop ? application->lighting_system.baked_lamp_count : 0u;
+  if (active_scene && active_scene->world_state.diffuse_volume.enabled) {
+    vkr_scene_diffuse_volume_binding(active_scene,
+                                     &application->assets.texture_system,
+                                     &draw->frame_lighting.diffuse_volume);
+    /* The baked volume is placed in document space (ADR-086). */
     draw->frame_lighting.diffuse_volume.origin =
         vec3_sub(draw->frame_lighting.diffuse_volume.origin,
                  active_scene->origin_offset);
@@ -2002,6 +2011,15 @@ vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
     world->decal_grid = vkr_standard_scene_runtime_scratch_copy(
         scratch, world->decal_grid, sizeof(*world->decal_grid));
     if (!world->decals || !world->decal_grid) {
+      return false_v;
+    }
+  }
+
+  if (draw->baked_lamp_count) {
+    draw->baked_lamps = vkr_standard_scene_runtime_scratch_copy(
+        scratch, draw->baked_lamps,
+        (uint64_t)draw->baked_lamp_count * sizeof(*draw->baked_lamps));
+    if (!draw->baked_lamps) {
       return false_v;
     }
   }
@@ -2473,9 +2491,14 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
 /* The tiled pipeline lights a scene's static lights through its lightmap set
    (ADR-087); a scene without a loaded set draws them with its dynamic
    lights, so its lamps show before a bake. */
-vkr_internal bool8_t vkr_standard_scene_runtime_static_lights_baked(
-    const VkrScene *scene, bool8_t tiled) {
-  return tiled && scene->lightmaps && scene->lightmaps->texture.id != 0u;
+/* Static lamps leave the runtime light lists once the scene's lightmaps hold
+   every lamp group in planes this pipeline samples: all of a set's layers
+   on the tiled pipeline, its lamp groups' desktop planes on the desktop
+   one (ADR-104). */
+vkr_internal bool8_t
+vkr_standard_scene_runtime_static_lights_baked(const VkrScene *scene) {
+  return scene->lightmaps && scene->lightmaps->texture.id != 0u &&
+         scene->lightmaps->lamps_baked;
 }
 
 vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
@@ -2549,7 +2572,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     vkr_scene_sync_sun(render_scene, delta);
     /* The volume's sun keys and lamp groups follow the turned sun and the
        light group factors (ADR-090). */
-    vkr_scene_update_diffuse_volume(render_scene, &application->assets, delta);
+    vkr_scene_update_diffuse_volume(render_scene, delta);
     (void)vkr_scene_bind_lightmaps(render_scene);
     (void)vkr_world_resources_prepare_scene_atmosphere(
         &application->assets, &application->assets.world_resources,
@@ -2560,7 +2583,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     const bool8_t tiled =
         application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
     application->lighting_system.static_lights_baked =
-        vkr_standard_scene_runtime_static_lights_baked(render_scene, tiled);
+        vkr_standard_scene_runtime_static_lights_baked(render_scene);
     vkr_lighting_system_sync_from_scene(&application->lighting_system,
                                         render_scene);
     /* Additive scenes' light groups follow the rendered scene's sun and
@@ -2571,7 +2594,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
           render_scene->world_state.time_of_day.night_groups);
       application->lighting_system.static_lights_baked =
           vkr_standard_scene_runtime_static_lights_baked(
-              application->additive_scenes[i], tiled);
+              application->additive_scenes[i]);
       vkr_lighting_system_append_scene(&application->lighting_system,
                                        application->additive_scenes[i]);
     }

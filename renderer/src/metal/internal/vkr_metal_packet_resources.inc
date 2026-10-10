@@ -1366,10 +1366,12 @@ VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
     const bool8_t array =
         prepared->description.type == VKR_TEXTURE_TYPE_2D_ARRAY;
     const bool8_t cube_shape = cubemap || cubemap_array;
+    /* A one-slice array, such as a one-page lightmap set with one lamp layer,
+       keeps its array view so shaders index every set alike. */
     const bool8_t valid_layers =
         (prepared->description.type == VKR_TEXTURE_TYPE_2D &&
          prepared->upload_array_layers == 1u) ||
-        (array && prepared->upload_array_layers > 1u) ||
+        (array && prepared->upload_array_layers >= 1u) ||
         (cubemap && prepared->upload_array_layers == 6u) ||
         (cubemap_array && prepared->upload_array_layers > 6u &&
          prepared->upload_array_layers % 6u == 0u);
@@ -2324,6 +2326,7 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_sources(
       plan->source_dynamic_count +
       (plan->repack_static ? plan->source_static_count : 0u);
   renderer->gpu_draw_count = 0u;
+  renderer->gpu_draw_static_count = 0u;
   plan->world_text_count =
       packet->input.world ? packet->input.world->text_draw_count : 0;
   if (plan->world_text_count > renderer->max_draws)
@@ -2506,8 +2509,8 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
   const VkrDiffuseVolumeBinding *diffuse_volume =
       packet->input.lighting ? &packet->input.lighting->diffuse_volume : NULL;
   const bool8_t diffuse_volume_enabled =
-      diffuse_volume && diffuse_volume->texture.id != 0u &&
-      diffuse_volume->texture.generation != VKR_INVALID_ID;
+      diffuse_volume && diffuse_volume->indirection.id != 0u &&
+      diffuse_volume->indirection.generation != VKR_INVALID_ID;
   plan->diffuse_volume_offset =
       vkr_metal_packet_align_up(plan->ibl_probes_offset + ibl_probes_bytes,
                                 AlignOf(VkrMetalPacketDiffuseVolume));
@@ -2801,6 +2804,7 @@ vkr_internal bool8_t vkr_metal_packet_pack_upload_candidates(
     renderer->gpu_draw_count = packed_static_count;
     omitted_count = omitted_static_count;
   }
+  renderer->gpu_draw_static_count = packed_static_count;
 #if VKR_METRICS_ENABLED
   renderer->packet_build.candidate_pack_ns = vkr_metrics_elapsed_ns(pack_start);
 #endif
@@ -3098,33 +3102,56 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
   if (packet->input.lighting) {
     const VkrDiffuseVolumeBinding *volume =
         &packet->input.lighting->diffuse_volume;
-    if (volume->texture.id != 0u &&
-        volume->texture.generation != VKR_INVALID_ID) {
-      VkrMetalPacketTexture *texture =
-          vkr_metal_packet_resolve_texture(renderer, volume->texture);
-      const uint32_t probe_count =
-          volume->dimensions[0] * volume->dimensions[1] * volume->dimensions[2];
-      id<MTLTexture> native_texture =
-          texture ? (id<MTLTexture>)texture->resource.metal_texture : nil;
-      if (!native_texture ||
-          native_texture.pixelFormat != MTLPixelFormatRGBA32Float ||
-          native_texture.textureType != MTLTextureType2D ||
-          native_texture.width != 8u || native_texture.height != probe_count)
-        return false_v;
-      upload->diffuse_volume_texture_id = texture->resource.resource_id;
+    if (volume->indirection.id != 0u &&
+        volume->indirection.generation != VKR_INVALID_ID) {
+      /* The binding names only confirmed publications; each texture keeps
+         the layout VkrDiffuseVolumeBinding gives it. */
+      const uint32_t rows =
+          (volume->probe_count + VKR_DIFFUSE_VOLUME_ROW_PROBES - 1u) /
+          VKR_DIFFUSE_VOLUME_ROW_PROBES;
+      const uint32_t tile_rows =
+          (volume->probe_count + VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES - 1u) /
+          VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES;
+      const VkrTextureHandle handles[4] = {volume->indirection, volume->probes,
+                                           volume->moments, volume->sh};
+      const MTLPixelFormat formats[4] = {
+          MTLPixelFormatR32Uint, MTLPixelFormatRGBA16Float,
+          MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float};
+      const NSUInteger widths[4] = {
+          volume->dimensions[0], VKR_DIFFUSE_VOLUME_ROW_PROBES,
+          VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES * VKR_DIFFUSE_VOLUME_MOMENT_TILE,
+          VKR_DIFFUSE_VOLUME_ROW_PROBES * 3u};
+      const NSUInteger heights[4] = {
+          volume->dimensions[1] * volume->dimensions[2], rows,
+          tile_rows * VKR_DIFFUSE_VOLUME_MOMENT_TILE, 2u * rows};
+      uint64_t ids[4] = {0};
+      for (uint32_t i = 0u; i < 4u; ++i) {
+        VkrMetalPacketTexture *texture =
+            vkr_metal_packet_resolve_texture(renderer, handles[i]);
+        id<MTLTexture> native_texture =
+            texture ? (id<MTLTexture>)texture->resource.metal_texture : nil;
+        if (!native_texture || native_texture.pixelFormat != formats[i] ||
+            native_texture.textureType != MTLTextureType2D ||
+            native_texture.width != widths[i] ||
+            native_texture.height != heights[i])
+          return false_v;
+        ids[i] = texture->resource.resource_id;
+        texture->last_use_submit_value = renderer->submit_value + 1u;
+      }
       VkrMetalPacketDiffuseVolume *params =
           (VkrMetalPacketDiffuseVolume *)(cpu + plan->diffuse_volume_offset);
       *params = (VkrMetalPacketDiffuseVolume){
+          .indirection = ids[0],
+          .probes = ids[1],
+          .moments = ids[2],
+          .sh = ids[3],
           .origin = {volume->origin.x, volume->origin.y, volume->origin.z,
-                     0.0f},
-          .inverse_spacing = {volume->inverse_spacing.x,
-                              volume->inverse_spacing.y,
-                              volume->inverse_spacing.z, 0.0f},
+                     volume->spacing},
+          .params = {volume->sh_scale, (float32_t)tile_rows, 0.0f, 0.0f},
           .dimensions = {volume->dimensions[0], volume->dimensions[1],
                          volume->dimensions[2], 0u},
       };
       upload->diffuse_volume_params_gpu = gpu + plan->diffuse_volume_offset;
-      texture->last_use_submit_value = renderer->submit_value + 1u;
     }
   }
   if (!vkr_metal_packet_upload_lightmap(renderer, packet, plan, cpu, gpu,

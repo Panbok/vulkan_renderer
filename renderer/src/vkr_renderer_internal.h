@@ -80,6 +80,24 @@ typedef struct VkrShadowMetrics {
   uint32_t sdsm_occupied_count;
   float32_t sdsm_linear_near;
   float32_t sdsm_linear_far;
+  /** Local faces drawn this frame into static squares with the static
+   * casters only, into dynamic squares over copies of static ones, and with
+   * every caster; the copies and their texels. */
+  uint32_t local_faces_static;
+  uint32_t local_faces_dynamic;
+  uint32_t local_faces_copied;
+  uint32_t local_faces_full;
+  uint64_t local_copy_texels;
+  /** Faces that wanted a dynamic square, those that showed their static
+   * square instead (past the cap, or their light showed no shadow), and the
+   * atlas layers of the band. */
+  uint32_t local_dynamic_faces_wanted;
+  uint32_t local_dynamic_faces_dropped;
+  uint32_t local_dynamic_layers;
+  /** Baked lamps whose moving casters' shadows the frame shows, and the
+   * baked lamps whose range held a moving caster in view. */
+  uint32_t baked_lamps_selected;
+  uint32_t baked_lamp_candidates;
 } VkrShadowMetrics;
 
 /**

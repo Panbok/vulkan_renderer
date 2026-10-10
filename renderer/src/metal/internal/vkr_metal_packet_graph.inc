@@ -39,6 +39,10 @@ vkr_metal_packet_pixel_format(VkrTextureFormat format) {
     return MTLPixelFormatASTC_6x6_sRGB;
   case VKR_TEXTURE_FORMAT_ASTC_4x4_HDR:
     return MTLPixelFormatASTC_4x4_HDR;
+  case VKR_TEXTURE_FORMAT_RGB9E5_UFLOAT:
+    return MTLPixelFormatRGB9E5Float;
+  case VKR_TEXTURE_FORMAT_BC6H_UFLOAT:
+    return MTLPixelFormatBC6H_RGBUfloat;
   case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return MTLPixelFormatEAC_RG11Unorm;
   case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:
@@ -294,6 +298,8 @@ vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   switch (kind) {
   case VKR_RG_EXECUTOR_SHADOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_COPY:
+  case VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC:
   case VKR_RG_EXECUTOR_PICKING:
   case VKR_RG_EXECUTOR_PICKING_READBACK:
   case VKR_RG_EXECUTOR_IBL_BAKE:
@@ -307,6 +313,7 @@ vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   case VKR_RG_EXECUTOR_CLOUD_SHADOW:
   case VKR_RG_EXECUTOR_CLOUD_TRACE:
   case VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT:
+  case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
   case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
   case VKR_RG_EXECUTOR_EXPOSURE_RESOLVE:
   case VKR_RG_EXECUTOR_BLOOM_PREFILTER:
@@ -1949,13 +1956,60 @@ vkr_metal_packet_record_producers(id<MTL4CommandEncoder> encoder,
     vkr_metal_dependency_encode_producer(encoder, &prepared->producers[i]);
 }
 
+/* Copies the static square of dynamic slot `repeat_index`'s face into its
+   dynamic square, both on slices of the shared atlas. */
+vkr_internal bool8_t vkr_metal_packet_prepare_local_shadow_copy(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared)
+    API_AVAILABLE(macos(26.0)) {
+  const VkrLocalShadowPassPayload *local = packet->input.local_shadow;
+  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  if (!local || pass->desc.repeat_index >= local->dynamic_render_count ||
+      !read || !write || !read->has_slice || !write->has_slice ||
+      read->image.id != write->image.id)
+    return false_v;
+  id<MTLTexture> atlas = vkr_metal_packet_texture(renderer, read->image);
+  if (!atlas)
+    return false_v;
+  const uint32_t slot =
+      vkr_local_shadow_dynamic_render_first(local) + pass->desc.repeat_index;
+  const Vec4 source =
+      local->views[local->dynamic_source_views[slot]].atlas_rect;
+  const Vec4 destination = local->views[local->render_views[slot]].atlas_rect;
+  if ((uint32_t)source.w != read->slice.base_layer ||
+      (uint32_t)destination.w != write->slice.base_layer)
+    return false_v;
+  const float32_t atlas_size = (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
+  const NSUInteger size = (NSUInteger)(source.z * atlas_size);
+  prepared->transfer.texture_copy = (VkrMetalPacketTextureCopy){
+      .texture = atlas,
+      .source_slice = read->slice.base_layer,
+      .destination_slice = write->slice.base_layer,
+      .source_origin = MTLOriginMake((NSUInteger)(source.x * atlas_size),
+                                     (NSUInteger)(source.y * atlas_size), 0u),
+      .destination_origin =
+          MTLOriginMake((NSUInteger)(destination.x * atlas_size),
+                        (NSUInteger)(destination.y * atlas_size), 0u),
+      .size = MTLSizeMake(size, size, 1u),
+  };
+  prepared->transfer.has_texture_copy = true_v;
+  prepared->active = true_v;
+  return true_v;
+}
+
 /* Copies the frame's packed candidate rows and a zeroed compaction state
-   into the culling buffers; Cull.Upload is the only transfer pass the
-   executor check admits. */
+   into the culling buffers, or a local face's static square into its
+   dynamic square; Cull.Upload and Shadow.Local.Copy are the only transfer
+   passes the executor check admits. */
 vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    VkrMetalPacketPreparedPass *prepared,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     const VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  prepared->transfer = (VkrMetalPacketTransferPass){0};
+  if (prepared->kind == VKR_RG_EXECUTOR_LOCAL_SHADOW_COPY)
+    return vkr_metal_packet_prepare_local_shadow_copy(renderer, pass, packet,
+                                                      prepared);
   if (prepared->kind != VKR_RG_EXECUTOR_GPU_DRAW_UPLOAD)
     return false_v;
   VkrMetalPacketTransferPass *transfer = &prepared->transfer;
@@ -2035,6 +2089,18 @@ vkr_metal_packet_record_transfer(id<MTL4ComputeCommandEncoder> encoder,
                    toBuffer:copy->destination
           destinationOffset:copy->destination_offset
                        size:copy->size];
+  }
+  if (transfer->has_texture_copy) {
+    const VkrMetalPacketTextureCopy *copy = &transfer->texture_copy;
+    [encoder copyFromTexture:copy->texture
+                 sourceSlice:copy->source_slice
+                 sourceLevel:0u
+                sourceOrigin:copy->source_origin
+                  sourceSize:copy->size
+                   toTexture:copy->texture
+            destinationSlice:copy->destination_slice
+            destinationLevel:0u
+           destinationOrigin:copy->destination_origin];
   }
 }
 

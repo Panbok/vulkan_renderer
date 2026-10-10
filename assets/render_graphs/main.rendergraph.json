@@ -58,7 +58,8 @@
       "usage": [
         "DEPTH_STENCIL_ATTACHMENT",
         "SAMPLED",
-        "TRANSFER_SRC"
+        "TRANSFER_SRC",
+        "TRANSFER_DST"
       ],
       "flags": [
         "RETAINED",
@@ -878,6 +879,138 @@
         "TRANSIENT",
         "RESIZABLE",
         "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "baked_lamp_irradiance",
+      "condition": "scene_rendering && baked_lamps_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "baked_lamp_shadow",
+      "condition": "scene_rendering && baked_lamp_shadows_active",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "baked_lamp_direction",
+      "condition": "scene_rendering && baked_lamps_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R8G8B8A8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "diffuse_volume_irradiance",
+      "condition": "scene_rendering && diffuse_volume_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "diffuse_volume_half",
+      "condition": "scene_rendering && diffuse_volume_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "diffuse_volume_guide",
+      "condition": "scene_rendering && diffuse_volume_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "diffuse_volume_fallback_pixels",
+      "type": "buffer",
+      "condition": "scene_rendering && diffuse_volume_enabled",
+      "size": {
+        "mode": "viewport_pixels",
+        "bytes_per_pixel": 4
+      },
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "diffuse_volume_fallback_arguments",
+      "type": "buffer",
+      "condition": "scene_rendering && diffuse_volume_enabled",
+      "size": 32,
+      "usage": [
+        "STORAGE",
+        "INDIRECT"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT"
       ]
     },
     {
@@ -2082,6 +2215,15 @@
       "execute": "pass.ibl_bake"
     },
     {
+      "name": "DiffuseVolume.Compose",
+      "type": "compute",
+      "condition": "scene_rendering",
+      "flags": [
+        "NO_CULL"
+      ],
+      "execute": "pass.diffuse_volume.compose"
+    },
+    {
       "name": "Cull.Upload",
       "condition": "scene_rendering",
       "type": "transfer",
@@ -2361,7 +2503,7 @@
       "type": "graphics",
       "domain": "SHADOW",
       "repeat": {
-        "count_source": "local_shadow_render_count"
+        "count_source": "local_shadow_static_render_count"
       },
       "reads": [
         {
@@ -2627,6 +2769,86 @@
         }
       },
       "execute": "pass.local_shadow.transmission_overflow"
+    },
+    {
+      "name": "Shadow.Local.Copy.${i}",
+      "condition": "scene_rendering && local_shadows_active",
+      "type": "transfer",
+      "repeat": {
+        "count_source": "local_shadow_dynamic_render_count"
+      },
+      "reads": [
+        {
+          "image": "local_shadow_map",
+          "access": "TRANSFER_SRC",
+          "binding": 0,
+          "subresource": {
+            "base_layer": "${local_shadow_copy_source_layer}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "writes": [
+        {
+          "image": "local_shadow_map",
+          "access": "TRANSFER_DST",
+          "binding": 1,
+          "subresource": {
+            "base_layer": "${local_shadow_dynamic_atlas_layer}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "execute": "pass.local_shadow.copy"
+    },
+    {
+      "name": "Shadow.Local.Dynamic.${i}",
+      "condition": "scene_rendering && local_shadows_active",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": {
+        "count_source": "local_shadow_dynamic_render_count"
+      },
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "local_shadow_map",
+          "load": "LOAD",
+          "store": "STORE",
+          "slice": {
+            "base_layer": "${local_shadow_dynamic_atlas_layer}",
+            "layer_count": 1
+          }
+        }
+      },
+      "execute": "pass.local_shadow.dynamic"
     },
     {
       "name": "Transmission.Cull.Upload",
@@ -3496,6 +3718,18 @@
           "access": "STORAGE_WRITE",
           "binding": 15,
           "when": "anisotropy_enabled"
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_WRITE",
+          "binding": 16,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "baked_lamp_direction",
+          "access": "STORAGE_WRITE",
+          "binding": 17,
+          "when": "baked_lamps_enabled"
         }
       ],
       "execute": "pass.gbuffer.resolve"
@@ -3600,6 +3834,18 @@
           "access": "STORAGE_WRITE",
           "binding": 15,
           "when": "anisotropy_enabled"
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_WRITE",
+          "binding": 16,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "baked_lamp_direction",
+          "access": "STORAGE_WRITE",
+          "binding": 17,
+          "when": "baked_lamps_enabled"
         }
       ],
       "execute": "pass.gbuffer.resolve"
@@ -3902,6 +4148,12 @@
             "base_layer": "${i}",
             "layer_count": 1
           }
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 18,
+          "when": "baked_lamp_shadows_active"
         }
       ],
       "writes": [
@@ -3909,9 +4161,177 @@
           "image": "local_shadow_mask",
           "access": "STORAGE_WRITE",
           "binding": 16
+        },
+        {
+          "image": "baked_lamp_shadow",
+          "access": "STORAGE_WRITE",
+          "binding": 21,
+          "when": "baked_lamp_shadows_active"
         }
       ],
       "execute": "pass.local_shadow.mask"
+    },
+    {
+      "name": "DiffuseVolume.Sample",
+      "type": "compute",
+      "condition": "scene_rendering && diffuse_volume_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "gbuffer_normal",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 18,
+          "when": "baked_lamps_enabled"
+        }
+      ],
+      "writes": [
+        {
+          "image": "diffuse_volume_half",
+          "access": "STORAGE_WRITE",
+          "binding": 16
+        },
+        {
+          "image": "diffuse_volume_guide",
+          "access": "STORAGE_WRITE",
+          "binding": 17
+        },
+        {
+          "buffer": "diffuse_volume_fallback_arguments",
+          "access": "STORAGE_WRITE",
+          "binding": 22
+        }
+      ],
+      "execute": "pass.diffuse_volume.sample"
+    },
+    {
+      "name": "DiffuseVolume.Upsample",
+      "type": "compute",
+      "condition": "scene_rendering && diffuse_volume_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "gbuffer_normal",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 18,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "diffuse_volume_half",
+          "access": "STORAGE_READ",
+          "binding": 20
+        },
+        {
+          "image": "diffuse_volume_guide",
+          "access": "STORAGE_READ",
+          "binding": 21
+        }
+      ],
+      "writes": [
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_WRITE",
+          "binding": 16
+        },
+        {
+          "buffer": "diffuse_volume_fallback_arguments",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 22
+        },
+        {
+          "buffer": "diffuse_volume_fallback_pixels",
+          "access": "STORAGE_WRITE",
+          "binding": 23
+        }
+      ],
+      "execute": "pass.diffuse_volume.upsample"
+    },
+    {
+      "name": "DiffuseVolume.Fallback",
+      "type": "compute",
+      "condition": "scene_rendering && diffuse_volume_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "gbuffer_normal",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 18,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "buffer": "diffuse_volume_fallback_pixels",
+          "access": "STORAGE_READ",
+          "binding": 23
+        },
+        {
+          "buffer": "diffuse_volume_fallback_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 22
+        }
+      ],
+      "writes": [
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 16
+        }
+      ],
+      "dispatch": {
+        "type": "indirect",
+        "binding": 22,
+        "offset": 0
+      },
+      "execute": "pass.diffuse_volume.fallback"
     },
     {
       "name": "Lighting.Deferred.Fullscreen",
@@ -4086,6 +4506,30 @@
           "access": "STORAGE_READ",
           "binding": 16,
           "when": "local_shadows_active"
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 18,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "baked_lamp_direction",
+          "access": "STORAGE_READ",
+          "binding": 19,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 20,
+          "when": "diffuse_volume_enabled"
+        },
+        {
+          "image": "baked_lamp_shadow",
+          "access": "STORAGE_READ",
+          "binding": 21,
+          "when": "baked_lamp_shadows_active"
         }
       ],
       "writes": [
@@ -4282,6 +4726,30 @@
           "access": "STORAGE_READ",
           "binding": 16,
           "when": "local_shadows_active"
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 18,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "baked_lamp_direction",
+          "access": "STORAGE_READ",
+          "binding": 19,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 20,
+          "when": "diffuse_volume_enabled"
+        },
+        {
+          "image": "baked_lamp_shadow",
+          "access": "STORAGE_READ",
+          "binding": 21,
+          "when": "baked_lamp_shadows_active"
         }
       ],
       "writes": [
@@ -4478,6 +4946,30 @@
           "access": "STORAGE_READ",
           "binding": 16,
           "when": "local_shadows_active"
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 18,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "baked_lamp_direction",
+          "access": "STORAGE_READ",
+          "binding": 19,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 20,
+          "when": "diffuse_volume_enabled"
+        },
+        {
+          "image": "baked_lamp_shadow",
+          "access": "STORAGE_READ",
+          "binding": 21,
+          "when": "baked_lamp_shadows_active"
         }
       ],
       "writes": [
@@ -4674,6 +5166,30 @@
           "access": "STORAGE_READ",
           "binding": 16,
           "when": "local_shadows_active"
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 18,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "baked_lamp_direction",
+          "access": "STORAGE_READ",
+          "binding": 19,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 20,
+          "when": "diffuse_volume_enabled"
+        },
+        {
+          "image": "baked_lamp_shadow",
+          "access": "STORAGE_READ",
+          "binding": 21,
+          "when": "baked_lamp_shadows_active"
         }
       ],
       "writes": [

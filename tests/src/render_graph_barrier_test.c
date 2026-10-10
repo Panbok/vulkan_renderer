@@ -1404,6 +1404,91 @@ vkr_internal void test_disjoint_layer_writes_coalesce_on_read(void) {
   printf("  test_disjoint_layer_writes_coalesce_on_read PASSED\n");
 }
 
+/* The local shadow atlas copies a static square on one layer into a
+   dynamic square on another layer of the same image, then draws moving
+   casters there: the copy transitions only its source layer to
+   TRANSFER_SRC and only its destination layer to TRANSFER_DST, and the
+   dynamic draw transitions only the destination layer back. */
+vkr_internal void test_same_image_layer_copy_barriers(void) {
+  printf("  Running test_same_image_layer_copy_barriers...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph != NULL);
+
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = desc.height = 64u;
+  desc.layers = 4u;
+  desc.format = VKR_TEXTURE_FORMAT_D16_UNORM;
+  desc.usage = vkr_texture_usage_flags_from_bits(
+      VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT | VKR_TEXTURE_USAGE_SAMPLED |
+      VKR_TEXTURE_USAGE_TRANSFER_SRC | VKR_TEXTURE_USAGE_TRANSFER_DST);
+  VkrRgImageHandle atlas =
+      vkr_rg_create_image(graph, string8_lit("atlas_layers"), &desc);
+  const VkrRgImageSlice source = {
+      .mip_level = 0u, .base_layer = 0u, .layer_count = 1u};
+  const VkrRgImageSlice destination = {
+      .mip_level = 0u, .base_layer = 3u, .layer_count = 1u};
+
+  VkrRgPassBuilder static_pass =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_GRAPHICS, "Static");
+  VkrRgAttachmentDesc attachment = {.slice = source};
+  attachment.load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR;
+  attachment.store_op = VKR_ATTACHMENT_STORE_OP_STORE;
+  assert(vkr_rg_pass_set_depth_attachment(&static_pass, atlas, &attachment,
+                                          false_v));
+
+  VkrRgPassBuilder copy =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_TRANSFER, "Copy");
+  assert(vkr_rg_pass_read_image_slice(
+      &copy, atlas, VKR_RG_IMAGE_ACCESS_TRANSFER_SRC, 0u, 0u, source));
+  assert(vkr_rg_pass_write_image_slice_at_stages(
+      &copy, atlas, VKR_RG_IMAGE_ACCESS_TRANSFER_DST, VKR_GPU_STAGE_TRANSFER,
+      1u, 0u, destination));
+
+  VkrRgPassBuilder dynamic_pass =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_GRAPHICS, "Dynamic");
+  VkrRgAttachmentDesc dynamic_attachment = {.slice = destination};
+  dynamic_attachment.load_op = VKR_ATTACHMENT_LOAD_OP_LOAD;
+  dynamic_attachment.store_op = VKR_ATTACHMENT_STORE_OP_STORE;
+  assert(vkr_rg_pass_set_depth_attachment(&dynamic_pass, atlas,
+                                          &dynamic_attachment, false_v));
+
+  assert(vkr_rg_compile_schedule(graph));
+  const VkrRgPass *compiled_copy = rg_barrier_test_pass(graph, 1u);
+  bool8_t saw_source = false_v;
+  bool8_t saw_destination = false_v;
+  for (uint64_t i = 0u; i < compiled_copy->pre_image_barriers.length; ++i) {
+    const VkrRgImageBarrier *barrier = array_get_VkrRgImageBarrier(
+        (Array_VkrRgImageBarrier *)&compiled_copy->pre_image_barriers, i);
+    assert(barrier->range.layer_count == 1u);
+    if (barrier->range.base_layer == 0u) {
+      assert(barrier->dst_layout == VKR_TEXTURE_LAYOUT_TRANSFER_SRC);
+      saw_source = true_v;
+    } else {
+      assert(barrier->range.base_layer == 3u);
+      assert(barrier->dst_layout == VKR_TEXTURE_LAYOUT_TRANSFER_DST);
+      saw_destination = true_v;
+    }
+  }
+  assert(saw_source && saw_destination);
+
+  const VkrRgPass *compiled_dynamic = rg_barrier_test_pass(graph, 2u);
+  assert(compiled_dynamic->pre_image_barriers.length == 1u);
+  const VkrRgImageBarrier *dynamic_barrier = array_get_VkrRgImageBarrier(
+      (Array_VkrRgImageBarrier *)&compiled_dynamic->pre_image_barriers, 0u);
+  assert(dynamic_barrier->range.base_layer == 3u &&
+         dynamic_barrier->range.layer_count == 1u);
+  assert(dynamic_barrier->src_layout == VKR_TEXTURE_LAYOUT_TRANSFER_DST);
+  assert(dynamic_barrier->dst_layout ==
+         VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT);
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_same_image_layer_copy_barriers PASSED\n");
+}
+
 vkr_internal void test_capture_read_uses_exact_array_slice(void) {
   printf("  Running test_capture_read_uses_exact_array_slice...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -1649,9 +1734,9 @@ vkr_internal void test_tiled_graph_topology(void) {
 vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   enum {
-    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 411u,
-    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 398u,
-    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 397u,
+    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 412u,
+    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 399u,
+    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 398u,
   };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -1714,6 +1799,8 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
           VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
       .local_shadow_refractive_casters = true_v,
       .local_shadow_render_count = VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
+      .local_shadow_static_render_count =
+          VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
       .local_shadow_transmission_render_count =
           VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
       .local_shadow_atlas_clear_mask = 1u,
@@ -1818,6 +1905,31 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   assert(runtime->passes.length == VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT);
   assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  assert(vkr_rg_compile_schedule(runtime));
+  vkr_rg_end_frame(runtime);
+
+  /* Sixteen faces drawn into dynamic squares on the band layer take a copy
+     and a draw each instead of the four passes of a transmitting face. */
+  frame.local_shadow_static_render_count =
+      VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX -
+      VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX;
+  frame.local_shadow_dynamic_render_count =
+      VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX;
+  frame.local_shadow_transmission_render_count =
+      frame.local_shadow_static_render_count;
+  frame.local_shadow_transmission_layer_count =
+      frame.local_shadow_static_render_count;
+  frame.local_shadow_atlas_layer_count = 2u;
+  for (uint32_t i = 0u; i < VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX; ++i) {
+    frame.local_shadow_render_atlas_layers
+        [frame.local_shadow_static_render_count + i] = 1u;
+    frame.local_shadow_copy_source_layers[i] = 0u;
+  }
+  assert(vkr_rg_begin_frame(runtime, &frame));
+  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  assert(runtime->passes.length ==
+         VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT -
+             2u * VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
@@ -2482,6 +2594,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_cascade_slices_are_per_layer_then_coalesce();
   test_disjoint_layer_writes_coalesce_on_read();
   test_capture_read_uses_exact_array_slice();
+  test_same_image_layer_copy_barriers();
 
   printf("--- RenderGraph barrier tests completed. ---\n");
   return true;

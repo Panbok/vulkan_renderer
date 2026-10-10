@@ -1,44 +1,181 @@
 #ifndef VKR_DIFFUSE_VOLUME_KERNEL
 #define VKR_DIFFUSE_VOLUME_KERNEL
 
-// Texture rows follow x + nx * (y + ny * z). Row texels 0..6 contain
-// Sloan-packed E/pi; texel 7.y proves the entire interpolation cell is clear
-// and its eight probes belong to one room. The loader validates this contract.
+// Sparse diffuse volume (DVOL v3). The indirection names, per level-0 brick
+// span of three probe spacings, the brick that covers it and that brick's
+// level; a level-k brick holds 4 x 4 x 4 probes 3^k spacings apart. Each
+// probe has a relocation offset and validity, L1 SH and octahedral distance
+// moments. These helpers are the math shared by every backend; texture
+// fetches stay in backend code.
+
+#define VKR_DIFFUSE_VOLUME_ENTRY_EMPTY 0xffffffffu
+#define VKR_DIFFUSE_VOLUME_ENTRY_LEVEL_SHIFT 30u
+#define VKR_DIFFUSE_VOLUME_ENTRY_BRICK_MASK 0x3fffffffu
+#define VKR_DIFFUSE_VOLUME_ROW_PROBES 1024u
+#define VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES 512u
+#define VKR_DIFFUSE_VOLUME_MOMENT_SIZE 10u
+#define VKR_DIFFUSE_VOLUME_MOMENT_INTERIOR 8u
+// A pixel whose probes' summed visibility falls below this keeps the
+// environment path, as one outside the volume does.
+#define VKR_DIFFUSE_VOLUME_MIN_WEIGHT 0.001f
+
+// The cell of one lookup: the brick's first probe, its lowest probe's
+// position and its probe spacing, and the interpolation corner and fraction
+// within it.
 struct VkrDiffuseVolumeCell {
+    uint first_probe;
+    float3 brick_origin;
+    float step;
     uint3 base;
     float3 fraction;
-    uint row;
-    bool valid;
 };
 
-uint vkr_diffuse_volume_node_index(uint3 node, uint3 dimensions) {
-    return node.x + dimensions.x * (node.y + dimensions.y * node.z);
+uint vkr_diffuse_volume_level_span(uint level) {
+    return level == 0u ? 1u : (level == 1u ? 3u : 9u);
 }
 
-VkrDiffuseVolumeCell vkr_diffuse_volume_cell(float3 world_position,
-    float3 origin, float3 inverse_spacing, uint3 dimensions) {
+// The indirection entry holding `position`, or a coordinate past
+// `dimensions` when the position lies outside the volume.
+uint3 vkr_diffuse_volume_entry(float3 position, float3 origin, float spacing,
+    uint3 dimensions) {
+    float3 entry = floor((position - origin) / (3.0f * spacing));
+    if (any(entry < float3(0.0f)) || any(entry >= float3(dimensions)))
+        return dimensions;
+    return uint3(entry);
+}
+
+bool vkr_diffuse_volume_entry_inside(uint3 entry, uint3 dimensions) {
+    return all(entry < dimensions);
+}
+
+// Indirection texel of an entry: x, then y + ny * z.
+uint2 vkr_diffuse_volume_entry_texel(uint3 entry, uint3 dimensions) {
+    return uint2(entry.x, entry.y + dimensions.y * entry.z);
+}
+
+// The brick cell for `sample_position`, which a bias may have moved out of
+// the entry's brick; it is clamped to the brick.
+VkrDiffuseVolumeCell vkr_diffuse_volume_brick_cell(uint value, uint3 entry,
+    float3 sample_position, float3 origin, float spacing) {
+    uint level = value >> VKR_DIFFUSE_VOLUME_ENTRY_LEVEL_SHIFT;
+    uint span = vkr_diffuse_volume_level_span(level);
+    uint3 brick_entry = entry - entry % uint3(span);
     VkrDiffuseVolumeCell cell;
-    cell.base = uint3(0);
-    cell.fraction = float3(0.0f);
-    cell.row = 0u;
-    float3 position = (world_position - origin) * inverse_spacing;
-    cell.valid = all(position >= float3(0.0f)) &&
-        all(position <= float3(dimensions - uint3(1u)));
-    if (!cell.valid)
-        return cell;
-    cell.base = min(uint3(floor(position)), dimensions - uint3(2u));
-    cell.fraction = position - float3(cell.base);
-    cell.row = vkr_diffuse_volume_node_index(cell.base, dimensions);
+    cell.first_probe = (value & VKR_DIFFUSE_VOLUME_ENTRY_BRICK_MASK) * 64u;
+    cell.brick_origin = origin + 3.0f * spacing * float3(brick_entry);
+    cell.step = spacing * float(span);
+    float3 local = clamp((sample_position - cell.brick_origin) / cell.step,
+                         float3(0.0f), float3(3.0f));
+    cell.base = min(uint3(floor(local)), uint3(2u));
+    cell.fraction = local - float3(cell.base);
     return cell;
+}
+
+// The probe step of the brick an entry names, for biasing before the cell.
+float vkr_diffuse_volume_entry_step(uint value, float spacing) {
+    return spacing * float(vkr_diffuse_volume_level_span(
+        value >> VKR_DIFFUSE_VOLUME_ENTRY_LEVEL_SHIFT));
 }
 
 uint3 vkr_diffuse_volume_corner(uint corner) {
     return uint3(corner & 1u, (corner >> 1u) & 1u, (corner >> 2u) & 1u);
 }
 
-float vkr_diffuse_volume_weight(uint3 corner, float3 fraction) {
-    float3 weight = float3(1.0f) - fraction +
-        float3(corner) * (2.0f * fraction - float3(1.0f));
+uint vkr_diffuse_volume_corner_probe(VkrDiffuseVolumeCell cell, uint corner) {
+    uint3 c = cell.base + vkr_diffuse_volume_corner(corner);
+    return cell.first_probe + c.x + 4u * (c.y + 4u * c.z);
+}
+
+float3 vkr_diffuse_volume_corner_position(VkrDiffuseVolumeCell cell,
+    uint corner) {
+    return cell.brick_origin +
+        cell.step * float3(cell.base + vkr_diffuse_volume_corner(corner));
+}
+
+float vkr_diffuse_volume_trilinear(uint corner, float3 fraction) {
+    float3 c = float3(vkr_diffuse_volume_corner(corner));
+    float3 weight = float3(1.0f) - fraction + c * (2.0f * fraction - float3(1.0f));
     return weight.x * weight.y * weight.z;
+}
+
+// Texel of a probe's offset and validity.
+uint2 vkr_diffuse_volume_probe_texel(uint probe) {
+    return uint2(probe % VKR_DIFFUSE_VOLUME_ROW_PROBES,
+                 probe / VKR_DIFFUSE_VOLUME_ROW_PROBES);
+}
+
+// Texel of a probe's SH row `channel` (red, green, blue) in rows `row_offset`
+// onward, as one layer of the layer texture or the composed texture.
+uint2 vkr_diffuse_volume_sh_texel(uint probe, uint channel, uint row_offset) {
+    return uint2(3u * (probe % VKR_DIFFUSE_VOLUME_ROW_PROBES) + channel,
+                 probe / VKR_DIFFUSE_VOLUME_ROW_PROBES + row_offset);
+}
+
+// Octahedral coordinate in [-1, 1]^2 of a direction; the bake's
+// octahedral_direction is its inverse.
+float2 vkr_diffuse_volume_octahedral(float3 direction) {
+    float3 n = direction / (abs(direction.x) + abs(direction.y) + abs(direction.z));
+    float2 e = n.xy;
+    if (n.z < 0.0f) {
+        e = float2((1.0f - abs(n.y)) * (n.x >= 0.0f ? 1.0f : -1.0f),
+                   (1.0f - abs(n.x)) * (n.y >= 0.0f ? 1.0f : -1.0f));
+    }
+    return e;
+}
+
+// Normalized coordinate, in an atlas `tile_rows` tiles high, of a probe's
+// moments toward `direction`: its tile's interior spans texels 1 to 7, so
+// bilinear taps at the edge read the border, which repeats the opposite
+// interior edge.
+float2 vkr_diffuse_volume_moment_uv(uint probe, float3 direction,
+    float tile_rows) {
+    float2 e = vkr_diffuse_volume_octahedral(direction);
+    float2 tile = float2(float(probe % VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES),
+                         float(probe / VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES));
+    float2 texel = tile * float(VKR_DIFFUSE_VOLUME_MOMENT_SIZE) + float2(1.0f) +
+        (e * 0.5f + float2(0.5f)) * float(VKR_DIFFUSE_VOLUME_MOMENT_INTERIOR);
+    return texel / (float2(float(VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES), tile_rows) *
+                    float(VKR_DIFFUSE_VOLUME_MOMENT_SIZE));
+}
+
+// Chebyshev bound on the chance a receiver `distance` from the probe is
+// visible from it, against the probe's distance mean and mean square in
+// that direction (DDGI), to the sixth power: on the sparse-volume leak
+// fixture the cube DDGI uses let a sealed room's corners take light from
+// probes past its 0.2 m roof.
+float vkr_diffuse_volume_chebyshev(float2 moments, float distance) {
+    if (distance <= moments.x)
+        return 1.0f;
+    float variance = abs(moments.y - moments.x * moments.x);
+    float delta = distance - moments.x;
+    float chebyshev = variance / max(variance + delta * delta, 1.0e-6f);
+    float cube = chebyshev * chebyshev * chebyshev;
+    return cube * cube;
+}
+
+// Smooth back-face weight: one for a probe in front of the surface, falling
+// to zero for one straight behind it.
+float vkr_diffuse_volume_backface(float3 normal, float3 to_probe) {
+    float facing = (dot(to_probe, normal) + 1.0f) * 0.5f;
+    return facing * facing;
+}
+
+// How far a receiver moves off its surface before the visibility test, in
+// probe spacings, a fifth along its normal and the rest toward the viewer.
+#define VKR_DIFFUSE_VOLUME_BIAS 0.6f
+
+// Crushes small visibility weights toward zero, so a probe the receiver
+// barely sees does not lend it light (DDGI).
+float vkr_diffuse_volume_crush(float weight) {
+    const float threshold = 0.2f;
+    return weight < threshold ? weight * weight * weight / (threshold * threshold)
+                              : weight;
+}
+
+// E/pi of L1 rows (linear x, y, z, constant) toward `normal`.
+float3 vkr_diffuse_volume_l1(float4 red, float4 green, float4 blue, float3 normal) {
+    float4 basis = float4(normal, 1.0f);
+    return max(float3(dot(red, basis), dot(green, basis), dot(blue, basis)),
+               float3(0.0f));
 }
 #endif

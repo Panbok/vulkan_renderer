@@ -347,8 +347,12 @@ typedef struct VkrMetalPacketFrameUpload {
   /* The tiled pipeline's refraction source, on frames that declare it. */
   uint64_t transmission_texture_id;
   uint64_t ibl_probes_gpu;
-  uint64_t diffuse_volume_texture_id;
   uint64_t diffuse_volume_params_gpu;
+  /** The diffuse-volume composition this frame records, committed to the
+      renderer once the frame is submitted. */
+  bool8_t diffuse_volume_composed;
+  VkrTextureHandle diffuse_volume_compose_sh;
+  uint32_t diffuse_volume_compose_revision;
   /* This frame's VkrMetalPacketLightmap, written for every frame. */
   uint64_t lightmap_gpu;
   /* This frame's VkrMetalPacketDecals; zero without decals (ADR-092). */
@@ -788,6 +792,11 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> cloud_sky_light_pipeline;
   id<MTLComputePipelineState> cloud_sky_light_sh_pipeline;
   id<MTLComputePipelineState> cloud_sky_light_mips_pipeline;
+  id<MTLComputePipelineState> diffuse_volume_compose_pipeline;
+  /** The diffuse-volume SH texture and composition the last submitted frame
+      wrote; a frame whose binding differs composes again. */
+  VkrTextureHandle diffuse_volume_composed_sh;
+  uint32_t diffuse_volume_composition;
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
@@ -827,6 +836,8 @@ struct VkrMetalPacketRenderer {
   uint64_t submit_value;
   uint64_t candidate_publication_generation;
   uint32_t gpu_draw_count;
+  /** Packed static candidates, which precede the dynamic ones. */
+  uint32_t gpu_draw_static_count;
   uint64_t current_hzb_world_epoch;
   Mat4 current_hzb_view_projection;
   Mat4 current_hzb_raster_view_projection;

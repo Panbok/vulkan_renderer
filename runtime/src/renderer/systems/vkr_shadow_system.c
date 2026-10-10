@@ -1677,10 +1677,100 @@ vkr_internal bool8_t vkr_shadow_local_dynamic_overlaps_light(
          distance_squared <= reach * reach;
 }
 
+/* A baked lamp keeps its place until a competitor's light at the moving
+   casters is this factor stronger, so the shadowed lamps do not flip while
+   their light crosses. */
+#define VKR_BAKED_LAMP_INCUMBENT_BONUS 1.15f
+
+/* The luminance `light` sends to `point`: intensity times its distance
+   falloff and spot cone, as the shared punctual kernel shades it. */
+vkr_internal float32_t
+vkr_shadow_baked_lamp_light_at(const VkrPointLight *light, Vec3 point) {
+  const Vec3 to_light = vec3_sub(light->position, point);
+  const float32_t distance_squared = vec3_length_squared(to_light);
+  const float32_t distance = sqrtf(distance_squared);
+  float32_t attenuation = 0.0f;
+  float32_t cone = 1.0f;
+  if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL) {
+    attenuation =
+        1.0f / Max(Max(light->constant, 1.0f) + light->linear * distance +
+                       light->quadratic * distance_squared,
+                   1e-6f);
+  } else {
+    if (light->range > 0.0f && distance >= light->range)
+      return 0.0f;
+    float32_t window = 1.0f;
+    if (light->range > 0.0f) {
+      const float32_t ratio = distance / light->range;
+      window = Clamp(1.0f - ratio * ratio * ratio * ratio, 0.0f, 1.0f);
+      window *= window;
+    }
+    attenuation = window / Max(distance_squared, 1e-4f);
+    if (light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT && distance > 1e-6f) {
+      const float32_t outer = cosf(light->outer_cone_angle);
+      const float32_t inner = cosf(light->inner_cone_angle);
+      const float32_t cosine = vec3_dot(vec3_scale(to_light, -1.0f / distance),
+                                        vec3_normalize(light->direction));
+      const float32_t t =
+          inner > outer ? Clamp((cosine - outer) / (inner - outer), 0.0f, 1.0f)
+                        : (cosine >= outer ? 1.0f : 0.0f);
+      cone = t * t * (3.0f - 2.0f * t);
+    }
+  }
+  const float32_t luminance = light->color.x * 0.2126f +
+                              light->color.y * 0.7152f +
+                              light->color.z * 0.0722f;
+  const float32_t value =
+      Max(luminance, 0.0f) * Max(light->intensity, 0.0f) * attenuation * cone;
+  return isfinite(value) ? value : 0.0f;
+}
+
+/* Selects the baked lamps whose moving-caster shadows the frame shows: at
+   most VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX, by `light`, each lamp's
+   strongest light at a moving caster that meets its range on a face the
+   camera may see, incumbents' light raised by the bonus. Writes their
+   indices strongest first and returns their count; `out_candidates`
+   receives the lamps considered. */
+vkr_internal uint32_t vkr_shadow_select_baked_lamps(
+    const VkrShadowSystem *system, const VkrPointLight *lamps,
+    const float32_t *light, uint32_t lamp_count, uint32_t *out_selected,
+    uint32_t *out_candidates) {
+  float32_t keys[VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX];
+  uint32_t selected_count = 0u;
+  *out_candidates = 0u;
+  for (uint32_t lamp = 0u; lamp < lamp_count; ++lamp) {
+    if (!(light[lamp] > 0.0f) || lamps[lamp].render_id == 0u)
+      continue;
+    ++*out_candidates;
+    float32_t key = light[lamp];
+    for (uint32_t i = 0u; i < system->baked_lamp_selected_count; ++i) {
+      if (system->baked_lamp_render_ids[i] == lamps[lamp].render_id)
+        key *= VKR_BAKED_LAMP_INCUMBENT_BONUS;
+    }
+    uint32_t insert = selected_count;
+    while (insert > 0u && keys[insert - 1u] < key)
+      --insert;
+    if (insert >= VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX)
+      continue;
+    const uint32_t last =
+        Min(selected_count, VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX - 1u);
+    for (uint32_t i = last; i > insert; --i) {
+      keys[i] = keys[i - 1u];
+      out_selected[i] = out_selected[i - 1u];
+    }
+    keys[insert] = key;
+    out_selected[insert] = lamp;
+    selected_count =
+        Min(selected_count + 1u, VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX);
+  }
+  return selected_count;
+}
+
 void vkr_shadow_system_resolve_local_shadows(
     VkrShadowSystem *system, VkrRetainedLocalShadowToken retained_token,
     const VkrWorldPassPayload *candidates, const VkrPointLight *lights,
-    uint32_t light_count, const VkrLocalShadowCamera *camera,
+    uint32_t light_count, const VkrPointLight *baked_lamps,
+    uint32_t baked_lamp_count, const VkrLocalShadowCamera *camera,
     VkrLocalShadowPassPayload *out_payload) {
   if (!out_payload)
     return;
@@ -1689,16 +1779,27 @@ void vkr_shadow_system_resolve_local_shadows(
     return;
   }
 
-  /* A face a dynamic caster may reach holds stale content; an unavailable
-   * scan makes every face unstable. */
+  /* The faces a dynamic caster may reach take its shadow over their static
+   * casters; an unavailable scan makes every face unstable. */
   const uint32_t shadow_count = candidates->gpu_shadow_candidate_count;
   const uint32_t static_count =
       Min(candidates->static_candidate_count, shadow_count);
   bool8_t dynamic_scan_failed =
       shadow_count - static_count > system->config.reuse_dynamic_scan_budget;
-  bool8_t dynamic_overlap[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+  uint8_t dynamic_faces[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX] = {0};
+  bool8_t dynamic_refractive[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX] = {0};
   const uint32_t bounded_light_count =
       Min(light_count, VKR_MAX_SCENE_POINT_LIGHTS);
+  const uint32_t bounded_lamp_count =
+      baked_lamps ? Min(baked_lamp_count, VKR_MAX_SCENE_POINT_LIGHTS) : 0u;
+  uint8_t lamp_faces[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+  /* Each baked lamp's strongest light at a moving caster on a face the
+     camera may see; the selection ranks the lamps by it. */
+  uint8_t lamp_visible_faces[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+  float32_t lamp_light[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+  for (uint32_t lamp = 0u; camera && lamp < bounded_lamp_count; ++lamp)
+    lamp_visible_faces[lamp] = (uint8_t)vkr_local_shadow_camera_faces(
+        &baked_lamps[lamp], camera->view, camera->projection);
   for (uint32_t index = static_count;
        !dynamic_scan_failed && index < shadow_count; ++index) {
     const VkrWorldDrawCandidate *candidate = &candidates->gpu_candidates[index];
@@ -1706,21 +1807,73 @@ void vkr_shadow_system_resolve_local_shadows(
       dynamic_scan_failed = true_v;
       break;
     }
+    Vec3 center = vec3_zero();
+    float32_t radius = 0.0f;
+    vkr_shadow_candidate_world_sphere(candidate, &center, &radius);
+    const bool8_t refractive =
+        (candidate->flags & VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION) != 0u;
     for (uint32_t light = 0u; light < bounded_light_count; ++light) {
-      if (!dynamic_overlap[light] && lights[light].casts_shadow &&
-          vkr_shadow_local_dynamic_overlaps_light(candidate, &lights[light]))
-        dynamic_overlap[light] = true_v;
+      if (!lights[light].casts_shadow ||
+          !vkr_shadow_local_dynamic_overlaps_light(candidate, &lights[light]))
+        continue;
+      const uint32_t faces =
+          vkr_local_shadow_sphere_faces(&lights[light], center, radius);
+      dynamic_faces[light] |= (uint8_t)faces;
+      dynamic_refractive[light] |= refractive && faces != 0u;
+    }
+    for (uint32_t lamp = 0u; lamp < bounded_lamp_count; ++lamp) {
+      if (!baked_lamps[lamp].casts_shadow ||
+          !vkr_shadow_local_dynamic_overlaps_light(candidate,
+                                                   &baked_lamps[lamp]))
+        continue;
+      const uint32_t faces =
+          vkr_local_shadow_sphere_faces(&baked_lamps[lamp], center, radius);
+      lamp_faces[lamp] |= (uint8_t)faces;
+      if ((faces & lamp_visible_faces[lamp]) != 0u)
+        lamp_light[lamp] =
+            Max(lamp_light[lamp],
+                vkr_shadow_baked_lamp_light_at(&baked_lamps[lamp], center));
+    }
+  }
+
+  /* Moving casters shadow the baked lamps that light them most; their
+     shadow is the difference of static and composite squares, so unknown
+     casters or contents select none. */
+  const bool8_t contents_unstable =
+      dynamic_scan_failed || candidates->publication_pending;
+  uint32_t selected[VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX] = {0};
+  uint32_t baked_candidates = 0u;
+  const uint32_t selected_count =
+      contents_unstable || !camera
+          ? 0u
+          : vkr_shadow_select_baked_lamps(system, baked_lamps, lamp_light,
+                                          bounded_lamp_count, selected,
+                                          &baked_candidates);
+  system->baked_lamp_selected_count = selected_count;
+  VkrPointLight combined[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
+  if (selected_count != 0u) {
+    MemCopy(combined, lights, bounded_light_count * sizeof(*lights));
+    for (uint32_t i = 0u; i < selected_count; ++i) {
+      combined[bounded_light_count + i] = baked_lamps[selected[i]];
+      dynamic_faces[bounded_light_count + i] = lamp_faces[selected[i]];
+      system->baked_lamp_render_ids[i] = baked_lamps[selected[i]].render_id;
     }
   }
 
   const VkrLocalShadowCacheInput input = {
-      .lights = lights,
-      .light_count = light_count,
+      .lights = selected_count != 0u ? combined : lights,
+      .light_count = selected_count != 0u ? bounded_light_count + selected_count
+                                          : light_count,
+      .baked_light_count = selected_count,
+      .baked_lamps_possible = bounded_lamp_count != 0u,
+      .baked_lamp_candidates = baked_candidates,
       .camera = camera,
       .feedback = system->light_contribution_ranking_disabled
                       ? NULL
                       : &system->light_contribution,
-      .dynamic_overlap = dynamic_overlap,
+      .dynamic_faces = dynamic_faces,
+      .dynamic_refractive = dynamic_refractive,
+      .dynamic_casters = shadow_count > static_count,
       .token = retained_token,
       .static_generation = candidates->static_generation,
       .static_changes = candidates->static_changes,
@@ -1728,8 +1881,7 @@ void vkr_shadow_system_resolve_local_shadows(
       .static_change_floor = candidates->static_change_floor,
       .publication_generation =
           vkr_world_content_publication_generation(candidates),
-      .contents_unstable =
-          dynamic_scan_failed || candidates->publication_pending,
+      .contents_unstable = contents_unstable,
       .refractive_casters = candidates->transmission_gpu_candidate_count > 0u,
       .contact_shadows = system->config.local_shadow_contact,
       .full_filter_all = system->config.local_shadow_full_filter_all,

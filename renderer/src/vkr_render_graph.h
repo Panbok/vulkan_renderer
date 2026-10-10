@@ -558,6 +558,13 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t clearcoat_enabled;
   bool8_t sheen_enabled;
   bool8_t anisotropy_enabled;
+  /** The scene's lightmaps hold its static lamps in planes the desktop
+      pipeline samples (ADR-104): the G-buffer resolve
+      writes their irradiance and deferred lighting adds it. */
+  bool8_t baked_lamps_enabled;
+  /* The frame binds a sparse diffuse volume, which DiffuseVolume.Sample
+     looks up per pixel for deferred lighting. */
+  bool8_t diffuse_volume_enabled;
   /** Any of clearcoat, sheen or anisotropy: deferred lighting splits its
    * tiles between a base kernel and the layered kernel. */
   bool8_t lighting_layers_enabled;
@@ -700,6 +707,17 @@ typedef struct VkrRenderGraphFrameInfo {
       local_shadow_render_atlas_layers[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
   uint32_t local_shadow_render_transmission_layers
       [VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
+  /** Render slots that draw static squares, then those that draw dynamic
+   * squares over copies of static ones; they sum to the render count. */
+  uint32_t local_shadow_static_render_count;
+  uint32_t local_shadow_dynamic_render_count;
+  /** Baked lamps whose moving casters' shadows Shadow.LocalMask writes and
+   * deferred lighting subtracts from their baked light; the desktop
+   * pipeline only. */
+  uint32_t local_shadow_baked_lamp_count;
+  /** Per dynamic slot: the atlas layer of the static square it copies. */
+  uint32_t
+      local_shadow_copy_source_layers[VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX];
   /** Atlas layers cleared whole before local-shadow faces draw. */
   uint32_t local_shadow_atlas_clear_mask;
   uint32_t local_shadow_atlas_layer_count;

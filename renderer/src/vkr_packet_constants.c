@@ -158,5 +158,15 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
                                     : (float32_t)frame->local_shadow_map_size;
     out_views[view] = vkr_gpu_lod_view(face->light_view_projection, face_size,
                                        light, light, false_v);
+    /* An opaque face view draws the casters its square holds: the static
+       ones into a static square, the dynamic ones over a copied one.
+       Transmission views draw every refractive caster. */
+    const VkrLocalShadowPassPayload *local = packet->input.local_shadow;
+    if (view - 1u - cascade_count >= frame->local_shadow_render_count)
+      continue;
+    if (slot >= vkr_local_shadow_dynamic_render_first(local))
+      out_views[view].flags |= VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY;
+    else if ((local->static_render_mask & (UINT64_C(1) << slot)) != 0u)
+      out_views[view].flags |= VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY;
   }
 }

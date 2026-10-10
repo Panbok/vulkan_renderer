@@ -69,6 +69,9 @@ struct VkrVkCullRoot
     uint local_shadow_excluded_flags;
     // Retained cascades' views, whose passes do not run this frame.
     uint encode_idle_view_mask;
+    // Candidates below it are static; a local face view whose LOD flags
+    // select one mobility skips the others.
+    uint static_candidate_count;
     VkrGpuLodView *lod_views;
     VkrVkGeometryRow *geometry_rows;
 };
@@ -151,6 +154,26 @@ struct VkrVkResolveRoot
     uint2 *decal_masks;
     float4 decal_grid_origin_cell_size;
     uint4 decal_grid_dimensions_count;
+    // Baked static lamps (ADR-104): lightmapped draws'
+    // page rectangles, the lamp-layer texture array whose slice
+    // page * lightmap_layer_count + layer holds one layer of a page, and the
+    // active layers with their weights. A zero rectangle count writes zero
+    // into baked_lamps_texture, which is the sentinel without baked lamps.
+    VkrLightmapRect *lightmap_rects;
+    uint lightmap_texture;
+    uint lightmap_sampler;
+    uint lightmap_rect_count;
+    uint lightmap_layer_count;
+    uint lightmap_active_count;
+    uint baked_lamps_texture;
+    float lightmap_inverse_page_size;
+    // The lamp layers' dominant-direction array, zero without one.
+    uint lightmap_direction_texture;
+    uint4 lightmap_active_layers[2];
+    float4 lightmap_active_weights[2];
+    // Dominant direction and directionality for deferred lighting.
+    uint baked_direction_texture;
+    uint3 lightmap_reserved;
 };
 
 #ifndef VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
@@ -233,7 +256,61 @@ struct VkrVkLightingRoot
     // Per-light visible contribution counters, or null when not measured.
     uint *light_contribution;
     uint shadow_moments_sampler;
-    uint light_contribution_reserved;
+    // The G-buffer resolve's baked lamp irradiance (alpha: the scale from
+    // the lightmap surface's irradiance to irradiance facing the dominant
+    // direction) and dominant direction (0.5 * d + 0.5, directionality in
+    // alpha); zero without baked lamps.
+    uint baked_lamps_texture;
+    uint baked_direction_texture;
+    // DiffuseVolume.Sample's per-pixel volume response; zero without a
+    // volume.
+    uint diffuse_volume_texture;
+    // Shadow.LocalMask's pre-exposed irradiance of the selected baked lamps
+    // that their moving casters hide; zero without a selected lamp.
+    uint baked_lamp_shadow_texture;
+    uint baked_reserved;
+};
+
+// DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
+// surface, its camera reconstruction, and the baked lamp irradiance whose
+// alpha marks a lightmapped pixel (zero without baked lamps).
+struct VkrVkDiffuseVolumeSampleRoot
+{
+    VkrVulkanPacketFrameRoot *frame;
+    uint2 frame_address_padding;
+    float4x4 inverse_view_projection;
+    uint vbuffer_texture;
+    uint depth_texture;
+    uint normal_texture;
+    uint baked_lamps_texture;
+    uint2 extent;
+    uint2 half_extent;
+    // RGBA16F: the volume's response (E/pi) and one where it is valid, at
+    // half resolution from the sample pass and full from the upsample.
+    uint output_texture;
+    // RGBA16F half resolution: the representative pixel's normal and camera
+    // distance, negative where its lightmap holds the baked lamps.
+    uint guide_texture;
+    // The sample pass's half-resolution response, for the upsample.
+    uint half_texture;
+    uint reserved;
+    // DiffuseVolume.Fallback's indirect arguments (groups x, y, z, then the
+    // pixel count) and its pixels, each x | y << 16: the ones no
+    // half-resolution texel matched. The sample pass resets the arguments
+    // and the upsample appends.
+    uint *fallback_arguments;
+    uint *fallback_pixels;
+};
+
+// A baked lamp whose moving casters Shadow.LocalMask shadows (desktop baked
+// lamps proposal): its pre-exposed light row and the first views of its
+// static and composite blocks.
+struct VkrVkBakedShadowLamp
+{
+    VkrGpuPointLightRow light;
+    uint static_first_view;
+    uint composite_first_view;
+    uint2 reserved;
 };
 
 // Shadow.LocalMask inputs: the G-buffer surface, its camera reconstruction,
@@ -256,7 +333,15 @@ struct VkrVkLocalShadowMaskRoot
     // Nonzero under temporal reconstruction: fully filtered lights take the
     // rotated temporal taps.
     uint temporal_filter;
-    uint2 reserved;
+    // RGBA16F: the pre-exposed irradiance the selected baked lamps' moving
+    // casters hide, for `baked_lamp_count` lamps.
+    uint baked_lamp_shadow_texture;
+    uint baked_lamp_count;
+    VkrVkBakedShadowLamp *baked_lamps;
+    // The G-buffer resolve's baked lamp irradiance: its alpha marks the
+    // lightmapped pixels, the only ones deferred lighting subtracts from.
+    uint baked_lamps_texture;
+    uint baked_reserved;
 };
 
 // One far cascade's EVSM moments layer, built from its depth layer.
@@ -433,6 +518,20 @@ struct VkrVkTransmissionRoot
     uint compact_layer;
     uint compact_enabled;
     uint reserved;
+    // Baked lamps (ADR-104): the G-buffer resolve's lightmap binding, so a
+    // lightmapped transmissive draw shades them too; a zero rectangle count
+    // without.
+    VkrLightmapRect *lightmap_rects;
+    uint lightmap_texture;
+    uint lightmap_sampler;
+    uint lightmap_rect_count;
+    uint lightmap_layer_count;
+    uint lightmap_active_count;
+    float lightmap_inverse_page_size;
+    uint lightmap_direction_texture;
+    uint3 lightmap_reserved;
+    uint4 lightmap_active_layers[2];
+    float4 lightmap_active_weights[2];
 };
 
 struct VkrVkTransmissionCompactRoot
@@ -487,6 +586,12 @@ struct VkrVkLightingPush
     VkrVkLightingRoot *root;
     uint2 reserved;
 };
+struct VkrVkDiffuseVolumeSamplePush
+{
+    VkrVkDiffuseVolumeSampleRoot *root;
+    uint2 reserved;
+};
+
 struct VkrVkLocalShadowMaskPush
 {
     VkrVkLocalShadowMaskRoot *root;
@@ -566,6 +671,8 @@ struct VkrVkTransmissionCompactPush
 [[vk::push_constant]] ConstantBuffer<VkrVkLightingPush> g_lighting_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkLocalShadowMaskPush>
     g_local_shadow_mask_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkDiffuseVolumeSamplePush>
+    g_diffuse_volume_sample_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkTemporalResolvePush>
     g_temporal_resolve_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkHzbPush> g_hzb_push;
@@ -680,13 +787,25 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
                                            : root.shadow_required_flags;
     uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
     uint excluded_flags = 0u;
+    bool mobility_excluded = false;
     if (view_index >= root.transmission_first_view)
         required_flags = root.transmission_required_flags;
     else if (view_index >= root.local_shadow_first_view)
+    {
         excluded_flags = root.local_shadow_excluded_flags;
+        // A static square holds the static casters; a dynamic square adds
+        // the dynamic ones over a copy of it.
+        uint mobility = root.lod_views[view_index].flags;
+        bool static_candidate = candidate_index < root.static_candidate_count;
+        mobility_excluded =
+            ((mobility & VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY) != 0u &&
+             !static_candidate) ||
+            ((mobility & VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY) != 0u &&
+             static_candidate);
+    }
     uint bucket = vkr_gpu_draw_state_bucket(candidate.state_flags);
     if ((candidate_flags & required_flags) != required_flags ||
-        (candidate_flags & excluded_flags) != 0u)
+        (candidate_flags & excluded_flags) != 0u || mobility_excluded)
     {
         root.classifications[view_index * root.candidate_capacity +
                              candidate_index] = 0xffffffffu;
@@ -1067,6 +1186,11 @@ void vkr_vk_resolve_defaults(VkrVkResolveRoot root, uint2 pixel, float marker)
     g_storage_2d[root.scene_texture][pixel] = 0.0f;
     g_storage_float2_2d[root.motion_texture][pixel] = 0.0f;
     g_storage_float2_2d[root.validity_texture][pixel] = 0.0f;
+    if (root.baked_lamps_texture != 0u)
+    {
+        g_storage_2d[root.baked_lamps_texture][pixel] = 0.0f;
+        g_storage_2d[root.baked_direction_texture][pixel] = 0.0f;
+    }
 }
 
 // One visibility sample reconstructed back into shadeable material inputs.
@@ -1096,6 +1220,9 @@ struct VkrVkSurfaceSource
     // Nonzero when the frame has decals: the surface then carries its world
     // position and that position's screen derivatives (ADR-092).
     uint project_decals;
+    // Nonzero when the frame samples baked lamps: a draw whose geometry
+    // carries lightmap UVs then reports its interpolated lightmap UV.
+    uint sample_lightmap;
 };
 
 bool vkr_vk_reject_surface(VkrVkSurfaceSource source)
@@ -1134,6 +1261,10 @@ struct VkrVkSurface
     uint material_index;
     uint instance_index;
     uint normal_mapped;
+    // The draw's lightmap UV over its source mesh's chart atlas, set only
+    // when the source samples lightmaps and the geometry carries them.
+    float2 lightmap_uv;
+    uint has_lightmap_uv;
 };
 
 // One extra terrain layer's surface from its row; its slots always hold a map
@@ -1298,6 +1429,21 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
         surface.world_dy = wa.xyz * perspective_dy.x +
                            wb.xyz * perspective_dy.y +
                            wc.xyz * perspective_dy.z;
+    }
+    if (source.sample_lightmap != 0u &&
+        (decode.flags & VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV) != 0u)
+    {
+        surface.lightmap_uv =
+            vkr_decode_packed_lightmap_uv(
+                source.vertices[geometry.first_vertex + uint(ia)]) *
+                perspective.x +
+            vkr_decode_packed_lightmap_uv(
+                source.vertices[geometry.first_vertex + uint(ib)]) *
+                perspective.y +
+            vkr_decode_packed_lightmap_uv(
+                source.vertices[geometry.first_vertex + uint(ic)]) *
+                perspective.z;
+        surface.has_lightmap_uv = 1u;
     }
     float2 uv = a.texcoord * perspective.x + b.texcoord * perspective.y +
                 c.texcoord * perspective.z;
@@ -1578,6 +1724,87 @@ bool vkr_vk_finish_surface_normal(VkrVkSurfaceSource source,
     return true;
 }
 
+struct VkrVkBakedLamps
+{
+    float4 irradiance;
+    float4 direction;
+};
+
+// The lamp layers a kernel samples (desktop baked lamps, ADR-104): the
+// G-buffer resolve's and the transmission root's lightmap fields; a zero
+// rectangle count samples none.
+struct VkrVkLightmapSource
+{
+    VkrLightmapRect *lightmap_rects;
+    uint lightmap_texture;
+    uint lightmap_sampler;
+    uint lightmap_rect_count;
+    uint lightmap_layer_count;
+    uint lightmap_active_count;
+    float lightmap_inverse_page_size;
+    uint lightmap_direction_texture;
+    uint4 lightmap_active_layers[2];
+    float4 lightmap_active_weights[2];
+};
+
+// The static lamps the bake holds at a lightmapped surface: the active lamp
+// layers of its rectangle, each at its weight. Irradiance alpha scales the
+// directional part from the lightmap surface (normal `surface_normal`) to a
+// surface facing the dominant direction, and is zero for a draw without a
+// lightmap. Direction is the layers' luminance-weighted dominant direction
+// as 0.5 * d + 0.5 with its directionality in alpha.
+VkrVkBakedLamps vkr_vk_baked_lamps(VkrVkLightmapSource root,
+                                   VkrVulkanInstance instance,
+                                   VkrVkSurface surface, float3 surface_normal)
+{
+    VkrVkBakedLamps baked = (VkrVkBakedLamps)0;
+    uint slot = uint(instance.normal_column2.w);
+    if (surface.has_lightmap_uv == 0u || slot == 0u ||
+        slot > root.lightmap_rect_count)
+        return baked;
+    VkrLightmapRect rect = root.lightmap_rects[slot - 1u];
+    float2 origin = float2(float(rect.origin & 0xffffu), float(rect.origin >> 16u));
+    float2 extent = float2(float(rect.extent & 0xffffu), float(rect.extent >> 16u));
+    float2 uv = (origin + surface.lightmap_uv * extent) *
+                root.lightmap_inverse_page_size;
+    uint slice_base = rect.page * root.lightmap_layer_count;
+    float3 irradiance = 0.0f;
+    float3 direction_sum = 0.0f;
+    float luminance_sum = 0.0f;
+    for (uint i = 0u; i < root.lightmap_active_count; ++i)
+    {
+        uint layer = root.lightmap_active_layers[i / 4u][i % 4u];
+        float weight = root.lightmap_active_weights[i / 4u][i % 4u];
+        float3 slice_uv = float3(uv, float(slice_base + layer));
+        float3 layer_irradiance = weight *
+            g_array_textures[root.lightmap_texture]
+                .SampleLevel(g_samplers[root.lightmap_sampler], slice_uv, 0.0f)
+                .rgb;
+        irradiance += layer_irradiance;
+        if (root.lightmap_direction_texture != 0u)
+        {
+            float4 encoded = g_array_textures[root.lightmap_direction_texture]
+                .SampleLevel(g_samplers[root.lightmap_sampler], slice_uv, 0.0f);
+            float3 d = encoded.rgb * 2.0f - 1.0f;
+            float length_d = length(d);
+            float luminance = dot(layer_irradiance, float3(0.2126f, 0.7152f, 0.0722f));
+            if (length_d > 1.0e-4f)
+                direction_sum += luminance * encoded.a * (d / length_d);
+            luminance_sum += luminance;
+        }
+    }
+    float3 mean = luminance_sum > 0.0f ? direction_sum / luminance_sum : 0.0f;
+    float directionality = saturate(length(mean));
+    float3 dominant = directionality > 1.0e-4f ? mean / directionality
+                                               : surface_normal;
+    // Irradiance facing the dominant direction, per unit of the lightmap
+    // surface's irradiance; bounded where the direction grazes it.
+    float facing = 1.0f / max(dot(surface_normal, dominant), 0.1f);
+    baked.irradiance = float4(irradiance, facing);
+    baked.direction = float4(dominant * 0.5f + 0.5f, directionality);
+    return baked;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
@@ -1610,6 +1837,7 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         root.visible_capacity, root.geometry_count,  root.material_count,
         root.instance_count, root.render_mode, root.pre_exposure,
         root.terrain_materials, root.decal_grid_dimensions_count.w,
+        root.lightmap_rect_count,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, thread_id.xy, surface))
@@ -1674,6 +1902,26 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
     }
     g_storage_float2_2d[root.motion_texture][thread_id.xy] = motion;
     g_storage_float2_2d[root.validity_texture][thread_id.xy] = validity;
+    if (root.baked_lamps_texture != 0u)
+    {
+        // The lightmap's surface: its interpolated normal, before normal
+        // mapping, which the bake's texels share.
+        float3 surface_normal = normalize(vkr_instance_transform_normal(
+            instance.normal_column0.xyz, instance.normal_column1.xyz,
+            instance.normal_column2.xyz, surface.object_normal));
+        VkrVkLightmapSource lightmap = {
+            root.lightmap_rects, root.lightmap_texture, root.lightmap_sampler,
+            root.lightmap_rect_count, root.lightmap_layer_count,
+            root.lightmap_active_count, root.lightmap_inverse_page_size,
+            root.lightmap_direction_texture, root.lightmap_active_layers,
+            root.lightmap_active_weights,
+        };
+        VkrVkBakedLamps baked =
+            vkr_vk_baked_lamps(lightmap, instance, surface, surface_normal);
+        g_storage_2d[root.baked_lamps_texture][thread_id.xy] = baked.irradiance;
+        g_storage_2d[root.baked_direction_texture][thread_id.xy] =
+            baked.direction;
+    }
     // Decals change the base colour the lighting views see; the neutral
     // inspection views keep their neutral base.
     if (root.decal_grid_dimensions_count.w != 0u && !neutral_lighting)
@@ -1977,7 +2225,8 @@ float vk_local_contact_shadow(VkrVkLocalShadowMaskRoot root, float3 origin,
 // contact-shadow march multiplies the filtered visibility of each light that
 // takes the full filter; without it the march's registers do not lower the
 // kernel's occupancy.
-void vk_local_shadow_mask_impl<let ContactShadows : bool>(uint3 thread_id)
+void vk_local_shadow_mask_impl<let ContactShadows : bool,
+                               let BakedLamps : bool>(uint3 thread_id)
 {
     VkrVkLocalShadowMaskRoot root = vkr_vk_uniform_root(*g_local_shadow_mask_push.root);
     if (any(thread_id.xy >= root.extent))
@@ -2073,20 +2322,270 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool>(uint3 thread_id)
             ++slot;
         }
     }
+    // The baked-lamp variants alone carry this work, so the default kernels
+    // keep their registers.
+    if (!BakedLamps || root.baked_lamp_count == 0u ||
+        g_storage_2d[root.baked_lamps_texture][thread_id.xy].a <= 0.0f)
+        return;
+    // A selected baked lamp's lightmap holds its light past the static
+    // casters only. The same taps through its static and composite squares
+    // give v_static - v_composite, the share of that light its moving
+    // casters hide; deferred lighting subtracts it from the baked light.
+    float3 hidden = 0.0f;
+    for (uint lamp = 0u; lamp < root.baked_lamp_count; ++lamp)
+    {
+        VkrVkBakedShadowLamp baked = root.baked_lamps[lamp];
+        VkrGpuPointLightRow light = baked.light;
+        VkrPunctualLightTerm term = vkr_punctual_light_term(
+            light.p0, light.p1, light.p2, light.p3, world);
+        float n_dot_l = dot(normal, term.direction);
+        if (!term.in_range || term.cone <= 0.0f || n_dot_l <= 0.0f)
+            continue;
+        // A face without a dynamic square holds no moving caster: its
+        // static and composite views name one square, so the difference is
+        // zero and neither is read. A moving caster that shadows the pixel
+        // lies on its ray, in the same face.
+        uint face = term.kind == 2u
+            ? 0u
+            : vkr_local_shadow_face(world - light.p0.xyz);
+        if (all(frame.local_shadow_views[baked.static_first_view + face]
+                    .atlas_rect ==
+                frame.local_shadow_views[baked.composite_first_view + face]
+                    .atlas_rect))
+            continue;
+        light.p3.w = float(baked.static_first_view + 1u);
+        float3 static_visibility = packet_local_shadow(
+            frame, light, term.kind, world, normal, tap_rotation, tap_count,
+            blocker_count);
+        if (all(static_visibility <= 0.0f))
+            continue;
+        light.p3.w = float(baked.composite_first_view + 1u);
+        float3 composite_visibility = packet_local_shadow(
+            frame, light, term.kind, world, normal, tap_rotation, tap_count,
+            blocker_count);
+        hidden += light.p1.rgb * light.p2.x * term.attenuation * term.cone *
+                  n_dot_l * max(static_visibility - composite_visibility, 0.0f);
+    }
+    g_storage_2d[root.baked_lamp_shadow_texture][thread_id.xy] =
+        float4(hidden, 0.0f);
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
 {
-    vk_local_shadow_mask_impl<false>(thread_id);
+    vk_local_shadow_mask_impl<false, false>(thread_id);
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_local_shadow_mask_contact(uint3 thread_id : SV_DispatchThreadID)
 {
-    vk_local_shadow_mask_impl<true>(thread_id);
+    vk_local_shadow_mask_impl<true, false>(thread_id);
+}
+
+// With selected baked lamps (ADR-104), the mask also
+// writes the light their moving casters hide.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_local_shadow_mask_baked(uint3 thread_id : SV_DispatchThreadID)
+{
+    vk_local_shadow_mask_impl<false, true>(thread_id);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_local_shadow_mask_contact_baked(uint3 thread_id : SV_DispatchThreadID)
+{
+    vk_local_shadow_mask_impl<true, true>(thread_id);
+}
+
+// A G-buffer surface pixel as the volume lookup takes it. A lightmapped
+// pixel whose lightmap holds the baked lamps leaves out the lamp part the
+// frame keeps apart.
+struct VkDiffuseVolumePixel
+{
+    float3 world;
+    float3 normal;
+    bool lamps_baked;
+};
+
+VkDiffuseVolumePixel vk_diffuse_volume_pixel(VkrVkDiffuseVolumeSampleRoot root,
+                                             uint2 pixel)
+{
+    VkDiffuseVolumePixel surface;
+    surface.normal = vkr_vk_octahedral_decode(
+        g_storage_float2_2d[root.normal_texture][pixel]);
+    float depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
+    float2 ndc_xy = (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
+    surface.world = vkr_vk_deferred_homogeneous(
+        mul(root.inverse_view_projection, float4(ndc_xy, depth, 1.0f)));
+    surface.lamps_baked =
+        root.baked_lamps_texture != 0u &&
+        g_storage_2d[root.baked_lamps_texture][pixel].a > 0.0f;
+    return surface;
+}
+
+// Camera distance, negative where the lightmap holds the baked lamps, so
+// the upsample never mixes the two compositions.
+float vk_diffuse_volume_guide_distance(VkrVulkanPacketFrameRoot *frame,
+                                       VkDiffuseVolumePixel surface)
+{
+    float camera_distance = distance(surface.world, frame.view_position.xyz);
+    return surface.lamps_baked ? -camera_distance : camera_distance;
+}
+
+float4 vk_diffuse_volume_lookup(VkrVulkanPacketFrameRoot *frame,
+                                VkDiffuseVolumePixel surface)
+{
+    float3 response;
+    if (packet_diffuse_volume_response(frame, surface.world, surface.normal,
+                                       !surface.lamps_baked, response))
+        return float4(response, 1.0f);
+    return 0.0f;
+}
+
+// The volume at half resolution: each texel looks it up at the first
+// surface pixel of its 2x2 block and keeps that pixel as its guide.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_diffuse_volume_sample(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkDiffuseVolumeSampleRoot root =
+        vkr_vk_uniform_root(*g_diffuse_volume_sample_push.root);
+    if (all(thread_id.xy == 0u))
+    {
+        root.fallback_arguments[0] = 0u;
+        root.fallback_arguments[1] = 1u;
+        root.fallback_arguments[2] = 1u;
+        root.fallback_arguments[3] = 0u;
+    }
+    if (any(thread_id.xy >= root.half_extent))
+        return;
+    VkrVulkanPacketFrameRoot *frame = root.frame;
+    float4 result = 0.0f;
+    float4 guide = 0.0f;
+    uint2 chosen = thread_id.xy * 2u;
+    bool found = false;
+    [loop] for (uint i = 0u; i < 4u; ++i)
+    {
+        uint2 pixel = thread_id.xy * 2u + uint2(i & 1u, i >> 1u);
+        if (all(pixel < root.extent) &&
+            g_storage_uint2_2d[root.vbuffer_texture][pixel].x != 0u)
+        {
+            chosen = pixel;
+            found = true;
+            break;
+        }
+    }
+    if (found)
+    {
+        VkDiffuseVolumePixel surface = vk_diffuse_volume_pixel(root, chosen);
+        result = vk_diffuse_volume_lookup(frame, surface);
+        guide = float4(surface.normal,
+                       vk_diffuse_volume_guide_distance(frame, surface));
+    }
+    g_storage_2d[root.output_texture][thread_id.xy] = result;
+    g_storage_2d[root.guide_texture][thread_id.xy] = guide;
+}
+
+// Relative camera-distance difference over which a half-resolution texel
+// stops counting for a pixel, and the normal agreement exponent.
+#define VK_DIFFUSE_VOLUME_UPSAMPLE_DEPTH 0.05f
+#define VK_DIFFUSE_VOLUME_UPSAMPLE_NORMAL_POWER 8.0f
+// Total weight below which a pixel looks the volume up itself.
+#define VK_DIFFUSE_VOLUME_UPSAMPLE_MIN_WEIGHT 0.05f
+
+// The volume at full resolution: the bilinear half-resolution texels that
+// match the pixel's surface, weighted by distance and normal agreement. A
+// pixel none matches, at a silhouette or on thin geometry, joins the
+// fallback list, which DiffuseVolume.Fallback looks up.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_diffuse_volume_upsample(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkDiffuseVolumeSampleRoot root =
+        vkr_vk_uniform_root(*g_diffuse_volume_sample_push.root);
+    if (any(thread_id.xy >= root.extent))
+        return;
+    float4 result = 0.0f;
+    if (g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy].x != 0u)
+    {
+        VkrVulkanPacketFrameRoot *frame = root.frame;
+        VkDiffuseVolumePixel surface =
+            vk_diffuse_volume_pixel(root, thread_id.xy);
+        float guide_distance = vk_diffuse_volume_guide_distance(frame, surface);
+        // Half texel i is (mostly) full pixel 2i, so pixel x sits at x / 2.
+        float2 position = float2(thread_id.xy) * 0.5f;
+        int2 base = int2(floor(position));
+        float2 fraction = position - float2(base);
+        int2 last = int2(root.half_extent) - 1;
+        float3 sum = 0.0f;
+        float total = 0.0f;
+        [unroll] for (uint tap = 0u; tap < 4u; ++tap)
+        {
+            int2 offset = int2(int(tap & 1u), int(tap >> 1u));
+            int2 texel = clamp(base + offset, int2(0), last);
+            float bilinear = (offset.x != 0 ? fraction.x : 1.0f - fraction.x) *
+                             (offset.y != 0 ? fraction.y : 1.0f - fraction.y);
+            if (bilinear <= 0.0f)
+                continue;
+            float4 sampled = g_storage_2d[root.half_texture][texel];
+            float4 guide = g_storage_2d[root.guide_texture][texel];
+            // A texel without the volume, or with the other composition,
+            // does not count.
+            if (sampled.a <= 0.0f || guide.w * guide_distance <= 0.0f)
+                continue;
+            float relative = abs(abs(guide.w) - abs(guide_distance)) /
+                             max(abs(guide_distance), 1.0e-3f);
+            float depth_weight =
+                saturate(1.0f - relative / VK_DIFFUSE_VOLUME_UPSAMPLE_DEPTH);
+            float normal_weight =
+                pow(saturate(dot(surface.normal, guide.xyz)),
+                    VK_DIFFUSE_VOLUME_UPSAMPLE_NORMAL_POWER);
+            float weight = bilinear * depth_weight * normal_weight;
+            sum += weight * sampled.rgb;
+            total += weight;
+        }
+        if (total >= VK_DIFFUSE_VOLUME_UPSAMPLE_MIN_WEIGHT)
+        {
+            result = float4(sum / total, 1.0f);
+        }
+        else
+        {
+            // Every pixel joins at most once, so the list, one entry per
+            // viewport pixel, cannot overflow.
+            uint index;
+            InterlockedAdd(root.fallback_arguments[3], 1u, index);
+            uint groups;
+            InterlockedMax(root.fallback_arguments[0], index / 64u + 1u,
+                           groups);
+            root.fallback_pixels[index] = thread_id.x | (thread_id.y << 16u);
+        }
+    }
+    g_storage_2d[root.output_texture][thread_id.xy] = result;
+}
+
+// The volume at each listed pixel. The last group's slots past the count
+// hold stale pixels, whose lookup writes their own correct response again.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_diffuse_volume_fallback(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkDiffuseVolumeSampleRoot root =
+        vkr_vk_uniform_root(*g_diffuse_volume_sample_push.root);
+    // The list holds one entry per viewport pixel.
+    if (thread_id.x >= root.extent.x * root.extent.y)
+        return;
+    uint packed = root.fallback_pixels[thread_id.x];
+    uint2 pixel = uint2(packed & 0xffffu, packed >> 16u);
+    if (any(pixel >= root.extent))
+        return;
+    float4 result = 0.0f;
+    if (g_storage_uint2_2d[root.vbuffer_texture][pixel].x != 0u)
+        result = vk_diffuse_volume_lookup(root.frame,
+                                          vk_diffuse_volume_pixel(root, pixel));
+    g_storage_2d[root.output_texture][pixel] = result;
 }
 
 groupshared uint g_deferred_tile_layered;
@@ -2300,6 +2799,44 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         frame.shadow_debug_mode == 0u)
         g_storage_2d[root.direct_source_texture][thread_id.xy] =
             float4((analytic_diffuse + seed.rgb) * base_transmission, 1.0f);
+    // Baked static lamps (ADR-104): the lightmap holds
+    // their direct light, shadows and bounce as irradiance, so it shades as
+    // diffuse light without GTAO, as on the tiled pipeline. SSGI does not
+    // bounce it again; the bake holds that bounce.
+    bool lamps_baked = false;
+    if (root.baked_lamps_texture != 0u)
+    {
+        float4 baked = g_storage_2d[root.baked_lamps_texture][thread_id.xy];
+        float4 dominant = g_storage_2d[root.baked_direction_texture][thread_id.xy];
+        lamps_baked = baked.a > 0.0f;
+        float3 irradiance = baked.rgb * frame.pre_exposure;
+        // The selected baked lamps' moving casters hide part of their baked
+        // light (Shadow.LocalMask); it leaves before the split.
+        if (lamps_baked && root.baked_lamp_shadow_texture != 0u)
+            irradiance = max(
+                irradiance -
+                    g_storage_2d[root.baked_lamp_shadow_texture][thread_id.xy]
+                        .rgb,
+                0.0f);
+        // The undirected share shades as diffuse light; the directed share
+        // as a light from the dominant direction, at the irradiance a
+        // surface facing it would take, so normal maps modulate it and the
+        // material's BRDF gives its highlight.
+        float directionality = dominant.a;
+        float3 undirected = irradiance * ((1.0f - directionality) / 3.14159265f);
+        diffuse_irradiance += undirected;
+        analytic_diffuse += energy.diffuse_weight * diffuse_albedo * undirected;
+        if (directionality > 0.0f)
+        {
+            VkrVulkanDirectResult directed = packet_direct(
+                normal, view, normalize(dominant.rgb * 2.0f - 1.0f),
+                irradiance * directionality * baked.a, diffuse_albedo, 0.0f,
+                roughness, f0, energy);
+            diffuse_irradiance += directed.irradiance;
+            analytic_diffuse += directed.diffuse;
+            analytic_specular += directed.specular;
+        }
+    }
     if (frame.render_mode == 1u || frame.render_mode == 4u ||
         frame.render_mode == 5u)
     {
@@ -2327,10 +2864,22 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     // Mode 9 reports the selected pre-GTAO indirect diffuse response.
     float3 indirect_diffuse_normal =
         frame.render_mode == 9u ? normal : bent_normal;
-    float3 volume_irradiance;
-    float3 volume_diffuse;
-    bool volume_valid = packet_diffuse_volume_terms(
-        frame, world, normal, diffuse_albedo, 0.0f, ao, energy, volume_diffuse, volume_irradiance);
+    // DiffuseVolume.Sample looked the volume up for this pixel; a covered
+    // pixel's volume light replaces only diffuse indirect light.
+    float3 volume_irradiance = 0.0f;
+    float3 volume_diffuse = 0.0f;
+    bool volume_valid = false;
+    if (root.diffuse_volume_texture != 0u)
+    {
+        float4 sampled =
+            g_storage_2d[root.diffuse_volume_texture][thread_id.xy];
+        volume_valid = sampled.a > 0.0f;
+        // The baked volume stores physical E/pi; lighting is pre-exposed.
+        float3 response = sampled.rgb * frame.pre_exposure;
+        volume_irradiance = response * ao;
+        volume_diffuse =
+            energy.diffuse_weight * diffuse_albedo * ao * response;
+    }
     float3 indirect_irradiance;
     float3 indirect_diffuse;
     float3 indirect_specular = 0.0f;
@@ -3729,7 +4278,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         root.compaction_state, root.view_projection, root.extent,
         root.visible_capacity, root.geometry_count,  root.material_count,
         root.instance_count, root.frame.render_mode, root.frame.pre_exposure,
-        nullptr, 0u,
+        nullptr, 0u, root.lightmap_rect_count,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, pixel, surface))
@@ -4068,6 +4617,59 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             clearcoat_direct, sheen_direct);
         analytic_diffuse += rectangles.diffuse;
         analytic_specular += rectangles.specular;
+        // Baked static lamps on a lightmapped transmissive draw, shaded as
+        // deferred lighting shades them: the undirected share as diffuse
+        // light, the directed share as a light from the dominant direction.
+        bool lamps_baked = false;
+        if (root.lightmap_rect_count != 0u)
+        {
+            VkrVkLightmapSource lightmap = {
+                root.lightmap_rects, root.lightmap_texture,
+                root.lightmap_sampler, root.lightmap_rect_count,
+                root.lightmap_layer_count, root.lightmap_active_count,
+                root.lightmap_inverse_page_size,
+                root.lightmap_direction_texture, root.lightmap_active_layers,
+                root.lightmap_active_weights,
+            };
+            float3 surface_normal = normalize(vkr_instance_transform_normal(
+                instance.normal_column0.xyz, instance.normal_column1.xyz,
+                instance.normal_column2.xyz, surface.object_normal));
+            VkrVkBakedLamps baked =
+                vkr_vk_baked_lamps(lightmap, instance, surface, surface_normal);
+            lamps_baked = baked.irradiance.a > 0.0f;
+            if (lamps_baked)
+            {
+                float3 irradiance = baked.irradiance.rgb * frame.pre_exposure;
+                float directionality = baked.direction.a;
+                float3 undirected =
+                    irradiance * ((1.0f - directionality) / 3.14159265f);
+                if (diffuse_enabled)
+                    analytic_diffuse += energy.diffuse_weight *
+                                        (1.0f - surface.metallic) *
+                                        surface.base.rgb * undirected;
+                if (directionality > 0.0f)
+                {
+                    float3 light = normalize(baked.direction.rgb * 2.0f - 1.0f);
+                    float3 radiance =
+                        irradiance * directionality * baked.irradiance.a;
+                    if (diffuse_enabled)
+                    {
+                        VkrVulkanDirectResult direct = packet_direct(
+                            surface.normal, view, light, radiance,
+                            surface.base.rgb, surface.metallic,
+                            surface.roughness, f0, energy);
+                        analytic_diffuse += direct.diffuse;
+                        analytic_specular += direct.specular;
+                    }
+                    else
+                    {
+                        analytic_specular += packet_direct_specular(
+                            surface.normal, view, light, radiance,
+                            surface.roughness, f0, energy);
+                    }
+                }
+            }
+        }
         if (diagnostic_enabled &&
             (frame.render_mode == 1u || frame.render_mode == 4u ||
              frame.render_mode == 5u))
@@ -4099,10 +4701,11 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                                 .diffuse;
                 }
                 float3 volume_diffuse;
-                if (packet_diffuse_volume(
+                float3 volume_irradiance;
+                if (packet_diffuse_volume_terms(
                         frame, world, surface.normal, surface.base.rgb,
-                        surface.metallic, surface.occlusion, energy,
-                        volume_diffuse))
+                        surface.metallic, surface.occlusion, !lamps_baked,
+                        energy, volume_diffuse, volume_irradiance))
                     color = volume_diffuse;
                 color *= base_transmission;
             }
@@ -4141,10 +4744,11 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             if (diffuse_enabled)
             {
                 float3 volume_diffuse;
-                if (packet_diffuse_volume(
+                float3 volume_irradiance;
+                if (packet_diffuse_volume_terms(
                         frame, world, surface.normal, surface.base.rgb,
-                        surface.metallic, surface.occlusion, energy,
-                        volume_diffuse))
+                        surface.metallic, surface.occlusion, !lamps_baked,
+                        energy, volume_diffuse, volume_irradiance))
                     diffuse = analytic_diffuse + volume_diffuse;
             }
             if (clearcoat_active)

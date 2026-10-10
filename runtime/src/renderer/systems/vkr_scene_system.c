@@ -177,19 +177,17 @@ vkr_internal void scene_release_owned_texture_handle(VkrRenderAssets *assets,
 
 void vkr_scene_reset_diffuse_volume(VkrScene *scene,
                                     struct VkrRenderAssets *assets) {
-  if (!scene)
+  if (!scene || !scene->diffuse_volume)
     return;
-  scene_release_owned_texture_handle((VkrRenderAssets *)assets,
-                                     &scene->diffuse_volume.texture);
-  if (scene->diffuse_volume_layers) {
-    free(scene->diffuse_volume_layers->probe_sh);
-    free(scene->diffuse_volume_layers->probe_regions);
-    free(scene->diffuse_volume_layers);
-    scene->diffuse_volume_layers = NULL;
+  VkrSceneDiffuseVolume *volume = scene->diffuse_volume;
+  VkrTextureHandle *textures[] = {&volume->indirection, &volume->probes,
+                                  &volume->moments, &volume->layer_sh,
+                                  &volume->sh};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    scene_release_owned_texture_handle((VkrRenderAssets *)assets, textures[i]);
   }
-  scene->diffuse_volume = (VkrDiffuseVolumeBinding){
-      .texture = VKR_TEXTURE_HANDLE_INVALID,
-  };
+  free(volume);
+  scene->diffuse_volume = NULL;
 }
 
 /* Requests carry the unit sun and moon directions the bake uses, so later
@@ -2491,81 +2489,6 @@ void vkr_scene_update_light_groups(VkrScene *scene, float32_t night,
   }
 }
 
-bool8_t vkr_scene_diffuse_volume_prepare_texture(
-    const VkrSceneDiffuseVolumeLayers *layers, const float32_t *weights,
-    struct VkrTexturePreparedLoad *out_prepared) {
-  MemZero(out_prepared, sizeof(*out_prepared));
-  const uint64_t pixel_bytes =
-      (uint64_t)layers->probe_count * 8u * 4u * sizeof(float32_t);
-  float32_t *pixels = (float32_t *)malloc((size_t)pixel_bytes);
-  VkrTextureUploadRegion *region =
-      (VkrTextureUploadRegion *)malloc(sizeof(*region));
-  if (!pixels || !region) {
-    free(region);
-    free(pixels);
-    return false_v;
-  }
-  for (uint32_t probe = 0u; probe < layers->probe_count; ++probe) {
-    float32_t *row = pixels + (uint64_t)probe * 8u * 4u;
-    MemZero(row, 7u * 4u * sizeof(float32_t));
-    const VkrShL2Packed *sh =
-        &layers->probe_sh[(uint64_t)probe * layers->layer_count];
-    for (uint32_t layer = 0u; layer < layers->layer_count; ++layer) {
-      const float32_t weight = weights[layer];
-      if (weight == 0.0f) {
-        continue;
-      }
-      for (uint32_t vector = 0u; vector < VKR_SH_PACKED_VECTOR_COUNT; ++vector)
-        for (uint32_t component = 0u; component < 4u; ++component)
-          row[vector * 4u + component] +=
-              weight * sh[layer].v[vector][component];
-    }
-    row[7u * 4u + 0u] = layers->probe_regions[probe * 2u + 0u];
-    row[7u * 4u + 1u] = layers->probe_regions[probe * 2u + 1u];
-    row[7u * 4u + 2u] = 0.0f;
-    row[7u * 4u + 3u] = 0.0f;
-  }
-  *region = (VkrTextureUploadRegion){
-      .mip_level = 0u,
-      .array_layer = 0u,
-      .width = 8u,
-      .height = layers->probe_count,
-      .depth = 1u,
-      .byte_offset = 0u,
-      .byte_size = pixel_bytes,
-  };
-  *out_prepared = (VkrTexturePreparedLoad){
-      .description =
-          {
-              .width = 8u,
-              .height = layers->probe_count,
-              .channels = 4u,
-              .mip_levels = 1u,
-              .array_layers = 1u,
-              .type = VKR_TEXTURE_TYPE_2D,
-              .format = VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT,
-              .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-              .sample_count = VKR_SAMPLE_COUNT_1,
-              .properties = vkr_texture_property_flags_create(),
-              .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-              .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-              .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-              .min_filter = VKR_FILTER_NEAREST,
-              .mag_filter = VKR_FILTER_NEAREST,
-              .mip_filter = VKR_MIP_FILTER_NONE,
-              .anisotropy_enable = false_v,
-          },
-      .upload_data = (uint8_t *)pixels,
-      .upload_data_size = pixel_bytes,
-      .upload_regions = region,
-      .upload_region_count = 1u,
-      .upload_mip_levels = 1u,
-      .upload_array_layers = 1u,
-      .upload_is_compressed = false_v,
-  };
-  return true_v;
-}
-
 void vkr_scene_light_layer_weights(const VkrScene *scene,
                                    const VkrLightLayer *layers,
                                    uint32_t layer_count,
@@ -2588,52 +2511,86 @@ void vkr_scene_light_layer_weights(const VkrScene *scene,
   }
 }
 
-void vkr_scene_update_diffuse_volume(VkrScene *scene,
-                                     struct VkrRenderAssets *assets,
-                                     float64_t delta_seconds) {
-  VkrSceneDiffuseVolumeLayers *layers =
-      scene ? scene->diffuse_volume_layers : NULL;
-  if (!layers || !assets || !scene->diffuse_volume.texture.id) {
+void vkr_scene_update_diffuse_volume(VkrScene *scene, float64_t delta_seconds) {
+  VkrSceneDiffuseVolume *volume = scene ? scene->diffuse_volume : NULL;
+  if (!volume) {
     return;
   }
   if (isfinite(delta_seconds) && delta_seconds > 0.0) {
-    layers->since_compose += delta_seconds;
+    volume->since_compose += delta_seconds;
   }
   float32_t weights[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
-  vkr_scene_light_layer_weights(scene, layers->layers, layers->layer_count,
+  vkr_scene_light_layer_weights(scene, volume->layers, volume->layer_count,
                                 weights);
   float32_t moved = 0.0f;
-  for (uint32_t layer = 0u; layer < layers->layer_count; ++layer) {
-    moved = Max(moved, fabsf(weights[layer] - layers->weights[layer]));
+  for (uint32_t layer = 0u; layer < volume->layer_count; ++layer) {
+    moved = Max(moved, fabsf(weights[layer] - volume->weights[layer]));
   }
-  if (moved <= 0.01f || layers->since_compose < VKR_SCENE_SUN_REFRESH_SECONDS) {
+  if (moved <= 0.01f || volume->since_compose < VKR_SCENE_SUN_REFRESH_SECONDS) {
     return;
   }
-  VkrTexturePreparedLoad prepared;
-  if (!vkr_scene_diffuse_volume_prepare_texture(layers, weights, &prepared)) {
+  MemCopy(volume->weights, weights, sizeof(weights));
+  volume->since_compose = 0.0;
+  volume->composition++;
+}
+
+void vkr_scene_diffuse_volume_binding(const VkrScene *scene,
+                                      struct VkrTextureSystem *texture_system,
+                                      VkrDiffuseVolumeBinding *out_binding) {
+  MemZero(out_binding, sizeof(*out_binding));
+  const VkrSceneDiffuseVolume *volume = scene ? scene->diffuse_volume : NULL;
+  if (!volume || !texture_system) {
     return;
   }
-  /* Each composition is a new texture; the name stays unique across scene
-     reloads while released ones await destruction. */
-  static uint32_t s_composition = 0u;
-  char name[sizeof(layers->name) + 16];
-  snprintf(name, sizeof(name), "%s#%u", layers->name, ++s_composition);
-  VkrTextureHandle texture = VKR_TEXTURE_HANDLE_INVALID;
-  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-  const bool8_t uploaded = vkr_texture_system_finalize_prepared_load(
-      &assets->texture_system,
-      string8_create_from_cstr((const uint8_t *)name, strlen(name)), &prepared,
-      &texture, &error);
-  vkr_texture_system_release_prepared_load(&prepared);
-  if (!uploaded) {
-    return;
+  const VkrTextureHandle textures[] = {volume->indirection, volume->probes,
+                                       volume->moments, volume->layer_sh,
+                                       volume->sh};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    if (!textures[i].id || !vkr_texture_system_publication_confirmed(
+                               texture_system, textures[i])) {
+      return;
+    }
   }
-  vkr_texture_system_add_ref_by_handle(&assets->texture_system, texture);
-  scene_release_owned_texture_handle(assets, &scene->diffuse_volume.texture);
-  scene->diffuse_volume.texture = texture;
-  MemCopy(layers->weights, weights, sizeof(weights));
-  layers->since_compose = 0.0;
-  layers->version++;
+  out_binding->indirection = volume->indirection;
+  out_binding->probes = volume->probes;
+  out_binding->moments = volume->moments;
+  out_binding->layer_sh = volume->layer_sh;
+  out_binding->sh = volume->sh;
+  out_binding->origin = volume->origin;
+  out_binding->spacing = volume->spacing;
+  out_binding->sh_scale = volume->sh_scale;
+  MemCopy(out_binding->dimensions, volume->dimensions,
+          sizeof(out_binding->dimensions));
+  out_binding->probe_count = volume->probe_count;
+  out_binding->layer_count = volume->layer_count;
+  out_binding->band_count = volume->layer_count + volume->lamp_direct_count;
+  out_binding->composition = volume->composition;
+  /* At most two sun keys weigh anything, and a volume holds at most
+     VKR_LIGHT_LAYER_MAX_LAMP_GROUPS lamp groups. */
+  /* Lamp group g's direct band follows the layers in lamp-group order. */
+  uint32_t lamp_group = 0u;
+  for (uint32_t layer = 0u; layer < volume->layer_count; ++layer) {
+    const bool8_t lamp =
+        volume->layers[layer].kind == VKR_LIGHT_LAYER_LAMP_GROUP;
+    const uint32_t direct_band = lamp && volume->lamp_direct_count != 0u
+                                     ? volume->layer_count + lamp_group
+                                     : VKR_DIFFUSE_VOLUME_NO_BAND;
+    if (lamp) {
+      ++lamp_group;
+    }
+    if (volume->weights[layer] > 0.0f &&
+        out_binding->active_layer_count <
+            VKR_DIFFUSE_VOLUME_MAX_ACTIVE_LAYERS) {
+      if (lamp) {
+        out_binding->active_lamp_mask |= 1u << out_binding->active_layer_count;
+      }
+      out_binding->active_direct_bands[out_binding->active_layer_count] =
+          direct_band;
+      out_binding->active_layers[out_binding->active_layer_count] = layer;
+      out_binding->active_weights[out_binding->active_layer_count++] =
+          volume->weights[layer];
+    }
+  }
 }
 
 /* Resolves the sun, or with `moon` the moon, into `sun`. */

@@ -1263,44 +1263,108 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
     return result;
 }
 
-// A valid volume cell replaces only diffuse indirect light. The texture's
-// lower-corner cell row proves all eight interpolated probes share one room.
+// Sparse diffuse volume lookup (DVOL v3): the L1 E/pi of the eight probes
+// around the receiver, each weighted by its trilinear position, a smooth
+// back-face term and a Chebyshev bound on its distance moments, after the
+// receiver moves off its surface by a fraction of the probe spacing. False
+// outside the volume and where no probe sees the receiver; the caller then
+// keeps the environment path. A surface whose lightmap holds the static
+// lamps (`include_lamps` false) leaves out the lamp groups' part the frame
+// keeps apart.
+bool packet_diffuse_volume_response(VkrVulkanPacketFrameRoot *frame,
+                                    float3 world_position, float3 normal,
+                                    bool include_lamps, out float3 response)
+{
+    response = 0.0f;
+    uint4 textures = frame.diffuse_volume_textures;
+    // Descriptor slot zero is the renderer's permanent sentinel.
+    if (textures.x == 0u)
+        return false;
+    float3 origin = frame.diffuse_volume_origin.xyz;
+    float spacing = frame.diffuse_volume_origin.w;
+    uint3 dimensions = frame.diffuse_volume_dimensions.xyz;
+    uint3 entry = vkr_diffuse_volume_entry(world_position, origin, spacing,
+                                           dimensions);
+    if (!vkr_diffuse_volume_entry_inside(entry, dimensions))
+        return false;
+    uint value = g_uint_textures[textures.x].Load(
+        int3(int2(vkr_diffuse_volume_entry_texel(entry, dimensions)), 0));
+    if (value == VKR_DIFFUSE_VOLUME_ENTRY_EMPTY)
+        return false;
+    float bias = VKR_DIFFUSE_VOLUME_BIAS *
+                 vkr_diffuse_volume_entry_step(value, spacing);
+    float3 to_viewer = normalize(frame.view_position.xyz - world_position);
+    float3 biased = world_position + (normal * 0.2f + to_viewer * 0.8f) * bias;
+    VkrDiffuseVolumeCell cell = vkr_diffuse_volume_brick_cell(
+        value, entry, biased, origin, spacing);
+    float tile_rows = frame.diffuse_volume_params.y;
+    uint lamp_rows = include_lamps ? uint(frame.diffuse_volume_params.z) : 0u;
+    SamplerState moment_sampler = g_samplers[frame.diffuse_volume_dimensions.w];
+    float4 red = 0.0f;
+    float4 green = 0.0f;
+    float4 blue = 0.0f;
+    float total = 0.0f;
+    [unroll] for (uint corner = 0u; corner < 8u; ++corner)
+    {
+        uint probe = vkr_diffuse_volume_corner_probe(cell, corner);
+        float4 record = g_textures[textures.y].Load(
+            int3(int2(vkr_diffuse_volume_probe_texel(probe)), 0));
+        if (record.w <= 0.0f)
+            continue;
+        float3 probe_position =
+            vkr_diffuse_volume_corner_position(cell, corner) + record.xyz;
+        float3 to_probe = probe_position - world_position;
+        float weight = vkr_diffuse_volume_backface(
+            normal, to_probe * rsqrt(max(dot(to_probe, to_probe), 1.0e-8f)));
+        float3 from_probe = biased - probe_position;
+        float distance = length(from_probe);
+        float2 moments = g_textures[textures.z].SampleLevel(
+            moment_sampler,
+            vkr_diffuse_volume_moment_uv(
+                probe, from_probe / max(distance, 1.0e-6f), tile_rows),
+            0.0f).xy;
+        weight *= vkr_diffuse_volume_chebyshev(moments, distance);
+        weight = vkr_diffuse_volume_crush(weight) *
+                 vkr_diffuse_volume_trilinear(corner, cell.fraction);
+        red += weight * g_textures[textures.w].Load(
+            int3(int2(vkr_diffuse_volume_sh_texel(probe, 0u, 0u)), 0));
+        green += weight * g_textures[textures.w].Load(
+            int3(int2(vkr_diffuse_volume_sh_texel(probe, 1u, 0u)), 0));
+        blue += weight * g_textures[textures.w].Load(
+            int3(int2(vkr_diffuse_volume_sh_texel(probe, 2u, 0u)), 0));
+        if (lamp_rows != 0u)
+        {
+            red += weight * g_textures[textures.w].Load(
+                int3(int2(vkr_diffuse_volume_sh_texel(probe, 0u, lamp_rows)), 0));
+            green += weight * g_textures[textures.w].Load(
+                int3(int2(vkr_diffuse_volume_sh_texel(probe, 1u, lamp_rows)), 0));
+            blue += weight * g_textures[textures.w].Load(
+                int3(int2(vkr_diffuse_volume_sh_texel(probe, 2u, lamp_rows)), 0));
+        }
+        total += weight;
+    }
+    if (total < VKR_DIFFUSE_VOLUME_MIN_WEIGHT)
+        return false;
+    response = vkr_diffuse_volume_l1(red, green, blue, normal) *
+               (frame.diffuse_volume_params.x / total);
+    return true;
+}
+
+// A covered pixel's volume light replaces only diffuse indirect light.
 bool packet_diffuse_volume_terms(VkrVulkanPacketFrameRoot *frame,
                            float3 world_position, float3 normal,
                            float3 albedo, float metallic, float ao,
+                           bool include_lamps,
                            VkrGgxMaterialEnergy energy, out float3 diffuse, out float3 irradiance)
 {
     diffuse = 0.0f;
     irradiance = 0.0f;
-    // Descriptor slot zero is the renderer's permanent sentinel, not a volume.
-    if (frame.diffuse_volume_texture == 0u)
+    float3 volume;
+    if (!packet_diffuse_volume_response(frame, world_position, normal,
+                                        include_lamps, volume))
         return false;
-    uint3 dimensions = frame.diffuse_volume_dimensions.xyz;
-    VkrDiffuseVolumeCell cell = vkr_diffuse_volume_cell(
-        world_position, frame.diffuse_volume_origin.xyz,
-        frame.diffuse_volume_inverse_spacing.xyz, dimensions);
-    if (!cell.valid ||
-        g_textures[frame.diffuse_volume_texture]
-            .Load(int3(7, int(cell.row), 0)).y <= 0.0f)
-        return false;
-    VkrShL2Packed coefficients;
-    [unroll] for (uint term = 0u; term < 7u; ++term)
-        coefficients.v[term] = 0.0f;
-    [unroll] for (uint corner_index = 0u; corner_index < 8u; ++corner_index)
-    {
-        uint3 corner = vkr_diffuse_volume_corner(corner_index);
-        uint node = vkr_diffuse_volume_node_index(cell.base + corner,
-                                                   dimensions);
-        float weight = vkr_diffuse_volume_weight(corner, cell.fraction);
-        [unroll] for (uint term = 0u; term < 7u; ++term)
-            coefficients.v[term] +=
-                g_textures[frame.diffuse_volume_texture]
-                    .Load(int3(int(term), int(node), 0)) * weight;
-    }
     // The baked volume stores physical E/pi; lighting is pre-exposed.
-    float3 response = vkr_sh_l2_evaluate(
-        coefficients, vkr_sh_l2_prepare_evaluation(normal)) *
-        frame.pre_exposure;
+    float3 response = volume * frame.pre_exposure;
     irradiance = response * ao;
     diffuse = energy.diffuse_weight * (1.0f - metallic) * albedo * ao *
               response;
@@ -1312,7 +1376,9 @@ bool packet_diffuse_volume(VkrVulkanPacketFrameRoot *frame,
                            float3 albedo, float metallic, float ao,
                            VkrGgxMaterialEnergy energy, out float3 diffuse) {
     float3 unused_irradiance;
-    return packet_diffuse_volume_terms(frame,world_position,normal,albedo,metallic,ao,energy,diffuse,unused_irradiance);
+    return packet_diffuse_volume_terms(frame, world_position, normal, albedo,
+                                       metallic, ao, true, energy, diffuse,
+                                       unused_irradiance);
 }
 
 // Global environment plus weighted local probes. `horizon_normal` is the

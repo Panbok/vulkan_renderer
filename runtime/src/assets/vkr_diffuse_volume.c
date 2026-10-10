@@ -3,7 +3,6 @@
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
 
-#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stddef.h>
@@ -11,31 +10,51 @@
 
 _Static_assert(CHAR_BIT == 8, "DVOL requires 8-bit bytes");
 _Static_assert(sizeof(float32_t) == 4u, "DVOL requires 32-bit float32_t");
-_Static_assert(sizeof(VkrShL2Packed) == VKR_SH_SLOT_BYTES, "DVOL SH ABI drift");
-_Static_assert(VKR_DIFFUSE_VOLUME_SH_BYTES == VKR_SH_SLOT_BYTES,
-               "DVOL SH record drift");
+_Static_assert(VKR_DIFFUSE_VOLUME_MOMENT_BYTES ==
+                   VKR_DIFFUSE_VOLUME_MOMENT_TEXELS * 2u * sizeof(uint16_t),
+               "DVOL moment tile drift");
+_Static_assert(VKR_DIFFUSE_VOLUME_MOMENT_TEXELS ==
+                   VKR_DIFFUSE_VOLUME_MOMENT_SIZE *
+                       VKR_DIFFUSE_VOLUME_MOMENT_SIZE,
+               "DVOL moment tile drift");
+_Static_assert(VKR_DIFFUSE_VOLUME_MAX_BRICKS *(uint64_t)
+                       VKR_DIFFUSE_VOLUME_BRICK_PROBES <=
+                   VKR_DIFFUSE_VOLUME_ENTRY_BRICK_MASK,
+               "DVOL brick index range");
 
 #define VKR_DIFFUSE_VOLUME_H_MAGIC 0u
 #define VKR_DIFFUSE_VOLUME_H_VERSION 4u
 #define VKR_DIFFUSE_VOLUME_H_ENDIAN 8u
 #define VKR_DIFFUSE_VOLUME_H_SIZE 12u
 #define VKR_DIFFUSE_VOLUME_H_FILE_SIZE 16u
-#define VKR_DIFFUSE_VOLUME_H_DIM_X 24u
-#define VKR_DIFFUSE_VOLUME_H_DIM_Y 28u
-#define VKR_DIFFUSE_VOLUME_H_DIM_Z 32u
-#define VKR_DIFFUSE_VOLUME_H_PROBE_COUNT 36u
-#define VKR_DIFFUSE_VOLUME_H_CELL_COUNT 40u
-#define VKR_DIFFUSE_VOLUME_H_LAYER_COUNT 44u
-#define VKR_DIFFUSE_VOLUME_H_ORIGIN 48u
-#define VKR_DIFFUSE_VOLUME_H_SPACING 60u
-#define VKR_DIFFUSE_VOLUME_H_PROBE_OFFSET 72u
-#define VKR_DIFFUSE_VOLUME_H_CELL_OFFSET 80u
-#define VKR_DIFFUSE_VOLUME_H_PROBE_BYTES 88u
-#define VKR_DIFFUSE_VOLUME_H_CELL_BYTES 92u
-#define VKR_DIFFUSE_VOLUME_H_PAYLOAD_CRC 96u
-#define VKR_DIFFUSE_VOLUME_H_HEADER_CRC 100u
-#define VKR_DIFFUSE_VOLUME_H_RESERVED1 104u
-#define VKR_DIFFUSE_VOLUME_H_RESERVED2 108u
+#define VKR_DIFFUSE_VOLUME_H_ORIGIN 24u
+#define VKR_DIFFUSE_VOLUME_H_SPACING 36u
+#define VKR_DIFFUSE_VOLUME_H_LEVEL_COUNT 40u
+#define VKR_DIFFUSE_VOLUME_H_DIMENSIONS 44u
+#define VKR_DIFFUSE_VOLUME_H_BRICK_COUNT 56u
+#define VKR_DIFFUSE_VOLUME_H_LAYER_COUNT 60u
+#define VKR_DIFFUSE_VOLUME_H_ENTRY_OFFSET 64u
+#define VKR_DIFFUSE_VOLUME_H_BRICK_OFFSET 72u
+#define VKR_DIFFUSE_VOLUME_H_AUX_OFFSET 80u
+#define VKR_DIFFUSE_VOLUME_H_MOMENT_OFFSET 88u
+#define VKR_DIFFUSE_VOLUME_H_SH_OFFSET 96u
+#define VKR_DIFFUSE_VOLUME_H_PAYLOAD_CRC 104u
+#define VKR_DIFFUSE_VOLUME_H_HEADER_CRC 108u
+#define VKR_DIFFUSE_VOLUME_H_SH_SCALE 112u
+#define VKR_DIFFUSE_VOLUME_H_LAMP_DIRECT_COUNT 116u
+#define VKR_DIFFUSE_VOLUME_H_RESERVED 120u
+
+#define VKR_DIFFUSE_VOLUME_BRICK_RECORD_BYTES 16u
+
+/* Section offsets and the file size that follow from a volume's counts. */
+typedef struct VkrDiffuseVolumeSections {
+  uint64_t entry_offset;
+  uint64_t brick_offset;
+  uint64_t aux_offset;
+  uint64_t moment_offset;
+  uint64_t sh_offset;
+  uint64_t file_size;
+} VkrDiffuseVolumeSections;
 
 static uint32_t vkr_diffuse_volume_header_crc(const uint8_t *header) {
   uint32_t crc = vkr_crc32_update(VKR_CRC32_INITIAL, header,
@@ -53,172 +72,243 @@ static bool8_t vkr_diffuse_volume_finite_vec3(Vec3 value) {
   return isfinite(value.x) && isfinite(value.y) && isfinite(value.z);
 }
 
-static bool8_t vkr_diffuse_volume_layout(uint32_t dimension_x,
-                                         uint32_t dimension_y,
-                                         uint32_t dimension_z,
-                                         uint32_t *out_probe_count,
-                                         uint32_t *out_cell_count) {
-  if (dimension_x < 2u || dimension_y < 2u || dimension_z < 2u ||
-      dimension_x > VKR_DIFFUSE_VOLUME_MAX_PROBES ||
-      dimension_y > VKR_DIFFUSE_VOLUME_MAX_PROBES ||
-      dimension_z > VKR_DIFFUSE_VOLUME_MAX_PROBES)
+static uint32_t vkr_diffuse_volume_level_span(uint32_t level) {
+  uint32_t span = 1u;
+  for (uint32_t i = 0u; i < level; ++i) {
+    span *= 3u;
+  }
+  return span;
+}
+
+static uint16_t vkr_diffuse_volume_load_half(const uint8_t *src) {
+  return (uint16_t)(src[0] | ((uint16_t)src[1] << 8));
+}
+
+static bool8_t vkr_diffuse_volume_half_finite(uint16_t half) {
+  return (half & 0x7c00u) != 0x7c00u;
+}
+
+/* Every count is in range and the grid's dimensions are whole top-level
+   blocks. */
+static bool8_t vkr_diffuse_volume_counts_valid(const uint32_t dimensions[3],
+                                               uint32_t level_count,
+                                               uint32_t brick_count,
+                                               uint32_t layer_count,
+                                               uint32_t *out_entry_count) {
+  if (level_count == 0u || level_count > VKR_DIFFUSE_VOLUME_MAX_LEVELS ||
+      brick_count == 0u || brick_count > VKR_DIFFUSE_VOLUME_MAX_BRICKS ||
+      layer_count == 0u || layer_count > VKR_DIFFUSE_VOLUME_MAX_LAYERS) {
     return false_v;
-
-  uint64_t probe_count = 0u;
-  uint64_t cell_count = 0u;
-  if (!vkr_checked_mul_u64(dimension_x, dimension_y, &probe_count) ||
-      !vkr_checked_mul_u64(probe_count, dimension_z, &probe_count) ||
-      probe_count > VKR_DIFFUSE_VOLUME_MAX_PROBES ||
-      !vkr_checked_mul_u64(dimension_x - 1u, dimension_y - 1u, &cell_count) ||
-      !vkr_checked_mul_u64(cell_count, dimension_z - 1u, &cell_count) ||
-      cell_count > UINT32_MAX)
-    return false_v;
-
-  *out_probe_count = (uint32_t)probe_count;
-  *out_cell_count = (uint32_t)cell_count;
-  return true_v;
-}
-
-/* A probe record: its region, then one SH per layer. */
-static uint64_t vkr_diffuse_volume_probe_bytes(uint32_t layer_count) {
-  return sizeof(uint32_t) + (uint64_t)layer_count * VKR_DIFFUSE_VOLUME_SH_BYTES;
-}
-
-static uint32_t vkr_diffuse_volume_probe_index(const VkrDiffuseVolume *volume,
-                                               uint32_t x, uint32_t y,
-                                               uint32_t z) {
-  return x + volume->dimensions[0] * (y + volume->dimensions[1] * z);
-}
-
-static bool8_t
-vkr_diffuse_volume_cell_region_valid(const VkrDiffuseVolume *volume,
-                                     uint32_t cell_x, uint32_t cell_y,
-                                     uint32_t cell_z, uint32_t region_id) {
-  if (region_id == 0u)
-    return true_v;
-  const uint32_t corners[] = {
-      vkr_diffuse_volume_probe_index(volume, cell_x, cell_y, cell_z),
-      vkr_diffuse_volume_probe_index(volume, cell_x + 1u, cell_y, cell_z),
-      vkr_diffuse_volume_probe_index(volume, cell_x, cell_y + 1u, cell_z),
-      vkr_diffuse_volume_probe_index(volume, cell_x + 1u, cell_y + 1u, cell_z),
-      vkr_diffuse_volume_probe_index(volume, cell_x, cell_y, cell_z + 1u),
-      vkr_diffuse_volume_probe_index(volume, cell_x + 1u, cell_y, cell_z + 1u),
-      vkr_diffuse_volume_probe_index(volume, cell_x, cell_y + 1u, cell_z + 1u),
-      vkr_diffuse_volume_probe_index(volume, cell_x + 1u, cell_y + 1u,
-                                     cell_z + 1u),
-  };
-  for (uint32_t corner = 0u; corner < ArrayCount(corners); ++corner)
-    if (volume->probe_region_ids[corners[corner]] != region_id)
+  }
+  const uint32_t block = vkr_diffuse_volume_level_span(level_count - 1u);
+  uint64_t entry_count = 1u;
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    if (dimensions[axis] == 0u || dimensions[axis] % block != 0u ||
+        !vkr_checked_mul_u64(entry_count, dimensions[axis], &entry_count) ||
+        entry_count > VKR_DIFFUSE_VOLUME_MAX_ENTRIES) {
       return false_v;
+    }
+  }
+  *out_entry_count = (uint32_t)entry_count;
   return true_v;
+}
+
+static bool8_t vkr_diffuse_volume_sections(uint32_t entry_count,
+                                           uint32_t brick_count,
+                                           uint32_t layer_count,
+                                           uint32_t band_count,
+                                           VkrDiffuseVolumeSections *out) {
+  const uint64_t alignment = VKR_DIFFUSE_VOLUME_SECTION_ALIGNMENT;
+  const uint64_t probe_count =
+      (uint64_t)brick_count * VKR_DIFFUSE_VOLUME_BRICK_PROBES;
+  uint64_t cursor = VKR_DIFFUSE_VOLUME_HEADER_BYTES +
+                    (uint64_t)layer_count * VKR_LIGHT_LAYER_RECORD_BYTES;
+  out->entry_offset = vkr_align_up_u64(cursor, alignment);
+  cursor = out->entry_offset + (uint64_t)entry_count * sizeof(uint32_t);
+  out->brick_offset = vkr_align_up_u64(cursor, alignment);
+  cursor = out->brick_offset +
+           (uint64_t)brick_count * VKR_DIFFUSE_VOLUME_BRICK_RECORD_BYTES;
+  out->aux_offset = vkr_align_up_u64(cursor, alignment);
+  cursor = out->aux_offset + probe_count * VKR_DIFFUSE_VOLUME_AUX_BYTES;
+  out->moment_offset = vkr_align_up_u64(cursor, alignment);
+  cursor = out->moment_offset + probe_count * VKR_DIFFUSE_VOLUME_MOMENT_BYTES;
+  out->sh_offset = vkr_align_up_u64(cursor, alignment);
+  uint64_t sh_bytes = 0u;
+  if (!vkr_checked_mul_u64(probe_count * band_count,
+                           VKR_DIFFUSE_VOLUME_SH_BYTES, &sh_bytes) ||
+      !vkr_checked_add_u64(out->sh_offset, sh_bytes, &out->file_size)) {
+    return false_v;
+  }
+  return true_v;
+}
+
+uint32_t vkr_diffuse_volume_sh_band_count(const VkrDiffuseVolume *volume) {
+  return volume->layer_count + volume->lamp_direct_count;
+}
+
+/* Zero lamp direct bands, or one per lamp-group layer. */
+static bool8_t vkr_diffuse_volume_direct_valid(const VkrDiffuseVolume *volume) {
+  if (volume->lamp_direct_count == 0u) {
+    return true_v;
+  }
+  uint32_t lamp_groups = 0u;
+  for (uint32_t layer = 0u; layer < volume->layer_count; ++layer) {
+    if (volume->layers[layer].kind == VKR_LIGHT_LAYER_LAMP_GROUP) {
+      ++lamp_groups;
+    }
+  }
+  return volume->lamp_direct_count == lamp_groups;
+}
+
+uint32_t vkr_diffuse_volume_entry(const VkrDiffuseVolume *volume,
+                                  uint32_t index) {
+  return vkr_load_le_u32(volume->entries + (uint64_t)index * sizeof(uint32_t));
+}
+
+static bool8_t vkr_diffuse_volume_bricks_valid(const VkrDiffuseVolume *volume) {
+  for (uint32_t b = 0u; b < volume->brick_count; ++b) {
+    const VkrDiffuseVolumeBrick *brick = &volume->bricks[b];
+    if (brick->level >= volume->level_count) {
+      return false_v;
+    }
+    const uint32_t span = vkr_diffuse_volume_level_span(brick->level);
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      if (brick->entry[axis] % span != 0u ||
+          brick->entry[axis] >= volume->dimensions[axis] ||
+          volume->dimensions[axis] - brick->entry[axis] < span) {
+        return false_v;
+      }
+    }
+  }
+  return true_v;
+}
+
+/* Each entry is empty or names a brick of its level that covers it. */
+static bool8_t
+vkr_diffuse_volume_entries_valid(const VkrDiffuseVolume *volume) {
+  uint32_t index = 0u;
+  for (uint32_t z = 0u; z < volume->dimensions[2]; ++z) {
+    for (uint32_t y = 0u; y < volume->dimensions[1]; ++y) {
+      for (uint32_t x = 0u; x < volume->dimensions[0]; ++x) {
+        const uint32_t entry = vkr_diffuse_volume_entry(volume, index);
+        ++index;
+        if (entry == VKR_DIFFUSE_VOLUME_ENTRY_EMPTY) {
+          continue;
+        }
+        const uint32_t level = entry >> VKR_DIFFUSE_VOLUME_ENTRY_LEVEL_SHIFT;
+        const uint32_t brick = entry & VKR_DIFFUSE_VOLUME_ENTRY_BRICK_MASK;
+        if (brick >= volume->brick_count ||
+            volume->bricks[brick].level != level) {
+          return false_v;
+        }
+        const uint32_t span = vkr_diffuse_volume_level_span(level);
+        const uint32_t coordinate[3] = {x, y, z};
+        for (uint32_t axis = 0u; axis < 3u; ++axis) {
+          const uint32_t first = volume->bricks[brick].entry[axis];
+          if (coordinate[axis] < first || coordinate[axis] - first >= span) {
+            return false_v;
+          }
+        }
+      }
+    }
+  }
+  return true_v;
+}
+
+/* Offsets stay within half their level's spacing (with half-precision
+   rounding), validity is exactly zero or one, and every half is finite. */
+static bool8_t vkr_diffuse_volume_probes_valid(const VkrDiffuseVolume *volume) {
+  for (uint32_t p = 0u; p < volume->probe_count; ++p) {
+    const uint32_t level =
+        volume->bricks[p / VKR_DIFFUSE_VOLUME_BRICK_PROBES].level;
+    const float32_t limit = 0.5f * volume->spacing *
+                            (float32_t)vkr_diffuse_volume_level_span(level) *
+                            1.001f;
+    const uint8_t *aux =
+        volume->probe_aux + (uint64_t)p * VKR_DIFFUSE_VOLUME_AUX_BYTES;
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      const uint16_t half = vkr_diffuse_volume_load_half(aux + axis * 2u);
+      if (!vkr_diffuse_volume_half_finite(half) ||
+          fabsf(vkr_float16_to_float32(half)) > limit) {
+        return false_v;
+      }
+    }
+    const uint16_t validity = vkr_diffuse_volume_load_half(aux + 6u);
+    if (validity != 0x0000u && validity != 0x3c00u) {
+      return false_v;
+    }
+  }
+  const uint64_t moment_halves =
+      (uint64_t)volume->probe_count * VKR_DIFFUSE_VOLUME_MOMENT_TEXELS * 2u;
+  for (uint64_t i = 0u; i < moment_halves; ++i) {
+    const uint16_t half =
+        vkr_diffuse_volume_load_half(volume->moments + i * 2u);
+    if (!vkr_diffuse_volume_half_finite(half) || (half & 0x8000u) != 0u) {
+      return false_v;
+    }
+  }
+  const uint64_t sh_halves = (uint64_t)volume->probe_count *
+                             vkr_diffuse_volume_sh_band_count(volume) *
+                             (VKR_DIFFUSE_VOLUME_SH_BYTES / 2u);
+  for (uint64_t i = 0u; i < sh_halves; ++i) {
+    if (!vkr_diffuse_volume_half_finite(
+            vkr_diffuse_volume_load_half(volume->layer_sh + i * 2u))) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* A positive, finite power of two, so scaling halves loses no precision. */
+static bool8_t vkr_diffuse_volume_scale_valid(float32_t scale) {
+  int exponent = 0;
+  return isfinite(scale) && scale > 0.0f && frexpf(scale, &exponent) == 0.5f;
 }
 
 static bool8_t vkr_diffuse_volume_valid(const VkrDiffuseVolume *volume) {
-  if (!volume || !volume->probe_region_ids || !volume->probe_sh ||
-      !volume->cell_region_ids || volume->layer_count == 0u ||
-      volume->layer_count > VKR_DIFFUSE_VOLUME_MAX_LAYERS ||
+  uint32_t entry_count = 0u;
+  if (!volume || !volume->entries || !volume->bricks || !volume->probe_aux ||
+      !volume->moments || !volume->layer_sh || !volume->layers ||
+      !vkr_diffuse_volume_counts_valid(volume->dimensions, volume->level_count,
+                                       volume->brick_count, volume->layer_count,
+                                       &entry_count) ||
+      volume->entry_count != entry_count ||
+      volume->probe_count !=
+          volume->brick_count * VKR_DIFFUSE_VOLUME_BRICK_PROBES ||
       !vkr_light_layers_valid(volume->layers, volume->layer_count) ||
+      !vkr_diffuse_volume_direct_valid(volume) ||
       !vkr_diffuse_volume_finite_vec3(volume->origin) ||
-      !vkr_diffuse_volume_finite_vec3(volume->spacing) ||
-      !(volume->spacing.x > 0.0f) || !(volume->spacing.y > 0.0f) ||
-      !(volume->spacing.z > 0.0f))
+      !isfinite(volume->spacing) || !(volume->spacing > 0.0f) ||
+      !vkr_diffuse_volume_scale_valid(volume->sh_scale)) {
     return false_v;
-
-  uint32_t expected_probe_count = 0u;
-  uint32_t expected_cell_count = 0u;
-  if (!vkr_diffuse_volume_layout(volume->dimensions[0], volume->dimensions[1],
-                                 volume->dimensions[2], &expected_probe_count,
-                                 &expected_cell_count) ||
-      volume->probe_count != expected_probe_count ||
-      volume->cell_count != expected_cell_count)
-    return false_v;
-
-  for (uint32_t probe_index = 0u; probe_index < volume->probe_count;
-       ++probe_index) {
-    if (volume->probe_region_ids[probe_index] >
-        VKR_DIFFUSE_VOLUME_MAX_REGION_ID)
-      return false_v;
   }
-  const uint64_t sh_count = (uint64_t)volume->probe_count * volume->layer_count;
-  for (uint64_t sh_index = 0u; sh_index < sh_count; ++sh_index)
-    for (uint32_t vector_index = 0u; vector_index < VKR_SH_PACKED_VECTOR_COUNT;
-         ++vector_index)
-      for (uint32_t component = 0u; component < 4u; ++component)
-        if (!isfinite(volume->probe_sh[sh_index].v[vector_index][component]))
-          return false_v;
-
-  uint32_t cell_index = 0u;
-  for (uint32_t z = 0u; z + 1u < volume->dimensions[2]; ++z)
-    for (uint32_t y = 0u; y + 1u < volume->dimensions[1]; ++y)
-      for (uint32_t x = 0u; x + 1u < volume->dimensions[0]; ++x) {
-        const uint32_t region_id = volume->cell_region_ids[cell_index++];
-        if (region_id > VKR_DIFFUSE_VOLUME_MAX_REGION_ID ||
-            !vkr_diffuse_volume_cell_region_valid(volume, x, y, z, region_id))
-          return false_v;
-      }
-  return true_v;
-}
-
-static void vkr_diffuse_volume_write_probe(uint8_t *bytes, uint32_t region_id,
-                                           const VkrShL2Packed *sh,
-                                           uint32_t layer_count) {
-  vkr_store_le_u32(bytes, region_id);
-  bytes += sizeof(uint32_t);
-  for (uint32_t layer = 0u; layer < layer_count; ++layer)
-    for (uint32_t vector_index = 0u; vector_index < VKR_SH_PACKED_VECTOR_COUNT;
-         ++vector_index)
-      for (uint32_t component = 0u; component < 4u; ++component) {
-        vkr_store_le_f32(bytes, sh[layer].v[vector_index][component]);
-        bytes += sizeof(float32_t);
-      }
-}
-
-static void vkr_diffuse_volume_read_probe(const uint8_t *bytes,
-                                          uint32_t layer_count,
-                                          uint32_t *out_region_id,
-                                          VkrShL2Packed *out_sh) {
-  *out_region_id = vkr_load_le_u32(bytes);
-  bytes += sizeof(uint32_t);
-  for (uint32_t layer = 0u; layer < layer_count; ++layer)
-    for (uint32_t vector_index = 0u; vector_index < VKR_SH_PACKED_VECTOR_COUNT;
-         ++vector_index)
-      for (uint32_t component = 0u; component < 4u; ++component) {
-        out_sh[layer].v[vector_index][component] = vkr_load_le_f32(bytes);
-        bytes += sizeof(float32_t);
-      }
+  return vkr_diffuse_volume_bricks_valid(volume) &&
+         vkr_diffuse_volume_entries_valid(volume) &&
+         vkr_diffuse_volume_probes_valid(volume);
 }
 
 bool8_t vkr_diffuse_volume_encode(const VkrDiffuseVolume *volume, Arena *arena,
                                   const uint8_t **out_bytes,
                                   uint64_t *out_size) {
-  if (!out_bytes || !out_size)
+  if (!out_bytes || !out_size) {
     return false_v;
+  }
   *out_bytes = NULL;
   *out_size = 0u;
-  if (!arena || !vkr_f32_is_binary32() || !vkr_diffuse_volume_valid(volume))
+  VkrDiffuseVolumeSections sections = {0};
+  if (!arena || !vkr_f32_is_binary32() || !vkr_diffuse_volume_valid(volume) ||
+      !vkr_diffuse_volume_sections(
+          volume->entry_count, volume->brick_count, volume->layer_count,
+          vkr_diffuse_volume_sh_band_count(volume), &sections)) {
     return false_v;
-
-  const uint64_t probe_record =
-      vkr_diffuse_volume_probe_bytes(volume->layer_count);
-  uint64_t probe_bytes = 0u;
-  uint64_t cell_bytes = 0u;
-  const uint64_t probe_offset =
-      VKR_DIFFUSE_VOLUME_HEADER_BYTES +
-      (uint64_t)volume->layer_count * VKR_LIGHT_LAYER_RECORD_BYTES;
-  uint64_t cell_offset = 0u;
-  uint64_t file_size = 0u;
-  if (!vkr_checked_mul_u64(volume->probe_count, probe_record, &probe_bytes) ||
-      !vkr_checked_add_u64(probe_offset, probe_bytes, &cell_offset) ||
-      !vkr_checked_mul_u64(volume->cell_count, VKR_DIFFUSE_VOLUME_CELL_BYTES,
-                           &cell_bytes) ||
-      !vkr_checked_add_u64(cell_offset, cell_bytes, &file_size))
-    return false_v;
+  }
 
   uint8_t *bytes =
-      (uint8_t *)arena_alloc(arena, file_size, ARENA_MEMORY_TAG_FILE);
-  if (!bytes)
+      (uint8_t *)arena_alloc(arena, sections.file_size, ARENA_MEMORY_TAG_FILE);
+  if (!bytes) {
     return false_v;
-  MemZero(bytes, file_size);
+  }
+  MemZero(bytes, sections.file_size);
   vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_MAGIC,
                    VKR_DIFFUSE_VOLUME_MAGIC);
   vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_VERSION,
@@ -227,63 +317,81 @@ bool8_t vkr_diffuse_volume_encode(const VkrDiffuseVolume *volume, Arena *arena,
                    VKR_DIFFUSE_VOLUME_ENDIAN_TAG);
   vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_SIZE,
                    VKR_DIFFUSE_VOLUME_HEADER_BYTES);
-  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_FILE_SIZE, file_size);
-  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_X, volume->dimensions[0]);
-  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Y, volume->dimensions[1]);
-  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Z, volume->dimensions[2]);
-  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_COUNT,
-                   volume->probe_count);
-  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_COUNT, volume->cell_count);
+  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_FILE_SIZE, sections.file_size);
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    vkr_store_le_f32(bytes + VKR_DIFFUSE_VOLUME_H_ORIGIN +
+                         axis * sizeof(float32_t),
+                     volume->origin.elements[axis]);
+    vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIMENSIONS +
+                         axis * sizeof(uint32_t),
+                     volume->dimensions[axis]);
+  }
+  vkr_store_le_f32(bytes + VKR_DIFFUSE_VOLUME_H_SPACING, volume->spacing);
+  vkr_store_le_f32(bytes + VKR_DIFFUSE_VOLUME_H_SH_SCALE, volume->sh_scale);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_LEVEL_COUNT,
+                   volume->level_count);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_BRICK_COUNT,
+                   volume->brick_count);
   vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_LAYER_COUNT,
                    volume->layer_count);
-  for (uint32_t component = 0u; component < 3u; ++component) {
-    vkr_store_le_f32(bytes + VKR_DIFFUSE_VOLUME_H_ORIGIN +
-                         component * sizeof(float32_t),
-                     volume->origin.elements[component]);
-    vkr_store_le_f32(bytes + VKR_DIFFUSE_VOLUME_H_SPACING +
-                         component * sizeof(float32_t),
-                     volume->spacing.elements[component]);
-  }
-  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_OFFSET, probe_offset);
-  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_CELL_OFFSET, cell_offset);
-  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_BYTES,
-                   (uint32_t)probe_record);
-  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_BYTES,
-                   VKR_DIFFUSE_VOLUME_CELL_BYTES);
+  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_LAMP_DIRECT_COUNT,
+                   volume->lamp_direct_count);
+  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_ENTRY_OFFSET,
+                   sections.entry_offset);
+  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_BRICK_OFFSET,
+                   sections.brick_offset);
+  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_AUX_OFFSET,
+                   sections.aux_offset);
+  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_MOMENT_OFFSET,
+                   sections.moment_offset);
+  vkr_store_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_SH_OFFSET, sections.sh_offset);
 
-  for (uint32_t layer = 0u; layer < volume->layer_count; ++layer)
+  for (uint32_t layer = 0u; layer < volume->layer_count; ++layer) {
     vkr_light_layer_write(bytes + VKR_DIFFUSE_VOLUME_HEADER_BYTES +
                               (uint64_t)layer * VKR_LIGHT_LAYER_RECORD_BYTES,
                           &volume->layers[layer]);
-  for (uint32_t index = 0u; index < volume->probe_count; ++index)
-    vkr_diffuse_volume_write_probe(
-        bytes + probe_offset + (uint64_t)index * probe_record,
-        volume->probe_region_ids[index],
-        &volume->probe_sh[(uint64_t)index * volume->layer_count],
-        volume->layer_count);
-  for (uint32_t index = 0u; index < volume->cell_count; ++index)
-    vkr_store_le_u32(bytes + cell_offset +
-                         (uint64_t)index * VKR_DIFFUSE_VOLUME_CELL_BYTES,
-                     volume->cell_region_ids[index]);
+  }
+  MemCopy(bytes + sections.entry_offset, volume->entries,
+          (uint64_t)volume->entry_count * sizeof(uint32_t));
+  for (uint32_t b = 0u; b < volume->brick_count; ++b) {
+    uint8_t *record = bytes + sections.brick_offset +
+                      (uint64_t)b * VKR_DIFFUSE_VOLUME_BRICK_RECORD_BYTES;
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      vkr_store_le_u32(record + axis * sizeof(uint32_t),
+                       volume->bricks[b].entry[axis]);
+    }
+    vkr_store_le_u32(record + 12u, volume->bricks[b].level);
+  }
+  MemCopy(bytes + sections.aux_offset, volume->probe_aux,
+          (uint64_t)volume->probe_count * VKR_DIFFUSE_VOLUME_AUX_BYTES);
+  MemCopy(bytes + sections.moment_offset, volume->moments,
+          (uint64_t)volume->probe_count * VKR_DIFFUSE_VOLUME_MOMENT_BYTES);
+  MemCopy(bytes + sections.sh_offset, volume->layer_sh,
+          (uint64_t)volume->probe_count *
+              vkr_diffuse_volume_sh_band_count(volume) *
+              VKR_DIFFUSE_VOLUME_SH_BYTES);
 
-  vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PAYLOAD_CRC,
-                   vkr_crc32(bytes + VKR_DIFFUSE_VOLUME_HEADER_BYTES,
-                             file_size - VKR_DIFFUSE_VOLUME_HEADER_BYTES));
+  vkr_store_le_u32(
+      bytes + VKR_DIFFUSE_VOLUME_H_PAYLOAD_CRC,
+      vkr_crc32(bytes + VKR_DIFFUSE_VOLUME_HEADER_BYTES,
+                sections.file_size - VKR_DIFFUSE_VOLUME_HEADER_BYTES));
   vkr_store_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_HEADER_CRC,
                    vkr_diffuse_volume_header_crc(bytes));
   *out_bytes = bytes;
-  *out_size = file_size;
+  *out_size = sections.file_size;
   return true_v;
 }
 
 bool8_t vkr_diffuse_volume_decode(const uint8_t *bytes, uint64_t size,
                                   Arena *arena, VkrDiffuseVolume *out_volume) {
-  if (!out_volume)
+  if (!out_volume) {
     return false_v;
+  }
   *out_volume = (VkrDiffuseVolume){0};
   if (!bytes || !arena || size < VKR_DIFFUSE_VOLUME_HEADER_BYTES ||
-      !vkr_f32_is_binary32())
+      !vkr_f32_is_binary32()) {
     return false_v;
+  }
   if (vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_MAGIC) !=
           VKR_DIFFUSE_VOLUME_MAGIC ||
       vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_VERSION) !=
@@ -293,90 +401,73 @@ bool8_t vkr_diffuse_volume_decode(const uint8_t *bytes, uint64_t size,
       vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_SIZE) !=
           VKR_DIFFUSE_VOLUME_HEADER_BYTES ||
       vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_FILE_SIZE) != size ||
-      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_RESERVED1) != 0u ||
-      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_RESERVED2) != 0u ||
       vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_HEADER_CRC) !=
-          vkr_diffuse_volume_header_crc(bytes))
+          vkr_diffuse_volume_header_crc(bytes)) {
     return false_v;
+  }
+  for (uint32_t offset = VKR_DIFFUSE_VOLUME_H_RESERVED;
+       offset < VKR_DIFFUSE_VOLUME_HEADER_BYTES; offset += 4u) {
+    if (vkr_load_le_u32(bytes + offset) != 0u) {
+      return false_v;
+    }
+  }
 
-  const uint32_t dimensions[3] = {
-      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_X),
-      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Y),
-      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_DIM_Z),
-  };
-  const uint32_t layer_count =
+  VkrDiffuseVolume volume = {0};
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    volume.origin.elements[axis] = vkr_load_le_f32(
+        bytes + VKR_DIFFUSE_VOLUME_H_ORIGIN + axis * sizeof(float32_t));
+    volume.dimensions[axis] = vkr_load_le_u32(
+        bytes + VKR_DIFFUSE_VOLUME_H_DIMENSIONS + axis * sizeof(uint32_t));
+  }
+  volume.spacing = vkr_load_le_f32(bytes + VKR_DIFFUSE_VOLUME_H_SPACING);
+  volume.sh_scale = vkr_load_le_f32(bytes + VKR_DIFFUSE_VOLUME_H_SH_SCALE);
+  volume.level_count =
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_LEVEL_COUNT);
+  volume.brick_count =
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_BRICK_COUNT);
+  volume.layer_count =
       vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_LAYER_COUNT);
-  if (layer_count == 0u || layer_count > VKR_DIFFUSE_VOLUME_MAX_LAYERS)
-    return false_v;
-  const uint64_t probe_record = vkr_diffuse_volume_probe_bytes(layer_count);
-  const uint64_t probe_offset =
-      VKR_DIFFUSE_VOLUME_HEADER_BYTES +
-      (uint64_t)layer_count * VKR_LIGHT_LAYER_RECORD_BYTES;
-  uint32_t expected_probe_count = 0u;
-  uint32_t expected_cell_count = 0u;
-  if (!vkr_diffuse_volume_layout(dimensions[0], dimensions[1], dimensions[2],
-                                 &expected_probe_count, &expected_cell_count) ||
-      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_COUNT) !=
-          expected_probe_count ||
-      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_COUNT) !=
-          expected_cell_count ||
-      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_BYTES) !=
-          probe_record ||
-      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_CELL_BYTES) !=
-          VKR_DIFFUSE_VOLUME_CELL_BYTES)
-    return false_v;
+  volume.lamp_direct_count =
+      vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_LAMP_DIRECT_COUNT);
 
-  uint64_t probe_bytes = 0u;
-  uint64_t cell_bytes = 0u;
-  uint64_t expected_cell_offset = 0u;
-  uint64_t expected_file_size = 0u;
-  if (!vkr_checked_mul_u64(expected_probe_count, probe_record, &probe_bytes) ||
-      !vkr_checked_add_u64(probe_offset, probe_bytes, &expected_cell_offset) ||
-      !vkr_checked_mul_u64(expected_cell_count, VKR_DIFFUSE_VOLUME_CELL_BYTES,
-                           &cell_bytes) ||
-      !vkr_checked_add_u64(expected_cell_offset, cell_bytes,
-                           &expected_file_size) ||
-      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_PROBE_OFFSET) !=
-          probe_offset ||
-      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_CELL_OFFSET) !=
-          expected_cell_offset ||
-      expected_file_size != size ||
+  VkrDiffuseVolumeSections sections = {0};
+  if (!vkr_diffuse_volume_counts_valid(volume.dimensions, volume.level_count,
+                                       volume.brick_count, volume.layer_count,
+                                       &volume.entry_count) ||
+      volume.lamp_direct_count > VKR_LIGHT_LAYER_MAX_LAMP_GROUPS ||
+      !vkr_diffuse_volume_sections(
+          volume.entry_count, volume.brick_count, volume.layer_count,
+          vkr_diffuse_volume_sh_band_count(&volume), &sections) ||
+      sections.file_size != size ||
+      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_ENTRY_OFFSET) !=
+          sections.entry_offset ||
+      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_BRICK_OFFSET) !=
+          sections.brick_offset ||
+      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_AUX_OFFSET) !=
+          sections.aux_offset ||
+      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_MOMENT_OFFSET) !=
+          sections.moment_offset ||
+      vkr_load_le_u64(bytes + VKR_DIFFUSE_VOLUME_H_SH_OFFSET) !=
+          sections.sh_offset ||
       vkr_load_le_u32(bytes + VKR_DIFFUSE_VOLUME_H_PAYLOAD_CRC) !=
           vkr_crc32(bytes + VKR_DIFFUSE_VOLUME_HEADER_BYTES,
-                    size - VKR_DIFFUSE_VOLUME_HEADER_BYTES))
+                    size - VKR_DIFFUSE_VOLUME_HEADER_BYTES)) {
     return false_v;
-
-  Vec3 origin = vec3_zero();
-  Vec3 spacing = vec3_zero();
-  for (uint32_t component = 0u; component < 3u; ++component) {
-    origin.elements[component] = vkr_load_le_f32(
-        bytes + VKR_DIFFUSE_VOLUME_H_ORIGIN + component * sizeof(float32_t));
-    spacing.elements[component] = vkr_load_le_f32(
-        bytes + VKR_DIFFUSE_VOLUME_H_SPACING + component * sizeof(float32_t));
   }
-  if (!vkr_diffuse_volume_finite_vec3(origin) ||
-      !vkr_diffuse_volume_finite_vec3(spacing) || !(spacing.x > 0.0f) ||
-      !(spacing.y > 0.0f) || !(spacing.z > 0.0f))
-    return false_v;
+  volume.probe_count = volume.brick_count * VKR_DIFFUSE_VOLUME_BRICK_PROBES;
 
   const Scratch scope = scratch_create(arena);
   VkrLightLayer *layers = (VkrLightLayer *)arena_alloc(
-      arena, (uint64_t)layer_count * sizeof(*layers), ARENA_MEMORY_TAG_ARRAY);
-  uint32_t *probe_region_ids = (uint32_t *)arena_alloc(
-      arena, (uint64_t)expected_probe_count * sizeof(*probe_region_ids),
+      arena, (uint64_t)volume.layer_count * sizeof(*layers),
       ARENA_MEMORY_TAG_ARRAY);
-  VkrShL2Packed *probe_sh = (VkrShL2Packed *)arena_alloc(
-      arena, (uint64_t)expected_probe_count * layer_count * sizeof(*probe_sh),
+  VkrDiffuseVolumeBrick *bricks = (VkrDiffuseVolumeBrick *)arena_alloc(
+      arena, (uint64_t)volume.brick_count * sizeof(*bricks),
       ARENA_MEMORY_TAG_ARRAY);
-  uint32_t *cell_region_ids = (uint32_t *)arena_alloc(
-      arena, (uint64_t)expected_cell_count * sizeof(*cell_region_ids),
-      ARENA_MEMORY_TAG_ARRAY);
-  if (!layers || !probe_region_ids || !probe_sh || !cell_region_ids) {
+  if (!layers || !bricks) {
     scratch_destroy(scope, ARENA_MEMORY_TAG_ARRAY);
     return false_v;
   }
-
-  for (uint32_t layer = 0u; layer < layer_count; ++layer) {
+  for (uint32_t layer = 0u; layer < volume.layer_count; ++layer) {
     if (!vkr_light_layer_read(bytes + VKR_DIFFUSE_VOLUME_HEADER_BYTES +
                                   (uint64_t)layer *
                                       VKR_LIGHT_LAYER_RECORD_BYTES,
@@ -385,27 +476,20 @@ bool8_t vkr_diffuse_volume_decode(const uint8_t *bytes, uint64_t size,
       return false_v;
     }
   }
-  const uint64_t cell_offset = expected_cell_offset;
-  for (uint32_t index = 0u; index < expected_probe_count; ++index)
-    vkr_diffuse_volume_read_probe(
-        bytes + probe_offset + (uint64_t)index * probe_record, layer_count,
-        &probe_region_ids[index], &probe_sh[(uint64_t)index * layer_count]);
-  for (uint32_t index = 0u; index < expected_cell_count; ++index)
-    cell_region_ids[index] = vkr_load_le_u32(
-        bytes + cell_offset + (uint64_t)index * VKR_DIFFUSE_VOLUME_CELL_BYTES);
-
-  VkrDiffuseVolume volume = {
-      .origin = origin,
-      .spacing = spacing,
-      .dimensions = {dimensions[0], dimensions[1], dimensions[2]},
-      .probe_region_ids = probe_region_ids,
-      .probe_sh = probe_sh,
-      .probe_count = expected_probe_count,
-      .layers = layers,
-      .layer_count = layer_count,
-      .cell_region_ids = cell_region_ids,
-      .cell_count = expected_cell_count,
-  };
+  for (uint32_t b = 0u; b < volume.brick_count; ++b) {
+    const uint8_t *record = bytes + sections.brick_offset +
+                            (uint64_t)b * VKR_DIFFUSE_VOLUME_BRICK_RECORD_BYTES;
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      bricks[b].entry[axis] = vkr_load_le_u32(record + axis * sizeof(uint32_t));
+    }
+    bricks[b].level = vkr_load_le_u32(record + 12u);
+  }
+  volume.layers = layers;
+  volume.bricks = bricks;
+  volume.entries = bytes + sections.entry_offset;
+  volume.probe_aux = bytes + sections.aux_offset;
+  volume.moments = bytes + sections.moment_offset;
+  volume.layer_sh = bytes + sections.sh_offset;
   if (!vkr_diffuse_volume_valid(&volume)) {
     scratch_destroy(scope, ARENA_MEMORY_TAG_ARRAY);
     return false_v;

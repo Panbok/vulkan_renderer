@@ -341,10 +341,10 @@ bool8_t vkr_vk_packet_subsurface_ready(VkrVulkanRenderer *renderer,
   return !texture || !texture->initialization_pending;
 }
 
-vkr_internal bool8_t vkr_vk_resolve_sampled_pair(VkrVulkanRenderer *renderer,
-                                                 VkrTextureHandle handle,
-                                                 uint32_t *out_texture,
-                                                 uint32_t *out_sampler) {
+bool8_t vkr_vk_resolve_sampled_pair(VkrVulkanRenderer *renderer,
+                                    VkrTextureHandle handle,
+                                    uint32_t *out_texture,
+                                    uint32_t *out_sampler) {
   VkrVulkanPublishedTexture *texture =
       vkr_vk_published_texture(renderer, handle, NULL);
   if (!texture || texture->initialization_pending ||
@@ -473,9 +473,11 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->ibl_ready = false_v;
   slot->ibl_radiance_stops = 0;
   slot->subsurface_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-  slot->diffuse_volume_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  for (uint32_t i = 0u; i < ArrayCount(slot->diffuse_volume_textures); ++i) {
+    slot->diffuse_volume_textures[i] = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  }
   slot->diffuse_volume_origin = (Vec4){0};
-  slot->diffuse_volume_inverse_spacing = (Vec4){0};
+  slot->diffuse_volume_params = (Vec4){0};
   MemZero(slot->diffuse_volume_dimensions,
           sizeof(slot->diffuse_volume_dimensions));
   slot->ltc = 0u;
@@ -661,30 +663,56 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
       return false_v;
     }
   }
-  if (lighting && lighting->diffuse_volume.texture.id != 0u) {
-    const VkrDiffuseVolumeBinding *volume = &lighting->diffuse_volume;
-    VkrVulkanPublishedTexture *texture =
-        vkr_vk_published_texture(renderer, volume->texture, NULL);
-    const uint64_t row_count = (uint64_t)volume->dimensions[0] *
-                               volume->dimensions[1] * volume->dimensions[2];
-    if (!texture || texture->initialization_pending ||
-        texture->image.format != VK_FORMAT_R32G32B32A32_SFLOAT ||
-        texture->image.width != 8u || texture->image.height != row_count ||
-        texture->image.mip_levels != 1u || texture->image.array_layers != 1u)
+  slot->lightmap_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->lightmap_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->lightmap_direction_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->lightmap_rects = 0u;
+  if (lighting && lighting->lightmap.texture.id != 0u &&
+      lighting->lightmap.active_layer_count > 0u) {
+    /* The desktop pipeline samples only lamp-group planes in desktop
+       encodings (ADR-104). */
+    const VkrLightmapBinding *lightmap = &lighting->lightmap;
+    const VkrVulkanPublishedTexture *texture =
+        vkr_vk_published_texture(renderer, lightmap->texture, NULL);
+    if (!texture ||
+        (texture->image.format != VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 &&
+         texture->image.format != VK_FORMAT_BC6H_UFLOAT_BLOCK) ||
+        texture->image.width != lightmap->page_size ||
+        texture->image.array_layers % lightmap->layer_count != 0u)
       return false_v;
-    uint32_t ignored_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-    if (!vkr_vk_resolve_sampled_pair(renderer, volume->texture,
-                                     &slot->diffuse_volume_texture,
-                                     &ignored_sampler))
+    if (!texture->initialization_pending) {
+      const uint64_t rect_bytes =
+          (uint64_t)lightmap->rect_count * sizeof(VkrLightmapRect);
+      VkrLightmapRect *rects = vkr_vk_frame_upload_allocate(
+          slot, Max(rect_bytes, sizeof(VkrLightmapRect)),
+          _Alignof(VkrLightmapRect), &slot->lightmap_rects, NULL);
+      if (!rects ||
+          !vkr_vk_resolve_sampled_pair(renderer, lightmap->texture,
+                                       &slot->lightmap_texture,
+                                       &slot->lightmap_sampler))
+        return false_v;
+      MemCopy(rects, lightmap->rects, rect_bytes);
+      /* Direction pages are optional; a pending or missing one leaves baked
+         lamps undirected. */
+      const VkrVulkanPublishedTexture *direction =
+          lightmap->direction.id != 0u
+              ? vkr_vk_published_texture(renderer, lightmap->direction, NULL)
+              : NULL;
+      uint32_t ignored_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+      if (direction && !direction->initialization_pending &&
+          (direction->image.format == VK_FORMAT_R8G8B8A8_UNORM ||
+           direction->image.format == VK_FORMAT_BC7_UNORM_BLOCK) &&
+          direction->image.array_layers == texture->image.array_layers &&
+          !vkr_vk_resolve_sampled_pair(renderer, lightmap->direction,
+                                       &slot->lightmap_direction_texture,
+                                       &ignored_sampler))
+        return false_v;
+    }
+  }
+  if (lighting && lighting->diffuse_volume.indirection.id != 0u) {
+    if (!vkr_vk_resolve_diffuse_volume(renderer, &lighting->diffuse_volume,
+                                       slot))
       return false_v;
-    slot->diffuse_volume_origin =
-        (Vec4){volume->origin.x, volume->origin.y, volume->origin.z, 0.0f};
-    slot->diffuse_volume_inverse_spacing =
-        (Vec4){volume->inverse_spacing.x, volume->inverse_spacing.y,
-               volume->inverse_spacing.z, 0.0f};
-    slot->diffuse_volume_dimensions[0] = volume->dimensions[0];
-    slot->diffuse_volume_dimensions[1] = volume->dimensions[1];
-    slot->diffuse_volume_dimensions[2] = volume->dimensions[2];
   }
 
   if (lighting && lighting->ibl_enabled && lighting->ibl_source.id) {
@@ -874,6 +902,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->gpu_candidate_instance_buffer = NULL;
   slot->candidate_residency_pending = false_v;
   slot->gpu_candidate_count = 0u;
+  slot->gpu_static_candidate_count = 0u;
   slot->transmission_gpu_candidate_count = 0u;
   slot->gpu_world_epoch = 0u;
   slot->hzb_history_valid = false_v;
@@ -999,6 +1028,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
         slot->gpu_candidate_count = packed_static_count;
         omitted_count = omitted_static_count;
       }
+      slot->gpu_static_candidate_count = packed_static_count;
     }
 
     if (packed && world->transmission_gpu_candidate_count > 0u) {
@@ -1270,9 +1300,10 @@ void vkr_vk_fill_packet_frame_root(
   root->froxel_integrated_texture = slot->froxel_integrated_texture;
   root->sky = slot->sky;
   root->froxel_sampler = renderer->transmission_sampler_slot;
-  root->diffuse_volume_texture = slot->diffuse_volume_texture;
+  MemCopy(root->diffuse_volume_textures, slot->diffuse_volume_textures,
+          sizeof(root->diffuse_volume_textures));
   root->diffuse_volume_origin = slot->diffuse_volume_origin;
-  root->diffuse_volume_inverse_spacing = slot->diffuse_volume_inverse_spacing;
+  root->diffuse_volume_params = slot->diffuse_volume_params;
   MemCopy(root->diffuse_volume_dimensions, slot->diffuse_volume_dimensions,
           sizeof(root->diffuse_volume_dimensions));
   root->flags = vkr_packet_derive_frame_flags(renderer->graph->packet,

@@ -1,4 +1,4 @@
-#include "bake/vkr_bake_metal.h"
+#include "bake/vkr_bake_gpu.h"
 
 #include "vkr_dfg_lut.h"
 
@@ -32,6 +32,8 @@ constexpr uint32_t kSkyWidth = 512u;
 constexpr uint32_t kSkyHeight = 256u;
 constexpr float kPi = 3.14159265358979323846f;
 
+/* vkr_bake_lightmap.slang is this kernel for Vulkan, statement by statement;
+   a change to one changes the other. */
 const char *kKernelSource = R"METAL(
 #include <metal_stdlib>
 #include <metal_raytracing>
@@ -162,7 +164,7 @@ struct GatherArgs {
      sample; the lights before it are evaluated once per texel. */
   uint rectangle_first;
   /* bit 0 sky, bit 1 emission, bit 2 texel direct, bit 3 occlusion, bit 4
-     back-face fraction. */
+     back-face fraction, bit 5 incident direction. */
   uint flags;
   /* First triangle of each geometry in the acceleration structure's index
      buffer: opaque triangles, then cutout and blended ones. */
@@ -587,6 +589,20 @@ static float3 bounce_albedo(thread const Material &material, float no_v,
   return reflectance + (1.0f - reflectance) * (1.0f - metallic) * base;
 }
 
+/* Length of a punctual light's shadow segment, next to the light, that no
+   occluder blocks: the runtime's local shadow maps clip it as their near
+   plane (vkr_local_shadow_system.c), so the bulb or socket mesh around an
+   imported lamp does not shadow it. Directional and rectangle lights have
+   none. */
+static float punctual_occluder_clip(GpuLight light) {
+  uint kind = uint(light.position_kind.w);
+  if (kind == 0u || kind == 4u) {
+    return 0.0f;
+  }
+  float range = light.direction_range.w;
+  return range > 0.0f ? min(0.05f, range * 0.01f) : 0.05f;
+}
+
 /* A point just off a surface on the side `direction` leaves through. */
 static float3 leave_surface(float3 position, float3 geometric,
                             float3 direction) {
@@ -597,13 +613,17 @@ static float3 leave_surface(float3 position, float3 geometric,
 /* Direct irradiance from the layer lights [first_light, end_light) at a
    point with this normal. As in the CPU integrator, a light above the shading
    normal counts even when it is below the geometric surface; its shadow ray
-   leaves on the light's side. */
+   leaves on the light's side. With a positive `direction_weight`, each
+   light's contribution also adds its luminance times that weight, times its
+   direction, to `direction_sum` (w the weighted luminance). */
 static float3 direct_irradiance(thread const Scene &scene,
                                 device const GpuLight *lights,
                                 device const uint *layer_lights,
                                 uint first_light, uint end_light,
                                 float3 position, float3 normal,
-                                float3 geometric, thread Rng &rng) {
+                                float3 geometric, thread Rng &rng,
+                                thread float4 &direction_sum,
+                                float direction_weight) {
   float3 result = float3(0.0f);
   for (uint i = first_light; i < end_light; ++i) {
     GpuLight light = lights[layer_lights[i]];
@@ -617,13 +637,24 @@ static float3 direct_irradiance(thread const Scene &scene,
     }
     float3 visibility = float3(1.0f);
     bool rectangle = uint(light.position_kind.w) == 4u;
-    if (rectangle || light.cone.z != 0.0f) {
+    float shadow_distance =
+        isinf(sample.distance)
+            ? INFINITY
+            : sample.distance - 2.0e-3f - punctual_occluder_clip(light);
+    if ((rectangle || light.cone.z != 0.0f) && shadow_distance > 0.0f) {
       float3 origin = leave_surface(position, geometric, sample.direction);
-      visibility = shadow_transmittance(
-          scene, origin, sample.direction,
-          isinf(sample.distance) ? INFINITY : sample.distance - 2.0e-3f);
+      visibility = shadow_transmittance(scene, origin, sample.direction,
+                                        shadow_distance);
     }
-    result += sample.radiance * visibility * (cosine * sample.weight);
+    float3 contribution =
+        sample.radiance * visibility * (cosine * sample.weight);
+    result += contribution;
+    if (direction_weight > 0.0f) {
+      direction_sum +=
+          float4(sample.direction, 1.0f) *
+          (dot(contribution, float3(0.2126f, 0.7152f, 0.0722f)) *
+           direction_weight);
+    }
   }
   return result;
 }
@@ -682,6 +713,7 @@ kernel void lightmap_gather(
     device float2 *moments [[buffer(16)]],
     device float *backface [[buffer(17)]],
     device const float4 *texel_footprints [[buffer(18)]],
+    device float4 *direction_out [[buffer(19)]],
     texture2d_array<half> textures [[texture(0)]],
     texture2d<float> sky [[texture(1)]],
     texture2d<float> dfg [[texture(2)]],
@@ -715,7 +747,10 @@ kernel void lightmap_gather(
   bool texel_direct = (args.flags & 4u) != 0u;
   bool use_occlusion = (args.flags & 8u) != 0u;
   bool use_backface = (args.flags & 16u) != 0u;
+  bool use_direction = (args.flags & 32u) != 0u;
   bool first_run = args.first_sample == 0u;
+  float4 direction_sum = float4(0.0f);
+  float4 untracked = float4(0.0f);
   uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
   float inverse_samples = 1.0f / float(args.samples);
 
@@ -725,6 +760,7 @@ kernel void lightmap_gather(
     Rng unused;
     unused.state = texel_seed;
     float points = 0.0f;
+    float4 point_directions = float4(0.0f);
     for (int y = -1; y <= 1; ++y) {
       for (int x = -1; x <= 1; ++x) {
         float3 point = texel_position + step_x * (float(x) / 3.0f) +
@@ -733,13 +769,15 @@ kernel void lightmap_gather(
             !footprint_reaches(scene, texel_position, texel_normal, point)) {
           continue;
         }
-        direct_total += direct_irradiance(scene, lights, layer_lights, 0u,
-                                          args.rectangle_first, point,
-                                          texel_normal, texel_normal, unused);
+        direct_total += direct_irradiance(
+            scene, lights, layer_lights, 0u, args.rectangle_first, point,
+            texel_normal, texel_normal, unused, point_directions,
+            use_direction ? 1.0f : 0.0f);
         points += 1.0f;
       }
     }
     direct_total /= points;
+    direction_sum += point_directions / points;
   }
   bool texel_rectangles =
       texel_direct && args.rectangle_first < args.light_count;
@@ -762,13 +800,15 @@ kernel void lightmap_gather(
       if (!footprint_reaches(scene, texel_position, texel_normal, point)) {
         point = texel_position;
       }
-      direct_total += inverse_samples *
-                      direct_irradiance(scene, lights, layer_lights,
-                                        args.rectangle_first,
-                                        args.light_count, point, texel_normal,
-                                        texel_normal, rng);
+      direct_total +=
+          inverse_samples *
+          direct_irradiance(scene, lights, layer_lights, args.rectangle_first,
+                            args.light_count, point, texel_normal,
+                            texel_normal, rng, direction_sum,
+                            use_direction ? inverse_samples : 0.0f);
     }
     float3 direction = cosine_direction(texel_normal, rng.next(), rng.next());
+    float3 first_direction = direction;
     float3 ray_origin = origin;
     float3 throughput = float3(1.0f);
     float3 radiance = float3(0.0f);
@@ -809,7 +849,8 @@ kernel void lightmap_gather(
       radiance += throughput * albedo * (1.0f / kPi) *
                   direct_irradiance(scene, lights, layer_lights, 0u,
                                     args.light_count, hit.position,
-                                    hit.normal, hit.geometric, rng);
+                                    hit.normal, hit.geometric, rng, untracked,
+                                    0.0f);
       throughput *= albedo;
       /* As in the CPU integrator, a direction sampled about the shading
          normal continues even below the geometric surface. */
@@ -833,6 +874,10 @@ kernel void lightmap_gather(
       sample_luminance = args.indirect_clamp;
     }
     indirect_total += sample_irradiance;
+    if (use_direction) {
+      direction_sum += float4(first_direction, 1.0f) *
+                       (sample_luminance * inverse_samples);
+    }
     luminance_sum += sample_luminance;
     luminance_squared_sum += sample_luminance * sample_luminance;
   }
@@ -849,6 +894,10 @@ kernel void lightmap_gather(
     float visibility =
         (float(args.sample_count) - occluded) * inverse_samples;
     occlusion[texel] = first_run ? visibility : occlusion[texel] + visibility;
+  }
+  if (use_direction) {
+    direction_out[texel] =
+        first_run ? direction_sum : direction_out[texel] + direction_sum;
   }
   if (use_backface) {
     float share = backface_hits * inverse_samples;
@@ -918,7 +967,7 @@ id<MTLBuffer> shared_buffer(id<MTLDevice> device, NSUInteger length) {
 
 } // namespace
 
-struct VkrBakeMetalContext {
+struct VkrBakeGpuContext {
   id<MTLDevice> device = nil;
   id<MTLCommandQueue> queue = nil;
   id<MTLAccelerationStructure> scene = nil;
@@ -942,7 +991,7 @@ struct VkrBakeMetalContext {
   id<MTLTexture> dfg = nil;
 };
 
-bool vkr_bake_metal_available() {
+bool vkr_bake_gpu_available() {
   @autoreleasepool {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     return device && device.supportsRaytracing;
@@ -956,7 +1005,7 @@ namespace {
    which bounds the interpolated one) falls below the cutoff. Blended surfaces
    always stop a traversal and are resolved after it, so they gain nothing
    from testing. */
-bool triangle_alpha_tested(const VkrBakeMetalContext *context,
+bool triangle_alpha_tested(const VkrBakeGpuContext *context,
                            const VkrBakeScene &scene, uint32_t triangle) {
   const VkrBakeTriangle &source = scene.triangles[triangle];
   const uint32_t material = source.material_index;
@@ -978,7 +1027,7 @@ bool triangle_alpha_tested(const VkrBakeMetalContext *context,
 /* Two geometries over the corner positions: opaque triangles, which commit
    during traversal, then cutout triangles that can pass, which the kernels
    test as candidates. An empty group gets no geometry. */
-bool build_acceleration_structure(VkrBakeMetalContext *context,
+bool build_acceleration_structure(VkrBakeGpuContext *context,
                                   const VkrBakeScene &scene) {
   const uint32_t triangle_count = (uint32_t)scene.triangles.size();
   context->as_indices = shared_buffer(
@@ -1060,7 +1109,7 @@ bool build_acceleration_structure(VkrBakeMetalContext *context,
 
 /* Corner attributes, triangle materials and positions, three corners per
    triangle in the scene's (BVH-partitioned) triangle order. */
-bool upload_triangles(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
+bool upload_triangles(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
   const NSUInteger count = scene.triangles.size();
   context->positions =
       shared_buffer(context->device, count * 9u * sizeof(float));
@@ -1101,7 +1150,7 @@ bool upload_triangles(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
 
 /* Materials and their base color and emission textures, resampled into one
    RGBA16F array of kTextureEdge layers. */
-bool upload_materials(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
+bool upload_materials(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
   std::map<std::pair<uint32_t, bool>, int32_t> layer_of;
   std::vector<VkrBakeMaterialTextureRef> layer_refs;
   auto layer_for = [&](VkrBakeMaterialTextureRef ref) -> int32_t {
@@ -1201,7 +1250,7 @@ bool upload_materials(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
   return true;
 }
 
-bool upload_lights(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
+bool upload_lights(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
   const NSUInteger count = std::max<size_t>(scene.lights.size(), 1u);
   context->lights = shared_buffer(context->device, count * sizeof(GpuLight));
   if (!context->lights) {
@@ -1229,7 +1278,7 @@ bool upload_lights(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
 }
 
 /* The renderer's split-sum table, as the CPU BSDF reads it. */
-bool upload_dfg(VkrBakeMetalContext *context) {
+bool upload_dfg(VkrBakeGpuContext *context) {
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
                                    width:VKR_DFG_LUT_SIZE
@@ -1251,7 +1300,7 @@ bool upload_dfg(VkrBakeMetalContext *context) {
 
 /* Equirectangular sky from the CPU scene environment, so escaped paths see
    the same radiance as the reference integrator up to filtering. */
-bool upload_sky(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
+bool upload_sky(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
                                    width:kSkyWidth
@@ -1304,12 +1353,12 @@ make_pipeline(id<MTLDevice> device, id<MTLLibrary> library, NSString *name) {
 
 } // namespace
 
-VkrBakeMetalContext *vkr_bake_metal_create(const VkrBakeScene &scene) {
+VkrBakeGpuContext *vkr_bake_gpu_create(const VkrBakeScene &scene) {
   @autoreleasepool {
     if (scene.triangles.empty()) {
       return nullptr;
     }
-    VkrBakeMetalContext *context = new (std::nothrow) VkrBakeMetalContext();
+    VkrBakeGpuContext *context = new (std::nothrow) VkrBakeGpuContext();
     if (!context) {
       return nullptr;
     }
@@ -1350,10 +1399,10 @@ VkrBakeMetalContext *vkr_bake_metal_create(const VkrBakeScene &scene) {
   }
 }
 
-void vkr_bake_metal_destroy(VkrBakeMetalContext *context) { delete context; }
+void vkr_bake_gpu_destroy(VkrBakeGpuContext *context) { delete context; }
 
-bool vkr_bake_metal_update_lighting(VkrBakeMetalContext *context,
-                                    const VkrBakeScene &scene) {
+bool vkr_bake_gpu_update_lighting(VkrBakeGpuContext *context,
+                                  const VkrBakeScene &scene) {
   @autoreleasepool {
     return context && upload_lights(context, scene) &&
            upload_sky(context, scene);
@@ -1422,10 +1471,9 @@ bool finish(id<MTLCommandBuffer> command, double *in_out_seconds) {
 
 } // namespace
 
-bool vkr_bake_metal_trace_benchmark(
-    VkrBakeMetalContext *context,
-    const std::vector<VkrBakeLightmapTexel> &texels, uint32_t samples,
-    uint32_t seed, std::vector<float32_t> *out_hit_fraction,
+bool vkr_bake_gpu_trace_benchmark(
+    VkrBakeGpuContext *context, const std::vector<VkrBakeLightmapTexel> &texels,
+    uint32_t samples, uint32_t seed, std::vector<float32_t> *out_hit_fraction,
     double *out_gpu_seconds) {
   @autoreleasepool {
     if (!context || !out_hit_fraction || !out_gpu_seconds || samples == 0u) {
@@ -1472,11 +1520,11 @@ bool vkr_bake_metal_trace_benchmark(
   }
 }
 
-bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
-                           const std::vector<VkrBakeLightmapTexel> &texels,
-                           const VkrBakeMetalLayer &layer,
-                           const VkrBakeMetalGatherSettings &settings,
-                           VkrBakeMetalGatherResult *out_result) {
+bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
+                         const std::vector<VkrBakeLightmapTexel> &texels,
+                         const VkrBakeGpuLayer &layer,
+                         const VkrBakeGpuGatherSettings &settings,
+                         VkrBakeGpuGatherResult *out_result) {
   @autoreleasepool {
     if (!context || !out_result || settings.samples == 0u ||
         settings.max_depth == 0u ||
@@ -1485,12 +1533,13 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
       return false;
     }
     const NSUInteger count = texels.size();
-    VkrBakeMetalGatherResult &result = *out_result;
+    VkrBakeGpuGatherResult &result = *out_result;
     result.direct.assign(count, vec3_zero());
     result.indirect.assign(count, vec3_zero());
     result.indirect_variance.assign(count, 0.0f);
     result.occlusion.assign(settings.occlusion ? count : 0u, 1.0f);
     result.backface.assign(settings.backface ? count : 0u, 0.0f);
+    result.direction.assign(settings.direction ? count : 0u, vec4_zero());
     result.gpu_seconds = 0.0;
     if (count == 0u) {
       return true;
@@ -1512,9 +1561,13 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
     id<MTLBuffer> backface =
         settings.backface ? shared_buffer(context->device, count * sizeof(float))
                           : moments;
+    id<MTLBuffer> direction =
+        settings.direction
+            ? shared_buffer(context->device, count * 4u * sizeof(float))
+            : moments;
     id<MTLBuffer> footprints = nil;
     if (!indirect || !direct || !moments || !layer_lights || !occlusion ||
-        !backface ||
+        !backface || !direction ||
         !upload_texels(context->device, texels, &positions, &normals,
                        &footprints)) {
       return false;
@@ -1534,10 +1587,10 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
       std::memcpy(layer_lights.contents, ordered.data(),
                   ordered.size() * sizeof(uint32_t));
     }
-    const uint32_t flags = (layer.sky ? 1u : 0u) | (layer.emission ? 2u : 0u) |
-                           (layer.texel_direct ? 4u : 0u) |
-                           (settings.occlusion ? 8u : 0u) |
-                           (settings.backface ? 16u : 0u);
+    const uint32_t flags =
+        (layer.sky ? 1u : 0u) | (layer.emission ? 2u : 0u) |
+        (layer.texel_direct ? 4u : 0u) | (settings.occlusion ? 8u : 0u) |
+        (settings.backface ? 16u : 0u) | (settings.direction ? 32u : 0u);
     const NSUInteger width = context->gather.threadExecutionWidth;
     /* Each batch of texels takes its samples in runs of
        kSamplesPerDispatch, a command buffer each. */
@@ -1586,6 +1639,7 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
       [encoder setBuffer:moments offset:0u atIndex:16u];
       [encoder setBuffer:backface offset:0u atIndex:17u];
       [encoder setBuffer:footprints offset:0u atIndex:18u];
+      [encoder setBuffer:direction offset:0u atIndex:19u];
       [encoder setTexture:context->textures atIndex:0u];
       [encoder setTexture:context->sky atIndex:1u];
       [encoder setTexture:context->dfg atIndex:2u];
@@ -1625,6 +1679,83 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
         result.backface[i] = std::clamp(share[i], 0.0f, 1.0f);
       }
     }
+    if (settings.direction) {
+      const float *sums = static_cast<const float *>(direction.contents);
+      for (NSUInteger i = 0u; i < count; ++i) {
+        result.direction[i] = vec4_new(sums[4u * i], sums[4u * i + 1u],
+                                       sums[4u * i + 2u], sums[4u * i + 3u]);
+      }
+    }
     return true;
   }
+}
+
+/* Metal has no probe gather yet (owner decision 2026-10-09: written in a Mac
+   session), so the diffuse baker bakes probes on the CPU here. */
+bool vkr_bake_gpu_probe_gather_available() { return false; }
+
+bool vkr_bake_gpu_gather_probes(VkrBakeGpuContext *context,
+                                const std::vector<Vec3> &positions,
+                                const std::vector<uint32_t> &seeds,
+                                const VkrBakeGpuLayer &layer,
+                                const VkrBakeGpuProbeSettings &settings,
+                                std::vector<float32_t> *out_sh,
+                                double *out_gpu_seconds) {
+  (void)context;
+  (void)positions;
+  (void)seeds;
+  (void)layer;
+  (void)settings;
+  (void)out_sh;
+  (void)out_gpu_seconds;
+  return false;
+}
+
+/* The BC page encoders run on Vulkan only (owner decision 2026-10-09): an
+   Apple host bakes for the tiled pipeline, which samples no BC plane. */
+bool vkr_bake_gpu_bc_available(const VkrBakeGpuContext *context) {
+  (void)context;
+  return false;
+}
+
+bool vkr_bake_gpu_encode_bc6h(VkrBakeGpuContext *context, const float32_t *rgba,
+                              uint32_t width, uint32_t height,
+                              std::vector<uint8_t> *out_blocks,
+                              double *out_gpu_seconds) {
+  (void)context;
+  (void)rgba;
+  (void)width;
+  (void)height;
+  (void)out_blocks;
+  *out_gpu_seconds = 0.0;
+  std::fprintf(stderr, "The BC encoders are unavailable on Metal\n");
+  return false;
+}
+
+bool vkr_bake_gpu_encode_bc7(VkrBakeGpuContext *context, const uint8_t *rgba8,
+                             uint32_t width, uint32_t height,
+                             std::vector<uint8_t> *out_blocks,
+                             double *out_gpu_seconds) {
+  (void)context;
+  (void)rgba8;
+  (void)width;
+  (void)height;
+  (void)out_blocks;
+  *out_gpu_seconds = 0.0;
+  std::fprintf(stderr, "The BC encoders are unavailable on Metal\n");
+  return false;
+}
+
+bool vkr_bake_gpu_decode_bc(VkrBakeGpuContext *context,
+                            VkrBakeGpuBcFormat format, const uint8_t *blocks,
+                            uint32_t width, uint32_t height,
+                            std::vector<float32_t> *out_rgba) {
+  (void)context;
+  (void)format;
+  (void)blocks;
+  (void)width;
+  (void)height;
+  (void)out_rgba;
+  std::fprintf(stderr, "The BC encoders are unavailable on Metal\n");
+  return false;
 }

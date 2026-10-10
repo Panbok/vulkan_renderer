@@ -47,6 +47,7 @@
 #include "world/default.slang"
 #include "world/deferred.slang"
 #include "ibl/clouds.slang"
+#include "world/diffuse_volume.slang"
 #include "world/local_shadow_transmission.slang"
 #include "picking/default.slang"
 #include "common/fullscreen.slang"

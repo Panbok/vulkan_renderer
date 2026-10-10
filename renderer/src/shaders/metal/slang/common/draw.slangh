@@ -71,8 +71,12 @@ struct VkrMetalPacketTemporalDrawState
 };
 
 struct VkrMetalPacketDiffuseVolume {
+    uint64_t indirection;
+    uint64_t probes;
+    uint64_t moments;
+    uint64_t sh;
     float4 origin;
-    float4 inverse_spacing;
+    float4 params;
     uint4 dimensions;
 };
 
@@ -226,7 +230,7 @@ struct VkrMetalPacketFrameRoot
     Texture2DArray<float> local_shadow_map;
     StructuredBuffer<VkrLocalShadowView> local_shadow_views;
     Texture2D<float4> dfg_lut;
-    Texture2D<float4> diffuse_volume;
+    uint64_t diffuse_volume_reserved;
     VkrMetalPacketDiffuseVolume* diffuse_volume_params;
     VkrMetalPacketLtc* ltc;
     VkrFogParams* fog;

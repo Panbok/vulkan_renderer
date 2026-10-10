@@ -235,10 +235,12 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
   const bool8_t cube_array =
       prepared->description.type == VKR_TEXTURE_TYPE_CUBE_MAP_ARRAY;
   const bool8_t array = prepared->description.type == VKR_TEXTURE_TYPE_2D_ARRAY;
+  /* A one-slice array, such as a one-page lightmap set with one lamp layer,
+     keeps its array view so shaders index every set alike. */
   const bool8_t valid_layers =
       (prepared->description.type == VKR_TEXTURE_TYPE_2D &&
        prepared->upload_array_layers == 1u) ||
-      (array && prepared->upload_array_layers > 1u) ||
+      (array && prepared->upload_array_layers >= 1u) ||
       (cube && prepared->upload_array_layers == 6u) ||
       (cube_array && prepared->upload_array_layers > 6u &&
        prepared->upload_array_layers % 6u == 0u);

@@ -474,6 +474,9 @@ typedef struct VkrShadowPendingHistory {
 /** Camera state that drives local-shadow priority and the fade-in. */
 typedef struct VkrLocalShadowCamera {
   Mat4 view;
+  /** Faces the camera cannot see take no dynamic square; an all-zero
+   * projection sees every face. */
+  Mat4 projection;
   Vec3 position;
   /** Seconds since the previous resolve; bounds each strength step. */
   float32_t delta_seconds;
@@ -495,9 +498,16 @@ typedef struct VkrLocalShadowFaceHistory {
   uint64_t last_submit_value;
   /** Transmission layer + 1 drawn with the face; zero without one. */
   uint32_t transmission_layer;
-  /** No dynamic caster or pending publication could reach the content. */
+  /** The content holds no dynamic caster: it was drawn with the static
+   * casters only, or with every caster while none dynamic could reach it,
+   * and no publication was pending. Dynamic squares are never committed. */
   bool8_t static_only_contents;
 } VkrLocalShadowFaceHistory;
+
+/* Lights the local-shadow cache holds: the scene table's and the baked
+   lamps a frame shadows with its moving casters. */
+#define VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX                                       \
+  (VKR_MAX_SCENE_POINT_LIGHTS + VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX)
 
 /** One resident light of the local-shadow cache. */
 typedef struct VkrLocalShadowCacheLight {
@@ -529,7 +539,7 @@ typedef struct VkrLocalShadowCacheLight {
  * a frame publishes is rebuilt from it each frame.
  */
 typedef struct VkrLocalShadowCache {
-  VkrLocalShadowCacheLight lights[VKR_MAX_SCENE_POINT_LIGHTS];
+  VkrLocalShadowCacheLight lights[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
   uint32_t light_count;
   uint32_t atlas_layer_count;
   uint32_t face_budget;
@@ -602,6 +612,10 @@ typedef struct VkrShadowSystem {
   VkrLocalLightContributionSample light_contribution;
   /** Diagnostic: rank by distance even when contribution is measured. */
   bool8_t light_contribution_ranking_disabled;
+  /** Render ids of the baked lamps the last resolve selected; they keep
+   * their place against stronger lamps by the incumbent bonus. */
+  uint32_t baked_lamp_render_ids[VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX];
+  uint32_t baked_lamp_selected_count;
 
   VkrShadowDepthRangeSample pending_sdsm_sample;
   float32_t sdsm_linear_near;
@@ -645,11 +659,18 @@ void vkr_shadow_system_set_light_contribution_sample(
  * light resident, schedules the faces whose content is invalid or stale in
  * priority order within the face budget, and fills the frame's payload. The
  * drawn faces commit with vkr_shadow_system_commit_frame().
+ *
+ * `baked_lamps` are the static lamps the desktop pipeline lights through
+ * its lightmap (ADR-104), or NULL. The resolve shadows
+ * the moving casters of at most VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX of
+ * them: those whose light is strongest at a moving caster that meets their
+ * range on a face the camera may see.
  */
 void vkr_shadow_system_resolve_local_shadows(
     VkrShadowSystem *system, VkrRetainedLocalShadowToken retained_token,
     const struct VkrWorldPassPayload *candidates,
     const struct VkrPointLight *lights, uint32_t light_count,
+    const struct VkrPointLight *baked_lamps, uint32_t baked_lamp_count,
     const VkrLocalShadowCamera *camera,
     struct VkrLocalShadowPassPayload *out_payload);
 

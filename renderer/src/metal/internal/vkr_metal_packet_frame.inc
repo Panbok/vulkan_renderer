@@ -217,7 +217,6 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
   if (!has_global_ibl && (*out_frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u) {
     renderer->ibl_black_last_use_submit_value = renderer->submit_value + 1u;
   }
-  frame_root->diffuse_volume_texture_id = upload->diffuse_volume_texture_id;
   frame_root->diffuse_volume_params = upload->diffuse_volume_params_gpu;
   frame_root->ltc = upload->ltc_gpu;
   frame_root->sheen = upload->sheen_gpu;
@@ -1133,6 +1132,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   root->visible_capacity = renderer->prepared_frame.gpu_draw_visible_capacity;
   root->view_count = view_count;
   root->icb_view_group_size = renderer->gpu_draw_icb_view_group_size;
+  root->static_candidate_count = renderer->gpu_draw_static_count;
   root->views = upload->gpu_draw_views_gpu;
   root->lod_views = upload->gpu_draw_lod_views_gpu;
   if (!root->views || !root->lod_views)
@@ -1580,6 +1580,58 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_sky_light(
   /* Global reflections read the chain through the sky record. */
   upload->sky_cpu->cloud_sky_light_face_size = extent;
   upload->sky_cpu->cloud_sky_light = upload->cloud_sky_light_radiance_gpu;
+  return true_v;
+}
+
+/* Composes the volume's active layers into its SH texture when the
+   binding's composition differs from the last submitted one. */
+vkr_internal bool8_t vkr_metal_packet_prepare_diffuse_volume_compose(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  prepared->active = false_v;
+  upload->diffuse_volume_composed = false_v;
+  const VkrDiffuseVolumeBinding *volume =
+      packet->input.lighting ? &packet->input.lighting->diffuse_volume : NULL;
+  if (!volume || volume->indirection.id == 0u ||
+      !renderer->diffuse_volume_compose_pipeline)
+    return true_v;
+  if (renderer->diffuse_volume_composed_sh.id == volume->sh.id &&
+      renderer->diffuse_volume_composed_sh.generation ==
+          volume->sh.generation &&
+      renderer->diffuse_volume_composition == volume->composition)
+    return true_v;
+  VkrMetalPacketTexture *layer_sh =
+      vkr_metal_packet_resolve_texture(renderer, volume->layer_sh);
+  VkrMetalPacketTexture *sh =
+      vkr_metal_packet_resolve_texture(renderer, volume->sh);
+  if (!layer_sh || !sh)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketDiffuseVolumeComposeRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketDiffuseVolumeComposeRoot){
+      .layer_sh = layer_sh->resource.resource_id,
+      .sh = sh->resource.resource_id,
+      .probe_count = volume->probe_count,
+      .rows = (volume->probe_count + VKR_DIFFUSE_VOLUME_ROW_PROBES - 1u) /
+              VKR_DIFFUSE_VOLUME_ROW_PROBES,
+      .active_layer_count = volume->active_layer_count,
+  };
+  for (uint32_t i = 0u; i < volume->active_layer_count; ++i) {
+    root->active_layers[i] = volume->active_layers[i];
+    root->active_weights[i] = volume->active_weights[i];
+  }
+  layer_sh->last_use_submit_value = renderer->submit_value + 1u;
+  sh->last_use_submit_value = renderer->submit_value + 1u;
+  prepared->diffuse_volume_compose.root = root_gpu;
+  prepared->diffuse_volume_compose.probe_count = volume->probe_count;
+  prepared->active = true_v;
+  upload->diffuse_volume_composed = true_v;
+  upload->diffuse_volume_compose_sh = volume->sh;
+  upload->diffuse_volume_compose_revision = volume->composition;
   return true_v;
 }
 
@@ -2172,17 +2224,24 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         packet->input.shadow->config_override, (uint32_t)target.width,
         (uint32_t)target.height, result);
   }
-  if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW) {
-    /* The face draws into its own atlas square. It clears only that square,
-       even without casters, unless its layer was cleared whole this
-       submission. Render slot i draws with culling view i. */
-    const uint32_t slot = pass->desc.repeat_index;
-    if (!packet->input.local_shadow ||
-        slot >= packet->input.local_shadow->render_count)
+  if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW ||
+      kind == VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC) {
+    /* The face draws into its own atlas square. A static square clears only
+       that square, even without casters, unless its layer was cleared whole
+       this submission; a dynamic square draws over the copy of its static
+       square. Render slot i draws with culling view i. */
+    const VkrLocalShadowPassPayload *local = packet->input.local_shadow;
+    const bool8_t dynamic = kind == VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC;
+    if (!local)
+      return false_v;
+    const uint32_t dynamic_first = vkr_local_shadow_dynamic_render_first(local);
+    const uint32_t slot =
+        dynamic ? dynamic_first + pass->desc.repeat_index
+                : pass->desc.repeat_index;
+    if (slot >= (dynamic ? local->render_count : dynamic_first))
       return false_v;
     /* A face keeping its opaque content draws nothing. */
-    if ((packet->input.local_shadow->retained_opaque_mask &
-         (UINT64_C(1) << slot)) != 0u)
+    if ((local->retained_opaque_mask & (UINT64_C(1) << slot)) != 0u)
       return true_v;
     const uint32_t face = packet->input.local_shadow->render_views[slot];
     if (packet->input.world && renderer->gpu_draw_count > 0u &&
@@ -2199,8 +2258,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     prepared->indirect.viewport = (MTLViewport){x, y, size, size, 0.0, 1.0};
     prepared->indirect.clear_rect = (MTLScissorRect){x, y, size, size};
     prepared->indirect.clear_depth =
-        !vkr_local_shadow_render_layer_cleared(packet->input.local_shadow,
-                                               slot);
+        !dynamic && !vkr_local_shadow_render_layer_cleared(local, slot);
     prepared->active = true_v;
     return true_v;
   }
@@ -2354,7 +2412,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
                                               upload, result);
   }
   if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
-    return vkr_metal_packet_prepare_transfer(renderer, pass, prepared, upload);
+    return vkr_metal_packet_prepare_transfer(renderer, pass, packet, prepared,
+                                             upload);
   switch (prepared->kind) {
   case VKR_RG_EXECUTOR_IBL_BAKE:
     return vkr_metal_packet_prepare_ibl(renderer, packet, prepared, upload,
@@ -2374,6 +2433,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT:
     return vkr_metal_packet_prepare_cloud_sky_light(renderer, packet, prepared,
                                                     upload);
+  case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
+    return vkr_metal_packet_prepare_diffuse_volume_compose(renderer, packet,
+                                                           prepared, upload);
   case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
     return vkr_metal_packet_prepare_exposure_histogram(renderer, pass, packet,
                                                        prepared, upload);
@@ -3125,9 +3187,11 @@ vkr_internal bool8_t vkr_metal_packet_encode_compute_run(
     /* The cloud-lit sky light also writes SH coefficients that later
        encoders read outside the graph's resources. */
     ibl_baked =
-        ibl_baked || (prepared->active &&
-                      (prepared->kind == VKR_RG_EXECUTOR_IBL_BAKE ||
-                       prepared->kind == VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT));
+        ibl_baked ||
+        (prepared->active &&
+         (prepared->kind == VKR_RG_EXECUTOR_IBL_BAKE ||
+          prepared->kind == VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT ||
+          prepared->kind == VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE));
   }
 
   id<MTL4ComputeCommandEncoder> encoder =
@@ -3729,6 +3793,12 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
        is the ADR-029 rollback: a cancelled frame commits nothing and the
        previous contents stay authoritative. */
     vkr_rg_commit_retained_state(renderer->graph);
+    if (submission.frame_upload.diffuse_volume_composed) {
+      renderer->diffuse_volume_composed_sh =
+          submission.frame_upload.diffuse_volume_compose_sh;
+      renderer->diffuse_volume_composition =
+          submission.frame_upload.diffuse_volume_compose_revision;
+    }
     if (submission.frame_upload.ibl_bake_recorded)
       vkr_metal_packet_publish_ibl_bakes(renderer, submit_value);
     if (renderer->drawable) {

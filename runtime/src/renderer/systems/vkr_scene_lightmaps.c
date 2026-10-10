@@ -233,6 +233,10 @@ void vkr_scene_reset_lightmaps(VkrScene *scene,
     vkr_texture_system_release_by_handle(&assets->texture_system,
                                          lightmaps->texture);
   }
+  if (assets && lightmaps->direction.id != 0u) {
+    vkr_texture_system_release_by_handle(&assets->texture_system,
+                                         lightmaps->direction);
+  }
   free(lightmaps->instances);
   free(lightmaps->rects);
   free(lightmaps->bound);
@@ -345,18 +349,20 @@ void vkr_scene_lightmap_binding(const VkrScene *scene,
   vkr_scene_light_layer_weights(scene, lightmaps->layers,
                                 lightmaps->layer_count, weights);
   out_binding->texture = lightmaps->texture;
+  out_binding->direction = lightmaps->direction;
   out_binding->page_size = lightmaps->page_size;
-  out_binding->layer_count = lightmaps->layer_count;
+  out_binding->layer_count = lightmaps->slice_layer_count;
   out_binding->rects = lightmaps->rects;
   out_binding->rect_count = lightmaps->instance_count;
   /* At most two sun keys weigh anything, and a set holds at most
-     VKR_LIGHT_LAYER_MAX_LAMP_GROUPS lamp groups. */
-  for (uint32_t layer = 0u; layer < lightmaps->layer_count; ++layer) {
-    if (weights[layer] > 0.0f &&
+     VKR_LIGHT_LAYER_MAX_LAMP_GROUPS lamp groups. Active layers name texture
+     slices within a page. */
+  for (uint32_t slice = 0u; slice < lightmaps->slice_layer_count; ++slice) {
+    const float32_t weight = weights[lightmaps->slice_layers[slice]];
+    if (weight > 0.0f &&
         out_binding->active_layer_count < VKR_LIGHTMAP_MAX_ACTIVE_LAYERS) {
-      out_binding->active_layers[out_binding->active_layer_count] = layer;
-      out_binding->active_weights[out_binding->active_layer_count++] =
-          weights[layer];
+      out_binding->active_layers[out_binding->active_layer_count] = slice;
+      out_binding->active_weights[out_binding->active_layer_count++] = weight;
     }
   }
 }

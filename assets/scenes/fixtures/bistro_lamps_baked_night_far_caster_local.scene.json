@@ -1,0 +1,173 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": true,
+    "intensity": 1.0,
+    "diffuse_intensity": 1.0,
+    "specular_intensity": 1.0
+  },
+  "atmosphere": {
+    "enabled": true,
+    "sun_direction": [
+      0.61237,
+      -0.5,
+      0.61237
+    ]
+  },
+  "clouds": {
+    "enabled": true,
+    "base_altitude_m": 1500,
+    "top_altitude_m": 4000,
+    "coverage": 0.45,
+    "density": 0.02,
+    "wind_mps": [
+      10,
+      0
+    ]
+  },
+  "lightmaps": {
+    "path": "assets/textures/bistro_lamps_local.vklm"
+  },
+  "reflection_probes": [
+    {
+      "enabled": true,
+      "center": [
+        -7.5,
+        2.2,
+        9.0
+      ],
+      "extents": [
+        5.5,
+        2.5,
+        8.0
+      ],
+      "blend_distance": 0.75,
+      "intensity": 1.0,
+      "diffuse_intensity": 1.0,
+      "specular_intensity": 0.0,
+      "cubemap": {
+        "base_path": "assets/textures/bistro_indoor_probe",
+        "extension": "png"
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "SceneRoot",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "directional_light": {
+        "enabled": true,
+        "color": [
+          0.77092856,
+          0.9677925,
+          1.0
+        ],
+        "intensity": 1.91198,
+        "direction_local": [
+          -0.61237,
+          0.5,
+          -0.61237
+        ],
+        "atmosphere_sun": true
+      }
+    },
+    {
+      "name": "Bistro Lights",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "path": "assets/models/bistro-lights-lightmapped.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Mannequin",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          -33.53,
+          -60.0,
+          -2.01
+        ],
+        "rot": [
+          0.0,
+          0.3907,
+          0.0,
+          0.9205
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "path": "assets/characters/mannequin/mannequin.vkb",
+        "pipeline_domain": "world",
+        "dynamic_caster": true
+      },
+      "animation": {
+        "path": "assets/characters/mannequin/mannequin.vka",
+        "clip": 15,
+        "loop": true
+      }
+    }
+  ]
+}

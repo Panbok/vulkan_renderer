@@ -365,6 +365,51 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
 }
 #endif
 
+/* The local faces this submission draws, by the casters each draws. */
+vkr_internal void
+vkr_renderer_record_local_shadow_metrics(VkrRenderer *renderer,
+                                         const VkrFrameInput *packet) {
+  VkrShadowMetrics *shadow = &renderer->frame_metrics.shadow;
+  shadow->local_faces_static = 0u;
+  shadow->local_faces_dynamic = 0u;
+  shadow->local_faces_copied = 0u;
+  shadow->local_faces_full = 0u;
+  shadow->local_copy_texels = 0u;
+  shadow->local_dynamic_faces_wanted = 0u;
+  shadow->local_dynamic_faces_dropped = 0u;
+  shadow->local_dynamic_layers = 0u;
+  shadow->baked_lamps_selected = 0u;
+  shadow->baked_lamp_candidates = 0u;
+  const VkrLocalShadowPassPayload *local = packet ? packet->local_shadow : NULL;
+  if (!local)
+    return;
+  shadow->baked_lamps_selected = local->baked_lamp_count;
+  shadow->baked_lamp_candidates = local->baked_lamp_candidates;
+  const uint32_t dynamic_first = vkr_local_shadow_dynamic_render_first(local);
+  for (uint32_t slot = 0u; slot < dynamic_first; ++slot) {
+    if ((local->retained_opaque_mask & (UINT64_C(1) << slot)) != 0u)
+      continue;
+    if ((local->static_render_mask & (UINT64_C(1) << slot)) != 0u)
+      shadow->local_faces_static++;
+    else
+      shadow->local_faces_full++;
+  }
+  for (uint32_t slot = dynamic_first; slot < local->render_count; ++slot) {
+    const float32_t side =
+        local->views[local->render_views[slot]].atlas_rect.z *
+        (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
+    shadow->local_copy_texels += (uint64_t)side * (uint64_t)side;
+  }
+  shadow->local_faces_dynamic = local->dynamic_render_count;
+  shadow->local_faces_copied = local->dynamic_render_count;
+  shadow->local_dynamic_faces_wanted = local->dynamic_faces_wanted;
+  shadow->local_dynamic_faces_dropped =
+      local->dynamic_faces_wanted > local->dynamic_render_count
+          ? local->dynamic_faces_wanted - local->dynamic_render_count
+          : 0u;
+  shadow->local_dynamic_layers = local->dynamic_layer_count;
+}
+
 vkr_internal void
 vkr_renderer_record_gpu_candidate_metrics(VkrRenderer *renderer,
                                           const VkrFrameInput *packet) {
@@ -1360,6 +1405,7 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .supports_texture_astc_hdr = true_v,
       .supports_texture_bc7 = true_v,
       .supports_texture_bc5 = true_v,
+      .graphics_pipeline = renderer->graphics_pipeline,
       .actual_target_kind = renderer->present_target.kind,
       .actual_present_mode = actual_present_mode,
       .actual_target_image_count =
@@ -1456,6 +1502,7 @@ vkr_internal void vkr_renderer_backend_get_device_information(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC7_UNORM),
       .supports_texture_bc5 = vkr_vulkan_renderer_texture_format_supported(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC5_UNORM),
+      .graphics_pipeline = renderer->graphics_pipeline,
       .actual_target_kind = renderer->present_target.kind,
       .actual_present_mode = present_mode,
       .actual_target_image_count = renderer->present_target.image_count,
@@ -2337,6 +2384,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
   renderer->frame_metrics.world.draw_calls_issued =
       observed->indexed_draw_count;
   vkr_renderer_record_gpu_candidate_metrics(renderer, &prepared.frame.input);
+  vkr_renderer_record_local_shadow_metrics(renderer, &prepared.frame.input);
   /* From this submit's own result: packet lowering ran on this thread now,
      while `observed` may still describe an older completed frame. */
   renderer->frame_metrics.packet_build = result.packet_build;
@@ -2474,6 +2522,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
   renderer->frame_metrics.world.draws_issued = world_draw_count;
   renderer->frame_metrics.world.draw_calls_issued = world_draw_count;
   vkr_renderer_record_gpu_candidate_metrics(renderer, &prepared.frame.input);
+  vkr_renderer_record_local_shadow_metrics(renderer, &prepared.frame.input);
   /* Packet lowering happened on this thread during this submit, so it comes
      from the call's own result rather than from `timing_result`, which may
      still describe an older completed frame. */

@@ -203,6 +203,16 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId shadow_sdsm_occupied_pixels;
   VkrMetricId shadow_sdsm_linear_near;
   VkrMetricId shadow_sdsm_linear_far;
+  VkrMetricId shadow_local_faces_static;
+  VkrMetricId shadow_local_faces_dynamic;
+  VkrMetricId shadow_local_faces_copied;
+  VkrMetricId shadow_local_faces_full;
+  VkrMetricId shadow_local_copy_texels;
+  VkrMetricId shadow_local_dynamic_faces_wanted;
+  VkrMetricId shadow_local_dynamic_faces_dropped;
+  VkrMetricId shadow_local_dynamic_layers;
+  VkrMetricId shadow_baked_lamps_selected;
+  VkrMetricId shadow_baked_lamp_candidates;
 
   VkrMetricId rg_live_images;
   VkrMetricId rg_peak_images;

@@ -30,6 +30,10 @@ struct VkrMetalPacketGpuDrawRoot {
   float hzb_depth_epsilon;
   uint icb_view_group_size;
   device struct VkrMetalCustomCompaction *custom_compaction;
+  // Candidates below it are static; a local face view whose LOD flags
+  // select one mobility skips the others.
+  uint static_candidate_count;
+  uint reserved_3;
 };
 
 // The camera view's draw buckets per Custom graph slot (ADR-096); slot 0 is
@@ -206,9 +210,19 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   uint classification_index = view_index * root.visible_capacity + index;
   uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
   uint bucket = vkr_gpu_draw_state_bucket(candidate.state_flags);
+  /* A static square holds the static casters; a dynamic square adds the
+     dynamic ones over a copy of it. */
+  uint mobility = root.lod_views[view_index].flags;
+  bool static_candidate = index < root.static_candidate_count;
+  bool mobility_excluded =
+      ((mobility & VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY) != 0u &&
+       !static_candidate) ||
+      ((mobility & VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY) != 0u &&
+       static_candidate);
   if ((candidate_flags & view.required_candidate_flags) !=
           view.required_candidate_flags ||
       (candidate_flags & view.excluded_candidate_flags) != 0u ||
+      mobility_excluded ||
       !vkr_metal_packet_candidate_in_frustum(root, view, candidate)) {
     root.classifications[classification_index] = 0u;
     return;
