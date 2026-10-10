@@ -1091,6 +1091,11 @@ static void level_lint_brushes(LevelGrid *grid, LevelIssues *issues) {
    piece of a blockout shape (its entity), with its world planes and box. */
 typedef struct LevelFightSolid {
   VkrEntityId entity;
+  /* The nearest mover at or above it, or none; with `open`, this solid is
+     its copy at that mover's open pose. A moving solid hides nothing: what
+     it covers at one pose shows at the other. */
+  VkrEntityId mover;
+  bool8_t open;
   uint32_t first_plane;
   uint32_t plane_count;
   Vec3 lo;
@@ -1136,8 +1141,9 @@ static bool8_t level_reserve(void **items, uint32_t *capacity, uint64_t needed,
 }
 
 /* Adds the faces of `geometry`, built in world space from `planes`, as one
-   solid of `entity`. */
+   solid of `entity` that `mover` moves (open: at its open pose). */
 static void level_fight_add(LevelFightSet *set, VkrEntityId entity,
+                            VkrEntityId mover, bool8_t open,
                             const VkrBrushGeometry *geometry,
                             const VkrBrushPlane *planes, uint32_t plane_count) {
   if (set->failed ||
@@ -1157,6 +1163,8 @@ static void level_fight_add(LevelFightSet *set, VkrEntityId entity,
   }
   const uint32_t owner = set->solid_count++;
   set->solids[owner] = (LevelFightSolid){.entity = entity,
+                                         .mover = mover,
+                                         .open = open,
                                          .first_plane = set->plane_count,
                                          .plane_count = plane_count,
                                          .lo = geometry->min,
@@ -1178,12 +1186,63 @@ static void level_fight_add(LevelFightSet *set, VkrEntityId entity,
   }
 }
 
-/* Whether `point` lies inside a gathered solid, deeper than the coplanar
-   distance. */
-static bool8_t level_fight_hidden(const LevelFightSet *set, Vec3 point) {
+/* Parents searched above a brush for the mover that moves it. */
+#define LEVEL_MOVER_DEPTH 16u
+
+/* The nearest mover at or above `entity`, or none. */
+static VkrEntityId level_mover_of(const VkrScene *scene, VkrEntityId entity) {
+  for (uint32_t depth = 0; depth < LEVEL_MOVER_DEPTH && entity.u64; ++depth) {
+    if (vkr_scene_get_typed(scene, entity, &vkr_scene_mover_type)) {
+      return entity;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+/* Whether `carrier` is a mover above `mover` (not `mover` itself), which
+   carries it wherever it moves. */
+static bool8_t level_mover_carries(const VkrScene *scene, VkrEntityId carrier,
+                                   VkrEntityId mover) {
+  if (!carrier.u64 || !mover.u64) {
+    return false_v;
+  }
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, mover, scene->comp_transform);
+  VkrEntityId above = level_mover_of(scene, transform ? transform->parent
+                                                      : VKR_ENTITY_ID_INVALID);
+  for (uint32_t depth = 0; above.u64 && depth < LEVEL_MOVER_DEPTH; ++depth) {
+    if (above.u64 == carrier.u64) {
+      return true_v;
+    }
+    transform =
+        vkr_entity_get_component(scene->world, above, scene->comp_transform);
+    above = level_mover_of(scene, transform ? transform->parent
+                                            : VKR_ENTITY_ID_INVALID);
+  }
+  return false_v;
+}
+
+/* Whether `point` lies inside a gathered solid deeper than the coplanar
+   distance that stays where it is while the fight between `a` and `b`
+   shows: one that never moves, or one at rest that a or b at rest moves
+   with or whose mover carries a's or b's, as a car's deck under its door. */
+static bool8_t level_fight_hidden(const VkrScene *scene,
+                                  const LevelFightSet *set,
+                                  const LevelFightSolid *a,
+                                  const LevelFightSolid *b, Vec3 point) {
   for (uint32_t s = 0; s < set->solid_count; ++s) {
     const LevelFightSolid *solid = &set->solids[s];
-    if (point.x < solid->lo.x || point.y < solid->lo.y ||
+    const VkrEntityId mover = solid->mover;
+    const bool8_t stays =
+        !mover.u64 ||
+        (!solid->open && ((!a->open && mover.u64 == a->mover.u64) ||
+                          (!b->open && mover.u64 == b->mover.u64) ||
+                          level_mover_carries(scene, mover, a->mover) ||
+                          level_mover_carries(scene, mover, b->mover)));
+    if (!stays || point.x < solid->lo.x || point.y < solid->lo.y ||
         point.z < solid->lo.z || point.x > solid->hi.x ||
         point.y > solid->hi.y || point.z > solid->hi.z) {
       continue;
@@ -1206,12 +1265,40 @@ static bool8_t level_box_apart(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi) {
          b_hi.x < a_lo.x || b_hi.y < a_lo.y || b_hi.z < a_lo.z;
 }
 
+/* `planes` moved to the open pose of `mover` (a turn about its pivot, then
+   its travel); false for a spinning mover, which has no open pose. */
+static bool8_t level_open_planes(const VkrScene *scene, VkrEntityId mover,
+                                 const VkrBrushPlane *planes, uint32_t count,
+                                 VkrBrushPlane *out) {
+  const SceneMover *settings =
+      vkr_scene_get_typed(scene, mover, &vkr_scene_mover_type);
+  VkrIoMoverMotion motion;
+  if (!settings || settings->spin ||
+      !vkr_io_mover_open_motion(scene, mover, &motion)) {
+    return false_v;
+  }
+  /* x' = R x + c, so n' . x' = n . x + n' . c. */
+  const Vec3 shift =
+      vec3_add(motion.offset,
+               vec3_sub(motion.pivot,
+                        vkr_quat_rotate_vec3(motion.rotation, motion.pivot)));
+  for (uint32_t i = 0; i < count; ++i) {
+    const Vec3 normal = vkr_quat_rotate_vec3(motion.rotation, planes[i].normal);
+    out[i] = (VkrBrushPlane){.normal = normal,
+                             .distance =
+                                 planes[i].distance + vec3_dot(normal, shift)};
+  }
+  return true_v;
+}
+
 /* Gathers the drawn faces of the visible solid and visual brushes and
-   blockout shape pieces whose boxes touch lo-hi. Clip and trigger brushes
-   draw only while editing. */
+   blockout shape pieces whose boxes touch lo-hi, and a brush under a mover
+   once more at the mover's open pose. Clip and trigger brushes draw only
+   while editing. */
 static void level_fight_gather(const VkrScene *scene, Vec3 lo, Vec3 hi,
                                VkrBrushGeometry *geometry, LevelFightSet *set) {
   VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  VkrBrushPlane open[VKR_BRUSH_FACE_MAX];
   for (uint32_t i = 0; i < scene->world->dir.living && !set->failed; ++i) {
     const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
     if (!vkr_scene_entity_alive(scene, entity) ||
@@ -1222,12 +1309,20 @@ static void level_fight_gather(const VkrScene *scene, Vec3 lo, Vec3 hi,
         vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type);
     if (brush) {
       uint32_t count = 0u;
-      if ((brush->role == SCENE_BRUSH_ROLE_SOLID ||
-           brush->role == SCENE_BRUSH_ROLE_VISUAL) &&
-          level_brush_planes(scene, entity, planes, &count) &&
-          vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK &&
+      if ((brush->role != SCENE_BRUSH_ROLE_SOLID &&
+           brush->role != SCENE_BRUSH_ROLE_VISUAL) ||
+          !level_brush_planes(scene, entity, planes, &count)) {
+        continue;
+      }
+      const VkrEntityId mover = level_mover_of(scene, entity);
+      if (vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK &&
           !level_box_apart(geometry->min, geometry->max, lo, hi)) {
-        level_fight_add(set, entity, geometry, planes, count);
+        level_fight_add(set, entity, mover, false_v, geometry, planes, count);
+      }
+      if (mover.u64 && level_open_planes(scene, mover, planes, count, open) &&
+          vkr_brush_build(open, count, geometry, NULL) == VKR_BRUSH_OK &&
+          !level_box_apart(geometry->min, geometry->max, lo, hi)) {
+        level_fight_add(set, entity, mover, true_v, geometry, open, count);
       }
       continue;
     }
@@ -1240,7 +1335,8 @@ static void level_fight_gather(const VkrScene *scene, Vec3 lo, Vec3 hi,
       if (count &&
           vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK &&
           !level_box_apart(geometry->min, geometry->max, lo, hi)) {
-        level_fight_add(set, entity, geometry, planes, count);
+        level_fight_add(set, entity, VKR_ENTITY_ID_INVALID, false_v, geometry,
+                        planes, count);
       }
     }
     free(pieces);
@@ -1251,7 +1347,8 @@ static void level_fight_gather(const VkrScene *scene, Vec3 lo, Vec3 hi,
    more than a square centimeter: z-fighting, which flickers in any view.
    A shared area counts in the region its middle lies in, and not when the
    point just in front of it lies inside another solid, as a face buried in
-   a wall. */
+   a wall. A mover's brushes count again at its open pose, as a door leaf
+   whose end meets a wall face once it has slid open. */
 static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
   const Vec3 lo = vec3_new(grid->min.x, grid->min.y - 4.0f, grid->min.z);
   const Vec3 hi = vec3_new(grid->max.x, grid->max.y + 4.0f, grid->max.z);
@@ -1275,18 +1372,29 @@ static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
   for (uint32_t i = 0; i < Min(found, LEVEL_FIGHT_MAX); ++i) {
     const VkrBrushFaceOverlap *fight = &fights[i];
     const Vec3 at = fight->center;
-    const VkrEntityId entity = set.solids[fight->owner_a].entity;
+    /* A mover's open copy names the moving brush first; against its own
+       mover at rest it shares planes along its travel by design. */
+    const bool8_t swap = set.solids[fight->owner_b].open;
+    const LevelFightSolid *a =
+        &set.solids[swap ? fight->owner_b : fight->owner_a];
+    const LevelFightSolid *b =
+        &set.solids[swap ? fight->owner_a : fight->owner_b];
+    if ((a->open || b->open) && a->mover.u64 == b->mover.u64) {
+      continue;
+    }
+    const VkrEntityId entity = a->entity;
     if (at.x < grid->min.x || at.x >= grid->max.x || at.z < grid->min.z ||
         at.z >= grid->max.z || at.y < lo.y || at.y > hi.y ||
         level_issue_merges(issues, VKR_EDITOR_LEVEL_Z_FIGHT, at, entity) ||
         level_fight_hidden(
-            &set, vec3_add(at, vec3_scale(fight->normal, LEVEL_FIGHT_FRONT)))) {
+            grid->scene, &set, a, b,
+            vec3_add(at, vec3_scale(fight->normal, LEVEL_FIGHT_FRONT)))) {
       continue;
     }
     const uint32_t index = issues->count;
     level_issue(issues, VKR_EDITOR_LEVEL_Z_FIGHT, at, entity, fight->area);
     if (issues->count > index) {
-      issues->items[index].other = set.solids[fight->owner_b].entity;
+      issues->items[index].other = b->entity;
       issues->items[index].normal = fight->normal;
     }
   }

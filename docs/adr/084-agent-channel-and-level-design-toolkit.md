@@ -830,7 +830,14 @@ leaves between ring pieces that share a radial plane. Faces group by plane
 distance and main axis and sweep along one axis, so each meets only faces
 near its plane and extent. A shared area counts in the region its middle
 lies in, and not when the point 1 cm in front of that middle lies inside
-another solid, as a face buried in a wall. The issue names both solids
+another solid, as a face buried in a wall. A brush under a mover counts
+once more at the mover's open pose (`vkr_io_mover_open_motion`), so a door
+leaf whose end meets a jamb once it has slid open is a fight. A moving solid
+hides another's face only while the two stay together: one at rest whose
+mover moves either fighting solid at rest, or carries it, as a car's deck
+under its door; a closed door never hides a fight it uncovers when it opens,
+and a mover's open copy is never compared with its own brushes at rest. The
+issue names both solids
 (`entity` and `other`; one blockout shape's pieces name it twice), the
 shared area in square meters and the plane's `normal`, the way both faces
 look.
