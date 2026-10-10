@@ -722,7 +722,7 @@ static void test_player_tram_mover(VkrAllocator *allocator,
   assert(state);
   Vec3 last = vec3_zero();
   float32_t worst = 0.0f;
-  float32_t far = 0.0f;
+  float32_t farthest = 0.0f;
   bool8_t grounded = true_v;
   for (uint64_t tick = 1; tick <= 220u; ++tick) {
     if (single_step) {
@@ -735,7 +735,7 @@ static void test_player_tram_mover(VkrAllocator *allocator,
         scene.world, test.deck.entity, scene.comp_evaluated_transform);
     assert(pose);
     const Vec3 deck = mat4_position(pose->world);
-    far = Min(far, deck.x);
+    farthest = Min(farthest, deck.x);
     const Vec3 offset = vec3_sub(test.player.current_foot, deck);
     if (tick > DECK_SETTLE_TICKS) {
       grounded = grounded && state->grounded;
@@ -743,7 +743,7 @@ static void test_player_tram_mover(VkrAllocator *allocator,
     }
     last = offset;
   }
-  assert(fabsf(far + 6.5f) < 1e-4f);
+  assert(fabsf(farthest + 6.5f) < 1e-4f);
   assert(grounded && worst < 1e-3f);
   test.deck.router = NULL;
   vkr_io_router_clear(&router);

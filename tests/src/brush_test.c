@@ -836,9 +836,9 @@ static void brush_test_coplanar(VkrBrushGeometry *geometry) {
   assert(brush_test_near(overlap.center.z, 1.5f, 1.0e-4f));
   assert(overlap.owner_a != overlap.owner_b);
 
-  const Vec3 far = vec3_new(1000.0f, 20.0f, -500.0f);
+  const Vec3 distant = vec3_new(1000.0f, 20.0f, -500.0f);
   found = brush_test_fights(lo, hi, vec3_new(1.0f, 0.5f, 1.0f),
-                            vec3_new(3.0f, 1.0f, 3.0f), 0.5236f, far, geometry,
+                            vec3_new(3.0f, 1.0f, 3.0f), 0.5236f, distant, geometry,
                             &overlap);
   assert(found == 1u);
   assert(brush_test_near(overlap.area, 1.0f, 1.0e-2f));

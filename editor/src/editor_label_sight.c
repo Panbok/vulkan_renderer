@@ -238,14 +238,14 @@ float32_t vkr_editor_label_sight(VkrEditorLabelSights *sights,
   const float32_t depth = sights->perspective ? clip.w : 0.0f;
   const bool8_t distance_fade =
       sights->max_distance > 0.0f && sights->perspective && placed;
-  const bool8_t far = distance_fade && depth >= sights->max_distance;
+  const bool8_t beyond = distance_fade && depth >= sights->max_distance;
 
   /* The sweep visits icons in order from its cursor; an icon no ray has
      tested yet goes first while rays remain. Icons off the Scene or past
      the icon distance spend no ray. */
   const bool8_t visit =
       sights->sweep && index >= sights->cursor && sights->rays_left;
-  const bool8_t testable = sights->occlusion && placed && on_screen && !far;
+  const bool8_t testable = sights->occlusion && placed && on_screen && !beyond;
   if (testable && sights->rays_left && (visit || !sight.tested)) {
     sight.occluded = vkr_editor_label_occluded(frame, frame->view_projection,
                                                sights->inverse_view_projection,
