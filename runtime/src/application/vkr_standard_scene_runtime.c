@@ -1393,29 +1393,80 @@ vkr_internal void vkr_standard_scene_runtime_prepare_environment(
       sky_light ? environment->specular_intensity : 1.0f;
 }
 
-/* Applies queued world text edits and prepares visible text draws. Returns
+/* The loaded container that owns `entity`: the primary scene, the root
+   World or an added scene, by the entity's world id; NULL when none is. */
+vkr_internal const VkrScene *vkr_standard_scene_runtime_owner_scene(
+    const VkrStandardSceneRuntime *application, VkrEntityId entity) {
+  const uint32_t world = entity.parts.world;
+  if (application->active_scene &&
+      application->active_scene->world_id == world) {
+    return application->active_scene;
+  }
+  if (application->world_scene && application->world_scene->world_id == world) {
+    return application->world_scene;
+  }
+  for (uint32_t i = 0u; i < application->additive_count; ++i) {
+    const VkrScene *scene = application->additive_scenes[i];
+    if (scene && scene->world_id == world) {
+      return scene;
+    }
+  }
+  return NULL;
+}
+
+/* Each world text takes its owner's world pose, the evaluated one while a
+   mover or body moves it, as meshes do: transform edits, undo, parents and
+   movers all move the text, not only the gizmo. */
+vkr_internal void vkr_standard_scene_runtime_follow_world_text(
+    VkrStandardSceneRuntime *application) {
+  VkrWorldResources *resources = &application->assets.world_resources;
+  for (uint64_t i = 0u; i < resources->text_slots.length; ++i) {
+    VkrWorldTextSlot *slot = &resources->text_slots.data[i];
+    const VkrScene *scene =
+        slot->active
+            ? vkr_standard_scene_runtime_owner_scene(application, slot->owner)
+            : NULL;
+    const SceneTransform *transform =
+        scene && vkr_scene_entity_alive(scene, slot->owner)
+            ? vkr_entity_get_component(scene->world, slot->owner,
+                                       scene->comp_transform)
+            : NULL;
+    if (!transform) {
+      continue;
+    }
+    const SceneEvaluatedTransform *evaluated = vkr_entity_get_component(
+        scene->world, slot->owner, scene->comp_evaluated_transform);
+    const Mat4 world = evaluated ? evaluated->world : transform->world;
+    Vec3 axes[3];
+    Vec3 scale;
+    Mat4 basis = mat4_identity();
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      axes[axis] = vec3_new(world.elements[axis * 4u + 0u],
+                            world.elements[axis * 4u + 1u],
+                            world.elements[axis * 4u + 2u]);
+      const float32_t length = vec3_length(axes[axis]);
+      scale.elements[axis] = length;
+      const Vec3 unit =
+          length > 0.0f ? vec3_scale(axes[axis], 1.0f / length) : vec3_zero();
+      basis.elements[axis * 4u + 0u] = unit.x;
+      basis.elements[axis * 4u + 1u] = unit.y;
+      basis.elements[axis * 4u + 2u] = unit.z;
+    }
+    vkr_text_3d_set_transform(
+        &slot->text, vkr_transform_new(mat4_position(world),
+                                       vkr_quat_from_mat4(basis), scale));
+  }
+}
+
+/* Moves world text with its owners and prepares visible text draws. Returns
    the error that cancels the frame, or VKR_RENDERER_ERROR_NONE. */
 vkr_internal VkrRendererError vkr_standard_scene_runtime_prepare_world_text(
     VkrStandardSceneRuntime *application,
     VkrStandardSceneRuntimeDrawContext *draw) {
   VkrWorldResources *world_resources = &application->assets.world_resources;
-  if (application->world_text_update_count >
-      VKR_STANDARD_SCENE_RUNTIME_MAX_PENDING_TEXT_UPDATES) {
-    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+  if (world_resources->initialized) {
+    vkr_standard_scene_runtime_follow_world_text(application);
   }
-  for (uint32_t i = 0u; i < application->world_text_update_count; ++i) {
-    const VkrStandardSceneRuntimeTextUpdate *pending =
-        &application->world_text_updates[i];
-    if (!world_resources->initialized ||
-        !vkr_world_resources_text_update(world_resources, pending->text_id,
-                                         pending->content) ||
-        (pending->has_transform &&
-         !vkr_world_resources_text_set_transform(
-             world_resources, pending->text_id, &pending->transform))) {
-      return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
-    }
-  }
-  application->world_text_update_count = 0u;
   if (!draw->scene_stopped && world_resources->initialized) {
     VkrPreparedTextDraw *text_draws = NULL;
     uint32_t text_draw_count = 0u;
@@ -2528,7 +2579,6 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
   VkrAllocator *frame_alloc = application->frame_allocator;
   if (vkr_allocator_supports_scopes(frame_alloc))
     frame_scope = vkr_allocator_begin_scope(frame_alloc);
-  application->world_text_update_count = 0;
 
   VKR_METRICS_SCOPE_NS(application->metrics, application->metric_ids.update) {
     if (application->callbacks.update)

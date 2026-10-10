@@ -1050,48 +1050,6 @@ vkr_standard_scene_runtime_ui_text_view(const ApplicationUiText *text) {
               : (String8){0};
 }
 
-vkr_internal void vkr_standard_scene_runtime_queue_world_text_update(
-    VkrStandardSceneRuntime *application, uint32_t text_id, String8 content,
-    const VkrTransform *transform) {
-  if (!application || text_id == VKR_INVALID_ID) {
-    return;
-  }
-
-  for (uint32_t i = 0; i < application->world_text_update_count; ++i) {
-    VkrStandardSceneRuntimeTextUpdate *slot =
-        &application->world_text_updates[i];
-    if (slot->text_id == text_id) {
-      if (content.length > 0 || content.str) {
-        slot->content = content;
-      }
-      if (transform) {
-        slot->transform = *transform;
-        slot->has_transform = true_v;
-      }
-      return;
-    }
-  }
-
-  if (application->world_text_update_count >=
-      VKR_STANDARD_SCENE_RUNTIME_MAX_PENDING_TEXT_UPDATES) {
-    log_warn("World text update queue full; dropping text %u", text_id);
-    return;
-  }
-
-  VkrStandardSceneRuntimeTextUpdate update = {
-      .text_id = text_id,
-      .content = content,
-      .has_transform = false_v,
-  };
-  if (transform) {
-    update.transform = *transform;
-    update.has_transform = true_v;
-  }
-
-  application->world_text_updates[application->world_text_update_count++] =
-      update;
-}
-
 /**
  * @brief Viewport mapping info for pointer-driven world interactions.
  */
@@ -1362,29 +1320,6 @@ vkr_internal Vec3 vkr_standard_scene_runtime_text_origin_from_pivot(
   return vec3_sub(pivot_parent, rotated_offset);
 }
 
-vkr_internal void vkr_standard_scene_runtime_sync_world_text_transform(
-    VkrStandardSceneRuntime *application, VkrScene *scene, VkrEntityId entity) {
-  if (!application || !scene || !scene->world) {
-    return;
-  }
-
-  SceneText3D *text = vkr_scene_get_text3d(scene, entity);
-  if (!text) {
-    return;
-  }
-
-  SceneTransform *transform = vkr_scene_get_transform(scene, entity);
-  if (!transform) {
-    return;
-  }
-
-  VkrTransform text_transform = vkr_transform_from_position_scale_rotation(
-      transform->position, transform->scale, transform->rotation);
-
-  vkr_standard_scene_runtime_queue_world_text_update(
-      application, text->text_index, (String8){0}, &text_transform);
-}
-
 /* The loaded container holding `entity`, by its world id (ADR-076): the
  * primary scene, the root World or an added scene; and its edit journal. */
 static VkrScene *sample_entity_container(VkrStandardSceneRuntime *application,
@@ -1485,8 +1420,6 @@ vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
                "Could not restore the authored transform.");
       return false_v;
     }
-    vkr_standard_scene_runtime_sync_world_text_transform(
-        application, scene, state->gizmo_drag.entity);
     gizmo_companions_move(scene, vec3_zero());
   }
   return true_v;
@@ -1535,8 +1468,6 @@ vkr_internal bool8_t vkr_standard_scene_runtime_apply_gizmo_pose(
              error ? error : "Transform edit failed.");
     return false_v;
   }
-  vkr_standard_scene_runtime_sync_world_text_transform(
-      application, scene, state->gizmo_drag.entity);
   return true_v;
 }
 

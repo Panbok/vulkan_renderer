@@ -70,15 +70,6 @@ typedef struct VkrStandardSceneRuntimeEditorViewport {
   VkrUiDockInputCapture dock_capture;
 } VkrStandardSceneRuntimeEditorViewport;
 
-#define VKR_STANDARD_SCENE_RUNTIME_MAX_PENDING_TEXT_UPDATES 32
-
-typedef struct VkrStandardSceneRuntimeTextUpdate {
-  uint32_t text_id;
-  String8 content;
-  bool8_t has_transform;
-  VkrTransform transform;
-} VkrStandardSceneRuntimeTextUpdate;
-
 /**
  * @brief Configuration settings for creating an application instance.
  * This structure is passed to `vkr_standard_scene_runtime_create()` to specify
@@ -301,10 +292,6 @@ typedef struct VkrStandardSceneRuntime {
   VkrVisibilityStats visibility_stats;
 
   VkrJobSystem job_system; /**< Engine-wide job system. */
-
-  VkrStandardSceneRuntimeTextUpdate
-      world_text_updates[VKR_STANDARD_SCENE_RUNTIME_MAX_PENDING_TEXT_UPDATES];
-  uint32_t world_text_update_count;
 
   /* Bounded Scene memory recovery applies to app and editor presentation. */
   float32_t scene_output_scale;
