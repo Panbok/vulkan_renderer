@@ -13,11 +13,12 @@ Accepted (partial). Phase 4 of the
 one editor hosts a session over the transport of
 [ADR-105](105-network-transport-and-asset-depot.md), other editors join it,
 and every edit that changes a scene journal applies on every editor in the
-host's order. Presence travels but no editor draws it yet. Live gesture
+host's order. Agents of every editor share the host's claims, task board
+and change feed. Presence travels but no editor draws it yet. Live gesture
 previews, edits that do not travel yet (listed under
-[Decision](#what-travels)), the session-wide change feed, claims and task
-board, a Session window and published assets stay in the proposal. Every
-check ran on one Windows host; macOS and cross-machine runs are unverified.
+[Decision](#what-travels)), capability-based task assignment, a Session
+window and published assets stay in the proposal. Every check ran on one
+Windows host; macOS and cross-machine runs are unverified.
 
 ## Context
 
@@ -119,12 +120,44 @@ name, pose bits and parent id, sorted). On a match the host replays its
 history from the first edit. The history keeps 64 MiB; past that, edits
 every participant received leave and new joins are refused.
 
+### Agent federation
+
+Agents keep talking JSON to their own editor's socket
+([ADR-084](084-agent-channel-and-level-design-toolkit.md)); the session
+carries what they share.
+
+- **Authors.** While a session runs, an agent's name becomes
+  `<agent>@<editor>` (agent names cannot hold `@` and keep 31 bytes), so
+  claims, tasks, the feed and author-scoped undo tell agents of different
+  machines apart. EDIT and APPLIED carry a batch's author and label.
+- **Claims and tasks belong to the host.** On a participant, `claims.set`,
+  `claims.release`, `task.add`, `task.next` and `task.done` travel as ASK to
+  the host, which runs them on its own tables and returns ANSWER; the
+  operation waits for it (at most 1,800 builds). The host sends its claims
+  and tasks as SHARED when they change and to each editor that joins.
+  Participants show that copy in place of their own and keep it out of
+  their claims file; leaving the session brings their own claims back.
+  Each editor checks claims against its copy before and after a batch, as
+  without a session.
+- **Change feed.** Each editor records the agent batches other editors
+  applied, with author, label and entities, beside its own events, and
+  feeds claims that appear, move or leave in the host's copy. A batch its
+  author reverts because it touched a claim still reads as applied, with
+  no entities, in other editors' feeds.
+- **Task board** ([editor_ops.c](../../editor/src/editor_ops.c), also
+  without a session). `task.add` opens a task of a kind with a title and an
+  optional region; `task.next` gives an agent its assigned task or the
+  oldest open task of the kinds it names; `task.done` finishes the
+  assignee's task as done or failed with a note; `task.list` reads the
+  board. A full board (256) drops its oldest finished task.
+
 ### Operations
 
 `session.host`, `session.join`, `session.leave` and `session.status` join
 the agent table ([editor_ops.c](../../editor/src/editor_ops.c)); the status
 reports the mode, address, key, sequence, pending edits, last error, this
-editor's digest and each peer's name, camera and selection.
+editor's digest and each peer's name, camera and selection. `task.add`,
+`task.next`, `task.done` and `task.list` run the task board.
 
 ## Consequences
 
@@ -169,6 +202,16 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
   ids change it between runs); the host reads the guest's cube at
   (4, 5, 6); the entity count stays 5,991 after the refused duplicate.
   Passes.
+- `python tools/checks/check_agent_federation.py --editor
+  build_debug/editor/vkr_editor.exe --mcp build_debug/tools/vkr_mcp.exe`
+  ([check_agent_federation.py](../../tools/checks/check_agent_federation.py))
+  joins two headless Bistro editors and drives `mason` on the host and
+  `painter` on the guest through `vkr_mcp`: the guest's agent adds a task
+  that the host's agent takes (`mason@alpha`) and finishes; the host's
+  agent cannot claim over `painter@beta`'s claim (`VKR-AGENT-0010`); each
+  agent's creation inside the other's claim is reverted with
+  `VKR-AGENT-0010`; each feed holds the other editor's applied batch with
+  its entity; both editors end at sequence 7 with equal digests. Passes.
 - Not exercised: gizmo drags (no headless drag script), batch reverts across
   editors, history trimming, macOS, two machines.
 

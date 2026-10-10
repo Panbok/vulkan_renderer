@@ -318,20 +318,18 @@ from the session base, shared undo, gizmo moves and presence data. The rest:
 
 ### Agent federation (use case 5)
 
-Agent federation is editor collaboration with agents as authors.
+[ADR-106](../adr/106-collaborative-editing-session.md#agent-federation)
+implements authors across editors, the host's claims and task board, and
+the session-wide change feed. The rest:
 
-- An agent talks JSON to its own editor over the local socket, unchanged.
-  The editor is a session participant. Its agents' batches travel as
-  `EDIT_BATCH` with the author `(participant, agent name)`.
-- `changes.feed`, `claims.*` and the Changes window read the host's
-  session-wide state. The claim rule then holds between agents on
-  different machines.
-- **Task board.** The host keeps a list of tasks: ID, kind (layout,
-  material, lighting and so on), region claim, assignee and state.
-  Participants advertise agent slots and capabilities, such as the tiled
-  pipeline or a lightmap bake host. The host assigns tasks, and an agent
-  takes its next task through a local `task.next` operation. This divides
-  work between level design and material agents across machines.
+- **Capabilities.** Participants advertise agent slots and capabilities,
+  such as the tiled pipeline or a lightmap bake host, and the host assigns
+  tasks by them instead of by the kinds an agent asks for.
+- **Reviews across editors.** The Changes window of one editor lists and
+  accepts or rejects other editors' agent batches; today each editor
+  reviews its own agents' batches.
+- **A reverted batch in the feed.** Other editors feed a batch its author
+  reverted for a claim as applied; a `reverted` event would correct it.
 - Each participant renders its own captures on its own GPU. A Mac draws
   the tiled pipeline and a Windows machine draws the desktop pipeline
   ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md)). Agents that
@@ -381,7 +379,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | Owner | Path | Contents |
 |---|---|---|
 | `vkr_runtime` | `runtime/src/net/` | `world`, `stream` and `view` services, the remote content mount |
-| Editor | `editor/src/editor_session.c` | The `collab` service (ADR-106); next gestures, drawn presence, task board, Session window |
+| Editor | `editor/src/editor_session.c` | The `collab` service and agent federation (ADR-106); next gestures, drawn presence, capabilities, Session window |
 | Renderer | Encoder and decoder hooks | Separate design and ADR in phase 7 |
 | `vkr_net` | `net/src/` | Threaded host; replication helpers on the bit stream |
 
@@ -396,7 +394,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
-| 4. Editor collaboration and agents | Remaining after ADR-106: depot joining, journal results, gestures, drawn presence, published assets, session claims and feed, task board | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
+| 4. Editor collaboration and agents | Remaining after ADR-106: depot joining, journal results, gestures, drawn presence, published assets, capability-based tasks, reviews across editors | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
 | 5. Game sessions | `world` service, opt-in components, input, prediction for the FPS module | 20 clients (bots) on a Bistro session with measured bytes per client and correction counts under 2% loss |
 | 6. Asset streaming | Remote content mount, then progressive mips and LOD ranges | Bistro streamed from a depot: time to first frame and to full detail; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |
