@@ -603,6 +603,30 @@ bool use_layer_lighting(VkrBakeScene &scene, const VkrBakeLayerPlan &plan,
   return !gpu || vkr_bake_gpu_update_lighting(gpu, scene);
 }
 
+/*
+ * Shortens each channel's linear term to at most its constant term, so the
+ * runtime's E/pi(n) = c + dot(l, n) is non-negative for every normal. A
+ * lamp's direct band projects |l| = 2c, and bright light near a lamp can do
+ * the same in a gathered band; behind the lamp that channel then goes
+ * negative, the runtime clamps it to zero and only the other channels'
+ * light, such as the sky's blue, survives. Composition sums bands with
+ * non-negative weights, so bounding each band bounds every composition.
+ */
+void clamp_l1_nonnegative(ProbeSh *sh) {
+  for (uint32_t c = 0u; c < 3u; ++c) {
+    const float constant = std::max(sh->v[c][3], 0.0f);
+    const float linear =
+        std::sqrt(sh->v[c][0] * sh->v[c][0] + sh->v[c][1] * sh->v[c][1] +
+                  sh->v[c][2] * sh->v[c][2]);
+    if (linear > constant) {
+      const float scale = constant / linear;
+      for (uint32_t k = 0u; k < 3u; ++k) {
+        sh->v[c][k] *= scale;
+      }
+    }
+  }
+}
+
 /* Luminance of a probe's constant term of E/pi. */
 double constant_luminance(const ProbeSh &sh) {
   return 0.2126 * sh.v[0][3] + 0.7152 * sh.v[1][3] + 0.0722 * sh.v[2][3];
@@ -883,12 +907,13 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
   /* Brick-major SH of every band, band-major as the file stores it. */
   std::vector<ProbeSh> slot_sh((size_t)slot_count * band_count);
   std::vector<ProbeSh> probe_sh(layout.probe_count);
-  /* Stores the baked probes' SH as band `band`; face-fill slots
-     interpolate their source probes. */
+  /* Stores the baked probes' SH as band `band`, non-negative; face-fill
+     slots interpolate their source probes. */
   auto store_band = [&](uint32_t band) {
     std::fill(probe_sh.begin(), probe_sh.end(), ProbeSh{});
     for (size_t i = 0u; i < probes.size(); ++i) {
       probe_sh[probes[i]] = baked_sh[i];
+      clamp_l1_nonnegative(&probe_sh[probes[i]]);
     }
     ProbeSh *slots = slot_sh.data() + (size_t)band * slot_count;
     for (uint32_t slot = 0u; slot < slot_count; ++slot) {
