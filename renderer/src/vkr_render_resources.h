@@ -2,6 +2,7 @@
 #include "containers/array.h"
 #include "containers/str.h"
 #include "math/vec.h"
+#include "vkr_lighting.h"
 #include "vkr_renderer.h"
 
 // =============================================================================
@@ -43,15 +44,44 @@ Array(VkrTextureHandle);
 #define VKR_LIGHTMAP_MAX_ACTIVE_LAYERS 6u
 
 /** A lightmapped instance's rectangle in texels on one page; the instance's
- * lightmap UVs span it (ADR-088). */
+ * lightmap UVs span it (ADR-088). `stationary` is its stationary lamp
+ * candidates' range in VkrLightmapBinding::candidates (ADR-107): the first
+ * index in bits 0 to 26, the count in bits 27 to 31; zero without any. */
 typedef struct VkrLightmapRect {
   uint32_t page;
   uint16_t x;
   uint16_t y;
   uint16_t width;
   uint16_t height;
-  uint32_t reserved;
+  uint32_t stationary;
 } VkrLightmapRect;
+
+#define VKR_LIGHTMAP_RECT_CANDIDATE_FIRST_BITS 27u
+#define VKR_LIGHTMAP_RECT_CANDIDATE_FIRST_MASK                                 \
+  ((UINT32_C(1) << VKR_LIGHTMAP_RECT_CANDIDATE_FIRST_BITS) - 1u)
+/** Stationary lamps of one lightmap set, and those one frame shades with
+ * runtime shadow maps (ADR-107). */
+#define VKR_LIGHTMAP_STATIONARY_MAX 1024u
+#define VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX 8u
+
+/** One stationary lamp of a frame (ADR-107): its live light, which the
+ * frame shades, and its baked ownership terms. `channel` is its shadow-mask
+ * channel or UINT32_MAX without one. `shadow_light` is its index in the
+ * lights the frame's local shadows resolve (the point lights, then the
+ * shadowed stationary lamps), or UINT32_MAX without a runtime shadow. An
+ * unbound lamp has zero intensity. */
+typedef struct VkrLightmapStationaryLight {
+  VkrPointLight light;
+  Vec3 baked_position;
+  float32_t baked_range;
+  Vec3 baked_direction;
+  float32_t baked_weight;
+  float32_t baked_cos_inner;
+  float32_t baked_cos_outer;
+  uint32_t baked_kind;
+  uint32_t channel;
+  uint32_t shadow_light;
+} VkrLightmapStationaryLight;
 
 /** Borrowed scene-owned lightmap set. An invalid texture disables sampling.
  * The texture is a 2D array of square ASTC 4x4 HDR irradiance pages whose
@@ -70,6 +100,18 @@ typedef struct VkrLightmapBinding {
   uint32_t active_layer_count;
   uint32_t active_layers[VKR_LIGHTMAP_MAX_ACTIVE_LAYERS];
   float32_t active_weights[VKR_LIGHTMAP_MAX_ACTIVE_LAYERS];
+  /** Stationary lamps (ADR-107), in the set's record order, which candidate
+      indices name; the shadow mask pages, one slice per page (RGBA: each
+      channel's owner's visibility); and the lamps with runtime shadows, by
+      index into `stationary`, which receivers without a lightmap shade.
+      Empty without stationary lamps. */
+  const VkrLightmapStationaryLight *stationary;
+  uint32_t stationary_count;
+  const uint16_t *candidates;
+  uint32_t candidate_count;
+  VkrTextureHandle shadow_mask;
+  uint32_t shadowed_count;
+  uint32_t shadowed[VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX];
 } VkrLightmapBinding;
 
 /** Most light layers one frame composes into a diffuse volume, as for

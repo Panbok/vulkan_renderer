@@ -77,7 +77,9 @@ Lights and bakes) found these gaps:
    - **Selected**: the selected light's Details rows, edited in place.
    - **Lights**: every light of the primary scene, then the World's, in
      entity order. Each row has an Enabled check box, the name (a click
-     selects it), Static or Dynamic (a click switches it), and the group
+     selects it), its mobility (a click cycles a point light through Static,
+     Stationary and Dynamic, a rectangle light between Static and Dynamic;
+     [ADR-107](107-stationary-lamps.md)), and the group
      and intensity. Edits are undoable. Only the rows in view are built.
 5. **Operations.**
    - `lighting.list`: the lights with their kind (`directional`, `point`,
@@ -97,7 +99,7 @@ Lights and bakes) found these gaps:
   the level. Keeping it is a separate, undoable edit.
 - Bake quality is set per session; a project does not store it yet.
 - A dynamic light belongs to no group ([ADR-090](090-time-of-day.md)), so
-  the group list shows only static lights' groups.
+  the group list shows only static and stationary lights' groups.
 - Outlines show the selection only, so a level with hundreds of lights stays
   readable.
 

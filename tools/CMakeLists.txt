@@ -210,6 +210,7 @@ add_library(vkr_bake_core STATIC
     bake/vkr_bake_sh.cpp
     bake/vkr_bake_integrator.cpp
     bake/vkr_bake_layers.cpp
+    bake/vkr_bake_stationary.cpp
     bake/vkr_bake_lightmap.cpp
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_dfg_lut.c"
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_sheen_lut.c"

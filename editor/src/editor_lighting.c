@@ -1071,7 +1071,8 @@ static void lights_row(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
   (void)vkr_ui_push_id_u64(ui, entry->entity.u64);
   const float32_t info_width = Min(110.0f, width * 0.28f);
-  const float32_t mobility_width = 68.0f;
+  /* Wide enough for "Stationary" at the row's 12 pt font. */
+  const float32_t mobility_width = 76.0f;
   const float32_t name_x = VKR_EDITOR_DETAILS_PAD_PT + 24.0f;
   const float32_t name_width =
       Max(40.0f, width - name_x - info_width - mobility_width -
@@ -1108,19 +1109,33 @@ static void lights_row(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   VkrUiWidgetConfig move = vkr_editor_details_widget(
       name_x + name_width + 4.0f, y, mobility_width, LIGHTS_ROW_PT - 2.0f);
   if (mobility) {
+    /* A point light cycles Static -> Stationary -> Dynamic; a rectangle
+       light cannot be stationary and switches Static <-> Dynamic. The
+       toggle lights up whenever the light's direct light is computed at
+       runtime. */
+    const bool8_t point = entry->kind != VKR_EDITOR_LIGHT_RECT;
+    String8 label = string8_lit("Static");
+    VkrLightMobility next =
+        point ? VKR_LIGHT_MOBILITY_STATIONARY : VKR_LIGHT_MOBILITY_DYNAMIC;
+    if (*mobility == VKR_LIGHT_MOBILITY_STATIONARY) {
+      label = string8_lit("Stationary");
+      next = VKR_LIGHT_MOBILITY_DYNAMIC;
+    } else if (*mobility == VKR_LIGHT_MOBILITY_DYNAMIC) {
+      label = string8_lit("Dynamic");
+      next = VKR_LIGHT_MOBILITY_STATIC;
+    }
     vkr_editor_ghost_style(&move);
-    vkr_editor_toggle_style(&move, *mobility == VKR_LIGHT_MOBILITY_DYNAMIC);
-    move.tooltip = string8_lit("Static lights bake into lightmaps; dynamic "
-                               "lights light at runtime. Click to switch "
-                               "(undoable)");
-    if (vkr_ui_button(ui, string8_lit("mobility"),
-                      *mobility == VKR_LIGHT_MOBILITY_DYNAMIC
-                          ? string8_lit("Dynamic")
-                          : string8_lit("Static"),
-                      &move)) {
-      *mobility = *mobility == VKR_LIGHT_MOBILITY_DYNAMIC
-                      ? VKR_LIGHT_MOBILITY_STATIC
-                      : VKR_LIGHT_MOBILITY_DYNAMIC;
+    vkr_editor_toggle_style(&move, *mobility != VKR_LIGHT_MOBILITY_STATIC);
+    move.tooltip =
+        point ? string8_lit("Static lights bake into lightmaps; stationary "
+                            "lights bake their bounce and light directly at "
+                            "runtime; dynamic lights light at runtime. Click "
+                            "to cycle (undoable)")
+              : string8_lit("Static lights bake into lightmaps; dynamic "
+                            "lights light at runtime. Click to switch "
+                            "(undoable)");
+    if (vkr_ui_button(ui, string8_lit("mobility"), label, &move)) {
+      *mobility = next;
       vkr_editor_request_component(frame, entry->entity, type, value);
     }
   }

@@ -63,11 +63,30 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolumeComposeRoot {
 _Static_assert(sizeof(VkrMetalPacketDiffuseVolumeComposeRoot) == 128u,
                "Metal diffuse volume compose root ABI drift");
 
+/** One stationary lamp of the frame (ADR-107); mirrors
+    VkrMetalPacketStationaryLamp in common/draw.metalh. `light` is its live
+    light as the point light table packs it, with p3.w its first local shadow
+    view plus one, zero without a runtime shadow; `position_range`,
+    `direction_weight` and `cone_kind_channel` (cos inner, cos outer, kind,
+    channel or -1) are its baked ownership terms. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketStationaryLamp {
+  VkrGpuPointLightRow light;
+  Vec4 position_range;
+  Vec4 direction_weight;
+  Vec4 cone_kind_channel;
+} VkrMetalPacketStationaryLamp;
+_Static_assert(sizeof(VkrMetalPacketStationaryLamp) == 112u,
+               "Metal stationary lamp ABI drift");
+
 /** Frame lightmap record (ADR-088); mirrors VkrMetalPacketLightmap in
     common/draw.metalh and draw.slangh. `texture_id` is a 2D array whose slice
     page * layer_count + layer holds one layer of one page; `rects` holds
     rect_count VkrLightmapRect, selected by an instance's lightmap slot minus
-    one. A zero rect_count leaves every draw without lightmaps. */
+    one. A zero rect_count leaves every draw without lightmaps. With
+    stationary lamps (ADR-107), `shadow_mask_id` is their mask, one slice per
+    page; `stationary` holds stationary_count lamps that the `candidates`
+    (16-bit) a rectangle's range names index; `shadowed` lists the
+    shadowed_count lamps with runtime shadows. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketLightmap {
   uint64_t texture_id;
   uint64_t rects;
@@ -77,9 +96,17 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketLightmap {
   uint32_t active_layer_count;
   uint32_t active_layers[8];
   float32_t active_weights[8];
+  uint64_t shadow_mask_id;
+  uint64_t stationary;
+  uint64_t candidates;
+  uint32_t stationary_count;
+  uint32_t shadowed_count;
+  uint32_t shadowed[8];
 } VkrMetalPacketLightmap;
-_Static_assert(sizeof(VkrMetalPacketLightmap) == 96u,
+_Static_assert(sizeof(VkrMetalPacketLightmap) == 160u,
                "Metal lightmap record ABI drift");
+_Static_assert(VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX <= 8u,
+               "Metal lightmap record lists at most eight shadowed lamps");
 _Static_assert(VKR_LIGHTMAP_MAX_ACTIVE_LAYERS <= 8u,
                "Metal lightmap record holds at most eight active layers");
 

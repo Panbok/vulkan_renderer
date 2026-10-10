@@ -91,7 +91,8 @@ on Metal. It shares kernels and host records with the desktop pipeline:
 
 - **Changed contracts.**
   - The Metal frame root carries `lightmap` at byte 544, the address
-    of a 96-byte `VkrMetalPacketLightmap`, `terrain_materials` at byte 552
+    of a 160-byte `VkrMetalPacketLightmap` (its stationary lamp fields from
+    byte 96, [ADR-107](107-stationary-lamps.md)), `terrain_materials` at byte 552
     and `transmission_materials` at byte 560; the tiled sky root is 128
     bytes. Both are pinned in
     `vkr_metal_packet_abi.c` and checked against reflection at pipeline
@@ -137,6 +138,15 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     contribution bound through the `ContributionCutoff` parameter of
     `vkr_metal_packet_layered_rectangle_lights`; a receiver that no row faces
     skips the LTC table reads, which changes no result.
+  - The tiled `STATIONARY` variant shades stationary lamps
+    (`vkr_metal_tiled_stationary`, [ADR-107](107-stationary-lamps.md)): its
+    ownership metric repeats `vkr_lightmap_stationary_metric` and the Metal
+    bake kernel's `stationary_metric`; a shadowed lamp reads the same
+    tent sample and blends from the mask channel by the shadow's strength.
+    `VkrLightmapRect::stationary`, the former reserved word, packs each
+    rectangle's candidate range; the Vulkan mirror renames it and reads
+    nothing. Native evidence: Metal Release captures of the Level Design Test
+    scene only; no Metal validation run.
   - The tiled class draws no FXAA; its alpha-tested surfaces use alpha to
     coverage and its opaque pass a tone-mapped tile resolve
     (`vkr_metal_tiled_resolve_tile`), a class difference the owner accepted

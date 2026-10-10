@@ -3872,7 +3872,9 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
       ok = edit_json_floats(j, &v->point_light.source_radius, 1);
       break;
     case 35:
-      ok = edit_json_int(j, 0, 1, &integer);
+      /* Point lights may be stationary; rectangle lights (case 37) not. */
+      ok = edit_json_int(j, VKR_LIGHT_MOBILITY_STATIC,
+                         VKR_LIGHT_MOBILITY_STATIONARY, &integer);
       v->point_light.mobility = (VkrLightMobility)integer;
       break;
     case 36:

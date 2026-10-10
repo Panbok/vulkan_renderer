@@ -3,6 +3,7 @@
 
 #include "bake/vkr_bake_gpu.h"
 #include "bake/vkr_bake_sh.h"
+#include "bake/vkr_bake_stationary.h"
 
 extern "C" {
 #include "platform/vkr_platform.h"
@@ -222,8 +223,9 @@ struct GpuLight {
   float right_half_width[4];
   float up_half_height[4];
   float cone[4];
+  float stationary[4];
 };
-static_assert(sizeof(GpuLight) == 112u, "GpuLight matches the kernel");
+static_assert(sizeof(GpuLight) == 128u, "GpuLight matches the kernel");
 
 #define VKR_BAKE_VK_GLOBAL_FUNCTIONS(X)                                        \
   X(vkCreateInstance)                                                          \
@@ -1362,7 +1364,8 @@ bool upload_lights(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
         // shadowed whatever casts_shadow says about runtime shadow maps;
         // an unshadowed lamp lit the far side of every wall.
         {std::cos(light.inner_cone_angle), std::cos(light.outer_cone_angle),
-         1.0f, light.enabled ? 1.0f : 0.0f}};
+         1.0f, light.enabled ? 1.0f : 0.0f},
+        {light.stationary ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f}};
   }
   return upload_buffer(context, context->host_lights.data(),
                        context->host_lights.size() * sizeof(GpuLight),
@@ -1861,6 +1864,29 @@ void vkr_bake_gpu_destroy(VkrBakeGpuContext *context) {
 bool vkr_bake_gpu_update_lighting(VkrBakeGpuContext *context,
                                   const VkrBakeScene &scene) {
   return context && upload_lights(context, scene) && upload_sky(context, scene);
+}
+
+bool vkr_bake_gpu_set_stationary(VkrBakeGpuContext *context,
+                                 const VkrBakeStationaryPlan &plan) {
+  if (!context) {
+    return false;
+  }
+  if (!plan.lamps.empty()) {
+    std::fprintf(stderr, "Stationary shadow masks bake on Metal hosts; a "
+                         "Vulkan host bakes desktop sets\n");
+    return false;
+  }
+  return true;
+}
+
+bool vkr_bake_gpu_stationary_mask(
+    VkrBakeGpuContext *context, const std::vector<VkrBakeLightmapTexel> &texels,
+    std::vector<Vec4> *out_mask, double *out_gpu_seconds) {
+  (void)context;
+  (void)texels;
+  (void)out_mask;
+  (void)out_gpu_seconds;
+  return false;
 }
 
 namespace {

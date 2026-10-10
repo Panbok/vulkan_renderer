@@ -127,7 +127,9 @@ light bakes none.
 ### Light mobility and groups
 
 Point and rectangle lights carry `mobility`, `"static"` (the default) or
-`"dynamic"`, and `light_group`, a name of at most 31 letters, digits, `_` or
+`"dynamic"`, and point lights also `"stationary"`, whose bounce bakes while
+its direct light stays at runtime ([ADR-107](107-stationary-lamps.md)), and
+`light_group`, a name of at most 31 letters, digits, `_` or
 `-`; an empty or absent name is the group `default`
 ([`vkr_scene_system.h`](../../runtime/src/renderer/systems/vkr_scene_system.h),
 `vkr_light_group_name_valid` in
@@ -305,7 +307,8 @@ near-zero sum published infinite texels.
 ### VKLM file
 
 [`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h) defines
-VKLM v4: a 128-byte header, the layer table (64-byte light-layer records:
+VKLM v5, which adds the stationary lamp tables and shadow mask plane of
+[ADR-107](107-stationary-lamps.md) and still reads v4: a 128-byte header, the layer table (64-byte light-layer records:
 kind, number, sun direction and, for a lamp group, its group name), the plane
 table (16-byte records of layer, kind — irradiance or direction — and
 encoding, sorted by layer, kind and encoding, at most one tiled and one

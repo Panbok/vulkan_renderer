@@ -7,6 +7,9 @@
 
 #include <stdlib.h>
 
+_Static_assert(VKR_LIGHTMAP_SET_MAX_STATIONARY == VKR_LIGHTMAP_STATIONARY_MAX,
+               "A frame holds every stationary lamp of a lightmap set");
+
 /* A drawn entity: its mesh instance or generated mesh and, when it has a
  * source identity, its document entity index and the source node it draws
  * (zero for a model without nodes). */
@@ -161,6 +164,13 @@ vkr_internal int scene_lightmap_target_entity_compare(const void *a,
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+vkr_internal int scene_lightmap_stationary_compare(const void *a,
+                                                   const void *b) {
+  const uint64_t left = ((const VkrSceneStationaryRef *)a)->entity.u64;
+  const uint64_t right = ((const VkrSceneStationaryRef *)b)->entity.u64;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 vkr_internal int scene_lightmap_ref_compare(const void *a, const void *b) {
   return MemCompare(&((const SceneLightmapRef *)a)->ref,
                     &((const SceneLightmapRef *)b)->ref, sizeof(VkrEntityRef));
@@ -237,11 +247,33 @@ void vkr_scene_reset_lightmaps(VkrScene *scene,
     vkr_texture_system_release_by_handle(&assets->texture_system,
                                          lightmaps->direction);
   }
+  if (assets && lightmaps->shadow_mask.id != 0u) {
+    vkr_texture_system_release_by_handle(&assets->texture_system,
+                                         lightmaps->shadow_mask);
+  }
+  free(lightmaps->stationary);
+  free(lightmaps->candidates);
+  free(lightmaps->stationary_entities);
+  free(lightmaps->stationary_by_entity);
   free(lightmaps->instances);
   free(lightmaps->rects);
   free(lightmaps->bound);
   free(lightmaps);
   scene->lightmaps = NULL;
+}
+
+uint32_t vkr_scene_lightmap_stationary_record(const VkrScene *scene,
+                                              VkrEntityId entity) {
+  const VkrSceneLightmaps *lightmaps = scene ? scene->lightmaps : NULL;
+  if (!lightmaps || lightmaps->stationary_bound_count == 0u ||
+      lightmaps->texture.id == 0u) {
+    return UINT32_MAX;
+  }
+  const VkrSceneStationaryRef key = {.entity = entity};
+  const VkrSceneStationaryRef *found = (const VkrSceneStationaryRef *)bsearch(
+      &key, lightmaps->stationary_by_entity, lightmaps->stationary_bound_count,
+      sizeof(VkrSceneStationaryRef), scene_lightmap_stationary_compare);
+  return found ? found->record : UINT32_MAX;
 }
 
 uint32_t vkr_scene_bind_lightmaps(VkrScene *scene) {
@@ -320,6 +352,32 @@ uint32_t vkr_scene_bind_lightmaps(VkrScene *scene) {
   }
   (void)vkr_mesh_manager_set_lightmap_slots(&scene->assets->mesh_manager,
                                             writes, write_count);
+  /* Stationary lamps match their light entity by document id (ADR-107). */
+  uint32_t stationary_bound = 0u;
+  for (uint32_t i = 0u; i < lightmaps->stationary_count; ++i) {
+    SceneLightmapRef ref_key = {0};
+    MemCopy(ref_key.ref.bytes, lightmaps->stationary[i].document_id,
+            sizeof(ref_key.ref.bytes));
+    const SceneLightmapRef *ref = (const SceneLightmapRef *)bsearch(
+        &ref_key, gather.refs, gather.ref_count, sizeof(SceneLightmapRef),
+        scene_lightmap_ref_compare);
+    const bool8_t light =
+        ref && vkr_entity_has_component(scene->world, ref->entity,
+                                        scene->comp_point_light);
+    lightmaps->stationary_entities[i] = light ? ref->entity : (VkrEntityId){0};
+    if (light) {
+      lightmaps->stationary_by_entity[stationary_bound++] =
+          (VkrSceneStationaryRef){.entity = ref->entity, .record = i};
+    }
+  }
+  qsort(lightmaps->stationary_by_entity, stationary_bound,
+        sizeof(VkrSceneStationaryRef), scene_lightmap_stationary_compare);
+  if (!lightmaps->binding_current ||
+      stationary_bound != lightmaps->stationary_bound_count) {
+    log_info("Scene lightmaps: %u of %u stationary lamps bound",
+             stationary_bound, lightmaps->stationary_count);
+  }
+  lightmaps->stationary_bound_count = stationary_bound;
   free(by_entity);
   free(writes);
   free(gather.targets);
@@ -354,6 +412,9 @@ void vkr_scene_lightmap_binding(const VkrScene *scene,
   out_binding->layer_count = lightmaps->slice_layer_count;
   out_binding->rects = lightmaps->rects;
   out_binding->rect_count = lightmaps->instance_count;
+  out_binding->shadow_mask = lightmaps->shadow_mask;
+  out_binding->candidates = lightmaps->candidates;
+  out_binding->candidate_count = lightmaps->candidate_count;
   /* At most two sun keys weigh anything, and a set holds at most
      VKR_LIGHT_LAYER_MAX_LAMP_GROUPS lamp groups. Active layers name texture
      slices within a page. */

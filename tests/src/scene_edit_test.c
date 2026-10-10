@@ -695,7 +695,7 @@ static void edit_test_structure(void) {
                          .outer_cone_angle = 0.6f,
                          .source_radius = 0.05f,
                          .enabled = true_v,
-                         .mobility = VKR_LIGHT_MOBILITY_DYNAMIC,
+                         .mobility = VKR_LIGHT_MOBILITY_STATIONARY,
                          .light_group = "street"}));
   vkr_scene_update(&scene, 0.0);
   VkrSceneEditState state = {0};
@@ -850,8 +850,9 @@ static void edit_test_structure(void) {
   assert(vkr_scene_get_transform(&scene, found)->parent.u64 == parent.u64);
   assert(vkr_scene_get_point_light(&scene, found)->intensity == 4.0f);
   assert(vkr_scene_get_point_light(&scene, found)->source_radius == 0.05f);
+  /* Stationary is the one point-light mobility rectangle lights lack. */
   assert(vkr_scene_get_point_light(&scene, found)->mobility ==
-         VKR_LIGHT_MOBILITY_DYNAMIC);
+         VKR_LIGHT_MOBILITY_STATIONARY);
   assert(strcmp(vkr_scene_get_point_light(&scene, found)->light_group,
                 "street") == 0);
   assert(state.created_count == 1u && state.created[0].entity.u64 == found.u64);

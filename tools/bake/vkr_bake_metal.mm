@@ -1,6 +1,7 @@
 #include "bake/vkr_bake_gpu.h"
 
 #include "bake/vkr_bake_sh.h"
+#include "bake/vkr_bake_stationary.h"
 #include "vkr_dfg_lut.h"
 
 #import <Metal/Metal.h>
@@ -156,6 +157,8 @@ struct GpuLight {
   float4 up_half_height;
   /* x cos inner, y cos outer, z casts shadow, w enabled. */
   float4 cone;
+  /* x one for a stationary light (ADR-107); yzw unused. */
+  float4 stationary;
 };
 
 struct GatherArgs {
@@ -173,7 +176,9 @@ struct GatherArgs {
      sample; the lights before it are evaluated once per texel. */
   uint rectangle_first;
   /* bit 0 sky, bit 1 emission, bit 2 texel direct, bit 3 occlusion, bit 4
-     back-face fraction, bit 5 incident direction. */
+     back-face fraction, bit 5 incident direction, bit 6 stationary
+     ownership: the texel direct term leaves out a stationary light only
+     where it owns its channel, instead of everywhere. */
   uint flags;
   /* First triangle of each geometry in the acceleration structure's index
      buffer: opaque triangles, then cutout and blended ones. */
@@ -619,11 +624,106 @@ static float3 leave_surface(float3 position, float3 geometric,
   return position + geometric * (side * 1.0e-3f);
 }
 
+/* A stationary lamp's ownership terms (ADR-107, VkrLightmapStationaryLamp):
+   xyz position, w range; xyz unit direction, w weight; x cos inner, y cos
+   outer, z kind (1 point, 2 spot), w channel, -1 without one. */
+struct StationaryLamp {
+  float4 position_range;
+  float4 direction_weight;
+  float4 cone_kind_channel;
+};
+
+/* Which stationary lights a direct term leaves out. Mode 0 leaves none out
+   (bounce paths, whose light every stationary lamp keeps); mode 1 every one
+   (desktop sets, which light them at runtime everywhere); mode 2 those that
+   are candidates of the texel's instance and own their channel, or have
+   none, at `position`, the texel's center. */
+struct StationaryTexel {
+  device const StationaryLamp *lamps;
+  device const uint *lamp_by_light;
+  device const uint *candidates;
+  uint first;
+  uint count;
+  uint mode;
+  float3 position;
+};
+
+/* vkr_lightmap_stationary_metric. */
+static float stationary_metric(StationaryLamp lamp, float3 point) {
+  float3 to_point = point - lamp.position_range.xyz;
+  float distance_squared = dot(to_point, to_point);
+  float range = lamp.position_range.w;
+  if (distance_squared > range * range) {
+    return 0.0f;
+  }
+  float ratio = distance_squared / (range * range);
+  float window = saturate(1.0f - ratio * ratio);
+  float metric = lamp.direction_weight.w * window * window /
+                 max(distance_squared, 1.0e-4f);
+  if (lamp.cone_kind_channel.z == 2.0f) {
+    float distance = sqrt(distance_squared);
+    float cosine = distance > 0.0f
+                       ? dot(lamp.direction_weight.xyz, to_point) / distance
+                       : 1.0f;
+    float cone = saturate((cosine - lamp.cone_kind_channel.y) /
+                          max(lamp.cone_kind_channel.x -
+                                  lamp.cone_kind_channel.y,
+                              1.0e-4f));
+    metric *= cone * cone;
+  }
+  return metric;
+}
+
+/* The candidate that owns `channel` at `point`: the largest metric, the
+   lower index on a tie (candidates ascend), none (~0u) where all are zero. */
+static uint stationary_owner(thread const StationaryTexel &texel, uint channel,
+                             float3 point) {
+  uint owner = ~0u;
+  float best = 0.0f;
+  for (uint i = 0u; i < texel.count; ++i) {
+    uint lamp = texel.candidates[texel.first + i];
+    StationaryLamp terms = texel.lamps[lamp];
+    if (terms.cone_kind_channel.w != float(channel)) {
+      continue;
+    }
+    float metric = stationary_metric(terms, point);
+    if (metric > best) {
+      best = metric;
+      owner = lamp;
+    }
+  }
+  return owner;
+}
+
+/* Whether scene light `light_index` lights the texel at runtime, so its
+   direct term stays out of the bake. */
+static bool stationary_at_runtime(thread const StationaryTexel &texel,
+                                  GpuLight light, uint light_index) {
+  if (texel.mode == 0u || light.stationary.x == 0.0f) {
+    return false;
+  }
+  if (texel.mode == 1u) {
+    return true;
+  }
+  uint lamp = texel.lamp_by_light[light_index];
+  bool candidate = false;
+  for (uint i = 0u; i < texel.count; ++i) {
+    candidate = candidate || texel.candidates[texel.first + i] == lamp;
+  }
+  if (!candidate) {
+    return false;
+  }
+  float channel = texel.lamps[lamp].cone_kind_channel.w;
+  return channel < 0.0f ||
+         stationary_owner(texel, uint(channel), texel.position) == lamp;
+}
+
 /* Direct irradiance from the layer lights [first_light, end_light) at a
-   point with this normal. As in the CPU integrator, a light above the shading
-   normal counts even when it is below the geometric surface; its shadow ray
-   leaves on the light's side. With a positive `direction_weight`, each
-   light's contribution also adds its luminance times that weight, times its
+   point with this normal, without the stationary lights `stationary` leaves
+   out. As in the CPU integrator, a light above the shading normal counts
+   even when it is below the geometric surface; its shadow ray leaves on the
+   light's side. With a positive `direction_weight`, each light's
+   contribution also adds its luminance times that weight, times its
    direction, to `direction_sum` (w the weighted luminance). */
 static float3 direct_irradiance(thread const Scene &scene,
                                 device const GpuLight *lights,
@@ -632,10 +732,14 @@ static float3 direct_irradiance(thread const Scene &scene,
                                 float3 position, float3 normal,
                                 float3 geometric, thread Rng &rng,
                                 thread float4 &direction_sum,
-                                float direction_weight) {
+                                float direction_weight,
+                                thread const StationaryTexel &stationary) {
   float3 result = float3(0.0f);
   for (uint i = first_light; i < end_light; ++i) {
     GpuLight light = lights[layer_lights[i]];
+    if (stationary_at_runtime(stationary, light, layer_lights[i])) {
+      continue;
+    }
     LightSample sample = sample_light(light, position, rng);
     if (!sample.valid) {
       continue;
@@ -773,12 +877,13 @@ static float3 path_radiance(thread const Scene &scene,
     }
     float3 albedo = bounce_albedo(hit.material, dot(hit.normal, -direction),
                                   transport.dfg);
+    StationaryTexel bounce = {};
     radiance += throughput * albedo * (1.0f / kPi) *
                 direct_irradiance(scene, transport.lights,
                                   transport.layer_lights, 0u,
                                   transport.light_count, hit.position,
                                   hit.normal, hit.geometric, rng, untracked,
-                                  0.0f);
+                                  0.0f, bounce);
     throughput *= albedo;
     /* As in the CPU integrator, a direction sampled about the shading
        normal continues even below the geometric surface. */
@@ -818,6 +923,11 @@ kernel void lightmap_gather(
     device float *backface [[buffer(17)]],
     device const float4 *texel_footprints [[buffer(18)]],
     device float4 *direction_out [[buffer(19)]],
+    device const StationaryLamp *stationary_lamps [[buffer(20)]],
+    device const uint *lamp_by_light [[buffer(21)]],
+    device const uint2 *candidate_ranges [[buffer(22)]],
+    device const uint *candidates [[buffer(23)]],
+    device const uint *texel_instances [[buffer(24)]],
     texture2d_array<half> textures [[texture(0)]],
     texture2d<float> sky [[texture(1)]],
     texture2d<float> dfg [[texture(2)]],
@@ -846,6 +956,17 @@ kernel void lightmap_gather(
   float3 step_x = texel_footprints[2u * texel + 0u].xyz;
   float3 step_y = texel_footprints[2u * texel + 1u].xyz;
   float3 origin = texel_position + texel_normal * 1.0e-3f;
+  StationaryTexel stationary = {};
+  stationary.mode = (args.flags & 64u) != 0u ? 2u : 1u;
+  if (stationary.mode == 2u) {
+    uint2 range = candidate_ranges[texel_instances[texel]];
+    stationary.lamps = stationary_lamps;
+    stationary.lamp_by_light = lamp_by_light;
+    stationary.candidates = candidates;
+    stationary.first = range.x;
+    stationary.count = range.y;
+    stationary.position = texel_position;
+  }
   Transport transport = {lights,
                          layer_lights,
                          args.light_count,
@@ -883,7 +1004,7 @@ kernel void lightmap_gather(
         direct_total += direct_irradiance(
             scene, lights, layer_lights, 0u, args.rectangle_first, point,
             texel_normal, texel_normal, unused, point_directions,
-            use_direction ? 1.0f : 0.0f);
+            use_direction ? 1.0f : 0.0f, stationary);
         points += 1.0f;
       }
     }
@@ -916,7 +1037,8 @@ kernel void lightmap_gather(
           direct_irradiance(scene, lights, layer_lights, args.rectangle_first,
                             args.light_count, point, texel_normal,
                             texel_normal, rng, direction_sum,
-                            use_direction ? inverse_samples : 0.0f);
+                            use_direction ? inverse_samples : 0.0f,
+                            stationary);
     }
     float3 direction = cosine_direction(texel_normal, rng.next(), rng.next());
     FirstHit first;
@@ -969,6 +1091,106 @@ kernel void lightmap_gather(
     float share = backface_hits * inverse_samples;
     backface[texel] = first_run ? share : backface[texel] + share;
   }
+}
+
+struct MaskArgs {
+  uint first_texel;
+  uint texel_count;
+  uint geometry_first[2];
+};
+
+/* The shadow mask at one texel (ADR-107): per channel, the visibility of the
+   lamp that owns it at the texel's center, as the mean over the reaching
+   points of the 3x3 footprint grid the texel direct term takes, of the
+   luminance of the shadow transmittance toward the lamp; one where no lamp
+   owns the channel or a point lies outside the owner's light. */
+kernel void stationary_mask(
+    device const float4 *texel_positions [[buffer(0)]],
+    device const float4 *texel_normals [[buffer(1)]],
+    device const float4 *texel_footprints [[buffer(2)]],
+    constant MaskArgs &args [[buffer(3)]],
+    primitive_acceleration_structure as [[buffer(4)]],
+    device const float *positions [[buffer(5)]],
+    device const float *normals [[buffer(6)]],
+    device const float2 *uvs [[buffer(7)]],
+    device const uint *colors [[buffer(8)]],
+    device const uint *triangle_materials [[buffer(9)]],
+    device const GpuMaterial *materials [[buffer(10)]],
+    device const GpuLight *lights [[buffer(11)]],
+    device const uint *as_indices [[buffer(12)]],
+    device const StationaryLamp *stationary_lamps [[buffer(13)]],
+    device const uint *light_by_lamp [[buffer(14)]],
+    device const uint2 *candidate_ranges [[buffer(15)]],
+    device const uint *candidates [[buffer(16)]],
+    device const uint *texel_instances [[buffer(17)]],
+    device float4 *mask [[buffer(18)]],
+    texture2d_array<half> textures [[texture(0)]],
+    uint id [[thread_position_in_grid]]) {
+  if (id >= args.texel_count) {
+    return;
+  }
+  constexpr sampler texture_sampler(coord::normalized, address::repeat,
+                                    filter::linear);
+  Scene scene = {as,
+                 positions,
+                 normals,
+                 uvs,
+                 colors,
+                 triangle_materials,
+                 materials,
+                 textures,
+                 texture_sampler,
+                 as_indices,
+                 {args.geometry_first[0], args.geometry_first[1]}};
+  uint texel = args.first_texel + id;
+  float3 texel_normal = texel_normals[texel].xyz;
+  float3 texel_position = texel_positions[texel].xyz;
+  float3 step_x = texel_footprints[2u * texel + 0u].xyz;
+  float3 step_y = texel_footprints[2u * texel + 1u].xyz;
+  uint2 range = candidate_ranges[texel_instances[texel]];
+  StationaryTexel stationary = {};
+  stationary.lamps = stationary_lamps;
+  stationary.candidates = candidates;
+  stationary.first = range.x;
+  stationary.count = range.y;
+  stationary.mode = 2u;
+  stationary.position = texel_position;
+  float4 visibility = float4(1.0f);
+  /* Point and spot lights draw no random numbers. */
+  Rng unused;
+  unused.state = 0u;
+  for (uint channel = 0u; channel < 4u; ++channel) {
+    uint lamp = stationary_owner(stationary, channel, texel_position);
+    if (lamp == ~0u) {
+      continue;
+    }
+    GpuLight light = lights[light_by_lamp[lamp]];
+    float sum = 0.0f;
+    float points = 0.0f;
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        float3 point = texel_position + step_x * (float(x) / 3.0f) +
+                       step_y * (float(y) / 3.0f);
+        if ((x != 0 || y != 0) &&
+            !footprint_reaches(scene, texel_position, texel_normal, point)) {
+          continue;
+        }
+        points += 1.0f;
+        LightSample sample = sample_light(light, point, unused);
+        float shadow_distance =
+            sample.distance - 2.0e-3f - punctual_occluder_clip(light);
+        if (!sample.valid || !(shadow_distance > 0.0f)) {
+          sum += 1.0f;
+          continue;
+        }
+        float3 origin = leave_surface(point, texel_normal, sample.direction);
+        sum += luminance(shadow_transmittance(scene, origin, sample.direction,
+                                              shadow_distance));
+      }
+    }
+    visibility[channel] = saturate(sum / points);
+  }
+  mask[texel] = visibility;
 }
 
 /* vkr_bake_cube_direction (tools/bake/vkr_bake_sh.cpp): KTX face order and
@@ -1162,6 +1384,19 @@ struct GpuLight {
   float right_half_width[4];
   float up_half_height[4];
   float cone[4];
+  float stationary[4];
+};
+
+struct StationaryLamp {
+  float position_range[4];
+  float direction_weight[4];
+  float cone_kind_channel[4];
+};
+
+struct MaskArgs {
+  uint32_t first_texel;
+  uint32_t texel_count;
+  uint32_t geometry_first[2];
 };
 
 uint32_t pack_unorm4(Vec4 color) {
@@ -1187,6 +1422,7 @@ struct VkrBakeGpuContext {
   id<MTLComputePipelineState> benchmark = nil;
   id<MTLComputePipelineState> gather = nil;
   id<MTLComputePipelineState> probes = nil;
+  id<MTLComputePipelineState> mask = nil;
   id<MTLBuffer> positions = nil;
   id<MTLBuffer> normals = nil;
   id<MTLBuffer> uvs = nil;
@@ -1196,6 +1432,15 @@ struct VkrBakeGpuContext {
   id<MTLBuffer> lights = nil;
   /* Corner indices of the acceleration structure, grouped by geometry. */
   id<MTLBuffer> as_indices = nil;
+  /* A tiled bake's stationary plan (ADR-107): its lamps' ownership terms,
+     each scene light's lamp and each lamp's light, the candidate ranges by
+     source instance and the candidates. Placeholders without a plan. */
+  bool stationary_ownership = false;
+  id<MTLBuffer> stationary_lamps = nil;
+  id<MTLBuffer> lamp_by_light = nil;
+  id<MTLBuffer> light_by_lamp = nil;
+  id<MTLBuffer> candidate_ranges = nil;
+  id<MTLBuffer> candidates = nil;
   /* Per material, the lowest alpha its factor and base color texture give,
      as the kernel samples them. */
   std::vector<float> material_alpha_floor;
@@ -1486,7 +1731,8 @@ bool upload_lights(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
         // shadowed whatever casts_shadow says about runtime shadow maps;
         // an unshadowed lamp lit the far side of every wall.
         {std::cos(light.inner_cone_angle), std::cos(light.outer_cone_angle),
-         1.0f, light.enabled ? 1.0f : 0.0f}};
+         1.0f, light.enabled ? 1.0f : 0.0f},
+        {light.stationary ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f}};
   }
   return true;
 }
@@ -1600,7 +1846,16 @@ VkrBakeGpuContext *vkr_bake_gpu_create(const VkrBakeScene &scene) {
     context->gather =
         make_pipeline(context->device, library, @"lightmap_gather");
     context->probes = make_pipeline(context->device, library, @"probe_gather");
+    context->mask = make_pipeline(context->device, library, @"stationary_mask");
+    context->stationary_lamps = shared_buffer(context->device, 0u);
+    context->lamp_by_light = shared_buffer(context->device, 0u);
+    context->light_by_lamp = shared_buffer(context->device, 0u);
+    context->candidate_ranges = shared_buffer(context->device, 0u);
+    context->candidates = shared_buffer(context->device, 0u);
     if (!context->benchmark || !context->gather || !context->probes ||
+        !context->mask || !context->stationary_lamps ||
+        !context->lamp_by_light || !context->light_by_lamp ||
+        !context->candidate_ranges || !context->candidates ||
         !upload_triangles(context, scene) ||
         !upload_materials(context, scene) ||
         !build_acceleration_structure(context, scene) ||
@@ -1621,6 +1876,63 @@ bool vkr_bake_gpu_update_lighting(VkrBakeGpuContext *context,
   @autoreleasepool {
     return context && upload_lights(context, scene) &&
            upload_sky(context, scene);
+  }
+}
+
+bool vkr_bake_gpu_set_stationary(VkrBakeGpuContext *context,
+                                 const VkrBakeStationaryPlan &plan) {
+  @autoreleasepool {
+    if (!context) {
+      return false;
+    }
+    const size_t lamp_count = plan.lamps.size();
+    id<MTLBuffer> lamps =
+        shared_buffer(context->device, lamp_count * sizeof(StationaryLamp));
+    id<MTLBuffer> lamp_by_light = shared_buffer(
+        context->device, plan.lamp_by_light.size() * sizeof(uint32_t));
+    id<MTLBuffer> light_by_lamp =
+        shared_buffer(context->device, lamp_count * sizeof(uint32_t));
+    id<MTLBuffer> ranges = shared_buffer(
+        context->device, plan.ranges_by_source.size() * 2u * sizeof(uint32_t));
+    id<MTLBuffer> candidates = shared_buffer(
+        context->device, plan.candidates.size() * sizeof(uint32_t));
+    if (!lamps || !lamp_by_light || !light_by_lamp || !ranges || !candidates) {
+      return false;
+    }
+    StationaryLamp *terms = static_cast<StationaryLamp *>(lamps.contents);
+    for (size_t i = 0u; i < lamp_count; ++i) {
+      const VkrLightmapStationaryLamp &lamp = plan.lamps[i];
+      terms[i] = {
+          {lamp.position.x, lamp.position.y, lamp.position.z, lamp.range},
+          {lamp.direction.x, lamp.direction.y, lamp.direction.z, lamp.weight},
+          {lamp.cos_inner, lamp.cos_outer, (float)lamp.kind,
+           lamp.channel < VKR_LIGHTMAP_STATIONARY_CHANNELS ? (float)lamp.channel
+                                                           : -1.0f}};
+    }
+    if (!plan.lamp_by_light.empty()) {
+      std::memcpy(lamp_by_light.contents, plan.lamp_by_light.data(),
+                  plan.lamp_by_light.size() * sizeof(uint32_t));
+    }
+    if (lamp_count != 0u) {
+      std::memcpy(light_by_lamp.contents, plan.lights.data(),
+                  lamp_count * sizeof(uint32_t));
+    }
+    uint32_t *range_words = static_cast<uint32_t *>(ranges.contents);
+    for (size_t i = 0u; i < plan.ranges_by_source.size(); ++i) {
+      range_words[2u * i + 0u] = plan.ranges_by_source[i].first;
+      range_words[2u * i + 1u] = plan.ranges_by_source[i].count;
+    }
+    uint32_t *candidate_words = static_cast<uint32_t *>(candidates.contents);
+    for (size_t i = 0u; i < plan.candidates.size(); ++i) {
+      candidate_words[i] = plan.candidates[i];
+    }
+    context->stationary_lamps = lamps;
+    context->lamp_by_light = lamp_by_light;
+    context->light_by_lamp = light_by_lamp;
+    context->candidate_ranges = ranges;
+    context->candidates = candidates;
+    context->stationary_ownership = lamp_count != 0u;
+    return true;
   }
 }
 
@@ -1670,6 +1982,23 @@ bool upload_texels(id<MTLDevice> device,
     n[4u * i + 3u] = 0.0f;
   }
   return true;
+}
+
+/* Each texel's source instance, which keys its stationary candidates; zeros
+   without a stationary plan, whose kernels never read it. */
+id<MTLBuffer>
+upload_texel_instances(VkrBakeGpuContext *context,
+                       const std::vector<VkrBakeLightmapTexel> &texels) {
+  id<MTLBuffer> buffer =
+      shared_buffer(context->device, texels.size() * sizeof(uint32_t));
+  if (!buffer || !context->stationary_ownership) {
+    return buffer;
+  }
+  uint32_t *words = static_cast<uint32_t *>(buffer.contents);
+  for (size_t i = 0u; i < texels.size(); ++i) {
+    words[i] = texels[i].source_instance_index;
+  }
+  return buffer;
 }
 
 bool finish(id<MTLCommandBuffer> command, double *in_out_seconds) {
@@ -1781,8 +2110,9 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
             ? shared_buffer(context->device, count * 4u * sizeof(float))
             : moments;
     id<MTLBuffer> footprints = nil;
+    id<MTLBuffer> texel_instances = upload_texel_instances(context, texels);
     if (!indirect || !direct || !moments || !layer_lights || !occlusion ||
-        !backface || !direction ||
+        !backface || !direction || !texel_instances ||
         !upload_texels(context->device, texels, &positions, &normals,
                        &footprints)) {
       return false;
@@ -1805,7 +2135,8 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
     const uint32_t flags =
         (layer.sky ? 1u : 0u) | (layer.emission ? 2u : 0u) |
         (layer.texel_direct ? 4u : 0u) | (settings.occlusion ? 8u : 0u) |
-        (settings.backface ? 16u : 0u) | (settings.direction ? 32u : 0u);
+        (settings.backface ? 16u : 0u) | (settings.direction ? 32u : 0u) |
+        (context->stationary_ownership ? 64u : 0u);
     const NSUInteger width = context->gather.threadExecutionWidth;
     /* Each batch of texels takes its samples in runs of
        kSamplesPerDispatch, a command buffer each. */
@@ -1855,6 +2186,11 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
       [encoder setBuffer:backface offset:0u atIndex:17u];
       [encoder setBuffer:footprints offset:0u atIndex:18u];
       [encoder setBuffer:direction offset:0u atIndex:19u];
+      [encoder setBuffer:context->stationary_lamps offset:0u atIndex:20u];
+      [encoder setBuffer:context->lamp_by_light offset:0u atIndex:21u];
+      [encoder setBuffer:context->candidate_ranges offset:0u atIndex:22u];
+      [encoder setBuffer:context->candidates offset:0u atIndex:23u];
+      [encoder setBuffer:texel_instances offset:0u atIndex:24u];
       [encoder setTexture:context->textures atIndex:0u];
       [encoder setTexture:context->sky atIndex:1u];
       [encoder setTexture:context->dfg atIndex:2u];
@@ -1900,6 +2236,78 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
         result.direction[i] = vec4_new(sums[4u * i], sums[4u * i + 1u],
                                        sums[4u * i + 2u], sums[4u * i + 3u]);
       }
+    }
+    return true;
+  }
+}
+
+bool vkr_bake_gpu_stationary_mask(
+    VkrBakeGpuContext *context, const std::vector<VkrBakeLightmapTexel> &texels,
+    std::vector<Vec4> *out_mask, double *out_gpu_seconds) {
+  @autoreleasepool {
+    if (!context || !out_mask || !out_gpu_seconds ||
+        !context->stationary_ownership) {
+      return false;
+    }
+    const NSUInteger count = texels.size();
+    out_mask->assign(count, vec4_new(1.0f, 1.0f, 1.0f, 1.0f));
+    *out_gpu_seconds = 0.0;
+    if (count == 0u) {
+      return true;
+    }
+    id<MTLBuffer> positions = nil;
+    id<MTLBuffer> normals = nil;
+    id<MTLBuffer> footprints = nil;
+    id<MTLBuffer> mask =
+        shared_buffer(context->device, count * 4u * sizeof(float));
+    id<MTLBuffer> texel_instances = upload_texel_instances(context, texels);
+    if (!mask || !texel_instances ||
+        !upload_texels(context->device, texels, &positions, &normals,
+                       &footprints)) {
+      return false;
+    }
+    const NSUInteger width = context->mask.threadExecutionWidth;
+    /* Up to 36 shadow rays a texel: a gather batch's budget covers it. */
+    for (NSUInteger first = 0u; first < count; first += kTexelsPerDispatch) {
+      const MaskArgs args = {
+          (uint32_t)first,
+          (uint32_t)std::min<NSUInteger>(kTexelsPerDispatch, count - first),
+          {context->geometry_first[0], context->geometry_first[1]}};
+      id<MTLCommandBuffer> command = [context->queue commandBuffer];
+      id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+      [encoder setComputePipelineState:context->mask];
+      [encoder setBuffer:positions offset:0u atIndex:0u];
+      [encoder setBuffer:normals offset:0u atIndex:1u];
+      [encoder setBuffer:footprints offset:0u atIndex:2u];
+      [encoder setBytes:&args length:sizeof(args) atIndex:3u];
+      [encoder setAccelerationStructure:context->scene atBufferIndex:4u];
+      [encoder setBuffer:context->positions offset:0u atIndex:5u];
+      [encoder setBuffer:context->normals offset:0u atIndex:6u];
+      [encoder setBuffer:context->uvs offset:0u atIndex:7u];
+      [encoder setBuffer:context->colors offset:0u atIndex:8u];
+      [encoder setBuffer:context->triangle_materials offset:0u atIndex:9u];
+      [encoder setBuffer:context->materials offset:0u atIndex:10u];
+      [encoder setBuffer:context->lights offset:0u atIndex:11u];
+      [encoder setBuffer:context->as_indices offset:0u atIndex:12u];
+      [encoder setBuffer:context->stationary_lamps offset:0u atIndex:13u];
+      [encoder setBuffer:context->light_by_lamp offset:0u atIndex:14u];
+      [encoder setBuffer:context->candidate_ranges offset:0u atIndex:15u];
+      [encoder setBuffer:context->candidates offset:0u atIndex:16u];
+      [encoder setBuffer:texel_instances offset:0u atIndex:17u];
+      [encoder setBuffer:mask offset:0u atIndex:18u];
+      [encoder setTexture:context->textures atIndex:0u];
+      [encoder useResource:context->scene usage:MTLResourceUsageRead];
+      [encoder dispatchThreads:MTLSizeMake(args.texel_count, 1u, 1u)
+          threadsPerThreadgroup:MTLSizeMake(width, 1u, 1u)];
+      [encoder endEncoding];
+      if (!finish(command, out_gpu_seconds)) {
+        return false;
+      }
+    }
+    const float *values = static_cast<const float *>(mask.contents);
+    for (NSUInteger i = 0u; i < count; ++i) {
+      (*out_mask)[i] = vec4_new(values[4u * i], values[4u * i + 1u],
+                                values[4u * i + 2u], values[4u * i + 3u]);
     }
     return true;
   }

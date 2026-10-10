@@ -2242,6 +2242,11 @@ typedef struct VkrMetalPacketUploadPlan {
   uint64_t lightmap_offset;
   uint64_t lightmap_rects_offset;
   uint32_t lightmap_rect_count;
+  /* Stationary lamps (ADR-107): their rows and the 16-bit candidates. */
+  uint64_t stationary_offset;
+  uint32_t stationary_count;
+  uint64_t candidates_offset;
+  uint32_t candidate_count;
   uint32_t rectangle_light_count;
   uint64_t ltc_offset;
   uint64_t rectangle_lights_offset;
@@ -2544,9 +2549,23 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
       AlignOf(VkrLightmapRect));
   const uint64_t lightmap_rects_bytes =
       (uint64_t)plan->lightmap_rect_count * sizeof(VkrLightmapRect);
-  plan->ltc_offset = vkr_metal_packet_align_up(plan->lightmap_rects_offset +
-                                                   lightmap_rects_bytes,
-                                               AlignOf(VkrMetalPacketLtc));
+  const VkrLightmapBinding *frame_lightmap =
+      plan->lightmap_rect_count ? &packet->input.lighting->lightmap : NULL;
+  plan->stationary_count =
+      frame_lightmap ? frame_lightmap->stationary_count : 0u;
+  plan->candidate_count =
+      plan->stationary_count ? frame_lightmap->candidate_count : 0u;
+  plan->stationary_offset = vkr_metal_packet_align_up(
+      plan->lightmap_rects_offset + lightmap_rects_bytes,
+      AlignOf(VkrMetalPacketStationaryLamp));
+  plan->candidates_offset = vkr_metal_packet_align_up(
+      plan->stationary_offset + (uint64_t)plan->stationary_count *
+                                    sizeof(VkrMetalPacketStationaryLamp),
+      AlignOf(uint32_t));
+  plan->ltc_offset = vkr_metal_packet_align_up(
+      plan->candidates_offset +
+          (uint64_t)plan->candidate_count * sizeof(uint16_t),
+      AlignOf(VkrMetalPacketLtc));
   plan->rectangle_lights_offset = plan->ltc_offset + sizeof(VkrMetalPacketLtc);
   const uint64_t rectangle_lights_bytes =
       (uint64_t)plan->rectangle_light_count * sizeof(VkrGpuRectangleLightRow);
@@ -2996,6 +3015,62 @@ vkr_internal void vkr_metal_packet_write_upload_decals(
   upload->decals_gpu = gpu + plan->decals_offset;
 }
 
+/* Writes the frame's stationary lamps into the lightmap record (ADR-107):
+   each lamp's live light, packed as the point light table packs it with its
+   first runtime shadow view, its baked ownership terms, the candidates and
+   the shadowed lamps. */
+vkr_internal bool8_t vkr_metal_packet_upload_stationary(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    const VkrMetalPacketUploadPlan *plan, uint8_t *cpu, uint64_t gpu,
+    VkrMetalPacketLightmap *record) {
+  const VkrLightmapBinding *lightmap = &packet->input.lighting->lightmap;
+  VkrMetalPacketTexture *mask =
+      vkr_metal_packet_resolve_texture(renderer, lightmap->shadow_mask);
+  id<MTLTexture> native =
+      mask ? (id<MTLTexture>)mask->resource.metal_texture : nil;
+  if (!native || native.pixelFormat != MTLPixelFormatASTC_4x4_LDR ||
+      native.textureType != MTLTextureType2DArray ||
+      native.width != lightmap->page_size)
+    return false_v;
+  const VkrLocalShadowPassPayload *local_shadow =
+      plan->local_shadow_view_count > 0u ? packet->input.local_shadow : NULL;
+  VkrMetalPacketStationaryLamp *rows =
+      (VkrMetalPacketStationaryLamp *)(cpu + plan->stationary_offset);
+  for (uint32_t i = 0u; i < plan->stationary_count; ++i) {
+    const VkrLightmapStationaryLight *lamp = &lightmap->stationary[i];
+    VkrMetalPacketStationaryLamp *row = &rows[i];
+    vkr_point_light_pack(&lamp->light, packet->exposure.pre_exposure,
+                         &row->light);
+    row->light.p3.w =
+        local_shadow && lamp->shadow_light < VKR_MAX_SCENE_POINT_LIGHTS
+            ? (float32_t)local_shadow->light_first_view[lamp->shadow_light]
+            : 0.0f;
+    row->position_range = (Vec4){lamp->baked_position.x, lamp->baked_position.y,
+                                 lamp->baked_position.z, lamp->baked_range};
+    row->direction_weight =
+        (Vec4){lamp->baked_direction.x, lamp->baked_direction.y,
+               lamp->baked_direction.z, lamp->baked_weight};
+    row->cone_kind_channel =
+        (Vec4){lamp->baked_cos_inner, lamp->baked_cos_outer,
+               (float32_t)lamp->baked_kind,
+               lamp->channel < 4u ? (float32_t)lamp->channel : -1.0f};
+  }
+  if (plan->candidate_count) {
+    MemCopy(cpu + plan->candidates_offset, lightmap->candidates,
+            (uint64_t)plan->candidate_count * sizeof(uint16_t));
+  }
+  record->shadow_mask_id = mask->resource.resource_id;
+  record->stationary = gpu + plan->stationary_offset;
+  record->candidates = gpu + plan->candidates_offset;
+  record->stationary_count = plan->stationary_count;
+  record->shadowed_count = lightmap->shadowed_count;
+  for (uint32_t i = 0u; i < lightmap->shadowed_count; ++i) {
+    record->shadowed[i] = lightmap->shadowed[i];
+  }
+  mask->last_use_submit_value = renderer->submit_value + 1u;
+  return true_v;
+}
+
 /* Writes the frame's lightmap record and, on the tiled pipeline, the set's
    rectangle table (ADR-088). Without a sampled set the record holds no
    rectangles, so every draw's slot misses it. */
@@ -3034,7 +3109,9 @@ vkr_internal bool8_t vkr_metal_packet_upload_lightmap(
     record->active_weights[i] = lightmap->active_weights[i];
   }
   texture->last_use_submit_value = renderer->submit_value + 1u;
-  return true_v;
+  return plan->stationary_count == 0u ||
+         vkr_metal_packet_upload_stationary(renderer, packet, plan, cpu, gpu,
+                                            record);
 }
 
 /* Writes fog, sky, diffuse-volume, lightmap and IBL probe data. */

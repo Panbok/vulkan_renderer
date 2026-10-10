@@ -275,7 +275,11 @@ pipeline rather than a backend mechanism.
     on the tiled class for each scene with a loaded lightmap set, the
     lighting system leaves that scene's static lights out of its tables; a
     scene without one keeps them, so they draw with the dynamic lights until
-    it is baked (owner decision, 2026-10-06). Then
+    it is baked (owner decision, 2026-10-06). Stationary lamps that the set
+    keys leave the tables too: the forward shader shades their direct light
+    through the set's candidates and shadow mask, the nearest with runtime
+    shadow maps, in the `STATIONARY` variant
+    ([ADR-107](107-stationary-lamps.md)). Then
     `vkr_lighting_system_limit_point_lights`
     ([`vkr_lighting_system.h`](../../runtime/src/renderer/systems/vkr_lighting_system.h))
     selects the 16 dynamic point and spot lights nearest the camera by the

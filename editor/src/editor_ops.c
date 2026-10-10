@@ -14238,7 +14238,8 @@ static const OpsDef s_ops[] = {
     {"lighting.list",
      "The open scene's and the World's lights (kind directional, point, "
      "spot or rectangle; 'from' scene or world; component values, with "
-     "mobility and light_group) and the scene's light groups with their "
+     "mobility static, stationary or dynamic (rectangle lights static or "
+     "dynamic) and light_group) and the scene's light groups with their "
      "live intensity and current factor.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_lighting_list, NULL,
      OPS_QUICK},

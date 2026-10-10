@@ -61,6 +61,7 @@ vkr_metal_tiled_vertex(uint vertex_id [[vertex_id]],
   output.visible_row_index = visible_row_index;
   output.lightmap_uv = float2(0.0f);
   output.lightmap_page = ~0u;
+  output.lightmap_stationary = 0u;
   const uint lightmap_slot = uint(instance.normal_column2.w);
   constant VkrMetalPacketLightmap &lightmap = *frame->lightmap;
   if (lightmap_slot != 0u && lightmap_slot <= lightmap.rect_count &&
@@ -74,6 +75,7 @@ vkr_metal_tiled_vertex(uint vertex_id [[vertex_id]],
         (origin + vkr_decode_packed_lightmap_uv(vertices[vertex_id]) * extent) *
         lightmap.inverse_page_size;
     output.lightmap_page = rect.page;
+    output.lightmap_stationary = rect.stationary;
   }
   return output;
 }
@@ -479,6 +481,8 @@ enum VkrMetalTiledLighting : uint {
   // Every light, and the editor's inspection modes (VkrRenderMode): unlit,
   // detail lighting, lighting only and wireframe.
   VKR_METAL_TILED_LIGHTING_INSPECT = 4u,
+  // Stationary lamps besides every dynamic light (ADR-107).
+  VKR_METAL_TILED_LIGHTING_STATIONARY = 5u,
 };
 
 // The tiled pipeline's local shadows: four hardware-filtered taps on the
@@ -528,6 +532,139 @@ static uint vkr_metal_tiled_pixel_probe(constant VkrMetalPacketFrameRoot *frame,
     }
   }
   return best;
+}
+
+// The ownership metric of a stationary lamp at `point` from its baked terms
+// (ADR-107, vkr_lightmap_stationary_metric), so each shadow-mask channel
+// belongs to the lamp the bake gave it.
+static float
+vkr_metal_tiled_stationary_metric(const device VkrMetalPacketStationaryLamp &lamp,
+                                  float3 point) {
+  const float3 to_point = point - lamp.position_range.xyz;
+  const float distance_squared = dot(to_point, to_point);
+  const float range = lamp.position_range.w;
+  if (distance_squared > range * range)
+    return 0.0f;
+  const float ratio = distance_squared / (range * range);
+  const float window = saturate(1.0f - ratio * ratio);
+  float metric = lamp.direction_weight.w * window * window /
+                 max(distance_squared, 1.0e-4f);
+  if (lamp.cone_kind_channel.z == 2.0f) {
+    const float distance = sqrt(distance_squared);
+    const float cosine =
+        distance > 0.0f ? dot(lamp.direction_weight.xyz, to_point) / distance
+                        : 1.0f;
+    const float cone =
+        saturate((cosine - lamp.cone_kind_channel.y) /
+                 max(lamp.cone_kind_channel.x - lamp.cone_kind_channel.y,
+                     1.0e-4f));
+    metric *= cone * cone;
+  }
+  return metric;
+}
+
+// A stationary lamp's direct light at a surface (ADR-107). Its visibility is
+// `fallback`, the baked mask channel it owns or zero for a surface without a
+// lightmap, until its runtime shadow map fades in with the shadow's strength.
+static void vkr_metal_tiled_stationary_lamp(
+    constant VkrMetalPacketFrameRoot *frame,
+    const device VkrMetalPacketStationaryLamp &lamp, float fallback,
+    float3 world_position, float3 normal, float3 view, float3 base,
+    float metallic, float roughness, float3 f0, VkrGgxMaterialEnergy energy,
+    thread float3 &diffuse, thread float3 &specular) {
+  const float4 p0 = lamp.light.p0;
+  const float4 p1 = lamp.light.p1;
+  const float4 p2 = lamp.light.p2;
+  const float4 p3 = lamp.light.p3;
+  if (p2.x <= 0.0f)
+    return;
+  const VkrPunctualLightTerm term =
+      vkr_punctual_light_term(p0, p1, p2, p3, world_position);
+  if (!term.in_range || term.cone <= 0.0f ||
+      !vkr_local_shadow_light_faces(normal, term.direction))
+    return;
+  float visibility = fallback;
+  const uint first_view_encoded = uint(p3.w);
+  if (first_view_encoded != 0u) {
+    const float strength =
+        frame->local_shadow_views[first_view_encoded - 1u].shadow_params.x;
+    if (strength > 0.0f) {
+      // The sampler shows 1 - strength * (1 - v) for the map's visibility v.
+      const float shown = vkr_metal_packet_local_shadow_sample<false, false, true>(
+                              frame, first_view_encoded, term.kind,
+                              world_position, normal)
+                              .x;
+      const float mapped = 1.0f - (1.0f - shown) / strength;
+      visibility = mix(fallback, mapped, strength);
+    }
+  }
+  if (visibility <= 0.0f)
+    return;
+  const VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
+      normal, view, term.direction,
+      p1.rgb * p2.x * (term.attenuation * term.cone * visibility), base,
+      metallic, roughness, f0, energy);
+  diffuse += direct.diffuse;
+  specular += direct.specular;
+}
+
+// Stationary lamps (ADR-107). A lightmapped surface ranks its instance's
+// candidates per mask channel by the ownership metric and shades each
+// channel's owner through the mask, and every candidate without a channel
+// unshadowed; the bake holds the other candidates' light there. A surface
+// without a lightmap shades only the lamps with runtime shadows.
+static void vkr_metal_tiled_stationary(
+    thread const VkrMetalTiledVertexOutput &input,
+    constant VkrMetalPacketFrameRoot *frame, float3 normal, float3 view,
+    float3 base, float metallic, float roughness, float3 f0,
+    VkrGgxMaterialEnergy energy, thread float3 &diffuse,
+    thread float3 &specular) {
+  constant VkrMetalPacketLightmap &lightmap = *frame->lightmap;
+  if (lightmap.stationary_count == 0u)
+    return;
+  const float3 position = input.world_position;
+  if (input.lightmap_page == ~0u) {
+    const uint shadowed = min(lightmap.shadowed_count, 8u);
+    for (uint i = 0u; i < shadowed; ++i)
+      vkr_metal_tiled_stationary_lamp(
+          frame, lightmap.stationary[lightmap.shadowed[i]], 0.0f, position,
+          normal, view, base, metallic, roughness, f0, energy, diffuse,
+          specular);
+    return;
+  }
+  const uint first = input.lightmap_stationary & 0x7ffffffu;
+  const uint count = input.lightmap_stationary >> 27u;
+  uint4 owners = uint4(~0u);
+  float4 best = float4(0.0f);
+  for (uint i = 0u; i < count; ++i) {
+    const uint index = uint(lightmap.candidates[first + i]);
+    const device VkrMetalPacketStationaryLamp &lamp = lightmap.stationary[index];
+    const float channel = lamp.cone_kind_channel.w;
+    if (channel < 0.0f) {
+      vkr_metal_tiled_stationary_lamp(frame, lamp, 1.0f, position, normal,
+                                      view, base, metallic, roughness, f0,
+                                      energy, diffuse, specular);
+      continue;
+    }
+    const uint c = uint(channel);
+    const float metric = vkr_metal_tiled_stationary_metric(lamp, position);
+    if (metric > best[c]) {
+      best[c] = metric;
+      owners[c] = index;
+    }
+  }
+  if (all(owners == uint4(~0u)))
+    return;
+  constexpr sampler mask_sampler(coord::normalized, address::clamp_to_edge,
+                                 filter::linear);
+  const float4 mask = lightmap.shadow_mask.sample(
+      mask_sampler, input.lightmap_uv, input.lightmap_page);
+  for (uint c = 0u; c < 4u; ++c) {
+    if (owners[c] != ~0u)
+      vkr_metal_tiled_stationary_lamp(
+          frame, lightmap.stationary[owners[c]], mask[c], position, normal,
+          view, base, metallic, roughness, f0, energy, diffuse, specular);
+  }
 }
 
 // Shades a forward-drawn surface: the sun with its cascades and cloud shadow,
@@ -633,7 +770,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
           sheen_unused, VkrMetalTiledLocalShadow{});
     }
     if (Lighting == VKR_METAL_TILED_LIGHTING_ALL ||
-        Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
+        Lighting == VKR_METAL_TILED_LIGHTING_INSPECT ||
+        Lighting == VKR_METAL_TILED_LIGHTING_STATIONARY) {
       VkrMetalPacketDirectResult rectangles =
           vkr_metal_packet_layered_rectangle_lights<true, true>(
               frame, input.world_position, normal, view, base, metallic,
@@ -641,6 +779,12 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
               coat_unused, sheen_unused);
       light.diffuse += rectangles.diffuse;
       light.specular += rectangles.specular;
+    }
+    if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT ||
+        Lighting == VKR_METAL_TILED_LIGHTING_STATIONARY) {
+      vkr_metal_tiled_stationary(input, frame, normal, view, base, metallic,
+                                 roughness, f0, energy, light.diffuse,
+                                 light.specular);
     }
   }
 
@@ -1496,5 +1640,88 @@ fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_all_probes_fragment(
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_ALL, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+// The stationary-lamp variants (ADR-107): every dynamic light and the
+// stationary lamps, for frames whose lightmap set has them.
+
+fragment float4 vkr_metal_tiled_forward_stationary_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_STATIONARY, false, false, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_stationary_probes_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_STATIONARY, false, true, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_stationary_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_STATIONARY, false, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_stationary_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_STATIONARY, false, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_stationary_coverage_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_STATIONARY, true, false, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_stationary_coverage_probes_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_STATIONARY, true, true, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_stationary_coverage_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_STATIONARY, true, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_stationary_coverage_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_STATIONARY, true, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_stationary_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_STATIONARY, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_stationary_probes_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_STATIONARY, true>(
       input, root, front_facing, float3(0.0f));
 }

@@ -11,6 +11,7 @@
 #include "bake/vkr_bake_layers.h"
 #include "bake/vkr_bake_scene.h"
 #include "bake/vkr_bake_sh.h"
+#include "bake/vkr_bake_stationary.h"
 
 extern "C" {
 #include "core/logger.h"
@@ -440,9 +441,13 @@ bool bake_lamp_direct(const Options &options, VkrBakeScene &scene,
                       const VkrBakeLayerPlan &plan,
                       const std::vector<uint32_t> &probes, uint32_t seed,
                       ProbeSh *sh) {
+  /* A stationary lamp's direct light stays at runtime (ADR-107); the band
+     holds only static lamps'. */
   std::vector<VkrBakeSceneLight> lights;
   for (uint32_t index : plan.lights) {
-    lights.push_back(scene.lights[index]);
+    if (!scene.lights[index].stationary) {
+      lights.push_back(scene.lights[index]);
+    }
   }
   VkrBakeIntegratorSettings settings = {};
   settings.scene = {&bvh,
@@ -1182,6 +1187,7 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
                  (unsigned)error, options.scene, scene.diagnostic.c_str());
     return 1;
   }
+  (void)vkr_bake_stationary_disable_unkeyed(&scene);
   // Resolve aliases before any output can replace a source used by the bake.
   for (const auto &dependency : scene.dependency_paths) {
     const fs::path source =

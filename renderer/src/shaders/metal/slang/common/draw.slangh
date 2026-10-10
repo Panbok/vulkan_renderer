@@ -86,7 +86,7 @@ struct VkrLightmapRect {
     uint page;
     uint origin;
     uint extent;
-    uint reserved;
+    uint stationary;
 };
 
 // Mirrors VkrMetalPacketLightmap in vkr_metal_packet_abi.h (ADR-088). Only
@@ -100,6 +100,12 @@ struct VkrMetalPacketLightmap {
     uint active_layer_count;
     uint4 active_layers[2];
     float4 active_weights[2];
+    uint64_t shadow_mask;
+    uint64_t stationary;
+    uint64_t candidates;
+    uint stationary_count;
+    uint shadowed_count;
+    uint4 shadowed[2];
 };
 
 // Mirrors VkrMetalPacketDecals in vkr_metal_packet_abi.h (ADR-092). Only MSL

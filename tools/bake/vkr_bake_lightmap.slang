@@ -115,6 +115,8 @@ struct GpuLight
     float4 up_half_height;
     /* x cos inner, y cos outer, z casts shadow, w enabled. */
     float4 cone;
+    /* x one for a stationary light (ADR-107); yzw unused. */
+    float4 stationary;
 };
 
 /* Every member is a 32-bit scalar, so std140 and std430 lay it out alike;
@@ -725,7 +727,10 @@ float3 leave_surface(float3 position, float3 geometric, float3 direction)
 }
 
 /* Direct irradiance from the layer lights [first_light, end_light) at a
-   point with this normal. As in the CPU integrator, a light above the shading
+   point with this normal, without stationary lights when
+   `skip_stationary`: a Vulkan host bakes desktop sets, which light them at
+   runtime everywhere (ADR-107); the Metal kernel's ownership mode has no
+   counterpart here. As in the CPU integrator, a light above the shading
    normal counts even when it is below the geometric surface; its shadow ray
    leaves on the light's side. With a positive `direction_weight`, each
    light's contribution also adds its luminance times that weight, times its
@@ -733,12 +738,16 @@ float3 leave_surface(float3 position, float3 geometric, float3 direction)
 float3 direct_irradiance(Transport transport, uint first_light, uint end_light,
                          float3 position, float3 normal, float3 geometric,
                          inout Rng rng, inout float4 direction_sum,
-                         float direction_weight)
+                         float direction_weight, bool skip_stationary)
 {
     float3 result = float3(0.0f);
     for (uint i = first_light; i < end_light; ++i)
     {
         GpuLight light = lights[layer_lights[i]];
+        if (skip_stationary && light.stationary.x != 0.0f)
+        {
+            continue;
+        }
         LightSample sample = sample_light(light, position, rng);
         if (!sample.valid)
         {
@@ -867,7 +876,7 @@ float3 path_radiance(Transport transport, float3 origin, float3 direction,
         radiance += throughput * albedo * (1.0f / kPi) *
                     direct_irradiance(transport, 0u, transport.light_count,
                                       hit.position, hit.normal, hit.geometric,
-                                      rng, untracked, 0.0f);
+                                      rng, untracked, 0.0f, false);
         throughput *= albedo;
         /* As in the CPU integrator, a direction sampled about the shading
            normal continues even below the geometric surface. */
@@ -955,7 +964,7 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
                 direct_total += direct_irradiance(
                     transport, 0u, args.rectangle_first, point, texel_normal,
                     texel_normal, unused, point_directions,
-                    use_direction ? 1.0f : 0.0f);
+                    use_direction ? 1.0f : 0.0f, true);
                 points += 1.0f;
             }
         }
@@ -995,7 +1004,8 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
                 direct_irradiance(transport, args.rectangle_first,
                                   args.light_count, point, texel_normal,
                                   texel_normal, rng, direction_sum,
-                                  use_direction ? inverse_samples : 0.0f);
+                                  use_direction ? inverse_samples : 0.0f,
+                                  true);
         }
         float first_draw = rng.next();
         float second_draw = rng.next();

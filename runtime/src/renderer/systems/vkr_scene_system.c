@@ -2426,12 +2426,14 @@ vkr_internal uint8_t scene_light_group_slot(VkrScene *scene, const char *name) {
 }
 
 /* A light's group slot, validating its baking fields: a static light joins
-   its group, a dynamic one none. False for an invalid mobility or name. */
+   its group, and so does a stationary one because its bounce light is baked
+   into the group's layer; a dynamic one joins none. False for an invalid
+   mobility or name. */
 vkr_internal bool8_t scene_light_slot(VkrScene *scene,
                                       VkrLightMobility mobility,
                                       const char *group, uint8_t *out_slot) {
   const uint64_t length = strnlen(group, VKR_LIGHT_GROUP_NAME_BYTES);
-  if (mobility > VKR_LIGHT_MOBILITY_DYNAMIC ||
+  if (mobility > VKR_LIGHT_MOBILITY_STATIONARY ||
       !vkr_light_group_name_valid(group, length)) {
     return false_v;
   }
@@ -3565,7 +3567,9 @@ bool8_t vkr_scene_set_rectangle_light(VkrScene *scene, VkrEntityId entity,
     return false_v;
 
   SceneRectangleLight value = *light;
-  if (!scene_light_slot(scene, light->mobility, light->light_group,
+  /* Only point lights may be stationary (ADR-107). */
+  if (light->mobility == VKR_LIGHT_MOBILITY_STATIONARY ||
+      !scene_light_slot(scene, light->mobility, light->light_group,
                         &value.light_group_slot))
     return false_v;
   light = &value;

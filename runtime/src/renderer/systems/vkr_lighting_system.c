@@ -17,6 +17,9 @@ typedef struct PointLightSyncContext {
   VkrLightingSystem *system;
   const VkrScene *scene;
   uint32_t total_considered;
+  /* The rendered scene's lights: its lightmap set's stationary records take
+     the stationary lamps it keys. */
+  bool8_t stationary_records;
 } PointLightSyncContext;
 
 typedef struct RectangleLightSyncContext {
@@ -190,6 +193,13 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     const bool8_t baked = ctx->system->static_lights_baked &&
                           lights[i].mobility == VKR_LIGHT_MOBILITY_STATIC;
     VkrLightingSystem *system = ctx->system;
+    /* A stationary lamp the set keys lights through its record; any other
+       stationary lamp is a dynamic light. */
+    const uint32_t record =
+        ctx->stationary_records && system->static_lights_baked &&
+                lights[i].mobility == VKR_LIGHT_MOBILITY_STATIONARY
+            ? vkr_scene_lightmap_stationary_record(scene, entities[i])
+            : UINT32_MAX;
     if (baked && (!lights[i].casts_shadow ||
                   system->baked_lamp_count >= ArrayCount(system->baked_lamps)))
       continue;
@@ -217,7 +227,9 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     };
     /* A baked lamp lights through the lightmap only; it stays a candidate
        for its moving casters' shadows. */
-    if (baked)
+    if (record < system->stationary_count)
+      system->stationary[record].light = light;
+    else if (baked)
       system->baked_lamps[system->baked_lamp_count++] = light;
     else
       point_light_insert_stable(ctx, light);
@@ -326,10 +338,35 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
         sun->light.sun_angular_diameter_degrees;
   }
 
+  /* The set's stationary records start unlit with their baked terms; the
+     sync fills the lights it finds (ADR-107). */
+  const VkrSceneLightmaps *lightmaps = scene->lightmaps;
+  system->stationary_count =
+      system->static_lights_baked && lightmaps
+          ? Min(lightmaps->stationary_count, VKR_LIGHTMAP_STATIONARY_MAX)
+          : 0u;
+  system->stationary_shadowed_count = 0u;
+  for (uint32_t i = 0u; i < system->stationary_count; ++i) {
+    const VkrLightmapStationaryLamp *lamp = &lightmaps->stationary[i];
+    system->stationary[i] = (VkrLightmapStationaryLight){
+        .light = {.position = lamp->position, .range = lamp->range},
+        .baked_position = lamp->position,
+        .baked_range = lamp->range,
+        .baked_direction = lamp->direction,
+        .baked_weight = lamp->weight,
+        .baked_cos_inner = lamp->cos_inner,
+        .baked_cos_outer = lamp->cos_outer,
+        .baked_kind = lamp->kind,
+        .channel = lamp->channel,
+        .shadow_light = UINT32_MAX,
+    };
+  }
+
   // Sync point lights
   PointLightSyncContext point_ctx = {
       .system = system,
       .scene = scene,
+      .stationary_records = true_v,
   };
   vkr_entity_query_compiled_each_chunk(
       (VkrQueryCompiled *)&scene->query_point_lights, sync_point_lights_cb,
@@ -435,6 +472,15 @@ vkr_internal PointLightRankKey point_light_rank_key(const VkrPointLight *light,
           unbounded ? 0.0f : Max(center_distance - light->range, 0.0f),
       .center_distance = center_distance,
   };
+}
+
+/* Whether key `a` ranks strictly before key `b`. */
+vkr_internal bool8_t point_light_rank_less(PointLightRankKey a,
+                                           PointLightRankKey b) {
+  if (a.range_distance != b.range_distance) {
+    return a.range_distance < b.range_distance;
+  }
+  return a.center_distance < b.center_distance;
 }
 
 vkr_internal bool8_t point_light_rank_precedes(const VkrPointLight *lights,
@@ -643,6 +689,54 @@ void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
     vkr_lighting_system_build_point_light_grid(system);
   }
   system->dirty = true_v;
+}
+
+void vkr_lighting_system_shadow_stationary(VkrLightingSystem *system,
+                                           Vec3 camera_position,
+                                           uint32_t shadow_max) {
+  if (!system) {
+    return;
+  }
+  shadow_max = Min(shadow_max, VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX);
+  uint32_t chosen[VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX];
+  PointLightRankKey chosen_keys[VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX];
+  uint32_t chosen_count = 0u;
+  /* An insertion into the nearest `shadow_max`, ties by record order. */
+  for (uint32_t record = 0u; record < system->stationary_count; ++record) {
+    const VkrPointLight *light = &system->stationary[record].light;
+    if (!light->casts_shadow || !(light->intensity > 0.0f) ||
+        system->stationary[record].channel ==
+            VKR_LIGHTMAP_STATIONARY_NO_CHANNEL) {
+      continue;
+    }
+    const PointLightRankKey key = point_light_rank_key(
+        light, camera_position, system->stationary_was_shadowed[record]);
+    uint32_t at = chosen_count;
+    while (at > 0u && point_light_rank_less(key, chosen_keys[at - 1u])) {
+      --at;
+    }
+    if (at >= shadow_max) {
+      continue;
+    }
+    const uint32_t end = Min(chosen_count, shadow_max - 1u);
+    for (uint32_t j = end; j > at; --j) {
+      chosen[j] = chosen[j - 1u];
+      chosen_keys[j] = chosen_keys[j - 1u];
+    }
+    chosen[at] = record;
+    chosen_keys[at] = key;
+    chosen_count = Min(chosen_count + 1u, shadow_max);
+  }
+  for (uint32_t record = 0u; record < system->stationary_count; ++record) {
+    system->stationary_was_shadowed[record] = false_v;
+    system->stationary[record].shadow_light = UINT32_MAX;
+  }
+  for (uint32_t i = 0u; i < chosen_count; ++i) {
+    system->stationary_shadowed[i] = chosen[i];
+    system->stationary_was_shadowed[chosen[i]] = true_v;
+    system->stationary[chosen[i]].shadow_light = system->point_light_count + i;
+  }
+  system->stationary_shadowed_count = chosen_count;
 }
 
 void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system) {

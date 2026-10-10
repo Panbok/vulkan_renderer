@@ -833,6 +833,29 @@ static const VkrMetalTiledEntries
                 .coverage_label = @"VKR tiled alpha-tested forward inspection",
                 .blend_label = @"VKR tiled blend inspection",
             },
+        [VKR_METAL_TILED_LIGHTING_STATIONARY] =
+            {
+                .forward =
+                    {{"vkr_metal_tiled_forward_stationary_fragment",
+                      "vkr_metal_tiled_forward_stationary_probes_fragment"},
+                     {"vkr_metal_tiled_forward_stationary_decals_fragment",
+                      "vkr_metal_tiled_forward_stationary_probes_decals_"
+                      "fragment"}},
+                .coverage =
+                    {{"vkr_metal_tiled_forward_stationary_coverage_fragment",
+                      "vkr_metal_tiled_forward_stationary_coverage_probes_"
+                      "fragment"},
+                     {"vkr_metal_tiled_forward_stationary_coverage_decals_"
+                      "fragment",
+                      "vkr_metal_tiled_forward_stationary_coverage_probes_"
+                      "decals_fragment"}},
+                .blend = {"vkr_metal_tiled_blend_stationary_fragment",
+                          "vkr_metal_tiled_blend_stationary_probes_fragment"},
+                .forward_label = @"VKR tiled forward with stationary lamps",
+                .coverage_label =
+                    @"VKR tiled alpha-tested forward with stationary lamps",
+                .blend_label = @"VKR tiled blend with stationary lamps",
+            },
 };
 
 /* Creates the tiled pipeline's raster pipelines (ADR-087): forward shading

@@ -176,15 +176,31 @@ struct alignas(16) VkrMetalPacketDiffuseVolume {
 };
 
 // A lightmapped instance's page rectangle in texels: x and y in `origin`,
-// width and height in `extent`, low 16 bits first. Mirrors VkrLightmapRect.
+// width and height in `extent`, low 16 bits first; its stationary lamp
+// candidates' first index in bits 0 to 26 of `stationary` and their count in
+// bits 27 to 31 (ADR-107). Mirrors VkrLightmapRect.
 struct VkrLightmapRect {
   uint page;
   uint origin;
   uint extent;
-  uint reserved;
+  uint stationary;
 };
 
-// Mirrors VkrMetalPacketLightmap in vkr_metal_packet_abi.h (ADR-088).
+// One stationary lamp of the frame (ADR-107); mirrors
+// VkrMetalPacketStationaryLamp in vkr_metal_packet_abi.h. `light` packs its
+// live light as the point light table does, p3.w its first local shadow view
+// plus one; the rest are its baked ownership terms: position and range,
+// direction and weight, cos inner, cos outer, kind and channel (-1 without
+// one).
+struct alignas(16) VkrMetalPacketStationaryLamp {
+  VkrGpuPointLightRow light;
+  float4 position_range;
+  float4 direction_weight;
+  float4 cone_kind_channel;
+};
+
+// Mirrors VkrMetalPacketLightmap in vkr_metal_packet_abi.h (ADR-088,
+// ADR-107).
 struct alignas(16) VkrMetalPacketLightmap {
   texture2d_array<float, access::sample> texture;
   device const VkrLightmapRect *rects;
@@ -194,6 +210,12 @@ struct alignas(16) VkrMetalPacketLightmap {
   uint active_layer_count;
   uint active_layers[8];
   float active_weights[8];
+  texture2d_array<float, access::sample> shadow_mask;
+  device const VkrMetalPacketStationaryLamp *stationary;
+  device const ushort *candidates;
+  uint stationary_count;
+  uint shadowed_count;
+  uint shadowed[8];
 };
 
 // Mirrors VkrMetalPacketDecal in vkr_metal_packet_abi.h (ADR-092).
@@ -618,6 +640,8 @@ struct VkrMetalTiledVertexOutput {
   uint visible_row_index [[user(TEXCOORD_5), flat]];
   float2 lightmap_uv [[user(TEXCOORD_6)]];
   uint lightmap_page [[user(TEXCOORD_7), flat]];
+  // The rectangle's stationary candidate range (VkrLightmapRect::stationary).
+  uint lightmap_stationary [[user(TEXCOORD_8), flat]];
 };
 
 static_assert(sizeof(VkrMetalPacketVertex) == 64,

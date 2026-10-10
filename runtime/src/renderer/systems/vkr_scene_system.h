@@ -680,6 +680,11 @@ typedef struct VkrSceneSun {
 typedef enum VkrLightMobility {
   VKR_LIGHT_MOBILITY_STATIC = 0,
   VKR_LIGHT_MOBILITY_DYNAMIC = 1,
+  /* A stationary point light keeps its bounce light in its light group's
+     baked lightmap layer; its direct light and shadows are computed at
+     runtime, with a baked shadow mask on the tiled pipeline. Rectangle
+     lights cannot be stationary. */
+  VKR_LIGHT_MOBILITY_STATIONARY = 2,
 } VkrLightMobility;
 
 /**
@@ -1041,6 +1046,13 @@ typedef struct VkrSceneDiffuseVolume {
     prepared instance row (VkrPreparedInstanceGPU). */
 #define VKR_SCENE_LIGHTMAP_MAX_INSTANCES (1u << 24)
 
+/** A stationary lamp's light entity and its record in the scene's lightmap
+ * set (ADR-107). */
+typedef struct VkrSceneStationaryRef {
+  VkrEntityId entity;
+  uint32_t record;
+} VkrSceneStationaryRef;
+
 /** A scene's lightmap set (ADR-088): the layers, each instance's matching
  * key and page rectangle, and the texture of the irradiance planes the
  * renderer's pipeline class samples: every layer's ASTC plane on the tiled
@@ -1067,8 +1079,23 @@ typedef struct VkrSceneLightmaps {
   bool8_t lamps_baked;
   uint32_t instance_count;
   VkrLightmapInstance *instances;
-  /** One per instance: the frame's rectangle table. */
+  /** One per instance: the frame's rectangle table, whose `stationary`
+      packs the instance's candidate range. */
   VkrLightmapRect *rects;
+  /** Stationary lamps (ADR-107) on the tiled pipeline: the shadow mask, one
+      slice per page, invalid without one; the set's lamp records and
+      candidate indices (malloc'd, empty on the desktop pipeline, which
+      lights stationary lamps as dynamic ones); and per record the light
+      entity the last binding matched by document id, zero when unbound,
+      with those pairs sorted by entity. */
+  VkrTextureHandle shadow_mask;
+  uint32_t stationary_count;
+  VkrLightmapStationaryLamp *stationary;
+  uint32_t candidate_count;
+  uint16_t *candidates;
+  VkrEntityId *stationary_entities;
+  VkrSceneStationaryRef *stationary_by_entity;
+  uint32_t stationary_bound_count;
   /** Mesh instances and generated meshes the last binding gave a slot. */
   VkrMeshLightmapSlot *bound;
   uint32_t bound_count;
@@ -1521,6 +1548,13 @@ void vkr_scene_reset_lightmaps(VkrScene *scene, struct VkrRenderAssets *assets);
     entity itself for a model without nodes and a brush. Returns how many
     instances are bound. */
 uint32_t vkr_scene_bind_lightmaps(VkrScene *scene);
+
+/** The stationary lamp record (ADR-107) of the scene's lightmap set that
+    point light `entity` matched at the last binding, or UINT32_MAX: the set
+    has none for it, it is not loaded, or the light is not stationary in the
+    bake. */
+uint32_t vkr_scene_lightmap_stationary_record(const VkrScene *scene,
+                                              VkrEntityId entity);
 
 /** The frame's lightmap binding: the texture, the rectangle table and the
     layers with nonzero weight for the current sun and light group factors.

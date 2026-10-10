@@ -76,7 +76,10 @@ Owner decisions:
    [`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c)).
    `vkr_standard_scene_runtime_static_lights_baked` then drops its static
    lamps from the point lights, the light grid, contribution ranking and
-   local shadows. A scene without such a set keeps runtime lamps.
+   local shadows. A scene without such a set keeps runtime lamps. A
+   stationary lamp is not static: a desktop bake keeps only its bounce, and
+   the desktop pipeline lights it as a dynamic lamp with local shadows
+   ([ADR-107](107-stationary-lamps.md)).
 3. **Static receivers.** For a draw with a lightmap slot, `pass.gbuffer.resolve`
    maps the decoded lightmap UV into the draw's rectangle and sums the
    active lamp layers at their weights. It writes the irradiance into

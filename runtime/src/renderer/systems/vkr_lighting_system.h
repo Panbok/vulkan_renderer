@@ -51,6 +51,20 @@ typedef struct VkrLightingSystem {
   uint32_t baked_lamp_count;
   VkrPointLightGrid point_light_grid;
 
+  /* Stationary lamps the rendered scene's lightmap set keys (ADR-107), in
+     the set's record order: the table leaves them out, and the renderer
+     shades their direct light through the set's candidates and shadow mask.
+     A record without an enabled, bound light keeps zero intensity. A
+     stationary light the set does not key stays a dynamic light. */
+  VkrLightmapStationaryLight stationary[VKR_LIGHTMAP_STATIONARY_MAX];
+  uint32_t stationary_count;
+  /* Records whose lamps take runtime shadow maps this frame, nearest the
+     camera first (vkr_lighting_system_shadow_stationary), and per record
+     whether it took one the call before. */
+  uint32_t stationary_shadowed[VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX];
+  uint32_t stationary_shadowed_count;
+  bool8_t stationary_was_shadowed[VKR_LIGHTMAP_STATIONARY_MAX];
+
   VkrRectangleLight rectangle_lights[VKR_MAX_SCENE_RECTANGLE_LIGHTS];
   uint32_t rectangle_light_count;
 
@@ -136,6 +150,18 @@ void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
                                             float32_t delta_seconds,
                                             uint32_t light_max,
                                             uint32_t shadow_max);
+
+/** Gives runtime shadow maps to the `shadow_max` shadow-casting stationary
+ * lamps nearest `camera_position`, ranked as the dynamic-light limit ranks
+ * lights with its incumbent bonus (ADR-107), after the point light table
+ * holds its final lights: each takes shadow light index point_light_count +
+ * its rank, the index of its light where the frame appends the shadowed
+ * stationary lamps to the point lights its local shadows resolve. The
+ * local shadow cache fades a shadow in and out, and the renderer shades a
+ * lamp through the mask where its shadow is faded. */
+void vkr_lighting_system_shadow_stationary(VkrLightingSystem *system,
+                                           Vec3 camera_position,
+                                           uint32_t shadow_max);
 
 /** Rebuilds the conservative world-space lookup from point_lights. Public for
  * deterministic CPU coverage tests; scene sync calls it automatically. */

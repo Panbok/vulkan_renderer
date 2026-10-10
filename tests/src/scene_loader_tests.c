@@ -1478,8 +1478,9 @@ vkr_internal void test_scene_loader_point_light_source_radius(void) {
 }
 
 /* A point or rectangle light's mobility and group load as authored and
-   default to a static light of the default group; an unknown mobility or a
-   name the lightmap layers cannot carry rejects the scene. */
+   default to a static light of the default group; a stationary point light
+   keeps its group slot; an unknown mobility, a stationary rectangle light or
+   a name the lightmap layers cannot carry rejects the scene. */
 vkr_internal void test_scene_loader_light_baking(void) {
   printf("  Running test_scene_loader_light_baking...\n");
   SceneLoaderTestContext ctx;
@@ -1491,8 +1492,10 @@ vkr_internal void test_scene_loader_light_baking(void) {
                                "\"light_group\":\"street-1\"}},"
                                "{\"name\":\"B\",\"rectangle_light\":{"
                                "\"light_group\":\"hall\"}},"
-                               "{\"name\":\"C\",\"point_light\":{}}]}")) ==
-         true_v);
+                               "{\"name\":\"C\",\"point_light\":{}},"
+                               "{\"name\":\"D\",\"point_light\":{"
+                               "\"mobility\":\"stationary\","
+                               "\"light_group\":\"street-1\"}}]}")) == true_v);
   const ScenePointLight *a = vkr_entity_get_component(
       ctx.scene.world, vkr_entity_id_from_index(ctx.scene.world, 0),
       ctx.scene.comp_point_light);
@@ -1507,11 +1510,19 @@ vkr_internal void test_scene_loader_light_baking(void) {
       ctx.scene.comp_point_light);
   assert(c && c->mobility == VKR_LIGHT_MOBILITY_STATIC &&
          c->light_group[0] == '\0');
+  const ScenePointLight *d = vkr_entity_get_component(
+      ctx.scene.world, vkr_entity_id_from_index(ctx.scene.world, 3),
+      ctx.scene.comp_point_light);
+  assert(d && d->mobility == VKR_LIGHT_MOBILITY_STATIONARY &&
+         strcmp(d->light_group, "street-1") == 0 &&
+         d->light_group_slot != VKR_SCENE_LIGHT_GROUP_NONE);
   scene_loader_test_context_shutdown(&ctx);
 
   const String8 rejected[] = {
       string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
                   "\"point_light\":{\"mobility\":\"baked\"}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"rectangle_light\":{\"mobility\":\"stationary\"}}]}"),
       string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
                   "\"rectangle_light\":{\"light_group\":\"two words\"}}]}"),
       string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","

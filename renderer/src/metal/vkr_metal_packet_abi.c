@@ -456,6 +456,14 @@ vkr_global const VkrMetalPacketAbiField vkr_lightmap_fields[] = {
                   "active_layer_count", 28),
     VKR_ABI_FIELD(VkrMetalPacketLightmap, active_layers, "active_layers", 32),
     VKR_ABI_FIELD(VkrMetalPacketLightmap, active_weights, "active_weights", 64),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, shadow_mask_id, "shadow_mask", 96),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, stationary, "stationary", 104),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, candidates, "candidates", 112),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, stationary_count, "stationary_count",
+                  120),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, shadowed_count, "shadowed_count",
+                  124),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, shadowed, "shadowed", 128),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_decals_fields[] = {
@@ -856,8 +864,8 @@ vkr_global const VkrMetalPacketAbiRecord
             VkrMetalPacketDiffuseVolume, "VkrMetalPacketDiffuseVolume", 80, 16,
             vkr_diffuse_volume_fields),
         [VKR_METAL_PACKET_ABI_LIGHTMAP] =
-            VKR_ABI_RECORD(VkrMetalPacketLightmap, "VkrMetalPacketLightmap", 96,
-                           16, vkr_lightmap_fields),
+            VKR_ABI_RECORD(VkrMetalPacketLightmap, "VkrMetalPacketLightmap",
+                           160, 16, vkr_lightmap_fields),
         [VKR_METAL_PACKET_ABI_DECALS] =
             VKR_ABI_RECORD(VkrMetalPacketDecals, "VkrMetalPacketDecals", 48, 16,
                            vkr_decals_fields),

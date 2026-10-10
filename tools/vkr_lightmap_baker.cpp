@@ -14,6 +14,7 @@ extern "C" {
 #include "bake/vkr_bake_layers.h"
 #include "bake/vkr_bake_lightmap.h"
 #include "bake/vkr_bake_scene.h"
+#include "bake/vkr_bake_stationary.h"
 #include "filesystem/vkr_filesystem_cpp.h"
 #include "vkr_ibl_math.h"
 
@@ -1038,6 +1039,38 @@ BakeLayer gpu_layer(const VkrBakeLayerPlan &plan) {
 }
 
 /*
+ * Gathers a page's stationary shadow mask (ADR-107), fills its buried
+ * texels from their neighbors as the layers do, lays it out as
+ * vkr_bake_lightmap_compose_page does (channels 0 to 2 as color, channel 3
+ * as alpha) and encodes it as ASTC 4x4 LDR into `blocks`.
+ */
+bool write_mask_page(const Options &options, VkrBakeGpuContext *gpu,
+                     const VkrBakeLightmapLayout &layout, uint32_t page,
+                     const std::vector<VkrBakeLightmapTexel> &texels,
+                     const VkrBakeLightmapFill &fill, uint32_t threads,
+                     std::vector<float32_t> *rgba, std::vector<uint8_t> *blocks,
+                     double *out_gpu_seconds) {
+  std::vector<Vec4> mask;
+  if (!vkr_bake_gpu_stationary_mask(gpu, texels, &mask, out_gpu_seconds)) {
+    std::fprintf(stderr, "The stationary shadow mask of page %u failed\n",
+                 page + 1u);
+    return false;
+  }
+  std::vector<Vec3> color(mask.size());
+  std::vector<float32_t> alpha(mask.size());
+  for (size_t i = 0u; i < mask.size(); ++i) {
+    color[i] = vec3_new(mask[i].x, mask[i].y, mask[i].z);
+    alpha[i] = mask[i].w;
+  }
+  vkr_bake_lightmap_apply_fill(fill, &color);
+  vkr_bake_lightmap_apply_fill(fill, &alpha);
+  return vkr_bake_lightmap_compose_page(layout, page, texels, color, &alpha,
+                                        options.dilation_passes, rgba) &&
+         vkr_bake_lightmap_encode_astc_ldr(
+             *rgba, layout.page_size, options.astc_effort, threads, blocks);
+}
+
+/*
  * Turns a gathered layer into the light its page publishes. Buried texels
  * take their same-surface neighbors' light first. With denoising, the a-trous
  * filter removes the indirect light's noise, while the direct light, exact
@@ -1266,7 +1299,7 @@ bool finish_directions(const Options &options,
  * gathered; the header and tables, which carry the payload checksum, are
  * written last. The file appears under its name only when complete.
  */
-int bake_set(const Options &options, VkrBakeScene &scene,
+int bake_set(const Options &options, VkrBakeScene &scene, const VkrBakeBvh &bvh,
              const VkrBakeLightmapLayout &layout) {
   if (layout.rects.empty()) {
     std::fprintf(stderr, "The scene has no lightmapped instances\n");
@@ -1331,7 +1364,8 @@ int bake_set(const Options &options, VkrBakeScene &scene,
   for (uint32_t i = 0u; i < scene.lightmap_instances.size(); ++i) {
     lightmap_by_source[scene.lightmap_instances[i].source_instance_index] = i;
   }
-  std::vector<VkrLightmapInstance> instances;
+  /* Each set instance's source instance index, in set order. */
+  std::vector<std::pair<VkrLightmapInstance, uint32_t>> keyed;
   for (const VkrBakeLightmapRect &rect : layout.rects) {
     const VkrBakeLightmapInstance &source =
         scene
@@ -1348,20 +1382,54 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     instance.y = rect.y;
     instance.width = rect.width;
     instance.height = rect.height;
-    instances.push_back(instance);
+    keyed.emplace_back(instance, rect.source_instance_index);
   }
-  std::sort(instances.begin(), instances.end(),
-            [](const VkrLightmapInstance &a, const VkrLightmapInstance &b) {
-              if (a.entity_index != b.entity_index) {
-                return a.entity_index < b.entity_index;
+  std::sort(keyed.begin(), keyed.end(),
+            [](const std::pair<VkrLightmapInstance, uint32_t> &a,
+               const std::pair<VkrLightmapInstance, uint32_t> &b) {
+              if (a.first.entity_index != b.first.entity_index) {
+                return a.first.entity_index < b.first.entity_index;
               }
-              return a.instance_index < b.instance_index;
+              return a.first.instance_index < b.first.instance_index;
             });
+  std::vector<VkrLightmapInstance> instances;
+  for (const auto &entry : keyed) {
+    instances.push_back(entry.first);
+  }
+
+  /* Stationary lamps (ADR-107): a tiled set keeps their bounce and holds
+     their records, candidates and shadow mask; a desktop set keeps only
+     their bounce and the desktop runtime lights them everywhere. */
+  VkrBakeStationaryPlan stationary;
+  std::vector<VkrLightmapStationaryRange> candidate_ranges;
+  if (!desktop) {
+    if (!vkr_bake_plan_stationary(scene, bvh,
+                                  (uint32_t)layout.rect_by_instance.size(),
+                                  &stationary)) {
+      return 1;
+    }
+    for (const auto &entry : keyed) {
+      candidate_ranges.push_back(stationary.ranges_by_source[entry.second]);
+    }
+    uint32_t channeled = 0u;
+    for (const VkrLightmapStationaryLamp &lamp : stationary.lamps) {
+      channeled += lamp.channel < VKR_LIGHTMAP_STATIONARY_CHANNELS ? 1u : 0u;
+    }
+    std::printf("stationary_lamps=%zu with_channel=%u shared_channel=%u "
+                "reach=%zu candidate_slots=%zu\n",
+                stationary.lamps.size(), channeled,
+                stationary.shared_channel_lamps, stationary.reach.size(),
+                stationary.candidates.size());
+  }
+  const bool bake_mask = !stationary.lamps.empty();
 
   const auto setup_start = std::chrono::steady_clock::now();
   std::unique_ptr<VkrBakeGpuContext, decltype(&vkr_bake_gpu_destroy)> gpu(
       vkr_bake_gpu_create(scene), vkr_bake_gpu_destroy);
   if (!gpu) {
+    return 1;
+  }
+  if (!vkr_bake_gpu_set_stationary(gpu.get(), stationary)) {
     return 1;
   }
   std::printf("gpu_setup_s=%.2f layers=%zu\n", seconds_since(setup_start),
@@ -1394,6 +1462,11 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     if (!desktop) {
       planes.push_back(
           {l, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR});
+      /* The stationary shadow mask rides on layer 0 (ADR-107). */
+      if (l == 0u && bake_mask) {
+        planes.push_back({0u, VKR_LIGHTMAP_PLANE_SHADOW_MASK,
+                          VKR_LIGHTMAP_FORMAT_ASTC_4X4_LDR});
+      }
       continue;
     }
     planes.push_back(
@@ -1413,6 +1486,11 @@ int bake_set(const Options &options, VkrBakeScene &scene,
   set.layers = layer_records.data();
   set.planes = planes.data();
   set.instances = instances.data();
+  set.stationary_count = (uint32_t)stationary.lamps.size();
+  set.candidate_count = (uint32_t)stationary.candidates.size();
+  set.stationary = stationary.lamps.data();
+  set.candidate_ranges = candidate_ranges.data();
+  set.candidates = stationary.candidates.data();
   uint64_t payload_offset = 0u;
   uint64_t file_size = 0u;
   if (!vkr_lightmap_set_layout(&set, &payload_offset, &file_size)) {
@@ -1467,6 +1545,13 @@ int bake_set(const Options &options, VkrBakeScene &scene,
          vkr_bake_lightmap_neighbors(
              layout.page_size, texels,
              kOutlierNeighborTexels / options.texels_per_unit, &neighbors);
+    /* The page's instances choose their stationary candidates before the
+       gathers rank them (ADR-107). */
+    if (ok && bake_mask) {
+      ok =
+          vkr_bake_stationary_choose_candidates(&stationary, texels, threads) &&
+          vkr_bake_gpu_set_stationary(gpu.get(), stationary);
+    }
     /* The page's ambient occlusion and buried texels come from its first
        layer's first-bounce rays; occlusion goes into every layer's alpha, so
        whichever layers a frame weighs carry it (ADR-088), and every layer
@@ -1552,6 +1637,21 @@ int bake_set(const Options &options, VkrBakeScene &scene,
       payload_crc =
           vkr_crc32_update(payload_crc, blocks.data(), (uint64_t)blocks.size());
       stream.write((const char *)blocks.data(), (std::streamsize)blocks.size());
+      if (l == 0u && bake_mask) {
+        double mask_seconds = 0.0;
+        ok = write_mask_page(options, gpu.get(), layout, page, texels, fill,
+                             threads, &rgba, &blocks, &mask_seconds);
+        gpu_seconds += mask_seconds;
+        if (!ok) {
+          break;
+        }
+        payload_crc = vkr_crc32_update(payload_crc, blocks.data(),
+                                       (uint64_t)blocks.size());
+        stream.write((const char *)blocks.data(),
+                     (std::streamsize)blocks.size());
+        std::printf("mask page=%u/%u gpu_s=%.2f\n", page + 1u,
+                    layout.page_count, mask_seconds);
+      }
       std::vector<Vec3> directions;
       float64_t mean_directionality = 0.0;
       BcReport direction_bc;
@@ -1624,6 +1724,18 @@ int bake_set(const Options &options, VkrBakeScene &scene,
   }
   gpu.reset();
 
+  /* Every page chose its instances' candidates. */
+  for (size_t i = 0u; bake_mask && i < keyed.size(); ++i) {
+    candidate_ranges[i] = stationary.ranges_by_source[keyed[i].second];
+  }
+  if (bake_mask) {
+    uint64_t chosen = 0u;
+    for (const VkrLightmapStationaryRange &range : candidate_ranges) {
+      chosen += range.count;
+    }
+    std::printf("stationary candidates=%llu capped_instances=%u\n",
+                (unsigned long long)chosen, stationary.capped_instances);
+  }
   ok = ok && vkr_lightmap_set_write_prefix(&set, ~payload_crc, prefix.data(),
                                            prefix.size());
   if (ok) {
@@ -1661,6 +1773,7 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
                  scene.diagnostic.c_str());
     return 1;
   }
+  (void)vkr_bake_stationary_disable_unkeyed(&scene);
   if (scene.triangles.size() > VKR_BAKE_BVH_MAX_TRIANGLES) {
     std::fprintf(stderr, "The scene has %zu triangles; a bake holds %u\n",
                  scene.triangles.size(), VKR_BAKE_BVH_MAX_TRIANGLES);
@@ -1704,7 +1817,7 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
     return 0;
   }
   if (options.output) {
-    return bake_set(options, scene, layout);
+    return bake_set(options, scene, bvh, layout);
   }
 
   VkrBakeIntegratorSettings settings = {};

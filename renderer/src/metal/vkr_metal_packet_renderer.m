@@ -574,7 +574,9 @@ typedef enum VkrMetalTiledLighting {
   VKR_METAL_TILED_LIGHTING_ALL = 3,
   /* Every light, and the editor's inspection modes. */
   VKR_METAL_TILED_LIGHTING_INSPECT = 4,
-  VKR_METAL_TILED_LIGHTING_COUNT = 5,
+  /* Stationary lamps besides every dynamic light (ADR-107). */
+  VKR_METAL_TILED_LIGHTING_STATIONARY = 5,
+  VKR_METAL_TILED_LIGHTING_COUNT = 6,
 } VkrMetalTiledLighting;
 
 /* Each shading variant without and with reflection probes (ADR-087): probe
