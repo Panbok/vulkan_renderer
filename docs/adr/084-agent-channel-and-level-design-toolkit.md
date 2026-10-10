@@ -835,9 +835,15 @@ another solid, as a face buried in a wall. The issue names both solids
 shared area in square meters and the plane's `normal`, the way both faces
 look.
 
-A `mover_timing` issue breaks the rule that every vehicle keeps a fixed
-stay and departure. A looping mover in the region with no positive `wait`
-is one (`value` 0). A mover that a looping mover's `on_opened` or
+A `mover_timing` issue breaks the rule that every looping vehicle keeps a
+fixed stay and departure, or that a vehicle departing on request (`use`,
+`ride` or a positive `delay`, without `loop`) keeps its doors open until it
+leaves. A looping mover in the region with no positive `wait`
+is one (`value` 0). For a vehicle on request, a door its arrival opens
+with a `wait` of zero or more is one, as it shuts by itself on a waiting
+rider (`value` the `wait`), and so is a door its `on_depart` closes whose
+connection delay and closing outlast the vehicle's `delay` (`value` the
+seconds over). A mover that a looping mover's `on_opened` or
 `on_closed` opens or toggles, a door on the vehicle or at its stop, is
 another when its connection delay, opening, `wait` and closing outlast
 the vehicle's `wait`, or when it stays open (`wait` negative). That issue
@@ -914,7 +920,7 @@ are:
 | `button` (`wait`, `locked`) | `on_pressed` and `on_refused` (the activator) | `press` (the activator), `lock`, `unlock` |
 | `timer` (`interval`, `start_running`, `once`) | `on_timer` | `start`, `stop`, `set_interval` |
 | `counter` (`start`, `min`, `max`) | `on_changed` (the value), `on_max`, `on_min` | `add`, `subtract`, `set` |
-| `mover` (`direction`, `distance`, `lip`, `angle`, `axis`, `pivot`, `spin`, `speed`, `acceleration`, `wait`, `start_open`, `loop`, `locked`) | `on_open`, `on_opened`, `on_close`, `on_closed` | `open`, `close`, `toggle`, `lock`, `unlock`, `set_position` (0 to 1) |
+| `mover` (`activation`, `reach`, `delay`, `direction`, `distance`, `lip`, `angle`, `axis`, `pivot`, `spin`, `speed`, `acceleration`, `wait`, `start_open`, `loop`, `locked`) | `on_open`, `on_opened`, `on_close`, `on_closed`, `on_depart` | `open`, `close`, `toggle`, `use` (activator), `lock`, `unlock`, `set_position` (0 to 1) |
 | Every entity | none | `show`, `hide`, `destroy` |
 
 Script behaviors declare theirs with `VKR_OUTPUTS` and `VKR_INPUTS`
@@ -962,7 +968,8 @@ brush carries the button, naming the player as activator. It fires
 `on_pressed` with the activator and then takes no press for `wait` seconds,
 or for the session with a negative wait; while `locked` a press fires
 `on_refused` instead. A door that opens on use carries a button whose
-`on_pressed` reaches its mover. A ladder is a trigger brush in front of a
+`on_pressed` reaches its mover; the use key on a mover's own brushes sends
+the mover `use` instead when no button is nearer. A ladder is a trigger brush in front of a
 climbable face carrying the FPS module's `fps_ladder` and reaching above the
 floor it leads to; the FPS player climbs it while it faces it
 ([ADR-073](073-native-gameplay-foundation.md)).
@@ -995,7 +1002,30 @@ or turning around fires `on_open` or `on_close`; reaching an end fires
 unless `wait` is negative; `loop` rests `wait` (at least zero) at the end
 it starts at, then sets off, and rests the same `wait` at each end it
 reaches before it turns back; `locked` refuses `open`, `toggle`
-and `set_position` but still closes. Solid and clip brushes under a mover
+and `set_position` but still closes.
+
+A mover's `activation` says who moves it besides its inputs, so doors and
+lifts need no trigger wiring for the player:
+
+| Activation | Behavior | Use |
+|---|---|---|
+| `scripted` (default) | Only inputs move it. | Cutscene and event doors, timed trams |
+| `use` | `use` toggles it, as `toggle`. | Interactable doors and lifts |
+| `auto` | Opens while a character's feet are within `reach` metres (horizontal) of its box at rest, and no higher than its top nor more than 1 m below its bottom; once open it holds within `reach` + 0.5 m. When none is, it closes `wait` seconds (at least zero) after the last one left. | Automatic doors |
+| `ride` | A character boarding it at rest (standing on its brushes, or with its feet over its box as it now stands, up to 0.75 m above) sends it to its other end, where it stays while ridden and after. While nobody rides, a character within `reach` of its box at the other end calls it there. `use` toggles it too. | Automatic lifts and platforms |
+
+The box is the world box at rest of the solid and clip brushes the mover
+moves itself (`vkr_scene_brush_mover_bounds`), or its origin without any;
+an `auto` door on a carrier senses in the carrier's frame. The script host
+gives the router each scene character's feet and ground entity as the last
+physics step left them (`vkr_io_router_sense`, `vkr_scene_characters`)
+before each step. The trigger-and-wait door it replaces closed after its
+`wait` on a player still in the trigger, which no new `on_enter` reopened.
+`delay` makes a request at rest (an input, `use`, boarding or a call) fire
+`on_depart` at once and set off `delay` seconds later; a request while one
+waits only changes where it heads. A lift wires `on_depart` to its doors'
+`close` and `on_opened`/`on_closed` to the arrival end's doors' `open`, the
+doors with `wait` -1. Solid and clip brushes under a mover
 (the nearest at or above them) join one kinematic generated body per mover
 instead of a cell, at most 32 hulls; the hulls stay in world space at rest
 and the body's kinematic target is the mover's motion from rest, its

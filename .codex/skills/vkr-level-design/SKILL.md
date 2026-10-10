@@ -78,18 +78,38 @@ sets the order of work and the checks that prove a level.
 
 - Doors, lifts and platforms: `mover.create` on their brushes; `hinge` makes
   a swinging door. A trigger brush under a mover moves with it.
-- Every vehicle (lift, elevator, tram, train) keeps a fixed stay and
-  departure: `loop` true with a positive `wait`, which it also rests at the
-  end it starts at. Do not make one wait to be boarded or toggled.
-  - Its doors are movers parented under it, so they ride it: build the
-    door brushes with `parent` set to the vehicle, then `mover.create`
-    them. Doors at the stops stay in the world.
-  - Wire the vehicle's `on_opened` (it reached its far end) and
-    `on_closed` (it is back at its start) to the `open` of the doors at
-    that end. Each door's opening, `wait` and closing must end within the
-    vehicle's `wait`; `level.lint` reports one that does not as
-    `mover_timing`. A once `timer` (`interval` 0.5) opens the start end's
-    doors for the first stay; count its interval in that door's cycle.
+- Give every door and lift one `activation` (mover value); never build an
+  automatic door from a trigger and a `wait`, which closes on a player who
+  stays in the trigger and never reopens:
+
+  | Kind | Values | Wiring |
+  |---|---|---|
+  | Automatic door (labs, corridors) | `auto`, `reach` 2 to 2.5, `wait` 1 to 1.5 | none |
+  | Interactable door, vent cover or hatch | `use`, `wait` -1 | optional buttons to `toggle` |
+  | Scripted door (event, cutscene, airlock) | `scripted` | triggers, buttons or timers to `open`, `close`, `lock`, `unlock` |
+  | Automatic lift or platform | `ride`, `delay` 1 to 1.5, `reach` 2.5 | doors below |
+  | Interactable lift | `use`, `delay` 1.5 | the use key on its brushes; landing buttons send `open` at the far end, `close` at the start |
+  | Scheduled vehicle (tram, crane) | `scripted`, `loop`, positive `wait` | doors below |
+
+  - `reach` counts horizontally from the mover's box at rest. A double door
+    is two movers; give both leaves the same `reach`.
+  - A locked `auto` door stays shut: `lock` it at start and `unlock` it
+    from a scanner button for a security door.
+  - A `ride` lift travels when a player boards it at rest and stays where
+    it went; a player within `reach` of the end it is not at calls it.
+    Raise `reach` when a landing stands farther from the deck.
+- Vehicle doors: doors on a vehicle are movers parented under it (build
+  the door brushes with `parent` set to the vehicle, then `mover.create`
+  them); doors at the stops stay in the world.
+  - On request (`ride` or `use`): every door `wait` -1. Wire `on_opened`
+    (far end) and `on_closed` (start end) to the `open` of that end's
+    doors, `on_depart` to every door's `close`, and a once `timer`
+    (`interval` 0.5) to the start end's doors. Each door must close within
+    the vehicle's `delay`.
+  - On a schedule (`loop`): wire `on_opened` and `on_closed` to that end's
+    doors; each door's opening, `wait` and closing must end within the
+    vehicle's `wait`.
+  - `level.lint` reports a door that breaks either rule as `mover_timing`.
   - A sliding door slides into a pocket inside the wall beside it (its
     faces strictly inside the wall's), never along a wall face.
 - Buttons: `component.add` `button` on a solid or clip brush, or on a parent
@@ -185,8 +205,13 @@ Put the checks in the same `level_run.py` plan as the writes, each with
      report a failure. Wait for a mover by polling `query.bounds` of its
      moving part. Walk every route both ways: a way up does not prove the
      way down.
-   - Board a timed vehicle at a fresh arrival: one already at its stop
-     may leave as the player reaches its doors. Read the player's offset
+   - Board a scheduled vehicle at a fresh arrival: one already at its stop
+     may leave as the player reaches its doors. A `ride` lift waits:
+     stand within its `reach` at the landing to call it, then board.
+   - Prove each door kind in Play: an `auto` door stays open while the
+     player stands in it for longer than its `wait` and opens again on
+     return; a `use` door opens and closes on the use key; read the moving
+     part's `query.bounds` to see where it stands. Read the player's offset
      from the vehicle while it rests before and after the ride; a change
      beyond 5 cm means the player slid on its deck.
    - For a drop, aim 0.6 m past the edge, or the capsule stays on it.
