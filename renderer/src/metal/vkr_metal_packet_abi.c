@@ -344,14 +344,15 @@ vkr_global const VkrMetalPacketAbiField
         VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, sh, "sh", 8),
         VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, probe_count,
                       "probe_count", 16),
-        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, rows, "rows",
-                      20),
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, rows, "rows", 20),
         VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot,
                       active_layer_count, "active_layer_count", 24),
         VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, active_layers,
                       "active_layers", 32),
         VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, active_weights,
                       "active_weights", 64),
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, active_direct,
+                      "active_direct", 96),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_cloud_sky_light_root_fields[] = {
@@ -435,8 +436,7 @@ vkr_global const VkrMetalPacketAbiField vkr_sheen_fields[] = {
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_diffuse_volume_fields[] = {
-    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, indirection, "indirection",
-                  0),
+    VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, indirection, "indirection", 0),
     VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, probes, "probes", 8),
     VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, moments, "moments", 16),
     VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, sh, "sh", 24),
@@ -950,10 +950,10 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketCloudSkyLightRoot, "VkrMetalPacketCloudSkyLightRoot",
             80, 16, vkr_cloud_sky_light_root_fields),
-        [VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME_COMPOSE_ROOT] = VKR_ABI_RECORD(
-            VkrMetalPacketDiffuseVolumeComposeRoot,
-            "VkrMetalPacketDiffuseVolumeComposeRoot", 96, 16,
-            vkr_diffuse_volume_compose_root_fields),
+        [VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME_COMPOSE_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketDiffuseVolumeComposeRoot,
+                           "VkrMetalPacketDiffuseVolumeComposeRoot", 128, 16,
+                           vkr_diffuse_volume_compose_root_fields),
         [VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketHzbBuildRoot, "VkrMetalPacketHzbBuildRoot", 48, 16,
             vkr_hzb_build_root_fields),

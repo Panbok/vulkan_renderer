@@ -2278,6 +2278,17 @@ typedef struct VkrMetalPacketUploadPlan {
   uint64_t skinning_offset;
 } VkrMetalPacketUploadPlan;
 
+/* Whether the frame samples a lightmap set (ADR-088); its lightmapped draws
+   then hold the set's baked lamps. */
+vkr_internal bool8_t
+vkr_metal_packet_lightmap_sampled(const VkrPreparedFrame *packet) {
+  const VkrLightmapBinding *lightmap =
+      packet->input.lighting ? &packet->input.lighting->lightmap : NULL;
+  return lightmap && lightmap->texture.id != 0u &&
+         lightmap->texture.generation != VKR_INVALID_ID &&
+         lightmap->rect_count != 0u;
+}
+
 /* Reads the frame's source counts, resolves the candidate graph buffers and
  * sizes the GPU-draw indirect command buffers. */
 vkr_internal bool8_t vkr_metal_packet_plan_upload_sources(
@@ -2521,12 +2532,9 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
                              : 0u;
   /* Every frame root names a lightmap record; with a sampled set it carries
      the set's rectangle table (ADR-088). */
-  const VkrLightmapBinding *lightmap =
-      packet->input.lighting ? &packet->input.lighting->lightmap : NULL;
   plan->lightmap_rect_count =
-      lightmap && lightmap->texture.id != 0u &&
-              lightmap->texture.generation != VKR_INVALID_ID
-          ? lightmap->rect_count
+      vkr_metal_packet_lightmap_sampled(packet)
+          ? packet->input.lighting->lightmap.rect_count
           : 0u;
   plan->lightmap_offset = vkr_metal_packet_align_up(
       plan->diffuse_volume_offset + diffuse_volume_bytes,

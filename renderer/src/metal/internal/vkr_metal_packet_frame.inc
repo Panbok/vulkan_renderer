@@ -1593,13 +1593,18 @@ vkr_internal bool8_t vkr_metal_packet_prepare_diffuse_volume_compose(
   upload->diffuse_volume_composed = false_v;
   const VkrDiffuseVolumeBinding *volume =
       packet->input.lighting ? &packet->input.lighting->diffuse_volume : NULL;
-  if (!volume || volume->indirection.id == 0u ||
-      !renderer->diffuse_volume_compose_pipeline)
+  /* Startup requires the composition pipeline, so a bound volume's SH is
+     always written before Tiled.Opaque reads it. */
+  if (!volume || volume->indirection.id == 0u)
     return true_v;
+  /* While a lightmap holds the baked lamps, only draws without one read the
+     volume, and they take the lamps' direct light from its bands. */
+  const bool8_t direct_bands = vkr_metal_packet_lightmap_sampled(packet);
   if (renderer->diffuse_volume_composed_sh.id == volume->sh.id &&
       renderer->diffuse_volume_composed_sh.generation ==
           volume->sh.generation &&
-      renderer->diffuse_volume_composition == volume->composition)
+      renderer->diffuse_volume_composition == volume->composition &&
+      renderer->diffuse_volume_composed_direct == direct_bands)
     return true_v;
   VkrMetalPacketTexture *layer_sh =
       vkr_metal_packet_resolve_texture(renderer, volume->layer_sh);
@@ -1620,9 +1625,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_diffuse_volume_compose(
               VKR_DIFFUSE_VOLUME_ROW_PROBES,
       .active_layer_count = volume->active_layer_count,
   };
+  for (uint32_t i = 0u; i < ArrayCount(root->active_direct); ++i) {
+    root->active_direct[i] = VKR_DIFFUSE_VOLUME_NO_BAND;
+  }
   for (uint32_t i = 0u; i < volume->active_layer_count; ++i) {
     root->active_layers[i] = volume->active_layers[i];
     root->active_weights[i] = volume->active_weights[i];
+    if (direct_bands) {
+      root->active_direct[i] = volume->active_direct_bands[i];
+    }
   }
   layer_sh->last_use_submit_value = renderer->submit_value + 1u;
   sh->last_use_submit_value = renderer->submit_value + 1u;
@@ -1632,6 +1643,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_diffuse_volume_compose(
   upload->diffuse_volume_composed = true_v;
   upload->diffuse_volume_compose_sh = volume->sh;
   upload->diffuse_volume_compose_revision = volume->composition;
+  upload->diffuse_volume_compose_direct = direct_bands;
   return true_v;
 }
 
@@ -3798,6 +3810,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           submission.frame_upload.diffuse_volume_compose_sh;
       renderer->diffuse_volume_composition =
           submission.frame_upload.diffuse_volume_compose_revision;
+      renderer->diffuse_volume_composed_direct =
+          submission.frame_upload.diffuse_volume_compose_direct;
     }
     if (submission.frame_upload.ibl_bake_recorded)
       vkr_metal_packet_publish_ibl_bakes(renderer, submit_value);

@@ -46,7 +46,9 @@ _Static_assert(sizeof(VkrMetalPacketDiffuseVolume) == 80u,
 
 /** Composition of a diffuse volume's active light layers into its SH
     texture; mirrors VkrMetalPacketDiffuseVolumeComposeRoot in
-    msl/world/diffuse_volume.metal. */
+    msl/world/diffuse_volume.metal. `active_direct` names each active lamp
+    group's direct band, VKR_DIFFUSE_VOLUME_NO_BAND without one or while no
+    lightmap is sampled. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolumeComposeRoot {
   uint64_t layer_sh;
   uint64_t sh;
@@ -56,8 +58,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolumeComposeRoot {
   uint32_t reserved;
   uint32_t active_layers[8];
   float32_t active_weights[8];
+  uint32_t active_direct[8];
 } VkrMetalPacketDiffuseVolumeComposeRoot;
-_Static_assert(sizeof(VkrMetalPacketDiffuseVolumeComposeRoot) == 96u,
+_Static_assert(sizeof(VkrMetalPacketDiffuseVolumeComposeRoot) == 128u,
                "Metal diffuse volume compose root ABI drift");
 
 /** Frame lightmap record (ADR-088); mirrors VkrMetalPacketLightmap in

@@ -353,6 +353,7 @@ typedef struct VkrMetalPacketFrameUpload {
   bool8_t diffuse_volume_composed;
   VkrTextureHandle diffuse_volume_compose_sh;
   uint32_t diffuse_volume_compose_revision;
+  bool8_t diffuse_volume_compose_direct;
   /* This frame's VkrMetalPacketLightmap, written for every frame. */
   uint64_t lightmap_gpu;
   /* This frame's VkrMetalPacketDecals; zero without decals (ADR-092). */
@@ -794,9 +795,11 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> cloud_sky_light_mips_pipeline;
   id<MTLComputePipelineState> diffuse_volume_compose_pipeline;
   /** The diffuse-volume SH texture and composition the last submitted frame
-      wrote; a frame whose binding differs composes again. */
+      wrote, and whether it added the lamp direct bands; a frame whose binding
+      differs composes again. */
   VkrTextureHandle diffuse_volume_composed_sh;
   uint32_t diffuse_volume_composition;
+  bool8_t diffuse_volume_composed_direct;
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
