@@ -785,10 +785,15 @@ post controls and the temporal consumer. The main dataflow is:
    transmission crossings plus a blocking overflow depth.
 2. Raster opaque/cutout visibility and depth, build HZB, and peel four ordered
    transmission visibility layers.
-3. Resolve the G-buffer, evaluate GTAO, and compute HDR lighting. When enabled,
+3. Resolve the G-buffer, which for lightmapped draws also writes the baked
+   static lamps' irradiance and dominant direction when the scene's set holds
+   them ([ADR-104](adr/104-desktop-baked-lamps.md)); evaluate GTAO; sample a
+   bound sparse diffuse volume at half resolution, upsample it with an exact
+   fallback for unmatched pixels ([ADR-054](adr/054-baked-diffuse-volumes.md)),
+   and compute HDR lighting. When enabled,
    SSGI writes an isolated direct/emissive source, traces and filters its
-   half-resolution diffuse residual, and composites it outside valid baked-volume
-   cells. Optional profiled surface diffusion gathers the diffuse source before
+   half-resolution diffuse residual, and composites it outside pixels the
+   volume covers. Optional profiled surface diffusion gathers the diffuse source before
    opaque SSR. The graph then traces and composites opaque SSR,
    injects/reprojects local froxel scattering, integrates the current-camera
    froxel volume and applies it, then applies analytic fog before the opaque
@@ -1467,15 +1472,18 @@ These are limits of current code or retained acceptance, not scheduled promises:
   remain outside the completed rigid-motion temporal contract.
 - Visibility-buffer MSAA, a general effects system, asynchronous graph queues
   and fully graph-declared IBL baking are not production features.
-- Baked diffuse volumes have CPU room classification, multi-bounce and glass
-  transport, portable assets, scene loading and Metal execution. Native Vulkan
-  execution remains unavailable; see [ADR-054](adr/054-baked-diffuse-volumes.md).
-- Lightmap sets bake on Metal ray tracing into VKLM files that projects store
-  and package, and scenes load them as ASTC 4×4 HDR textures and bind them to
-  their draws. Only the tiled pipeline, on Metal, samples them; the desktop
-  pipeline on Vulkan ignores light mobility, and hosts without Metal ray
-  tracing cannot bake them; see
-  [ADR-088](adr/088-baked-lightmap-sets.md).
+- Sparse baked diffuse volumes bake on Vulkan ray queries or the CPU and
+  light the desktop pipeline on Vulkan; the tiled pipeline's composition and
+  lookup have not run on Metal, Metal has no probe gather, and light paths
+  are traced per layer; see [ADR-054](adr/054-baked-diffuse-volumes.md).
+- Lightmap sets bake on Metal ray tracing or Vulkan ray queries into VKLM
+  files that projects store and package; each platform bakes only the
+  planes its pipeline class samples. The tiled pipeline
+  samples every layer; the desktop pipeline samples the lamp groups' desktop
+  planes in place of its static lamps, but moving casters do not yet shadow
+  baked lamps and forward and transmission draws take the volume's lamp
+  light; see [ADR-088](adr/088-baked-lightmap-sets.md) and
+  [ADR-104](adr/104-desktop-baked-lamps.md).
 - Charlie sheen is implemented below clearcoat in runtime and offline lighting.
   Its two-component rectangle fit retains measured errors for dim tilted lights;
   [ADR-063](adr/063-charlie-sheen.md) records those approximation limits and the

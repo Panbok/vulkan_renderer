@@ -1,6 +1,6 @@
 ---
-status: implemented
-updated: 2026-10-08
+status: partial
+updated: 2026-10-09
 authority: adr
 ---
 
@@ -8,258 +8,281 @@ authority: adr
 
 ## Status
 
-Accepted.
+Accepted (partial). The sparse brick volume replaced the room-proof grid on
+2026-10-09. The desktop pipeline (Vulkan) bakes, loads, composes and samples
+it, with native evidence on Bistro. The tiled pipeline's composition and lookup
+are written but have not been compiled or run on Metal. Metal has no probe
+gather, so a Mac bakes volumes with the CPU integrator. Light paths are not
+yet shared across layers.
 
 ## Context
 
-Global environment SH and local reflection probes describe diffuse irradiance but
-cannot prove room membership or prevent interpolation through static walls.
-The renderer needs static, scene-local, multi-bounce diffuse transport without
-adding a per-frame ray-tracing workload. The runtime already evaluates packed L2
-SH as scene-linear `E/π`.
+Global environment SH and local reflection probes describe diffuse irradiance
+but cannot keep light from crossing walls. The renderer needs static,
+scene-local, multi-bounce diffuse light without per-frame ray tracing.
 
-The bake must import the same opaque, masked, blended, transmissive, and
-specular material semantics as the scene. A non-transmissive `BLEND` surface is
-not a room boundary. Opaque surfaces, `MASK` surfaces without sampled-opacity
-proof, and refractive or transmissive material block room membership. Thick
-transmissive glass participates in the offline physical path phase; it is not a
-runtime approximation for the volume lookup. The material conventions follow
-[KHR_materials_specular](https://registry.khronos.org/glTF/extensions/2.0/Khronos/KHR_materials_specular/)
-and [KHR_materials_volume](https://registry.khronos.org/glTF/extensions/2.0/Khronos/KHR_materials_volume/).
+Until 2026-10-09 a volume was one uniform grid of at most 256 probes. It
+proved room membership per cell by voxelizing the scene and flood-filling the
+outside. Open scenes such as Bistro found no valid cell. A 350 × 30 × 250 m
+indoor level fitted cells larger than its rooms. The grid could not place
+probes densely near surfaces and sparsely in open air.
 
 ## Decision
 
 ### Offline bake
 
 A managed project bakes the scene the runtime loads
-([`vkr_project_bake.c`](../../tools/bakery/project/vkr_project_bake.c)): the
-lowered document with its authored overrides, then the project World's
-entities, then the overlay's editor-created entities, whose light edit values
-become the scene's light blocks and whose components carry over; a hidden
-created entity and its subtree stay out, as do dynamic lights, which no bake
-holds ([ADR-088](088-baked-lightmap-sets.md)). Every baked light casts
-shadows, whatever its `casts_shadow`: that flag prices runtime shadow maps,
-while a baked light is static and reaches the screen only through its bake.
-Until atmosphere model version 3 (2026-10-05) bakes left directional lights
-unshadowed, so sun light reached closed rooms, and until 2026-10-08 they left
-point, spot and model lights without `casts_shadow` unshadowed, so lamps lit
-the far side of walls; volumes and lightmaps baked before then need a rebake,
-which `--check` does not report. The bake scene loader builds every
-solid or visual brush from its `brush_face` children as the runtime does
-([ADR-084](084-agent-channel-and-level-design-toolkit.md)), with each
-face's art-owned material or its surface's greybox look, and keeps each
-entity's document id. It builds
-each blockout shape's pieces as the runtime does, as geometry without a
-lightmap (ADR-088). Since 2026-10-08 it leaves out every brush and blockout
-shape that a `mover` on the entity or an ancestor moves, as the runtime's
-`brush_mover_of` finds one: the volume neither occludes nor bounces light
-off it and lights it at runtime, so a closed door no longer stops baked
-light between rooms. It finds an entity block by key at the entity's root or
-in its `components` object, never inside another block, so a blockout's
-`shape` field is not a `shape` block; components the bake does not read are
-ignored. A failed load prints the entity (index, name, id) and the block or
-file at fault after `Scene preparation failed`. It reads the
-`atmosphere`, `environment` and `subsurface` blocks at the top level of the
-document only; when the scene has no `atmosphere` or `environment` block of
-its own, the effective scene takes the component of the scene's own entities
-or else the World's, as runtime resolution does. An authored override of an
-entity the loader synthesizes from a top-level block, such as a block's
-Sky Atmosphere, has no document entity and fails the bake; edit the block
-instead. Verified 2026-10-05 on a blockout made
-through `vkr_mcp` (two rooms joined by a doorway, a sealed room, three lamps
-and the World sun): before this the effective scene held no entity and every
-bake of an editor-built level was empty; after it, the volume bake found 39
-valid probes in two regions and published.
+([`vkr_project_bake.c`](../../tools/bakery/project/vkr_project_bake.c)). It
+takes the lowered document with its authored overrides, then the project
+World's entities, then the overlay's editor-created entities, whose light
+edit values become the scene's light blocks. A hidden created entity and its
+subtree stay out, and so do dynamic lights, which no bake holds
+([ADR-088](088-baked-lightmap-sets.md)).
 
-The volume holds one SH set per probe for each baked light layer
-([ADR-088](088-baked-lightmap-sets.md)), planned as for lightmaps
-([`vkr_bake_layers.h`](../../tools/bake/vkr_bake_layers.h)): in an atmosphere
-scene one layer per sun key, baked under that key's atmosphere with the key
-light and the sky, then one per static light group with the group's lights,
-where only the default group holds surface emission and, without a sun key,
-the sky. Caustic photons are emitted per layer from its own analytic lights.
+The bake scene loader builds solid and visual brushes and blockout shapes as
+the runtime does ([ADR-084](084-agent-channel-and-level-design-toolkit.md)).
+It leaves out every brush and shape that a `mover` on the entity or an
+ancestor moves, so a closed door does not stop baked light between rooms. It
+reads the `atmosphere`, `environment` and `subsurface` blocks at the top level
+of the document. When the scene has none of its own, it takes the component of
+the scene's entities or else the World's, as the runtime does.
 
-The CPU baker flattens the scene into caller-owned triangles and builds a
-deterministic, binned-SAH BVH. Scene creation discards exact zero-area triangles
-from cooked geometry, retaining every positive finite area. The BVH rejects
-non-finite or degenerate input at its boundary, accepts at most 8,000,000
-triangles, partitions in place
-into leaves of at most four triangles, and bounds depth to 128. The bake arena
-owns the pre-sized BVH nodes; it does not own triangle storage.
+Every baked light casts shadows, whatever its `casts_shadow`: that flag prices
+runtime shadow maps, while a baked light reaches the screen only through its
+bake. A punctual light's shadow ray stops `min(5 cm, 1% of its range)` short of
+the light. The runtime's local shadow maps clip that span as their near plane
+([`vkr_local_shadow_system.c`](../../runtime/src/renderer/systems/vkr_local_shadow_system.c)),
+so a bulb or socket mesh around an imported lamp does not shadow its own lamp.
+Before 2026-10-09 every Bistro lamp baked fully occluded, and only noisy
+bounce escaped its lantern.
 
-Automatic room detection voxelizes blocking triangles conservatively. Voxel
-occupancy is limited to 8,000,000 cells, the grid has at most 256 probe nodes in
-total, and the voxel size is at most half the smallest derived probe spacing.
-One-cell dilation supplies clearance from boundaries. Exterior empty voxels are
-flood-filled from the bounds' faces, so explicit `--bounds` must enclose the
-rooms' walls, floors and ceilings; then remaining empty components receive
-region IDs.
+**Placement** ([`vkr_bake_bricks.h`](../../tools/bake/vkr_bake_bricks.h)).
+Probes sit in 4 × 4 × 4 bricks over up to three levels.
+- Level 0 has spacing `s` (`--spacing`, 1 m by default); each level triples
+  it.
+- The grid starts half a spacing below the scene bounds. It is covered by
+  indirection entries of `3s`, and its dimensions are whole top-level
+  blocks.
+- A block refines its 27 children wherever blocking geometry lies within
+  `--margin` spans of a child. A child that is not refined shares one brick
+  of the parent's level.
+- Probes are deduplicated by level and lattice position, so face probes that
+  meet a finer level are filled from the coarse brick's corners.
 
-Without `--grid`, the baker fits the grid to the bounds
-(`vkr_bake_voxels_fit_grid`): the finest near-cubic spacing, at least 1 m,
-whose grid of at least four probes per axis holds at most 256 probes. Probes
-sit half a spacing inside the bounds and the cell proof below reaches one
-voxel past the cell into the dilated boundary, so where geometry lies on a
-bounds face the outer cell on that side never proves clear; four probes leave
-an inner cell layer. The fixed 4 × 4 × 4 default used before 2026-10-08
-ignored the bounds. `test_fitted_volume_grid_finds_every_room` requires that
-a 48 × 4 × 12 m row of four rooms, which fits 16 × 4 × 4 probes at
-3 × 1 × 3 m, proves cells in every room, and that 4 × 4 × 4, which spaces
-its probes a room apart there, proves none.
+**Validity and relocation.** Each probe traces an octahedral 8 × 8 map with
+16 stratified rays per texel.
+- If more than a quarter of the hits are back faces, the probe is inside
+  geometry. It moves up to 0.45 of its spacing in three steps: through the
+  nearest back face plus 0.1 spacing, or away from a front face closer than
+  0.1 spacing.
+- A probe that stays inside is invalid.
+- A brick whose probes are all invalid is dropped.
+- The same rays write the probe's distance moments (mean and mean square,
+  clamped to two spacings) into a 10 × 10 RG16F tile: the 8 × 8 interior and a
+  border that repeats the opposite edge, so bilinear filtering wraps across
+  the octahedron's seams.
 
-A region is retained only when a representative's nearest blocking boundary on
-all six axial rays is front-facing toward room air. Missing, grazing, mixed, or
-outward-facing boundaries reject the region. An interpolation cell is valid only
-when every overlapping dilated occupancy voxel is clear and has the cell's one
-region ID. This full-cell proof is deliberately conservative: an invalid,
-outside, or unclassified cell falls back to existing global/probe diffuse
-lighting instead of leaking through geometry.
+**Light layers.** A volume holds one L1 SH set per probe for each light layer
+([`vkr_bake_layers.h`](../../tools/bake/vkr_bake_layers.h)):
+- in an atmosphere scene, one per sun key, baked under that key's atmosphere
+  with the key light and the sky;
+- then one per static light group, holding the group's bounce.
 
-The integrator traces multi-bounce diffuse transport and uses a bounded
-fixed-radius photon density estimate for analytic-light caustics after qualifying
-specular or thick eta-changing chains. Photon normalization and visibility stay
-in the offline bake. The estimator smooths caustics by its radius; packed diffuse
-L2 cannot reproduce sharp caustic detail at runtime. The transport design is
-based on [PBRT's stochastic progressive photon mapping treatment](https://pbr-book.org/3ed-2018/Light_Transport_III_Bidirectional_Methods/Stochastic_Progressive_Photon_Mapping).
+**Lamp direct bands.** No gathered path hits a punctual light. Each lamp group
+therefore also gets a direct band: every light's analytic irradiance at the
+probe, shadowed as above, projected into L1
+(`vkr_bake_integrator_direct_l1`). A light of normal-incidence irradiance `E`
+from direction `w` gives constant `E / 4π` and linear `E w / 2π`. The runtime
+adds the band only for surfaces whose lightmap does not hold the lamps
+([ADR-104](104-desktop-baked-lamps.md)).
 
-### Portable artifact and provenance
+**Transport.**
+- The default is `vkr_bake_gpu` with Vulkan ray queries
+  ([`vkr_bake_vulkan.cpp`](../../tools/bake/vkr_bake_vulkan.cpp)).
+- `--cpu` selects the CPU integrator
+  ([`vkr_bake_integrator.h`](../../tools/bake/vkr_bake_integrator.h)), and
+  `--gpu-parity` compares the two.
+- The CPU integrator keeps the bounded photon estimate for caustics after
+  specular or thick glass chains. The GPU gather has none.
+- In the CPU integrator, a path that exceeds the transparent-layer limit
+  ends dark, and a shadow walk that exceeds it returns no light.
+- Each probe's paths are seeded from its lattice position, so a volume is
+  byte-identical for any thread count ([ADR-077](077-asset-build-system.md)).
+- SH projection is L1 only, as `E/π` with the cosine lobe's band-1 transfer
+  of 2/3 (`vkr_bake_sh_project_l1`).
 
-`DVOL` v2 is a versioned, explicit little-endian byte format. It has a
-112-byte header, the layer table of 64-byte light-layer records
-([`vkr_light_layers.h`](../../runtime/src/assets/vkr_light_layers.h)), one
-probe record per probe and a 4-byte cell record. The header carries layout,
-dimensions, the layer count, coordinate data, payload layout, and separate
-payload and header CRC32 values. Each probe stores a nonzero room region and
-one canonical `VkrShL2Packed` set per layer; each cell stores its valid region
-or zero. Native struct serialization is prohibited. Version 1 held one SH set
-of all light per probe; the loader refuses it and asks for a new bake, which
-the sun-shadow fix requires anyway. `vkr_bakery` verifies outputs with the
-runtime decoder.
+### Portable artifact
+
+`DVOL` v3 ([`vkr_diffuse_volume.h`](../../runtime/src/assets/vkr_diffuse_volume.h))
+is explicit little-endian; native structs are never serialized. It holds:
+- a 128-byte header, with the lamp direct band count at byte 116 and the SH
+  scale at byte 112;
+- the layer table of 64-byte light-layer records
+  ([`vkr_light_layers.h`](../../runtime/src/assets/vkr_light_layers.h));
+- indirection entries, each `(level << 30) | brick` or empty (`0xFFFFFFFF`);
+- brick records;
+- per probe, a 3-half relocation offset and a validity half;
+- the moment tiles;
+- the SH bands. A band is three half4 rows (red, green, blue: linear x, y, z,
+  then constant), divided by a power-of-two `sh_scale`.
+
+Sections are 16-byte aligned. A volume holds at most 13,104 bricks (the
+runtime's moment atlas) and 4,194,304 entries. The decoder rejects a malformed
+layout, CRC mismatches, an invalid layer table, entries that name a missing
+brick or another level, misaligned bricks, offsets beyond half a spacing,
+validity other than 0 or 1, non-finite halves, and a direct band count other
+than 0 or the lamp-group count. Versions 1 and 2 are refused.
 
 [`vkr_bakery bake diffuse`](../../tools/bakery/vkr_bakery_bake.c) writes an
-inspect manifest before baking, records the complete source dependency closure,
-recipe and tool digest, and validates the resulting `.vkdv` file. It checks the
-same closure before publication and writes the sidecar `.vkdv.bake.json`;
-`--check --output volume.vkdv` rejects stale inputs or corrupt output. The
-command publishes only after its temporary output, manifest, and source checks
-succeed. When inspection finds no valid cell, it stops before the bake pass and
-exits 3 without output; a scene without geometry inspects as zero probes and
-cells and takes the same path. The baker traces probes on worker threads; each path's
-seed derives from its probe, pixel and sample, so the volume is byte-identical
-for any `--threads` value ([ADR-077](077-asset-build-system.md)). The baker refuses to bake an
-all-invalid volume, and such a volume would render like no volume. Open and
-exterior scenes such as Bistro took this path at the fixed 4 × 4 × 4 grid; no
-one has inspected Bistro at the fitted grid.
+inspect manifest, records the dependency closure, recipe and tool digest,
+verifies the output with the runtime decoder and writes the `.vkdv.bake.json`
+sidecar. `--check` rejects stale inputs or corrupt output. A placement without
+bricks exits 3 without output.
 
-### Runtime and shader contract
+### Runtime
 
-A scene's optional `diffuse_volume.path` is prepared on a worker and uploaded on
-the render thread under the existing resource finalization contract. The scene
-owns one immutable `8 × probe_count` RGBA32F texture and its lattice binding;
-replacement and scene reset retire the texture after its last completed GPU use.
-The scene also keeps every layer's SH and composes the texture as their
-weighted sum ([ADR-090](090-time-of-day.md)): the two sun keys nearest the
-current sun on its daily circle share weight one by angle
-(`vkr_light_layers_sun_weights`), and each lamp group weighs its light group's
-factor. When a weight moves by more than one percent, at most every 0.25
-seconds, the scene composes a new texture and releases the previous one
-(`vkr_scene_update_diffuse_volume`). Shaders read the composed texture as
-before.
-Texels 0 through 6 contain canonical SH vectors. Texel 7 stores probe region in
-`x` and lower-corner cell region in `y`, with zero marking an invalid cell.
+A scene's `diffuse_volume.path` is prepared on a worker
+([`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c))
+into five scene-owned textures:
+- R32_UINT indirection;
+- RGBA16F probe records, 1,024 probes per row;
+- the RG16F moment atlas, 512 tiles per row;
+- an immutable RGBA16F texture of every SH band;
+- a writable RGBA16F composed-SH texture with two row bands.
 
-The shader first validates the single lower-corner cell proof, then trilinearly
-combines all eight matching probe records. It evaluates the stored `E/π` response
-and replaces only global/probe **diffuse** indirect lighting. Existing probe and
-global specular remain active, and existing ambient occlusion still applies.
+A volume is used only once all five publications are confirmed and their
+uploads have completed; until then the frame lights without it.
 
-Diffuse volumes entered `VkrFrameInput` before version 37 added rectangle lights.
-The Metal frame root is now 512 bytes: the diffuse-volume texture remains at 480
-and its 48-byte parameter pointer at 488 (origin at 0, inverse spacing at 16,
-dimensions at 32); the later LTC pointer is at 496. The Vulkan root is now 576
-bytes: the volume texture remains at 496 and values at 512/528/544; its later LTC
-block pointer is at 560. [ADR-044](044-shader-cross-backend-contract.md) owns
-cross-backend ABI validation.
+The scene weighs the layers ([ADR-090](090-time-of-day.md)): the two sun keys
+nearest the current sun share weight one, and each lamp group takes its light
+group's factor. When a weight moves by more than one percent, at most every
+0.25 s, the composition revision advances (`vkr_scene_update_diffuse_volume`).
+`DiffuseVolume.Compose`, a compute pass in both render graphs, then writes the
+weighted sum into the composed texture's first band. On a frame that samples
+baked lamps, the active lamp groups and their direct bands go to the second
+band instead.
+
+**Lookup** ([`diffuse_volume_kernel.slangh`](../../renderer/src/shaders/shared/diffuse_volume_kernel.slangh),
+`packet_diffuse_volume_response`):
+- An empty entry, or a total weight below 0.001, keeps the environment path.
+- The receiver moves `0.6 ×` its level's spacing along `0.2 n + 0.8 v`, where
+  `n` is the normal and `v` points toward the viewer.
+- The eight corners of its brick cell weigh trilinear × back-face
+  (`facing²`) × Chebyshev visibility to the sixth power. Weights below 0.2 are
+  crushed.
+- The weighted L1 evaluated at the normal replaces only diffuse indirect
+  light. Environment and probe specular stay, and so does ambient occlusion.
+- SSGI does not add bounce on covered pixels.
+
+**On the desktop pipeline** the lookup runs outside deferred lighting
+([`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c)):
+1. `DiffuseVolume.Sample` looks the volume up once per 2 × 2 block, at the
+   block's first surface pixel. It stores that pixel's normal and camera
+   distance as a guide; the distance is negative where its lightmap holds the
+   baked lamps.
+2. `DiffuseVolume.Upsample` weights the bilinear half-resolution texels by
+   `saturate(n · n_t)⁸` and by a camera-distance tolerance of 5 %. It lists
+   each pixel whose weight is below 0.05.
+3. `DiffuseVolume.Fallback` looks those pixels up exactly in one indirect
+   dispatch.
+
+Deferred lighting reads the result per pixel. Transmission shading and SSGI
+call the lookup inline. The tiled pipeline calls it inline in
+`Tiled.Opaque`. Frame roots carry the textures, origin, spacing, `sh_scale`,
+moment rows, lamp band offset and dimensions
+([ADR-044](044-shader-cross-backend-contract.md) owns the ABI checks).
 
 ## Consequences
 
-Static geometry, material boundary policy, and baked lighting changes require a
-rebake. A volume costs one SH set per probe per layer: ten layers on the
-blockout baked in 14.6 s instead of 5.2 s for one. Invalid coverage preserves the old global/probe diffuse path, which can
-be less local but cannot claim a room proof. The volume does not supply dynamic
-indirect lighting, sharp caustic maps, or runtime glass transport.
-
-The fixed-radius photon estimate has smoothing bias. Packed L2 preserves broad
-diffuse color and directional variation but loses high-frequency caustics. These
-limits are accepted for the bounded runtime texture and eight-probe lookup.
+- Static geometry, material, light or layer changes need a rebake.
+- The desktop lookup interpolates at half resolution. It is exact only at
+  silhouettes and on thin geometry.
+- The volume does not supply dynamic indirect light, sharp caustics or runtime
+  glass transport.
+- L1 loses the quadratic band's directional detail.
+- Moments trade some light near thin occluders for leak control. At the
+  previous 6 × 6 interior, a probe just past a thin roof saw its hits and
+  escapes in one texel, and light leaked through.
 
 ## Alternatives considered
 
-Using broad reflection-probe bounds for diffuse lighting cannot establish wall
-occlusion or room membership. Per-frame ray tracing moves unbounded static work
-into the frame budget. A ray-free raster capture bake remains possible, but it
-does not by itself establish converged multi-bounce transport or the accepted
-room-containment proof.
+- **Keep the room proof as a hard mask.** It rejects open space and keeps a
+  second representation.
+- **Validity alone.** It leaks through thin facades.
+- **L2 SH.** It needs seven reads per probe instead of three. At 1 m spacing,
+  variation across space dominates angular detail.
+- **Look the volume up inside deferred lighting.** Lighting rose 1.18 ms at
+  1440p; one corner alone cost 0.53 ms.
+- **A full-resolution pass.** It cost 0.83 ms.
+- **A single upsample pass with an inline exact fallback.** The fallback's
+  registers cost 0.24 ms.
+- **The upsample inside lighting.** Lighting rose 0.47 ms.
+- **Packed RGB9E5 images.** No gain over RGBA16F.
 
 ## Evidence and remaining checks
 
-On the Metal desktop implementation, removed on 2026-10-06, the native opaque
-and `BLEND` numeric case reported maximum HDR error `0.000330536` and passed the
-baked colored-room fixture. Its report digest is
-`cceec0b4c93c8e27f51620e8958e6bbbdd814e15b463e52a28a34b0e8758cd2d`.
+CPU tests (`run_lightmap_bake_tests`, 2026-10-09):
+- the DVOL v3 round trip and its rejections, including a direct band count
+  that does not match the lamp groups;
+- brick placement and relocation on a room fixture with a 2 m column;
+- the L1 Lambert furnace: emission 1 with albedo 0.5 gives exactly 1 at depth
+  1 and 1.75 at depth 3;
+- `test_point_lamp_direct_l1`: a point lamp 2 m above a probe projects to the
+  analytic constant and linear terms. A 3 cm socket box around the lamp does
+  not shadow it; a wall between them does.
 
-The CPU Lambert furnace evaluates 27 valid probes on six axes. With emission
-1 and albedo 0.5, depth 1 gives 1 and depth 3 gives 1.75; maximum errors are
-2.91e-9 and 5.10e-9. Actual compiled Vulkan reflection confirms the 576-byte
-root, the unchanged volume offsets, and the appended LTC block.
+Leak fixture: three rooms, room C sealed under a 0.2 m roof. An emulation of
+the lookup over the decoded volume found light on 88 % of room C's lit floor
+with 6 × 6 moments and bias 0.3. With the shipped 10 × 10 moments, bias 0.6
+and the sixth power, it found light on 0.27 %. The Vulkan render of room C is
+black: its brightest pixel is 6/255.
 
-Bistro inspection succeeds with 4,208,488 triangles after creation compacts 518
-exact zero-area triangles. A two-triangle fixture discards its collapsed triangle
-and retains its 0.001-edge triangle. The rebuilt CPU baker completes a nested,
-shared-material glass fixture containing blended receivers: 20,000 emitted
-photons produce 2,178 caustic deposits, and all 100 valid probes yield finite SH.
-The `.vkdv` SHA-256 is
-`583fa2113db932af81095936d492ae7289b1ae1588786a3f7fad78a90da4615f`.
+Bistro, Windows (Ryzen 5 2600, RX 6700 XT, Release), 2026-10-09:
+- **Bake.** Spacing 1 m, three levels, margin 1:
+  - Placement: 7,991 bricks (7,537 / 416 / 38 per level), 236,786 probes,
+    18.7 s.
+  - Visibility: 194,463 valid probes, 58,660 relocated, 7,581 bricks kept,
+    87.6 s.
+  - GPU gather: about 22 s per sun key and 59 s for the 72-lamp group.
+  - Lamp direct band: 0.26 s, nonzero on 12.6 % of probes.
+  - Output: 314.7 MB, with nine layers and one direct band.
+  - GPU textures: about 340 MB, mostly the 194 MB moment atlas and the
+    116 MB band texture.
+- **Output.** `sparse_volume_bistro_street_{on,off}_mode9` (2560 × 1440
+  indirect diffuse; the off scene has no volume). Mean difference 16.6/255,
+  with 67 % of pixels differing by more than 8. Depth is identical.
+  Half-resolution against full-resolution lookup: mean 0.99/255; 4.47 % of
+  pixels differ by more than 4/255 and 0.45 % by more than 16/255.
+- **Cost.** `sparse_volume_bistro_street_{on,off}_timing` at 2560 × 1440 with
+  `local-offscreen-gpu-repeated` (5 repetitions, 1,500 samples). This is
+  **non-authoritative**: local profile, dirty tree.
+  - Sample 0.243 ms, Upsample 0.241 ms, Fallback 0.031 ms.
+  - `Lighting.Deferred` 6.578 against 6.523 ms.
+  - Transmission shading layer 0: 0.936 against 0.835 ms.
+  - Frame wall: 19.90 against 19.20 ms.
+  - Runs `20261009T134750.845Z-000e68` and `20261009T135807.377Z-001d74`.
+  - The owner's budget was 0.5 ms; the volume adds 0.57 ms to the opaque
+    path and 0.10 ms to transmission.
 
-On the same implementation, an all-invalid volume and a scene without a volume
-produced byte-identical HDR payloads (SHA-256
-`d130dbb29986f49ef80044a67dbdad3f0679a82c64531b7f360e0dd1754018f7`).
-`bake diffuse --check` detects stale source files, corrupt output, and source/output aliasing.
-
-The ADR-088 blockout (atmosphere celestial pole set to (0, 0.8, −0.6) so its
-sun sets) baked ten layers, eight sun keys and the `default` and `warm` lamp
-groups, at 1.4 to 1.6 s each. Before root-scoped block lookup the bake read
-the World entity's atmosphere component instead of the scene's block and
-turned the keys about the default pole. In the editor with every lamp group
-at zero and manual exposure, the closed room shows daylight bounce at noon and
-is black at midnight. `test_light_layer_sun_weights` and
-`test_diffuse_volume_layers_round_trip` cover the weights and the codec.
-
-Neither native Vulkan nor the tiled pipeline has run the numeric case;
-evidence from the removed Metal desktop implementation and compiled reflection
-do not establish their output. These checks establish the implemented transport,
-asset and runtime paths; they do not establish converged lighting quality or a
-Bistro bake-time target.
+Unavailable on this host:
+- the tiled pipeline's compose and lookup on Metal, and
+  `tiled_bistro_baked_native` before and after;
+- volume bake times on the M1 Pro;
+- an authoritative clean-tree timing;
+- a Bistro night capture across the café facade.
 
 ## Revisit when
 
-Revisit the grid and artifact only after a measured need for more than 256
-probes, dynamic indirect lighting, sharper caustic reconstruction, or a
-cross-backend representation that preserves the same full-cell room proof.
-
-The first condition is met. A 25,000-entity indoor brush level of about
-350 × 30 × 250 m, with rooms 4 to 20 m wide, inspected at the fixed
-4 × 4 × 4 grid on 2026-10-08 as 64 probes, 0 valid, and 0 of 27 valid cells,
-so its bake skipped the volume. The fitted grid gives it 9 × 4 × 7 = 252
-probes at about 39 × 7.5 × 36 m, cells larger than any of its rooms, so no
-cell can lie inside one room. One volume of 256 probes cannot resolve rooms
-of that size across a level of that size; it needs about 1 to 2 m spacing in
-the rooms only, as the
-[sparse diffuse volumes proposal](../proposals/sparse-diffuse-volumes.md)
-places it.
+- **Path sharing.** Sharing light paths across layers would cut bake time:
+  each sun key costs about 22 s on Bistro.
+- **Metal probe gather.** Mac bakes need one to stop falling back to the CPU.
+- **Cost.** An authoritative timing exceeds the owner's budget, or the
+  half-resolution softening shows at contact shadows in review.
+- **Size.** A scene needs more than 13,104 bricks: the moment atlas limit,
+  reached at about 0.5 m spacing on Bistro.
 
 ## Code evidence
 
-- [Bake geometry](../../tools/bake/vkr_bake_geometry.h), [BVH](../../tools/bake/vkr_bake_bvh.h), [room voxelizer](../../tools/bake/vkr_bake_voxels.h), and [transport integrator](../../tools/bake/vkr_bake_integrator.h)
-- [DVOL codec](../../runtime/src/assets/vkr_diffuse_volume.h) and [scene loader](../../runtime/src/renderer/resources/loaders/scene_loader.c)
-- [Scene-owned binding](../../runtime/src/renderer/systems/vkr_scene_system.h), [frame input](../../renderer/src/vkr_frame_input.h), and [portable sampling kernel](../../renderer/src/shaders/shared/diffuse_volume_kernel.slangh)
+- Bake: [bricks](../../tools/bake/vkr_bake_bricks.h), [diffuse baker](../../tools/vkr_diffuse_baker.cpp), [integrator](../../tools/bake/vkr_bake_integrator.h), [GPU gather](../../tools/bake/vkr_bake_lightmap.slang), [SH](../../tools/bake/vkr_bake_sh.h)
+- Asset and scene: [DVOL codec](../../runtime/src/assets/vkr_diffuse_volume.h), [scene loader](../../runtime/src/renderer/resources/loaders/scene_loader.c), [scene binding](../../runtime/src/renderer/systems/vkr_scene_system.h)
+- Renderer: [binding contract](../../renderer/src/vkr_render_resources.h), [Vulkan compose](../../renderer/src/vulkan/vkr_vulkan_diffuse_volume.c), [Vulkan sample passes](../../renderer/src/vulkan/vkr_vulkan_deferred.c), [shared kernel](../../renderer/src/shaders/shared/diffuse_volume_kernel.slangh), [compose shader](../../renderer/src/shaders/vulkan/slang/world/diffuse_volume.slang)

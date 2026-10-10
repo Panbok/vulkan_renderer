@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-07
+updated: 2026-10-09
 authority: proposal
 ---
 # Lighting efficiency
@@ -119,18 +119,12 @@ In order of measured payoff on Vulkan:
    cost 0.83 ms of the mask, because every Bistro lamp is inside its own
    lantern glass. A five-tap PCF in the inline fallback needs an owner
    quality decision.
-3. **Static and dynamic local-shadow atlas layers.** Static casters would
-   render once and only dynamic casters would redraw into a copy of the
-   static square. Both pipeline classes render the shared atlas, so this
-   applies to the tiled pipeline as well. Bistro has no dynamic shadow
-   casters (all 2,909 candidates are static), so this step needs a scene with
-   moving casters to measure.
-4. **Half-precision BRDF terms** in the per-light loop, keeping positions,
+3. **Half-precision BRDF terms** in the per-light loop, keeping positions,
    depths and normalisation in 32-bit. It needs a numeric comparison against
    the full-precision loop on RDNA 2 and Ampere; on the M1, 16-bit arithmetic
    gave no ALU gain in the tiled prototype
    ([Tiled graphics pipeline](tiled-pipeline.md#first-prototype-measurements)).
-5. **Deferred for Bistro-class scenes: camera-space clustered culling.** It
+4. **Deferred for Bistro-class scenes: camera-space clustered culling.** It
    remains useful above the 128-light table or for scenes with short-range
    lights, but it does not pay off here.
 

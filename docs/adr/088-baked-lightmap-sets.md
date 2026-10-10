@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-08
+updated: 2026-10-10
 authority: adr
 ---
 
@@ -12,15 +12,17 @@ Accepted (partial). Baking, storage, packaging, light mobility and groups,
 the editor controls, runtime loading and binding of a set, and sampling in
 the tiled pipeline's forward shader
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8) are
-implemented. The toolkit test level and a lightmap-UV Bistro fixture render
+implemented. The desktop pipeline samples the lamp groups' desktop planes
+in place of its static lamps
+([ADR-104](104-desktop-baked-lamps.md)). The toolkit test level and a lightmap-UV Bistro fixture render
 with their sets on the tiled pipeline, in the editor too; Bistro bakes
 without visible noise at 16 samples once outlier texels are rejected and
 each layer is smoothed (see Evidence). Since 2026-10-08 the bake denoises
 indirect light apart from the exact direct light and fills texels buried
-inside solids; a level-scale check of that change is pending. The desktop
-pipeline lights static
-and dynamic lights alike. The bake needs
-Metal ray tracing.
+inside solids; a level-scale check of that change is pending. The bake runs
+on Metal ray tracing or, since 2026-10-09, on Vulkan ray queries; the Metal
+side of that day's changes (the punctual shadow clip and the direction
+gather) has not been compiled.
 
 ## Context
 
@@ -37,7 +39,9 @@ ray tracing, with the CPU integrator of
 [ADR-054](054-baked-diffuse-volumes.md) as the reference and the path for
 hosts without Metal ray tracing; give each light a mobility and a named group
 (static lights bake into their group's layer, dynamic lights never bake; at
-most four groups).
+most four groups). Owner decision (2026-10-09): Windows hosts bake with a
+Vulkan ray-query port of the same gather; desktop encodings of the lamp
+groups follow [ADR-104](104-desktop-baked-lamps.md).
 
 ## Decision
 
@@ -146,7 +150,14 @@ changes color.
 
 ### GPU transport
 
-[`vkr_bake_metal.h`](../../tools/bake/vkr_bake_metal.h) uploads the scene once
+[`vkr_bake_gpu.h`](../../tools/bake/vkr_bake_gpu.h) is one interface over two
+hosts: Metal ray tracing
+([`vkr_bake_metal.mm`](../../tools/bake/vkr_bake_metal.mm)) and Vulkan ray
+queries ([`vkr_bake_vulkan.cpp`](../../tools/bake/vkr_bake_vulkan.cpp), kernel
+[`vkr_bake_lightmap.slang`](../../tools/bake/vkr_bake_lightmap.slang),
+embedded as SPIR-V). The Vulkan port shares the kernel's path radiance with
+the diffuse volume's probe gather ([ADR-054](054-baked-diffuse-volumes.md)).
+Either host uploads the scene once
 (an acceleration structure, corner attributes, materials, base color,
 emission, metallic-roughness and transmission textures resampled to 128×128
 RGBA16F, the lights, the renderer's DFG table and a 512×256 equirectangular
@@ -202,11 +213,21 @@ tints. It is a lightmap subset of the ADR-054 transport:
 - cutout and blended surfaces, the shadow walk, light falloff, cones,
   rectangle lights, the shading-normal side rules and Russian roulette follow
   the CPU integrator; every baked light casts shadows, whatever its
-  `casts_shadow` ([ADR-054](054-baked-diffuse-volumes.md)); Russian roulette
+  `casts_shadow` ([ADR-054](054-baked-diffuse-volumes.md)), and a punctual
+  light's shadow ray stops `min(5 cm, 1% of its range)` short of the light,
+  the span the runtime's local shadow maps clip, so the bulb or socket mesh
+  around an imported lamp does not shadow it (before 2026-10-09 every Bistro
+  lamp baked fully occluded); Russian roulette
   starts after the second bounce (`--rr-start`, 0 off; before 2026-10-08 it
   started after the fourth, the last at the default depth, so it never ran),
   for the GPU gather and the CPU parity integrator alike;
 - normal maps, clearcoat, sheen, subsurface and anisotropy are not modeled.
+
+A lamp group's gather also returns each texel's luminance-weighted light
+direction: the direct samples' directions and each indirect sample's first
+path direction, summed with their luminance (gather flag bit 5). The baker
+fills and smooths the mean direction like the direct light, so its length,
+the directionality, shrinks where neighbors disagree.
 
 ### Encoding
 
@@ -269,24 +290,41 @@ instance. Alpha is the page's ambient visibility, smoothed like irradiance
 but without outlier rejection, in every layer, so whichever layers a frame
 weighs carry it; texels outside every rectangle keep alpha one. Pages are
 encoded with astcenc to ASTC 4×4 in the HDR RGB, LDR alpha profile at effort
-10.
+10. A lamp group's page is also written for the desktop pipeline as RGB9E5,
+or BC6H, and its direction page
+(0.5 d + 0.5 in RGB, directionality in alpha, neutral outside every
+rectangle) as ASTC 4×4 LDR and RGBA8 or BC7. BC6H and BC7 are the default
+where the bake's Vulkan device can run the GPU encoder (DirectXTex's compute
+shaders, `vkr_bake_gpu_encode_bc6h` and `vkr_bake_gpu_encode_bc7` in
+[`vkr_bake_gpu.h`](../../tools/bake/vkr_bake_gpu.h)); `--desktop-encoding
+uncompressed` writes RGB9E5 and RGBA8. The a-trous denoiser divides by
+its weight sum; before 2026-10-09 it multiplied by its reciprocal, and a
+near-zero sum published infinite texels.
 
 ### VKLM file
 
 [`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h) defines
-VKLM v3: a 128-byte header, the layer table (64-byte light-layer records:
-kind, number, sun direction and, for a lamp group, its group name), the
-instance table and,
-aligned to 256 bytes, one page image per page and layer,
-page-major. Every scalar is little-endian. An instance carries its entity's
+VKLM v4: a 128-byte header, the layer table (64-byte light-layer records:
+kind, number, sun direction and, for a lamp group, its group name), the plane
+table (16-byte records of layer, kind — irradiance or direction — and
+encoding, sorted by layer, kind and encoding, at most one tiled and one
+desktop encoding of each kind, desktop encodings only on lamp groups), the
+instance table and, aligned to 256 bytes, each page's image of every plane in
+table order. A bake writes only the planes its host's pipeline class
+samples, because each platform is baked, packaged and tested on its own
+machine (owner decision, 2026-10-09): a Mac bake writes every layer's ASTC
+4×4 HDR irradiance plane, and a Windows or Linux bake only the lamp groups,
+with their desktop irradiance and direction planes, and no sun-key layer,
+since the desktop pipeline takes sun bounce from the diffuse volume
+([ADR-054](054-baked-diffuse-volumes.md)). A set baked on one platform
+therefore does not light the other pipeline class until that platform bakes
+it. Version 3 (ASTC irradiance only) is refused. Every scalar is little-endian. An instance carries its entity's
 document id (zero when the entity has none), the entity's index in the baked
 entity array (the document's entities, then the World's, then editor-created
 ones) and its source-node index in the entity's cooked model (zero without
 source nodes and for brushes), and records its page rectangle. The runtime
 matches an instance by document id and falls back to the index. Instances are
-sorted by index and node. Page alpha is ambient visibility; sets baked
-before it carry alpha one, which reads as unoccluded, so v3 is unchanged.
-Versions 1 (keyed by index only) and 2 (without group names) were never read
+sorted by index and node. Page alpha is ambient visibility. Versions 1 (keyed by index only) and 2 (without group names) were never read
 by a runtime. Producers stream the payload and
 write the header last; the decoder checks header, table and payload CRCs,
 sizes, layer meanings, that lamp groups have distinct valid names and sun
@@ -325,10 +363,14 @@ the bake's outcome ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
 
 The scene loader reads a `lightmaps` block's `path`
 ([`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c)),
-decodes the set and publishes every layer page as one
+decodes the set and publishes the irradiance planes its renderer's pipeline
+class samples. The tiled pipeline takes every layer's ASTC plane as one
 `VKR_TEXTURE_FORMAT_ASTC_4x4_HDR` 2D array whose slice
 `page * layer_count + layer` is the file's page image, uploaded from the file
-bytes in place. The loader reads the file into one buffer, and recording the
+bytes in place. The desktop pipeline takes the lamp groups' RGB9E5 or BC6H
+planes and their RGBA8 or BC7 direction planes as two 2D arrays, slice
+`page * lamp_groups + group`, and a set without them is off there
+([ADR-104](104-desktop-baked-lamps.md)). The loader reads the file into one buffer, and recording the
 publication transfers that buffer to the publication queue without a copy
 (ADR-082); the queue frees it after the render thread's native upload has
 copied it into staging, so the set is held once on the CPU side rather than
@@ -368,8 +410,12 @@ draw's rectangle and its forward shader sums the active layers.
   per texel on the M1 Pro and stores 453 MB; each layer takes 16 MiB per
   page, so lamp groups and the texel density set the memory floor. Cooking lightmap UVs
   costs about 25 times the cook time of the same model without them.
-- Bakes need Metal ray tracing. Windows and Linux hosts cannot bake lightmaps
-  until the CPU integrator gains the layer split and texel direct term.
+- Bakes need Metal ray tracing or Vulkan ray queries; a host with neither
+  cannot bake lightmaps until the CPU integrator gains the layer split and
+  texel direct term. On Windows (RX 6700 XT) the Bistro set with its lamp
+  group's desktop and direction planes bakes in 283 s at 16 samples (88 s of
+  GPU time, 75 s of encoding), peaks at 13.4 GB private memory and stores
+  906 MB.
 - The GPU baker approximates the CPU BSDF. Spreading specular reflection
   diffusely ignores where a delta sun's specular lobe points, which darkens
   shadowed sun bounce by about 2% on the blockout; overall light stays within
@@ -399,13 +445,25 @@ draw's rectangle and its forward shader sums the active layers.
   twelve layers. Kept as the reference only.
 - **One KTX2 file per page or layer.** More files to reference and package;
   the runtime would still need the instance table.
-- **BC6H or RGB9E5.** The M1 Pro creates both, as it does ASTC 4×4 HDR. The
-  owner chose ASTC 4×4 HDR: 8 bits per texel like BC6H, a quarter of RGB9E5,
-  and the format of the Apple and mobile GPUs the tiled pipeline targets.
+- **BC6H or RGB9E5 for every layer.** The M1 Pro creates both, as it does
+  ASTC 4×4 HDR. The owner chose ASTC 4×4 HDR for the tiled pipeline: 8 bits
+  per texel like BC6H, a quarter of RGB9E5, and the format of the Apple and
+  mobile GPUs it targets. Desktop GPUs do not sample ASTC, so the lamp
+  groups carry desktop planes as well ([ADR-104](104-desktop-baked-lamps.md)).
 - **Lightmap UVs for every import.** Cooks 25 times slower and grows meshes
   by about 40% for models the desktop pipeline never lightmaps.
 
 ## Evidence
+
+Vulkan ray-query host, Release, RX 6700 XT, 2026-10-09: the validation layer
+reports no message for a trace, a gather and a full bake of a sun-lit room
+fixture; the trace matches the CPU integrator's mean hit (0.4966 over 20,000
+texels); the gather is within 0.47% of the CPU parity integrator at 16
+samples (z 3.6; the remainder is the diffusely spread specular, 0.05% on a
+Lambert variant), and `vkr_bakery bake lightmap` of the fixture at 64
+samples takes 29.3 s and writes the same bytes twice. The Bistro lamp set
+before the shadow clip held lamp-layer means of 0.0032, 0.041 and 0.37 per
+page; after it, 0.037, 0.122 and 1.09.
 
 Release build, M1 Pro, 2026-10-05, Bistro (`bistro-lights.gltf`) cooked at 8
 texels per meter with deferred textures:

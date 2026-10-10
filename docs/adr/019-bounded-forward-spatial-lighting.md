@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-08
+updated: 2026-10-09
 authority: adr
 ---
 
@@ -13,7 +13,10 @@ shadow cache and its atlas raster. `Shadow.LocalMask`, contact shadows, local
 transmission layers, contribution measurement and local probes belong to the
 desktop pipeline, which Vulkan implements. The tiled pipeline draws a bounded
 set of dynamic lights, and a shadowed one takes one bilinear comparison tap
-([ADR-087](087-gpu-class-graphics-pipelines.md), decisions 8 and 11).
+([ADR-087](087-gpu-class-graphics-pipelines.md), decisions 8 and 11). Since
+2026-10-09 a cached face holds static casters only and moving casters draw
+into a per-frame copy of it; the tiled pipeline's side of that change is
+written but has not been compiled or run on Metal.
 
 ## Context
 
@@ -98,9 +101,31 @@ static change. The world payload lists each static change with the world box it
 may alter (`VkrWorldPassPayload.static_changes`): a mesh's arrival or departure
 its bounding box, a terrain swap the footprints of the tiles that changed. A
 change the list does not bound, or content older than the list, reaches every
-light. Content no change reaches takes the new generation, a dynamic caster's
-bounds reach the light, the dynamic-bounds scan is unavailable, or an asset
-publication is in flight. Stale content keeps showing while it waits to redraw.
+light. Content that no change reaches takes the new generation. Stale
+content keeps showing while it waits to redraw.
+
+A cached face, its static square, holds static casters only, so a moving
+caster never makes it stale. Each light carries a six-bit mask of the faces
+whose pyramid a dynamic caster's bounding sphere meets
+(`vkr_shadow_system.c`). A face in that mask that the camera can see gets a
+dynamic square for the frame, in a band of one trailing atlas layer that
+exists while the world holds any dynamic caster: `Shadow.Local.Copy.${i}`
+copies the static square into it (a same-image layer copy) and
+`Shadow.Local.Dynamic.${i}` draws only the dynamic casters there, without a
+clear. Culling views carry `STATIC_CASTERS_ONLY` or `DYNAMIC_CASTERS_ONLY`
+(`VkrGpuLodView.flags`) and the cull roots the static candidate count, since
+the candidate table lists static candidates first. The receiver view of such a
+face names the dynamic square, and a companion view after `view_count` names
+its static square (`dynamic_source_views`); receivers sample whichever square
+their view names, so receiver shaders are unchanged. A dynamic square is never
+committed: when the caster leaves, the face shows its static square again
+without a draw. Dynamic squares take render slots first, at most 16 per frame,
+and the static budget is the smaller of the face budget and the slots left; a
+face over the cap shows its static square. The frame falls back to the full
+redraw of every face a caster reaches, with static and dynamic casters
+together, when the dynamic scan is unavailable or a publication is pending
+(all lights), when a refractive dynamic caster reaches a light (that light),
+or when the static squares fill all 32 layers and leave no band.
 The preset's face budget bounds the faces drawn per frame: High 30, Balanced 12
 and Ultra 60. Complete lights draw in that budget, invalid lights first, then
 lights waiting for transmission layers, then stale ones, each by importance. A
@@ -505,7 +530,9 @@ squared under High, eight layers or 512 MiB; the per-image atlas it replaces
 took 64 MiB per target image. These are storage figures from the layout, not
 a measured allocation. A face redraws whenever its content is invalid or
 stale, within the face budget per frame; after the fill, cost scales with
-dynamic-caster overlap and moved lights. A scene load draws its faces over
+moved lights and with the faces moving casters reach, each a copy and a
+dynamic-caster draw. The dynamic band adds one 32 MiB layer while a dynamic
+caster exists. A scene load draws its faces over
 several frames: 432 Bistro faces take 15 frames under High. The shadow mask
 adds 32 bytes per pixel while local shadows are active, about 28 MiB per
 physical image at 1280x720. With refractive casters, the single transmission
@@ -554,6 +581,23 @@ and the Metal/Vulkan retained graph providers implement local-shadow reuse and
 submit-only promotion.
 
 ## Evidence
+
+Static and dynamic squares, Vulkan Release, RX 6700 XT, 2026-10-09, local and
+non-authoritative (`local-offscreen-gpu-repeated`, 5 repetitions of 300
+frames): on the Bistro street view without a moving caster the GPU frame is
+5.749 ms before and 5.755 ms after, `Shadow.LocalMask` 1.816 ms both, and the
+band never appears. With the mannequin walking about 3 m from a lamp
+(`local_shadow_bistro_vulkan_street_moving`), the frame falls from 12.318 to
+8.007 ms: the full redraws (2.59 ms of local shadows and 2.51 ms of
+transmission layers) give way to 0.230 ms of copies and 0.552 ms of dynamic
+draws for about 12 faces. A motionless dynamic caster at the Ultra budget
+matches the full redraw within the snapshot gate with identical depth; at
+the default budget the full redraw showed the mannequin's shadow for 5 of
+the 9 lamps it reaches, the static and dynamic squares for all 9. A Debug run
+with the validation layer's synchronization checks reports no message.
+`test_same_image_layer_copy_barriers` and the shadow-system tests cover the
+layer copy's barriers, the face mask, reuse, a caster leaving, a static
+change, the fallbacks, an offscreen face, the cap and validation.
 
 Native Metal Release checks on 2026-09-07, on the Metal desktop implementation
 removed on 2026-10-06, validated six 64² scene captures, exact face/quadrant
