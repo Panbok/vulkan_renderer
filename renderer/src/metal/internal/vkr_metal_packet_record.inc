@@ -202,8 +202,15 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     break;
   }
   case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
-    /* Later passes in this encoder and later encoders read the composed SH,
-       which no graph resource orders. */
+    /* The composed SH is rewritten in place while earlier frames' shading
+       may still read it, and the layers can come from an earlier
+       texture-upload submission; Metal 4 orders neither across command
+       buffers, so wait for both. Later passes in this encoder and later
+       encoders read the composed SH, which no graph resource orders. */
+    [encoder barrierAfterQueueStages:MTLStageFragment | MTLStageDispatch |
+                                     MTLStageBlit
+                        beforeStages:MTLStageDispatch
+                   visibilityOptions:MTL4VisibilityOptionDevice];
     [renderer->argument_table setAddress:pass->diffuse_volume_compose.root
                                  atIndex:0u];
     [encoder setComputePipelineState:renderer->diffuse_volume_compose_pipeline];

@@ -82,6 +82,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT:
   case VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT:
   case VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT:
+  case VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME_COMPOSE_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
@@ -1278,6 +1279,8 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->cloud_noise_pipelines[2], "Cloud weather pipeline"},
       {renderer->cloud_shadow_pipeline, "Cloud shadow pipeline"},
       {renderer->cloud_trace_pipeline, "Cloud trace pipeline"},
+      {renderer->diffuse_volume_compose_pipeline,
+       "diffuse volume composition pipeline"},
       {renderer->hzb_build_pipeline, "HZB build pipeline"},
       {renderer->exposure_clear_pipeline, "exposure clear pipeline"},
       {renderer->exposure_histogram_pipeline, "exposure histogram pipeline"},
