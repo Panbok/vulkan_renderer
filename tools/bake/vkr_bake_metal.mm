@@ -1,5 +1,6 @@
 #include "bake/vkr_bake_gpu.h"
 
+#include "bake/vkr_bake_sh.h"
 #include "vkr_dfg_lut.h"
 
 #import <Metal/Metal.h>
@@ -24,6 +25,14 @@ namespace {
    same GPU (2026-10-06). */
 constexpr uint32_t kTexelsPerDispatch = 16384u;
 constexpr uint32_t kSamplesPerDispatch = 8u;
+/* Paths per probe-gather command buffer: the texel gather's budget. Like the
+   texel gather, the probe gather takes its samples in runs, one sample of
+   each pixel per buffer: a path evaluates every layer light at every bounce,
+   and with all four samples in one buffer a 72-lamp Bistro layer's slowest
+   buffer ran 0.88 s. */
+constexpr uint64_t kProbePathsPerDispatch =
+    (uint64_t)kTexelsPerDispatch * kSamplesPerDispatch;
+constexpr uint32_t kProbeSamplesPerDispatch = 1u;
 
 /* Material textures are resampled to this edge for transport: bounce light
    needs their low frequencies only. */
@@ -693,6 +702,101 @@ static bool footprint_reaches(thread const Scene &scene, float3 center,
    covered share instead of all or nothing; rectangle lights take one point
    per sample, at a random point of the footprint. Footprint points the
    texel's center does not reach on its surface are left out. */
+/* A layer's lights and transport settings, as path_radiance takes them. */
+struct Transport {
+  device const GpuLight *lights;
+  device const uint *layer_lights;
+  uint light_count;
+  uint max_depth;
+  uint rr_start_depth;
+  bool use_sky;
+  bool use_emission;
+  texture2d<float> sky;
+  sampler sky_sampler;
+  texture2d<float> dfg;
+};
+
+/* The first surface a path meets: whether there is one, how far it is, its
+   opacity (one minus its glass fraction) and whether the path reached the
+   back of a one-sided surface. */
+struct FirstHit {
+  bool found;
+  bool back_face;
+  float distance;
+  float opacity;
+};
+
+/* Radiance arriving at `origin` from `direction` through one path of the
+   lightmap subset of the ADR-054 transport: the sky on escape, surface
+   emission, the layer lights at every surface, glass passed straight through
+   and one cosine lobe per bounce, with Russian roulette from
+   transport.rr_start_depth. */
+static float3 path_radiance(thread const Scene &scene,
+                            thread const Transport &transport, float3 origin,
+                            float3 direction, thread Rng &rng,
+                            thread FirstHit &first) {
+  first.found = false;
+  first.back_face = false;
+  first.distance = 0.0f;
+  first.opacity = 0.0f;
+  float3 ray_origin = origin;
+  float3 throughput = float3(1.0f);
+  float3 radiance = float3(0.0f);
+  float4 untracked = float4(0.0f);
+  for (uint depth = 0u; depth < transport.max_depth; ++depth) {
+    Hit hit = trace_surface(scene, ray_origin, direction, rng);
+    if (depth == 0u && hit.found) {
+      first.found = true;
+      first.back_face = hit.back_face;
+      first.distance = distance(hit.position, ray_origin);
+      first.opacity = 1.0f - (1.0f - saturate(hit.material.metallic)) *
+                                 saturate(hit.material.transmission);
+    }
+    if (!hit.found) {
+      if (transport.use_sky) {
+        radiance += throughput * sky_radiance(transport.sky,
+                                              transport.sky_sampler, direction);
+      }
+      break;
+    }
+    if (transport.use_emission) {
+      radiance += throughput * max(hit.material.emissive, float3(0.0f));
+    }
+    /* The glass fraction passes the path straight through, tinted by the
+       base color (a thin-walled or slab approximation of refraction). */
+    float glass = (1.0f - saturate(hit.material.metallic)) *
+                  saturate(hit.material.transmission);
+    if (glass > 0.0f && rng.next() < glass) {
+      throughput *= max(hit.material.base.xyz, float3(0.0f));
+      ray_origin = leave_surface(hit.position, hit.geometric, direction);
+      continue;
+    }
+    float3 albedo = bounce_albedo(hit.material, dot(hit.normal, -direction),
+                                  transport.dfg);
+    radiance += throughput * albedo * (1.0f / kPi) *
+                direct_irradiance(scene, transport.lights,
+                                  transport.layer_lights, 0u,
+                                  transport.light_count, hit.position,
+                                  hit.normal, hit.geometric, rng, untracked,
+                                  0.0f);
+    throughput *= albedo;
+    /* As in the CPU integrator, a direction sampled about the shading
+       normal continues even below the geometric surface. */
+    direction = cosine_direction(hit.normal, rng.next(), rng.next());
+    ray_origin = leave_surface(hit.position, hit.geometric, direction);
+    if (transport.rr_start_depth > 0u &&
+        depth + 1u >= transport.rr_start_depth) {
+      float survival = min(0.95f, max3(throughput.x, throughput.y,
+                                       throughput.z));
+      if (survival <= 0.0f || rng.next() >= survival) {
+        break;
+      }
+      throughput /= survival;
+    }
+  }
+  return radiance;
+}
+
 kernel void lightmap_gather(
     device const float4 *texel_positions [[buffer(0)]],
     device const float4 *texel_normals [[buffer(1)]],
@@ -742,15 +846,22 @@ kernel void lightmap_gather(
   float3 step_x = texel_footprints[2u * texel + 0u].xyz;
   float3 step_y = texel_footprints[2u * texel + 1u].xyz;
   float3 origin = texel_position + texel_normal * 1.0e-3f;
-  bool use_sky = (args.flags & 1u) != 0u;
-  bool use_emission = (args.flags & 2u) != 0u;
+  Transport transport = {lights,
+                         layer_lights,
+                         args.light_count,
+                         args.max_depth,
+                         args.rr_start_depth,
+                         (args.flags & 1u) != 0u,
+                         (args.flags & 2u) != 0u,
+                         sky,
+                         sky_sampler,
+                         dfg};
   bool texel_direct = (args.flags & 4u) != 0u;
   bool use_occlusion = (args.flags & 8u) != 0u;
   bool use_backface = (args.flags & 16u) != 0u;
   bool use_direction = (args.flags & 32u) != 0u;
   bool first_run = args.first_sample == 0u;
   float4 direction_sum = float4(0.0f);
-  float4 untracked = float4(0.0f);
   uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
   float inverse_samples = 1.0f / float(args.samples);
 
@@ -808,61 +919,16 @@ kernel void lightmap_gather(
                             use_direction ? inverse_samples : 0.0f);
     }
     float3 direction = cosine_direction(texel_normal, rng.next(), rng.next());
-    float3 first_direction = direction;
-    float3 ray_origin = origin;
-    float3 throughput = float3(1.0f);
-    float3 radiance = float3(0.0f);
-    for (uint depth = 0u; depth < args.max_depth; ++depth) {
-      Hit hit = trace_surface(scene, ray_origin, direction, rng);
-      if (depth == 0u && hit.found) {
-        if (use_occlusion) {
-          float opacity = 1.0f - (1.0f - saturate(hit.material.metallic)) *
-                                     saturate(hit.material.transmission);
-          occluded += opacity *
-                      saturate(1.0f - distance(hit.position, ray_origin) /
-                                          args.occlusion_radius);
-        }
-        if (use_backface && hit.back_face) {
-          backface_hits += 1.0f;
-        }
+    FirstHit first;
+    float3 radiance = path_radiance(scene, transport, origin, direction, rng,
+                                    first);
+    if (first.found) {
+      if (use_occlusion) {
+        occluded += first.opacity *
+                    saturate(1.0f - first.distance / args.occlusion_radius);
       }
-      if (!hit.found) {
-        if (use_sky) {
-          radiance += throughput * sky_radiance(sky, sky_sampler, direction);
-        }
-        break;
-      }
-      if (use_emission) {
-        radiance += throughput * max(hit.material.emissive, float3(0.0f));
-      }
-      /* The glass fraction passes the path straight through, tinted by the
-         base color (a thin-walled or slab approximation of refraction). */
-      float glass = (1.0f - saturate(hit.material.metallic)) *
-                    saturate(hit.material.transmission);
-      if (glass > 0.0f && rng.next() < glass) {
-        throughput *= max(hit.material.base.xyz, float3(0.0f));
-        ray_origin = leave_surface(hit.position, hit.geometric, direction);
-        continue;
-      }
-      float3 albedo = bounce_albedo(hit.material,
-                                    dot(hit.normal, -direction), dfg);
-      radiance += throughput * albedo * (1.0f / kPi) *
-                  direct_irradiance(scene, lights, layer_lights, 0u,
-                                    args.light_count, hit.position,
-                                    hit.normal, hit.geometric, rng, untracked,
-                                    0.0f);
-      throughput *= albedo;
-      /* As in the CPU integrator, a direction sampled about the shading
-         normal continues even below the geometric surface. */
-      direction = cosine_direction(hit.normal, rng.next(), rng.next());
-      ray_origin = leave_surface(hit.position, hit.geometric, direction);
-      if (args.rr_start_depth > 0u && depth + 1u >= args.rr_start_depth) {
-        float survival = min(0.95f, max3(throughput.x, throughput.y,
-                                         throughput.z));
-        if (survival <= 0.0f || rng.next() >= survival) {
-          break;
-        }
-        throughput /= survival;
+      if (use_backface && first.back_face) {
+        backface_hits += 1.0f;
       }
     }
     /* Cosine-weighted sampling: irradiance is pi times mean radiance. */
@@ -875,7 +941,7 @@ kernel void lightmap_gather(
     }
     indirect_total += sample_irradiance;
     if (use_direction) {
-      direction_sum += float4(first_direction, 1.0f) *
+      direction_sum += float4(direction, 1.0f) *
                        (sample_luminance * inverse_samples);
     }
     luminance_sum += sample_luminance;
@@ -904,6 +970,138 @@ kernel void lightmap_gather(
     backface[texel] = first_run ? share : backface[texel] + share;
   }
 }
+
+/* vkr_bake_cube_direction (tools/bake/vkr_bake_sh.cpp): KTX face order and
+   the renderer's cube coordinates. */
+static float3 cube_direction(uint face, float s, float t) {
+  float3 direction;
+  switch (face) {
+  case 0u:
+    direction = float3(1.0f, -t, -s);
+    break;
+  case 1u:
+    direction = float3(-1.0f, -t, s);
+    break;
+  case 2u:
+    direction = float3(s, 1.0f, t);
+    break;
+  case 3u:
+    direction = float3(s, -1.0f, -t);
+    break;
+  case 4u:
+    direction = float3(s, -t, 1.0f);
+    break;
+  default:
+    direction = float3(-s, -t, -1.0f);
+    break;
+  }
+  return normalize(direction);
+}
+
+/* Every member is a 32-bit scalar; the host's ProbeArgs matches it byte for
+   byte. */
+struct ProbeArgs {
+  uint first_probe;
+  uint probe_count;
+  uint face_size;
+  uint samples;
+  /* This run's samples of each pixel. */
+  uint first_sample;
+  uint sample_count;
+  uint max_depth;
+  uint rr_start_depth;
+  uint light_count;
+  /* bit 0 sky, bit 1 emission. */
+  uint flags;
+  uint geometry_first[2];
+};
+
+/* One cube-face pixel of one probe: the mean radiance of `samples` paths
+   through jittered points of the pixel, starting at the probe's center in
+   free space. Seeds follow vkr_diffuse_baker's CPU bake: the probe's seed,
+   the pixel and the sample. A run adds its samples to the pixel's slot of
+   this dispatch, in sample order, and the last run leaves the mean, which
+   the host projects to SH. */
+kernel void probe_gather(
+    device const float4 *probe_positions [[buffer(0)]],
+    device const uint *probe_seeds [[buffer(1)]],
+    device float4 *probe_radiance [[buffer(2)]],
+    constant ProbeArgs &args [[buffer(3)]],
+    primitive_acceleration_structure as [[buffer(4)]],
+    device const float *positions [[buffer(5)]],
+    device const float *normals [[buffer(6)]],
+    device const float2 *uvs [[buffer(7)]],
+    device const uint *colors [[buffer(8)]],
+    device const uint *triangle_materials [[buffer(9)]],
+    device const GpuMaterial *materials [[buffer(10)]],
+    device const GpuLight *lights [[buffer(11)]],
+    device const uint *layer_lights [[buffer(12)]],
+    device const uint *as_indices [[buffer(13)]],
+    texture2d_array<half> textures [[texture(0)]],
+    texture2d<float> sky [[texture(1)]],
+    texture2d<float> dfg [[texture(2)]],
+    uint id [[thread_position_in_grid]]) {
+  uint pixels = 6u * args.face_size * args.face_size;
+  uint local_probe = id / pixels;
+  if (local_probe >= args.probe_count) {
+    return;
+  }
+  constexpr sampler texture_sampler(coord::normalized, address::repeat,
+                                    filter::linear);
+  constexpr sampler sky_sampler(coord::normalized, s_address::repeat,
+                                t_address::clamp_to_edge, filter::linear);
+  Scene scene = {as,
+                 positions,
+                 normals,
+                 uvs,
+                 colors,
+                 triangle_materials,
+                 materials,
+                 textures,
+                 texture_sampler,
+                 as_indices,
+                 {args.geometry_first[0], args.geometry_first[1]}};
+  Transport transport = {lights,
+                         layer_lights,
+                         args.light_count,
+                         args.max_depth,
+                         args.rr_start_depth,
+                         (args.flags & 1u) != 0u,
+                         (args.flags & 2u) != 0u,
+                         sky,
+                         sky_sampler,
+                         dfg};
+  uint pixel = id - local_probe * pixels;
+  uint probe = args.first_probe + local_probe;
+  uint face = pixel / (args.face_size * args.face_size);
+  uint in_face = pixel - face * args.face_size * args.face_size;
+  uint y = in_face / args.face_size;
+  uint x = in_face - y * args.face_size;
+  float3 origin = probe_positions[probe].xyz;
+  uint base_seed = probe_seeds[probe];
+  float face_size = float(args.face_size);
+
+  float3 sum =
+      args.first_sample == 0u ? float3(0.0f) : probe_radiance[id].xyz;
+  for (uint s = args.first_sample; s < args.first_sample + args.sample_count;
+       ++s) {
+    uint seed = mix_seed(base_seed ^ mix_seed(pixel + 256u) ^
+                         mix_seed(s + 65536u));
+    float u = 2.0f * (float(x) + random_unit(seed)) / face_size - 1.0f;
+    float v = 2.0f * (float(y) + random_unit(seed ^ 0x9e3779b9u)) /
+                  face_size -
+              1.0f;
+    float3 direction = cube_direction(face, u, v);
+    /* The path's own stream, apart from the two jitter draws. */
+    Rng rng;
+    rng.state = mix_seed(seed ^ 0x68bc21ebu);
+    FirstHit first;
+    sum += path_radiance(scene, transport, origin, direction, rng, first);
+  }
+  bool last_run = args.first_sample + args.sample_count == args.samples;
+  probe_radiance[id] =
+      float4(last_run ? sum / float(args.samples) : sum, 0.0f);
+}
 )METAL";
 
 struct BenchmarkArgs {
@@ -930,6 +1128,21 @@ struct GatherArgs {
   float indirect_clamp;
 };
 static_assert(sizeof(GatherArgs) == 60u, "GatherArgs matches the kernel");
+
+struct ProbeArgs {
+  uint32_t first_probe;
+  uint32_t probe_count;
+  uint32_t face_size;
+  uint32_t samples;
+  uint32_t first_sample;
+  uint32_t sample_count;
+  uint32_t max_depth;
+  uint32_t rr_start_depth;
+  uint32_t light_count;
+  uint32_t flags;
+  uint32_t geometry_first[2];
+};
+static_assert(sizeof(ProbeArgs) == 48u, "ProbeArgs matches the kernel");
 
 struct GpuMaterial {
   float base_color[4];
@@ -973,6 +1186,7 @@ struct VkrBakeGpuContext {
   id<MTLAccelerationStructure> scene = nil;
   id<MTLComputePipelineState> benchmark = nil;
   id<MTLComputePipelineState> gather = nil;
+  id<MTLComputePipelineState> probes = nil;
   id<MTLBuffer> positions = nil;
   id<MTLBuffer> normals = nil;
   id<MTLBuffer> uvs = nil;
@@ -1385,7 +1599,8 @@ VkrBakeGpuContext *vkr_bake_gpu_create(const VkrBakeScene &scene) {
         make_pipeline(context->device, library, @"lightmap_trace_benchmark");
     context->gather =
         make_pipeline(context->device, library, @"lightmap_gather");
-    if (!context->benchmark || !context->gather ||
+    context->probes = make_pipeline(context->device, library, @"probe_gather");
+    if (!context->benchmark || !context->gather || !context->probes ||
         !upload_triangles(context, scene) ||
         !upload_materials(context, scene) ||
         !build_acceleration_structure(context, scene) ||
@@ -1690,9 +1905,7 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
   }
 }
 
-/* Metal has no probe gather yet (owner decision 2026-10-09: written in a Mac
-   session), so the diffuse baker bakes probes on the CPU here. */
-bool vkr_bake_gpu_probe_gather_available() { return false; }
+bool vkr_bake_gpu_probe_gather_available() { return vkr_bake_gpu_available(); }
 
 bool vkr_bake_gpu_gather_probes(VkrBakeGpuContext *context,
                                 const std::vector<Vec3> &positions,
@@ -1701,14 +1914,142 @@ bool vkr_bake_gpu_gather_probes(VkrBakeGpuContext *context,
                                 const VkrBakeGpuProbeSettings &settings,
                                 std::vector<float32_t> *out_sh,
                                 double *out_gpu_seconds) {
-  (void)context;
-  (void)positions;
-  (void)seeds;
-  (void)layer;
-  (void)settings;
-  (void)out_sh;
-  (void)out_gpu_seconds;
-  return false;
+  @autoreleasepool {
+    if (!context || !out_sh || !out_gpu_seconds ||
+        seeds.size() != positions.size() || settings.face_size == 0u ||
+        settings.face_size > VKR_SH_PROJECTION_MAX_FACE_SIZE ||
+        settings.samples == 0u || settings.max_depth == 0u ||
+        !std::isfinite(settings.deringing) || settings.deringing < 0.0f) {
+      return false;
+    }
+    const size_t count = positions.size();
+    out_sh->assign(count * 12u, 0.0f);
+    *out_gpu_seconds = 0.0;
+    if (count == 0u) {
+      return true;
+    }
+    const NSUInteger light_capacity =
+        context->lights.length / sizeof(GpuLight);
+    for (uint32_t light : layer.lights) {
+      if (light >= light_capacity) {
+        return false;
+      }
+    }
+    const uint32_t pixels = 6u * settings.face_size * settings.face_size;
+    const uint32_t run_samples =
+        std::min(kProbeSamplesPerDispatch, settings.samples);
+    const uint32_t runs = (settings.samples + run_samples - 1u) / run_samples;
+    const uint64_t probe_paths = (uint64_t)pixels * run_samples;
+    const uint32_t probes_per_dispatch = (uint32_t)std::max<uint64_t>(
+        1u, kProbePathsPerDispatch / probe_paths);
+
+    /* Probe inputs for the whole layer, and one dispatch's radiance, which
+       the host projects before the next dispatch overwrites it. */
+    id<MTLBuffer> probe_positions =
+        shared_buffer(context->device, count * 4u * sizeof(float));
+    id<MTLBuffer> probe_seeds =
+        shared_buffer(context->device, count * sizeof(uint32_t));
+    id<MTLBuffer> radiance =
+        shared_buffer(context->device,
+                      (NSUInteger)probes_per_dispatch * pixels * 4u *
+                          sizeof(float));
+    id<MTLBuffer> layer_lights =
+        shared_buffer(context->device, layer.lights.size() * sizeof(uint32_t));
+    if (!probe_positions || !probe_seeds || !radiance || !layer_lights) {
+      return false;
+    }
+    float *p = static_cast<float *>(probe_positions.contents);
+    for (size_t i = 0u; i < count; ++i) {
+      p[4u * i + 0u] = positions[i].x;
+      p[4u * i + 1u] = positions[i].y;
+      p[4u * i + 2u] = positions[i].z;
+      p[4u * i + 3u] = 1.0f;
+    }
+    std::memcpy(probe_seeds.contents, seeds.data(), count * sizeof(uint32_t));
+    if (!layer.lights.empty()) {
+      std::memcpy(layer_lights.contents, layer.lights.data(),
+                  layer.lights.size() * sizeof(uint32_t));
+    }
+
+    const uint32_t flags = (layer.sky ? 1u : 0u) | (layer.emission ? 2u : 0u);
+    const NSUInteger width = context->probes.threadExecutionWidth;
+    std::vector<Vec3> cube(pixels);
+    double longest_dispatch = 0.0;
+    uint32_t dispatches = 0u;
+    for (size_t first = 0u; first < count; first += probes_per_dispatch) {
+      const uint32_t batch_probes =
+          (uint32_t)std::min<size_t>(probes_per_dispatch, count - first);
+      for (uint32_t run = 0u; run < runs; ++run) {
+        const uint32_t first_sample = run * run_samples;
+        const ProbeArgs args = {
+            (uint32_t)first,
+            batch_probes,
+            settings.face_size,
+            settings.samples,
+            first_sample,
+            std::min(run_samples, settings.samples - first_sample),
+            settings.max_depth,
+            settings.rr_start_depth,
+            (uint32_t)layer.lights.size(),
+            flags,
+            {context->geometry_first[0], context->geometry_first[1]}};
+        id<MTLCommandBuffer> command = [context->queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        [encoder setComputePipelineState:context->probes];
+        [encoder setBuffer:probe_positions offset:0u atIndex:0u];
+        [encoder setBuffer:probe_seeds offset:0u atIndex:1u];
+        [encoder setBuffer:radiance offset:0u atIndex:2u];
+        [encoder setBytes:&args length:sizeof(args) atIndex:3u];
+        [encoder setAccelerationStructure:context->scene atBufferIndex:4u];
+        [encoder setBuffer:context->positions offset:0u atIndex:5u];
+        [encoder setBuffer:context->normals offset:0u atIndex:6u];
+        [encoder setBuffer:context->uvs offset:0u atIndex:7u];
+        [encoder setBuffer:context->colors offset:0u atIndex:8u];
+        [encoder setBuffer:context->triangle_materials offset:0u atIndex:9u];
+        [encoder setBuffer:context->materials offset:0u atIndex:10u];
+        [encoder setBuffer:context->lights offset:0u atIndex:11u];
+        [encoder setBuffer:layer_lights offset:0u atIndex:12u];
+        [encoder setBuffer:context->as_indices offset:0u atIndex:13u];
+        [encoder setTexture:context->textures atIndex:0u];
+        [encoder setTexture:context->sky atIndex:1u];
+        [encoder setTexture:context->dfg atIndex:2u];
+        [encoder useResource:context->scene usage:MTLResourceUsageRead];
+        const NSUInteger threads = (NSUInteger)args.probe_count * pixels;
+        [encoder dispatchThreads:MTLSizeMake(threads, 1u, 1u)
+            threadsPerThreadgroup:MTLSizeMake(width, 1u, 1u)];
+        [encoder endEncoding];
+        double seconds = 0.0;
+        if (!finish(command, &seconds)) {
+          return false;
+        }
+        *out_gpu_seconds += seconds;
+        longest_dispatch = std::max(longest_dispatch, seconds);
+        ++dispatches;
+      }
+      const float *values = static_cast<const float *>(radiance.contents);
+      for (uint32_t local = 0u; local < batch_probes; ++local) {
+        const float *source = values + (size_t)local * pixels * 4u;
+        for (uint32_t pixel = 0u; pixel < pixels; ++pixel) {
+          cube[pixel] = vec3_new(source[4u * pixel], source[4u * pixel + 1u],
+                                 source[4u * pixel + 2u]);
+        }
+        const size_t probe = first + local;
+        float32_t sh[3][4];
+        if (!vkr_bake_sh_project_l1(cube.data(), settings.face_size,
+                                    settings.deringing, sh)) {
+          std::fprintf(stderr, "Probe %zu gathered non-finite radiance\n",
+                       probe);
+          return false;
+        }
+        std::memcpy(out_sh->data() + probe * 12u, sh, sizeof(sh));
+      }
+    }
+    std::printf("gpu_probe_gather probes=%zu dispatches=%u "
+                "probes_per_dispatch=%u gpu_s=%.3f longest_dispatch_ms=%.1f\n",
+                count, dispatches, probes_per_dispatch, *out_gpu_seconds,
+                longest_dispatch * 1000.0);
+    return true;
+  }
 }
 
 /* The BC page encoders run on Vulkan only (owner decision 2026-10-09): an

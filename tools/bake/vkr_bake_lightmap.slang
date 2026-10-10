@@ -5,8 +5,7 @@
  * draws in the same order, and the same light, material and shadow rules; a
  * change to one kernel changes the other. The gather's paths run through
  * path_radiance, which the probe gather of the diffuse volume bake
- * (ADR-054) shares; Metal has no probe
- * gather yet.
+ * (ADR-054) shares, on both backends.
  *
  * vkr_bake_vulkan.cpp binds the resources below and compiles this file to
  * SPIR-V once per entry point at build time.

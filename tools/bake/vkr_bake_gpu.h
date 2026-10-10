@@ -155,9 +155,8 @@ bool vkr_bake_gpu_gather_probes(VkrBakeGpuContext *context,
                                 std::vector<float32_t> *out_sh,
                                 double *out_gpu_seconds);
 
-/* Whether this host's GPU transport has the probe gather: Vulkan hosts with
-   GPU ray tracing do; Metal's is not written yet, so Apple hosts bake probes
-   on the CPU. */
+/* Whether this host's GPU transport has the probe gather: every host whose
+   GPU traces rays (Vulkan ray queries or Metal ray tracing) does. */
 bool vkr_bake_gpu_probe_gather_available();
 
 /*
