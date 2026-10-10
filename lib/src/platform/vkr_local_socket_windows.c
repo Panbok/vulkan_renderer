@@ -14,6 +14,7 @@
 
 #include "platform/vkr_local_socket.h"
 #include "platform/vkr_platform.h"
+#include "platform/vkr_winsock.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -21,28 +22,28 @@
 /* Covers `<temp>/vkr` and socket paths; longer paths cannot bind anyway. */
 #define LOCAL_SOCKET_WIDE_PATH 1024
 
-static INIT_ONCE local_socket_startup_once = INIT_ONCE_STATIC_INIT;
-static bool8_t local_socket_started = false_v;
+static INIT_ONCE winsock_startup_once = INIT_ONCE_STATIC_INIT;
+static bool8_t winsock_started = false_v;
 static volatile LONG local_socket_pair_serial = 0;
 
-static BOOL CALLBACK local_socket_startup(PINIT_ONCE once, PVOID parameter,
-                                          PVOID *context) {
+static BOOL CALLBACK winsock_startup(PINIT_ONCE once, PVOID parameter,
+                                     PVOID *context) {
   (void)once;
   (void)parameter;
   (void)context;
   WSADATA data;
   /* Winsock stays started for the life of the process. */
-  local_socket_started = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+  winsock_started = WSAStartup(MAKEWORD(2, 2), &data) == 0;
   return TRUE;
 }
 
-static bool8_t local_socket_ready(void) {
-  (void)InitOnceExecuteOnce(&local_socket_startup_once, local_socket_startup,
-                            NULL, NULL);
-  if (!local_socket_started) {
+bool8_t vkr_winsock_ready(void) {
+  (void)InitOnceExecuteOnce(&winsock_startup_once, winsock_startup, NULL,
+                            NULL);
+  if (!winsock_started) {
     WSASetLastError(WSANOTINITIALISED);
   }
-  return local_socket_started;
+  return winsock_started;
 }
 
 static SOCKET local_socket_handle(VkrLocalSocket socket) {
@@ -89,7 +90,7 @@ bool8_t vkr_local_socket_path_fits(const char *path) {
 bool8_t vkr_local_socket_connect(const char *path, VkrLocalSocket *out_socket) {
   *out_socket = VKR_LOCAL_SOCKET_INVALID;
   struct sockaddr_un address;
-  if (!local_socket_address(path, &address) || !local_socket_ready()) {
+  if (!local_socket_address(path, &address) || !vkr_winsock_ready()) {
     return false_v;
   }
   const SOCKET handle = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -114,7 +115,7 @@ VkrLocalSocketListenStatus vkr_local_socket_listen(const char *path,
   if (!local_socket_address(path, &address)) {
     return VKR_LOCAL_SOCKET_LISTEN_TOO_LONG;
   }
-  if (!local_socket_ready()) {
+  if (!vkr_winsock_ready()) {
     return VKR_LOCAL_SOCKET_LISTEN_FAILED;
   }
 
