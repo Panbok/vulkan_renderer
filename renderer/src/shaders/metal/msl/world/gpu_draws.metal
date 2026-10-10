@@ -645,8 +645,8 @@ kernel void vkr_metal_packet_hzb_build(constant VkrMetalPacketHzbBuildRoot &root
 
 static_assert(sizeof(VkrGpuDrawCompactionState) == 144,
               "GPU draw compaction state ABI must remain 144 bytes");
-static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 192,
-              "GPU draw root ABI must remain 192 bytes");
+static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 208,
+              "GPU draw root ABI must remain 208 bytes");
 static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,
               "GPU draw view ABI must remain 112 bytes");
 static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
