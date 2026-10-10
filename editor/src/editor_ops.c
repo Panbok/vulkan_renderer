@@ -3,11 +3,12 @@
 #include "editor_agent.h"
 #include "editor_environment.h"
 #include "editor_internal.h"
+#include "editor_level.h"
 #include "editor_lighting.h"
 #include "editor_material.h"
 #include "editor_projects.h"
+#include "editor_session.h"
 #include "editor_workbench.h"
-#include "editor_level.h"
 
 #include "assets/vkr_light_layers.h"
 #include "assets/vkr_material_codegen.h"
@@ -12588,6 +12589,116 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+// =============================================================================
+// Collaborative session (editor_session.h)
+// =============================================================================
+
+static VkrBakeryJson *ops_session_status(OpsContext *ctx) {
+  static const char *const modes[] = {"none", "host", "participant"};
+  VkrEditorSessionStatus status;
+  vkr_editor_session_status(ctx->editor->session, &status);
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "mode",
+          vkr_bakery_json_cstr(arena, modes[Min(status.mode, 2u)]));
+  ops_set(ctx, result, "joined", vkr_bakery_json_bool(arena, status.joined));
+  ops_set(ctx, result, "self", vkr_bakery_json_int(arena, status.self_id));
+  ops_set(ctx, result, "sequence",
+          vkr_bakery_json_int(arena, (int64_t)status.sequence));
+  ops_set(ctx, result, "pending", vkr_bakery_json_int(arena, status.pending));
+  ops_set(ctx, result, "address", vkr_bakery_json_cstr(arena, status.address));
+  ops_set(ctx, result, "key", vkr_bakery_json_cstr(arena, status.key));
+  ops_set(ctx, result, "error", vkr_bakery_json_cstr(arena, status.error));
+  /* What a joining editor's scenes must match, from this editor's scenes:
+     equal digests mean equal names, poses and parents. */
+  uint8_t digest[32];
+  char digest_hex[65];
+  vkr_editor_session_digest(ctx->frame, digest);
+  for (uint32_t i = 0; i < 32u; ++i) {
+    snprintf(digest_hex + 2u * i, 3u, "%02x", digest[i]);
+  }
+  ops_set(ctx, result, "digest", vkr_bakery_json_cstr(arena, digest_hex));
+  VkrBakeryJson *peers = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < status.peer_count; ++i) {
+    const VkrEditorSessionPeer *peer = &status.peers[i];
+    VkrBakeryJson *row = vkr_bakery_json_object(arena);
+    ops_set(ctx, row, "id", vkr_bakery_json_int(arena, peer->id));
+    ops_set(ctx, row, "name", vkr_bakery_json_cstr(arena, peer->name));
+    if (peer->has_camera) {
+      VkrBakeryJson *camera = vkr_bakery_json_object(arena);
+      ops_set(ctx, camera, "position", ops_vec3(ctx, peer->camera_position));
+      ops_set(ctx, camera, "yaw", ops_number(ctx, peer->camera_yaw));
+      ops_set(ctx, camera, "pitch", ops_number(ctx, peer->camera_pitch));
+      ops_set(ctx, row, "camera", camera);
+    } else {
+      ops_set(ctx, row, "camera", vkr_bakery_json_null(arena));
+    }
+    if (peer->has_selection) {
+      char ref[37];
+      vkr_entity_ref_format(&peer->selection, ref);
+      VkrBakeryJson *selection = vkr_bakery_json_object(arena);
+      ops_set(ctx, selection, "container",
+              vkr_bakery_json_int(arena, peer->selection_container));
+      ops_set(ctx, selection, "ref", vkr_bakery_json_cstr(arena, ref));
+      ops_set(ctx, row, "selection", selection);
+    } else {
+      ops_set(ctx, row, "selection", vkr_bakery_json_null(arena));
+    }
+    vkr_bakery_json_append(peers, row);
+  }
+  ops_set(ctx, result, "peers", peers);
+  return result;
+}
+
+static VkrEditorOpStatus ops_run_session_status(OpsContext *ctx) {
+  ctx->call->result = ops_session_status(ctx);
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_session_host(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char bind[64] = {0};
+  char name[VKR_EDITOR_SESSION_NAME_MAX] = {0};
+  char error[192] = {0};
+  if (!ops_arg_string(ctx, args, "bind", bind, sizeof(bind)) ||
+      !ops_arg_string(ctx, args, "name", name, sizeof(name))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_session_host(ctx->editor->session, ctx->frame, bind, name,
+                               error, sizeof(error))) {
+    ops_fail(ctx, OPS_BUSY, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = ops_session_status(ctx);
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_session_join(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char address[256] = {0};
+  char key[80] = {0};
+  char name[VKR_EDITOR_SESSION_NAME_MAX] = {0};
+  char error[192] = {0};
+  if (!ops_arg_string(ctx, args, "address", address, sizeof(address)) ||
+      !ops_arg_string(ctx, args, "key", key, sizeof(key)) ||
+      !ops_arg_string(ctx, args, "name", name, sizeof(name))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_session_join(ctx->editor->session, ctx->frame, address, key,
+                               name, error, sizeof(error))) {
+    ops_fail(ctx, OPS_INVALID, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = ops_session_status(ctx);
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_session_leave(OpsContext *ctx) {
+  vkr_editor_session_leave(ctx->editor->session);
+  ctx->call->result = ops_session_status(ctx);
+  return VKR_EDITOR_OP_DONE;
+}
+
 static const OpsDef s_ops[] = {
     {"ops.list", "Every operation with its description and argument schema.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_list, NULL, OPS_QUICK},
@@ -13613,6 +13724,29 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"line\":{\"type\":\"string\"}},"
      "\"required\":[\"line\"]}",
      ops_run_cmd, NULL},
+    {"session.host",
+     "Host a collaborative editing session of the open scene on 'bind' "
+     "(default every interface, port 7330); answers the address and the key "
+     "others join with. Every edit then applies in the host's order.",
+     "{\"type\":\"object\",\"properties\":{\"bind\":{\"type\":"
+     "\"string\"},\"name\":{\"type\":\"string\"}}}",
+     ops_run_session_host, NULL},
+    {"session.join",
+     "Join the session at 'address' with the host's 64-digit 'key'. This "
+     "editor must have the host's session scene open, unedited; the "
+     "session's edits replay first. Poll session.status for 'joined'.",
+     "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
+     "\"string\"},\"key\":{\"type\":\"string\"},\"name\":{\"type\":"
+     "\"string\"}},\"required\":[\"address\",\"key\"]}",
+     ops_run_session_join, NULL},
+    {"session.leave", "Leave or stop the collaborative session.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_session_leave, NULL},
+    {"session.status",
+     "The session's mode, address and key, this editor's place in the edit "
+     "order, edits waiting to apply, the last error, the digest of this "
+     "editor's scenes and each peer's name, camera and selection.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_session_status, NULL,
+     OPS_QUICK},
 };
 
 static const OpsDef *ops_find(String8 name) {

@@ -1,10 +1,11 @@
 #include "editor_agent.h"
 #include "editor_internal.h"
-#include "editor_material.h"
 #include "editor_io.h"
+#include "editor_material.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
 #include "editor_scene_panels.h"
+#include "editor_session.h"
 #include "editor_terrain.h"
 
 #include "renderer/systems/vkr_editor_viewport.h"
@@ -598,6 +599,8 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
         (int32_t)(VKR_EDITOR_NAVIGATION_HEIGHT_PT * ui->content_scale),
         allowed);
   }
+  /* Last, after everything that may request an edit this build. */
+  vkr_editor_session_update(editor->session, frame);
   return dock_capture;
 }
 

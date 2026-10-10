@@ -93,6 +93,8 @@ vkr_global const FilterModeEntry FILTER_MODES[] = {
  */
 /* Most entities a move drag carries beside its own. */
 #define GIZMO_COMPANION_MAX 16u
+_Static_assert(GIZMO_COMPANION_MAX + 1u <= VKR_SAMPLE_GIZMO_EDIT_MAX,
+               "a gizmo report holds the dragged entity and its companions");
 
 typedef struct GizmoDragState {
   bool8_t active;
@@ -188,6 +190,8 @@ typedef struct State {
   uint32_t physics_sensor_event_count;
   /* The latest edit batch or group revert outcome the UI reads. */
   VkrSampleEditBatchResult edit_batch_result;
+  /* The gizmo drag recorded since the last build; the next build reads it. */
+  VkrSampleGizmoEdit gizmo_recorded;
   /* The latest entity IO request's outcome. */
   VkrSampleIoResult io_result;
   /* One window capture the UI asked for: the renderer request while it
@@ -4277,11 +4281,17 @@ vkr_internal void vkr_standard_scene_runtime_finish_gizmo_edit(
                     !vec3_equal(state->gizmo_before.scale, after.scale, 0.0f) ||
                     MemCompare(&state->gizmo_before.rotation, &after.rotation,
                                sizeof(after.rotation)) != 0;
-      const bool8_t grouped = changed && state->gizmo_drag.companion_count &&
-                              vkr_scene_edit_group_begin(edits) != 0u;
+      const uint64_t group = changed && state->gizmo_drag.companion_count
+                                 ? vkr_scene_edit_group_begin(edits)
+                                 : 0u;
+      const bool8_t grouped = group != 0u;
       bool8_t recorded = !changed || vkr_scene_edit_record_external(
                                          edits, scene, state->gizmo_edit_entity,
                                          &state->gizmo_before, &after);
+      VkrSampleGizmoEdit report = {.count = 1u,
+                                   .fields = after.fields,
+                                   .group = group,
+                                   .entities = {state->gizmo_edit_entity}};
       for (uint32_t i = 0;
            changed && recorded && i < state->gizmo_drag.companion_count; ++i) {
         /* A companion's values before the move differ only in position. */
@@ -4295,6 +4305,7 @@ vkr_internal void vkr_standard_scene_runtime_finish_gizmo_edit(
         before.position = state->gizmo_drag.companion_start[i];
         recorded = vkr_scene_edit_record_external(edits, scene, companion,
                                                   &before, &moved);
+        report.entities[report.count++] = companion;
       }
       if (grouped) {
         if (recorded) {
@@ -4302,6 +4313,10 @@ vkr_internal void vkr_standard_scene_runtime_finish_gizmo_edit(
         } else {
           (void)vkr_scene_edit_group_rollback(edits, scene);
         }
+      }
+      /* A collaborative session shares the drag the journal now holds. */
+      if (changed && recorded) {
+        state->gizmo_recorded = report;
       }
       if (!recorded &&
           !vkr_standard_scene_runtime_restore_gizmo_edit(application)) {
@@ -5271,6 +5286,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .scene_edit = &requests->scene_edit,
       .edit_batch = &requests->edit_batch,
       .edit_batch_result = &state->edit_batch_result,
+      .gizmo_edit = state->gizmo_recorded.count ? &state->gizmo_recorded : NULL,
+      .gizmo_edit_pending = state->gizmo_edit_pending,
       .capture_request = &requests->capture_request,
       .capture_ready =
           state->capture_ready_valid ? &state->capture_ready : NULL,
@@ -6089,6 +6106,11 @@ static void sample_edit_batch(VkrStandardSceneRuntime *application,
     return;
   }
   VkrSampleEditBatchResult *result = &state->edit_batch_result;
+  if (batch->forced_result) {
+    *result = *batch->forced_result;
+    result->token = batch->token;
+    return;
+  }
   MemZero(result, sizeof(*result));
   result->token = batch->token;
   result->failed_index = UINT32_MAX;
@@ -6604,6 +6626,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   application->animation_preview = (VkrAnimationPreviewRequest){0};
   application->editor_viewport.dock_capture =
       vkr_standard_scene_runtime_build_ui_frame(application, &requests);
+  state->gizmo_recorded.count = 0u;
   application->ui_capture = vkr_ui_end(&application->ui_system);
   application->editor_viewport.scene_maximized =
       application->editor_viewport.enabled &&

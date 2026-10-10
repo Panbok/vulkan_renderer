@@ -357,6 +357,10 @@ typedef struct VkrSampleEditBatchRequest {
   uint32_t count;
   uint16_t container;
   uint64_t revert_group;
+  /* Answers the request with this outcome, under `token`, without applying
+   * anything: a collaborative session reports the host's refusal of a batch
+   * this editor forwarded this way. */
+  const struct VkrSampleEditBatchResult *forced_result;
 } VkrSampleEditBatchRequest;
 
 /* The outcome of the latest batch or revert, kept until the next one. */
@@ -390,6 +394,20 @@ typedef struct VkrSampleCaptureReady {
   /* The final_color item; borrowed for this build only. */
   const VkrCaptureItemResult *item;
 } VkrSampleCaptureReady;
+
+/* Entities one gizmo drag moves: the dragged one and its companions. */
+#define VKR_SAMPLE_GIZMO_EDIT_MAX 17u
+
+/* A gizmo drag the runtime recorded in a journal itself, outside the edit
+ * requests: `entities[0]` is the dragged entity, the rest its companions,
+ * each with the `fields` of its values changed. More than one entity
+ * recorded as journal group `group`; one as a single entry. */
+typedef struct VkrSampleGizmoEdit {
+  uint32_t count;
+  uint32_t fields;
+  uint64_t group;
+  VkrEntityId entities[VKR_SAMPLE_GIZMO_EDIT_MAX];
+} VkrSampleGizmoEdit;
 
 typedef struct VkrSampleUiFrame {
   VkrUiSystem *ui;
@@ -428,6 +446,11 @@ typedef struct VkrSampleUiFrame {
    * outcome, borrowed for the build. */
   VkrSampleEditBatchRequest *edit_batch;
   const VkrSampleEditBatchResult *edit_batch_result;
+  /** The gizmo drag recorded since the last build, for this build only, or
+   * NULL. `gizmo_edit_pending`: a drag moved an entity and has not recorded
+   * it yet; a scene edit request records it before applying. */
+  const VkrSampleGizmoEdit *gizmo_edit;
+  bool8_t gizmo_edit_pending;
   VkrSampleCaptureRequest *capture_request;
   /** A finished capture, for this build only; NULL otherwise. */
   const VkrSampleCaptureReady *capture_ready;

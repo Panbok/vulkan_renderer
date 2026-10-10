@@ -18,7 +18,8 @@ target_include_directories(vkr_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 # The script SDK (ADR-079): sdk.h for modules and the host that fills it.
 target_include_directories(vkr_runtime PUBLIC "${CMAKE_SOURCE_DIR}/sdk")
 target_include_directories(vkr_runtime PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
-target_link_libraries(vkr_runtime PUBLIC renderer_lib vkr_asset_formats vkr_physics PRIVATE vkr_ktx_read vkr_image_decode)
+# Collaborative editing encodes scene edits for the network (runtime/src/net).
+target_link_libraries(vkr_runtime PUBLIC renderer_lib vkr_asset_formats vkr_physics vkr_net PRIVATE vkr_ktx_read vkr_image_decode)
 if(APPLE)
     target_link_libraries(vkr_runtime PRIVATE "-framework Cocoa" "-framework GameController" "-framework UniformTypeIdentifiers")
 elseif(WIN32)

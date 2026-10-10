@@ -6,10 +6,10 @@
 #include "animation_player_tests.h"
 #include "animation_tests.h"
 #include "brush_test.h"
-#include "material_graph_tests.h"
 #include "camera_rig_test.h"
 #include "character_test.h"
 #include "collision_asset_test.h"
+#include "depot_test.h"
 #include "editor_project_store_test.h"
 #include "gameplay_input_test.h"
 #include "gameplay_player_test.h"
@@ -17,12 +17,13 @@
 #include "heightfield_test.h"
 #include "io_test.h"
 #include "lightmap_bake_tests.h"
+#include "material_graph_tests.h"
 #include "mesh_lightmap_uv_tests.h"
 #include "mesh_material_override_tests.h"
 #include "mesh_skin_tests.h"
+#include "net_scene_edit_test.h"
 #include "net_test.h"
 #include "net_wire_test.h"
-#include "depot_test.h"
 #include "physics_test.h"
 #include "player_animation_test.h"
 #include "scene_animation_tests.h"
@@ -102,6 +103,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_local_socket_tests),
     VKR_TEST_SUITE(run_net_tests),
     VKR_TEST_SUITE(run_net_wire_tests),
+    VKR_TEST_SUITE(run_net_scene_edit_tests),
     VKR_TEST_SUITE(run_depot_tests),
     VKR_TEST_SUITE(run_texture_vkt_tests),
     VKR_TEST_SUITE(run_renderer_impl_tests),

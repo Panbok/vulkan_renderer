@@ -576,6 +576,9 @@ typedef struct VkrEditorUi {
   /* The agent channel and its operation table
      (ADR-084). */
   struct VkrEditorAgent *agent;
+  /* The collaborative editing session, idle until hosted or joined
+     (editor_session.h). */
+  struct VkrEditorSession *session;
   /* The Level checks window's last report (editor_level.h). */
   struct VkrEditorLevelReport *level_report;
   /* Brush clipping on the selected brush's grid (editor_brush_grid.h). */

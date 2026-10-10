@@ -10,6 +10,7 @@
 #include "editor_material.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
+#include "editor_session.h"
 
 #include "core/logger.h"
 #include "fps_module.h"
@@ -101,9 +102,10 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
       vkr_editor_physics_settings_create(&ui->retained_allocator);
   editor->ui.agent = vkr_editor_agent_create(
       &ui->retained_allocator, editor->agent_socket, !editor->agent_disabled);
+  editor->ui.session = vkr_editor_session_create(&ui->retained_allocator);
   if (!editor->ui.bakery || !editor->ui.build || !editor->ui.scene_panels ||
       !editor->ui.physics_settings || !editor->ui.scripts || !editor->ui.code ||
-      !editor->ui.materials || !editor->ui.agent)
+      !editor->ui.materials || !editor->ui.agent || !editor->ui.session)
     goto cleanup;
   /* Startup Cmd scripts: the environment first, then --exec. */
   editor->ui.cmd_quit_when_done = editor->headless;
@@ -163,6 +165,8 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   }
   return true_v;
 cleanup:
+  vkr_editor_session_destroy(editor->ui.session);
+  editor->ui.session = NULL;
   vkr_editor_agent_destroy(editor->ui.agent);
   editor->ui.agent = NULL;
   (void)vkr_editor_projects_destroy(editor->ui.projects, &editor->ui, dock);
@@ -324,6 +328,8 @@ static bool8_t editor_application_shutdown(void *state,
    */
   vkr_editor_content_destroy(editor->ui.content);
   editor->ui.content = NULL;
+  vkr_editor_session_destroy(editor->ui.session);
+  editor->ui.session = NULL;
   vkr_editor_agent_destroy(editor->ui.agent);
   editor->ui.agent = NULL;
   if (editor->ui.level_report) {
