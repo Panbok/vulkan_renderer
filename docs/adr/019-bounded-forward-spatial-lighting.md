@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-09
+updated: 2026-10-10
 authority: adr
 ---
 
@@ -15,8 +15,8 @@ desktop pipeline, which Vulkan implements. The tiled pipeline draws a bounded
 set of dynamic lights, and a shadowed one takes one bilinear comparison tap
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decisions 8 and 11). Since
 2026-10-09 a cached face holds static casters only and moving casters draw
-into a per-frame copy of it; the tiled pipeline's side of that change is
-written but has not been compiled or run on Metal.
+into a per-frame copy of it, on both pipeline classes; the tiled pipeline's
+side has native Metal evidence since 2026-10-10.
 
 ## Context
 
@@ -598,6 +598,23 @@ with the validation layer's synchronization checks reports no message.
 `test_same_image_layer_copy_barriers` and the shadow-system tests cover the
 layer copy's barriers, the face mask, reuse, a caster leaving, a static
 change, the fallbacks, an offscreen face, the cap and validation.
+
+Static and dynamic squares on the tiled pipeline, Metal Release, Apple M1 Pro,
+2026-10-10, local and non-authoritative on a dirty tree, against `32656d25`
+(before the split) built in a separate worktree:
+- `local_shadow_bistro_metal_street_moving` (`local-offscreen-gpu-single`,
+  300 frames, runs alternated after/before/after/before): four faces copied
+  and four drawn dynamic per frame, none redrawn whole, none dropped. The
+  local shadow passes fall from 8.19 ms (24 face redraws) to 0.40 ms of
+  dynamic draws; the copies are blits without timestamps. Frame wall time
+  falls from 26.8 to 18.1 ms at p50 in both pairs.
+- `local_shadow_bistro_metal_street_moving_capture` before and after: depth
+  identical; colour differs only in the clouds (1,101 of 1,103 pixels above
+  2/255), which follow submission history: the two binaries reach frame 568
+  through different submit counts. A rerun of the same binary differs in
+  6 pixels.
+- One `MTL_DEBUG_LAYER=1` snapshot of the moving capture case reports no
+  message from the copies or the dynamic draws.
 
 Native Metal Release checks on 2026-09-07, on the Metal desktop implementation
 removed on 2026-10-06, validated six 64² scene captures, exact face/quadrant

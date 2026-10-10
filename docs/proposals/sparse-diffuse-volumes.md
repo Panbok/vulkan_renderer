@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-09
+updated: 2026-10-10
 authority: proposal
 ---
 
@@ -8,8 +8,8 @@ authority: proposal
 
 Sparse brick volumes shipped on 2026-10-09: placement, relocation, distance
 moments, L1 layers with lamp direct bands, `DVOL` v3, the GPU composition
-pass and the desktop pipeline's half-resolution lookup
-([ADR-054](../adr/054-baked-diffuse-volumes.md)). This proposal keeps the
+pass, the desktop pipeline's half-resolution lookup and the tiled pipeline's
+inline lookup ([ADR-054](../adr/054-baked-diffuse-volumes.md)). This proposal keeps the
 parts that are not implemented and the evidence still missing.
 
 ## Baseline
@@ -22,8 +22,9 @@ spacing bakes:
 - the 72-lamp group in 59 s.
 
 Each layer traces its own paths. A Mac bakes volumes on the CPU only,
-because Metal has no probe gather. The tiled pipeline's composition kernel
-and inline lookup are written, but have not been compiled or run.
+because Metal has no probe gather: on the M1 Pro the same Bistro volume at
+`--face-size 4 --samples 1` takes 463 s and 5.2 GB, about 35 s per sun key
+and 73 s for the lamp group.
 
 ## Proposed changes
 
@@ -49,10 +50,10 @@ and inline lookup are written, but have not been compiled or run.
 ## Evidence needed
 
 - **Tiled pipeline.** `tiled_bistro_baked_native` before and after, with
-  `Tiled.Opaque` within noise, and a Metal capture of a draw without a
-  lightmap lit by the volume.
-- **M1 Pro.** Bake time and peak memory for the CPU and, after item 2, the
-  Metal gather.
+  `Tiled.Opaque` within noise. Its indirect diffuse alone needs render mode 9
+  in the harness, which accepts only five modes on Metal today.
+- **M1 Pro.** Bake time and peak memory of the Metal gather after item 2,
+  against the CPU baseline above.
 - **Leaks.** A Bistro night capture across the café facade that shows no
   interior lamp bounce on the outer wall away from the openings.
 - **Cost.** An authoritative, clean-tree timing of the desktop lookup against

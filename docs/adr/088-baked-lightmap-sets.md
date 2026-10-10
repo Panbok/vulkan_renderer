@@ -20,9 +20,10 @@ without visible noise at 16 samples once outlier texels are rejected and
 each layer is smoothed (see Evidence). Since 2026-10-08 the bake denoises
 indirect light apart from the exact direct light and fills texels buried
 inside solids; a level-scale check of that change is pending. The bake runs
-on Metal ray tracing or, since 2026-10-09, on Vulkan ray queries; the Metal
-side of that day's changes (the punctual shadow clip and the direction
-gather) has not been compiled.
+on Metal ray tracing or, since 2026-10-09, on Vulkan ray queries. The Metal
+side of that day's changes compiles; Mac bakes run its punctual shadow clip
+since 2026-10-10. Its direction gather serves only desktop planes, which a
+Mac bake does not write, and has not run.
 
 ## Context
 
@@ -652,6 +653,21 @@ texels per meter with deferred textures:
   rare bright texels keep 89.5% of their energy where the center-only
   tolerance kept 75%) and the buried fill
   (ring order, both sides of a three-texel strip, a surface buried whole).
+
+- Bistro on the tiled pipeline after the per-pipeline planes and the punctual
+  shadow clip, 2026-10-10 (M1 Pro, Release, local and dirty tree): the
+  lightmap-UV model cooked as above (28.8 s, 2.8 GB peak; the cook rewrote
+  the 254 shared `assets/materials/bistro-lights` files in the current format,
+  restored afterwards), then `vkr_bakery bake lightmap --scene
+  assets/scenes/fixtures/bistro_tiled_local.scene.json --output
+  assets/scenes/bistro_tiled.vklm --samples 16`: VKLM v4, 601.7 s, 6.2 GB
+  peak, 453 MB, nine layers with one ASTC 4×4 HDR irradiance plane each and
+  no other plane
+  (`sha256:f16b953063cbd9c8e8b8b05299c00ac33c472b1a7da6accf4b0c18a8974a396a`).
+  Against the same bake by `32656d25` (v3, 592.6 s) its layer and instance
+  tables match byte for byte; the lamp layer differs in 65 % of its blocks,
+  the sun layers in 1 to 3 %. The street now takes the lamps' light around
+  the lanterns ([ADR-104](104-desktop-baked-lamps.md)).
 
 Unavailable: a Windows or Vulkan host.
 

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-09
+updated: 2026-10-10
 authority: adr
 ---
 
@@ -10,10 +10,10 @@ authority: adr
 
 Accepted (partial). The sparse brick volume replaced the room-proof grid on
 2026-10-09. The desktop pipeline (Vulkan) bakes, loads, composes and samples
-it, with native evidence on Bistro. The tiled pipeline's composition and lookup
-are written but have not been compiled or run on Metal. Metal has no probe
-gather, so a Mac bakes volumes with the CPU integrator. Light paths are not
-yet shared across layers.
+it, with native evidence on Bistro. The tiled pipeline (Metal) composes and
+samples it too, with native evidence on Bistro and the leak fixture since
+2026-10-10. Metal has no probe gather, so a Mac bakes volumes with the CPU
+integrator. Light paths are not yet shared across layers.
 
 ## Context
 
@@ -96,6 +96,18 @@ from direction `w` gives constant `E / 4π` and linear `E w / 2π`. The runtime
 adds the band only for surfaces whose lightmap does not hold the lamps
 ([ADR-104](104-desktop-baked-lamps.md)).
 
+**Non-negative bands.** The runtime evaluates `E/π(n) = c + l · n` per channel
+and clamps the result at zero. A band with `|l| > c` is negative behind its
+dominant direction: every single-lamp direct band has `|l| = 2c`, and a
+gathered band near a bright lamp can come close. There the warm channels clip
+to zero and only the sky's blue survives, which showed as dark blue patches
+beside Bistro's lantern brackets. The baker therefore shortens each stored
+band's linear term per channel to at most its constant term
+(`clamp_l1_nonnegative` in `store_band`), for gathered and direct bands
+alike. Composition sums bands with non-negative weights, so every composition
+stays non-negative. The cost is directionality: a lamp-dominated probe facing
+its lamp evaluates `2c` instead of `3c`.
+
 **Transport.**
 - The default is `vkr_bake_gpu` with Vulkan ray queries
   ([`vkr_bake_vulkan.cpp`](../../tools/bake/vkr_bake_vulkan.cpp)).
@@ -160,7 +172,11 @@ group's factor. When a weight moves by more than one percent, at most every
 `DiffuseVolume.Compose`, a compute pass in both render graphs, then writes the
 weighted sum into the composed texture's first band. On a frame that samples
 baked lamps, the active lamp groups and their direct bands go to the second
-band instead.
+band instead. The tiled pipeline has no second band: it looks the volume up
+only for draws without a lightmap, so while a lightmap is sampled its compose
+adds each active lamp group's direct band into the single sum (owner decision,
+2026-10-10). The compose waits at queue level for earlier frames' reads of the
+composed texture before rewriting it in place.
 
 **Lookup** ([`diffuse_volume_kernel.slangh`](../../renderer/src/shaders/shared/diffuse_volume_kernel.slangh),
 `packet_diffuse_volume_response`):
@@ -264,10 +280,40 @@ Bistro, Windows (Ryzen 5 2600, RX 6700 XT, Release), 2026-10-09:
   - The owner's budget was 0.5 ms; the volume adds 0.57 ms to the opaque
     path and 0.10 ms to transmission.
 
-Unavailable on this host:
-- the tiled pipeline's compose and lookup on Metal, and
-  `tiled_bistro_baked_native` before and after;
-- volume bake times on the M1 Pro;
+Mac (Apple M1 Pro, 16 GB, Metal 4, Release), 2026-10-10, local
+non-authoritative runs on a dirty tree:
+- **Bake.** `vkr_bakery tool diffuse-baker --scene
+  assets/scenes/fixtures/bistro_sparse_volume_local.scene.json --face-size 4
+  --samples 1` on the CPU integrator: 194,463 baked probes, nine layers and
+  one direct band (72 lamps), 463 s, 5.2 GB peak, 315 MB. The leak fixture
+  (`--spacing 1 --levels 2 --margin 1 --face-size 4 --samples 1`): 6,266
+  probes, 10.5 s.
+- **Compose ABI.** Every Metal startup creates `DiffuseVolume.Compose` and
+  checks its 128-byte root by reflection; the first run found the root checked
+  at buffer 1 instead of 0, which had disabled the compose silently.
+- **Tiled lookup.** `tiled_bistro_sparse_volume_{on,off}_capture` (lightmapped
+  Bistro with the animated mannequin, the only draw without a lightmap): depth
+  identical; every changed pixel (2,769) lies in the mannequin's box, which
+  takes the street's warm bounce instead of the environment's blue.
+- **Leak fixture.** `sparse_volume_leak_room_c{,_none}_metal_local`: room C's
+  far wall, which no direct light reaches, is 0/255 over 48,100 pixels with
+  the volume and 76/255 from the environment without it. Room C's floor and
+  ceiling take `lamp_b`'s direct light through `wall_bc`, pixel-identical
+  before this change; the tiled pipeline does not shadow that lamp.
+- **Blue patches.** `sparse_volume_bistro_street_on_lighting_metal_local`
+  with a volume baked before and after the non-negative clamp: 10.4 % of
+  pixels change, in patches beside lamps; across them blue minus red moves
+  from −9.7 to −12.3 and 59 % of them were bluer without the clamp.
+- **Validation.** One `MTL_DEBUG_LAYER=1` snapshot each of
+  `tiled_bistro_sparse_volume_on_capture` (compose) and
+  `local_shadow_bistro_metal_street_moving_capture`
+  (`local-metal-offscreen-validation-serial`): no messages.
+
+Unavailable:
+- the tiled pipeline's indirect diffuse alone: the harness renders only the
+  default, unlit, detail lighting, lighting-only and wireframe modes there;
+- a Windows rebake of Bistro's volume with the clamp and its render mode 9
+  capture at the bracket camera;
 - an authoritative clean-tree timing;
 - a Bistro night capture across the café facade.
 
@@ -276,6 +322,8 @@ Unavailable on this host:
 - **Path sharing.** Sharing light paths across layers would cut bake time:
   each sun key costs about 22 s on Bistro.
 - **Metal probe gather.** Mac bakes need one to stop falling back to the CPU.
+- **Directionality.** Lamp-lit moving objects look flat next to lightmapped
+  surfaces: the non-negative clamp halves a lamp band's linear term.
 - **Cost.** An authoritative timing exceeds the owner's budget, or the
   half-resolution softening shows at contact shadows in review.
 - **Size.** A scene needs more than 13,104 bricks: the moment atlas limit,
@@ -285,4 +333,4 @@ Unavailable on this host:
 
 - Bake: [bricks](../../tools/bake/vkr_bake_bricks.h), [diffuse baker](../../tools/vkr_diffuse_baker.cpp), [integrator](../../tools/bake/vkr_bake_integrator.h), [GPU gather](../../tools/bake/vkr_bake_lightmap.slang), [SH](../../tools/bake/vkr_bake_sh.h)
 - Asset and scene: [DVOL codec](../../runtime/src/assets/vkr_diffuse_volume.h), [scene loader](../../runtime/src/renderer/resources/loaders/scene_loader.c), [scene binding](../../runtime/src/renderer/systems/vkr_scene_system.h)
-- Renderer: [binding contract](../../renderer/src/vkr_render_resources.h), [Vulkan compose](../../renderer/src/vulkan/vkr_vulkan_diffuse_volume.c), [Vulkan sample passes](../../renderer/src/vulkan/vkr_vulkan_deferred.c), [shared kernel](../../renderer/src/shaders/shared/diffuse_volume_kernel.slangh), [compose shader](../../renderer/src/shaders/vulkan/slang/world/diffuse_volume.slang)
+- Renderer: [binding contract](../../renderer/src/vkr_render_resources.h), [Vulkan compose](../../renderer/src/vulkan/vkr_vulkan_diffuse_volume.c), [Vulkan sample passes](../../renderer/src/vulkan/vkr_vulkan_deferred.c), [shared kernel](../../renderer/src/shaders/shared/diffuse_volume_kernel.slangh), [compose shader](../../renderer/src/shaders/vulkan/slang/world/diffuse_volume.slang), [Metal compose](../../renderer/src/shaders/metal/msl/world/diffuse_volume.metal) and [its frame preparation](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc), [tiled lookup](../../renderer/src/shaders/metal/msl/world/lighting.metalh)

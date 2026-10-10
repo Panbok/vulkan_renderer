@@ -13,8 +13,9 @@ into lamp-group lightmap layers with direction pages. It removes the lamps
 from runtime lighting and shades the baked light per pixel on opaque and
 transmissive surfaces. Moving receivers take lamp light from the sparse
 volume, and moving casters shadow the two baked lamps whose light at them is
-strongest. The shared payload, validation and atlas changes are unverified on
-Metal, and no timing here is authoritative.
+strongest. The tiled pipeline (Metal) runs the shared payload, validation and
+atlas changes with native evidence since 2026-10-10. No timing here is
+authoritative.
 
 ## Context
 
@@ -229,12 +230,31 @@ local and non-authoritative.
   `20261009T211159.780Z-000685`, `20261009T211927.415Z-00111e`,
   `20261009T205227.181Z-0036c4`, `20261009T212844.490Z-001d8b`.
 
-Unavailable on this host:
-- the tiled pipeline, which takes no baked-lamp data, and Metal's side of the
-  shared payload, validation and atlas changes: `tiled_bistro_baked_native`
-  has not run;
-- the Metal shadow clip (uncompiled);
-- an authoritative, clean-tree timing.
+Mac (Apple M1 Pro, Metal 4, Release), 2026-10-10, local non-authoritative
+runs on a dirty tree. The tiled pipeline takes none of this ADR's planes; its
+moving receivers take the lamp direct bands from the volume
+([ADR-054](054-baked-diffuse-volumes.md)).
+- **Tiled bake.** `vkr_bakery bake lightmap --scene
+  assets/scenes/fixtures/bistro_tiled_local.scene.json --output
+  assets/scenes/bistro_tiled.vklm --samples 16`: 601.7 s, 6.2 GB peak,
+  453 MB, pipeline `tiled`, nine layers with one ASTC 4×4 HDR irradiance
+  plane each and no desktop or direction plane
+  (`sha256:f16b953063cbd9c8e8b8b05299c00ac33c472b1a7da6accf4b0c18a8974a396a`).
+- **Metal shadow clip.** Against the same bake by `32656d25`, the lamp layer
+  differs in 65 % of its blocks and each sun layer in 1 to 3 %. Lamp light
+  now leaves the lanterns: walls beside them take warm halos and the street a
+  warm bounce in `tiled_bistro_baked_capture` (mean difference 29/255).
+- **Renderer unchanged.** `tiled_bistro_baked_capture` renders the `32656d25`
+  bake's pixels, repacked as VKLM v4, within the snapshot gate of `32656d25`
+  rendering its own v3 file: depth identical, final colour mean difference
+  0.0017/255, 17 pixels above 2/255.
+- **Desktop-only set on Metal.** The tiled loader requires an ASTC plane for
+  every layer; a set without one disables lightmaps and keeps the runtime
+  lamps (`scene_loader_lightmap_slices`, source review).
+
+Unavailable:
+- an authoritative, clean-tree timing;
+- a Mac load of a Windows-baked set (source review only).
 
 ## Revisit when
 

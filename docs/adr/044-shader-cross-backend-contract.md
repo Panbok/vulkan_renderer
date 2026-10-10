@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-08
+updated: 2026-10-10
 authority: adr
 ---
 
@@ -775,16 +775,21 @@ horizon before the two fitted lobe integrals. Vulkan output checks are pending.
 [ADR-063](063-charlie-sheen.md) owns the layer, numerical domain, table budget
 and environment-filtering approximation.
 
-Baked diffuse volumes are shared and share cell lookup and trilinear weights.
-The Metal frame root keeps the texture at byte 480 and the 48-byte parameter
-pointer at 488; origin, inverse spacing and dimensions remain at 0/16/32. The
-576-byte Vulkan root keeps the corresponding texture/value offsets at
-496/512/528/544. Both paths load an immutable RGBA32F texture and replace only
-diffuse lighting inside validated same-room cells; the tiled pipeline uses them
-for draws without a lightmap (ADR-087, decision 8). Actual deferred SPIR-V
-reflection confirms all volume offsets in the 576-byte span; shader SHA-256 is
-`dcbed9153947320b6163c397ec24361b39ca298f903a0c50f5cb617627f2d239`. Native
-output evidence on the tiled pipeline and on Vulkan is not recorded.
+Baked diffuse volumes are shared: both pipeline classes take the brick
+lookup, the back-face, Chebyshev and crush weights and the L1 evaluation from
+`diffuse_volume_kernel.slangh`. The tiled pipeline calls it inline in
+`Tiled.Opaque` for draws without a lightmap (ADR-087, decision 8); the
+desktop pipeline at half resolution with an exact fallback. The Metal frame
+root names the 80-byte `VkrMetalPacketDiffuseVolume` record at byte 488
+(indirection, probes, moments and composed SH at 0/8/16/24, origin at 32,
+parameters at 48, dimensions at 64), with byte 480 reserved. Each backend
+composes the layers in its own kernel: Vulkan's `diffuse_volume_compose`
+writes a second lamp band, Metal's 128-byte compose root (active layers at 32,
+weights at 64, direct bands at 96, bound at buffer 0) adds the direct bands
+into its single sum while a lightmap is sampled. Native evidence: Vulkan
+captures and timing on Bistro (2026-10-09), and on Metal the
+`tiled_bistro_sparse_volume_{on,off}_capture` pair, the leak fixture and one
+API validation run (2026-10-10), recorded in ADR-054.
 [ADR-054](054-baked-diffuse-volumes.md) owns asset and sampling semantics.
 
 Rectangle LTC is shared and appends a 32-byte light/table block after those
