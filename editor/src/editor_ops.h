@@ -10,8 +10,11 @@
  * journal group. */
 typedef struct VkrEditorOps VkrEditorOps;
 
-/* Bytes of an author name, with its terminator. */
-#define VKR_EDITOR_AUTHOR_CAPACITY 32u
+/* Bytes of an author name, with its terminator: an agent's name and, in a
+   collaborative session, `@` and its editor's name (ADR-106). */
+#define VKR_EDITOR_AUTHOR_CAPACITY 80u
+/* Bytes of an agent's own name, with its terminator. */
+#define VKR_EDITOR_AGENT_NAME_CAPACITY 32u
 
 typedef enum VkrEditorOpStatus {
   VKR_EDITOR_OP_DONE = 0,
@@ -93,6 +96,32 @@ typedef struct VkrEditorClaim {
   Vec3 min;
   Vec3 max;
 } VkrEditorClaim;
+
+#define VKR_EDITOR_TASK_MAX 256u
+
+typedef enum VkrEditorTaskState {
+  VKR_EDITOR_TASK_OPEN = 0,
+  VKR_EDITOR_TASK_ASSIGNED,
+  VKR_EDITOR_TASK_DONE,
+  VKR_EDITOR_TASK_FAILED,
+} VkrEditorTaskState;
+
+/* A task of the board (task.*): work of one kind, such as layout, material
+ * or lighting, optionally in a region, that one agent takes with task.next
+ * and finishes with task.done. In a collaborative session the host keeps the
+ * board, so agents of every editor divide its tasks (ADR-106). */
+typedef struct VkrEditorTask {
+  uint32_t id;
+  uint8_t state; /**< VkrEditorTaskState. */
+  bool8_t has_region;
+  uint16_t container;
+  char kind[32];
+  char title[96];
+  char assignee[VKR_EDITOR_AUTHOR_CAPACITY];
+  char note[96];
+  Vec3 min;
+  Vec3 max;
+} VkrEditorTask;
 
 VkrEditorOps *vkr_editor_ops_create(VkrAllocator *allocator);
 void vkr_editor_ops_destroy(VkrEditorOps *ops);

@@ -20,16 +20,18 @@
  *
  * Channel 0, reliable and ordered, carries the session: HELLO and WELCOME,
  * EDIT from a participant, RESULT for a refused one, APPLIED in session
- * order and PEER_LEFT. Channel 1, sequenced, carries PRESENCE. Every message
- * starts with its 4-bit type. An edit's body travels as aligned bytes after
- * its header, so the host relays a participant's body unchanged:
+ * order, PEER_LEFT, and for agents ASK, ANSWER and SHARED (the host's claims
+ * and tasks). Channel 1, sequenced, carries PRESENCE. Every message starts
+ * with its 4-bit type. EDIT and APPLIED name the batch's agent author and
+ * label; an edit's body travels as aligned bytes after its header, so the
+ * host relays a participant's body unchanged:
  *
  *   SINGLE  one edit (vkr_net_scene_edit.h)
  *   BATCH   container 16, count varuint, then each edit
  *   UNDO, REDO  empty
  *   REVERT  container 16, the session sequence of the batch it reverts */
 #define SESSION_SERVICE_VERSION 1u
-#define SESSION_SCHEMA_HASH 0x434f4c4c41420001ull
+#define SESSION_SCHEMA_HASH 0x434f4c4c41420002ull
 #define SESSION_EDIT_CHANNEL 0u
 #define SESSION_PRESENCE_CHANNEL 1u
 #define SESSION_MESSAGE_MAX (8u << 20)
@@ -43,6 +45,12 @@
    it forwards without a requester's token. */
 #define SESSION_TOKEN_APPLY 0x8000000000000000ull
 #define SESSION_TOKEN_FORWARD 0x4000000000000000ull
+/* Agent requests waiting on the host, answers waiting on a participant,
+   batch notes of one build and applied batches waiting for the feed. */
+#define SESSION_ASK_MAX 64u
+#define SESSION_ANSWER_MAX 16u
+#define SESSION_NOTE_MAX 8u
+#define SESSION_APPLIED_MAX 16u
 
 typedef enum SessionMessage {
   SESSION_MSG_HELLO = 1,
@@ -52,6 +60,9 @@ typedef enum SessionMessage {
   SESSION_MSG_APPLIED,
   SESSION_MSG_PRESENCE,
   SESSION_MSG_PEER_LEFT,
+  SESSION_MSG_ASK,
+  SESSION_MSG_ANSWER,
+  SESSION_MSG_SHARED,
 } SessionMessage;
 
 typedef enum SessionEditKind {
@@ -95,7 +106,23 @@ typedef struct SessionEdit {
   uint64_t seq;
   uint8_t *payload;
   uint32_t size;
+  /* A batch's agent author, as the session knows it, and label; empty for
+     the designer's edits. */
+  char agent[VKR_EDITOR_AUTHOR_CAPACITY];
+  char label[96];
 } SessionEdit;
+
+/* The author and label ops gave the batch it submits under `token`. */
+typedef struct SessionNote {
+  uint64_t token;
+  char author[VKR_EDITOR_AUTHOR_CAPACITY];
+  char label[96];
+} SessionNote;
+
+typedef struct SessionAnswerSlot {
+  bool8_t used;
+  VkrEditorSessionAnswer answer;
+} SessionAnswerSlot;
 
 /* The journal group a session batch made here, for a later revert. */
 typedef struct SessionGroup {
@@ -148,6 +175,8 @@ typedef struct SessionInflight {
   SessionEdit edit;
   uint64_t slot_token;
   uint16_t container;
+  /* Edits of an injected batch, for the change feed. */
+  uint32_t item_count;
   SessionSignature before;
 } SessionInflight;
 
@@ -210,6 +239,27 @@ struct VkrEditorSession {
   VkrEditorSessionPeer peers[VKR_EDITOR_SESSION_PEERS_MAX];
   uint32_t peer_count;
   uint64_t presence_at;
+
+  /* Agent federation. `epoch` survives a reset. */
+  uint64_t epoch;
+  SessionNote notes[SESSION_NOTE_MAX];
+  uint32_t note_next;
+  VkrEditorSessionApplied applied[SESSION_APPLIED_MAX];
+  uint32_t applied_head;
+  uint32_t applied_count;
+  /* Host: participants' requests, and the claims and tasks as sent. */
+  VkrEditorSessionAsk asks[SESSION_ASK_MAX];
+  uint32_t ask_head;
+  uint32_t ask_count;
+  uint8_t *shared_bytes;
+  uint32_t shared_size;
+  /* Participant: answers by token, and the host's claims and tasks. */
+  SessionAnswerSlot answers[SESSION_ANSWER_MAX];
+  uint64_t shared_revision;
+  VkrEditorClaim shared_claims[VKR_EDITOR_CLAIM_MAX];
+  uint32_t shared_claim_count;
+  VkrEditorTask shared_tasks[VKR_EDITOR_TASK_MAX];
+  uint32_t shared_task_count;
 };
 
 // =============================================================================
@@ -690,6 +740,8 @@ static uint32_t session_encode_edit(VkrEditorSession *session, uint8_t type,
     }
     vkr_bit_write(&writer, edit->token, 64u);
     vkr_bit_write(&writer, edit->kind, 4u);
+    session_write_text(&writer, edit->agent);
+    session_write_text(&writer, edit->label);
     vkr_bit_write_varuint(&writer, edit->size);
     vkr_bit_write_bytes(&writer, edit->payload, edit->size);
     const uint32_t size =
@@ -714,6 +766,10 @@ static bool8_t session_read_edit(VkrBitReader *reader, uint8_t type,
   }
   out->token = vkr_bit_read(reader, 64u);
   out->kind = (uint8_t)vkr_bit_read(reader, 4u);
+  if (!session_read_text(reader, out->agent, sizeof(out->agent)) ||
+      !session_read_text(reader, out->label, sizeof(out->label))) {
+    return false_v;
+  }
   const uint64_t size = vkr_bit_read_varuint(reader);
   if (out->kind >= SESSION_EDIT_WIRE_COUNT || size > SESSION_MESSAGE_MAX) {
     return false_v;
@@ -729,6 +785,188 @@ static bool8_t session_read_edit(VkrBitReader *reader, uint8_t type,
   MemCopy(out->payload, bytes, size);
   out->size = (uint32_t)size;
   return true_v;
+}
+
+typedef void (*SessionPut)(VkrBitWriter *writer, const void *context);
+
+/* Builds a message into the growable message buffer. */
+static uint32_t session_build(VkrEditorSession *session, SessionPut put,
+                              const void *context) {
+  for (;;) {
+    VkrBitWriter writer;
+    vkr_bit_writer_init(&writer, session->message.data,
+                        session->message.capacity);
+    put(&writer, context);
+    const uint32_t size =
+        session->message.capacity ? vkr_bit_writer_finish(&writer) : 0u;
+    if (size) {
+      return size;
+    }
+    if (!session_buffer_grow(&session->message)) {
+      return 0u;
+    }
+  }
+}
+
+static void session_write_vec3(VkrBitWriter *writer, Vec3 value) {
+  session_write_float(writer, value.x);
+  session_write_float(writer, value.y);
+  session_write_float(writer, value.z);
+}
+
+static Vec3 session_read_vec3(VkrBitReader *reader) {
+  const float32_t x = session_read_float(reader);
+  const float32_t y = session_read_float(reader);
+  const float32_t z = session_read_float(reader);
+  return vec3_new(x, y, z);
+}
+
+static void session_write_claim(VkrBitWriter *writer,
+                                const VkrEditorClaim *claim) {
+  vkr_bit_write_varuint(writer, claim->id);
+  vkr_bit_write(writer, claim->container, 16u);
+  session_write_text(writer, claim->author);
+  session_write_text(writer, claim->name);
+  session_write_vec3(writer, claim->min);
+  session_write_vec3(writer, claim->max);
+}
+
+static bool8_t session_read_claim(VkrBitReader *reader, VkrEditorClaim *out) {
+  MemZero(out, sizeof(*out));
+  out->id = (uint32_t)vkr_bit_read_varuint(reader);
+  out->container = (uint16_t)vkr_bit_read(reader, 16u);
+  if (!session_read_text(reader, out->author, sizeof(out->author)) ||
+      !session_read_text(reader, out->name, sizeof(out->name))) {
+    return false_v;
+  }
+  out->min = session_read_vec3(reader);
+  out->max = session_read_vec3(reader);
+  return !reader->overflow;
+}
+
+static void session_write_task(VkrBitWriter *writer,
+                               const VkrEditorTask *task) {
+  vkr_bit_write_varuint(writer, task->id);
+  vkr_bit_write(writer, task->state, 2u);
+  vkr_bit_write(writer, task->has_region, 1u);
+  if (task->has_region) {
+    vkr_bit_write(writer, task->container, 16u);
+    session_write_vec3(writer, task->min);
+    session_write_vec3(writer, task->max);
+  }
+  session_write_text(writer, task->kind);
+  session_write_text(writer, task->title);
+  session_write_text(writer, task->assignee);
+  session_write_text(writer, task->note);
+}
+
+static bool8_t session_read_task(VkrBitReader *reader, VkrEditorTask *out) {
+  MemZero(out, sizeof(*out));
+  out->id = (uint32_t)vkr_bit_read_varuint(reader);
+  out->state = (uint8_t)vkr_bit_read(reader, 2u);
+  out->has_region = (bool8_t)vkr_bit_read(reader, 1u);
+  if (out->has_region) {
+    out->container = (uint16_t)vkr_bit_read(reader, 16u);
+    out->min = session_read_vec3(reader);
+    out->max = session_read_vec3(reader);
+  }
+  return session_read_text(reader, out->kind, sizeof(out->kind)) &&
+         session_read_text(reader, out->title, sizeof(out->title)) &&
+         session_read_text(reader, out->assignee, sizeof(out->assignee)) &&
+         session_read_text(reader, out->note, sizeof(out->note));
+}
+
+/* ASK: token, kind, author, then every field an ask may use. */
+static void session_put_ask(VkrBitWriter *writer, const void *context) {
+  const VkrEditorSessionAsk *ask = context;
+  vkr_bit_write(writer, SESSION_MSG_ASK, 4u);
+  vkr_bit_write(writer, ask->token, 64u);
+  vkr_bit_write(writer, ask->kind, 4u);
+  session_write_text(writer, ask->author);
+  session_write_claim(writer, &ask->claim);
+  vkr_bit_write(writer, ask->all, 1u);
+  session_write_task(writer, &ask->task);
+  session_write_text(writer, ask->kinds);
+}
+
+static bool8_t session_read_ask(VkrBitReader *reader,
+                                VkrEditorSessionAsk *out) {
+  MemZero(out, sizeof(*out));
+  out->token = vkr_bit_read(reader, 64u);
+  out->kind = (uint8_t)vkr_bit_read(reader, 4u);
+  if (!session_read_text(reader, out->author, sizeof(out->author)) ||
+      !session_read_claim(reader, &out->claim)) {
+    return false_v;
+  }
+  out->all = (bool8_t)vkr_bit_read(reader, 1u);
+  return session_read_task(reader, &out->task) &&
+         session_read_text(reader, out->kinds, sizeof(out->kinds)) &&
+         vkr_bit_reader_at_end(reader) &&
+         out->kind >= VKR_EDITOR_ASK_CLAIM_SET &&
+         out->kind <= VKR_EDITOR_ASK_TASK_DONE;
+}
+
+static void session_put_answer(VkrBitWriter *writer, const void *context) {
+  const VkrEditorSessionAnswer *answer = context;
+  vkr_bit_write(writer, SESSION_MSG_ANSWER, 4u);
+  vkr_bit_write(writer, answer->token, 64u);
+  vkr_bit_write(writer, answer->ok, 1u);
+  session_write_text(writer, answer->code);
+  session_write_text(writer, answer->error);
+  session_write_claim(writer, &answer->claim);
+  vkr_bit_write(writer, answer->has_task, 1u);
+  if (answer->has_task) {
+    session_write_task(writer, &answer->task);
+  }
+  vkr_bit_write_varuint(writer, answer->released_count);
+  for (uint32_t i = 0u; i < answer->released_count; ++i) {
+    vkr_bit_write_varuint(writer, answer->released[i]);
+  }
+}
+
+static bool8_t session_read_answer(VkrBitReader *reader,
+                                   VkrEditorSessionAnswer *out) {
+  MemZero(out, sizeof(*out));
+  out->token = vkr_bit_read(reader, 64u);
+  out->ok = (bool8_t)vkr_bit_read(reader, 1u);
+  if (!session_read_text(reader, out->code, sizeof(out->code)) ||
+      !session_read_text(reader, out->error, sizeof(out->error)) ||
+      !session_read_claim(reader, &out->claim)) {
+    return false_v;
+  }
+  out->has_task = (bool8_t)vkr_bit_read(reader, 1u);
+  if (out->has_task && !session_read_task(reader, &out->task)) {
+    return false_v;
+  }
+  const uint64_t released = vkr_bit_read_varuint(reader);
+  if (released > VKR_EDITOR_CLAIM_MAX) {
+    return false_v;
+  }
+  out->released_count = (uint32_t)released;
+  for (uint32_t i = 0u; i < out->released_count; ++i) {
+    out->released[i] = (uint32_t)vkr_bit_read_varuint(reader);
+  }
+  return vkr_bit_reader_at_end(reader);
+}
+
+typedef struct SessionShared {
+  const VkrEditorClaim *claims;
+  uint32_t claim_count;
+  const VkrEditorTask *tasks;
+  uint32_t task_count;
+} SessionShared;
+
+static void session_put_shared(VkrBitWriter *writer, const void *context) {
+  const SessionShared *shared = context;
+  vkr_bit_write(writer, SESSION_MSG_SHARED, 4u);
+  vkr_bit_write_varuint(writer, shared->claim_count);
+  for (uint32_t i = 0u; i < shared->claim_count; ++i) {
+    session_write_claim(writer, &shared->claims[i]);
+  }
+  vkr_bit_write_varuint(writer, shared->task_count);
+  for (uint32_t i = 0u; i < shared->task_count; ++i) {
+    session_write_task(writer, &shared->tasks[i]);
+  }
 }
 
 static uint32_t session_encode_presence(const VkrEditorSessionPeer *peer,
@@ -903,6 +1141,11 @@ static void session_host_hello(VkrEditorSession *session, SessionLink *link,
   link->welcomed = true_v;
   link->id = id;
   link->log_sent = 0u;
+  /* The claims and tasks come before the history replays. */
+  if (session->shared_size) {
+    (void)session_send(session, link->connection, SESSION_EDIT_CHANNEL,
+                       session->shared_bytes, session->shared_size);
+  }
   VkrEditorSessionPeer peer = {.id = id};
   snprintf(peer.name, sizeof(peer.name), "%s", name);
   session_peer_set(session, &peer);
@@ -940,6 +1183,27 @@ static void session_host_message(VkrEditorSession *session, SessionLink *link,
   }
   if (type == SESSION_MSG_HELLO) {
     session_host_hello(session, link, reader);
+    return;
+  }
+  if (type == SESSION_MSG_ASK) {
+    VkrEditorSessionAsk ask;
+    if (!link->welcomed || !session_read_ask(reader, &ask)) {
+      vkr_net_core_close(vkr_net_host_core(session->host), link->connection,
+                         VKR_NET_CLOSE_SCHEMA_VIOLATION, session->now);
+      return;
+    }
+    ask.peer = link->id;
+    if (session->ask_count == SESSION_ASK_MAX) {
+      const VkrEditorSessionAnswer busy = {
+          .token = ask.token,
+          .code = "VKR-AGENT-0006",
+          .error = "The session host has too many agent requests waiting"};
+      vkr_editor_session_reply(session, &ask, &busy);
+      return;
+    }
+    session
+        ->asks[(session->ask_head + session->ask_count++) % SESSION_ASK_MAX] =
+        ask;
     return;
   }
   SessionEdit edit;
@@ -1166,6 +1430,44 @@ static void session_participant_message(VkrEditorSession *session,
     session_peer_remove(session, id);
     return;
   }
+  case SESSION_MSG_ANSWER: {
+    VkrEditorSessionAnswer answer;
+    if (!session_read_answer(reader, &answer)) {
+      session_fail(session, "The host sent a malformed answer.");
+      return;
+    }
+    /* The oldest slot gives way when every one is taken: its asker timed
+       out long ago. */
+    SessionAnswerSlot *slot = &session->answers[0];
+    for (uint32_t i = 0u; i < SESSION_ANSWER_MAX; ++i) {
+      if (!session->answers[i].used) {
+        slot = &session->answers[i];
+        break;
+      }
+    }
+    *slot = (SessionAnswerSlot){.used = true_v, .answer = answer};
+    return;
+  }
+  case SESSION_MSG_SHARED: {
+    const uint64_t claims = vkr_bit_read_varuint(reader);
+    bool8_t ok = claims <= VKR_EDITOR_CLAIM_MAX;
+    for (uint32_t i = 0u; ok && i < claims; ++i) {
+      ok = session_read_claim(reader, &session->shared_claims[i]);
+    }
+    const uint64_t tasks = ok ? vkr_bit_read_varuint(reader) : 0u;
+    ok = ok && tasks <= VKR_EDITOR_TASK_MAX;
+    for (uint32_t i = 0u; ok && i < tasks; ++i) {
+      ok = session_read_task(reader, &session->shared_tasks[i]);
+    }
+    if (!ok || !vkr_bit_reader_at_end(reader)) {
+      session_fail(session, "The host sent malformed claims or tasks.");
+      return;
+    }
+    session->shared_claim_count = (uint32_t)claims;
+    session->shared_task_count = (uint32_t)tasks;
+    session->shared_revision += 1u;
+    return;
+  }
   default:
     session_fail(session, "The host sent an unknown message.");
     return;
@@ -1384,11 +1686,16 @@ static void session_answer_batch(VkrEditorSession *session,
 /* Sends or queues one edit this editor made; false with a message when it
    cannot go. */
 static bool8_t session_submit(VkrEditorSession *session,
-                              SessionPayload *payload, uint64_t token) {
+                              SessionPayload *payload, uint64_t token,
+                              const SessionNote *note) {
   SessionEdit edit = {.kind = payload->kind,
                       .author = session->self_id,
                       .local = true_v,
                       .token = token};
+  if (note) {
+    snprintf(edit.agent, sizeof(edit.agent), "%s", note->author);
+    snprintf(edit.label, sizeof(edit.label), "%s", note->label);
+  }
   if (!session_encode_payload(session, payload, &edit.payload, &edit.size)) {
     return false_v;
   }
@@ -1463,7 +1770,8 @@ static void session_intercept(VkrEditorSession *session,
     } else if (!session_submit(session, &payload,
                                session->mode == VKR_EDITOR_SESSION_HOST
                                    ? 0u
-                                   : session_forward_token(session))) {
+                                   : session_forward_token(session),
+                               NULL)) {
       log_warn("The edit did not reach the session: %s", payload.error);
     }
     edit->action = VKR_SCENE_EDIT_NONE;
@@ -1508,7 +1816,13 @@ static void session_intercept(VkrEditorSession *session,
         return;
       }
     }
-    if (!session_submit(session, &payload, token)) {
+    const SessionNote *note = NULL;
+    for (uint32_t i = 0u; i < SESSION_NOTE_MAX; ++i) {
+      if (session->notes[i].token == token) {
+        note = &session->notes[i];
+      }
+    }
+    if (!session_submit(session, &payload, token, note)) {
       session_answer_batch(session, frame, token, payload.error);
     }
   }
@@ -1576,7 +1890,7 @@ static void session_gizmo(VkrEditorSession *session,
     return;
   }
   const uint64_t token = session_forward_token(session);
-  if (!session_submit(session, &payload, token)) {
+  if (!session_submit(session, &payload, token, NULL)) {
     session->rollbacks += 1u;
     log_warn("That gizmo edit cannot travel: %s", payload.error);
     return;
@@ -1661,6 +1975,7 @@ static bool8_t session_place(VkrEditorSession *session,
       return false_v;
     }
     *out_container = container;
+    session->inflight.item_count = (uint32_t)count;
     *frame->edit_batch = (VkrSampleEditBatchRequest){.token = slot_token,
                                                      .items = session->items,
                                                      .count = (uint32_t)count,
@@ -1783,6 +2098,7 @@ static void session_inject(VkrEditorSession *session,
                                   .edit = edit,
                                   .slot_token = slot_token,
                                   .container = container,
+                                  .item_count = inflight->item_count,
                                   .before = before};
     return;
   }
@@ -1794,6 +2110,42 @@ static void session_inject(VkrEditorSession *session,
                                   .rollback = true_v,
                                   .edit = {.kind = SESSION_EDIT_UNDO},
                                   .before = before};
+  }
+}
+
+/* Queues another editor's agent batch that applied here for the change
+   feed: the entities it edited or created. */
+static void session_note_applied(VkrEditorSession *session,
+                                 const SessionEdit *edit, uint16_t container,
+                                 uint32_t item_count,
+                                 const VkrSampleEditBatchResult *result) {
+  VkrEditorSessionApplied *notice =
+      &session->applied[(session->applied_head + session->applied_count) %
+                        SESSION_APPLIED_MAX];
+  if (session->applied_count == SESSION_APPLIED_MAX) {
+    session->applied_head = (session->applied_head + 1u) % SESSION_APPLIED_MAX;
+  } else {
+    session->applied_count += 1u;
+  }
+  *notice = (VkrEditorSessionApplied){.container = container};
+  snprintf(notice->author, sizeof(notice->author), "%s", edit->agent);
+  snprintf(notice->label, sizeof(notice->label), "%s", edit->label);
+  for (uint32_t i = 0u;
+       i < item_count &&
+       notice->entity_count < VKR_EDITOR_SESSION_APPLIED_ENTITIES;
+       ++i) {
+    const VkrSceneEditRequest *request = &session->items[i].request;
+    VkrEntityId entity = result->created[i];
+    if (!entity.u64 && request->action != VKR_SCENE_EDIT_DELETE) {
+      entity = request->entity;
+    }
+    bool8_t seen = !entity.u64;
+    for (uint32_t k = 0u; !seen && k < notice->entity_count; ++k) {
+      seen = notice->entities[k].u64 == entity.u64;
+    }
+    if (!seen) {
+      notice->entities[notice->entity_count++] = entity;
+    }
   }
 }
 
@@ -1833,6 +2185,13 @@ static void session_verify(VkrEditorSession *session,
   }
   SessionEdit edit = inflight->edit;
   MemZero(&inflight->edit, sizeof(inflight->edit));
+  const bool8_t others = session->mode == VKR_EDITOR_SESSION_HOST
+                             ? !edit.local
+                             : edit.author != session->self_id;
+  if (ok && others && edit.agent[0] && edit.kind == SESSION_EDIT_BATCH) {
+    session_note_applied(session, &edit, inflight->container,
+                         inflight->item_count, result);
+  }
   if (inflight->rollback) {
     if (!ok) {
       session_fail(session, "A local edit could not be undone to follow the "
@@ -1943,11 +2302,14 @@ static void session_reset(VkrEditorSession *session) {
   free(session->payload.data);
   free(session->message.data);
   session_edit_release(&session->inflight.edit);
+  free(session->shared_bytes);
   VkrAllocator *allocator = session->allocator;
+  const uint64_t epoch = session->epoch;
   char error[sizeof(session->error)];
   MemCopy(error, session->error, sizeof(error));
   MemZero(session, sizeof(*session));
   session->allocator = allocator;
+  session->epoch = epoch;
   MemCopy(session->error, error, sizeof(error));
 }
 
@@ -1983,6 +2345,7 @@ static bool8_t session_begin(VkrEditorSession *session,
   snprintf(session->name, sizeof(session->name), "%s",
            name && name[0] ? name : fallback);
   session->scene_generation = frame->scene_generation;
+  session->epoch += 1u;
   session->apply_seq = 1u;
   session->receive_seq = 1u;
   vkr_editor_session_digest(frame, session->digest);
@@ -2126,4 +2489,161 @@ void vkr_editor_session_status(const VkrEditorSession *session,
   out_status->peer_count = session->peer_count;
   MemCopy(out_status->peers, session->peers,
           session->peer_count * sizeof(session->peers[0]));
+}
+
+// =============================================================================
+// Agent federation
+// =============================================================================
+
+void vkr_editor_session_author(const VkrEditorSession *session,
+                               const char *local, char *out,
+                               uint32_t capacity) {
+  char copy[VKR_EDITOR_AUTHOR_CAPACITY];
+  snprintf(copy, sizeof(copy), "%s", local);
+  if (session && session->mode != VKR_EDITOR_SESSION_NONE && copy[0]) {
+    snprintf(out, capacity, "%s@%s", copy, session->name);
+  } else {
+    snprintf(out, capacity, "%s", copy);
+  }
+}
+
+void vkr_editor_session_note_batch(VkrEditorSession *session, uint64_t token,
+                                   const char *author, const char *label) {
+  if (!session || session->mode == VKR_EDITOR_SESSION_NONE || !token) {
+    return;
+  }
+  SessionNote *note = &session->notes[session->note_next++ % SESSION_NOTE_MAX];
+  note->token = token;
+  snprintf(note->author, sizeof(note->author), "%s", author ? author : "");
+  snprintf(note->label, sizeof(note->label), "%s", label ? label : "");
+}
+
+bool8_t vkr_editor_session_take_applied(VkrEditorSession *session,
+                                        VkrEditorSessionApplied *out) {
+  if (!session || !session->applied_count) {
+    return false_v;
+  }
+  *out = session->applied[session->applied_head];
+  session->applied_head = (session->applied_head + 1u) % SESSION_APPLIED_MAX;
+  session->applied_count -= 1u;
+  return true_v;
+}
+
+bool8_t vkr_editor_session_forwards(const VkrEditorSession *session) {
+  return session && session->mode == VKR_EDITOR_SESSION_PARTICIPANT &&
+         session->welcomed && !session->leave_pending;
+}
+
+bool8_t vkr_editor_session_hosting(const VkrEditorSession *session) {
+  return session && session->mode == VKR_EDITOR_SESSION_HOST;
+}
+
+uint64_t vkr_editor_session_ask(VkrEditorSession *session,
+                                const VkrEditorSessionAsk *ask) {
+  if (!vkr_editor_session_forwards(session)) {
+    return 0u;
+  }
+  VkrEditorSessionAsk sent = *ask;
+  sent.token = session_forward_token(session);
+  const uint32_t size = session_build(session, session_put_ask, &sent);
+  return size && session_send(session, session->connection,
+                              SESSION_EDIT_CHANNEL, session->message.data, size)
+             ? sent.token
+             : 0u;
+}
+
+bool8_t vkr_editor_session_take_answer(VkrEditorSession *session,
+                                       uint64_t token,
+                                       VkrEditorSessionAnswer *out) {
+  for (uint32_t i = 0u; session && i < SESSION_ANSWER_MAX; ++i) {
+    SessionAnswerSlot *slot = &session->answers[i];
+    if (slot->used && slot->answer.token == token) {
+      *out = slot->answer;
+      slot->used = false_v;
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_editor_session_take_ask(VkrEditorSession *session,
+                                    VkrEditorSessionAsk *out) {
+  if (!vkr_editor_session_hosting(session) || !session->ask_count) {
+    return false_v;
+  }
+  *out = session->asks[session->ask_head];
+  session->ask_head = (session->ask_head + 1u) % SESSION_ASK_MAX;
+  session->ask_count -= 1u;
+  return true_v;
+}
+
+void vkr_editor_session_reply(VkrEditorSession *session,
+                              const VkrEditorSessionAsk *ask,
+                              const VkrEditorSessionAnswer *answer) {
+  SessionLink *link = vkr_editor_session_hosting(session)
+                          ? session_link_by_id(session, ask->peer)
+                          : NULL;
+  if (!link) {
+    return;
+  }
+  VkrEditorSessionAnswer sent = *answer;
+  sent.token = ask->token;
+  const uint32_t size = session_build(session, session_put_answer, &sent);
+  if (size) {
+    (void)session_send(session, link->connection, SESSION_EDIT_CHANNEL,
+                       session->message.data, size);
+  }
+}
+
+void vkr_editor_session_publish(VkrEditorSession *session,
+                                const VkrEditorClaim *claims,
+                                uint32_t claim_count,
+                                const VkrEditorTask *tasks,
+                                uint32_t task_count) {
+  if (!vkr_editor_session_hosting(session)) {
+    return;
+  }
+  const SessionShared shared = {.claims = claims,
+                                .claim_count = claim_count,
+                                .tasks = tasks,
+                                .task_count = task_count};
+  const uint32_t size = session_build(session, session_put_shared, &shared);
+  uint8_t *bytes = size ? realloc(session->shared_bytes, size) : NULL;
+  if (!bytes) {
+    log_warn("The session could not send its claims and tasks");
+    return;
+  }
+  MemCopy(bytes, session->message.data, size);
+  session->shared_bytes = bytes;
+  session->shared_size = size;
+  for (uint32_t i = 0u; i < VKR_EDITOR_SESSION_PEERS_MAX; ++i) {
+    const SessionLink *link = &session->links[i];
+    if (link->live && link->welcomed) {
+      (void)session_send(session, link->connection, SESSION_EDIT_CHANNEL, bytes,
+                         size);
+    }
+  }
+}
+
+uint64_t vkr_editor_session_epoch(const VkrEditorSession *session) {
+  return session ? session->epoch : 0u;
+}
+
+uint64_t vkr_editor_session_shared(const VkrEditorSession *session,
+                                   const VkrEditorClaim **out_claims,
+                                   uint32_t *out_claim_count,
+                                   const VkrEditorTask **out_tasks,
+                                   uint32_t *out_task_count) {
+  if (!vkr_editor_session_forwards(session)) {
+    *out_claims = NULL;
+    *out_claim_count = 0u;
+    *out_tasks = NULL;
+    *out_task_count = 0u;
+    return 0u;
+  }
+  *out_claims = session->shared_claims;
+  *out_claim_count = session->shared_claim_count;
+  *out_tasks = session->shared_tasks;
+  *out_task_count = session->shared_task_count;
+  return session->shared_revision;
 }

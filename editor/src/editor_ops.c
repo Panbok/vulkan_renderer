@@ -145,6 +145,20 @@ struct VkrEditorOps {
   uint32_t claim_count;
   uint32_t next_claim_id;
   uint64_t claims_generation;
+  /* The task board (task.*). */
+  VkrEditorTask tasks[VKR_EDITOR_TASK_MAX];
+  uint32_t task_count;
+  uint32_t next_task_id;
+  /* Grows with every change of claims or tasks. A session host sends them
+     when it differs from what it sent in this session (`published_*`); a
+     participant shows the host's copy `mirror_revision` instead of its own
+     (ADR-106). */
+  uint64_t shared_revision;
+  uint64_t published_epoch;
+  uint64_t published_revision;
+  bool8_t mirroring;
+  uint64_t mirror_epoch;
+  uint64_t mirror_revision;
   /* A ring of the newest feed events, each in slot `sequence %
      OPS_FEED_MAX`; `feed_last` is the newest sequence, zero for none. */
   OpsFeedEvent feed[OPS_FEED_MAX];
@@ -756,7 +770,9 @@ static bool8_t ops_claims_path(const VkrSampleUiFrame *frame, char *out,
 static void ops_claims_save(const VkrEditorOps *ops,
                             const VkrSampleUiFrame *frame) {
   char path[512];
-  if (!ops_claims_path(frame, path, sizeof(path))) {
+  /* A participant shows the session host's claims, which are not its own
+     to keep. */
+  if (ops->mirroring || !ops_claims_path(frame, path, sizeof(path))) {
     return;
   }
   const FilePath target = {
@@ -5228,6 +5244,14 @@ static VkrEditorOpStatus ops_submit(OpsContext *ctx, OpsBatch *batch,
   pending->batch = *batch;
   pending->token = ++ctx->ops->next_token;
   pending->settle = ops_arg_bool(call->args, "settle", false_v);
+  {
+    char label[96];
+    snprintf(label, sizeof(label), "%.*s",
+             (int)Min(batch->label.length, (uint64_t)95u),
+             batch->label.length ? (const char *)batch->label.str : "");
+    vkr_editor_session_note_batch(ctx->editor->session, pending->token,
+                                  call->author, label);
+  }
   *ctx->frame->edit_batch = (VkrSampleEditBatchRequest){
       .token = pending->token,
       .items = ctx->ops->items,
@@ -9814,24 +9838,144 @@ static VkrBakeryJson *ops_claim_json(OpsContext *ctx,
 }
 
 /* claims.set: the caller claims a box, or moves one of its claims. */
+/* The static error code the agent channel names `code`; an answer from a
+   session host carries it as text. */
+static const char *ops_code_named(const char *code) {
+  static const char *const codes[] = {
+      OPS_MALFORMED, OPS_UNKNOWN, OPS_INVALID, OPS_NOT_FOUND, OPS_REJECTED,
+      OPS_BUSY,      OPS_CAPTURE, OPS_LIMIT,   OPS_NOT_OWNER, OPS_CLAIMED};
+  for (uint32_t i = 0; i < ArrayCount(codes); ++i) {
+    if (strcmp(code, codes[i]) == 0) {
+      return codes[i];
+    }
+  }
+  return OPS_REJECTED;
+}
+
+/* Sends `ask` to the session host and waits in later builds; see
+   ops_host_answer. */
+static VkrEditorOpStatus ops_ask_host(OpsContext *ctx,
+                                      VkrEditorSessionAsk *ask) {
+  snprintf(ask->author, sizeof(ask->author), "%s", ctx->call->author);
+  const uint64_t token = vkr_editor_session_ask(ctx->editor->session, ask);
+  if (!token) {
+    ops_fail(ctx, OPS_BUSY, "The request could not reach the session host");
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->token = token;
+  ctx->call->stage = 1u;
+  ctx->call->frames = 0u;
+  return VKR_EDITOR_OP_WAIT;
+}
+
+/* Builds the host may take to answer before the request fails. */
+#define OPS_HOST_ANSWER_FRAMES 1800u
+
+/* The host's answer to the request ops_ask_host sent: DONE with `out` set,
+   DONE with the host's error, or WAIT. */
+static VkrEditorOpStatus ops_host_answer(OpsContext *ctx,
+                                         VkrEditorSessionAnswer *out) {
+  if (vkr_editor_session_take_answer(ctx->editor->session, ctx->call->token,
+                                     out)) {
+    if (!out->ok) {
+      ops_fail(ctx, ops_code_named(out->code), "%s", out->error);
+    }
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_session_forwards(ctx->editor->session) ||
+      ++ctx->call->frames > OPS_HOST_ANSWER_FRAMES) {
+    ops_fail(ctx, OPS_BUSY, "The session host did not answer");
+  }
+  return ctx->call->error_code ? VKR_EDITOR_OP_DONE : VKR_EDITOR_OP_WAIT;
+}
+
+/* Sets `author`'s claim from `want`: a new one when `want->id` is zero,
+   else that claim, which must be the author's. Fails with `code` and a
+   message in `error`. */
+static bool8_t ops_claim_put(VkrEditorOps *ops, const char *author,
+                             const VkrEditorClaim *want, VkrEditorClaim *out,
+                             const char **code, char *error,
+                             uint32_t capacity) {
+  const VkrEditorClaim *other =
+      ops_claim_hit(ops, author, want->container, want->min, want->max);
+  if (other) {
+    *code = OPS_CLAIMED;
+    snprintf(error, capacity,
+             "The box overlaps %s's claim '%s' (claim %u); claim beside it",
+             other->author, other->name[0] ? other->name : "unnamed",
+             other->id);
+    return false_v;
+  }
+  VkrEditorClaim *claim = NULL;
+  for (uint32_t i = 0; want->id && i < ops->claim_count; ++i) {
+    if (ops->claims[i].id == want->id) {
+      claim = &ops->claims[i];
+    }
+  }
+  if (want->id && (!claim || strcmp(claim->author, author))) {
+    *code = claim ? OPS_NOT_OWNER : OPS_NOT_FOUND;
+    if (claim) {
+      snprintf(error, capacity, "Claim %u belongs to %s", want->id,
+               claim->author);
+    } else {
+      snprintf(error, capacity, "No claim %u", want->id);
+    }
+    return false_v;
+  }
+  if (!claim) {
+    if (ops->claim_count == VKR_EDITOR_CLAIM_MAX) {
+      *code = OPS_LIMIT;
+      snprintf(error, capacity, "The editor holds at most %u claims",
+               VKR_EDITOR_CLAIM_MAX);
+      return false_v;
+    }
+    claim = &ops->claims[ops->claim_count++];
+    *claim = (VkrEditorClaim){.id = ++ops->next_claim_id};
+    snprintf(claim->author, sizeof(claim->author), "%s", author);
+  }
+  claim->container = want->container;
+  claim->min = want->min;
+  claim->max = want->max;
+  if (want->name[0]) {
+    snprintf(claim->name, sizeof(claim->name), "%s", want->name);
+  }
+  OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_CLAIMED, claim->container,
+                                     claim->author, claim->name);
+  event->claim = claim->id;
+  event->min = claim->min;
+  event->max = claim->max;
+  event->bounded = true_v;
+  ops->shared_revision++;
+  *out = *claim;
+  return true_v;
+}
+
 static VkrEditorOpStatus ops_run_claims_set(OpsContext *ctx) {
   VkrEditorOps *ops = ctx->ops;
   const VkrBakeryJson *args = ctx->call->args;
+  if (ctx->call->stage) {
+    VkrEditorSessionAnswer answer;
+    const VkrEditorOpStatus status = ops_host_answer(ctx, &answer);
+    if (status == VKR_EDITOR_OP_DONE && !ctx->call->error_code) {
+      ctx->call->result = ops_claim_json(ctx, &answer.claim);
+    }
+    return status;
+  }
   if (!ctx->call->author[0]) {
     ops_fail(ctx, OPS_INVALID,
              "Only an agent claims a region; the designer edits anywhere");
     return VKR_EDITOR_OP_DONE;
   }
   const VkrBakeryJson *region = vkr_bakery_json_get(args, "region");
-  Vec3 lo = {0};
-  Vec3 hi = {0};
+  VkrEditorClaim want = {0};
   bool8_t has_lo = false_v;
   bool8_t has_hi = false_v;
-  uint16_t container = 0u;
   if (!region || region->type != VKR_BAKERY_JSON_OBJECT ||
-      !ops_arg_vec3(ctx, region, "min", &lo, &has_lo) ||
-      !ops_arg_vec3(ctx, region, "max", &hi, &has_hi) || !has_lo || !has_hi ||
-      !(hi.x > lo.x && hi.y > lo.y && hi.z > lo.z)) {
+      !ops_arg_vec3(ctx, region, "min", &want.min, &has_lo) ||
+      !ops_arg_vec3(ctx, region, "max", &want.max, &has_hi) || !has_lo ||
+      !has_hi ||
+      !(want.max.x > want.min.x && want.max.y > want.min.y &&
+        want.max.z > want.min.z)) {
     if (!ctx->call->error_code) {
       ops_fail(ctx, OPS_INVALID,
                "'region' is {\"min\": [..], \"max\": [..]}, a box with "
@@ -9839,59 +9983,32 @@ static VkrEditorOpStatus ops_run_claims_set(OpsContext *ctx) {
     }
     return VKR_EDITOR_OP_DONE;
   }
-  if (!ops_arg_container(ctx, args, &container)) {
+  if (!ops_arg_container(ctx, args, &want.container)) {
     return VKR_EDITOR_OP_DONE;
   }
   float64_t id_value = 0.0;
-  const uint32_t id = ops_arg_number(args, "claim", &id_value)
-                          ? (uint32_t)Max(id_value, 0.0)
-                          : 0u;
-  const VkrEditorClaim *other =
-      ops_claim_hit(ops, ctx->call->author, container, lo, hi);
-  if (other) {
-    ops_fail(ctx, OPS_CLAIMED,
-             "The box overlaps %s's claim '%s' (claim %u); claim beside it",
-             other->author, other->name[0] ? other->name : "unnamed",
-             other->id);
-    return VKR_EDITOR_OP_DONE;
-  }
-  VkrEditorClaim *claim = NULL;
-  for (uint32_t i = 0; id && i < ops->claim_count; ++i) {
-    if (ops->claims[i].id == id) {
-      claim = &ops->claims[i];
-    }
-  }
-  if (id && (!claim || strcmp(claim->author, ctx->call->author))) {
-    ops_fail(ctx, claim ? OPS_NOT_OWNER : OPS_NOT_FOUND,
-             claim ? "Claim %u belongs to %s" : "No claim %u", id,
-             claim ? claim->author : "");
-    return VKR_EDITOR_OP_DONE;
-  }
-  if (!claim) {
-    if (ops->claim_count == VKR_EDITOR_CLAIM_MAX) {
-      ops_fail(ctx, OPS_LIMIT, "The editor holds at most %u claims",
-               VKR_EDITOR_CLAIM_MAX);
-      return VKR_EDITOR_OP_DONE;
-    }
-    claim = &ops->claims[ops->claim_count++];
-    *claim = (VkrEditorClaim){.id = ++ops->next_claim_id};
-    snprintf(claim->author, sizeof(claim->author), "%s", ctx->call->author);
-  }
-  claim->container = container;
-  claim->min = lo;
-  claim->max = hi;
+  want.id = ops_arg_number(args, "claim", &id_value)
+                ? (uint32_t)Max(id_value, 0.0)
+                : 0u;
   String8 name = {0};
   if (vkr_bakery_json_get_string(args, "name", &name)) {
-    snprintf(claim->name, sizeof(claim->name), "%.*s",
+    snprintf(want.name, sizeof(want.name), "%.*s",
              (int)Min(name.length, (uint64_t)47u), (const char *)name.str);
   }
-  OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_CLAIMED, container,
-                                     claim->author, claim->name);
-  event->claim = claim->id;
-  event->min = lo;
-  event->max = hi;
-  event->bounded = true_v;
-  ctx->call->result = ops_claim_json(ctx, claim);
+  /* In a session the host keeps every editor's claims. */
+  if (vkr_editor_session_forwards(ctx->editor->session)) {
+    VkrEditorSessionAsk ask = {.kind = VKR_EDITOR_ASK_CLAIM_SET, .claim = want};
+    return ops_ask_host(ctx, &ask);
+  }
+  VkrEditorClaim claim;
+  const char *code = NULL;
+  char error[256];
+  if (!ops_claim_put(ops, ctx->call->author, &want, &claim, &code, error,
+                     sizeof(error))) {
+    ops_fail(ctx, code, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = ops_claim_json(ctx, &claim);
   ops_claims_save(ops, ctx->frame);
   return VKR_EDITOR_OP_DONE;
 }
@@ -9906,25 +10023,24 @@ static void ops_claim_release_at(VkrEditorOps *ops, uint32_t index) {
   event->max = claim->max;
   event->bounded = true_v;
   ops->claims[index] = ops->claims[--ops->claim_count];
+  ops->shared_revision++;
 }
 
-/* claims.release: one claim by id, or every claim of the caller; the
-   editor's own requests may release any claim, and all with 'all'. */
-static VkrEditorOpStatus ops_run_claims_release(OpsContext *ctx) {
-  VkrEditorOps *ops = ctx->ops;
-  const char *author = ctx->call->author;
-  float64_t id_value = 0.0;
-  const uint32_t id = ops_arg_number(ctx->call->args, "claim", &id_value)
-                          ? (uint32_t)Max(id_value, 0.0)
-                          : 0u;
-  const bool8_t all = ops_arg_bool(ctx->call->args, "all", false_v);
+/* Releases claim `id`, or every claim of `author` (any author's with `all`
+   from the editor's own requests). The editor's own requests, with an empty
+   author, may release any claim. */
+static bool8_t ops_claim_drop(VkrEditorOps *ops, const char *author,
+                              uint32_t id, bool8_t all, uint32_t *released,
+                              uint32_t *released_count, const char **code,
+                              char *error, uint32_t capacity) {
+  *released_count = 0u;
   if (!id && !author[0] && !all) {
-    ops_fail(ctx, OPS_INVALID, "Name a 'claim', or release 'all'");
-    return VKR_EDITOR_OP_DONE;
+    *code = OPS_INVALID;
+    snprintf(error, capacity, "Name a 'claim', or release 'all'");
+    return false_v;
   }
-  VkrBakeryJson *released = vkr_bakery_json_array(ops_arena(ctx));
   for (uint32_t i = 0; i < ops->claim_count;) {
-    VkrEditorClaim *claim = &ops->claims[i];
+    const VkrEditorClaim *claim = &ops->claims[i];
     const bool8_t mine = !author[0] || strcmp(claim->author, author) == 0;
     const bool8_t named = id ? claim->id == id : (all || author[0]);
     if (!named) {
@@ -9933,24 +10049,70 @@ static VkrEditorOpStatus ops_run_claims_release(OpsContext *ctx) {
     }
     if (!mine) {
       if (id) {
-        ops_fail(ctx, OPS_NOT_OWNER, "Claim %u belongs to %s", id,
-                 claim->author);
-        return VKR_EDITOR_OP_DONE;
+        *code = OPS_NOT_OWNER;
+        snprintf(error, capacity, "Claim %u belongs to %s", id, claim->author);
+        return false_v;
       }
       ++i;
       continue;
     }
-    vkr_bakery_json_append(released,
-                           vkr_bakery_json_int(ops_arena(ctx), claim->id));
+    released[(*released_count)++] = claim->id;
     ops_claim_release_at(ops, i);
   }
-  if (id && !released->count) {
-    ops_fail(ctx, OPS_NOT_FOUND, "No claim %u", id);
+  if (id && !*released_count) {
+    *code = OPS_NOT_FOUND;
+    snprintf(error, capacity, "No claim %u", id);
+    return false_v;
+  }
+  return true_v;
+}
+
+static VkrBakeryJson *
+ops_released_json(OpsContext *ctx, const uint32_t *released, uint32_t count) {
+  VkrBakeryJson *ids = vkr_bakery_json_array(ops_arena(ctx));
+  for (uint32_t i = 0; i < count; ++i) {
+    vkr_bakery_json_append(ids,
+                           vkr_bakery_json_int(ops_arena(ctx), released[i]));
+  }
+  VkrBakeryJson *result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, result, "released", ids);
+  return result;
+}
+
+/* claims.release: one claim by id, or every claim of the caller; the
+   editor's own requests may release any claim, and all with 'all'. */
+static VkrEditorOpStatus ops_run_claims_release(OpsContext *ctx) {
+  VkrEditorOps *ops = ctx->ops;
+  if (ctx->call->stage) {
+    VkrEditorSessionAnswer answer;
+    const VkrEditorOpStatus status = ops_host_answer(ctx, &answer);
+    if (status == VKR_EDITOR_OP_DONE && !ctx->call->error_code) {
+      ctx->call->result =
+          ops_released_json(ctx, answer.released, answer.released_count);
+    }
+    return status;
+  }
+  float64_t id_value = 0.0;
+  const uint32_t id = ops_arg_number(ctx->call->args, "claim", &id_value)
+                          ? (uint32_t)Max(id_value, 0.0)
+                          : 0u;
+  const bool8_t all = ops_arg_bool(ctx->call->args, "all", false_v);
+  if (vkr_editor_session_forwards(ctx->editor->session)) {
+    VkrEditorSessionAsk ask = {
+        .kind = VKR_EDITOR_ASK_CLAIM_RELEASE, .claim = {.id = id}, .all = all};
+    return ops_ask_host(ctx, &ask);
+  }
+  uint32_t released[VKR_EDITOR_CLAIM_MAX];
+  uint32_t count = 0u;
+  const char *code = NULL;
+  char error[256];
+  if (!ops_claim_drop(ops, ctx->call->author, id, all, released, &count, &code,
+                      error, sizeof(error))) {
+    ops_fail(ctx, code, "%s", error);
     return VKR_EDITOR_OP_DONE;
   }
   ops_claims_save(ops, ctx->frame);
-  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
-  ops_set(ctx, ctx->call->result, "released", released);
+  ctx->call->result = ops_released_json(ctx, released, count);
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -9961,6 +10123,325 @@ static VkrEditorOpStatus ops_run_claims_list(OpsContext *ctx) {
   }
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "claims", claims);
+  return VKR_EDITOR_OP_DONE;
+}
+
+// -----------------------------------------------------------------------------
+// Task board (ADR-106)
+// -----------------------------------------------------------------------------
+
+static const char *const s_task_states[] = {"open", "assigned", "done",
+                                            "failed"};
+
+static VkrEditorTask *ops_task_find(VkrEditorOps *ops, uint32_t id) {
+  for (uint32_t i = 0; id && i < ops->task_count; ++i) {
+    if (ops->tasks[i].id == id) {
+      return &ops->tasks[i];
+    }
+  }
+  return NULL;
+}
+
+/* Adds an open task of `want`'s kind, title and region. A full board drops
+   its oldest finished task. */
+static bool8_t ops_task_add(VkrEditorOps *ops, const VkrEditorTask *want,
+                            VkrEditorTask *out, const char **code, char *error,
+                            uint32_t capacity) {
+  if (!want->kind[0]) {
+    *code = OPS_INVALID;
+    snprintf(error, capacity, "A task needs a 'kind'");
+    return false_v;
+  }
+  if (ops->task_count == VKR_EDITOR_TASK_MAX) {
+    uint32_t oldest = UINT32_MAX;
+    for (uint32_t i = 0; i < ops->task_count; ++i) {
+      if (ops->tasks[i].state >= VKR_EDITOR_TASK_DONE &&
+          (oldest == UINT32_MAX || ops->tasks[i].id < ops->tasks[oldest].id)) {
+        oldest = i;
+      }
+    }
+    if (oldest == UINT32_MAX) {
+      *code = OPS_LIMIT;
+      snprintf(error, capacity, "The board holds %u unfinished tasks",
+               VKR_EDITOR_TASK_MAX);
+      return false_v;
+    }
+    ops->tasks[oldest] = ops->tasks[--ops->task_count];
+  }
+  VkrEditorTask *task = &ops->tasks[ops->task_count++];
+  *task = *want;
+  task->id = ++ops->next_task_id;
+  task->state = VKR_EDITOR_TASK_OPEN;
+  task->assignee[0] = '\0';
+  task->note[0] = '\0';
+  ops->shared_revision++;
+  *out = *task;
+  return true_v;
+}
+
+/* Whether `kind` is one of the comma-separated `kinds`; empty takes any. */
+static bool8_t ops_task_kind_in(const char *kind, const char *kinds) {
+  if (!kinds[0]) {
+    return true_v;
+  }
+  const uint64_t length = strlen(kind);
+  for (const char *at = kinds; *at;) {
+    while (*at == ' ' || *at == ',') {
+      ++at;
+    }
+    const char *end = at;
+    while (*end && *end != ',') {
+      ++end;
+    }
+    const char *last = end;
+    while (last > at && last[-1] == ' ') {
+      --last;
+    }
+    if ((uint64_t)(last - at) == length && length &&
+        strncmp(at, kind, length) == 0) {
+      return true_v;
+    }
+    at = end;
+  }
+  return false_v;
+}
+
+/* Gives `author` its assigned task, else assigns it the oldest open task of
+   one of `kinds`. `*out_has` is false when none is open. */
+static bool8_t ops_task_take(VkrEditorOps *ops, const char *author,
+                             const char *kinds, VkrEditorTask *out,
+                             bool8_t *out_has, const char **code, char *error,
+                             uint32_t capacity) {
+  *out_has = false_v;
+  if (!author[0]) {
+    *code = OPS_INVALID;
+    snprintf(error, capacity, "Only an agent takes a task");
+    return false_v;
+  }
+  VkrEditorTask *pick = NULL;
+  for (uint32_t i = 0; i < ops->task_count; ++i) {
+    VkrEditorTask *task = &ops->tasks[i];
+    if (task->state == VKR_EDITOR_TASK_ASSIGNED &&
+        strcmp(task->assignee, author) == 0) {
+      *out = *task;
+      *out_has = true_v;
+      return true_v;
+    }
+    if (task->state == VKR_EDITOR_TASK_OPEN &&
+        ops_task_kind_in(task->kind, kinds) && (!pick || task->id < pick->id)) {
+      pick = task;
+    }
+  }
+  if (pick) {
+    pick->state = VKR_EDITOR_TASK_ASSIGNED;
+    snprintf(pick->assignee, sizeof(pick->assignee), "%s", author);
+    ops->shared_revision++;
+    *out = *pick;
+    *out_has = true_v;
+  }
+  return true_v;
+}
+
+/* Finishes task `want->id` as `want->state` (done or failed) with its note;
+   an agent finishes only its own task, the designer any unfinished one. */
+static bool8_t ops_task_finish(VkrEditorOps *ops, const char *author,
+                               const VkrEditorTask *want, VkrEditorTask *out,
+                               const char **code, char *error,
+                               uint32_t capacity) {
+  VkrEditorTask *task = ops_task_find(ops, want->id);
+  if (!task) {
+    *code = OPS_NOT_FOUND;
+    snprintf(error, capacity, "No task %u", want->id);
+    return false_v;
+  }
+  if (task->state >= VKR_EDITOR_TASK_DONE ||
+      (author[0] && (task->state != VKR_EDITOR_TASK_ASSIGNED ||
+                     strcmp(task->assignee, author)))) {
+    *code = OPS_NOT_OWNER;
+    snprintf(error, capacity, "Task %u is %s%s%s", task->id,
+             s_task_states[task->state], task->assignee[0] ? " by " : "",
+             task->assignee);
+    return false_v;
+  }
+  task->state = want->state == VKR_EDITOR_TASK_FAILED ? VKR_EDITOR_TASK_FAILED
+                                                      : VKR_EDITOR_TASK_DONE;
+  snprintf(task->note, sizeof(task->note), "%s", want->note);
+  ops->shared_revision++;
+  *out = *task;
+  return true_v;
+}
+
+static VkrBakeryJson *ops_task_json(OpsContext *ctx,
+                                    const VkrEditorTask *task) {
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *object = vkr_bakery_json_object(arena);
+  ops_set(ctx, object, "task", vkr_bakery_json_int(arena, task->id));
+  ops_set(ctx, object, "kind", vkr_bakery_json_cstr(arena, task->kind));
+  ops_set(ctx, object, "title", vkr_bakery_json_cstr(arena, task->title));
+  ops_set(ctx, object, "state",
+          vkr_bakery_json_cstr(arena, s_task_states[task->state & 3u]));
+  if (task->assignee[0]) {
+    ops_set(ctx, object, "assignee",
+            vkr_bakery_json_cstr(arena, task->assignee));
+  }
+  if (task->note[0]) {
+    ops_set(ctx, object, "note", vkr_bakery_json_cstr(arena, task->note));
+  }
+  if (task->has_region) {
+    char slot[16];
+    ops_set(
+        ctx, object, "container",
+        vkr_bakery_json_cstr(
+            arena, ops_container_name(task->container, slot, sizeof(slot))));
+    ops_set(ctx, object, "region", ops_box(ctx, task->min, task->max));
+  }
+  return object;
+}
+
+/* Answers a task operation from the host's answer, after a forward. */
+static VkrEditorOpStatus ops_task_answered(OpsContext *ctx) {
+  VkrEditorSessionAnswer answer;
+  const VkrEditorOpStatus status = ops_host_answer(ctx, &answer);
+  if (status == VKR_EDITOR_OP_DONE && !ctx->call->error_code) {
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+    ops_set(ctx, ctx->call->result, "task",
+            answer.has_task ? ops_task_json(ctx, &answer.task)
+                            : vkr_bakery_json_null(ops_arena(ctx)));
+  }
+  return status;
+}
+
+static VkrEditorOpStatus ops_task_done_with(OpsContext *ctx, bool8_t ok,
+                                            bool8_t has,
+                                            const VkrEditorTask *task,
+                                            const char *code,
+                                            const char *error) {
+  if (!ok) {
+    ops_fail(ctx, code, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "task",
+          has ? ops_task_json(ctx, task)
+              : vkr_bakery_json_null(ops_arena(ctx)));
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_task_add(OpsContext *ctx) {
+  if (ctx->call->stage) {
+    return ops_task_answered(ctx);
+  }
+  const VkrBakeryJson *args = ctx->call->args;
+  VkrEditorTask want = {0};
+  if (!ops_arg_string(ctx, args, "kind", want.kind, sizeof(want.kind)) ||
+      !ops_arg_string(ctx, args, "title", want.title, sizeof(want.title))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrBakeryJson *region = vkr_bakery_json_get(args, "region");
+  if (region) {
+    bool8_t has_lo = false_v;
+    bool8_t has_hi = false_v;
+    if (region->type != VKR_BAKERY_JSON_OBJECT ||
+        !ops_arg_vec3(ctx, region, "min", &want.min, &has_lo) ||
+        !ops_arg_vec3(ctx, region, "max", &want.max, &has_hi) || !has_lo ||
+        !has_hi) {
+      if (!ctx->call->error_code) {
+        ops_fail(ctx, OPS_INVALID,
+                 "'region' is {\"min\": [..], \"max\": [..]}");
+      }
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!ops_arg_container(ctx, args, &want.container)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    want.has_region = true_v;
+  }
+  if (vkr_editor_session_forwards(ctx->editor->session)) {
+    VkrEditorSessionAsk ask = {.kind = VKR_EDITOR_ASK_TASK_ADD, .task = want};
+    return ops_ask_host(ctx, &ask);
+  }
+  VkrEditorTask task;
+  const char *code = NULL;
+  char error[256] = {0};
+  const bool8_t ok =
+      ops_task_add(ctx->ops, &want, &task, &code, error, sizeof(error));
+  return ops_task_done_with(ctx, ok, true_v, &task, code, error);
+}
+
+static VkrEditorOpStatus ops_run_task_next(OpsContext *ctx) {
+  if (ctx->call->stage) {
+    return ops_task_answered(ctx);
+  }
+  char kinds[128] = {0};
+  const VkrBakeryJson *value = vkr_bakery_json_get(ctx->call->args, "kinds");
+  for (const VkrBakeryJson *entry =
+           value && value->type == VKR_BAKERY_JSON_ARRAY ? value->first : NULL;
+       entry; entry = entry->next) {
+    const uint64_t used = strlen(kinds);
+    if (entry->type != VKR_BAKERY_JSON_STRING ||
+        used + entry->string.length + 2u > sizeof(kinds)) {
+      ops_fail(ctx, OPS_INVALID, "'kinds' is a short array of task kinds");
+      return VKR_EDITOR_OP_DONE;
+    }
+    snprintf(kinds + used, sizeof(kinds) - used, "%s%.*s", used ? "," : "",
+             (int)entry->string.length, (const char *)entry->string.str);
+  }
+  if (vkr_editor_session_forwards(ctx->editor->session)) {
+    VkrEditorSessionAsk ask = {.kind = VKR_EDITOR_ASK_TASK_NEXT};
+    snprintf(ask.kinds, sizeof(ask.kinds), "%s", kinds);
+    return ops_ask_host(ctx, &ask);
+  }
+  VkrEditorTask task;
+  bool8_t has = false_v;
+  const char *code = NULL;
+  char error[256] = {0};
+  const bool8_t ok = ops_task_take(ctx->ops, ctx->call->author, kinds, &task,
+                                   &has, &code, error, sizeof(error));
+  return ops_task_done_with(ctx, ok, has, &task, code, error);
+}
+
+static VkrEditorOpStatus ops_run_task_done(OpsContext *ctx) {
+  if (ctx->call->stage) {
+    return ops_task_answered(ctx);
+  }
+  const VkrBakeryJson *args = ctx->call->args;
+  float64_t id_value = 0.0;
+  VkrEditorTask want = {0};
+  if (!ops_arg_number(args, "task", &id_value) || id_value < 1.0) {
+    ops_fail(ctx, OPS_INVALID, "'task' names a task by id");
+    return VKR_EDITOR_OP_DONE;
+  }
+  want.id = (uint32_t)id_value;
+  want.state = ops_arg_bool(args, "ok", true_v) ? VKR_EDITOR_TASK_DONE
+                                                : VKR_EDITOR_TASK_FAILED;
+  if (!ops_arg_string(ctx, args, "note", want.note, sizeof(want.note))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (vkr_editor_session_forwards(ctx->editor->session)) {
+    VkrEditorSessionAsk ask = {.kind = VKR_EDITOR_ASK_TASK_DONE, .task = want};
+    return ops_ask_host(ctx, &ask);
+  }
+  VkrEditorTask task;
+  const char *code = NULL;
+  char error[256] = {0};
+  const bool8_t ok = ops_task_finish(ctx->ops, ctx->call->author, &want, &task,
+                                     &code, error, sizeof(error));
+  return ops_task_done_with(ctx, ok, true_v, &task, code, error);
+}
+
+static VkrEditorOpStatus ops_run_task_list(OpsContext *ctx) {
+  const VkrEditorOps *ops = ctx->ops;
+  String8 state = {0};
+  (void)vkr_bakery_json_get_string(ctx->call->args, "state", &state);
+  VkrBakeryJson *tasks = vkr_bakery_json_array(ops_arena(ctx));
+  for (uint32_t i = 0; i < ops->task_count; ++i) {
+    const VkrEditorTask *task = &ops->tasks[i];
+    if (!state.length || ops_equals(state, s_task_states[task->state & 3u])) {
+      vkr_bakery_json_append(tasks, ops_task_json(ctx, task));
+    }
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "tasks", tasks);
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -13741,6 +14222,35 @@ static const OpsDef s_ops[] = {
      ops_run_session_join, NULL},
     {"session.leave", "Leave or stop the collaborative session.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_session_leave, NULL},
+    {"task.add",
+     "Add an open task of a 'kind' (layout, material, lighting and so on) "
+     "with a 'title' and optionally a 'region' box of a 'container'. In a "
+     "collaborative session the host keeps the board for every editor.",
+     "{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":"
+     "\"string\"},\"title\":{\"type\":\"string\"},\"region\":"
+     "{\"type\":\"object\"},\"container\":" OPS_CONTAINER_SCHEMA
+     "},\"required\":[\"kind\"]}",
+     ops_run_task_add, NULL},
+    {"task.next",
+     "Take your next task: the one assigned to you, else the oldest open "
+     "task of one of 'kinds' (any kind when absent); null when none is "
+     "open.",
+     "{\"type\":\"object\",\"properties\":{\"kinds\":{\"type\":"
+     "\"array\",\"items\":{\"type\":\"string\"}}}}",
+     ops_run_task_next, NULL},
+    {"task.done",
+     "Finish your task with 'ok' (default true; false marks it failed) and "
+     "a 'note'.",
+     "{\"type\":\"object\",\"properties\":{\"task\":{\"type\":"
+     "\"integer\"},\"ok\":{\"type\":\"boolean\"},\"note\":{\"type\":"
+     "\"string\"}},\"required\":[\"task\"]}",
+     ops_run_task_done, NULL},
+    {"task.list",
+     "Every task of the board with its kind, title, state, assignee, note "
+     "and region; 'state' keeps one state (open, assigned, done, failed).",
+     "{\"type\":\"object\",\"properties\":{\"state\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_task_list, NULL, OPS_QUICK},
     {"session.status",
      "The session's mode, address and key, this editor's place in the edit "
      "order, edits waiting to apply, the last error, the digest of this "
@@ -13820,6 +14330,13 @@ VkrEditorOpStatus vkr_editor_ops_run(VkrEditorOps *ops, VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrEditorOpCall *call) {
   OpsContext ctx = {.ops = ops, .editor = editor, .frame = frame, .call = call};
+  /* In a collaborative session an agent's name carries its editor's, so
+     claims, tasks and the feed tell agents of different machines apart;
+     agent names never hold `@` (editor_agent.c). */
+  if (call->author[0] && !strchr(call->author, '@')) {
+    vkr_editor_session_author(editor->session, call->author, call->author,
+                              sizeof(call->author));
+  }
   const OpsDef *def = ops_find(call->op);
   if (!def) {
     ops_fail(&ctx, OPS_UNKNOWN, "Unknown operation '%.*s'; see ops.list",
@@ -13887,8 +14404,153 @@ static bool8_t ops_input_active(InputState *input) {
   return false_v;
 }
 
+/* Answers one participant's request on the session host. */
+static void ops_serve(VkrEditorOps *ops, const VkrSampleUiFrame *frame,
+                      const VkrEditorSessionAsk *ask,
+                      VkrEditorSessionAnswer *answer) {
+  const char *code = NULL;
+  switch (ask->kind) {
+  case VKR_EDITOR_ASK_CLAIM_SET:
+    answer->ok = ask->author[0] && ops_scene(frame, ask->claim.container) &&
+                 ops_claim_put(ops, ask->author, &ask->claim, &answer->claim,
+                               &code, answer->error, sizeof(answer->error));
+    if (!ask->author[0] || !ops_scene(frame, ask->claim.container)) {
+      code = OPS_INVALID;
+      snprintf(answer->error, sizeof(answer->error),
+               "The claim needs an agent and a scene the host has loaded");
+    }
+    break;
+  case VKR_EDITOR_ASK_CLAIM_RELEASE:
+    answer->ok = ops_claim_drop(ops, ask->author, ask->claim.id, ask->all,
+                                answer->released, &answer->released_count,
+                                &code, answer->error, sizeof(answer->error));
+    break;
+  case VKR_EDITOR_ASK_TASK_ADD:
+    answer->has_task = true_v;
+    answer->ok = ops_task_add(ops, &ask->task, &answer->task, &code,
+                              answer->error, sizeof(answer->error));
+    break;
+  case VKR_EDITOR_ASK_TASK_NEXT:
+    answer->ok = ops_task_take(ops, ask->author, ask->kinds, &answer->task,
+                               &answer->has_task, &code, answer->error,
+                               sizeof(answer->error));
+    break;
+  case VKR_EDITOR_ASK_TASK_DONE:
+    answer->has_task = true_v;
+    answer->ok = ops_task_finish(ops, ask->author, &ask->task, &answer->task,
+                                 &code, answer->error, sizeof(answer->error));
+    break;
+  default:
+    code = OPS_INVALID;
+    snprintf(answer->error, sizeof(answer->error), "Unknown request");
+    break;
+  }
+  snprintf(answer->code, sizeof(answer->code), "%s",
+           !answer->ok && code ? code : "");
+}
+
+/* Shows the session host's claims and tasks in place of this editor's,
+   feeding the claims that appeared, moved or left. */
+static void ops_mirror(VkrEditorOps *ops, const VkrEditorClaim *claims,
+                       uint32_t claim_count, const VkrEditorTask *tasks,
+                       uint32_t task_count) {
+  for (uint32_t i = 0; i < ops->claim_count; ++i) {
+    const VkrEditorClaim *old = &ops->claims[i];
+    bool8_t kept = false_v;
+    for (uint32_t k = 0; !kept && k < claim_count; ++k) {
+      kept = claims[k].id == old->id;
+    }
+    if (!kept) {
+      OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_RELEASED, old->container,
+                                         old->author, old->name);
+      event->claim = old->id;
+      event->min = old->min;
+      event->max = old->max;
+      event->bounded = true_v;
+    }
+  }
+  for (uint32_t k = 0; k < claim_count; ++k) {
+    const VkrEditorClaim *claim = &claims[k];
+    bool8_t same = false_v;
+    for (uint32_t i = 0; !same && i < ops->claim_count; ++i) {
+      same = MemCompare(&ops->claims[i], claim, sizeof(*claim)) == 0;
+    }
+    if (!same) {
+      OpsFeedEvent *event = ops_feed_add(
+          ops, OPS_FEED_CLAIMED, claim->container, claim->author, claim->name);
+      event->claim = claim->id;
+      event->min = claim->min;
+      event->max = claim->max;
+      event->bounded = true_v;
+    }
+  }
+  ops->claim_count = Min(claim_count, (uint32_t)VKR_EDITOR_CLAIM_MAX);
+  MemCopy(ops->claims, claims, ops->claim_count * sizeof(*claims));
+  ops->task_count = Min(task_count, (uint32_t)VKR_EDITOR_TASK_MAX);
+  MemCopy(ops->tasks, tasks, ops->task_count * sizeof(*tasks));
+}
+
+/* The session's share of the agent channel (ADR-106): the host answers
+   participants' requests and sends its claims and tasks when they change;
+   a participant shows the host's; every editor feeds the agent batches
+   other editors applied here. */
+static void ops_session_update(VkrEditorOps *ops, VkrEditorSession *session,
+                               const VkrSampleUiFrame *frame) {
+  if (vkr_editor_session_hosting(session)) {
+    VkrEditorSessionAsk ask;
+    while (vkr_editor_session_take_ask(session, &ask)) {
+      VkrEditorSessionAnswer answer = {0};
+      ops_serve(ops, frame, &ask, &answer);
+      vkr_editor_session_reply(session, &ask, &answer);
+    }
+    const uint64_t epoch = vkr_editor_session_epoch(session);
+    if (ops->published_epoch != epoch ||
+        ops->published_revision != ops->shared_revision) {
+      ops->published_epoch = epoch;
+      ops->published_revision = ops->shared_revision;
+      vkr_editor_session_publish(session, ops->claims, ops->claim_count,
+                                 ops->tasks, ops->task_count);
+      ops_claims_save(ops, frame);
+    }
+  }
+  const VkrEditorClaim *claims = NULL;
+  const VkrEditorTask *tasks = NULL;
+  uint32_t claim_count = 0u;
+  uint32_t task_count = 0u;
+  const uint64_t revision = vkr_editor_session_shared(
+      session, &claims, &claim_count, &tasks, &task_count);
+  const uint64_t epoch = vkr_editor_session_epoch(session);
+  if (revision && (!ops->mirroring || ops->mirror_epoch != epoch ||
+                   ops->mirror_revision != revision)) {
+    ops->mirroring = true_v;
+    ops->mirror_epoch = epoch;
+    ops->mirror_revision = revision;
+    ops_mirror(ops, claims, claim_count, tasks, task_count);
+  } else if (ops->mirroring && !vkr_editor_session_forwards(session)) {
+    /* Out of the session: this editor's own claims return; the host's
+       tasks stay with the host. */
+    ops->mirroring = false_v;
+    ops->task_count = 0u;
+    ops_claims_load(ops, frame);
+  }
+  VkrEditorSessionApplied applied;
+  while (vkr_editor_session_take_applied(session, &applied)) {
+    const VkrScene *scene = ops_scene(frame, applied.container);
+    OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_APPLIED, applied.container,
+                                       applied.author, applied.label);
+    VkrBrushGeometry *scratch = malloc(sizeof(VkrBrushGeometry));
+    for (uint32_t i = 0; i < applied.entity_count; ++i) {
+      ops_feed_entity(event, scene, applied.entities[i], scratch);
+    }
+    free(scratch);
+  }
+}
+
 void vkr_editor_ops_update(VkrEditorOps *ops, const VkrEditorUi *editor,
                            const VkrSampleUiFrame *frame) {
+  if (ops && editor) {
+    ops_session_update(ops, editor->session, frame);
+  }
   if (ops && frame->input && ops_input_active(frame->input)) {
     ops->input_last = vkr_platform_get_absolute_time();
   }

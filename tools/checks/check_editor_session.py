@@ -80,12 +80,15 @@ def editor_env(work: pathlib.Path) -> dict:
     return env
 
 
-def launch(editor: str, work: pathlib.Path, script: str, log: pathlib.Path):
+def launch(editor: str, work: pathlib.Path, script: str, log: pathlib.Path,
+           socket: str = ""):
+    """Starts a headless editor on Bistro; `socket` opens its agent channel
+    there instead of none."""
     work.mkdir(parents=True, exist_ok=True)
     out = open(log, "w", encoding="utf-8", errors="replace")
+    channel = ["--agent-socket", socket] if socket else ["--no-agent-socket"]
     process = subprocess.Popen(
-        [editor, "--headless", "--no-agent-socket", "--scene", SCENE,
-         "--exec", script],
+        [editor, "--headless", *channel, "--scene", SCENE, "--exec", script],
         cwd=ROOT, env=editor_env(work), stdout=out, stderr=subprocess.STDOUT)
     return process, out
 

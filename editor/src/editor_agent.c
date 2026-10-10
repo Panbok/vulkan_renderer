@@ -363,11 +363,12 @@ static void agent_author(VkrEditorAgent *agent, const VkrBakeryJson *request,
     return;
   }
   const uint64_t length =
-      Min(name.length, (uint64_t)VKR_EDITOR_AUTHOR_CAPACITY - 1u);
+      Min(name.length, (uint64_t)VKR_EDITOR_AGENT_NAME_CAPACITY - 1u);
   for (uint64_t i = 0; i < length; ++i) {
-    /* Names show in the Changes window and in messages. */
+    /* Names show in the Changes window and in messages; `@` joins an
+       agent's name to its editor's in a collaborative session. */
     const uint8_t c = name.str[i];
-    author[i] = c >= 0x20u && c < 0x7fu ? (char)c : '?';
+    author[i] = c == '@' ? '_' : (c >= 0x20u && c < 0x7fu ? (char)c : '?');
   }
   author[length] = '\0';
 }
