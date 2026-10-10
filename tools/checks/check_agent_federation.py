@@ -6,9 +6,12 @@ them in a session over loopback, and drives one agent on each through
 `vkr_mcp`: `mason` on the host and `painter` on the guest. The check
 passes when the task board, the claims and the change feed are shared:
 
-- a task the guest's agent adds is taken by the host's agent and finished;
+- a task the guest's agent adds is taken by the host's agent and finished,
+  and of two tasks that require a pipeline class, the host's agent gets the
+  one its machine draws;
 - a claim of the guest's agent refuses the host's agent, and the reverse;
-- each editor's change feed names the other editor's agent batch;
+- each editor's change feed names the other editor's agent batch, which
+  also waits for review there until the guest accepts it;
 - both editors end with the same scene digest.
 
     python tools/checks/check_agent_federation.py \
@@ -151,6 +154,20 @@ def main() -> int:
         expect(painter, "task.next", {"kinds": ["layout"]},
                contains='"task": null')
 
+        # Capabilities: a task for the other pipeline class waits; the one
+        # for this machine's class (ADR-087) goes to the host's agent.
+        expect(painter, "task.add", {"kind": "material",
+                                     "title": "Tune the tiled path",
+                                     "requires": ["tiled"]})
+        expect(painter, "task.add", {"kind": "material",
+                                     "title": "Tune the desktop path",
+                                     "requires": ["desktop"]})
+        lookdev = Agent(mcp, host_socket, "lookdev", work / "lookdev.log")
+        agents.append(lookdev)
+        own = "tiled" if sys.platform == "darwin" else "desktop"
+        expect(lookdev, "task.next", {"kinds": ["material"]},
+               contains=f"Tune the {own} path")
+
         # Claims hold across editors, both ways.
         expect(painter, "claims.set",
                {"name": "east", "region": {"min": [-40, -5, -20],
@@ -168,8 +185,8 @@ def main() -> int:
         expect(painter, "claims.list", {}, contains="mason@alpha")
         expect(mason, "entity.create",
                {"name": "MasonBox", "position": [15, 1, -15]})
-        expect(painter, "entity.create",
-               {"name": "PainterBox", "position": [-35, 1, -15]})
+        painter_box = expect(painter, "entity.create",
+                             {"name": "PainterBox", "position": [-35, 1, -15]})
         expect(mason, "entity.create",
                {"name": "Intruder", "position": [-36, 1, -14]},
                ok=False, contains="VKR-AGENT-0010")
@@ -189,6 +206,16 @@ def main() -> int:
                        for event in feed.get("events", [])):
                 failures.append(f"{agent.name}'s feed lacks {author}'s "
                                 f"{name}")
+
+        # Reviews span the editors: the guest's batch waits for review on the
+        # host too, and accepting it on the guest clears it there.
+        expect(mason, "changes.list", {}, contains="painter@beta")
+        expect(painter, "changes.accept", {"change": painter_box.get("change")})
+        time.sleep(3.0)
+        pending = expect(mason, "changes.list", {})
+        if "painter@beta" in json.dumps(pending):
+            failures.append("the guest's accepted change still waits on the "
+                            "host")
 
         expect(mason, "task.done", {"task": task_id, "note": "plaza built"})
         time.sleep(2.0)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "editor_brush_grid.h"
 #include "editor_ops.h"
 #include "vkr_sample_runtime.h"
 
@@ -18,9 +19,9 @@
  * session base: the same scene with no unsaved edits, which a scene digest
  * checks when it joins; edits made since are replayed to it in order.
  *
- * Edits that cannot travel yet (vkr_net_scene_edit.h: duplicate, terrain,
- * physics, settings, partition, scene loads) are refused while a session
- * runs, with a Console message. */
+ * Edits that cannot travel yet (vkr_net_scene_edit.h: terrain, physics,
+ * settings, partition, scene loads) are refused while a session runs, with
+ * a Console message. */
 
 #define VKR_EDITOR_SESSION_PORT 7330u
 #define VKR_EDITOR_SESSION_PEERS_MAX 32u
@@ -104,16 +105,21 @@ void vkr_editor_session_author(const VkrEditorSession *session,
                                const char *local, char *out, uint32_t capacity);
 
 /* Names the author and label of the batch this build submits under
-   `token`; the session carries them with the batch to every editor. */
+   `token`, and whether it waits for review; the session carries them with
+   the batch to every editor. */
 void vkr_editor_session_note_batch(VkrEditorSession *session, uint64_t token,
-                                   const char *author, const char *label);
+                                   const char *author, const char *label,
+                                   bool8_t review);
 
 #define VKR_EDITOR_SESSION_APPLIED_ENTITIES 16u
 
 /* An agent batch of another editor that applied here, for the change
-   feed. */
+   feed, and for review when `review` is set: `group` is its journal group
+   here. */
 typedef struct VkrEditorSessionApplied {
   uint16_t container;
+  bool8_t review;
+  uint64_t group;
   char author[VKR_EDITOR_AUTHOR_CAPACITY];
   char label[96];
   uint32_t entity_count;
@@ -123,6 +129,17 @@ typedef struct VkrEditorSessionApplied {
 /* Takes the oldest such batch; false when none waits. */
 bool8_t vkr_editor_session_take_applied(VkrEditorSession *session,
                                         VkrEditorSessionApplied *out);
+
+/* A reviewed batch of journal group `group` of `container` was accepted
+   here; every editor of the session drops it from review. */
+void vkr_editor_session_accepted(VkrEditorSession *session, uint16_t container,
+                                 uint64_t group);
+
+/* Takes a batch another editor accepted, by its journal group here; false
+   when none waits. */
+bool8_t vkr_editor_session_take_accepted(VkrEditorSession *session,
+                                         uint16_t *out_container,
+                                         uint64_t *out_group);
 
 /* Whether claims and tasks belong to a session host elsewhere: this editor
    joined a session, so its agents ask the host. */
@@ -154,8 +171,9 @@ typedef struct VkrEditorSessionAsk {
   /* TASK_ADD: kind, title and region; TASK_DONE: id, state and note. */
   VkrEditorTask task;
   /* TASK_NEXT: the kinds the agent takes, separated by commas; empty takes
-     any. */
+     any; and the capabilities its editor and it have. */
   char kinds[128];
+  char capabilities[160];
 } VkrEditorSessionAsk;
 
 typedef struct VkrEditorSessionAnswer {
@@ -208,3 +226,28 @@ uint64_t vkr_editor_session_shared(const VkrEditorSession *session,
                                    uint32_t *out_claim_count,
                                    const VkrEditorTask **out_tasks,
                                    uint32_t *out_task_count);
+
+// =============================================================================
+// Session window and Scene overlay
+// =============================================================================
+
+/* The colour that marks peer `id` in the Scene and the Session window. */
+Vec4 vkr_editor_session_peer_color(uint8_t id);
+
+/* Lines the Scene draws for other editors at most: 21 for a camera and
+   12 for a selection box per peer. */
+#define VKR_EDITOR_SESSION_LINE_MAX (33u * VKR_EDITOR_SESSION_PEERS_MAX)
+
+/* The other editors in the Scene: each peer's camera as a small frustum and
+   its selection as a box, in its colour. Writes at most `capacity` into
+   `out` and returns the count; with a NULL `out`, the count needed. */
+uint32_t vkr_editor_session_lines(const VkrEditorSession *session,
+                                  const VkrSampleUiFrame *frame,
+                                  VkrEditorBrushGridLine *out,
+                                  uint32_t capacity);
+
+/* The Session window: host or join, the address and key to share, and each
+   peer with its colour and a button that moves the Scene camera to it. */
+void vkr_editor_session_window_build(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     VkrUiRect bounds);

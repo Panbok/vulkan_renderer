@@ -5955,8 +5955,8 @@ static bool8_t sample_structure_edit(VkrStandardSceneRuntime *application,
     break;
   case VKR_SCENE_EDIT_DUPLICATE: {
     /* The copy takes the selection, so the next drag moves it. */
-    const VkrEntityId copy =
-        vkr_scene_edit_duplicate(edits, scene, request->entity);
+    const VkrEntityId copy = vkr_scene_edit_duplicate(
+        edits, scene, request->entity, &request->values.ref);
     if (copy.u64) {
       vkr_standard_scene_runtime_cancel_gizmo_pick(application);
       vkr_standard_scene_runtime_clear_gizmo_handles(application);
@@ -6082,7 +6082,8 @@ static bool8_t sample_batch_item(VkrStandardSceneRuntime *application,
     }
     return true_v;
   case VKR_SCENE_EDIT_DUPLICATE:
-    *out_created = vkr_scene_edit_duplicate(edits, scene, request->entity);
+    *out_created = vkr_scene_edit_duplicate(edits, scene, request->entity,
+                                            &request->values.ref);
     return out_created->u64 != 0u;
   case VKR_SCENE_EDIT_REPARENT:
     return vkr_scene_edit_reparent(edits, scene, request->entity,

@@ -117,6 +117,12 @@ typedef struct VkrEditorTask {
   uint16_t container;
   char kind[32];
   char title[96];
+  /* Capabilities the assignee's editor must have, separated by commas, such
+     as `tiled` for the Metal pipeline or `desktop` for Vulkan (ADR-087);
+     empty for any editor. */
+  char
+    requires[
+        64];
   char assignee[VKR_EDITOR_AUTHOR_CAPACITY];
   char note[96];
   Vec3 min;

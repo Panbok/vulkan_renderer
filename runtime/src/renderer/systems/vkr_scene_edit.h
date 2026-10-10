@@ -82,7 +82,8 @@ typedef struct VkrSceneEditValues {
   const VkrTypeDesc *component_type;
   _Alignas(16) uint8_t component[VKR_TYPE_VALUE_MAX];
   /* Creation only: the new entity's document-stable id, chosen ahead so a
-     batch can reference it; zero makes a fresh one. Reads leave it zero. */
+     batch can reference it; zero makes a fresh one. DUPLICATE: the seed of
+     the copies' ids; zero makes fresh ones. Reads leave it zero. */
   VkrEntityRef ref;
 } VkrSceneEditValues;
 
@@ -313,10 +314,13 @@ bool8_t vkr_scene_edit_can_duplicate(const VkrScene *scene, VkrEntityId entity,
                                      const char **reason);
 /** Copy `entity` and its descendants under the same parent, at the same
  * place, as one undo step. The copy is named like the original with the
- * first free " (n)" number and gets new ids. Returns the copy, or invalid
- * with a status message. */
+ * first free " (n)" number and gets new ids: random ones, or with a `seed`
+ * ids derived from the seed and each original's id, so editors that apply
+ * the same duplicate to the same scene make the same ids (ADR-106).
+ * Returns the copy, or invalid with a status message. */
 VkrEntityId vkr_scene_edit_duplicate(VkrSceneEditState *state, VkrScene *scene,
-                                     VkrEntityId entity);
+                                     VkrEntityId entity,
+                                     const VkrEntityRef *seed);
 /** Move `entity` under `parent` (invalid: root) keeping its world transform.
  * Rejects cycles and parents in another container. */
 bool8_t vkr_scene_edit_reparent(VkrSceneEditState *state, VkrScene *scene,

@@ -6,7 +6,8 @@ and edits before anyone joins, then a headless guest editor that joins with
 the host's key, replays that history and edits through the host. Both print
 `session.status`; the check passes when both editors end at the same session
 sequence with the same scene digest, the guest saw the host's edits, the
-host saw the guest's, and the guest's refused edit did not apply.
+host saw the guest's, including a duplicate, and the guest's physics edit,
+which cannot travel, was refused.
 
     python tools/checks/check_editor_session.py --editor build_debug/editor/vkr_editor.exe
 """
@@ -35,6 +36,8 @@ echo host-edited
 {polls}
 select GuestCube
 sel.position
+select GuestCube (1)
+sel.position
 op session.status
 """
 
@@ -57,8 +60,10 @@ wait 3
 sel.position
 scene.entities
 duplicate
-wait 3
+wait 4
 scene.entities
+component.add physics_body
+wait 3
 wait 5
 op session.status
 echo guest-done
@@ -197,13 +202,16 @@ def main() -> int:
     if not any(r.startswith("(1, 2, 3)") or r.startswith("(1.0") or
                "1, 2, 3" in r for r in guest_results):
         failures.append("the guest did not see HostCube at (1, 2, 3)")
-    if not any("4, 5, 6" in r for r in host_results):
-        failures.append("the host did not see GuestCube at (4, 5, 6) after "
-                        "the guest's undo")
-    entity_counts = [r for r in guest_results if re.fullmatch(r"\d+\s*", r)]
-    if len(entity_counts) >= 2 and entity_counts[-1] != entity_counts[-2]:
-        failures.append("the guest's duplicate applied: "
-                        f"{entity_counts[-2]} -> {entity_counts[-1]}")
+    if sum("4, 5, 6" in r for r in host_results) < 2:
+        failures.append("the host did not see GuestCube and its duplicate at "
+                        "(4, 5, 6) after the guest's undo")
+    entity_counts = [int(r) for r in guest_results
+                     if re.fullmatch(r"\d+\s*", r)]
+    if len(entity_counts) < 2 or entity_counts[-1] != entity_counts[-2] + 1:
+        failures.append(f"the guest's duplicate did not apply: "
+                        f"{entity_counts}")
+    if "do not reach a collaborative session" not in guest_text:
+        failures.append("the guest's physics edit was not refused")
     for failure in failures:
         print("FAIL:", failure)
     print("host log:", host_log)

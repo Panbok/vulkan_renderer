@@ -7,6 +7,7 @@
 #include "editor_level.h"
 #include "editor_lighting.h"
 #include "editor_ops.h"
+#include "editor_session.h"
 #include "editor_terrain.h"
 #include "editor_ui.h"
 #include "renderer/systems/vkr_scene_brush.h"
@@ -1157,6 +1158,14 @@ static void physics_level_tools(VkrEditorUi *editor,
     physics_line(editor, frame, VKR_ENTITY_ID_INVALID, light_lines[i].from,
                  light_lines[i].to, light_lines[i].color, capacity);
   }
+  /* Other editors' cameras and selections (ADR-106). */
+  VkrEditorBrushGridLine session_lines[VKR_EDITOR_SESSION_LINE_MAX];
+  const uint32_t session_count = vkr_editor_session_lines(
+      editor->session, frame, session_lines, ArrayCount(session_lines));
+  for (uint32_t i = 0; i < session_count; ++i) {
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, session_lines[i].from,
+                 session_lines[i].to, session_lines[i].color, capacity);
+  }
   if (editor->face_handle_count) {
     /* The brush's edges, each face's arrow, the hot face's outline and
        where a drag would put it. */
@@ -1325,6 +1334,8 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       vkr_editor_brush_grid_lines(editor, NULL) +
       vkr_editor_blockout_lines(editor, NULL) +
       vkr_editor_lighting_lines(editor, frame, NULL, 0u) +
+      Min(vkr_editor_session_lines(editor->session, frame, NULL, 0u),
+          VKR_EDITOR_SESSION_LINE_MAX) +
       (report && report->checked &&
                vkr_editor_window_shown(editor, frame, VKR_EDITOR_WINDOW_LEVEL)
            ? 1u

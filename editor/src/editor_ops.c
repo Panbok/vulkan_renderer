@@ -159,6 +159,9 @@ struct VkrEditorOps {
   bool8_t mirroring;
   uint64_t mirror_epoch;
   uint64_t mirror_revision;
+  /* The editor's session, from the last update, so an accept reaches the
+     other editors. */
+  VkrEditorSession *session;
   /* A ring of the newest feed events, each in slot `sequence %
      OPS_FEED_MAX`; `feed_last` is the newest sequence, zero for none. */
   OpsFeedEvent feed[OPS_FEED_MAX];
@@ -5250,7 +5253,7 @@ static VkrEditorOpStatus ops_submit(OpsContext *ctx, OpsBatch *batch,
              (int)Min(batch->label.length, (uint64_t)95u),
              batch->label.length ? (const char *)batch->label.str : "");
     vkr_editor_session_note_batch(ctx->editor->session, pending->token,
-                                  call->author, label);
+                                  call->author, label, batch->review);
   }
   *ctx->frame->edit_batch = (VkrSampleEditBatchRequest){
       .token = pending->token,
@@ -10206,11 +10209,53 @@ static bool8_t ops_task_kind_in(const char *kind, const char *kinds) {
   return false_v;
 }
 
+/* Whether every comma-separated item of `needed` is in `have`. */
+static bool8_t ops_task_covers(const char *have, const char *needed) {
+  char item[64];
+  for (const char *at = needed; *at;) {
+    while (*at == ' ' || *at == ',') {
+      ++at;
+    }
+    const char *end = at;
+    while (*end && *end != ',') {
+      ++end;
+    }
+    const char *last = end;
+    while (last > at && last[-1] == ' ') {
+      --last;
+    }
+    const uint64_t length = Min((uint64_t)(last - at), sizeof(item) - 1u);
+    if (length) {
+      MemCopy(item, at, length);
+      item[length] = '\0';
+      if (!have[0] || !ops_task_kind_in(item, have)) {
+        return false_v;
+      }
+    }
+    at = end;
+  }
+  return true_v;
+}
+
+/* The capabilities this editor gives its agents: its platform, and its
+   graphics pipeline class (ADR-087). */
+static const char *ops_editor_capabilities(void) {
+#if defined(__APPLE__)
+  return "macos,tiled";
+#elif defined(_WIN32)
+  return "windows,desktop";
+#else
+  return "linux,desktop";
+#endif
+}
+
 /* Gives `author` its assigned task, else assigns it the oldest open task of
-   one of `kinds`. `*out_has` is false when none is open. */
+   one of `kinds` whose requirements `capabilities` covers. `*out_has` is
+   false when none is open. */
 static bool8_t ops_task_take(VkrEditorOps *ops, const char *author,
-                             const char *kinds, VkrEditorTask *out,
-                             bool8_t *out_has, const char **code, char *error,
+                             const char *kinds, const char *capabilities,
+                             VkrEditorTask *out, bool8_t *out_has,
+                             const char **code, char *error,
                              uint32_t capacity) {
   *out_has = false_v;
   if (!author[0]) {
@@ -10228,7 +10273,9 @@ static bool8_t ops_task_take(VkrEditorOps *ops, const char *author,
       return true_v;
     }
     if (task->state == VKR_EDITOR_TASK_OPEN &&
-        ops_task_kind_in(task->kind, kinds) && (!pick || task->id < pick->id)) {
+        ops_task_kind_in(task->kind, kinds) &&
+        ops_task_covers(capabilities, task->requires) &&
+        (!pick || task->id < pick->id)) {
       pick = task;
     }
   }
@@ -10287,6 +10334,10 @@ static VkrBakeryJson *ops_task_json(OpsContext *ctx,
   if (task->note[0]) {
     ops_set(ctx, object, "note", vkr_bakery_json_cstr(arena, task->note));
   }
+  if (task->requires[0]) {
+    ops_set(ctx, object, "requires",
+            vkr_bakery_json_cstr(arena, task->requires));
+  }
   if (task->has_region) {
     char slot[16];
     ops_set(
@@ -10327,6 +10378,29 @@ static VkrEditorOpStatus ops_task_done_with(OpsContext *ctx, bool8_t ok,
   return VKR_EDITOR_OP_DONE;
 }
 
+/* Joins the strings of array argument `key` with commas after `out`'s
+   text; false, with the failure set, when they do not fit or are not
+   strings. */
+static bool8_t ops_arg_list(OpsContext *ctx, const char *key, char *out,
+                            uint32_t capacity) {
+  const VkrBakeryJson *value = vkr_bakery_json_get(ctx->call->args, key);
+  if (value && value->type != VKR_BAKERY_JSON_ARRAY) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' is an array of strings", key);
+  }
+  for (const VkrBakeryJson *entry = value ? value->first : NULL; entry;
+       entry = entry->next) {
+    const uint64_t used = strlen(out);
+    if (entry->type != VKR_BAKERY_JSON_STRING ||
+        used + entry->string.length + 2u > capacity) {
+      return ops_fail(ctx, OPS_INVALID, "'%s' is a short array of strings",
+                      key);
+    }
+    snprintf(out + used, capacity - used, "%s%.*s", used ? "," : "",
+             (int)entry->string.length, (const char *)entry->string.str);
+  }
+  return true_v;
+}
+
 static VkrEditorOpStatus ops_run_task_add(OpsContext *ctx) {
   if (ctx->call->stage) {
     return ops_task_answered(ctx);
@@ -10334,7 +10408,8 @@ static VkrEditorOpStatus ops_run_task_add(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
   VkrEditorTask want = {0};
   if (!ops_arg_string(ctx, args, "kind", want.kind, sizeof(want.kind)) ||
-      !ops_arg_string(ctx, args, "title", want.title, sizeof(want.title))) {
+      !ops_arg_string(ctx, args, "title", want.title, sizeof(want.title)) ||
+      !ops_arg_list(ctx, "requires", want.requires, sizeof(want.requires))) {
     return VKR_EDITOR_OP_DONE;
   }
   const VkrBakeryJson *region = vkr_bakery_json_get(args, "region");
@@ -10373,30 +10448,26 @@ static VkrEditorOpStatus ops_run_task_next(OpsContext *ctx) {
     return ops_task_answered(ctx);
   }
   char kinds[128] = {0};
-  const VkrBakeryJson *value = vkr_bakery_json_get(ctx->call->args, "kinds");
-  for (const VkrBakeryJson *entry =
-           value && value->type == VKR_BAKERY_JSON_ARRAY ? value->first : NULL;
-       entry; entry = entry->next) {
-    const uint64_t used = strlen(kinds);
-    if (entry->type != VKR_BAKERY_JSON_STRING ||
-        used + entry->string.length + 2u > sizeof(kinds)) {
-      ops_fail(ctx, OPS_INVALID, "'kinds' is a short array of task kinds");
-      return VKR_EDITOR_OP_DONE;
-    }
-    snprintf(kinds + used, sizeof(kinds) - used, "%s%.*s", used ? "," : "",
-             (int)entry->string.length, (const char *)entry->string.str);
+  char capabilities[160] = {0};
+  /* The agent's own capabilities join its editor's. */
+  snprintf(capabilities, sizeof(capabilities), "%s", ops_editor_capabilities());
+  if (!ops_arg_list(ctx, "kinds", kinds, sizeof(kinds)) ||
+      !ops_arg_list(ctx, "capabilities", capabilities, sizeof(capabilities))) {
+    return VKR_EDITOR_OP_DONE;
   }
   if (vkr_editor_session_forwards(ctx->editor->session)) {
     VkrEditorSessionAsk ask = {.kind = VKR_EDITOR_ASK_TASK_NEXT};
     snprintf(ask.kinds, sizeof(ask.kinds), "%s", kinds);
+    snprintf(ask.capabilities, sizeof(ask.capabilities), "%s", capabilities);
     return ops_ask_host(ctx, &ask);
   }
   VkrEditorTask task;
   bool8_t has = false_v;
   const char *code = NULL;
   char error[256] = {0};
-  const bool8_t ok = ops_task_take(ctx->ops, ctx->call->author, kinds, &task,
-                                   &has, &code, error, sizeof(error));
+  const bool8_t ok =
+      ops_task_take(ctx->ops, ctx->call->author, kinds, capabilities, &task,
+                    &has, &code, error, sizeof(error));
   return ops_task_done_with(ctx, ok, has, &task, code, error);
 }
 
@@ -14224,19 +14295,24 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{}}", ops_run_session_leave, NULL},
     {"task.add",
      "Add an open task of a 'kind' (layout, material, lighting and so on) "
-     "with a 'title' and optionally a 'region' box of a 'container'. In a "
-     "collaborative session the host keeps the board for every editor.",
+     "with a 'title', optionally a 'region' box of a 'container', and the "
+     "capabilities it 'requires' of the editor that takes it (macos, "
+     "windows, tiled, desktop, or an agent's own). In a collaborative "
+     "session the host keeps the board for every editor.",
      "{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":"
      "\"string\"},\"title\":{\"type\":\"string\"},\"region\":"
      "{\"type\":\"object\"},\"container\":" OPS_CONTAINER_SCHEMA
-     "},\"required\":[\"kind\"]}",
+     ",\"requires\":{\"type\":\"array\",\"items\":{\"type\":"
+     "\"string\"}}},\"required\":[\"kind\"]}",
      ops_run_task_add, NULL},
     {"task.next",
      "Take your next task: the one assigned to you, else the oldest open "
-     "task of one of 'kinds' (any kind when absent); null when none is "
-     "open.",
+     "task of one of 'kinds' (any kind when absent) whose requirements your "
+     "editor's capabilities (its platform and pipeline class) and your "
+     "'capabilities' meet; null when none is open.",
      "{\"type\":\"object\",\"properties\":{\"kinds\":{\"type\":"
-     "\"array\",\"items\":{\"type\":\"string\"}}}}",
+     "\"array\",\"items\":{\"type\":\"string\"}},\"capabilities\":"
+     "{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}",
      ops_run_task_next, NULL},
     {"task.done",
      "Finish your task with 'ok' (default true; false marks it failed) and "
@@ -14404,6 +14480,8 @@ static bool8_t ops_input_active(InputState *input) {
   return false_v;
 }
 
+static void ops_feed_accept(VkrEditorOps *ops, const VkrEditorChange *change);
+
 /* Answers one participant's request on the session host. */
 static void ops_serve(VkrEditorOps *ops, const VkrSampleUiFrame *frame,
                       const VkrEditorSessionAsk *ask,
@@ -14431,9 +14509,9 @@ static void ops_serve(VkrEditorOps *ops, const VkrSampleUiFrame *frame,
                               answer->error, sizeof(answer->error));
     break;
   case VKR_EDITOR_ASK_TASK_NEXT:
-    answer->ok = ops_task_take(ops, ask->author, ask->kinds, &answer->task,
-                               &answer->has_task, &code, answer->error,
-                               sizeof(answer->error));
+    answer->ok = ops_task_take(ops, ask->author, ask->kinds, ask->capabilities,
+                               &answer->task, &answer->has_task, &code,
+                               answer->error, sizeof(answer->error));
     break;
   case VKR_EDITOR_ASK_TASK_DONE:
     answer->has_task = true_v;
@@ -14543,12 +14621,46 @@ static void ops_session_update(VkrEditorOps *ops, VkrEditorSession *session,
       ops_feed_entity(event, scene, applied.entities[i], scratch);
     }
     free(scratch);
+    /* Another editor's agent batch waits for review here too. */
+    if (applied.review && applied.group &&
+        ops->change_count < VKR_EDITOR_CHANGE_MAX) {
+      VkrEditorChange change = {.id = ++ops->next_change_id,
+                                .group = applied.group,
+                                .container = applied.container,
+                                .created = vkr_platform_get_absolute_time()};
+      snprintf(change.author, sizeof(change.author), "%s", applied.author);
+      snprintf(change.label, sizeof(change.label), "%s", applied.label);
+      if (!change.label[0]) {
+        snprintf(change.label, sizeof(change.label), "Agent edit %u",
+                 change.id);
+      }
+      for (uint32_t i = 0; i < applied.entity_count; ++i) {
+        ops_change_touch(&change, applied.entities[i]);
+      }
+      ops->changes[ops->change_count++] = change;
+      event->change = change.id;
+    }
+  }
+  /* A batch accepted on another editor leaves review here. */
+  uint16_t container = 0u;
+  uint64_t group = 0u;
+  while (vkr_editor_session_take_accepted(session, &container, &group)) {
+    for (uint32_t i = 0; i < ops->change_count; ++i) {
+      const VkrEditorChange *change = &ops->changes[i];
+      if (!change->document[0] && change->group == group &&
+          change->container == container) {
+        ops_feed_accept(ops, change);
+        ops_change_remove(ops, i);
+        break;
+      }
+    }
   }
 }
 
 void vkr_editor_ops_update(VkrEditorOps *ops, const VkrEditorUi *editor,
                            const VkrSampleUiFrame *frame) {
   if (ops && editor) {
+    ops->session = editor->session;
     ops_session_update(ops, editor->session, frame);
   }
   if (ops && frame->input && ops_input_active(frame->input)) {
@@ -14608,13 +14720,23 @@ static void ops_feed_accept(VkrEditorOps *ops, const VkrEditorChange *change) {
   }
 }
 
+/* Accepts a change here and, for a scene change, on every editor of the
+   session. */
+static void ops_change_accept(VkrEditorOps *ops,
+                              const VkrEditorChange *change) {
+  ops_feed_accept(ops, change);
+  if (!change->document[0]) {
+    vkr_editor_session_accepted(ops->session, change->container, change->group);
+  }
+}
+
 bool8_t vkr_editor_ops_accept(VkrEditorOps *ops, uint32_t id) {
   if (!ops) {
     return false_v;
   }
   if (!id) {
     for (uint32_t i = 0; i < ops->change_count; ++i) {
-      ops_feed_accept(ops, &ops->changes[i]);
+      ops_change_accept(ops, &ops->changes[i]);
     }
     ops->change_count = 0u;
     return true_v;
@@ -14623,7 +14745,7 @@ bool8_t vkr_editor_ops_accept(VkrEditorOps *ops, uint32_t id) {
   if (index < 0) {
     return false_v;
   }
-  ops_feed_accept(ops, &ops->changes[index]);
+  ops_change_accept(ops, &ops->changes[index]);
   ops_change_remove(ops, (uint32_t)index);
   return true_v;
 }

@@ -6,6 +6,7 @@
 #include "renderer/systems/vkr_scene_types.h"
 
 #include "core/logger.h"
+#include "core/vkr_hash.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
 #include <errno.h>
@@ -1757,11 +1758,41 @@ static void edit_duplicate_name(const VkrScene *scene, const char *name,
   }
 }
 
-/* Copies `entity` under `parent`, then its children under the copy. */
+/* The id of the copy of `entity` a seeded duplicate makes: a version 4
+   UUID from the seed and the original's id, or, for an original without
+   one, the copy's place in the subtree. */
+static void edit_duplicate_ref(const VkrScene *scene, VkrEntityId entity,
+                               const VkrEntityRef *seed, uint32_t ordinal,
+                               VkrEntityRef *out) {
+  VkrEntityRef original = {0};
+  uint8_t ordinal_bytes[4] = {(uint8_t)ordinal, (uint8_t)(ordinal >> 8),
+                              (uint8_t)(ordinal >> 16),
+                              (uint8_t)(ordinal >> 24)};
+  const bool8_t named = vkr_scene_entity_ref(scene, entity, &original) &&
+                        !vkr_entity_ref_empty(&original);
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  vkr_sha256_update(&hash, "vkr.duplicate.1", 15u);
+  vkr_sha256_update(&hash, seed->bytes, sizeof(seed->bytes));
+  if (named) {
+    vkr_sha256_update(&hash, original.bytes, sizeof(original.bytes));
+  } else {
+    vkr_sha256_update(&hash, ordinal_bytes, sizeof(ordinal_bytes));
+  }
+  vkr_sha256_final(&hash, digest);
+  MemCopy(out->bytes, digest, sizeof(out->bytes));
+  out->bytes[6] = (uint8_t)((out->bytes[6] & 0x0fu) | 0x40u);
+  out->bytes[8] = (uint8_t)((out->bytes[8] & 0x3fu) | 0x80u);
+}
+
+/* Copies `entity` under `parent`, then its children under the copy;
+   `ordinal` counts the copies made so far. */
 static VkrEntityId edit_duplicate_subtree(VkrSceneEditState *s, VkrScene *scene,
                                           VkrEntityId entity,
-                                          VkrEntityId parent,
-                                          const char *name) {
+                                          VkrEntityId parent, const char *name,
+                                          const VkrEntityRef *seed,
+                                          uint32_t *ordinal) {
   EditStructure *structure = &s_edit_structure;
   MemZero(structure, sizeof(*structure));
   edit_object_capture(s, scene, entity, &structure->object);
@@ -1774,7 +1805,12 @@ static VkrEntityId edit_duplicate_subtree(VkrSceneEditState *s, VkrScene *scene,
     vkr_type_reset_transient(structure->object.types[i],
                              structure->object.components[i]);
   }
-  vkr_scene_entity_ref_generate(&structure->object.ref);
+  if (seed) {
+    edit_duplicate_ref(scene, entity, seed, *ordinal, &structure->object.ref);
+  } else {
+    vkr_scene_entity_ref_generate(&structure->object.ref);
+  }
+  *ordinal += 1u;
   if (name) {
     snprintf(structure->object.name, sizeof(structure->object.name), "%s",
              name);
@@ -1792,7 +1828,8 @@ static VkrEntityId edit_duplicate_subtree(VkrSceneEditState *s, VkrScene *scene,
         vkr_entity_get_component(scene->world, child, scene->comp_transform);
     if (transform && transform->parent.u64 == entity.u64 &&
         vkr_scene_entity_alive(scene, child) &&
-        !edit_duplicate_subtree(s, scene, child, copy, NULL).u64) {
+        !edit_duplicate_subtree(s, scene, child, copy, NULL, seed, ordinal)
+             .u64) {
       return VKR_ENTITY_ID_INVALID;
     }
   }
@@ -1800,7 +1837,8 @@ static VkrEntityId edit_duplicate_subtree(VkrSceneEditState *s, VkrScene *scene,
 }
 
 VkrEntityId vkr_scene_edit_duplicate(VkrSceneEditState *s, VkrScene *scene,
-                                     VkrEntityId entity) {
+                                     VkrEntityId entity,
+                                     const VkrEntityRef *seed) {
   const char *reason = NULL;
   if (!vkr_scene_edit_can_duplicate(scene, entity, &reason)) {
     snprintf(s->status, sizeof(s->status), "%s", reason);
@@ -1818,8 +1856,10 @@ VkrEntityId vkr_scene_edit_duplicate(VkrSceneEditState *s, VkrScene *scene,
   if (own_group) {
     (void)vkr_scene_edit_group_begin(s);
   }
-  const VkrEntityId copy =
-      edit_duplicate_subtree(s, scene, entity, parent, name);
+  uint32_t ordinal = 0u;
+  const VkrEntityId copy = edit_duplicate_subtree(
+      s, scene, entity, parent, name,
+      seed && !vkr_entity_ref_empty(seed) ? seed : NULL, &ordinal);
   if (own_group) {
     if (copy.u64) {
       vkr_scene_edit_group_end(s);

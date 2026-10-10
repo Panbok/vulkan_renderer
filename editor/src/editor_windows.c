@@ -7,6 +7,7 @@
 #include "editor_ops.h"
 #include "editor_partition.h"
 #include "editor_projects.h"
+#include "editor_session.h"
 #include "editor_terrain.h"
 
 #include "editor_graphics.h"
@@ -151,6 +152,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_ENVIRONMENT] = {"Environment", VKR_UI_ICON_PLANET, false_v},
     [CMD_BAKE_SETTINGS] = {"Bake settings", VKR_UI_ICON_BAKERY, false_v},
     [CMD_LIGHTS] = {"Lights", VKR_UI_ICON_POINT_LIGHT, false_v},
+    [CMD_SESSION] = {"Collaborative session", VKR_UI_ICON_CLOUD, false_v},
     [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, false_v},
     [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, false_v},
     [CMD_SIM_PAUSE] = {"Pause simulation", VKR_UI_ICON_PAUSE, false_v},
@@ -631,6 +633,8 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor->windows[VKR_EDITOR_WINDOW_BAKE_SETTINGS].visible;
   case CMD_LIGHTS:
     return editor->windows[VKR_EDITOR_WINDOW_LIGHTS].visible;
+  case CMD_SESSION:
+    return editor->windows[VKR_EDITOR_WINDOW_SESSION].visible;
   case CMD_PHYSICS:
     return editor->windows[VKR_EDITOR_WINDOW_PHYSICS].visible;
   case CMD_GRAPHICS:
@@ -770,6 +774,9 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_LIGHTS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_LIGHTS);
+    break;
+  case CMD_SESSION:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_SESSION);
     break;
   case CMD_GRAPHICS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_GRAPHICS);
@@ -979,6 +986,7 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_ENVIRONMENT},
     {CMD_BAKE_SETTINGS},
     {CMD_LIGHTS},
+    {CMD_SESSION},
     {CMD_GRAPHICS},
     {CMD_LABELS, true_v},
     {CMD_LABELS_DIRECTIONAL, false_v, true_v},
@@ -1968,6 +1976,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     title_text = string8_lit("Lights");
     title_icon = VKR_UI_ICON_POINT_LIGHT;
     break;
+  case VKR_EDITOR_WINDOW_SESSION:
+    title_text = string8_lit("Collaborative session");
+    title_icon = VKR_UI_ICON_CLOUD;
+    break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");
     title_icon = VKR_UI_ICON_ADD;
@@ -2248,6 +2260,13 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     if (editor_window_body_begin(ui, window, string8_lit("lights.body"),
                                  &bounds)) {
       vkr_editor_lights_window_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
+  } else if (kind == VKR_EDITOR_WINDOW_SESSION) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("session.body"),
+                                 &bounds)) {
+      vkr_editor_session_window_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
   } else if (kind == VKR_EDITOR_WINDOW_LEVEL) {

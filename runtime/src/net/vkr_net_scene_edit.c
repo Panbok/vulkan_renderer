@@ -30,6 +30,7 @@ bool8_t vkr_net_scene_edit_supported(const VkrSceneEditRequest *request) {
     return (request->values.fields & ~net_edit_value_fields) == 0u;
   case VKR_SCENE_EDIT_DELETE:
   case VKR_SCENE_EDIT_REPARENT:
+  case VKR_SCENE_EDIT_DUPLICATE:
   case VKR_SCENE_EDIT_ADD_COMPONENT:
   case VKR_SCENE_EDIT_REMOVE_COMPONENT:
   case VKR_SCENE_EDIT_REPLACE_COMPONENT:
@@ -341,6 +342,15 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
     return net_edit_write_type_name(writer, request->values.component_type) ||
            (snprintf(error, capacity, "a component type cannot travel"),
             false_v);
+  case VKR_SCENE_EDIT_DUPLICATE:
+    /* Every editor derives the copies' ids from this seed. */
+    if (vkr_entity_ref_empty(&request->values.ref)) {
+      snprintf(error, capacity, "a duplicate travels with the seed of its ids");
+      return false_v;
+    }
+    vkr_bit_write(writer, vkr_load_le_u64(request->values.ref.bytes), 64u);
+    vkr_bit_write(writer, vkr_load_le_u64(request->values.ref.bytes + 8), 64u);
+    return true_v;
   case VKR_SCENE_EDIT_REPLACE_COMPONENT:
     return (net_edit_write_type_name(writer, request->replaced_type) &&
             net_edit_write_type_name(writer, request->values.component_type) &&
@@ -417,6 +427,14 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
         net_edit_read_type_name(reader, error, capacity);
     request->values.fields = VKR_SCENE_EDIT_COMPONENT;
     ok = request->values.component_type != NULL;
+    break;
+  case VKR_SCENE_EDIT_DUPLICATE:
+    vkr_store_le_u64(request->values.ref.bytes, vkr_bit_read(reader, 64u));
+    vkr_store_le_u64(request->values.ref.bytes + 8, vkr_bit_read(reader, 64u));
+    ok = !vkr_entity_ref_empty(&request->values.ref);
+    if (!ok) {
+      snprintf(error, capacity, "a duplicate without the seed of its ids");
+    }
     break;
   default:
     break;

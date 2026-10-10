@@ -55,6 +55,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_BAKE_SETTINGS,
   /* The scene's lights and light groups (ADR-100). */
   VKR_EDITOR_WINDOW_LIGHTS,
+  /* The collaborative editing session (ADR-106). */
+  VKR_EDITOR_WINDOW_SESSION,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 

@@ -47,6 +47,10 @@ static bool8_t net_edit_apply(EditPeer *peer,
   case VKR_SCENE_EDIT_REPARENT:
     return vkr_scene_edit_reparent(&peer->edits, &peer->scene, request->entity,
                                    request->parent);
+  case VKR_SCENE_EDIT_DUPLICATE:
+    *out_created = vkr_scene_edit_duplicate(
+        &peer->edits, &peer->scene, request->entity, &request->values.ref);
+    return out_created->u64 != 0u;
   case VKR_SCENE_EDIT_ADD_COMPONENT:
     return vkr_scene_edit_add_component(
         &peer->edits, &peer->scene, request->entity,
@@ -148,6 +152,48 @@ static void net_edit_compare(EditPeer *a, EditPeer *b, const uint8_t *seeds,
   }
 }
 
+/* Every entity of A with a document id has a twin in B under the same id,
+   with the same name and parent id, and B has no others. */
+static void net_edit_compare_all(EditPeer *a, EditPeer *b) {
+  uint32_t named_a = 0u;
+  uint32_t named_b = 0u;
+  for (uint32_t i = 0u; i < b->scene.world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(b->scene.world, i);
+    VkrEntityRef ref;
+    named_b += vkr_scene_entity_alive(&b->scene, entity) &&
+               vkr_scene_entity_ref(&b->scene, entity, &ref) &&
+               !vkr_entity_ref_empty(&ref);
+  }
+  for (uint32_t i = 0u; i < a->scene.world->dir.living; ++i) {
+    const VkrEntityId ea = vkr_entity_id_from_index(a->scene.world, i);
+    VkrEntityRef ref;
+    if (!vkr_scene_entity_alive(&a->scene, ea) ||
+        !vkr_scene_entity_ref(&a->scene, ea, &ref) ||
+        vkr_entity_ref_empty(&ref)) {
+      continue;
+    }
+    named_a += 1u;
+    const VkrEntityId eb = vkr_scene_find_entity_ref(&b->scene, &ref);
+    assert(eb.u64);
+    const String8 name_a = vkr_scene_get_name(&a->scene, ea);
+    const String8 name_b = vkr_scene_get_name(&b->scene, eb);
+    assert(name_a.length == name_b.length &&
+           MemCompare(name_a.str, name_b.str, name_a.length) == 0);
+    VkrEntityRef parent_a = {0};
+    VkrEntityRef parent_b = {0};
+    const SceneTransform *ta = vkr_scene_get_transform(&a->scene, ea);
+    const SceneTransform *tb = vkr_scene_get_transform(&b->scene, eb);
+    if (ta->parent.u64) {
+      assert(vkr_scene_entity_ref(&a->scene, ta->parent, &parent_a));
+    }
+    if (tb->parent.u64) {
+      assert(vkr_scene_entity_ref(&b->scene, tb->parent, &parent_b));
+    }
+    assert(MemCompare(&parent_a, &parent_b, sizeof(VkrEntityRef)) == 0);
+  }
+  assert(named_a == named_b);
+}
+
 static void net_edit_peer_init(EditPeer *peer, VkrAllocator *allocator) {
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
   assert(vkr_scene_init(&peer->scene, allocator, 0, 8, &error));
@@ -174,9 +220,9 @@ static VkrSceneEditRequest net_edit_create(uint8_t seed, const char *name,
 }
 
 /* Fails when a sequence of creations, renames, transforms, component adds and
-   removals, reparenting and deletion does not leave a second scene equal to
-   the first under the same document ids, or when an edit that cannot travel
-   or a reference to a missing entity is accepted. */
+   removals, reparenting, deletion and a seeded duplicate does not leave a
+   second scene equal to the first under the same document ids, or when an
+   edit that cannot travel or a reference to a missing entity is accepted. */
 static void test_net_scene_edit_replication(void) {
   printf("  Running test_net_scene_edit_replication...\n");
   VkrDMemory memory;
@@ -251,7 +297,16 @@ static void test_net_scene_edit_replication(void) {
   net_edit_replicate(&a, &b, &request);
   net_edit_compare(&a, &b, seeds, ArrayCount(seeds), text);
 
-  /* What cannot travel is refused at the writer. */
+  /* A seeded duplicate of the room, with the base and lamp under it, makes
+     the same copies, names and ids on both. */
+  request = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_DUPLICATE,
+                                  .entity = net_edit_find(&a, 2u)};
+  net_edit_ref(9u, &request.values.ref);
+  net_edit_replicate(&a, &b, &request);
+  net_edit_compare_all(&a, &b);
+
+  /* What cannot travel is refused at the writer: here a duplicate without
+     the seed of its ids. */
   uint8_t bytes[4096];
   VkrBitWriter writer;
   char message[256];

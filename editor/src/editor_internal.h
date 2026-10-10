@@ -77,6 +77,7 @@ typedef enum EditorCommand {
   CMD_BAKE_SETTINGS,
   /* The Lights window (ADR-100). */
   CMD_LIGHTS,
+  CMD_SESSION,
   /* Scene transform tools. */
   CMD_TOOL_SELECT,
   CMD_TOOL_MOVE,

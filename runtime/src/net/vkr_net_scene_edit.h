@@ -3,19 +3,18 @@
 #include "renderer/systems/vkr_scene_edit.h"
 #include "vkr_bitstream.h"
 
-/* Scene edits on the wire for collaborative editing
- * (docs/proposals/network-protocol.md, "Editor collaboration"). An edit names
- * entities by their document-stable id (VkrEntityRef), or by the index of the
- * edit of the same batch that creates them, never by a local VkrEntityId,
- * which differs between editors. Values travel through their type
- * descriptors (vkr_net_type.h).
+/* Scene edits on the wire for collaborative editing (ADR-106). An edit
+ * names entities by their document-stable id (VkrEntityRef), or by the index
+ * of the edit of the same batch that creates them, never by a local
+ * VkrEntityId, which differs between editors. Values travel through their
+ * type descriptors (vkr_net_type.h).
  *
  * Only edits every peer reproduces exactly travel: APPLY (transform, name,
  * visibility, lights and one world component; not physics), CREATE with a
- * document id chosen ahead, DELETE, REPARENT and component add, remove and
- * replace. DUPLICATE (fresh ids on each peer), terrain strokes (floating
- * point each host computes) and physics, settings or partition edits do not
- * travel yet; the writer refuses them. */
+ * document id chosen ahead, DUPLICATE with the seed its copies' ids derive
+ * from, DELETE, REPARENT and component add, remove and replace. Terrain
+ * strokes (floating point each editor computes) and physics, settings or
+ * partition edits do not travel yet; the writer refuses them. */
 
 typedef struct VkrNetSceneEditScenes {
   /* The loaded containers by world id: 0 the primary scene, 1 to
