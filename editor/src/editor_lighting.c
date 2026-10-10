@@ -80,10 +80,15 @@ static const VkrPropertyDesc s_lightmap_properties[] = {
 };
 
 static const VkrPropertyDesc s_diffuse_properties[] = {
-    LIGHTING_SIZE(VkrEditorDiffuseSettings, voxel_size, "voxel_size",
-                  "Voxel size", "0 uses Bakery's default", "m", 0.05f),
-    LIGHTING_SIZE(VkrEditorDiffuseSettings, face_size, "face_size", "Face size",
-                  "0 uses Bakery's default", "m", 0.05f),
+    LIGHTING_SIZE(VkrEditorDiffuseSettings, spacing, "spacing", "Probe spacing",
+                  "Finest probe spacing; a large level needs a wider one to "
+                  "fit the volume's brick budget. 0 uses Bakery's default",
+                  "m", 0.05f),
+    LIGHTING_COUNT(VkrEditorDiffuseSettings, face_size, "face_size",
+                   "Face size",
+                   "Cube-face pixels per edge each probe gathers; 0 uses "
+                   "Bakery's default",
+                   32.0f),
     LIGHTING_COUNT(VkrEditorDiffuseSettings, samples, "samples", "Samples",
                    "0 uses Bakery's default", 1000000.0f),
     LIGHTING_COUNT(VkrEditorDiffuseSettings, max_depth, "max_depth", "Bounces",

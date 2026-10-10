@@ -26,8 +26,10 @@ typedef struct VkrEditorLightmapSettings {
 
 /* `diffuse_settings` of a bake request; a zero leaves Bakery's default. */
 typedef struct VkrEditorDiffuseSettings {
-  float32_t voxel_size;
-  float32_t face_size;
+  /* The finest probe spacing in metres. */
+  float32_t spacing;
+  /* Cube-face edge in pixels each probe gathers. */
+  uint32_t face_size;
   uint32_t samples;
   uint32_t max_depth;
   uint32_t seed;

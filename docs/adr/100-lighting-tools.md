@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-09
+updated: 2026-10-10
 authority: adr
 ---
 
@@ -35,8 +35,10 @@ Lights and bakes) found these gaps:
    - lightmap: `samples`, `max_depth`, `seed`, `page_size`,
      `texels_per_unit`, `denoise` (default, on or off),
      `denoise_iterations` and `indirect_clamp`;
-   - diffuse volume: `voxel_size`, `face_size`, `samples`, `max_depth`,
-     `seed`, `photons` and `photon_radius`.
+   - diffuse volume: `spacing` (the finest probe spacing in metres),
+     `face_size` (cube-face pixels per edge), `samples`, `max_depth`, `seed`,
+     `photons` and `photon_radius`, the diffuse baker's options of those
+     names.
 
    The project holds them for the session. The `bake_scene` request writes
    each group with only its nonzero values, so zero keeps Bakery's default.

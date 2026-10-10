@@ -13597,7 +13597,7 @@ static const OpsDef s_ops[] = {
      "option), lightmaps. 'lightmap_settings' (samples, max_depth, seed, "
      "page_size, texels_per_unit, denoise default|on|off, "
      "denoise_iterations, indirect_clamp) and 'diffuse_settings' "
-     "(voxel_size, face_size, samples, max_depth, seed, photons, "
+     "(spacing, face_size, samples, max_depth, seed, photons, "
      "photon_radius) replace the Bake settings window's values; 0 keeps "
      "Bakery's default.",
      "{\"type\":\"object\",\"properties\":{\"lightmap\":{\"type\":"
