@@ -8,8 +8,8 @@ authority: proposal
 
 Sparse brick volumes shipped on 2026-10-09: placement, relocation, distance
 moments, L1 layers with lamp direct bands, `DVOL` v3, the GPU composition
-pass, the desktop pipeline's half-resolution lookup and the tiled pipeline's
-inline lookup ([ADR-054](../adr/054-baked-diffuse-volumes.md)). This proposal keeps the
+pass, the desktop pipeline's half-resolution lookup, the tiled pipeline's
+inline lookup and the Metal probe gather ([ADR-054](../adr/054-baked-diffuse-volumes.md)). This proposal keeps the
 parts that are not implemented and the evidence still missing.
 
 ## Baseline
@@ -21,10 +21,9 @@ spacing bakes:
 - each of eight sun keys in about 22 s;
 - the 72-lamp group in 59 s.
 
-Each layer traces its own paths. A Mac bakes volumes on the CPU only,
-because Metal has no probe gather: on the M1 Pro the same Bistro volume at
-`--face-size 4 --samples 1` takes 463 s and 5.2 GB, about 35 s per sun key
-and 73 s for the lamp group.
+Each layer traces its own paths. On the M1 Pro's Metal probe gather the same
+volume takes 677 s at the default face size and samples: 40 to 44 s of GPU
+time per sun key and 183 s for the lamp group.
 
 ## Proposed changes
 
@@ -32,18 +31,13 @@ and 73 s for the lamp group.
    lights and sky at its vertices instead of tracing nine sets of paths. On
    Bistro this would remove most of the 8 × 22 s of sun-key gathering;
    lightmap bakes would gain the same.
-2. **Metal probe gather.** Port the Vulkan kernel's probe gather
-   (`probe_gather` in
-   [`vkr_bake_lightmap.slang`](../../tools/bake/vkr_bake_lightmap.slang)) to
-   [`vkr_bake_metal.mm`](../../tools/bake/vkr_bake_metal.mm), so a Mac stops
-   falling back to the CPU integrator.
-3. **SSGI from unbaked light.** Let SSGI add dynamic lights and the emission
+2. **SSGI from unbaked light.** Let SSGI add dynamic lights and the emission
    of dynamic objects on covered pixels without counting baked light twice;
    ADR-060 names this revisit.
-4. **Specular occlusion from the volume.** Scale environment specular by the
+3. **Specular occlusion from the volume.** Scale environment specular by the
    ratio of volume to environment irradiance, so glossy surfaces inside the
    café stop reflecting the sky.
-5. **Runtime ray-traced updates** of the same bricks and moments on the
+4. **Runtime ray-traced updates** of the same bricks and moments on the
    desktop pipeline, for dynamic lights and time of day without baked
    layers.
 
@@ -52,8 +46,6 @@ and 73 s for the lamp group.
 - **Tiled pipeline.** `tiled_bistro_baked_native` before and after, with
   `Tiled.Opaque` within noise. Its indirect diffuse alone needs render mode 9
   in the harness, which accepts only five modes on Metal today.
-- **M1 Pro.** Bake time and peak memory of the Metal gather after item 2,
-  against the CPU baseline above.
 - **Leaks.** A Bistro night capture across the café facade that shows no
   interior lamp bounce on the outer wall away from the openings.
 - **Cost.** An authoritative, clean-tree timing of the desktop lookup against

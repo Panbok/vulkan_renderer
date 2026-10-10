@@ -12,8 +12,8 @@ Accepted (partial). The sparse brick volume replaced the room-proof grid on
 2026-10-09. The desktop pipeline (Vulkan) bakes, loads, composes and samples
 it, with native evidence on Bistro. The tiled pipeline (Metal) composes and
 samples it too, with native evidence on Bistro and the leak fixture since
-2026-10-10. Metal has no probe gather, so a Mac bakes volumes with the CPU
-integrator. Light paths are not yet shared across layers.
+2026-10-10, and a Mac bakes volumes on Metal ray tracing. Light paths are not
+yet shared across layers.
 
 ## Context
 
@@ -109,8 +109,12 @@ stays non-negative. The cost is directionality: a lamp-dominated probe facing
 its lamp evaluates `2c` instead of `3c`.
 
 **Transport.**
-- The default is `vkr_bake_gpu` with Vulkan ray queries
-  ([`vkr_bake_vulkan.cpp`](../../tools/bake/vkr_bake_vulkan.cpp)).
+- The default is `vkr_bake_gpu`: Vulkan ray queries
+  ([`vkr_bake_vulkan.cpp`](../../tools/bake/vkr_bake_vulkan.cpp)) or Metal ray
+  tracing ([`vkr_bake_metal.mm`](../../tools/bake/vkr_bake_metal.mm)), whose
+  `probe_gather` kernels share the lightmap gather's `path_radiance`. Metal
+  takes one sample of each pixel per command buffer and accumulates the runs
+  in sample order, so the split does not change the result.
 - `--cpu` selects the CPU integrator
   ([`vkr_bake_integrator.h`](../../tools/bake/vkr_bake_integrator.h)), and
   `--gpu-parity` compares the two.
@@ -118,8 +122,18 @@ its lamp evaluates `2c` instead of `3c`.
   specular or thick glass chains. The GPU gather has none.
 - In the CPU integrator, a path that exceeds the transparent-layer limit
   ends dark, and a shadow walk that exceeds it returns no light.
-- Each probe's paths are seeded from its lattice position, so a volume is
+- Each probe's paths are seeded from its lattice position, so a CPU volume is
   byte-identical for any thread count ([ADR-077](077-asset-build-system.md)).
+  A Metal volume is byte-identical for any batching on a scene without cutout
+  or blended surfaces, but two Metal bakes of the Level Design Test differ:
+  shadow rays accept any hit, so through such surfaces the order of hits, and
+  with it the random draws, varies between runs.
+- A scene whose bounds need more indirection entries or bricks than the
+  limits allow at its spacing gets no volume: the diffuse baker exits with
+  `VKR_DIFFUSE_VOLUME_OVER_BUDGET_EXIT`, `vkr_bakery bake diffuse` with
+  `VKR_BAKERY_BAKE_VOLUME_TOO_LARGE`, and the project bake drops any previous
+  volume and bakes the lightmaps with a warning, as for a scene without
+  geometry. The Bake settings window's Probe spacing widens the lattice.
 - SH projection is L1 only, as `E/π` with the cosine lobe's band-1 transfer
   of 2/3 (`vkr_bake_sh_project_l1`).
 
@@ -304,6 +318,19 @@ non-authoritative runs on a dirty tree:
   with a volume baked before and after the non-negative clamp: 10.4 % of
   pixels change, in patches beside lamps; across them blue minus red moves
   from −9.7 to −12.3 and 59 % of them were bluer without the clamp.
+- **Metal probe gather.** `--gpu-parity 256` on the leak fixture
+  (`--face-size 4`): at 4 samples every sun key's mean is within 0.5 % of the
+  CPU's and its per-probe RMS 0.23 to 0.87 of the RMS between two CPU seeds;
+  the lamp group's 1.67 falls to 1.04 at 16 samples, where sun keys 2 and 7
+  read 0.5 % and 0.4 % low (z ≈ −4), the diffusely spread specular lobe of the
+  GPU subset ([ADR-088](088-baked-lightmap-sets.md)). Lifting the loop into
+  `path_radiance` left the leak fixture's lightmap byte-identical.
+- **GPU bakes.** Bistro at the default `--face-size 8 --samples 4`: 677 s,
+  4.8 GB peak; each sun key 40 to 44 s of GPU time, the 72-lamp group 183 s.
+  The longest command buffer was 111 ms in a sun key and 659 ms in the lamp
+  group. The Level Design Test at `--spacing 1.5` (8,683 bricks, 262,700
+  probes; 1 m exceeds the brick budget): 82 s with 51 s of GPU time, from the
+  editor's Bake lighting.
 - **Validation.** One `MTL_DEBUG_LAYER=1` snapshot each of
   `tiled_bistro_sparse_volume_on_capture` (compose) and
   `local_shadow_bistro_metal_street_moving_capture`
@@ -321,7 +348,9 @@ Unavailable:
 
 - **Path sharing.** Sharing light paths across layers would cut bake time:
   each sun key costs about 22 s on Bistro.
-- **Metal probe gather.** Mac bakes need one to stop falling back to the CPU.
+- **Command buffer length.** A lamp group's longest Metal buffer (659 ms on
+  Bistro) nears the second at which macOS ended lightmap buffers while
+  another app drew; larger lamp counts need smaller buffers for lamp layers.
 - **Directionality.** Lamp-lit moving objects look flat next to lightmapped
   surfaces: the non-negative clamp halves a lamp band's linear term.
 - **Cost.** An authoritative timing exceeds the owner's budget, or the

@@ -1485,9 +1485,9 @@ These are limits of current code or retained acceptance, not scheduled promises:
   remain outside the completed rigid-motion temporal contract.
 - Visibility-buffer MSAA, a general effects system, asynchronous graph queues
   and fully graph-declared IBL baking are not production features.
-- Sparse baked diffuse volumes bake on Vulkan ray queries or the CPU and
-  light both pipeline classes; Metal has no probe gather, so a Mac bakes them
-  on the CPU, and light paths are traced per layer; see
+- Sparse baked diffuse volumes bake on Vulkan ray queries, Metal ray
+  tracing or the CPU and light both pipeline classes; light paths are traced
+  per layer; see
   [ADR-054](adr/054-baked-diffuse-volumes.md).
 - Lightmap sets bake on Metal ray tracing or Vulkan ray queries into VKLM
   files that projects store and package; each platform bakes only the
