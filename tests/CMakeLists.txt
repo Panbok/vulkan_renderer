@@ -43,6 +43,12 @@ find_package(Vulkan REQUIRED)
 target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_script_fps vkr_harness_core vkr_collision_cooking vkr_bake_core vkr_bakery_json ktx Vulkan::Vulkan)
 # The network transport tests also call libsodium to check Noise vectors.
 target_link_libraries(vulkan_renderer_tester PRIVATE vkr_net vkr_sodium)
+# The depot tests use libktx's zstd through the depot codec adapter.
+target_link_libraries(vulkan_renderer_tester PRIVATE vkr_depot_lib)
+target_sources(vulkan_renderer_tester PRIVATE
+    "${CMAKE_SOURCE_DIR}/tools/depot/vkr_depot_zstd.c")
+target_include_directories(vulkan_renderer_tester PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/ktx-software/external/basisu/zstd")
 
 # Script modules the host reload tests load (ADR-079): one source, four
 # variants, linked as MODULE libraries so an engine symbol fails the link.

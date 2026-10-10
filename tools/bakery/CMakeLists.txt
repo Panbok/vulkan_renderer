@@ -14,6 +14,18 @@ if(NOT WIN32)
     target_link_libraries(vkr_bakery_json PUBLIC m)
 endif()
 
+# Bakery's host file-system and process helpers. The asset depot
+# (tools/depot) walks, stages and clones files through them too.
+add_library(vkr_bakery_os STATIC vkr_bakery_os.c vkr_bakery_os.h)
+vkr_require_declared_c_functions(vkr_bakery_os)
+target_include_directories(vkr_bakery_os PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/lib/src")
+target_link_libraries(vkr_bakery_os PUBLIC vkr_foundation)
+if(WIN32)
+    target_link_libraries(vkr_bakery_os PUBLIC psapi)
+endif()
+
 add_executable(vkr_bakery
     vkr_bakery_main.c
     vkr_bakery_commands.c
@@ -22,7 +34,6 @@ add_executable(vkr_bakery
     vkr_bakery_events.c
     vkr_bakery_graph.c
     vkr_bakery_index.c
-    vkr_bakery_os.c
     vkr_bakery_registry.c
     vkr_bakery_script.c
     vkr_bakery_serve.c
@@ -34,7 +45,7 @@ target_include_directories(vkr_bakery PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_BINARY_DIR}"
     "${CMAKE_SOURCE_DIR}/lib/src")
-target_link_libraries(vkr_bakery PRIVATE vkr_foundation vkr_bakery_json)
+target_link_libraries(vkr_bakery PRIVATE vkr_foundation vkr_bakery_json vkr_bakery_os)
 if(APPLE)
     # FSEvents watches files for the daemon.
     target_link_libraries(vkr_bakery PRIVATE "-framework CoreServices")

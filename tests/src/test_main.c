@@ -22,6 +22,7 @@
 #include "mesh_skin_tests.h"
 #include "net_test.h"
 #include "net_wire_test.h"
+#include "depot_test.h"
 #include "physics_test.h"
 #include "player_animation_test.h"
 #include "scene_animation_tests.h"
@@ -101,6 +102,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_local_socket_tests),
     VKR_TEST_SUITE(run_net_tests),
     VKR_TEST_SUITE(run_net_wire_tests),
+    VKR_TEST_SUITE(run_depot_tests),
     VKR_TEST_SUITE(run_texture_vkt_tests),
     VKR_TEST_SUITE(run_renderer_impl_tests),
     VKR_TEST_SUITE(run_vulkan_tests),

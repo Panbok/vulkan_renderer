@@ -42,6 +42,9 @@ add_executable(vkr_net_bench net/vkr_net_bench.c)
 vkr_require_declared_c_functions(vkr_net_bench)
 target_link_libraries(vkr_net_bench PRIVATE vkr_net vkr_sodium vkr_foundation)
 
+# The asset depot server, client and command (tools/depot).
+add_subdirectory(depot)
+
 find_package(Vulkan REQUIRED)
 
 # Capture/export consumers and asset importers share one image writer object.
