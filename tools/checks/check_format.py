@@ -26,8 +26,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_MAJOR = 19
-ROOTS = ('lib/src', 'renderer/src', 'runtime/src', 'editor/src', 'app/src',
-         'tools', 'tests/src', 'examples')
+ROOTS = ('lib/src', 'net/src', 'renderer/src', 'runtime/src', 'editor/src',
+         'app/src', 'tools', 'tests/src', 'examples')
 THIRD_PARTY_PREFIXES = ('stb_', 'cgltf')
 
 

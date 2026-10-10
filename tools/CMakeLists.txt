@@ -36,6 +36,12 @@ vkr_configure_table_cooker_target(vkr_anisotropy_cooker)
 target_link_libraries(vkr_anisotropy_cooker PRIVATE vkr_foundation)
 target_include_directories(vkr_anisotropy_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
 
+# Network transport measurements: crypto, raw UDP, the transport over sockets
+# and over the simulated link (docs/proposals/network-protocol.md).
+add_executable(vkr_net_bench net/vkr_net_bench.c)
+vkr_require_declared_c_functions(vkr_net_bench)
+target_link_libraries(vkr_net_bench PRIVATE vkr_net vkr_sodium vkr_foundation)
+
 find_package(Vulkan REQUIRED)
 
 # Capture/export consumers and asset importers share one image writer object.

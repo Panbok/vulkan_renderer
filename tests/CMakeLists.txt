@@ -41,6 +41,8 @@ find_package(Vulkan REQUIRED)
 # The editor project store writes reflection probes through the Bakery JSON
 # tree (ADR-103).
 target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_script_fps vkr_harness_core vkr_collision_cooking vkr_bake_core vkr_bakery_json ktx Vulkan::Vulkan)
+# The network transport tests also call libsodium to check Noise vectors.
+target_link_libraries(vulkan_renderer_tester PRIVATE vkr_net vkr_sodium)
 
 # Script modules the host reload tests load (ADR-079): one source, four
 # variants, linked as MODULE libraries so an engine symbol fails the link.
