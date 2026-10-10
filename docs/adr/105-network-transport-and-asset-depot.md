@@ -13,8 +13,10 @@ Accepted (partial). Phases 0 to 3 of the
 implemented: the encrypted UDP transport, the binary data format, services
 over sessions, and the asset depot with its server and command. Every check
 ran on Windows (Ryzen 5 2600, clang); macOS execution and every
-cross-machine measurement are unverified. The proposal keeps editor
-collaboration, agent federation, game sessions, asset and view streaming,
+cross-machine measurement are unverified.
+[ADR-106](106-collaborative-editing-session.md) builds editor collaboration
+on it. The proposal keeps the rest of editor collaboration, agent
+federation, game sessions, asset and view streaming,
 scale and the open items listed under [Gaps](#gaps).
 
 ## Context

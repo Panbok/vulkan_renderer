@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-08
+updated: 2026-10-10
 authority: adr
 ---
 # ADR-084: Agent channel and level design toolkit
@@ -103,6 +103,7 @@ thread during the editor's build.
 | `undo`, `redo`, `cmd` | Cmd statements through the Cmd queue, returning the `[cmd]` lines they printed |
 | `query.raycast` | First physics surface along a ray |
 | `view.capture` | A PNG of the Scene or the whole window, optionally from another view, framed on an entity or box, with grid labels |
+| `session.host`, `session.join`, `session.leave`, `session.status` | The collaborative editing session ([ADR-106](106-collaborative-editing-session.md)) |
 
 An entity argument is `"<world>:<index>:<generation>"`, a unique exact name,
 or `"$k"` for the entity operation `k` of the same batch created. A name

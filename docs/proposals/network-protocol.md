@@ -9,14 +9,16 @@ The work that remains of one binary protocol over UDP for every networked
 feature of the engine and the editor. The transport, the binary data format,
 services over sessions and the asset depot (phases 0 to 3) are implemented;
 [ADR-105](../adr/105-network-transport-and-asset-depot.md) records them and
-their evidence. This proposal keeps the services that build on them:
+their evidence. The core of editor collaboration is implemented too
+([ADR-106](../adr/106-collaborative-editing-session.md)). This proposal keeps
+the services that build on them:
 
 1. Asset streaming: assets fetched from a depot as the scene needs them and
    uploaded into GPU memory.
 2. Game sessions: lobbies of 10 to 20 players first, later persistent worlds
    with 10,000 or more players and 200 to 400 in one place.
-3. Editor collaboration: several users in one editor session whose edits,
-   drags and clicks reach every participant.
+3. Editor collaboration: the rest of several users in one editor session
+   whose edits, drags and clicks reach every participant.
 4. Agent federation: agents on several machines that work on one level
    through their own editors, with work divided between them.
 5. View streaming: frames rendered on another machine and streamed back.
@@ -285,71 +287,33 @@ persistence are outside this proposal.
 
 ### Editor collaboration (use case 3)
 
-One editor is the session host. A headless editor on a server can also be
-the host. The host owns the authoritative scenes, the journal and a
-session-wide edit sequence. Other editors are participants.
+[ADR-106](../adr/106-collaborative-editing-session.md) implements the core:
+host and join, host-ordered edit requests with mirrored journals, replay
+from the session base, shared undo, gizmo moves and presence data. The rest:
 
-#### Joining
-
-1. The participant pulls the project from the depot, or confirms that its
-   working copy matches the host's commit.
-2. The host sends the session state as schema messages: per container, its
-   journal revision and the entities changed since the commit, encoded
-   through their type descriptors.
-3. The participant applies the state and reports ready. From then on,
-   journal groups arrive in session order.
-
-#### Edits
-
-A participant's editor runs an operation locally, as it does today, up to
-the `VkrSampleEditBatchItem` list. It sends the list to the host instead
-of submitting it to its own runtime.
-
-```text
-participant                          host
-  | EDIT_BATCH: items, base revisions -> |
-  |                                      | validate, check bases,
-  |                                      | apply as journal group,
-  |                                      | assign session sequence
-  | <- EDIT_RESULT: ok or code + index   |
-  | <- JOURNAL_GROUP (to every peer)     |
-```
-
-- `EDIT_BATCH` names entities by `ENTITY_REF` or by a `$k` index into the
-  batch, never by a local `VkrEntityId`. Component values travel through
-  the component's wire encoding and include only the fields the request
-  sets. Each item that reads an entity carries that entity's revision.
-- The host refuses an item whose base revision is out of date. The
-  participant then runs the operation again on the current state. Edits
-  to different entities never conflict.
-- `JOURNAL_GROUP` carries the author, the group ID and each entry's
-  resulting state: entity values, structure changes, and the after-state
-  rectangles of terrain samples. Participants apply results and do not
-  execute the operations again. Brush geometry and terrain strokes use
-  floating-point math that can differ between ARM and x86, so applying
-  results keeps all peers identical.
-- A participant waits one round trip for its structure edits in phase 4.
-  On a local network that wait is below one frame.
-- Undo and redo are requests to the host. Author-scoped undo already
-  refuses another author's step (`VKR-AGENT-0009`).
-
-#### Gestures and presence
-
-- A drag, gizmo move, slider scrub or terrain stroke sends `GESTURE`
-  messages on a `SEQUENCED` channel at the display rate: gesture ID,
-  entity and quantized value. Other participants draw a preview. The end
-  of the gesture is one `EDIT_BATCH`, which matches the current `gesture`
-  merge into one undo entry.
-- `PRESENCE` messages on a `SEQUENCED` channel at 10 Hz carry each
-  participant's camera, selection, cursor ray and tool. Editors draw
-  remote participants from them.
-- Claims (ADR-084) belong to the host and apply to every remote author.
-  The change feed is the host's feed.
-- A file created during the session, such as an import or a material
-  graph, is pushed to the depot. The host broadcasts `ASSET_PUBLISHED` with
-  the identity and hash, and participants fetch it when they need it.
-  Each platform cooks its own variant or takes it from the shared Bakery
-  cache.
+- **Joining from a depot commit.** A participant pulls the project from the
+  depot, or confirms its working copy matches the host's commit, and the
+  host sends a snapshot of what changed since the commit, so a host with
+  unsaved edits or a long history can take new participants.
+- **Journal results.** Terrain strokes, brush geometry and duplicates
+  travel as each entry's resulting state (entity values, structure changes,
+  after-state rectangles of terrain samples). Floating-point operations can
+  differ between ARM and x86, so applying results keeps peers identical.
+  Physics, collision layers, scene settings and partition edits follow.
+- **Gestures.** A drag, gizmo move, slider scrub or terrain stroke sends
+  `GESTURE` messages on a `SEQUENCED` channel at the display rate: gesture
+  ID, entity and quantized value. Other editors draw a preview; the end of
+  the gesture is the edit that already travels.
+- **Presence drawn.** Editors draw each participant's camera, selection,
+  cursor ray and tool from `PRESENCE`, and a Session window lists peers and
+  hosts or joins.
+- **Published assets.** A file created during the session, such as an
+  import or a material graph, is pushed to the depot. The host broadcasts
+  `ASSET_PUBLISHED` with the identity and hash, and participants fetch it
+  when they need it. Each platform cooks its own variant or takes it from
+  the shared Bakery cache.
+- **Access.** A session credential or an allow list of participant keys
+  instead of open joining for anyone who knows the key.
 - Play stays local to each participant in this proposal.
 
 ### Agent federation (use case 5)
@@ -417,7 +381,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | Owner | Path | Contents |
 |---|---|---|
 | `vkr_runtime` | `runtime/src/net/` | `world`, `stream` and `view` services, the remote content mount |
-| Editor | `editor/src/editor_session.c` | `collab` service, presence, task board, Session window |
+| Editor | `editor/src/editor_session.c` | The `collab` service (ADR-106); next gestures, drawn presence, task board, Session window |
 | Renderer | Encoder and decoder hooks | Separate design and ADR in phase 7 |
 | `vkr_net` | `net/src/` | Threaded host; replication helpers on the bit stream |
 
@@ -432,7 +396,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
-| 4. Editor collaboration and agents | Host and join, edit batches, journal groups, gestures, presence, session claims and feed, task board | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
+| 4. Editor collaboration and agents | Remaining after ADR-106: depot joining, journal results, gestures, drawn presence, published assets, session claims and feed, task board | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
 | 5. Game sessions | `world` service, opt-in components, input, prediction for the FPS module | 20 clients (bots) on a Bistro session with measured bytes per client and correction counts under 2% loss |
 | 6. Asset streaming | Remote content mount, then progressive mips and LOD ranges | Bistro streamed from a depot: time to first frame and to full detail; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |
@@ -519,6 +483,8 @@ phase that depends on it.
 
 - [ADR-105](../adr/105-network-transport-and-asset-depot.md): the
   transport, data format, sessions and asset depot.
+- [ADR-106](../adr/106-collaborative-editing-session.md): the collaborative
+  editing session.
 - [ADR-073](../adr/073-native-gameplay-foundation.md): fixed ticks and
   ordered input.
 - [ADR-076](../adr/076-project-object-model.md): type descriptors and

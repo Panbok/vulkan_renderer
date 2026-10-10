@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-08
+updated: 2026-10-10
 authority: context
 ---
 # Project vocabulary
@@ -248,6 +248,8 @@ Object model terms ([ADR-076](adr/076-project-object-model.md)):
 | Service | A versioned protocol (depot, collaboration, world) that opens its channels on a connection through the session. | [vkr_net_session.h](../net/src/vkr_net_session.h) |
 | Schema / schema hash | C descriptor tables of a service's binary messages / 64 bits of the SHA-256 of their wire layout, compared when a service opens. | [vkr_wire.h](../net/src/vkr_wire.h) |
 | Depot | A versioned, content-addressed asset store served over the network, with branches, commits and path locks. | [ADR-105](adr/105-network-transport-and-asset-depot.md) |
+| Collaborative session | Editors that share one scene over the network: the session host orders every journal edit and participants apply them in that order. | [ADR-106](adr/106-collaborative-editing-session.md) |
+| Session base | The scenes the host held when it started hosting; a joining editor must hold the same, checked by a digest, before the history replays. | [ADR-106](adr/106-collaborative-editing-session.md) |
 | Chunk / blob / tree / commit | Depot objects: a FastCDC piece of a file / a file's chunk list / a directory listing / a snapshot with parents, author and message, each named by the SHA-256 of its bytes. | [vkr_depot_object.h](../tools/depot/vkr_depot_object.h) |
 | Working copy | A directory synced with a depot branch, with `.vkrdepot/` holding its state, index and local store. | [vkr_depot_workspace.h](../tools/depot/vkr_depot_workspace.h) |
 
