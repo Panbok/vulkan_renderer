@@ -8784,7 +8784,8 @@ static bool8_t ops_build_terrain_ramp(OpsContext *ctx,
   return ops_terrain_item(ctx, batch, &ref, &op) != NULL;
 }
 
-/* terrain.stamp: a grayscale image of heights over a rectangle. */
+/* terrain.stamp: a grayscale image of heights over a rectangle, or with
+   mode paint an RGBA image of the four layers' weights. */
 static bool8_t ops_build_terrain_stamp(OpsContext *ctx,
                                        const VkrBakeryJson *args,
                                        OpsBatch *batch) {
@@ -8805,11 +8806,14 @@ static bool8_t ops_build_terrain_stamp(OpsContext *ctx,
   (void)vkr_bakery_json_get_string(args, "mode", &mode);
   if (!has_center || !vkr_bakery_json_get_string(args, "image", &image) ||
       !image.length || image.length >= 1024u || !(size > 0.0) ||
-      (!ops_equals(mode, "add") && !ops_equals(mode, "set"))) {
+      (!ops_equals(mode, "add") && !ops_equals(mode, "set") &&
+       !ops_equals(mode, "paint"))) {
     return ops_fail(ctx, OPS_INVALID,
                     "terrain.stamp needs an 'image' file, a 'center', a "
-                    "positive 'size' and 'mode' add or set");
+                    "positive 'size' and 'mode' add, set or paint");
   }
+  const bool8_t paint = ops_equals(mode, "paint");
+  const uint32_t channels = paint ? VKR_HEIGHTFIELD_LAYERS : 1u;
   char path[1100];
   char relative[1024];
   snprintf(relative, sizeof(relative), "%.*s", (int)image.length, image.str);
@@ -8834,11 +8838,13 @@ static bool8_t ops_build_terrain_stamp(OpsContext *ctx,
   }
   int width = 0;
   int height = 0;
-  int channels = 0;
-  stbi_us *pixels = encoded
-                        ? stbi_load_16_from_memory(encoded, (int)bytes, &width,
-                                                   &height, &channels, 1)
-                        : NULL;
+  int file_channels = 0;
+  /* Heights read one channel; weights read RGBA, each channel a layer's
+     share. 8-bit images widen to 16 bits. */
+  stbi_us *pixels =
+      encoded ? stbi_load_16_from_memory(encoded, (int)bytes, &width, &height,
+                                         &file_channels, (int)channels)
+              : NULL;
   if (!pixels || width < 2 || height < 2 || width > 4096 || height > 4096) {
     if (pixels) {
       stbi_image_free(pixels);
@@ -8846,10 +8852,10 @@ static bool8_t ops_build_terrain_stamp(OpsContext *ctx,
     return ops_fail(ctx, OPS_NOT_FOUND,
                     "The image did not load as 2 to 4096 pixels a side");
   }
-  float32_t *values =
-      arena_alloc(ops_arena(ctx), sizeof(float32_t) * (size_t)width * height,
-                  ARENA_MEMORY_TAG_ARRAY);
-  for (int i = 0; values && i < width * height; ++i) {
+  const size_t count = (size_t)width * height * channels;
+  float32_t *values = arena_alloc(ops_arena(ctx), sizeof(float32_t) * count,
+                                  ARENA_MEMORY_TAG_ARRAY);
+  for (size_t i = 0; values && i < count; ++i) {
     values[i] = (float32_t)pixels[i] / 65535.0f;
   }
   stbi_image_free(pixels);
@@ -8866,7 +8872,8 @@ static bool8_t ops_build_terrain_stamp(OpsContext *ctx,
       .image = values,
       .image_width = (uint32_t)width,
       .image_height = (uint32_t)height,
-      .add = ops_equals(mode, "add")};
+      .add = ops_equals(mode, "add"),
+      .paint = paint};
   (void)field;
   return ops_terrain_item(ctx, batch, &ref, &op) != NULL;
 }
@@ -13835,12 +13842,14 @@ static const OpsDef s_ops[] = {
     {"terrain.stamp",
      "Stamp a grayscale 'image' file over a square of 'size' metres at "
      "'center': 'mode' add raises by the image times 'height_scale'; set "
-     "makes heights center.y plus that.",
+     "makes heights center.y plus that; paint reads an RGBA image whose "
+     "channels weigh layers 1 to 4 and blends them, leaving heights and "
+     "holes.",
      "{\"type\":\"object\",\"properties\":{\"terrain\":" OPS_ENTITY_SCHEMA
      ",\"image\":{\"type\":\"string\"},\"center\":" OPS_VEC3_SCHEMA
      ",\"size\":{\"type\":\"number\"},\"height_scale\":{\"type\":"
      "\"number\"},\"mode\":{\"type\":\"string\",\"enum\":[\"add\","
-     "\"set\"]}," OPS_REVIEW_SCHEMA
+     "\"set\",\"paint\"]}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"terrain\",\"image\",\"center\"]}",
      NULL, ops_build_terrain_stamp},
     {"terrain.sample",

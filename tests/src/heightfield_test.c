@@ -199,6 +199,35 @@ static void heightfield_test_operations(void) {
   }
   assert(((vkr_heightfield_weights_at(&field, 32u, 32u) >> 16u) & 0xFFu) ==
          153u);
+
+  /* A paint stamp blends its pixels' weights: layer 1 on the west edge,
+     layer 3 on the east, half of each midway. Heights stay, and a hole
+     stays open. */
+  op = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_HOLE,
+                          .min = vec2_new(-29.5f, -0.5f),
+                          .max = vec2_new(-28.5f, 0.5f),
+                          .add = true_v};
+  assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
+  const float32_t raised = vkr_heightfield_at(&field, 32u, 32u);
+  const float32_t weights_image[2u * 2u * VKR_HEIGHTFIELD_LAYERS] = {
+      1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+      1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+  op = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_STAMP,
+                          .min = vec2_new(-32.0f, -32.0f),
+                          .max = vec2_new(32.0f, 32.0f),
+                          .image = weights_image,
+                          .image_width = 2u,
+                          .image_height = 2u,
+                          .paint = true_v};
+  assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
+  assert(vkr_heightfield_weights_at(&field, 0u, 10u) == 0xFFu);
+  assert(vkr_heightfield_weights_at(&field, 64u, 10u) == (0xFFu << 16u));
+  const uint32_t midway = vkr_heightfield_weights_at(&field, 32u, 10u);
+  assert((midway & 0xFFu) + ((midway >> 16u) & 0xFFu) == 255u &&
+         (midway & 0xFFu) >= 127u && ((midway >> 16u) & 0xFFu) >= 127u);
+  assert(vkr_heightfield_weights_at(&field, 3u, 32u) ==
+         VKR_HEIGHTFIELD_HOLE_WEIGHTS);
+  assert(vkr_heightfield_at(&field, 32u, 32u) == raised);
   vkr_heightfield_destroy(&field, &test.allocator);
   heightfield_test_end(&test);
   printf("  heightfield_test_operations PASSED\n");

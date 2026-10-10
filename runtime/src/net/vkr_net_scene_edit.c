@@ -384,6 +384,11 @@ static Vec3 net_edit_read_vec3(VkrBitReader *reader) {
   return vec3_new(x, y, z);
 }
 
+/* Values a stamp's image holds a pixel: a height, or a weight a layer. */
+static uint32_t net_edit_image_channels(const VkrHeightfieldOp *op) {
+  return op->paint ? VKR_HEIGHTFIELD_LAYERS : 1u;
+}
+
 /* A terrain op as its parameters, with a stamp's image and a road's points
    as raw arrays. */
 static void net_edit_write_terrain(VkrBitWriter *writer,
@@ -403,12 +408,14 @@ static void net_edit_write_terrain(VkrBitWriter *writer,
   net_edit_write_float(writer, op->width);
   net_edit_write_float(writer, op->falloff);
   vkr_bit_write(writer, op->add, 1u);
+  vkr_bit_write(writer, op->paint, 1u);
   const bool8_t image = op->image && op->image_width && op->image_height;
   vkr_bit_write_varuint(writer, image ? op->image_width : 0u);
   vkr_bit_write_varuint(writer, image ? op->image_height : 0u);
   if (image) {
     vkr_net_write_array(writer, op->image,
                         op->image_width * op->image_height *
+                            net_edit_image_channels(op) *
                             (uint32_t)sizeof(float32_t));
   }
   const uint32_t path = op->path ? op->path_count : 0u;
@@ -437,6 +444,7 @@ static bool8_t net_edit_read_terrain(VkrBitReader *reader,
   out->width = net_edit_read_float(reader);
   out->falloff = net_edit_read_float(reader);
   out->add = (bool8_t)vkr_bit_read(reader, 1u);
+  out->paint = (bool8_t)vkr_bit_read(reader, 1u);
   const uint64_t image_width = vkr_bit_read_varuint(reader);
   const uint64_t image_height = vkr_bit_read_varuint(reader);
   if (out->kind >= VKR_HEIGHTFIELD_OP_SAMPLES ||
@@ -450,9 +458,9 @@ static bool8_t net_edit_read_terrain(VkrBitReader *reader,
   if (image_width) {
     out->image_width = (uint32_t)image_width;
     out->image_height = (uint32_t)image_height;
-    out->image =
-        vkr_net_read_array(reader, out->image_width * out->image_height *
-                                       (uint32_t)sizeof(float32_t));
+    out->image = vkr_net_read_array(
+        reader, out->image_width * out->image_height *
+                    net_edit_image_channels(out) * (uint32_t)sizeof(float32_t));
   }
   const uint64_t path = vkr_bit_read_varuint(reader);
   if (path > NET_EDIT_PATH_MAX) {

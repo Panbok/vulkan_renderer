@@ -354,6 +354,29 @@ static void test_net_scene_edit_replication(void) {
     assert(op->path_count == 3u && op->path[2].z == -3.0f &&
            op->path[1].y == 2.0f);
     assert(((uintptr_t)op->image & 15u) == 0u);
+    /* A paint stamp carries every layer's weight a pixel. */
+    static const float32_t weights[2u * 2u * VKR_HEIGHTFIELD_LAYERS] = {
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f,  0.5f,  0.5f,  0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f, 0.25f, 0.25f, 0.25f, 0.25f};
+    terrain.terrain = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_STAMP,
+                                         .min = vec2_new(-3.0f, -2.0f),
+                                         .max = vec2_new(3.0f, 2.0f),
+                                         .image = weights,
+                                         .image_width = 2u,
+                                         .image_height = 2u,
+                                         .paint = true_v};
+    vkr_bit_writer_init(&terrain_writer, encoded, sizeof(encoded));
+    assert(vkr_net_scene_edit_write(&terrain_writer, &terrain_scenes, &terrain,
+                                    -1, -1, terrain_error,
+                                    sizeof(terrain_error)));
+    vkr_bit_reader_init(&terrain_reader, encoded,
+                        vkr_bit_writer_finish(&terrain_writer));
+    assert(vkr_net_scene_edit_read(&terrain_reader, &terrain_scenes, NULL,
+                                   &decoded_terrain, &refs[0], &refs[1],
+                                   terrain_error, sizeof(terrain_error)));
+    assert(op->paint && !op->add && op->image_width == 2u &&
+           op->image_height == 2u &&
+           MemCompare(op->image, weights, sizeof(weights)) == 0);
     /* The samples op is a result and never travels as a request. */
     terrain.terrain = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_SAMPLES};
     vkr_bit_writer_init(&terrain_writer, encoded, sizeof(encoded));

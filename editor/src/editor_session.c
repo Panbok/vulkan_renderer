@@ -42,7 +42,7 @@
  *   UNDO, REDO  empty
  *   REVERT  container 16, the session sequence of the batch it reverts */
 #define SESSION_SERVICE_VERSION 1u
-#define SESSION_SCHEMA_HASH 0x434f4c4c4142000aull
+#define SESSION_SCHEMA_HASH 0x434f4c4c4142000bull
 #define SESSION_EDIT_CHANNEL 0u
 #define SESSION_PRESENCE_CHANNEL 1u
 #define SESSION_MESSAGE_MAX (8u << 20)

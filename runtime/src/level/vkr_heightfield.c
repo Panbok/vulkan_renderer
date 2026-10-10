@@ -486,6 +486,35 @@ static void heightfield_paint(VkrHeightfield *field, uint32_t x, uint32_t z,
       bytes[0] | (bytes[1] << 8u) | (bytes[2] << 16u) | (bytes[3] << 24u);
 }
 
+/* Sets sample (x, z) to the blend of `w`, one weight a layer, keeping the
+   bytes summing to 255; a hole stays open, and no weight leaves layer 0. */
+static void heightfield_weights_set(VkrHeightfield *field, uint32_t x,
+                                    uint32_t z,
+                                    const float32_t w[VKR_HEIGHTFIELD_LAYERS]) {
+  uint32_t *weights = heightfield_weights_ref(field, x, z);
+  if (*weights == VKR_HEIGHTFIELD_HOLE_WEIGHTS) {
+    return;
+  }
+  float32_t sum = 0.0f;
+  for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
+    sum += Max(0.0f, w[i]);
+  }
+  uint32_t bytes[VKR_HEIGHTFIELD_LAYERS];
+  uint32_t total = 0u;
+  uint32_t largest = 0u;
+  for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
+    const float32_t share =
+        sum > 0.0f ? Max(0.0f, w[i]) / sum : (i == 0u ? 1.0f : 0.0f);
+    bytes[i] = (uint32_t)lroundf(share * 255.0f);
+    total += bytes[i];
+    largest = bytes[i] > bytes[largest] ? i : largest;
+  }
+  /* Rounding drift goes to the heaviest layer. */
+  bytes[largest] = (uint32_t)((int32_t)bytes[largest] + 255 - (int32_t)total);
+  *weights =
+      bytes[0] | (bytes[1] << 8u) | (bytes[2] << 16u) | (bytes[3] << 24u);
+}
+
 /* Makes sample (x, z) a hole (`open`), or returns a hole to ground on layer
    0 at the height it kept. */
 static void heightfield_cut(VkrHeightfield *field, uint32_t x, uint32_t z,
@@ -741,25 +770,35 @@ static bool8_t heightfield_op_run(VkrHeightfield *field,
     }
     const float32_t w = (float32_t)(op->image_width - 1u);
     const float32_t h = (float32_t)(op->image_height - 1u);
+    const uint32_t channels = op->paint ? VKR_HEIGHTFIELD_LAYERS : 1u;
     for (uint32_t sz = touched->z0; sz <= touched->z1; ++sz) {
       for (uint32_t sx = touched->x0; sx <= touched->x1; ++sx) {
         const Vec2 at = heightfield_local(field, sx, sz);
-        /* Bilinear image value at this sample. */
+        /* Bilinear image values at this sample. */
         const float32_t u = (at.x - op->min.x) / (op->max.x - op->min.x) * w;
         const float32_t v = (at.y - op->min.y) / (op->max.y - op->min.y) * h;
         const uint32_t u0 = Min((uint32_t)Max(0.0f, u), op->image_width - 2u);
         const uint32_t v0 = Min((uint32_t)Max(0.0f, v), op->image_height - 2u);
         const float32_t fu = Min(1.0f, Max(0.0f, u - (float32_t)u0));
         const float32_t fv = Min(1.0f, Max(0.0f, v - (float32_t)v0));
-        const float32_t *row0 = op->image + (size_t)v0 * op->image_width;
-        const float32_t *row1 = row0 + op->image_width;
-        const float32_t value =
-            (row0[u0] * (1.0f - fu) + row0[u0 + 1u] * fu) * (1.0f - fv) +
-            (row1[u0] * (1.0f - fu) + row1[u0 + 1u] * fu) * fv;
+        const size_t stride = (size_t)op->image_width * channels;
+        const float32_t *row0 =
+            op->image + (size_t)v0 * stride + (size_t)u0 * channels;
+        const float32_t *row1 = row0 + stride;
+        float32_t value[VKR_HEIGHTFIELD_LAYERS] = {0};
+        for (uint32_t c = 0; c < channels; ++c) {
+          value[c] =
+              (row0[c] * (1.0f - fu) + row0[channels + c] * fu) * (1.0f - fv) +
+              (row1[c] * (1.0f - fu) + row1[channels + c] * fu) * fv;
+        }
+        if (op->paint) {
+          heightfield_weights_set(field, sx, sz, value);
+          continue;
+        }
         const float32_t now = vkr_heightfield_at(field, sx, sz);
         heightfield_blend(field, sx, sz,
-                          op->add ? now + value * op->strength
-                                  : op->height + value * op->strength,
+                          op->add ? now + value[0] * op->strength
+                                  : op->height + value[0] * op->strength,
                           1.0f);
       }
     }

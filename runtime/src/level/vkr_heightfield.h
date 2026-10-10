@@ -248,7 +248,9 @@ typedef enum VkrHeightfieldOpKind {
   VKR_HEIGHTFIELD_OP_FLATTEN,
   VKR_HEIGHTFIELD_OP_RAMP,
   /* An image of heights over [`min`, `max`]: each sample takes `height` plus
-     `strength` times the image value, or with `add` gains it. */
+     `strength` times the image value, or with `add` gains it. With `paint`
+     the image holds four layer weights a pixel instead, and each sample
+     outside a hole takes their normalized blend. */
   VKR_HEIGHTFIELD_OP_STAMP,
   /* A road: a ramp `width` wide from each of `path_count` points, offset by
      `a`, to the next, blending over `falloff`. */
@@ -281,12 +283,14 @@ typedef struct VkrHeightfieldOp {
   float32_t height;
   float32_t width;
   float32_t falloff;
-  /* Stamps: `image_width` x `image_height` values in [0, 1], row by row from
-     `min`, borrowed for the call. */
+  /* Stamps: `image_width` x `image_height` pixels of values in [0, 1], row
+     by row from `min`, borrowed for the call: one height a pixel, or with
+     `paint` VKR_HEIGHTFIELD_LAYERS weights. */
   const float32_t *image;
   uint32_t image_width;
   uint32_t image_height;
   bool8_t add;
+  bool8_t paint;
   /* Roads: points of the centreline, borrowed for the call. */
   const Vec3 *path;
   uint32_t path_count;

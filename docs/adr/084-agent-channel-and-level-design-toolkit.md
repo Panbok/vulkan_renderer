@@ -1196,7 +1196,7 @@ Agents edit regions with operations that take world coordinates:
 | `terrain.brush` | Raise, lower, smooth, flatten, paint a layer, cut holes or fill them with a round brush at up to 256 points |
 | `terrain.flatten` | Level a footprint at a height, blending over a falloff |
 | `terrain.ramp` | A straight slope of a width between two surface points |
-| `terrain.stamp` | Add or set heights from a grayscale PNG over a square |
+| `terrain.stamp` | Add or set heights from a grayscale PNG over a square, or with `mode` `paint` set the four layers' weights from an RGBA PNG's channels (a weightmap import), normalized per sample, leaving heights and holes |
 | `terrain.sample` | Ground heights at x and z points, or with `region` a grid every `step` metres in rows from minimum z, each running +x, rounded to centimetres; at most 4,096 heights; null over a hole |
 | `terrain.hole` | Cut holes for an entrance, the samples strictly inside a `min`/`max` box (a box on grid lines opens exactly) or within `radius` of `points`; `fill` closes them |
 
@@ -1434,7 +1434,10 @@ material then).
   partial last tile, the brush, flatten, ramp and paint results at named
   samples, the touched rectangle an operation predicts, and a stroke folded
   into one undo entry that undo and redo restore; suite `physics` covers a
-  height field body (2026-10-04, macOS Debug).
+  height field body (2026-10-04, macOS Debug). The same suite covers a
+  paint stamp's blended weights at named samples, the hole it leaves open
+  and the heights it keeps, and suite `net_scene_edit` its round trip
+  (2026-10-11, macOS Release).
 - Headless macOS Release on Bistro (2026-10-04): `terrain.create`,
   `terrain.brush`, `terrain.flatten`, `terrain.ramp`, `terrain.sample` and
   `scene.describe` on a 256 m terrain north of the town; `query.raycast`
