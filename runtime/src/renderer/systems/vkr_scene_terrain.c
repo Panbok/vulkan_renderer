@@ -435,8 +435,15 @@ bool8_t vkr_scene_terrain_stage(const char *path, uint32_t cells,
                                 float32_t spacing, float32_t height_min,
                                 float32_t height_max, float32_t height) {
   if (!path || strlen(path) >= sizeof(s_terrain_staged[0].path) ||
-      cells > VKR_HEIGHTFIELD_RESIDENT_CELLS ||
-      s_terrain_staged_count == TERRAIN_STAGED_MAX) {
+      cells > VKR_HEIGHTFIELD_RESIDENT_CELLS) {
+    return false_v;
+  }
+  /* Staging one path again keeps the first: a collaborative session stages
+     on every editor what one editor created (ADR-106). */
+  if (terrain_staged_find(path)) {
+    return true_v;
+  }
+  if (s_terrain_staged_count == TERRAIN_STAGED_MAX) {
     return false_v;
   }
   TerrainStaged *staged = &s_terrain_staged[s_terrain_staged_count++];

@@ -784,24 +784,45 @@ static void edit_terrain_arrays(EditTerrainPayload *payload, uint32_t which,
                           which * count * sizeof(uint16_t));
 }
 
-bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
-                               VkrEntityId entity, const VkrHeightfieldOp *op,
-                               uint64_t gesture) {
+/* `op`, in world space, in the space of `entity`'s terrain. */
+static const VkrHeightfield *edit_terrain_local(const VkrScene *scene,
+                                                VkrEntityId entity,
+                                                const VkrHeightfieldOp *op,
+                                                VkrHeightfieldOp *out_local) {
   const VkrHeightfield *field = vkr_scene_terrain_field(scene, entity);
   Vec3 origin = {0};
   if (!field ||
       !vkr_scene_terrain_to_local(scene, entity, vec3_zero(), &origin)) {
+    return NULL;
+  }
+  *out_local = *op;
+  out_local->a = vec3_add(op->a, origin);
+  out_local->b = vec3_add(op->b, origin);
+  out_local->min = vec2_new(op->min.x + origin.x, op->min.y + origin.z);
+  out_local->max = vec2_new(op->max.x + origin.x, op->max.y + origin.z);
+  out_local->height = op->height + origin.y;
+  return field;
+}
+
+bool8_t vkr_scene_edit_terrain_rect(const VkrScene *scene, VkrEntityId entity,
+                                    const VkrHeightfieldOp *op,
+                                    VkrHeightfieldRect *out) {
+  VkrHeightfieldOp local;
+  const VkrHeightfield *field = edit_terrain_local(scene, entity, op, &local);
+  return field && vkr_heightfield_op_rect(field, &local, out);
+}
+
+bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
+                               VkrEntityId entity, const VkrHeightfieldOp *op,
+                               uint64_t gesture) {
+  /* World to the terrain's local space. */
+  VkrHeightfieldOp local;
+  const VkrHeightfield *field = edit_terrain_local(scene, entity, op, &local);
+  if (!field) {
     snprintf(s->status, sizeof(s->status),
              "That object has no loaded terrain.");
     return false_v;
   }
-  /* World to the terrain's local space. */
-  VkrHeightfieldOp local = *op;
-  local.a = vec3_add(op->a, origin);
-  local.b = vec3_add(op->b, origin);
-  local.min = vec2_new(op->min.x + origin.x, op->min.y + origin.z);
-  local.max = vec2_new(op->max.x + origin.x, op->max.y + origin.z);
-  local.height = op->height + origin.y;
   VkrHeightfieldRect rect;
   if (!vkr_heightfield_op_rect(field, &local, &rect)) {
     snprintf(s->status, sizeof(s->status), "The edit misses the terrain.");

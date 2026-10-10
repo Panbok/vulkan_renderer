@@ -305,6 +305,62 @@ static void test_net_scene_edit_replication(void) {
   net_edit_replicate(&a, &b, &request);
   net_edit_compare_all(&a, &b);
 
+  /* A terrain op travels with its stamp image and road points as aligned
+     raw arrays the reader borrows in place. */
+  {
+    static const float32_t image[6] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f, 0.1f};
+    static const Vec3 path[3] = {
+        {0.0f, 1.0f, 0.0f}, {4.0f, 2.0f, 0.5f}, {9.0f, 1.5f, -3.0f}};
+    VkrSceneEditRequest terrain = {.action = VKR_SCENE_EDIT_TERRAIN,
+                                   .entity = net_edit_find(&a, 2u),
+                                   .gesture = 7u};
+    terrain.terrain = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_STAMP,
+                                         .min = vec2_new(-3.0f, -2.0f),
+                                         .max = vec2_new(3.0f, 2.0f),
+                                         .strength = 2.5f,
+                                         .height = 0.75f,
+                                         .image = image,
+                                         .image_width = 3u,
+                                         .image_height = 2u,
+                                         .path = path,
+                                         .path_count = 3u,
+                                         .add = true_v};
+    _Alignas(16) uint8_t encoded[1024];
+    VkrBitWriter terrain_writer;
+    vkr_bit_writer_init(&terrain_writer, encoded, sizeof(encoded));
+    char terrain_error[256];
+    const VkrNetSceneEditScenes terrain_scenes = net_edit_scenes(&a);
+    assert(vkr_net_scene_edit_write(&terrain_writer, &terrain_scenes, &terrain,
+                                    -1, -1, terrain_error,
+                                    sizeof(terrain_error)));
+    const uint32_t encoded_size = vkr_bit_writer_finish(&terrain_writer);
+    VkrBitReader terrain_reader;
+    vkr_bit_reader_init(&terrain_reader, encoded, encoded_size);
+    VkrSceneEditRequest decoded_terrain;
+    int32_t refs[2];
+    assert(vkr_net_scene_edit_read(&terrain_reader, &terrain_scenes,
+                                   &decoded_terrain, &refs[0], &refs[1],
+                                   terrain_error, sizeof(terrain_error)));
+    const VkrHeightfieldOp *op = &decoded_terrain.terrain;
+    assert(decoded_terrain.action == VKR_SCENE_EDIT_TERRAIN &&
+           decoded_terrain.entity.u64 == terrain.entity.u64 &&
+           decoded_terrain.gesture == 7u);
+    assert(op->kind == VKR_HEIGHTFIELD_OP_STAMP && op->add &&
+           op->strength == 2.5f && op->height == 0.75f && op->min.x == -3.0f &&
+           op->max.y == 2.0f);
+    assert(op->image_width == 3u && op->image_height == 2u &&
+           MemCompare(op->image, image, sizeof(image)) == 0);
+    assert(op->path_count == 3u && op->path[2].z == -3.0f &&
+           op->path[1].y == 2.0f);
+    assert(((uintptr_t)op->image & 15u) == 0u);
+    /* The samples op is a result and never travels as a request. */
+    terrain.terrain = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_SAMPLES};
+    vkr_bit_writer_init(&terrain_writer, encoded, sizeof(encoded));
+    assert(!vkr_net_scene_edit_write(&terrain_writer, &terrain_scenes, &terrain,
+                                     -1, -1, terrain_error,
+                                     sizeof(terrain_error)));
+  }
+
   /* What cannot travel is refused at the writer: here a duplicate without
      the seed of its ids. */
   uint8_t bytes[4096];

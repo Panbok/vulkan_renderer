@@ -834,6 +834,73 @@ static void heightfield_test_holes(void) {
   printf("  heightfield_test_holes PASSED\n");
 }
 
+/* Fails when the samples op does not copy another op's result exactly:
+   heights and paint, inside the rectangle only. */
+static void heightfield_test_samples(void) {
+  printf("  Running heightfield_test_samples...\n");
+  HeightfieldTest test;
+  heightfield_test_begin(&test);
+  VkrHeightfield source;
+  VkrHeightfield copy;
+  assert(vkr_heightfield_create(&source, 64u, 1.0f, -50.0f, 50.0f, 0.0f,
+                                &test.allocator));
+  assert(vkr_heightfield_create(&copy, 64u, 1.0f, -50.0f, 50.0f, 0.0f,
+                                &test.allocator));
+  VkrHeightfieldRect touched;
+  const VkrHeightfieldOp raise = {.kind = VKR_HEIGHTFIELD_OP_BRUSH,
+                                  .brush = VKR_HEIGHTFIELD_RAISE,
+                                  .a = vec3_new(3.0f, 0.0f, -2.0f),
+                                  .radius = 5.0f,
+                                  .strength = 1.7f};
+  assert(vkr_heightfield_op_apply(&source, &raise, &test.allocator, &touched));
+  const VkrHeightfieldOp paint = {.kind = VKR_HEIGHTFIELD_OP_BRUSH,
+                                  .brush = VKR_HEIGHTFIELD_PAINT,
+                                  .a = vec3_new(3.0f, 0.0f, -2.0f),
+                                  .radius = 5.0f,
+                                  .strength = 0.6f,
+                                  .layer = 2u};
+  VkrHeightfieldRect painted;
+  assert(vkr_heightfield_op_apply(&source, &paint, &test.allocator, &painted));
+  (void)vkr_heightfield_rect_union(&source, touched, painted, &touched);
+  const uint32_t count = vkr_heightfield_rect_count(touched);
+  uint16_t *heights = malloc(count * sizeof(uint16_t));
+  uint32_t *weights = malloc(count * sizeof(uint32_t));
+  assert(heights && weights);
+  vkr_heightfield_read_rect(&source, touched, heights, weights);
+  const VkrHeightfieldOp samples = {.kind = VKR_HEIGHTFIELD_OP_SAMPLES,
+                                    .rect = touched,
+                                    .heights = heights,
+                                    .weights = weights};
+  VkrHeightfieldRect written;
+  assert(vkr_heightfield_op_apply(&copy, &samples, &test.allocator, &written));
+  assert(MemCompare(&written, &touched, sizeof(written)) == 0);
+  const VkrHeightfieldRect whole = {0u, 0u, 64u, 64u};
+  const uint32_t all = vkr_heightfield_rect_count(whole);
+  uint16_t *a_heights = malloc(all * sizeof(uint16_t));
+  uint16_t *b_heights = malloc(all * sizeof(uint16_t));
+  uint32_t *a_weights = malloc(all * sizeof(uint32_t));
+  uint32_t *b_weights = malloc(all * sizeof(uint32_t));
+  assert(a_heights && b_heights && a_weights && b_weights);
+  vkr_heightfield_read_rect(&source, whole, a_heights, a_weights);
+  vkr_heightfield_read_rect(&copy, whole, b_heights, b_weights);
+  assert(MemCompare(a_heights, b_heights, all * sizeof(uint16_t)) == 0);
+  assert(MemCompare(a_weights, b_weights, all * sizeof(uint32_t)) == 0);
+  /* A rectangle past the field is refused. */
+  VkrHeightfieldOp outside = samples;
+  outside.rect.x1 = 65u;
+  assert(!vkr_heightfield_op_rect(&copy, &outside, &written));
+  free(a_heights);
+  free(b_heights);
+  free(a_weights);
+  free(b_weights);
+  free(heights);
+  free(weights);
+  vkr_heightfield_destroy(&source, &test.allocator);
+  vkr_heightfield_destroy(&copy, &test.allocator);
+  heightfield_test_end(&test);
+  printf("  heightfield_test_samples PASSED\n");
+}
+
 bool32_t run_heightfield_tests(void) {
   printf("--- Starting Heightfield Tests ---\n");
   heightfield_test_file();
@@ -842,6 +909,7 @@ bool32_t run_heightfield_tests(void) {
   heightfield_test_journal();
   heightfield_test_tile_levels();
   heightfield_test_holes();
+  heightfield_test_samples();
   printf("--- Heightfield Tests Completed ---\n");
   return true_v;
 }

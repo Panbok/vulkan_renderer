@@ -43,6 +43,12 @@ typedef struct VkrEditorSessionPeer {
   bool8_t has_selection;
   uint16_t selection_container;
   VkrEntityRef selection;
+  /* A gizmo drag in progress: the dragged entity and its world matrix now,
+     which other editors draw before the drag records. */
+  bool8_t dragging;
+  uint16_t drag_container;
+  VkrEntityRef drag;
+  Mat4 drag_world;
 } VkrEditorSessionPeer;
 
 typedef struct VkrEditorSessionStatus {
@@ -111,6 +117,15 @@ void vkr_editor_session_note_batch(VkrEditorSession *session, uint64_t token,
                                    const char *author, const char *label,
                                    bool8_t review);
 
+/* A new flat terrain the batch this build submits creates, which exists
+   only in this editor's memory until its scene is saved
+   (vkr_scene_terrain_stage): the session stages it on every editor before
+   the batch applies there. `relative` is the component's heightfield path. */
+void vkr_editor_session_note_terrain(VkrEditorSession *session,
+                                     const char *relative, uint32_t cells,
+                                     float32_t spacing, float32_t height_min,
+                                     float32_t height_max, float32_t height);
+
 #define VKR_EDITOR_SESSION_APPLIED_ENTITIES 16u
 
 /* An agent batch of another editor that applied here, for the change
@@ -141,6 +156,9 @@ bool8_t vkr_editor_session_take_accepted(VkrEditorSession *session,
                                          uint16_t *out_container,
                                          uint64_t *out_group);
 
+/* This editor's name in the session, or an empty string outside one. */
+const char *vkr_editor_session_name(const VkrEditorSession *session);
+
 /* Whether claims and tasks belong to a session host elsewhere: this editor
    joined a session, so its agents ask the host. */
 bool8_t vkr_editor_session_forwards(const VkrEditorSession *session);
@@ -155,6 +173,7 @@ typedef enum VkrEditorSessionAskKind {
   VKR_EDITOR_ASK_TASK_ADD,
   VKR_EDITOR_ASK_TASK_NEXT,
   VKR_EDITOR_ASK_TASK_DONE,
+  VKR_EDITOR_ASK_TASK_SLOTS,
 } VkrEditorSessionAskKind;
 
 /* An agent's request a participant forwards to the host. */
@@ -174,6 +193,9 @@ typedef struct VkrEditorSessionAsk {
      any; and the capabilities its editor and it have. */
   char kinds[128];
   char capabilities[160];
+  /* TASK_SLOTS: the tasks the asking editor's agents may hold at once; zero
+     for no limit. */
+  uint32_t slots;
 } VkrEditorSessionAsk;
 
 typedef struct VkrEditorSessionAnswer {
@@ -234,9 +256,9 @@ uint64_t vkr_editor_session_shared(const VkrEditorSession *session,
 /* The colour that marks peer `id` in the Scene and the Session window. */
 Vec4 vkr_editor_session_peer_color(uint8_t id);
 
-/* Lines the Scene draws for other editors at most: 21 for a camera and
-   12 for a selection box per peer. */
-#define VKR_EDITOR_SESSION_LINE_MAX (33u * VKR_EDITOR_SESSION_PEERS_MAX)
+/* Lines the Scene draws for other editors at most: 21 for a camera, 12
+   for a selection box and 13 for a dragged entity's box per peer. */
+#define VKR_EDITOR_SESSION_LINE_MAX (46u * VKR_EDITOR_SESSION_PEERS_MAX)
 
 /* The other editors in the Scene: each peer's camera as a small frustum and
    its selection as a box, in its colour. Writes at most `capacity` into
@@ -245,6 +267,11 @@ uint32_t vkr_editor_session_lines(const VkrEditorSession *session,
                                   const VkrSampleUiFrame *frame,
                                   VkrEditorBrushGridLine *out,
                                   uint32_t capacity);
+
+/* Each other editor's name beside its camera in the Scene, in its colour.
+   Builds over the Scene image; call with the object icons. */
+void vkr_editor_session_names_build(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame);
 
 /* The Session window: host or join, the address and key to share, and each
    peer with its colour and a button that moves the Scene camera to it. */

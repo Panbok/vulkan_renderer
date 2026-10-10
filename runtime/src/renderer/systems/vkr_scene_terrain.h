@@ -129,8 +129,9 @@ bool8_t vkr_scene_terrain_save(const VkrScene *scene, char *error,
    vkr_scene_terrain_resolve gives) does not exist yet: a terrain component
    naming it loads the field in memory, and the first save of its scene
    writes the file. A discarded scene leaves no file behind. Only resident
-   sizes, up to VKR_HEIGHTFIELD_RESIDENT_CELLS cells a side, can be staged.
-   Main thread; false when the staging table is full. */
+   sizes, up to VKR_HEIGHTFIELD_RESIDENT_CELLS cells a side, can be staged;
+   a path staged already keeps its first field. Main thread; false when the
+   staging table is full. */
 bool8_t vkr_scene_terrain_stage(const char *path, uint32_t cells,
                                 float32_t spacing, float32_t height_min,
                                 float32_t height_max, float32_t height);

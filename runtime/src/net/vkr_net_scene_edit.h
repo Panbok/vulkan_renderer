@@ -12,9 +12,16 @@
  * Only edits every peer reproduces exactly travel: APPLY (transform, name,
  * visibility, lights and one world component; not physics), CREATE with a
  * document id chosen ahead, DUPLICATE with the seed its copies' ids derive
- * from, DELETE, REPARENT and component add, remove and replace. Terrain
- * strokes (floating point each editor computes) and physics, settings or
- * partition edits do not travel yet; the writer refuses them. */
+ * from, DELETE, REPARENT, component add, remove and replace, and terrain
+ * ops. A terrain op's result can differ between machines (floating point),
+ * so the session host sends the samples it changed beside the op, and other
+ * editors write those (VKR_HEIGHTFIELD_OP_SAMPLES). Physics, settings or
+ * partition edits do not travel yet; the writer refuses them.
+ *
+ * A stamp's image and a road's points travel as raw arrays in place, 16-byte
+ * aligned from the start of the encoded bytes and in the little-endian
+ * order of every supported host. A reader whose bytes start 16-byte aligned
+ * borrows them, so the request lives no longer than those bytes. */
 
 typedef struct VkrNetSceneEditScenes {
   /* The loaded containers by world id: 0 the primary scene, 1 to
@@ -35,6 +42,13 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
                                  const VkrSceneEditRequest *request,
                                  int32_t entity_ref, int32_t parent_ref,
                                  char *error, uint32_t capacity);
+
+/* Writes `size` bytes as a raw array, padded to a 16-byte boundary from the
+   start of the writer's buffer; and reads one in place, NULL when the
+   reader's bytes are not aligned so or are too short. */
+void vkr_net_write_array(VkrBitWriter *writer, const void *bytes,
+                         uint32_t size);
+const void *vkr_net_read_array(VkrBitReader *reader, uint32_t size);
 
 /* Reads one edit and resolves its entities in this editor's scenes. False,
    with a message, on a malformed edit or an entity this editor lacks. */

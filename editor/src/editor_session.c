@@ -5,7 +5,9 @@
 #include "core/logger.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
+#include "filesystem/filesystem.h"
 #include "net/vkr_net_scene_edit.h"
+#include "renderer/systems/vkr_scene_terrain.h"
 #include "vkr_bitstream.h"
 #include "vkr_net_crypto.h"
 #include "vkr_net_host.h"
@@ -23,22 +25,30 @@
  * Channel 0, reliable and ordered, carries the session: HELLO and WELCOME,
  * EDIT from a participant, RESULT for a refused one, APPLIED in session
  * order, PEER_LEFT, and for agents ASK, ANSWER, SHARED (the host's claims
- * and tasks) and REVIEWED (a batch accepted on some editor). Channel 1,
+ * and tasks) and REVIEWED (a batch accepted on some editor). EDIT and
+ * APPLIED also name the new terrains a batch creates, which every editor
+ * stages before applying it. Channel 1,
  * sequenced, carries PRESENCE. Every message starts with its 4-bit type. EDIT
  * and APPLIED name the batch's agent author and label; an edit's body travels
  * as aligned bytes after its header, so the host relays a participant's body
  * unchanged:
+ *
+ * APPLIED then carries the terrain samples the edit changed on the host
+ * (session_terrain_results), which other editors write instead of running
+ * the terrain ops again.
  *
  *   SINGLE  one edit (vkr_net_scene_edit.h)
  *   BATCH   container 16, count varuint, then each edit
  *   UNDO, REDO  empty
  *   REVERT  container 16, the session sequence of the batch it reverts */
 #define SESSION_SERVICE_VERSION 1u
-#define SESSION_SCHEMA_HASH 0x434f4c4c41420004ull
+#define SESSION_SCHEMA_HASH 0x434f4c4c41420008ull
 #define SESSION_EDIT_CHANNEL 0u
 #define SESSION_PRESENCE_CHANNEL 1u
 #define SESSION_MESSAGE_MAX (8u << 20)
 #define SESSION_PRESENCE_US 100000ull
+/* Presence while this editor drags a gizmo, so others follow the drag. */
+#define SESSION_PRESENCE_DRAG_US 33000ull
 /* Applied edits the host keeps for editors that join later; past it, the
    ones every participant received leave and joining is refused. */
 #define SESSION_LOG_BYTES_MAX (64ull << 20)
@@ -55,6 +65,8 @@
 #define SESSION_NOTE_MAX 8u
 #define SESSION_APPLIED_MAX 16u
 #define SESSION_ACCEPTED_MAX 64u
+/* New terrains one batch stages on every editor. */
+#define SESSION_STAGE_MAX 16u
 
 typedef enum SessionMessage {
   SESSION_MSG_HELLO = 1,
@@ -98,6 +110,16 @@ typedef enum SessionRefusal {
   SESSION_REFUSED_GROUP,
 } SessionRefusal;
 
+/* A new flat terrain to stage (vkr_editor_session_note_terrain). */
+typedef struct SessionStage {
+  char path[SCENE_TERRAIN_PATH_CAPACITY];
+  uint32_t cells;
+  float32_t spacing;
+  float32_t height_min;
+  float32_t height_max;
+  float32_t height;
+} SessionStage;
+
 /* An edit waiting to apply here. The host's queue holds this editor's and
  * the participants' edits in arrival order; a participant's holds the host's
  * APPLIED edits in session order. `payload` is owned. */
@@ -117,7 +139,21 @@ typedef struct SessionEdit {
   char label[96];
   /* An agent batch that waits for the designer's review. */
   bool8_t review;
+  /* APPLIED: the terrain samples the edit changed on the host; owned. */
+  uint8_t *results;
+  uint32_t results_size;
+  /* New terrains to stage before the edit applies; owned. */
+  SessionStage *stages;
+  uint32_t stage_count;
 } SessionEdit;
+
+/* A terrain edit the host injected: the edit's index in its batch (zero for
+   a single edit), the terrain and the samples it may change. */
+typedef struct SessionTerrain {
+  uint32_t index;
+  VkrEntityId entity;
+  VkrHeightfieldRect rect;
+} SessionTerrain;
 
 /* The author and label ops gave the batch it submits under `token`. */
 typedef struct SessionNote {
@@ -125,6 +161,8 @@ typedef struct SessionNote {
   char author[VKR_EDITOR_AUTHOR_CAPACITY];
   char label[96];
   bool8_t review;
+  SessionStage stages[SESSION_STAGE_MAX];
+  uint32_t stage_count;
 } SessionNote;
 
 /* A batch some editor accepted, by its journal group here. */
@@ -191,6 +229,8 @@ typedef struct SessionInflight {
   uint16_t container;
   /* Edits of an injected batch, for the change feed. */
   uint32_t item_count;
+  /* Host: its terrain edits, whose results APPLIED carries. */
+  uint32_t terrain_count;
   SessionSignature before;
 } SessionInflight;
 
@@ -245,6 +285,9 @@ struct VkrEditorSession {
   uint64_t next_token;
   VkrSampleEditBatchItem *items;
   uint32_t item_capacity;
+  SessionTerrain *terrain;
+  uint32_t terrain_capacity;
+  SessionBuffer results;
   VkrSampleEditBatchResult refused;
   VkrSceneEditRequest scratch;
   SessionBuffer payload;
@@ -264,6 +307,9 @@ struct VkrEditorSession {
   uint64_t epoch;
   SessionNote notes[SESSION_NOTE_MAX];
   uint32_t note_next;
+  /* Terrains noted this build, for the batch noted next. */
+  SessionStage stages[SESSION_STAGE_MAX];
+  uint32_t stage_count;
   VkrEditorSessionApplied applied[SESSION_APPLIED_MAX];
   uint32_t applied_head;
   uint32_t applied_count;
@@ -639,6 +685,8 @@ static bool8_t session_encode_payload(VkrEditorSession *session,
 
 static void session_edit_release(SessionEdit *edit) {
   free(edit->payload);
+  free(edit->results);
+  free(edit->stages);
   MemZero(edit, sizeof(*edit));
 }
 
@@ -768,8 +816,22 @@ static uint32_t session_encode_edit(VkrEditorSession *session, uint8_t type,
     session_write_text(&writer, edit->agent);
     session_write_text(&writer, edit->label);
     vkr_bit_write(&writer, edit->review, 1u);
+    vkr_bit_write_varuint(&writer, edit->stage_count);
+    for (uint32_t i = 0u; i < edit->stage_count; ++i) {
+      const SessionStage *stage = &edit->stages[i];
+      session_write_text(&writer, stage->path);
+      vkr_bit_write_varuint(&writer, stage->cells);
+      session_write_float(&writer, stage->spacing);
+      session_write_float(&writer, stage->height_min);
+      session_write_float(&writer, stage->height_max);
+      session_write_float(&writer, stage->height);
+    }
     vkr_bit_write_varuint(&writer, edit->size);
     vkr_bit_write_bytes(&writer, edit->payload, edit->size);
+    if (type == SESSION_MSG_APPLIED) {
+      vkr_bit_write_varuint(&writer, edit->results_size);
+      vkr_bit_write_bytes(&writer, edit->results, edit->results_size);
+    }
     const uint32_t size =
         session->message.capacity ? vkr_bit_writer_finish(&writer) : 0u;
     if (size) {
@@ -797,12 +859,37 @@ static bool8_t session_read_edit(VkrBitReader *reader, uint8_t type,
     return false_v;
   }
   out->review = (bool8_t)vkr_bit_read(reader, 1u);
+  const uint64_t stages = vkr_bit_read_varuint(reader);
+  if (stages > SESSION_STAGE_MAX) {
+    return false_v;
+  }
+  if (stages) {
+    out->stages = calloc(stages, sizeof(*out->stages));
+    if (!out->stages) {
+      return false_v;
+    }
+    out->stage_count = (uint32_t)stages;
+  }
+  for (uint32_t i = 0u; i < out->stage_count; ++i) {
+    SessionStage *stage = &out->stages[i];
+    if (!session_read_text(reader, stage->path, sizeof(stage->path))) {
+      session_edit_release(out);
+      return false_v;
+    }
+    stage->cells = (uint32_t)vkr_bit_read_varuint(reader);
+    stage->spacing = session_read_float(reader);
+    stage->height_min = session_read_float(reader);
+    stage->height_max = session_read_float(reader);
+    stage->height = session_read_float(reader);
+  }
   const uint64_t size = vkr_bit_read_varuint(reader);
   if (out->kind >= SESSION_EDIT_WIRE_COUNT || size > SESSION_MESSAGE_MAX) {
+    session_edit_release(out);
     return false_v;
   }
   const uint8_t *bytes = vkr_bit_read_bytes(reader, (uint32_t)size);
-  if (!bytes || !vkr_bit_reader_at_end(reader)) {
+  if (!bytes) {
+    session_edit_release(out);
     return false_v;
   }
   out->payload = malloc(Max((uint32_t)size, 1u));
@@ -811,6 +898,31 @@ static bool8_t session_read_edit(VkrBitReader *reader, uint8_t type,
   }
   MemCopy(out->payload, bytes, size);
   out->size = (uint32_t)size;
+  if (type == SESSION_MSG_APPLIED) {
+    const uint64_t results = vkr_bit_read_varuint(reader);
+    const uint8_t *result_bytes =
+        results <= SESSION_MESSAGE_MAX
+            ? vkr_bit_read_bytes(reader, (uint32_t)results)
+            : NULL;
+    if (!result_bytes) {
+      session_edit_release(out);
+      return false_v;
+    }
+    /* Copied apart, so its raw arrays start aligned (vkr_net_read_array). */
+    if (results) {
+      out->results = malloc(results);
+      if (!out->results) {
+        session_edit_release(out);
+        return false_v;
+      }
+      MemCopy(out->results, result_bytes, results);
+      out->results_size = (uint32_t)results;
+    }
+  }
+  if (!vkr_bit_reader_at_end(reader)) {
+    session_edit_release(out);
+    return false_v;
+  }
   return true_v;
 }
 
@@ -917,6 +1029,7 @@ static void session_put_ask(VkrBitWriter *writer, const void *context) {
   session_write_task(writer, &ask->task);
   session_write_text(writer, ask->kinds);
   session_write_text(writer, ask->capabilities);
+  vkr_bit_write_varuint(writer, ask->slots);
 }
 
 static bool8_t session_read_ask(VkrBitReader *reader,
@@ -933,9 +1046,10 @@ static bool8_t session_read_ask(VkrBitReader *reader,
          session_read_text(reader, out->kinds, sizeof(out->kinds)) &&
          session_read_text(reader, out->capabilities,
                            sizeof(out->capabilities)) &&
+         (out->slots = (uint32_t)vkr_bit_read_varuint(reader), true_v) &&
          vkr_bit_reader_at_end(reader) &&
          out->kind >= VKR_EDITOR_ASK_CLAIM_SET &&
-         out->kind <= VKR_EDITOR_ASK_TASK_DONE;
+         out->kind <= VKR_EDITOR_ASK_TASK_SLOTS;
 }
 
 static void session_put_answer(VkrBitWriter *writer, const void *context) {
@@ -1021,6 +1135,14 @@ static uint32_t session_encode_presence(const VkrEditorSessionPeer *peer,
     vkr_bit_write(&writer, peer->selection_container, 16u);
     session_write_ref(&writer, &peer->selection);
   }
+  vkr_bit_write(&writer, peer->dragging, 1u);
+  if (peer->dragging) {
+    vkr_bit_write(&writer, peer->drag_container, 16u);
+    session_write_ref(&writer, &peer->drag);
+    for (uint32_t i = 0u; i < 16u; ++i) {
+      session_write_float(&writer, peer->drag_world.elements[i]);
+    }
+  }
   return vkr_bit_writer_finish(&writer);
 }
 
@@ -1044,6 +1166,14 @@ static bool8_t session_read_presence(VkrBitReader *reader,
   if (out->has_selection) {
     out->selection_container = (uint16_t)vkr_bit_read(reader, 16u);
     session_read_ref(reader, &out->selection);
+  }
+  out->dragging = (bool8_t)vkr_bit_read(reader, 1u);
+  if (out->dragging) {
+    out->drag_container = (uint16_t)vkr_bit_read(reader, 16u);
+    session_read_ref(reader, &out->drag);
+    for (uint32_t i = 0u; i < 16u; ++i) {
+      out->drag_world.elements[i] = session_read_float(reader);
+    }
   }
   return vkr_bit_reader_at_end(reader);
 }
@@ -1193,7 +1323,7 @@ static void session_host_presence(VkrEditorSession *session, SessionLink *link,
   /* The connection says who speaks, not the message. */
   peer.id = link->id;
   session_peer_set(session, &peer);
-  uint8_t bytes[256];
+  uint8_t bytes[384];
   const uint32_t size = session_encode_presence(&peer, bytes, sizeof(bytes));
   for (uint32_t i = 0u; size && i < VKR_EDITOR_SESSION_PEERS_MAX; ++i) {
     const SessionLink *other = &session->links[i];
@@ -1660,7 +1790,7 @@ static bool8_t session_start_network(VkrEditorSession *session,
               {.delivery = VKR_NET_SEQUENCED,
                .priority = 2u,
                .weight = 1u,
-               .max_message_size = 512u},
+               .max_message_size = 384u},
           },
       .channel_count = 2u,
       .context = session,
@@ -1787,6 +1917,16 @@ static bool8_t session_submit(VkrEditorSession *session,
     snprintf(edit.agent, sizeof(edit.agent), "%s", note->author);
     snprintf(edit.label, sizeof(edit.label), "%s", note->label);
     edit.review = note->review;
+    if (note->stage_count) {
+      edit.stages = malloc(note->stage_count * sizeof(*edit.stages));
+      if (!edit.stages) {
+        snprintf(payload->error, sizeof(payload->error), "Out of memory.");
+        return false_v;
+      }
+      MemCopy(edit.stages, note->stages,
+              note->stage_count * sizeof(*edit.stages));
+      edit.stage_count = note->stage_count;
+    }
   }
   if (!session_encode_payload(session, payload, &edit.payload, &edit.size)) {
     return false_v;
@@ -1995,6 +2135,229 @@ static void session_gizmo(VkrEditorSession *session,
 // Applying the session's edits
 // =============================================================================
 
+// -----------------------------------------------------------------------------
+// Terrain results
+// -----------------------------------------------------------------------------
+
+/* Host: remembers what terrain edit `index` of the injected edit may change,
+   so its result can travel. False when the terrain is not loaded here. */
+static bool8_t session_terrain_note(VkrEditorSession *session,
+                                    const VkrSampleUiFrame *frame,
+                                    const VkrSceneEditRequest *request,
+                                    uint32_t index) {
+  const VkrScene *scene = session_container(frame, request->entity.parts.world);
+  VkrHeightfieldRect rect;
+  if (!scene || !vkr_scene_edit_terrain_rect(scene, request->entity,
+                                             &request->terrain, &rect)) {
+    return false_v;
+  }
+  if (session->inflight.terrain_count == session->terrain_capacity) {
+    const uint32_t capacity =
+        session->terrain_capacity ? session->terrain_capacity * 2u : 16u;
+    SessionTerrain *grown =
+        realloc(session->terrain, capacity * sizeof(*grown));
+    if (!grown) {
+      return false_v;
+    }
+    session->terrain = grown;
+    session->terrain_capacity = capacity;
+  }
+  session->terrain[session->inflight.terrain_count++] =
+      (SessionTerrain){.index = index, .entity = request->entity, .rect = rect};
+  return true_v;
+}
+
+typedef struct SessionResultsContext {
+  const VkrEditorSession *session;
+  const VkrSampleUiFrame *frame;
+  bool8_t ok;
+} SessionResultsContext;
+
+/* count, then per terrain edit its index, rectangle, heights and weights as
+   raw arrays. */
+static void session_put_results(VkrBitWriter *writer, const void *context) {
+  SessionResultsContext *results = (SessionResultsContext *)context;
+  const VkrEditorSession *session = results->session;
+  const uint32_t count = session->inflight.terrain_count;
+  vkr_bit_write_varuint(writer, count);
+  results->ok = true_v;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const SessionTerrain *terrain = &session->terrain[i];
+    const VkrScene *scene =
+        session_container(results->frame, terrain->entity.parts.world);
+    const VkrHeightfield *field =
+        scene ? vkr_scene_terrain_field(scene, terrain->entity) : NULL;
+    const uint32_t samples = vkr_heightfield_rect_count(terrain->rect);
+    uint16_t *heights = field ? malloc(samples * sizeof(uint16_t)) : NULL;
+    uint32_t *weights = heights ? malloc(samples * sizeof(uint32_t)) : NULL;
+    if (!weights) {
+      free(heights);
+      results->ok = false_v;
+      return;
+    }
+    vkr_heightfield_read_rect(field, terrain->rect, heights, weights);
+    vkr_bit_write_varuint(writer, terrain->index);
+    vkr_bit_write_varuint(writer, terrain->rect.x0);
+    vkr_bit_write_varuint(writer, terrain->rect.z0);
+    vkr_bit_write_varuint(writer, terrain->rect.x1);
+    vkr_bit_write_varuint(writer, terrain->rect.z1);
+    vkr_net_write_array(writer, heights, samples * (uint32_t)sizeof(uint16_t));
+    vkr_net_write_array(writer, weights, samples * (uint32_t)sizeof(uint32_t));
+    free(heights);
+    free(weights);
+  }
+}
+
+/* Host: the samples the injected edit's terrain edits changed, into an owned
+   copy on `edit`. */
+static bool8_t session_terrain_results(VkrEditorSession *session,
+                                       const VkrSampleUiFrame *frame,
+                                       SessionEdit *edit) {
+  if (!session->inflight.terrain_count) {
+    return true_v;
+  }
+  SessionResultsContext context = {.session = session, .frame = frame};
+  uint32_t size = 0u;
+  for (;;) {
+    VkrBitWriter writer;
+    vkr_bit_writer_init(&writer, session->results.data,
+                        session->results.capacity);
+    session_put_results(&writer, &context);
+    size = session->results.capacity && context.ok
+               ? vkr_bit_writer_finish(&writer)
+               : 0u;
+    if (size || !context.ok || !session_buffer_grow(&session->results)) {
+      break;
+    }
+  }
+  edit->results = size ? malloc(size) : NULL;
+  if (!edit->results) {
+    return false_v;
+  }
+  MemCopy(edit->results, session->results.data, size);
+  edit->results_size = size;
+  return true_v;
+}
+
+/* Participant: puts the host's results in place of the terrain ops of the
+   decoded edit: each becomes the samples it made on the host. */
+static bool8_t session_terrain_apply_results(VkrEditorSession *session,
+                                             const VkrSampleUiFrame *frame,
+                                             const SessionEdit *edit,
+                                             uint32_t item_count) {
+  VkrBitReader reader;
+  vkr_bit_reader_init(&reader, edit->results, edit->results_size);
+  const uint64_t count = edit->results ? vkr_bit_read_varuint(&reader) : 0u;
+  for (uint64_t i = 0u; i < count; ++i) {
+    const uint64_t index = vkr_bit_read_varuint(&reader);
+    VkrHeightfieldRect rect;
+    rect.x0 = (uint32_t)vkr_bit_read_varuint(&reader);
+    rect.z0 = (uint32_t)vkr_bit_read_varuint(&reader);
+    rect.x1 = (uint32_t)vkr_bit_read_varuint(&reader);
+    rect.z1 = (uint32_t)vkr_bit_read_varuint(&reader);
+    if (rect.x0 > rect.x1 || rect.z0 > rect.z1 || rect.x1 - rect.x0 > 65535u ||
+        rect.z1 - rect.z0 > 65535u) {
+      return false_v;
+    }
+    const uint32_t samples = vkr_heightfield_rect_count(rect);
+    const uint16_t *heights =
+        vkr_net_read_array(&reader, samples * (uint32_t)sizeof(uint16_t));
+    const uint32_t *weights =
+        vkr_net_read_array(&reader, samples * (uint32_t)sizeof(uint32_t));
+    VkrSceneEditRequest *request =
+        edit->kind == SESSION_EDIT_SINGLE
+            ? (index == 0u ? frame->scene_edit : NULL)
+            : (index < item_count ? &session->items[index].request : NULL);
+    if (!heights || !weights || !request ||
+        request->action != VKR_SCENE_EDIT_TERRAIN) {
+      return false_v;
+    }
+    request->terrain = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_SAMPLES,
+                                          .rect = rect,
+                                          .heights = heights,
+                                          .weights = weights};
+  }
+  if (!vkr_bit_reader_at_end(&reader) && edit->results) {
+    return false_v;
+  }
+  /* Every terrain op of the edit has its result. */
+  for (uint32_t i = 0u; i < Max(item_count, 1u); ++i) {
+    const VkrSceneEditRequest *request = edit->kind == SESSION_EDIT_SINGLE
+                                             ? frame->scene_edit
+                                             : &session->items[i].request;
+    if (request->action == VKR_SCENE_EDIT_TERRAIN &&
+        request->terrain.kind != VKR_HEIGHTFIELD_OP_SAMPLES) {
+      return false_v;
+    }
+    if (edit->kind == SESSION_EDIT_SINGLE) {
+      break;
+    }
+  }
+  return true_v;
+}
+
+/* Stages the new terrains a batch creates, unless their files exist, so
+   its terrain components load here as on the editor that made them. */
+static bool8_t session_stage_terrains(const VkrSampleUiFrame *frame,
+                                      const SessionEdit *edit,
+                                      uint16_t container, char *error,
+                                      uint32_t capacity) {
+  const VkrScene *scene = session_container(frame, container);
+  for (uint32_t i = 0u; i < edit->stage_count; ++i) {
+    const SessionStage *stage = &edit->stages[i];
+    char absolute[1100];
+    if (!scene || !vkr_scene_terrain_resolve(scene, stage->path, absolute,
+                                             sizeof(absolute))) {
+      snprintf(error, capacity, "A new terrain has no place here.");
+      return false_v;
+    }
+    const FilePath path = {.path = string8_create_from_cstr(
+                               (const uint8_t *)absolute, strlen(absolute)),
+                           .type = FILE_PATH_TYPE_ABSOLUTE};
+    if (!file_exists(&path) &&
+        !vkr_scene_terrain_stage(absolute, stage->cells, stage->spacing,
+                                 stage->height_min, stage->height_max,
+                                 stage->height)) {
+      snprintf(error, capacity, "A new terrain could not be staged.");
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* The terrain edits of a decoded edit: the host notes what each may change;
+   a participant takes the host's results in place of the ops. */
+static bool8_t session_terrain_place(VkrEditorSession *session,
+                                     const VkrSampleUiFrame *frame,
+                                     const SessionEdit *edit,
+                                     uint32_t item_count, char *error,
+                                     uint32_t capacity) {
+  session->inflight.terrain_count = 0u;
+  if (session->mode != VKR_EDITOR_SESSION_HOST) {
+    if (!session_terrain_apply_results(session, frame, edit, item_count)) {
+      snprintf(error, capacity, "Terrain results do not match the edit.");
+      return false_v;
+    }
+    return true_v;
+  }
+  for (uint32_t i = 0u; i < Max(item_count, 1u); ++i) {
+    const VkrSceneEditRequest *request = edit->kind == SESSION_EDIT_SINGLE
+                                             ? frame->scene_edit
+                                             : &session->items[i].request;
+    if (request->action == VKR_SCENE_EDIT_TERRAIN &&
+        (!request->entity.u64 ||
+         !session_terrain_note(session, frame, request, i))) {
+      snprintf(error, capacity,
+               "Terrain edit %u misses a terrain loaded on the host.", i);
+      return false_v;
+    }
+    if (edit->kind == SESSION_EDIT_SINGLE) {
+      break;
+    }
+  }
+  return true_v;
+}
+
 /* Decodes `edit` into this build's request slots. Another author's single
    creation or duplicate applies as a batch of one, which does not select
    what it makes, so it leaves this editor's selection alone. */
@@ -2021,6 +2384,11 @@ static bool8_t session_place(VkrEditorSession *session,
       return false_v;
     }
     request->gesture = session_gesture(edit->author, request->gesture);
+    if (request->action == VKR_SCENE_EDIT_TERRAIN &&
+        !session_terrain_place(session, frame, edit, 0u, error, capacity)) {
+      MemZero(request, sizeof(*request));
+      return false_v;
+    }
     if (own || (request->action != VKR_SCENE_EDIT_CREATE &&
                 request->action != VKR_SCENE_EDIT_DUPLICATE)) {
       return true_v;
@@ -2048,6 +2416,9 @@ static bool8_t session_place(VkrEditorSession *session,
   case SESSION_EDIT_BATCH: {
     const uint16_t container = (uint16_t)vkr_bit_read(&reader, 16u);
     const uint64_t count = vkr_bit_read_varuint(&reader);
+    if (!session_stage_terrains(frame, edit, container, error, capacity)) {
+      return false_v;
+    }
     if (count == 0u || count > VKR_SAMPLE_EDIT_BATCH_MAX) {
       snprintf(error, capacity, "Malformed batch.");
       return false_v;
@@ -2067,6 +2438,10 @@ static bool8_t session_place(VkrEditorSession *session,
     }
     if (!vkr_bit_reader_at_end(&reader)) {
       snprintf(error, capacity, "Malformed batch.");
+      return false_v;
+    }
+    if (!session_terrain_place(session, frame, edit, (uint32_t)count, error,
+                               capacity)) {
       return false_v;
     }
     *out_container = container;
@@ -2194,6 +2569,7 @@ static void session_inject(VkrEditorSession *session,
                                   .slot_token = slot_token,
                                   .container = container,
                                   .item_count = inflight->item_count,
+                                  .terrain_count = inflight->terrain_count,
                                   .before = before};
     return;
   }
@@ -2296,6 +2672,14 @@ static void session_verify(VkrEditorSession *session,
     return;
   }
   if (session->mode == VKR_EDITOR_SESSION_HOST) {
+    /* The edit applied here; participants cannot follow without its
+       terrain samples. */
+    if (ok && !session_terrain_results(session, frame, &edit)) {
+      session_edit_release(&edit);
+      session_fail(session, "The terrain samples of an edit could not be "
+                            "read; the session ends.");
+      return;
+    }
     if (ok) {
       session_host_commit(session, &edit,
                           edit.kind == SESSION_EDIT_BATCH ||
@@ -2320,7 +2704,9 @@ static void session_presence(VkrEditorSession *session,
       (session->mode == VKR_EDITOR_SESSION_PARTICIPANT && !session->welcomed)) {
     return;
   }
-  session->presence_at = session->now + SESSION_PRESENCE_US;
+  session->presence_at =
+      session->now + (frame->gizmo_edit_pending ? SESSION_PRESENCE_DRAG_US
+                                                : SESSION_PRESENCE_US);
   VkrEditorSessionPeer self = {.id = session->self_id};
   snprintf(self.name, sizeof(self.name), "%s", session->name);
   self.has_camera = frame->scene_recall.camera_valid;
@@ -2335,7 +2721,19 @@ static void session_presence(VkrEditorSession *session,
     self.has_selection = true_v;
     self.selection_container = selected.parts.world;
   }
-  uint8_t bytes[256];
+  /* The gizmo moves the selection live during a drag. */
+  const SceneTransform *transform =
+      self.has_selection && frame->gizmo_edit_pending
+          ? vkr_entity_get_component(scene->world, selected,
+                                     scene->comp_transform)
+          : NULL;
+  if (transform) {
+    self.dragging = true_v;
+    self.drag_container = self.selection_container;
+    self.drag = self.selection;
+    self.drag_world = transform->world;
+  }
+  uint8_t bytes[384];
   const uint32_t size = session_encode_presence(&self, bytes, sizeof(bytes));
   if (!size) {
     return;
@@ -2398,6 +2796,8 @@ static void session_reset(VkrEditorSession *session) {
   free(session->queue);
   free(session->groups);
   free(session->items);
+  free(session->terrain);
+  free(session->results.data);
   free(session->payload.data);
   free(session->message.data);
   session_edit_release(&session->inflight.edit);
@@ -2626,6 +3026,28 @@ void vkr_editor_session_note_batch(VkrEditorSession *session, uint64_t token,
   snprintf(note->author, sizeof(note->author), "%s", author ? author : "");
   snprintf(note->label, sizeof(note->label), "%s", label ? label : "");
   note->review = review;
+  /* The terrains noted this build belong to this batch. */
+  MemCopy(note->stages, session->stages,
+          session->stage_count * sizeof(session->stages[0]));
+  note->stage_count = session->stage_count;
+  session->stage_count = 0u;
+}
+
+void vkr_editor_session_note_terrain(VkrEditorSession *session,
+                                     const char *relative, uint32_t cells,
+                                     float32_t spacing, float32_t height_min,
+                                     float32_t height_max, float32_t height) {
+  if (!session || session->mode == VKR_EDITOR_SESSION_NONE ||
+      session->stage_count == SESSION_STAGE_MAX) {
+    return;
+  }
+  SessionStage *stage = &session->stages[session->stage_count++];
+  *stage = (SessionStage){.cells = cells,
+                          .spacing = spacing,
+                          .height_min = height_min,
+                          .height_max = height_max,
+                          .height = height};
+  snprintf(stage->path, sizeof(stage->path), "%s", relative);
 }
 
 bool8_t vkr_editor_session_take_applied(VkrEditorSession *session,
@@ -2637,6 +3059,11 @@ bool8_t vkr_editor_session_take_applied(VkrEditorSession *session,
   session->applied_head = (session->applied_head + 1u) % SESSION_APPLIED_MAX;
   session->applied_count -= 1u;
   return true_v;
+}
+
+const char *vkr_editor_session_name(const VkrEditorSession *session) {
+  return session && session->mode != VKR_EDITOR_SESSION_NONE ? session->name
+                                                             : "";
 }
 
 bool8_t vkr_editor_session_forwards(const VkrEditorSession *session) {
@@ -2815,19 +3242,14 @@ static void session_camera_lines(SessionLines *lines,
                vec3_add(center, vec3_scale(up, 0.32f)), color);
 }
 
-/* An entity's local bounds through its world transform, or a cross at its
-   position when it has none. */
+/* An entity's local bounds through `world`, or a cross at its position
+   when it has none. */
 static void session_entity_lines(SessionLines *lines, const VkrScene *scene,
-                                 VkrEntityId entity, Vec4 color) {
-  const SceneTransform *transform =
-      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
-  if (!transform) {
-    return;
-  }
+                                 VkrEntityId entity, Mat4 world, Vec4 color) {
   Vec3 lower = {0};
   Vec3 upper = {0};
   if (!vkr_scene_entity_local_bounds(scene, entity, &lower, &upper)) {
-    const Vec3 at = mat4_position(transform->world);
+    const Vec3 at = mat4_position(world);
     for (uint32_t axis = 0u; axis < 3u; ++axis) {
       const Vec3 half =
           vec3_new(axis == 0u ? 0.25f : 0.0f, axis == 1u ? 0.25f : 0.0f,
@@ -2838,10 +3260,9 @@ static void session_entity_lines(SessionLines *lines, const VkrScene *scene,
   }
   Vec3 corners[8];
   for (uint32_t i = 0u; i < 8u; ++i) {
-    corners[i] =
-        mat4_mul_vec3(transform->world, vec3_new((i & 1u) ? upper.x : lower.x,
-                                                 (i & 2u) ? upper.y : lower.y,
-                                                 (i & 4u) ? upper.z : lower.z));
+    corners[i] = mat4_mul_vec3(world, vec3_new((i & 1u) ? upper.x : lower.x,
+                                               (i & 2u) ? upper.y : lower.y,
+                                               (i & 4u) ? upper.z : lower.z));
   }
   for (uint32_t i = 0u; i < 8u; ++i) {
     for (uint32_t bit = 1u; bit < 8u; bit <<= 1u) {
@@ -2874,11 +3295,95 @@ uint32_t vkr_editor_session_lines(const VkrEditorSession *session,
     const VkrEntityId entity =
         scene ? vkr_scene_find_entity_ref(scene, &peer->selection)
               : VKR_ENTITY_ID_INVALID;
-    if (entity.u64 && vkr_scene_entity_alive(scene, entity)) {
-      session_entity_lines(&lines, scene, entity, color);
+    const SceneTransform *transform =
+        entity.u64 && vkr_scene_entity_alive(scene, entity)
+            ? vkr_entity_get_component(scene->world, entity,
+                                       scene->comp_transform)
+            : NULL;
+    if (transform) {
+      session_entity_lines(&lines, scene, entity, transform->world, color);
+    }
+    /* A drag in progress: the entity where the peer holds it now, and a
+       line from where it is here. */
+    const VkrScene *dragged_scene =
+        peer->dragging ? session_container(frame, peer->drag_container) : NULL;
+    const VkrEntityId dragged =
+        dragged_scene ? vkr_scene_find_entity_ref(dragged_scene, &peer->drag)
+                      : VKR_ENTITY_ID_INVALID;
+    const SceneTransform *resting =
+        dragged.u64 && vkr_scene_entity_alive(dragged_scene, dragged)
+            ? vkr_entity_get_component(dragged_scene->world, dragged,
+                                       dragged_scene->comp_transform)
+            : NULL;
+    if (resting) {
+      session_entity_lines(&lines, dragged_scene, dragged, peer->drag_world,
+                           color);
+      session_line(&lines, mat4_position(resting->world),
+                   mat4_position(peer->drag_world), color);
     }
   }
   return out ? Min(lines.count, capacity) : lines.count;
+}
+
+void vkr_editor_session_names_build(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame) {
+  const VkrEditorSession *session = editor->session;
+  if (!session || session->mode == VKR_EDITOR_SESSION_NONE ||
+      !session->peer_count || !frame->mapping_valid ||
+      frame->scene_rendering_stopped || frame->scripts_running) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const float32_t scale = ui->content_scale;
+  const Vec4 image = frame->mapping.image_rect_px;
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = VKR_UI_PLACEMENT_DEFAULT;
+  panel.placement.column = panel.placement.row = 0;
+  panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
+  panel.placement.margin_pt =
+      (VkrUiEdges){image.y / scale, 0, 0, image.x / scale};
+  panel.style.min_size_pt = panel.style.max_size_pt =
+      (Vec2){image.z / scale, image.w / scale};
+  panel.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("session.names"), &panel)) {
+    return;
+  }
+  for (uint32_t i = 0u; i < session->peer_count; ++i) {
+    const VkrEditorSessionPeer *peer = &session->peers[i];
+    Vec2 pixel = {0};
+    if (!peer->has_camera ||
+        !vkr_editor_viewport_pixel(frame, peer->camera_position, &pixel)) {
+      continue;
+    }
+    const Vec2 text = vkr_editor_text_size(
+        ui, VKR_FONT_HANDLE_INVALID, peer->name, vkr_ui_theme()->font_caption);
+    const Vec2 size = {text.x + 14.0f, 20.0f};
+    const float32_t x = (pixel.x - image.x) / scale - size.x * 0.5f;
+    const float32_t y = (pixel.y - image.y) / scale - size.y - 14.0f;
+    if (x < 0.0f || y < 0.0f || x + size.x > image.z / scale ||
+        y + size.y > image.w / scale) {
+      continue;
+    }
+    VkrUiWidgetConfig chip = vkr_ui_widget_config_default();
+    chip.placement = VKR_UI_PLACEMENT_DEFAULT;
+    chip.placement.column = chip.placement.row = 0;
+    chip.placement.justify = chip.placement.align = VKR_UI_ALIGN_START;
+    chip.placement.margin_pt = (VkrUiEdges){y, 0, 0, x};
+    chip.style.min_size_pt = chip.style.max_size_pt = size;
+    chip.style.padding_pt = (VkrUiEdges){2, 7, 2, 7};
+    chip.style.corner_radius_pt = (Vec4){10, 10, 10, 10};
+    chip.style.font_size_pt = vkr_ui_theme()->font_caption;
+    chip.style.background_color =
+        vkr_ui_color_alpha(vkr_editor_session_peer_color(peer->id), 0.9f);
+    chip.style.text_color = (Vec4){0.04f, 0.05f, 0.06f, 1.0f};
+    (void)vkr_ui_push_id_u64(ui, peer->id);
+    vkr_ui_label(ui, string8_lit("name"),
+                 string8_create_from_cstr((const uint8_t *)peer->name,
+                                          strlen(peer->name)),
+                 &chip);
+    (void)vkr_ui_pop_id(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
 }
 
 static String8 session_string(const char *text) {

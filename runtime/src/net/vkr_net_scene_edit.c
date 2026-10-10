@@ -9,6 +9,12 @@
 
 #define NET_EDIT_ACTION_BITS 5u
 #define NET_EDIT_TYPE_NAME_MAX 64u
+/* Raw arrays start on this boundary from the start of the encoded bytes,
+   so a reader of bytes aligned as well borrows them in place. */
+#define NET_EDIT_ARRAY_ALIGN 16u
+/* Largest stamp image side and road point count that travel. */
+#define NET_EDIT_IMAGE_SIDE_MAX 4096u
+#define NET_EDIT_PATH_MAX 65536u
 
 /* How an entity travels: none, an earlier edit of the batch, or a world id
    and document id. */
@@ -28,6 +34,9 @@ bool8_t vkr_net_scene_edit_supported(const VkrSceneEditRequest *request) {
   case VKR_SCENE_EDIT_APPLY:
   case VKR_SCENE_EDIT_CREATE:
     return (request->values.fields & ~net_edit_value_fields) == 0u;
+  case VKR_SCENE_EDIT_TERRAIN:
+    /* Results travel apart from the request (vkr_net_scene_edit_samples). */
+    return request->terrain.kind < VKR_HEIGHTFIELD_OP_SAMPLES;
   case VKR_SCENE_EDIT_DELETE:
   case VKR_SCENE_EDIT_REPARENT:
   case VKR_SCENE_EDIT_DUPLICATE:
@@ -301,6 +310,150 @@ static bool8_t net_edit_read_values(VkrBitReader *reader,
   return vkr_scene_edit_validate(values);
 }
 
+// =============================================================================
+// Raw arrays and terrain
+// =============================================================================
+
+static void net_edit_write_float(VkrBitWriter *writer, float32_t value) {
+  uint32_t bits = 0u;
+  MemCopy(&bits, &value, sizeof(bits));
+  vkr_bit_write(writer, bits, 32u);
+}
+
+static float32_t net_edit_read_float(VkrBitReader *reader) {
+  const uint32_t bits = (uint32_t)vkr_bit_read(reader, 32u);
+  float32_t value = 0.0f;
+  MemCopy(&value, &bits, sizeof(value));
+  return value;
+}
+
+void vkr_net_write_array(VkrBitWriter *writer, const void *bytes,
+                         uint32_t size) {
+  static const uint8_t zeros[NET_EDIT_ARRAY_ALIGN] = {0};
+  vkr_bit_write_align(writer);
+  const uint32_t pad =
+      (NET_EDIT_ARRAY_ALIGN - writer->bytes % NET_EDIT_ARRAY_ALIGN) %
+      NET_EDIT_ARRAY_ALIGN;
+  vkr_bit_write_bytes(writer, zeros, pad);
+  vkr_bit_write_bytes(writer, bytes, size);
+}
+
+const void *vkr_net_read_array(VkrBitReader *reader, uint32_t size) {
+  vkr_bit_read_align(reader);
+  const uint32_t pad =
+      (NET_EDIT_ARRAY_ALIGN - reader->bytes % NET_EDIT_ARRAY_ALIGN) %
+      NET_EDIT_ARRAY_ALIGN;
+  const uint8_t *skipped = vkr_bit_read_bytes(reader, pad);
+  const uint8_t *bytes = vkr_bit_read_bytes(reader, size);
+  if (!skipped || !bytes ||
+      ((uintptr_t)bytes & (NET_EDIT_ARRAY_ALIGN - 1u)) != 0u) {
+    reader->overflow = true_v;
+    return NULL;
+  }
+  return bytes;
+}
+
+static void net_edit_write_vec3(VkrBitWriter *writer, Vec3 value) {
+  net_edit_write_float(writer, value.x);
+  net_edit_write_float(writer, value.y);
+  net_edit_write_float(writer, value.z);
+}
+
+static Vec3 net_edit_read_vec3(VkrBitReader *reader) {
+  const float32_t x = net_edit_read_float(reader);
+  const float32_t y = net_edit_read_float(reader);
+  const float32_t z = net_edit_read_float(reader);
+  return vec3_new(x, y, z);
+}
+
+/* A terrain op as its parameters, with a stamp's image and a road's points
+   as raw arrays. */
+static void net_edit_write_terrain(VkrBitWriter *writer,
+                                   const VkrHeightfieldOp *op) {
+  vkr_bit_write(writer, op->kind, 4u);
+  vkr_bit_write(writer, op->brush, 4u);
+  vkr_bit_write_varuint(writer, op->layer);
+  net_edit_write_vec3(writer, op->a);
+  net_edit_write_vec3(writer, op->b);
+  net_edit_write_float(writer, op->min.x);
+  net_edit_write_float(writer, op->min.y);
+  net_edit_write_float(writer, op->max.x);
+  net_edit_write_float(writer, op->max.y);
+  net_edit_write_float(writer, op->radius);
+  net_edit_write_float(writer, op->strength);
+  net_edit_write_float(writer, op->height);
+  net_edit_write_float(writer, op->width);
+  net_edit_write_float(writer, op->falloff);
+  vkr_bit_write(writer, op->add, 1u);
+  const bool8_t image = op->image && op->image_width && op->image_height;
+  vkr_bit_write_varuint(writer, image ? op->image_width : 0u);
+  vkr_bit_write_varuint(writer, image ? op->image_height : 0u);
+  if (image) {
+    vkr_net_write_array(writer, op->image,
+                        op->image_width * op->image_height *
+                            (uint32_t)sizeof(float32_t));
+  }
+  const uint32_t path = op->path ? op->path_count : 0u;
+  vkr_bit_write_varuint(writer, path);
+  if (path) {
+    vkr_net_write_array(writer, op->path, path * (uint32_t)sizeof(Vec3));
+  }
+}
+
+static bool8_t net_edit_read_terrain(VkrBitReader *reader,
+                                     VkrHeightfieldOp *out, char *error,
+                                     uint32_t capacity) {
+  MemZero(out, sizeof(*out));
+  out->kind = (VkrHeightfieldOpKind)vkr_bit_read(reader, 4u);
+  out->brush = (VkrHeightfieldBrush)vkr_bit_read(reader, 4u);
+  out->layer = (uint32_t)vkr_bit_read_varuint(reader);
+  out->a = net_edit_read_vec3(reader);
+  out->b = net_edit_read_vec3(reader);
+  out->min.x = net_edit_read_float(reader);
+  out->min.y = net_edit_read_float(reader);
+  out->max.x = net_edit_read_float(reader);
+  out->max.y = net_edit_read_float(reader);
+  out->radius = net_edit_read_float(reader);
+  out->strength = net_edit_read_float(reader);
+  out->height = net_edit_read_float(reader);
+  out->width = net_edit_read_float(reader);
+  out->falloff = net_edit_read_float(reader);
+  out->add = (bool8_t)vkr_bit_read(reader, 1u);
+  const uint64_t image_width = vkr_bit_read_varuint(reader);
+  const uint64_t image_height = vkr_bit_read_varuint(reader);
+  if (out->kind >= VKR_HEIGHTFIELD_OP_SAMPLES ||
+      out->brush >= VKR_HEIGHTFIELD_BRUSH_COUNT ||
+      image_width > NET_EDIT_IMAGE_SIDE_MAX ||
+      image_height > NET_EDIT_IMAGE_SIDE_MAX ||
+      (image_width == 0u) != (image_height == 0u)) {
+    snprintf(error, capacity, "a malformed terrain edit");
+    return false_v;
+  }
+  if (image_width) {
+    out->image_width = (uint32_t)image_width;
+    out->image_height = (uint32_t)image_height;
+    out->image =
+        vkr_net_read_array(reader, out->image_width * out->image_height *
+                                       (uint32_t)sizeof(float32_t));
+  }
+  const uint64_t path = vkr_bit_read_varuint(reader);
+  if (path > NET_EDIT_PATH_MAX) {
+    snprintf(error, capacity, "a terrain road with too many points");
+    return false_v;
+  }
+  if (path) {
+    out->path_count = (uint32_t)path;
+    out->path =
+        vkr_net_read_array(reader, out->path_count * (uint32_t)sizeof(Vec3));
+  }
+  if (reader->overflow || (image_width && !out->image) ||
+      (path && !out->path)) {
+    snprintf(error, capacity, "a truncated terrain edit");
+    return false_v;
+  }
+  return true_v;
+}
+
 bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
                                  const VkrNetSceneEditScenes *scenes,
                                  const VkrSceneEditRequest *request,
@@ -342,6 +495,9 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
     return net_edit_write_type_name(writer, request->values.component_type) ||
            (snprintf(error, capacity, "a component type cannot travel"),
             false_v);
+  case VKR_SCENE_EDIT_TERRAIN:
+    net_edit_write_terrain(writer, &request->terrain);
+    return true_v;
   case VKR_SCENE_EDIT_DUPLICATE:
     /* Every editor derives the copies' ids from this seed. */
     if (vkr_entity_ref_empty(&request->values.ref)) {
@@ -427,6 +583,9 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
         net_edit_read_type_name(reader, error, capacity);
     request->values.fields = VKR_SCENE_EDIT_COMPONENT;
     ok = request->values.component_type != NULL;
+    break;
+  case VKR_SCENE_EDIT_TERRAIN:
+    ok = net_edit_read_terrain(reader, &request->terrain, error, capacity);
     break;
   case VKR_SCENE_EDIT_DUPLICATE:
     vkr_store_le_u64(request->values.ref.bytes, vkr_bit_read(reader, 64u));

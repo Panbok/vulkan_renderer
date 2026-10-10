@@ -434,6 +434,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   if (!preparing_scene) {
     vkr_editor_physics_build(editor, frame);
     vkr_editor_labels_build(editor, frame);
+    vkr_editor_session_names_build(editor, frame);
   }
   vkr_editor_windows_build_navigation(editor, frame);
   vkr_editor_workbench_build_row(editor, frame);

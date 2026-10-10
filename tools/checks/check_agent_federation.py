@@ -8,8 +8,11 @@ passes when the task board, the claims and the change feed are shared:
 
 - a task the guest's agent adds is taken by the host's agent and finished,
   and of two tasks that require a pipeline class, the host's agent gets the
-  one its machine draws;
+  one its machine draws; with one slot, the guest editor's second agent
+  waits while a host agent takes the next task;
 - a claim of the guest's agent refuses the host's agent, and the reverse;
+- a terrain one agent creates, another raises and the first smooths holds
+  the same samples on both editors;
 - each editor's change feed names the other editor's agent batch, which
   also waits for review there until the guest accepts it;
 - both editors end with the same scene digest.
@@ -168,6 +171,21 @@ def main() -> int:
         expect(lookdev, "task.next", {"kinds": ["material"]},
                contains=f"Tune the {own} path")
 
+        # Slots: the guest editor holds one task at a time, so its second
+        # agent waits while a host agent takes the other task.
+        expect(painter, "task.slots", {"slots": 1})
+        expect(painter, "task.add", {"kind": "survey", "title": "Survey north"})
+        expect(painter, "task.add", {"kind": "survey", "title": "Survey south"})
+        expect(painter, "task.next", {"kinds": ["survey"]},
+               contains="Survey north")
+        scout = Agent(mcp, guest_socket, "scout", work / "scout.log")
+        surveyor = Agent(mcp, host_socket, "surveyor", work / "surveyor.log")
+        agents.extend([scout, surveyor])
+        expect(scout, "task.next", {"kinds": ["survey"]},
+               contains='"task": null')
+        expect(surveyor, "task.next", {"kinds": ["survey"]},
+               contains="Survey south")
+
         # Claims hold across editors, both ways.
         expect(painter, "claims.set",
                {"name": "east", "region": {"min": [-40, -5, -20],
@@ -216,6 +234,35 @@ def main() -> int:
         if "painter@beta" in json.dumps(pending):
             failures.append("the guest's accepted change still waits on the "
                             "host")
+
+        # Terrain: the host's agent makes one, the guest's raises it, the
+        # host's paints it; both editors hold the same samples.
+        expect(mason, "terrain.create",
+               {"name": "SharedGround", "size": 64, "spacing": 1,
+                "position": [60, 0, -60], "review": False})
+        time.sleep(3.0)
+        expect(painter, "terrain.brush",
+               {"terrain": "SharedGround", "mode": "raise",
+                "points": [[58, 0, -62], [62, 0, -58]], "radius": 6,
+                "strength": 2.5, "review": False})
+        expect(mason, "terrain.brush",
+               {"terrain": "SharedGround", "mode": "smooth",
+                "point": [60, 0, -60], "radius": 5, "strength": 0.7,
+                "review": False})
+        time.sleep(3.0)
+        region = {"terrain": "SharedGround",
+                  "region": {"min": [50, 0, -70], "max": [70, 0, -50]},
+                  "step": 1}
+        host_ground = expect(mason, "terrain.sample", region)
+        guest_ground = expect(painter, "terrain.sample", region)
+        host_rows = (host_ground.get("grid") or {}).get("rows") or []
+        guest_rows = (guest_ground.get("grid") or {}).get("rows") or []
+        if not host_rows or json.dumps(host_rows) != json.dumps(guest_rows):
+            failures.append("the editors' terrain samples differ")
+        if not any(isinstance(h, (int, float)) and h > 1.0
+                   for row in host_rows for h in row):
+            failures.append("the terrain was not raised: "
+                            f"{json.dumps(host_rows)[:200]}")
 
         expect(mason, "task.done", {"task": task_id, "note": "plaza built"})
         time.sleep(2.0)

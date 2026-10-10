@@ -700,6 +700,14 @@ bool8_t vkr_heightfield_op_rect(const VkrHeightfield *field,
   case VKR_HEIGHTFIELD_OP_HOLE:
     return op->min.x < op->max.x && op->min.y < op->max.y &&
            heightfield_rect(field, op->min, op->max, out);
+  case VKR_HEIGHTFIELD_OP_SAMPLES:
+    if (!op->heights || !op->weights || op->rect.x0 > op->rect.x1 ||
+        op->rect.z0 > op->rect.z1 || op->rect.x1 > field->cells ||
+        op->rect.z1 > field->cells) {
+      return false_v;
+    }
+    *out = op->rect;
+    return true_v;
   default:
     return false_v;
   }
@@ -720,6 +728,12 @@ static bool8_t heightfield_op_run(VkrHeightfield *field,
   case VKR_HEIGHTFIELD_OP_RAMP:
     return vkr_heightfield_ramp(field, op->a, op->b, op->width, op->falloff,
                                 touched);
+  case VKR_HEIGHTFIELD_OP_SAMPLES:
+    if (!vkr_heightfield_op_rect(field, op, touched)) {
+      return false_v;
+    }
+    vkr_heightfield_write_rect(field, *touched, op->heights, op->weights);
+    return true_v;
   case VKR_HEIGHTFIELD_OP_STAMP: {
     if (!vkr_heightfield_op_rect(field, op, touched) || !isfinite(op->height) ||
         !isfinite(op->strength)) {

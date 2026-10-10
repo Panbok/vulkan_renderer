@@ -257,6 +257,10 @@ typedef enum VkrHeightfieldOpKind {
      false the holes there filled. A box on grid lines opens exactly that
      box, as the triangles around its samples open with them. */
   VKR_HEIGHTFIELD_OP_HOLE,
+  /* The samples of `rect` set to `heights` and `weights`, rows packed: the
+     result of another op, which a collaborative session sends so every
+     editor holds the same samples (ADR-106). */
+  VKR_HEIGHTFIELD_OP_SAMPLES,
   VKR_HEIGHTFIELD_OP_KIND_COUNT,
 } VkrHeightfieldOpKind;
 
@@ -286,6 +290,10 @@ typedef struct VkrHeightfieldOp {
   /* Roads: points of the centreline, borrowed for the call. */
   const Vec3 *path;
   uint32_t path_count;
+  /* Samples: the rectangle and its values, borrowed for the call. */
+  VkrHeightfieldRect rect;
+  const uint16_t *heights;
+  const uint32_t *weights;
 } VkrHeightfieldOp;
 
 /* The samples `op` may change, before it runs; false when none. */

@@ -115,6 +115,11 @@ typedef struct OpsAuthored {
   char author[VKR_EDITOR_AUTHOR_CAPACITY];
 } OpsAuthored;
 
+typedef struct OpsTaskSlots {
+  char editor[VKR_EDITOR_SESSION_NAME_MAX];
+  uint32_t slots;
+} OpsTaskSlots;
+
 struct VkrEditorOps {
   VkrAllocator *allocator;
   /* Reused batch storage, grown up to VKR_SAMPLE_EDIT_BATCH_MAX as a batch
@@ -149,6 +154,10 @@ struct VkrEditorOps {
   VkrEditorTask tasks[VKR_EDITOR_TASK_MAX];
   uint32_t task_count;
   uint32_t next_task_id;
+  /* How many tasks each editor's agents may hold at once (task.slots), by
+     the editor's session name; empty outside a session. */
+  OpsTaskSlots task_slots[VKR_EDITOR_SESSION_PEERS_MAX];
+  uint32_t task_slot_count;
   /* Grows with every change of claims or tasks. A session host sends them
      when it differs from what it sent in this session (`published_*`); a
      participant shows the host's copy `mirror_revision` instead of its own
@@ -8546,6 +8555,10 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
       return ops_fail(ctx, OPS_LIMIT,
                       "Save the scene before creating more terrains");
     }
+    /* Other editors of a session stage the same field (ADR-106). */
+    vkr_editor_session_note_terrain(
+        ctx->editor->session, relative, (uint32_t)cells, (float32_t)spacing,
+        (float32_t)height_min, (float32_t)height_max, (float32_t)height);
   } else {
     VkrAllocator scratch = {.ctx = ops_arena(ctx)};
     vkr_allocator_arena(&scratch);
@@ -9859,7 +9872,9 @@ static const char *ops_code_named(const char *code) {
    ops_host_answer. */
 static VkrEditorOpStatus ops_ask_host(OpsContext *ctx,
                                       VkrEditorSessionAsk *ask) {
-  snprintf(ask->author, sizeof(ask->author), "%s", ctx->call->author);
+  if (!ask->author[0]) {
+    snprintf(ask->author, sizeof(ask->author), "%s", ctx->call->author);
+  }
   const uint64_t token = vkr_editor_session_ask(ctx->editor->session, ask);
   if (!token) {
     ops_fail(ctx, OPS_BUSY, "The request could not reach the session host");
@@ -10249,9 +10264,46 @@ static const char *ops_editor_capabilities(void) {
 #endif
 }
 
+/* The editor part of an author, `agent@editor`; empty for this editor's
+   authors outside a session. */
+static const char *ops_author_editor(const char *author) {
+  const char *at = strchr(author, '@');
+  return at ? at + 1 : "";
+}
+
+static OpsTaskSlots *ops_task_slots(VkrEditorOps *ops, const char *editor) {
+  for (uint32_t i = 0; i < ops->task_slot_count; ++i) {
+    if (strcmp(ops->task_slots[i].editor, editor) == 0) {
+      return &ops->task_slots[i];
+    }
+  }
+  return NULL;
+}
+
+/* Sets how many tasks `editor`'s agents may hold at once; zero lifts the
+   limit. */
+static bool8_t ops_task_set_slots(VkrEditorOps *ops, const char *editor,
+                                  uint32_t slots, const char **code,
+                                  char *error, uint32_t capacity) {
+  OpsTaskSlots *entry = ops_task_slots(ops, editor);
+  if (!entry) {
+    if (ops->task_slot_count == ArrayCount(ops->task_slots)) {
+      *code = OPS_LIMIT;
+      snprintf(error, capacity, "The board tracks %u editors",
+               (uint32_t)ArrayCount(ops->task_slots));
+      return false_v;
+    }
+    entry = &ops->task_slots[ops->task_slot_count++];
+    snprintf(entry->editor, sizeof(entry->editor), "%s", editor);
+  }
+  entry->slots = slots;
+  return true_v;
+}
+
 /* Gives `author` its assigned task, else assigns it the oldest open task of
-   one of `kinds` whose requirements `capabilities` covers. `*out_has` is
-   false when none is open. */
+   one of `kinds` whose requirements `capabilities` covers, unless its
+   editor's agents hold as many tasks as its slots. `*out_has` is false when
+   none is open or the editor is full. */
 static bool8_t ops_task_take(VkrEditorOps *ops, const char *author,
                              const char *kinds, const char *capabilities,
                              VkrEditorTask *out, bool8_t *out_has,
@@ -10278,6 +10330,19 @@ static bool8_t ops_task_take(VkrEditorOps *ops, const char *author,
         (!pick || task->id < pick->id)) {
       pick = task;
     }
+  }
+  /* An editor with slots takes no more tasks than it has, so the others go
+     to editors with room. */
+  const char *editor = ops_author_editor(author);
+  const OpsTaskSlots *slots = ops_task_slots(ops, editor);
+  uint32_t held = 0u;
+  for (uint32_t i = 0; pick && slots && slots->slots && i < ops->task_count;
+       ++i) {
+    held += ops->tasks[i].state == VKR_EDITOR_TASK_ASSIGNED &&
+            strcmp(ops_author_editor(ops->tasks[i].assignee), editor) == 0;
+  }
+  if (pick && slots && slots->slots && held >= slots->slots) {
+    pick = NULL;
   }
   if (pick) {
     pick->state = VKR_EDITOR_TASK_ASSIGNED;
@@ -10498,6 +10563,44 @@ static VkrEditorOpStatus ops_run_task_done(OpsContext *ctx) {
   const bool8_t ok = ops_task_finish(ctx->ops, ctx->call->author, &want, &task,
                                      &code, error, sizeof(error));
   return ops_task_done_with(ctx, ok, true_v, &task, code, error);
+}
+
+/* task.slots: how many tasks this editor's agents may hold at once. */
+static VkrEditorOpStatus ops_run_task_slots(OpsContext *ctx) {
+  if (ctx->call->stage) {
+    VkrEditorSessionAnswer answer;
+    const VkrEditorOpStatus status = ops_host_answer(ctx, &answer);
+    if (status == VKR_EDITOR_OP_DONE && !ctx->call->error_code) {
+      ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+    }
+    return status;
+  }
+  float64_t value = -1.0;
+  if (!ops_arg_number(ctx->call->args, "slots", &value) || value < 0.0 ||
+      value > 1024.0) {
+    ops_fail(ctx, OPS_INVALID, "'slots' is 0 (no limit) to 1024");
+    return VKR_EDITOR_OP_DONE;
+  }
+  const uint32_t slots = (uint32_t)value;
+  if (vkr_editor_session_forwards(ctx->editor->session)) {
+    /* The host reads the editor from the author, so the request carries
+       one even for the designer. */
+    VkrEditorSessionAsk ask = {.kind = VKR_EDITOR_ASK_TASK_SLOTS,
+                               .slots = slots};
+    vkr_editor_session_author(ctx->editor->session, "editor", ask.author,
+                              sizeof(ask.author));
+    return ops_ask_host(ctx, &ask);
+  }
+  const char *code = NULL;
+  char error[256] = {0};
+  if (!ops_task_set_slots(ctx->ops,
+                          vkr_editor_session_name(ctx->editor->session), slots,
+                          &code, error, sizeof(error))) {
+    ops_fail(ctx, code, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  return VKR_EDITOR_OP_DONE;
 }
 
 static VkrEditorOpStatus ops_run_task_list(OpsContext *ctx) {
@@ -14321,6 +14424,14 @@ static const OpsDef s_ops[] = {
      "\"integer\"},\"ok\":{\"type\":\"boolean\"},\"note\":{\"type\":"
      "\"string\"}},\"required\":[\"task\"]}",
      ops_run_task_done, NULL},
+    {"task.slots",
+     "Set how many tasks this editor's agents may hold at once (0 for no "
+     "limit). In a collaborative session the host gives an editor no more "
+     "tasks than its slots, so a machine with one slot, such as a bake host, "
+     "takes one task at a time and the rest go to others.",
+     "{\"type\":\"object\",\"properties\":{\"slots\":{\"type\":"
+     "\"integer\",\"minimum\":0}},\"required\":[\"slots\"]}",
+     ops_run_task_slots, NULL},
     {"task.list",
      "Every task of the board with its kind, title, state, assignee, note "
      "and region; 'state' keeps one state (open, assigned, done, failed).",
@@ -14512,6 +14623,11 @@ static void ops_serve(VkrEditorOps *ops, const VkrSampleUiFrame *frame,
     answer->ok = ops_task_take(ops, ask->author, ask->kinds, ask->capabilities,
                                &answer->task, &answer->has_task, &code,
                                answer->error, sizeof(answer->error));
+    break;
+  case VKR_EDITOR_ASK_TASK_SLOTS:
+    answer->ok =
+        ops_task_set_slots(ops, ops_author_editor(ask->author), ask->slots,
+                           &code, answer->error, sizeof(answer->error));
     break;
   case VKR_EDITOR_ASK_TASK_DONE:
     answer->has_task = true_v;

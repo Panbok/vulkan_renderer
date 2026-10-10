@@ -258,6 +258,11 @@ bool8_t vkr_scene_edit_group_revert(VkrSceneEditState *state, VkrScene *scene,
 bool8_t vkr_scene_edit_terrain(VkrSceneEditState *state, VkrScene *scene,
                                VkrEntityId entity, const VkrHeightfieldOp *op,
                                uint64_t gesture);
+/** The samples of `entity`'s terrain that `op`, in world space, may change;
+ * false when it has no loaded terrain or the op misses it. */
+bool8_t vkr_scene_edit_terrain_rect(const VkrScene *scene, VkrEntityId entity,
+                                    const VkrHeightfieldOp *op,
+                                    VkrHeightfieldRect *out);
 bool8_t vkr_scene_edit_undo(VkrSceneEditState *state, VkrScene *scene,
                             bool8_t redo);
 /** Sequence of the entry undo (or redo) would apply next, or zero. */
