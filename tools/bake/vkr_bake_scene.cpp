@@ -1436,12 +1436,13 @@ bool brush_material(VkrBakeScene *scene, const std::string &path,
 
 /* Face `f` of built `geometry` placed by `world`, as the runtime writes it
    (brush_write_face): a triangle fan with texture UVs from `style` and,
-   when `layout` is set, lightmap UVs from the brush layout. */
+   when `atlas` is set, lightmap UVs on the face's chart, `charts[f]`. */
 bool append_brush_polygon(VkrBakeScene *scene, const VkrBrushGeometry *geometry,
                           uint32_t f, const BrushFaceStyle &style,
                           uint32_t material_index, Mat4 world,
                           Mat4 normal_world, bool flipped,
-                          const VkrBrushLightmapLayout *layout,
+                          const VkrBrushLightmapAtlas *atlas,
+                          const VkrBrushLightmapChart *charts,
                           uint32_t source_instance_index) {
   const VkrBrushPolygon polygon = geometry->polygons[f];
   if (polygon.count < 3u) {
@@ -1465,9 +1466,9 @@ bool append_brush_polygon(VkrBakeScene *scene, const VkrBrushGeometry *geometry,
         vkr_brush_uv(style.uv_world ? position : local, projection_normal,
                      style.uv_offset, style.uv_scale, style.uv_rotation);
     corners[i].color = vec4_new(1.0f, 1.0f, 1.0f, 1.0f);
-    if (layout) {
+    if (atlas) {
       corners[i].lightmap_uv =
-          vkr_brush_lightmap_uv(layout, geometry, f, local);
+          vkr_brush_lightmap_chart_uv(atlas, &charts[f], local);
     }
     if (!finite_vec3(position) || !finite_vec3(world_normal)) {
       return false;
@@ -1560,8 +1561,8 @@ bool append_brush(VkrBakeScene *scene,
     }
     if (!append_brush_polygon(scene, geometry.get(), f, style, material_index,
                               world, normal_world, flipped,
-                              lightmapped ? &layout : nullptr,
-                              source_instance_index)) {
+                              lightmapped ? &layout.atlas : nullptr,
+                              layout.charts, source_instance_index)) {
       out_failure->reason = "face " + std::to_string(f) + " is not finite";
       return false;
     }
@@ -1574,9 +1575,9 @@ bool append_brush(VkrBakeScene *scene,
     instance.entity_index = entity_index;
     instance.source_node_index = 0u;
     instance.world = world;
-    instance.atlas_width = layout.width;
-    instance.atlas_height = layout.height;
-    instance.texels_per_unit = layout.texels_per_unit;
+    instance.atlas_width = layout.atlas.width;
+    instance.atlas_height = layout.atlas.height;
+    instance.texels_per_unit = layout.atlas.texels_per_unit;
     scene->lightmap_instances.push_back(instance);
   }
   return true;
@@ -1585,11 +1586,15 @@ bool append_brush(VkrBakeScene *scene,
 /* A blockout shape (ADR-084) built as the runtime builds it
    (brush_rebuild_shape): each laid-out piece is the brush of its hull, in the
    wall look of the shape's surface, floors in the floor look of its floor
-   surface, with the greybox UVs.
-   Shapes take no lightmap at runtime, so their faces occlude and bounce
-   light without becoming a lightmap instance. A shape that does not lay out,
-   or a piece that does not build, is left out as the runtime leaves it. */
-bool append_blockout(VkrBakeScene *scene, const SceneBlockout &shape,
+   surface, with the greybox UVs and lightmap UVs on one atlas of every
+   piece's faces (vkr_blockout_lightmap_layout). The shape is one lightmap
+   instance; one whose atlas does not lay out only occludes and bounces
+   light, as the runtime then draws it without lightmap UVs. A shape that
+   does not lay out, or a piece that does not build, is left out as the
+   runtime leaves it. */
+bool append_blockout(VkrBakeScene *scene,
+                     const std::vector<EntityImport> &entities,
+                     uint32_t entity_index, const SceneBlockout &shape,
                      Mat4 world, uint32_t source_instance_index,
                      std::map<std::string, uint32_t> *materials,
                      AppendFailure *out_failure) {
@@ -1623,25 +1628,46 @@ bool append_blockout(VkrBakeScene *scene, const SceneBlockout &shape,
     }
   }
   std::unique_ptr<VkrBrushGeometry> geometry(new VkrBrushGeometry());
+  std::vector<VkrBrushLightmapChart> charts(vkr_blockout_lightmap_chart_count(
+      pieces.data(), count, geometry.get()));
+  std::vector<uint32_t> chart_order(charts.size());
+  std::vector<uint32_t> piece_first_chart(count);
+  VkrBrushLightmapAtlas atlas = {};
+  const bool lightmapped =
+      !charts.empty() &&
+      vkr_blockout_lightmap_layout(pieces.data(), count, geometry.get(),
+                                   charts.data(), chart_order.data(),
+                                   piece_first_chart.data(),
+                                   &atlas) != false_v;
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrBlockoutPiece &piece = pieces[i];
-    VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
-    const uint32_t plane_count = vkr_brush_hull(piece.points, piece.point_count,
-                                                planes, VKR_BRUSH_FACE_MAX);
-    if (plane_count == 0u ||
-        vkr_brush_build(planes, plane_count, geometry.get(), nullptr) !=
-            VKR_BRUSH_OK) {
+    if (!vkr_blockout_piece_build(&piece, geometry.get())) {
       continue;
     }
     const uint32_t style = piece.kind == VKR_BLOCKOUT_PIECE_FLOOR ? 1u : 0u;
     for (uint32_t f = 0u; f < geometry->face_count; ++f) {
-      if (!append_brush_polygon(scene, geometry.get(), f, styles[style],
-                                material_indices[style], world, normal_world,
-                                flipped, nullptr, source_instance_index)) {
+      if (!append_brush_polygon(
+              scene, geometry.get(), f, styles[style], material_indices[style],
+              world, normal_world, flipped, lightmapped ? &atlas : nullptr,
+              lightmapped ? &charts[piece_first_chart[i]] : nullptr,
+              source_instance_index)) {
         out_failure->reason = "piece " + std::to_string(i) + " is not finite";
         return false;
       }
     }
+  }
+  if (lightmapped) {
+    VkrBakeLightmapInstance instance;
+    instance.source_instance_index = source_instance_index;
+    instance.document_id = entities[entity_index].document_id;
+    instance.has_document_id = entities[entity_index].has_document_id;
+    instance.entity_index = entity_index;
+    instance.source_node_index = 0u;
+    instance.world = world;
+    instance.atlas_width = atlas.width;
+    instance.atlas_height = atlas.height;
+    instance.texels_per_unit = atlas.texels_per_unit;
+    scene->lightmap_instances.push_back(instance);
   }
   return true;
 }
@@ -1924,8 +1950,8 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
                     describe_entity(entity, i) + ": brush: " + failure.reason);
       }
       if (entity.blockout && !moves &&
-          !append_blockout(scene, *entity.blockout, worlds[i], next_instance++,
-                           &brush_materials, &failure)) {
+          !append_blockout(scene, entities, i, *entity.blockout, worlds[i],
+                           next_instance++, &brush_materials, &failure)) {
         return fail(failure.error, describe_entity(entity, i) +
                                        ": blockout: " + failure.reason);
       }

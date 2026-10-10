@@ -266,87 +266,141 @@ static void brush_lightmap_basis(Vec3 normal, Vec3 *out_u, Vec3 *out_v) {
   *out_v = vec3_cross(normal, *out_u);
 }
 
+VkrBrushLightmapChart vkr_brush_lightmap_chart(const VkrBrushGeometry *geometry,
+                                               uint32_t face) {
+  VkrBrushLightmapChart chart = {0};
+  const VkrBrushPolygon polygon = geometry->polygons[face];
+  if (polygon.count < 3u) {
+    return chart;
+  }
+  Vec3 u;
+  Vec3 v;
+  brush_lightmap_basis(geometry->normals[face], &u, &v);
+  float32_t min_u = INFINITY;
+  float32_t min_v = INFINITY;
+  float32_t max_u = -INFINITY;
+  float32_t max_v = -INFINITY;
+  for (uint32_t i = 0; i < polygon.count; ++i) {
+    const Vec3 p = geometry->vertices[polygon.first + i];
+    const float32_t s = vec3_dot(p, u);
+    const float32_t t = vec3_dot(p, v);
+    min_u = Min(min_u, s);
+    min_v = Min(min_v, t);
+    max_u = Max(max_u, s);
+    max_v = Max(max_v, t);
+  }
+  chart.present = true_v;
+  chart.normal = geometry->normals[face];
+  chart.projected_min = vec2_new(min_u, min_v);
+  chart.projected_max = vec2_new(max_u, max_v);
+  return chart;
+}
+
+/* A chart's size in texels at `texels_per_unit`, padding included. */
+static uint32_t brush_lightmap_chart_texels(float32_t low, float32_t high,
+                                            float32_t texels_per_unit) {
+  return Max(1u, (uint32_t)ceilf((high - low) * texels_per_unit)) +
+         2u * VKR_BRUSH_LIGHTMAP_PADDING;
+}
+
 /* One packing attempt at `texels_per_unit`; false when the atlas is too
-   large. */
-static bool8_t brush_lightmap_pack(const VkrBrushGeometry *geometry,
-                                   float32_t texels_per_unit,
-                                   VkrBrushLightmapLayout *out) {
+   large. `order` receives the present charts tallest first; ties keep chart
+   order. */
+static bool8_t brush_lightmap_pack_at(VkrBrushLightmapChart *charts,
+                                      uint32_t count, uint32_t *order,
+                                      float32_t texels_per_unit,
+                                      VkrBrushLightmapAtlas *out) {
   const uint32_t padding = VKR_BRUSH_LIGHTMAP_PADDING;
-  out->width = 0u;
-  out->height = 0u;
-  uint32_t widths[VKR_BRUSH_FACE_MAX] = {0};
-  uint32_t heights[VKR_BRUSH_FACE_MAX] = {0};
-  uint32_t order[VKR_BRUSH_FACE_MAX];
   uint32_t chart_count = 0u;
-  uint64_t area = 0u;
-  uint32_t widest = 0u;
-  for (uint32_t face = 0; face < geometry->face_count; ++face) {
-    const VkrBrushPolygon polygon = geometry->polygons[face];
-    out->projected_min[face] = vec2_new(0.0f, 0.0f);
-    out->chart_corner[face] = vec2_new(0.0f, 0.0f);
-    if (polygon.count < 3u) {
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!charts[i].present) {
       continue;
     }
-    Vec3 u;
-    Vec3 v;
-    brush_lightmap_basis(geometry->normals[face], &u, &v);
-    float32_t min_u = INFINITY;
-    float32_t min_v = INFINITY;
-    float32_t max_u = -INFINITY;
-    float32_t max_v = -INFINITY;
-    for (uint32_t i = 0; i < polygon.count; ++i) {
-      const Vec3 p = geometry->vertices[polygon.first + i];
-      const float32_t s = vec3_dot(p, u);
-      const float32_t t = vec3_dot(p, v);
-      min_u = Min(min_u, s);
-      min_v = Min(min_v, t);
-      max_u = Max(max_u, s);
-      max_v = Max(max_v, t);
-    }
-    out->projected_min[face] = vec2_new(min_u, min_v);
-    widths[face] = Max(1u, (uint32_t)ceilf((max_u - min_u) * texels_per_unit)) +
-                   2u * padding;
-    heights[face] =
-        Max(1u, (uint32_t)ceilf((max_v - min_v) * texels_per_unit)) +
-        2u * padding;
-    area += (uint64_t)widths[face] * heights[face];
-    widest = Max(widest, widths[face]);
-    order[chart_count++] = face;
-  }
-  if (chart_count == 0u) {
-    return false_v;
-  }
-  /* Tallest first; ties keep face order. */
-  for (uint32_t i = 1; i < chart_count; ++i) {
-    const uint32_t face = order[i];
-    uint32_t j = i;
-    while (j > 0u && heights[order[j - 1u]] < heights[face]) {
+    const uint32_t height = brush_lightmap_chart_texels(
+        charts[i].projected_min.y, charts[i].projected_max.y, texels_per_unit);
+    uint32_t j = chart_count++;
+    while (j > 0u &&
+           brush_lightmap_chart_texels(charts[order[j - 1u]].projected_min.y,
+                                       charts[order[j - 1u]].projected_max.y,
+                                       texels_per_unit) < height) {
       order[j] = order[j - 1u];
       --j;
     }
-    order[j] = face;
+    order[j] = i;
   }
-  const uint32_t width = Max(widest, (uint32_t)ceil(sqrt((float64_t)area)));
+  uint64_t area = 0u;
+  uint32_t widest = 0u;
+  for (uint32_t i = 0; i < chart_count; ++i) {
+    const VkrBrushLightmapChart *chart = &charts[order[i]];
+    const uint32_t width = brush_lightmap_chart_texels(
+        chart->projected_min.x, chart->projected_max.x, texels_per_unit);
+    const uint32_t height = brush_lightmap_chart_texels(
+        chart->projected_min.y, chart->projected_max.y, texels_per_unit);
+    area += (uint64_t)width * height;
+    widest = Max(widest, width);
+  }
+  const uint32_t atlas_width =
+      Max(widest, (uint32_t)ceil(sqrt((float64_t)area)));
   uint32_t x = 0u;
   uint32_t y = 0u;
   uint32_t row = 0u;
   for (uint32_t i = 0; i < chart_count; ++i) {
-    const uint32_t face = order[i];
-    if (x + widths[face] > width) {
+    VkrBrushLightmapChart *chart = &charts[order[i]];
+    const uint32_t width = brush_lightmap_chart_texels(
+        chart->projected_min.x, chart->projected_max.x, texels_per_unit);
+    const uint32_t height = brush_lightmap_chart_texels(
+        chart->projected_min.y, chart->projected_max.y, texels_per_unit);
+    if (x + width > atlas_width) {
       y += row;
       x = 0u;
       row = 0u;
     }
-    out->chart_corner[face] =
+    chart->corner =
         vec2_new((float32_t)(x + padding), (float32_t)(y + padding));
-    x += widths[face];
-    row = Max(row, heights[face]);
+    x += width;
+    row = Max(row, height);
   }
-  out->width = width;
+  out->width = atlas_width;
   out->height = y + row;
   out->texels_per_unit = texels_per_unit;
   return out->width <= VKR_BRUSH_LIGHTMAP_MAX_SIZE &&
          out->height <= VKR_BRUSH_LIGHTMAP_MAX_SIZE;
+}
+
+bool8_t vkr_brush_lightmap_pack(VkrBrushLightmapChart *charts, uint32_t count,
+                                uint32_t *order, VkrBrushLightmapAtlas *out) {
+  *out = (VkrBrushLightmapAtlas){0};
+  bool8_t any = false_v;
+  for (uint32_t i = 0; i < count; ++i) {
+    charts[i].corner = vec2_new(0.0f, 0.0f);
+    any = any || charts[i].present;
+  }
+  if (!any) {
+    return false_v;
+  }
+  float32_t texels_per_unit = VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT;
+  for (uint32_t attempt = 0; attempt <= 8u; ++attempt) {
+    if (brush_lightmap_pack_at(charts, count, order, texels_per_unit, out)) {
+      return true_v;
+    }
+    texels_per_unit *= 0.5f;
+  }
+  return false_v;
+}
+
+Vec2 vkr_brush_lightmap_chart_uv(const VkrBrushLightmapAtlas *atlas,
+                                 const VkrBrushLightmapChart *chart,
+                                 Vec3 point) {
+  Vec3 u;
+  Vec3 v;
+  brush_lightmap_basis(chart->normal, &u, &v);
+  return vec2_new(
+      (chart->corner.x +
+       (vec3_dot(point, u) - chart->projected_min.x) * atlas->texels_per_unit) /
+          (float32_t)atlas->width,
+      (chart->corner.y +
+       (vec3_dot(point, v) - chart->projected_min.y) * atlas->texels_per_unit) /
+          (float32_t)atlas->height);
 }
 
 bool8_t vkr_brush_lightmap_layout(const VkrBrushGeometry *geometry,
@@ -354,32 +408,20 @@ bool8_t vkr_brush_lightmap_layout(const VkrBrushGeometry *geometry,
   if (!geometry || !out) {
     return false_v;
   }
-  float32_t texels_per_unit = VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT;
-  for (uint32_t attempt = 0; attempt <= 8u; ++attempt) {
-    if (brush_lightmap_pack(geometry, texels_per_unit, out)) {
-      return true_v;
-    }
-    if (out->width == 0u) {
-      return false_v;
-    }
-    texels_per_unit *= 0.5f;
+  for (uint32_t face = 0; face < geometry->face_count; ++face) {
+    out->charts[face] = vkr_brush_lightmap_chart(geometry, face);
   }
-  return false_v;
+  uint32_t order[VKR_BRUSH_FACE_MAX];
+  return vkr_brush_lightmap_pack(out->charts, geometry->face_count, order,
+                                 &out->atlas);
 }
 
 Vec2 vkr_brush_lightmap_uv(const VkrBrushLightmapLayout *layout,
                            const VkrBrushGeometry *geometry, uint32_t face,
                            Vec3 point) {
-  Vec3 u;
-  Vec3 v;
-  brush_lightmap_basis(geometry->normals[face], &u, &v);
-  const Vec2 corner = layout->chart_corner[face];
-  const Vec2 minimum = layout->projected_min[face];
-  return vec2_new(
-      (corner.x + (vec3_dot(point, u) - minimum.x) * layout->texels_per_unit) /
-          (float32_t)layout->width,
-      (corner.y + (vec3_dot(point, v) - minimum.y) * layout->texels_per_unit) /
-          (float32_t)layout->height);
+  (void)geometry;
+  return vkr_brush_lightmap_chart_uv(&layout->atlas, &layout->charts[face],
+                                     point);
 }
 
 static VkrBrushPlane brush_plane(float32_t x, float32_t y, float32_t z,

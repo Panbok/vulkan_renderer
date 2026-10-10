@@ -487,7 +487,8 @@ into convex pieces, each the hull of its points. One generated mesh holds
 them, in chunks of 512 pieces with a submesh per chunk and look: floor
 pieces show the floor look of `floor_surface` (or `surface` when it is none),
 the others the wall look of `surface`, all with the shape's `mark`, the
-greybox grid in world space and no lightmap.
+greybox grid in world space and lightmap UVs on one atlas of every piece's
+faces (ADR-088, since 2026-10-10).
 The shape owns one static body whose triangle mesh holds every piece's faces.
 A shape has no child entities, so a change of its settings is one undo
 entry at any size, and a document stores only the component. The component

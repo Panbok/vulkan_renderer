@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "level/vkr_brush.h"
 #include "level/vkr_surface.h"
 #include "math/vec.h"
 
@@ -116,6 +117,29 @@ uint32_t vkr_blockout_piece_capacity(const SceneBlockout *shape);
 uint32_t vkr_blockout_layout(const SceneBlockout *shape, VkrBlockoutPiece *out,
                              uint32_t capacity, char *error,
                              uint64_t error_size);
+
+/* Builds `piece` into `geometry` as the brush of its hull; false when it
+   does not build, which leaves the piece out of the shape. */
+bool8_t vkr_blockout_piece_build(const VkrBlockoutPiece *piece,
+                                 VkrBrushGeometry *geometry);
+
+/* The lightmap charts of a shape's `count` pieces: the summed face counts
+   of the pieces that build, which vkr_blockout_lightmap_layout's `charts`
+   and `order` hold. */
+uint32_t vkr_blockout_lightmap_chart_count(const VkrBlockoutPiece *pieces,
+                                           uint32_t count,
+                                           VkrBrushGeometry *geometry);
+/* Lays out one lightmap atlas for a shape (ADR-088): a chart per face of
+   every piece that builds, in piece and face order, packed as a brush's
+   charts. `piece_first_chart[i]` receives piece i's first chart, or
+   UINT32_MAX when it does not build. `geometry` is scratch. False when no
+   face has a polygon or the atlas stays too large. */
+bool8_t vkr_blockout_lightmap_layout(const VkrBlockoutPiece *pieces,
+                                     uint32_t count, VkrBrushGeometry *geometry,
+                                     VkrBrushLightmapChart *charts,
+                                     uint32_t *order,
+                                     uint32_t *piece_first_chart,
+                                     VkrBrushLightmapAtlas *out);
 
 /* The wall of corridor `shape` nearest `local` (in its space): its index
    (stretch * 2 + side, as SceneBlockout.walls), the distance along its

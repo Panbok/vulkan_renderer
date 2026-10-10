@@ -5,6 +5,7 @@ extern "C" {
 #include "assets/vkr_lightmap_set.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
+#include "level/vkr_brush.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 }
@@ -1069,8 +1070,10 @@ void write_text_file(const char *path, const char *text) {
 /* A level's blockout stairs (ADR-084) are bake geometry: a `blockout`
    component whose own "shape" field names the shape kind loads, and its four
    steps become four 1 x 0.25 x 0.5 boxes (48 triangles) inside the stairs'
-   world box, with no lightmap instance since shapes take none. A malformed
-   brush face fails the load with a diagnostic naming its entity. */
+   world box. The shape is one lightmap instance whose triangles all carry
+   lightmap UVs inside its atlas, at the brush density (ADR-088). A
+   malformed brush face fails the load with a diagnostic naming its
+   entity. */
 void test_bake_scene_builds_blockout_stairs() {
   FilePath directory = {};
   directory.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp");
@@ -1101,9 +1104,16 @@ void test_bake_scene_builds_blockout_stairs() {
     assert(vkr_bake_scene_load(&scene, path, &error));
     assert(error == VkrBakeSceneError::None && scene.diagnostic.empty());
     assert(scene.triangles.size() == 48u);
-    assert(scene.lightmap_instances.empty());
+    assert(scene.lightmap_instances.size() == 1u);
+    const VkrBakeLightmapInstance &instance = scene.lightmap_instances[0];
+    assert(instance.entity_index == 0u && instance.has_document_id);
+    assert(instance.atlas_width > 0u && instance.atlas_height > 0u);
+    assert(instance.texels_per_unit == VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT);
     for (const VkrBakeTriangle &triangle : scene.triangles) {
+      assert(triangle.source_instance_index == instance.source_instance_index);
       for (const VkrBakeVertex &vertex : triangle.vertex) {
+        assert(vertex.lightmap_uv.x >= 0.0f && vertex.lightmap_uv.x <= 1.0f &&
+               vertex.lightmap_uv.y >= 0.0f && vertex.lightmap_uv.y <= 1.0f);
         assert(vertex.position.x >= 9.5f - 1.0e-4f &&
                vertex.position.x <= 10.5f + 1.0e-4f);
         assert(vertex.position.y >= -1.0e-4f &&

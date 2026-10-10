@@ -587,14 +587,16 @@ static uint64_t brush_cell_key(Vec3 point) {
 }
 
 /* Writes one face's polygon as a triangle fan with Hammer-style UVs. */
-/* Writes one face's triangle fan. With a lightmap layout it also writes each
-   vertex's lightmap UV pair into `lightmap_uvs`, as the bake computes it
-   (ADR-088). The face's UV scale counts repeats of `world_size`, its
-   material's size, so 1 shows the material at its real size. */
+/* Writes one face's triangle fan. With a lightmap atlas it also writes each
+   vertex's lightmap UV pair on the face's chart, `charts[face]`, into
+   `lightmap_uvs`, as the bake computes it (ADR-088). The face's UV scale
+   counts repeats of `world_size`, its material's size, so 1 shows the
+   material at its real size. */
 static void brush_write_face(const VkrBrushGeometry *geometry, uint32_t face,
                              const SceneBrushFace *settings, Vec2 world_size,
                              const Mat4 *world, const Mat4 *world_inverse,
-                             const VkrBrushLightmapLayout *lightmap,
+                             const VkrBrushLightmapAtlas *atlas,
+                             const VkrBrushLightmapChart *charts,
                              VkrVertex3d *vertices, float32_t *lightmap_uvs,
                              uint32_t *vertex_count, uint32_t *indices,
                              uint32_t *index_count) {
@@ -633,8 +635,8 @@ static void brush_write_face(const VkrBrushGeometry *geometry, uint32_t face,
         .colour = vec4_one(),
         .tangent = vec4_new(tangent.x, tangent.y, tangent.z, handedness),
     };
-    if (lightmap) {
-      const Vec2 uv = vkr_brush_lightmap_uv(lightmap, geometry, face, local);
+    if (atlas) {
+      const Vec2 uv = vkr_brush_lightmap_chart_uv(atlas, &charts[face], local);
       lightmap_uvs[*vertex_count * 2u + 0u] = uv.x;
       lightmap_uvs[*vertex_count * 2u + 1u] = uv.y;
     }
@@ -651,6 +653,33 @@ static bool8_t brush_publish_mesh(VkrScene *scene, VkrSceneBrushes *state,
                                   BrushRecord *record,
                                   const VkrSubMeshDesc *submeshes,
                                   uint32_t submesh_count, bool8_t ok);
+
+/* Creates a brush or shape geometry; with `lightmap_uvs`, one UV pair per
+   vertex, it packs the vertices here to store those UVs, which the geometry
+   system would pack without them. An invalid handle on failure. */
+static VkrGeometryHandle brush_geometry_create(VkrScene *scene,
+                                               const VkrGeometryConfig *config,
+                                               const float32_t *lightmap_uvs) {
+  struct VkrRenderAssets *assets = scene->assets;
+  VkrGeometryConfig created = *config;
+  if (lightmap_uvs) {
+    VkrPackedStaticVertex *packed =
+        vkr_allocator_alloc(&assets->scratch_allocator,
+                            config->vertex_count * sizeof(*packed), BRUSH_TAG);
+    VkrGpuGeometryDecodeRecord *decodes = vkr_allocator_alloc(
+        &assets->scratch_allocator,
+        VKR_GEOMETRY_PACKED_DECODES_MAX * sizeof(*decodes), BRUSH_TAG);
+    if (!packed || !decodes ||
+        !vkr_geometry_pack(config, packed, decodes, &created) ||
+        !vkr_packed_geometry_set_lightmap_uv(packed, config->vertex_count,
+                                             lightmap_uvs, &decodes[0])) {
+      return (VkrGeometryHandle){0};
+    }
+  }
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  return vkr_geometry_system_create(&assets->geometry_system, &created, true_v,
+                                    &error);
+}
 
 /* Builds the brush's mesh, one submesh per distinct face material. */
 static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
@@ -738,8 +767,9 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
         const bool8_t greybox = face_uvs[face] == &s_greybox_uv;
         brush_write_face(geometry, face, face_uvs[face],
                          greybox ? vec2_new(1.0f, 1.0f) : world_size, world,
-                         &world_inverse, lightmap, vertices, lightmap_uvs,
-                         &vertex_count, indices, &index_count);
+                         &world_inverse, lightmap ? &lightmap->atlas : NULL,
+                         lightmap ? lightmap->charts : NULL, vertices,
+                         lightmap_uvs, &vertex_count, indices, &index_count);
       }
     }
     VkrGeometryConfig config = {
@@ -757,28 +787,8 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
              (unsigned)record->entity.parts.world,
              (unsigned)record->entity.parts.index,
              (unsigned)record->entity.parts.generation, record->serial, group);
-    /* A lightmapped brush packs here to store its lightmap UVs in the packed
-       vertices, which the geometry system would pack without them. */
-    if (lightmap) {
-      VkrPackedStaticVertex *packed =
-          vkr_allocator_alloc(&assets->scratch_allocator,
-                              vertex_count * sizeof(*packed), BRUSH_TAG);
-      VkrGpuGeometryDecodeRecord *decodes = vkr_allocator_alloc(
-          &assets->scratch_allocator,
-          VKR_GEOMETRY_PACKED_DECODES_MAX * sizeof(*decodes), BRUSH_TAG);
-      VkrGeometryConfig packed_config;
-      if (!packed || !decodes ||
-          !vkr_geometry_pack(&config, packed, decodes, &packed_config) ||
-          !vkr_packed_geometry_set_lightmap_uv(packed, vertex_count,
-                                               lightmap_uvs, &decodes[0])) {
-        ok = false_v;
-        break;
-      }
-      config = packed_config;
-    }
-    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-    const VkrGeometryHandle handle = vkr_geometry_system_create(
-        &assets->geometry_system, &config, true_v, &error);
+    const VkrGeometryHandle handle =
+        brush_geometry_create(scene, &config, lightmap_uvs);
     if (!handle.id) {
       ok = false_v;
       break;
@@ -920,17 +930,6 @@ static bool8_t brush_store_hull(VkrScene *scene, BrushRecord *record,
   return true_v;
 }
 
-/* Builds one piece of a blockout shape into `geometry`. */
-static bool8_t brush_shape_piece(const VkrBlockoutPiece *piece,
-                                 VkrBrushGeometry *geometry) {
-  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
-  const uint32_t plane_count = vkr_brush_hull(piece->points, piece->point_count,
-                                              planes, VKR_BRUSH_FACE_MAX);
-  uint32_t failed = UINT32_MAX;
-  return plane_count && vkr_brush_build(planes, plane_count, geometry,
-                                        &failed) == VKR_BRUSH_OK;
-}
-
 /* Appends a built piece's faces to the shape's world-space collision mesh
    as triangle fans. */
 static bool8_t brush_shape_collision(VkrScene *scene, BrushRecord *record,
@@ -973,8 +972,9 @@ static bool8_t brush_shape_collision(VkrScene *scene, BrushRecord *record,
    chunks of pieces, a submesh per chunk and look (floor pieces take the
    floor look of the floor surface, the others the wall look of the
    surface), and one static body whose triangle mesh holds every piece.
-   Pieces project the greybox grid in world space, so neighbours line up;
-   shapes take no lightmap. */
+   Pieces project the greybox grid in world space, so neighbours line up.
+   Unless a mover moves it, the shape takes lightmap UVs on one atlas of its
+   pieces' faces, as the bake lays it out (ADR-088). */
 static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
                                 BrushRecord *record, const SceneBlockout *shape,
                                 const Mat4 *world) {
@@ -997,6 +997,30 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
              count ? "the shape has too many pieces" : error);
     return;
   }
+
+  /* The lightmap atlas of every piece's faces; a shape whose atlas does not
+     lay out draws without lightmap UVs, as before a bake. */
+  const uint32_t chart_count =
+      record->mover.u64
+          ? 0u
+          : vkr_blockout_lightmap_chart_count(pieces, count, state->geometry);
+  VkrBrushLightmapChart *charts =
+      chart_count ? vkr_allocator_alloc(scratch, chart_count * sizeof(*charts),
+                                        BRUSH_TAG)
+                  : NULL;
+  uint32_t *chart_order =
+      chart_count ? vkr_allocator_alloc(
+                        scratch, chart_count * sizeof(*chart_order), BRUSH_TAG)
+                  : NULL;
+  uint32_t *piece_first_chart =
+      chart_count ? vkr_allocator_alloc(
+                        scratch, count * sizeof(*piece_first_chart), BRUSH_TAG)
+                  : NULL;
+  VkrBrushLightmapAtlas atlas = {0};
+  const bool8_t lightmapped =
+      charts && chart_order && piece_first_chart &&
+      vkr_blockout_lightmap_layout(pieces, count, state->geometry, charts,
+                                   chart_order, piece_first_chart, &atlas);
 
   const VkrSurface floor_surface = shape->floor_surface != VKR_SURFACE_NONE
                                        ? shape->floor_surface
@@ -1026,7 +1050,7 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
         const uint32_t piece_material =
             pieces[i].kind == VKR_BLOCKOUT_PIECE_FLOOR ? 1u : 0u;
         if (piece_material != material ||
-            !brush_shape_piece(&pieces[i], state->geometry)) {
+            !vkr_blockout_piece_build(&pieces[i], state->geometry)) {
           continue;
         }
         for (uint32_t f = 0; f < state->geometry->face_count; ++f) {
@@ -1041,7 +1065,13 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
           scratch, vertex_capacity * sizeof(*vertices), BRUSH_TAG);
       uint32_t *indices = vkr_allocator_alloc(
           scratch, index_capacity * sizeof(*indices), BRUSH_TAG);
-      if (!vertices || !indices) {
+      float32_t *lightmap_uvs =
+          lightmapped
+              ? vkr_allocator_alloc(scratch,
+                                    vertex_capacity * 2u * sizeof(float32_t),
+                                    BRUSH_TAG)
+              : NULL;
+      if (!vertices || !indices || (lightmapped && !lightmap_uvs)) {
         ok = false_v;
         break;
       }
@@ -1053,14 +1083,17 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
         const uint32_t piece_material =
             pieces[i].kind == VKR_BLOCKOUT_PIECE_FLOOR ? 1u : 0u;
         if (piece_material != material ||
-            !brush_shape_piece(&pieces[i], state->geometry)) {
+            !vkr_blockout_piece_build(&pieces[i], state->geometry)) {
           continue;
         }
         const VkrBrushGeometry *geometry = state->geometry;
+        const VkrBrushLightmapChart *piece_charts =
+            lightmapped ? &charts[piece_first_chart[i]] : NULL;
         for (uint32_t f = 0; f < geometry->face_count; ++f) {
           brush_write_face(geometry, f, &s_greybox_uv, vec2_new(1.0f, 1.0f),
-                           world, &world_inverse, NULL, vertices, NULL,
-                           &vertex_count, indices, &index_count);
+                           world, &world_inverse, lightmapped ? &atlas : NULL,
+                           piece_charts, vertices, lightmap_uvs, &vertex_count,
+                           indices, &index_count);
         }
         lo = vec3_new(Min(lo.x, geometry->min.x), Min(lo.y, geometry->min.y),
                       Min(lo.z, geometry->min.z));
@@ -1088,9 +1121,8 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
                (unsigned)record->entity.parts.index,
                (unsigned)record->entity.parts.generation, record->serial,
                chunk * 2u + material);
-      VkrRendererError error_code = VKR_RENDERER_ERROR_NONE;
-      const VkrGeometryHandle handle = vkr_geometry_system_create(
-          &assets->geometry_system, &config, true_v, &error_code);
+      const VkrGeometryHandle handle =
+          brush_geometry_create(scene, &config, lightmap_uvs);
       if (!handle.id) {
         ok = false_v;
         break;

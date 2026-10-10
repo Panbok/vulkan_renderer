@@ -71,10 +71,16 @@ padding, shelf-packed tallest first; a brush whose atlas would pass 1,024
 texels halves its density. The bake and the runtime compute the same UVs
 from the same planes, so brushes need no cooked lightmap data.
 
-A blockout shape (stairs, corridors; ADR-084) has no lightmap at runtime, so
-the bake builds its pieces from `vkr_blockout_layout` and `vkr_brush_hull`
-as occluding and bouncing geometry without a lightmap instance; the diffuse
-volume lights it. A brush or blockout shape that a `mover` moves (the
+A blockout shape (stairs, corridors; ADR-084) is one lightmap instance
+since 2026-10-10: `vkr_blockout_lightmap_layout`
+([`vkr_blockout.h`](../../runtime/src/level/vkr_blockout.h)) makes a chart
+of every face of every piece that builds (`vkr_blockout_piece_build`) and
+packs them into one atlas as a brush's charts (`vkr_brush_lightmap_pack`),
+and both the bake and `brush_rebuild_shape` write those UVs. Before, a shape
+had no lightmap: the diffuse volume lit it, so the Level Design Test
+corridors showed no lamp shadows and the volume's view-dependent sampling
+drew bands that bent as the camera neared a wall (user report,
+2026-10-10). A brush or blockout shape that a `mover` moves (the
 nearest mover at or above it, the runtime's `brush_mover_of` within 64
 levels) is out of every bake since 2026-10-08: it takes no lightmap and
 neither occludes nor bounces baked light, so a closed door no longer stops

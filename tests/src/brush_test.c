@@ -398,7 +398,7 @@ static void brush_test_lightmap(VkrBrushGeometry *geometry) {
     assert(vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK);
     VkrBrushLightmapLayout layout;
     assert(vkr_brush_lightmap_layout(geometry, &layout));
-    assert(layout.texels_per_unit == VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT);
+    assert(layout.atlas.texels_per_unit == VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT);
     Vec2 lower[VKR_BRUSH_FACE_MAX];
     Vec2 upper[VKR_BRUSH_FACE_MAX];
     for (uint32_t face = 0; face < geometry->face_count; ++face) {
@@ -409,8 +409,8 @@ static void brush_test_lightmap(VkrBrushGeometry *geometry) {
         const Vec3 point = geometry->vertices[polygon.first + i];
         const Vec2 uv = vkr_brush_lightmap_uv(&layout, geometry, face, point);
         assert(uv.x >= 0.0f && uv.x <= 1.0f && uv.y >= 0.0f && uv.y <= 1.0f);
-        const Vec2 texel = vec2_new(uv.x * (float32_t)layout.width,
-                                    uv.y * (float32_t)layout.height);
+        const Vec2 texel = vec2_new(uv.x * (float32_t)layout.atlas.width,
+                                    uv.y * (float32_t)layout.atlas.height);
         lower[face] = vec2_new(fminf(lower[face].x, texel.x),
                                fminf(lower[face].y, texel.y));
         upper[face] = vec2_new(fmaxf(upper[face].x, texel.x),
@@ -422,10 +422,10 @@ static void brush_test_lightmap(VkrBrushGeometry *geometry) {
       const Vec2 ua = vkr_brush_lightmap_uv(&layout, geometry, face, a);
       const Vec2 ub = vkr_brush_lightmap_uv(&layout, geometry, face, b);
       const float32_t texels =
-          sqrtf(powf((ub.x - ua.x) * (float32_t)layout.width, 2.0f) +
-                powf((ub.y - ua.y) * (float32_t)layout.height, 2.0f));
+          sqrtf(powf((ub.x - ua.x) * (float32_t)layout.atlas.width, 2.0f) +
+                powf((ub.y - ua.y) * (float32_t)layout.atlas.height, 2.0f));
       assert(brush_test_near(
-          texels, vec3_length(vec3_sub(b, a)) * layout.texels_per_unit,
+          texels, vec3_length(vec3_sub(b, a)) * layout.atlas.texels_per_unit,
           1.0e-2f));
     }
     for (uint32_t f = 0; f < geometry->face_count; ++f) {
@@ -443,9 +443,9 @@ static void brush_test_lightmap(VkrBrushGeometry *geometry) {
   assert(vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK);
   VkrBrushLightmapLayout layout;
   assert(vkr_brush_lightmap_layout(geometry, &layout));
-  assert(layout.texels_per_unit < VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT);
-  assert(layout.width <= VKR_BRUSH_LIGHTMAP_MAX_SIZE &&
-         layout.height <= VKR_BRUSH_LIGHTMAP_MAX_SIZE);
+  assert(layout.atlas.texels_per_unit < VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT);
+  assert(layout.atlas.width <= VKR_BRUSH_LIGHTMAP_MAX_SIZE &&
+         layout.atlas.height <= VKR_BRUSH_LIGHTMAP_MAX_SIZE);
 }
 
 /* Stairs or a corridor with every size set and no corner of its own. */
@@ -673,6 +673,92 @@ static void brush_test_blockout(VkrBrushGeometry *geometry) {
   }
   assert(walls == 2u * (SCENE_BLOCKOUT_POINT_MAX - 1u) +
                       3u * SCENE_BLOCKOUT_OPENING_MAX);
+  free(pieces);
+}
+
+/* A corridor's lightmap atlas holds a chart for every face of every piece
+   that builds: each polygon maps inside the atlas at the atlas density, and
+   no two charts share texels, so neither the bake nor the runtime bleeds
+   one face's light into another. */
+static void brush_test_blockout_lightmap(VkrBrushGeometry *geometry) {
+  SceneBlockout corridor =
+      brush_test_shape(SCENE_BLOCKOUT_CORRIDOR, SCENE_STAIRS_STRAIGHT);
+  corridor.width = 3.0f;
+  corridor.height = 3.2f;
+  corridor.thickness = 0.25f;
+  corridor.radius = 0.0f;
+  corridor.ceiling = true_v;
+  corridor.point_count = 2u;
+  corridor.points[0] = vec3_zero();
+  corridor.points[1] = vec3_new(45.75f, 0.0f, 0.0f);
+  corridor.opening_count = 2u;
+  corridor.walls[0] = 0u;
+  corridor.openings[0] = vec4_new(9.5f, 10.7f, 0.0f, 2.2f);
+  corridor.walls[1] = 1u;
+  corridor.openings[1] = vec4_new(23.5f, 24.7f, 0.0f, 2.2f);
+  VkrBlockoutPiece *pieces = NULL;
+  const uint32_t count = brush_test_layout(&corridor, &pieces);
+  assert(count > 0u);
+  const uint32_t chart_count =
+      vkr_blockout_lightmap_chart_count(pieces, count, geometry);
+  assert(chart_count >= count * 4u);
+  VkrBrushLightmapChart *charts = malloc(chart_count * sizeof(*charts));
+  uint32_t *order = malloc(chart_count * sizeof(*order));
+  uint32_t *first = malloc(count * sizeof(*first));
+  Vec2 *lower = malloc(chart_count * sizeof(*lower));
+  Vec2 *upper = malloc(chart_count * sizeof(*upper));
+  assert(charts && order && first && lower && upper);
+  VkrBrushLightmapAtlas atlas;
+  assert(vkr_blockout_lightmap_layout(pieces, count, geometry, charts, order,
+                                      first, &atlas));
+  assert(atlas.texels_per_unit == VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT);
+  uint32_t used = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    assert(first[i] != UINT32_MAX);
+    assert(vkr_blockout_piece_build(&pieces[i], geometry));
+    for (uint32_t f = 0; f < geometry->face_count; ++f) {
+      const uint32_t chart = first[i] + f;
+      const VkrBrushPolygon polygon = geometry->polygons[f];
+      lower[chart] = vec2_new(INFINITY, INFINITY);
+      upper[chart] = vec2_new(-INFINITY, -INFINITY);
+      for (uint32_t c = 0; c < polygon.count; ++c) {
+        const Vec2 uv = vkr_brush_lightmap_chart_uv(
+            &atlas, &charts[chart], geometry->vertices[polygon.first + c]);
+        assert(uv.x >= 0.0f && uv.x <= 1.0f && uv.y >= 0.0f && uv.y <= 1.0f);
+        const Vec2 texel = vec2_new(uv.x * (float32_t)atlas.width,
+                                    uv.y * (float32_t)atlas.height);
+        lower[chart] = vec2_new(fminf(lower[chart].x, texel.x),
+                                fminf(lower[chart].y, texel.y));
+        upper[chart] = vec2_new(fmaxf(upper[chart].x, texel.x),
+                                fmaxf(upper[chart].y, texel.y));
+      }
+      const Vec3 a = geometry->vertices[polygon.first];
+      const Vec3 b = geometry->vertices[polygon.first + 1u];
+      const Vec2 ua = vkr_brush_lightmap_chart_uv(&atlas, &charts[chart], a);
+      const Vec2 ub = vkr_brush_lightmap_chart_uv(&atlas, &charts[chart], b);
+      const float32_t texels =
+          sqrtf(powf((ub.x - ua.x) * (float32_t)atlas.width, 2.0f) +
+                powf((ub.y - ua.y) * (float32_t)atlas.height, 2.0f));
+      assert(brush_test_near(
+          texels, vec3_length(vec3_sub(b, a)) * atlas.texels_per_unit,
+          1.0e-1f));
+      ++used;
+    }
+  }
+  assert(used == chart_count);
+  for (uint32_t f = 0; f < chart_count; ++f) {
+    for (uint32_t g = f + 1u; g < chart_count; ++g) {
+      const bool8_t apart =
+          upper[f].x <= lower[g].x || upper[g].x <= lower[f].x ||
+          upper[f].y <= lower[g].y || upper[g].y <= lower[f].y;
+      assert(apart);
+    }
+  }
+  free(upper);
+  free(lower);
+  free(first);
+  free(order);
+  free(charts);
   free(pieces);
 }
 
@@ -999,6 +1085,7 @@ bool32_t run_brush_tests(void) {
   brush_test_uv();
   brush_test_lightmap(geometry);
   brush_test_blockout(geometry);
+  brush_test_blockout_lightmap(geometry);
   brush_test_coplanar(geometry);
   brush_test_surfaces();
   free(geometry);

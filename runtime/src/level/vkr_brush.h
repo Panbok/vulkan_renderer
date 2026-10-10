@@ -81,21 +81,54 @@ Vec2 vkr_brush_uv(Vec3 point, Vec3 normal, Vec2 offset, Vec2 scale,
    into an atlas about as wide as it is tall. A brush whose atlas would pass
    VKR_BRUSH_LIGHTMAP_MAX_SIZE halves the density, up to eight times. The
    layout depends only on the geometry, so a bake and the runtime that
-   samples it compute the same UVs. */
+   samples it compute the same UVs. A blockout shape packs the charts of
+   all its pieces into one atlas the same way (vkr_blockout.h). */
 #define VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT 8.0f
 #define VKR_BRUSH_LIGHTMAP_PADDING 2u
 #define VKR_BRUSH_LIGHTMAP_MAX_SIZE 1024u
 
-typedef struct VkrBrushLightmapLayout {
+/* One chart of a lightmap atlas: a face polygon projected on an orthonormal
+   basis of its plane. */
+typedef struct VkrBrushLightmapChart {
+  /* False for a face without a polygon, which takes no atlas space. */
+  bool8_t present;
+  /* The face's unit normal, which picks the basis. */
+  Vec3 normal;
+  /* The polygon's bounds on that basis, in brush units. */
+  Vec2 projected_min;
+  Vec2 projected_max;
+  /* Set by vkr_brush_lightmap_pack: the chart's lower corner in texels,
+     inside its padding. */
+  Vec2 corner;
+} VkrBrushLightmapChart;
+
+typedef struct VkrBrushLightmapAtlas {
   uint32_t width;
   uint32_t height;
   /* Texels per brush unit after any halving. */
   float32_t texels_per_unit;
-  /* Per face: the chart's lower corner in texels, inside its padding, and
-     the polygon's minimum on the face basis. */
-  Vec2 chart_corner[VKR_BRUSH_FACE_MAX];
-  Vec2 projected_min[VKR_BRUSH_FACE_MAX];
+} VkrBrushLightmapAtlas;
+
+typedef struct VkrBrushLightmapLayout {
+  VkrBrushLightmapAtlas atlas;
+  /* Per face of the brush. */
+  VkrBrushLightmapChart charts[VKR_BRUSH_FACE_MAX];
 } VkrBrushLightmapLayout;
+
+/* The chart of face `face` of a built brush, not present for a face without
+   a polygon. */
+VkrBrushLightmapChart vkr_brush_lightmap_chart(const VkrBrushGeometry *geometry,
+                                               uint32_t face);
+/* Packs the present charts of `charts` into one atlas, halving the density
+   until it fits. `order` holds `count` indices. False when no chart is
+   present or the atlas stays too large. */
+bool8_t vkr_brush_lightmap_pack(VkrBrushLightmapChart *charts, uint32_t count,
+                                uint32_t *order, VkrBrushLightmapAtlas *out);
+/* The normalized lightmap UV of `point`, in the chart's space, on `chart`
+   of `atlas`. */
+Vec2 vkr_brush_lightmap_chart_uv(const VkrBrushLightmapAtlas *atlas,
+                                 const VkrBrushLightmapChart *chart,
+                                 Vec3 point);
 
 /* Lays out the charts of a built brush. False when no face has a polygon or
    the atlas stays too large. */

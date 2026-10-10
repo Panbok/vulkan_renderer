@@ -634,3 +634,44 @@ uint32_t vkr_blockout_layout(const SceneBlockout *shape, VkrBlockoutPiece *out,
              ? layout_corridor(shape, out, capacity, error, error_size)
              : layout_stairs(shape, out, capacity, error, error_size);
 }
+
+bool8_t vkr_blockout_piece_build(const VkrBlockoutPiece *piece,
+                                 VkrBrushGeometry *geometry) {
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  const uint32_t plane_count = vkr_brush_hull(piece->points, piece->point_count,
+                                              planes, VKR_BRUSH_FACE_MAX);
+  return plane_count != 0u &&
+         vkr_brush_build(planes, plane_count, geometry, NULL) == VKR_BRUSH_OK;
+}
+
+uint32_t vkr_blockout_lightmap_chart_count(const VkrBlockoutPiece *pieces,
+                                           uint32_t count,
+                                           VkrBrushGeometry *geometry) {
+  uint32_t charts = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (vkr_blockout_piece_build(&pieces[i], geometry)) {
+      charts += geometry->face_count;
+    }
+  }
+  return charts;
+}
+
+bool8_t vkr_blockout_lightmap_layout(const VkrBlockoutPiece *pieces,
+                                     uint32_t count, VkrBrushGeometry *geometry,
+                                     VkrBrushLightmapChart *charts,
+                                     uint32_t *order,
+                                     uint32_t *piece_first_chart,
+                                     VkrBrushLightmapAtlas *out) {
+  uint32_t chart_count = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    piece_first_chart[i] = UINT32_MAX;
+    if (!vkr_blockout_piece_build(&pieces[i], geometry)) {
+      continue;
+    }
+    piece_first_chart[i] = chart_count;
+    for (uint32_t f = 0; f < geometry->face_count; ++f) {
+      charts[chart_count++] = vkr_brush_lightmap_chart(geometry, f);
+    }
+  }
+  return vkr_brush_lightmap_pack(charts, chart_count, order, out);
+}
