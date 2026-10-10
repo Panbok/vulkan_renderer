@@ -133,6 +133,39 @@ sets the order of work and the checks that prove a level.
 - Hiding an object in the editor removes it from placement and picks only:
   collision, level checks and the game still have it.
 
+## Detail pass
+
+- Read the doorway or wall first: `scene.describe` a region around it. A
+  prop (a fridge, a counter) can block a new door, and an existing frame,
+  wainscot or corridor wall makes new trim fight. Blockout rooms name their
+  pieces alike (`Wall North -Z`): pass the id from `scene.describe`.
+- Sliding leaves sit in the middle of the wall's thickness, overlap each
+  jamb by 4 cm and travel their width less 8 cm. Frame trim goes only on a
+  face that has none; a blockout corridor wall in front of a room wall
+  owns the corridor-side face.
+- A hinged door or vent cover swings away from where the player uses it. One
+  that swings toward the player shoves them and then blocks the way.
+- Hidden passages: a crawl duct is 1.2 m clear behind a `use` grate. A
+  ladder shaft leaves it through a standing-height chamber, and the ladder
+  trigger fills the shaft's whole depth, so a player climbing down stays
+  on it. A drop through a ceiling uses a horizontal grate (`angle` 90
+  about `axis` [1, 0, 0], `pivot` on one edge) with a crate below it, so
+  the fall stays under 4 m.
+- Lettering is an entity with a `text` component (`content`, `size`,
+  `color`, `align`) and `rotation` [0, yaw, 0]: yaw 0 faces +z, 180 faces
+  -z, 90 faces +x and -90 faces -x. Place it 1 to 2 cm in front of its
+  plate.
+- Turned pieces: give `brush.box` a `rotation` about one axis at a time.
+  Yaw -θ points a box's local +x along ground angle θ, measured from +x
+  toward +z. Size ring segments on the inner radius so neighbours never
+  overlap. Offset the extents of touching parts by at least 1 cm, such as
+  an arm and its pylon, or a strut and its boom, so they share no plane.
+- Shells: run the floor and ceiling between the walls, or the walls between
+  the floor and ceiling, but never both to the same outer face.
+- New lamps light at runtime with shadows until the next bake. A detail
+  pass that adds lamps can slow every frame several times over, so bake
+  before you judge the look or the frame time.
+
 ## Lighting
 
 - Keep lamps `mobility` static (the default) and bake: save, then Cmd
@@ -201,6 +234,16 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    - A rise between neighbouring points beyond a step is a ladder: walk to
      the lower point, then hold forward facing the upper one until the
      player stands there.
+   - Wait until the player stands still after `sim.play` before the first
+     look, and stop it before a use or a check. At a low frame rate the
+     steering overshoots, so walk on a quiet GPU.
+   - A synthetic key event can miss its tick: while crouching through a
+     vent, press `ui.key ctrl down` again after each look and every half
+     second of walking. When crouched, compute a use's pitch from an eye
+     0.9 m above the feet, not 1.6 m.
+   - Climb down a ladder by looking down (pitch below -0.5 rad) and holding
+     forward toward the rungs. Holding forward away from them walks the
+     player off the ladder.
    - When the player stalls, plan again from where it stands before you
      report a failure. Wait for a mover by polling `query.bounds` of its
      moving part. Walk every route both ways: a way up does not prove the
