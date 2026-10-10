@@ -882,11 +882,14 @@ static const char *level_port_name(const char *name) {
   return dot ? dot + 1 : name;
 }
 
-/* Every vehicle keeps a fixed stay and departure: a looping mover rests at
-   each end, and a mover its arrival opens (a door on it or at the stop)
-   opens, waits and closes within that stay. A door that stays open, or one
-   whose delay, opening, wait and closing outlast the stay, is still open as
-   the vehicle sets off. */
+/* A looping vehicle keeps a fixed stay and departure: it rests at each end,
+   and a mover its arrival opens (a door on it or at the stop) opens, waits
+   and closes within that stay. A door that stays open, or one whose delay,
+   opening, wait and closing outlast the stay, is still open as the vehicle
+   sets off. A vehicle that departs on request (use, ride or a delay) keeps
+   its arrival's doors open until its on_depart closes them within its
+   delay: one that closes by itself shuts the rider out, and one still
+   closing when the delay ends is open as it sets off. */
 static void level_lint_movers(LevelGrid *grid, LevelIssues *issues) {
   const VkrScene *scene = grid->scene;
   for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
@@ -915,14 +918,22 @@ static void level_lint_movers(LevelGrid *grid, LevelIssues *issues) {
         connection ? vkr_scene_get_typed(scene, transform->parent,
                                          &vkr_scene_mover_type)
                    : NULL;
-    if (!vehicle || !vehicle->loop || vehicle->spin ||
-        !(vehicle->wait > 0.0f)) {
+    if (!vehicle || vehicle->spin) {
       continue;
     }
+    const bool8_t looping = vehicle->loop && vehicle->wait > 0.0f;
+    const bool8_t requested =
+        !vehicle->loop &&
+        (vehicle->delay > 0.0f || vehicle->activation == VKR_SCENE_MOVER_USE ||
+         vehicle->activation == VKR_SCENE_MOVER_RIDE);
     const char *output = level_port_name(connection->output);
     const char *input = level_port_name(connection->input);
-    if ((strcmp(output, "on_opened") && strcmp(output, "on_closed")) ||
-        (strcmp(input, "open") && strcmp(input, "toggle"))) {
+    const bool8_t arrival =
+        (!strcmp(output, "on_opened") || !strcmp(output, "on_closed")) &&
+        (!strcmp(input, "open") || !strcmp(input, "toggle"));
+    const bool8_t departure =
+        !strcmp(output, "on_depart") && !strcmp(input, "close");
+    if (!(looping && arrival) && !(requested && (arrival || departure))) {
       continue;
     }
     const VkrEntityId door =
@@ -939,6 +950,20 @@ static void level_lint_movers(LevelGrid *grid, LevelIssues *issues) {
     }
     const Vec3 at = mat4_position(placed->world);
     if (!level_in_region(grid, at)) {
+      continue;
+    }
+    if (requested) {
+      /* Seconds past the vehicle's delay the door still moves, or the wait
+         after which it shuts by itself. */
+      float32_t over = Max(0.0f, settings->wait);
+      if (departure) {
+        over = Max(0.0f, connection->delay) +
+               level_mover_seconds(scene, door, settings) - vehicle->delay;
+      }
+      if (over > 1.0e-3f || (arrival && settings->wait >= 0.0f)) {
+        level_issue_pair(issues, VKR_EDITOR_LEVEL_MOVER_TIMING, at, door,
+                         transform->parent, Max(over, 1.0e-3f));
+      }
       continue;
     }
     /* A door left open overruns the whole departure. */

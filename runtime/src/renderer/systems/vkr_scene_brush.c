@@ -1423,6 +1423,39 @@ void vkr_scene_brush_mover_move(VkrScene *scene, VkrEntityId mover, Vec3 offset,
   }
 }
 
+bool8_t vkr_scene_brush_mover_bounds(const VkrScene *scene, VkrEntityId mover,
+                                     Vec3 *out_min, Vec3 *out_max) {
+  const VkrSceneBrushes *state = scene ? scene->brushes : NULL;
+  if (!state) {
+    return false_v;
+  }
+  Vec3 lower = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 upper = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  bool8_t found = false_v;
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    const BrushRecord *record = &state->records[i];
+    if (record->mover.u64 != mover.u64) {
+      continue;
+    }
+    if (record->dirty) {
+      return false_v;
+    }
+    for (uint32_t j = 0; j < record->hull_count; ++j) {
+      const float32_t *p = record->hull + j * 3u;
+      lower =
+          vec3_new(Min(lower.x, p[0]), Min(lower.y, p[1]), Min(lower.z, p[2]));
+      upper =
+          vec3_new(Max(upper.x, p[0]), Max(upper.y, p[1]), Max(upper.z, p[2]));
+      found = true_v;
+    }
+  }
+  if (found) {
+    *out_min = lower;
+    *out_max = upper;
+  }
+  return found;
+}
+
 static bool8_t brush_matrix_equal(const Mat4 *a, const Mat4 *b) {
   return MemCompare(a->elements, b->elements, sizeof(a->elements)) == 0;
 }

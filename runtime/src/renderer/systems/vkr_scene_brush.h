@@ -50,6 +50,10 @@ void vkr_scene_brush_update(VkrScene *scene);
    calls it as the mover moves (vkr_io_router.h). */
 void vkr_scene_brush_mover_move(VkrScene *scene, VkrEntityId mover, Vec3 offset,
                                 VkrQuat rotation, Vec3 pivot);
+/* World box at rest of the solid and clip brushes whose nearest mover at or
+   above is `mover`; false while one waits to rebuild or none has a hull. */
+bool8_t vkr_scene_brush_mover_bounds(const VkrScene *scene, VkrEntityId mover,
+                                     Vec3 *out_min, Vec3 *out_max);
 void vkr_scene_brush_shutdown(VkrScene *scene);
 /* Shows every brush face's greybox look, art-owned materials too, or
    returns them; changing it rebuilds the scene's brushes. */

@@ -6,7 +6,7 @@
 #define PLAYER_PITCH_LIMIT 1.45f
 #define PLAYER_LOOK_SCALE 0.0025f
 /* How far the use key reaches from the eye, in metres, and how many parents
-   up from the hit brush it looks for a button. */
+   up from the hit brush it looks for a button or mover. */
 #define PLAYER_USE_REACH 2.0f
 #define PLAYER_USE_DEPTH 8u
 /* How far ahead of the chest a ladder is found, and how far down the view
@@ -125,12 +125,16 @@ static void player_fire(VkrCtx *ctx, FpsPlayer *player, FpsPlayerState *state,
                                     &filter, &player->pending_hit);
 }
 
-/* The use key presses the button the eye looks at within reach: the brush
-   hit carries the `button` component, as Source's func_button is a brush.
-   The press names the player as its activator. */
+/* The use key presses the button the eye looks at within reach, or uses
+   the mover it belongs to: the brush hit or an object above it carries the
+   `button` or `mover` component, as Source's func_button and func_door are
+   brushes. The mover decides whether the use moves it. The press names the
+   player as its activator. */
 static void player_use(VkrCtx *ctx, FpsPlayer *player,
                        const FpsPlayerState *state) {
-  if (!player->button_type || !player->press_input.id) {
+  const bool8_t buttons = player->button_type && player->press_input.id;
+  const bool8_t movers = player->mover_type && player->use_input.id;
+  if (!buttons && !movers) {
     return;
   }
   const Vec3 eye = vec3_add(player->current_foot,
@@ -145,20 +149,22 @@ static void player_use(VkrCtx *ctx, FpsPlayer *player,
                    &hit)) {
     return;
   }
-  /* The hit brush, or an object above it, carries the button. */
+  /* The hit brush, or the nearest object above it, carries either. */
   VkrEntity target = vkr_entity_valid(hit.collider) ? hit.collider : hit.entity;
-  for (uint32_t depth = 0; vkr_entity_valid(target) &&
-                           !vkr_component_get(ctx, target, player->button_type);
-       ++depth) {
+  for (uint32_t depth = 0; vkr_entity_valid(target); ++depth) {
+    const VkrIoValue activator = {.kind = VKR_IO_ENTITY,
+                                  .entity = player->entity};
+    if (buttons && vkr_component_get(ctx, target, player->button_type)) {
+      (void)vkr_io_send(ctx, target, player->press_input, &activator);
+      return;
+    }
+    if (movers && vkr_component_get(ctx, target, player->mover_type)) {
+      (void)vkr_io_send(ctx, target, player->use_input, &activator);
+      return;
+    }
     target =
         depth < PLAYER_USE_DEPTH ? vkr_parent(ctx, target) : VKR_ENTITY_NONE;
   }
-  if (!vkr_entity_valid(target)) {
-    return;
-  }
-  const VkrIoValue activator = {.kind = VKR_IO_ENTITY,
-                                .entity = player->entity};
-  (void)vkr_io_send(ctx, target, player->press_input, &activator);
 }
 
 /* The ladder ahead: a sensor with `fps_ladder` that a short level ray from
@@ -611,6 +617,10 @@ bool8_t fps_player_attach(VkrCtx *ctx, FpsPlayer *player,
   player->button_type = vkr_component_named(ctx, "button");
   if (player->button_type) {
     player->press_input = vkr_io_input(ctx, player->button_type, "press");
+  }
+  player->mover_type = vkr_component_named(ctx, "mover");
+  if (player->mover_type) {
+    player->use_input = vkr_io_input(ctx, player->mover_type, "use");
   }
   const VkrCharacterDesc motor = vkr_character_default(ctx);
   if (!vkr_character_create(ctx, config->entity, &motor,

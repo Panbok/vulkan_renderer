@@ -123,6 +123,26 @@ typedef struct IoMover {
   float64_t wait_left;
   /* Progress per second, positive opening, while it eases. */
   float64_t rate;
+  /* Who moves it besides its inputs (VkrSceneMoverActivation), the metres
+     within which a player activates it, and the seconds a request at rest
+     waits before it sets off. */
+  uint32_t activation;
+  float32_t reach;
+  float32_t delay;
+  /* Its box at rest in world space: its brushes', or its origin. Known
+     once its brushes built. */
+  Vec3 box_min;
+  Vec3 box_max;
+  bool8_t box_known;
+  /* A player rode it last step, so only a fresh boarding sends it. */
+  bool8_t ridden;
+  /* A player was within reach last step: an auto door then senses a
+     little farther, so one at the edge does not flap it. */
+  bool8_t nearby;
+  /* Seconds until a delayed request sets off toward `depart_target`;
+     negative with none waiting. */
+  float64_t depart_left;
+  float64_t depart_target;
   /* The nearest mover above it in the hierarchy, whose motion carries it,
      or -1. Carriers sort before what they carry. */
   int32_t carrier;
@@ -701,6 +721,12 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
             .wait_left = mover->loop && !mover->spin
                              ? (float64_t)Max(0.0f, mover->wait)
                              : -1.0,
+            .activation =
+                mover->spin ? VKR_SCENE_MOVER_SCRIPTED : mover->activation,
+            .reach = mover->reach,
+            .delay = mover->delay,
+            .ridden = true_v,
+            .depart_left = -1.0,
             .carrier = -1,
             .turn = vkr_quat_identity()};
         if (!turns && vec3_length(travel) <= 0.0f) {
@@ -1053,6 +1079,10 @@ bool8_t vkr_io_router_refresh(VkrIoRouter *router) {
   IO_CARRY(counters, counter_count)
   IO_CARRY(movers, mover_count)
   IO_CARRY(buttons, button_count)
+  /* Brushes that came or went may change a mover's box. */
+  for (uint32_t n = 0; n < router->mover_count; ++n) {
+    router->movers[n].box_known = false_v;
+  }
   /* A mover whose component went while its entity stayed rests again. */
   for (uint32_t o = 0; o < previous.mover_count; ++o) {
     bool8_t kept = false_v;
@@ -1350,6 +1380,11 @@ static float64_t io_mover_rest_time(const IoMover *mover) {
   if (mover->loop) {
     return Max(0.0f, mover->wait);
   }
+  /* An auto door closes once nobody is near; a ride stays where it went. */
+  if (mover->activation == VKR_SCENE_MOVER_AUTO ||
+      mover->activation == VKR_SCENE_MOVER_RIDE) {
+    return -1.0;
+  }
   return mover->progress == 1.0 ? mover->wait : -1.0;
 }
 
@@ -1375,6 +1410,28 @@ static bool8_t io_mover_head(VkrIoRouter *router, IoMover *mover,
   const VkrIoEndpoint output =
       io_out(&vkr_scene_mover_type, opening ? "on_open" : "on_close");
   return io_emit(router, mover->entity, output, NULL, depth);
+}
+
+/* Sends `mover` toward `target` as a request: one at rest with a `delay`
+   fires on_depart now and sets off that many seconds later; a request
+   while one waits only changes where it will head. */
+static bool8_t io_mover_request(VkrIoRouter *router, IoMover *mover,
+                                float64_t target, uint32_t depth) {
+  if (mover->depart_left >= 0.0) {
+    if (target != mover->progress) {
+      mover->depart_target = target;
+    }
+    return true_v;
+  }
+  if (mover->delay > 0.0f && !mover->spin && mover->progress == mover->target &&
+      target != mover->progress) {
+    mover->depart_left = mover->delay;
+    mover->depart_target = target;
+    mover->wait_left = -1.0;
+    return io_emit(router, mover->entity,
+                   io_out(&vkr_scene_mover_type, "on_depart"), NULL, depth);
+  }
+  return io_mover_head(router, mover, target, depth);
 }
 
 /* Engine component inputs; false only when the router faulted. */
@@ -1501,10 +1558,15 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
     if (mover->locked && strcmp(name, "close")) {
       return true_v;
     }
+    /* The use key moves only a mover that takes it. */
+    if (!strcmp(name, "use") && mover->activation != VKR_SCENE_MOVER_USE &&
+        mover->activation != VKR_SCENE_MOVER_RIDE) {
+      return true_v;
+    }
     float64_t target = 0.0;
     if (!strcmp(name, "open")) {
       target = 1.0;
-    } else if (!strcmp(name, "toggle")) {
+    } else if (!strcmp(name, "toggle") || !strcmp(name, "use")) {
       /* Heading open or resting open closes; anything else opens. */
       const bool8_t open =
           mover->target > mover->progress || mover->target == 1.0;
@@ -1512,7 +1574,7 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
     } else if (!strcmp(name, "set_position")) {
       target = Clamp((float64_t)delivery->value.f32, 0.0, 1.0);
     }
-    return io_mover_head(router, mover, target, depth);
+    return io_mover_request(router, mover, target, depth);
   }
   /* A script type: its behavior's handler. */
   if (router->hooks.script_input &&
@@ -1750,6 +1812,150 @@ static void io_mover_advance(IoMover *mover, float64_t dt) {
   }
 }
 
+void vkr_io_router_sense(VkrIoRouter *router, const VkrIoCharacter *characters,
+                         uint32_t count) {
+  router->character_count = characters ? Min(count, VKR_IO_CHARACTERS_MAX) : 0u;
+  if (router->character_count) {
+    MemCopy(router->characters, characters,
+            router->character_count * sizeof(VkrIoCharacter));
+  }
+}
+
+/* Feet a little below a box's bottom still stand at it, as on a floor
+   under a door's lip or a sunk pit. */
+#define IO_SENSE_BELOW 1.0f
+/* Feet up to this far above a ride's box stand on it. */
+#define IO_RIDE_ABOVE 0.75f
+/* Metres an open auto door's reach grows while someone is near. */
+#define IO_AUTO_HOLD 0.5f
+
+/* `point` moved back by a motion (`turn` then `shift`) to where it was
+   before it. */
+static Vec3 io_unmove(Vec3 point, VkrQuat turn, Vec3 shift) {
+  return vkr_quat_rotate_vec3(vkr_quat_conjugate(turn), vec3_sub(point, shift));
+}
+
+/* Horizontal metres from `point` to the box, zero inside it. */
+static float32_t io_box_reach(Vec3 point, Vec3 lo, Vec3 hi) {
+  const float32_t dx = Max(Max(lo.x - point.x, point.x - hi.x), 0.0f);
+  const float32_t dz = Max(Max(lo.z - point.z, point.z - hi.z), 0.0f);
+  return sqrtf(dx * dx + dz * dz);
+}
+
+/* Finds the mover's box at rest once its brushes built; a mover without
+   brushes takes its origin. */
+static bool8_t io_mover_box(IoMover *mover, const VkrScene *scene) {
+  if (mover->box_known) {
+    return true_v;
+  }
+  if (vkr_scene_brush_mover_bounds(scene, mover->entity, &mover->box_min,
+                                   &mover->box_max)) {
+    mover->box_known = true_v;
+    return true_v;
+  }
+  if (vkr_scene_brush_pending(scene)) {
+    return false_v;
+  }
+  Mat4 rest;
+  if (!io_mover_rest(scene, mover->entity, &rest)) {
+    return false_v;
+  }
+  mover->box_min = mat4_position(rest);
+  mover->box_max = mover->box_min;
+  mover->box_known = true_v;
+  return true_v;
+}
+
+/* Whether `character` rides `mover`: it stands on one of its brushes, or
+   its feet are over its box as the mover now stands. */
+static bool8_t io_mover_rider(const VkrIoRouter *router, const IoMover *mover,
+                              const VkrIoCharacter *character) {
+  const VkrScene *scene = io_scene_of(router, character->ground);
+  if (scene && character->ground.u64 &&
+      (character->ground.u64 == mover->entity.u64 ||
+       io_mover_carrier_of(scene, character->ground, NULL).u64 ==
+           mover->entity.u64)) {
+    return true_v;
+  }
+  const Vec3 feet = io_unmove(character->foot, mover->turn, mover->shift);
+  return feet.x >= mover->box_min.x && feet.x <= mover->box_max.x &&
+         feet.z >= mover->box_min.z && feet.z <= mover->box_max.z &&
+         feet.y >= mover->box_min.y - IO_SENSE_BELOW &&
+         feet.y <= mover->box_max.y + IO_RIDE_ABOVE;
+}
+
+/* Opens an auto door while a character is near its closed pose and starts
+   its wait once none is; sends a ride to its other end when a character
+   boards it at rest, or to the end a character waits at while nobody
+   rides. False only when the router faulted. */
+static bool8_t io_mover_sense(VkrIoRouter *router, VkrScene *scene,
+                              IoMover *mover) {
+  if ((mover->activation != VKR_SCENE_MOVER_AUTO &&
+       mover->activation != VKR_SCENE_MOVER_RIDE) ||
+      !io_mover_box(mover, scene)) {
+    return true_v;
+  }
+  const bool8_t at_rest =
+      mover->progress == mover->target && mover->depart_left < 0.0;
+  if (mover->activation == VKR_SCENE_MOVER_AUTO) {
+    /* The box rides its carrier, as a door on a car. */
+    const IoMover *carrier =
+        mover->carrier >= 0 ? &router->movers[mover->carrier] : NULL;
+    const float32_t reach =
+        mover->reach + (mover->nearby ? IO_AUTO_HOLD : 0.0f);
+    bool8_t nearby = false_v;
+    for (uint32_t i = 0; i < router->character_count && !nearby; ++i) {
+      const Vec3 foot = router->characters[i].foot;
+      const Vec3 feet =
+          carrier ? io_unmove(foot, carrier->turn, carrier->shift) : foot;
+      nearby = feet.y >= mover->box_min.y - IO_SENSE_BELOW &&
+               feet.y <= mover->box_max.y &&
+               io_box_reach(feet, mover->box_min, mover->box_max) <= reach;
+    }
+    mover->nearby = nearby;
+    if (nearby) {
+      if (mover->target == 1.0) {
+        mover->wait_left = -1.0;
+        return true_v;
+      }
+      return mover->locked || io_mover_request(router, mover, 1.0, 0u);
+    }
+    if (at_rest && mover->progress == 1.0 && mover->wait_left < 0.0) {
+      mover->wait_left = Max(0.0f, mover->wait);
+    }
+    return true_v;
+  }
+  bool8_t ridden = false_v;
+  for (uint32_t i = 0; i < router->character_count && !ridden; ++i) {
+    ridden = io_mover_rider(router, mover, &router->characters[i]);
+  }
+  const bool8_t boarded = ridden && !mover->ridden;
+  mover->ridden = ridden;
+  if (!at_rest || mover->locked ||
+      (mover->progress != 0.0 && mover->progress != 1.0)) {
+    return true_v;
+  }
+  const float64_t other = mover->progress == 1.0 ? 0.0 : 1.0;
+  if (boarded) {
+    return io_mover_request(router, mover, other, 0u);
+  }
+  if (ridden || mover->turns) {
+    return true_v;
+  }
+  /* Its box at the other end, where a character may wait for it. */
+  const Vec3 there = vec3_scale(mover->travel, (float32_t)other);
+  const Vec3 lo = vec3_add(mover->box_min, there);
+  const Vec3 hi = vec3_add(mover->box_max, there);
+  for (uint32_t i = 0; i < router->character_count; ++i) {
+    const Vec3 feet = router->characters[i].foot;
+    if (feet.y >= lo.y - IO_SENSE_BELOW && feet.y <= hi.y + IO_RIDE_ABOVE &&
+        io_box_reach(feet, lo, hi) <= mover->reach) {
+      return io_mover_request(router, mover, other, 0u);
+    }
+  }
+  return true_v;
+}
+
 bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt) {
   if (!router->published || router->faulted) {
     return !router->faulted;
@@ -1779,6 +1985,21 @@ bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt) {
       if (mover->rate != 0.0) {
         mover->progress = fmod(mover->progress + mover->rate * dt, 1.0);
         mover->pose_due = true_v;
+      }
+      continue;
+    }
+    if (!io_mover_sense(router, scene, mover)) {
+      return false_v;
+    }
+    /* A delayed request sets off once its delay ran out. */
+    if (mover->depart_left >= 0.0) {
+      mover->depart_left -= dt;
+      if (mover->depart_left > 1.0e-9) {
+        continue;
+      }
+      mover->depart_left = -1.0;
+      if (!io_mover_head(router, mover, mover->depart_target, 0u)) {
+        return false_v;
       }
       continue;
     }

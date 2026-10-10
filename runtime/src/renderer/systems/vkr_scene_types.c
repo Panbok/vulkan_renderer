@@ -2919,17 +2919,52 @@ static const VkrIoPort s_mover_outputs[] = {
     {"on_opened", "On opened", VKR_IO_PORT_NONE},
     {"on_close", "On close", VKR_IO_PORT_NONE},
     {"on_closed", "On closed", VKR_IO_PORT_NONE},
+    {"on_depart", "On depart", VKR_IO_PORT_NONE},
     {NULL, NULL, 0u}};
 static const VkrIoPort s_mover_inputs[] = {
     {"open", "Open", VKR_IO_PORT_NONE},
     {"close", "Close", VKR_IO_PORT_NONE},
     {"toggle", "Toggle", VKR_IO_PORT_NONE},
+    {"use", "Use", VKR_PROPERTY_ENTITY},
     {"lock", "Lock", VKR_IO_PORT_NONE},
     {"unlock", "Unlock", VKR_IO_PORT_NONE},
     {"set_position", "Set position", VKR_PROPERTY_F32},
     {NULL, NULL, 0u}};
 
+static const char *const s_mover_activation_names[] = {"scripted", "use",
+                                                       "auto", "ride", NULL};
+
 static const VkrPropertyDesc s_mover_properties[] = {
+    {.name = "activation",
+     .label = "Activation",
+     .tooltip = "Scripted: only inputs move it. Use: the use key toggles it. "
+                "Auto: opens while a player is within reach and closes the "
+                "wait after the last one left. Ride: a player boarding it "
+                "sends it to its other end; one within reach of that end "
+                "calls it",
+     .names = s_mover_activation_names,
+     .offset = TYPE_OFFSET(SceneMover, activation),
+     .kind = VKR_PROPERTY_ENUM},
+    {.name = "reach",
+     .label = "Reach",
+     .tooltip = "Metres from its box at rest within which a player opens an "
+                "auto door or calls a riding lift",
+     .unit = "m",
+     .offset = TYPE_OFFSET(SceneMover, reach),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 100.0f,
+     .step = 0.05f},
+    {.name = "delay",
+     .label = "Delay",
+     .tooltip = "Seconds from a request at rest to setting off; On depart "
+                "fires at the request, as for a lift closing its doors",
+     .unit = "s",
+     .offset = TYPE_OFFSET(SceneMover, delay),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 3600.0f,
+     .step = 0.05f},
     {.name = "direction",
      .label = "Direction",
      .tooltip = "Where it opens, in its own space",
@@ -3004,8 +3039,8 @@ static const VkrPropertyDesc s_mover_properties[] = {
      .step = 0.1f},
     {.name = "wait",
      .label = "Wait",
-     .tooltip = "Seconds it stays open before it closes by itself; -1 stays "
-                "open",
+     .tooltip = "Seconds it stays open before it closes by itself, or an "
+                "auto door after the last player left; -1 stays open",
      .unit = "s",
      .offset = TYPE_OFFSET(SceneMover, wait),
      .kind = VKR_PROPERTY_F32,
@@ -3033,7 +3068,8 @@ static void mover_defaults(void *value) {
   *(SceneMover *)value = (SceneMover){.direction = vec3_new(1.0f, 0.0f, 0.0f),
                                       .speed = 2.0f,
                                       .wait = -1.0f,
-                                      .axis = vec3_new(0.0f, 1.0f, 0.0f)};
+                                      .axis = vec3_new(0.0f, 1.0f, 0.0f),
+                                      .reach = 2.0f};
 }
 
 static bool8_t mover_validate(const void *value, char *error,
@@ -3044,6 +3080,16 @@ static bool8_t mover_validate(const void *value, char *error,
   if (!isfinite(mover->acceleration) || mover->acceleration < 0.0f) {
     if (error) {
       snprintf(error, capacity, "A mover's acceleration is zero or more");
+    }
+    return false_v;
+  }
+  if (mover->activation >= VKR_SCENE_MOVER_ACTIVATION_COUNT ||
+      !isfinite(mover->reach) || mover->reach < 0.0f ||
+      !isfinite(mover->delay) || mover->delay < 0.0f) {
+    if (error) {
+      snprintf(error, capacity,
+               "A mover's activation is scripted, use, auto or ride, and "
+               "its reach and delay are zero or more");
     }
     return false_v;
   }

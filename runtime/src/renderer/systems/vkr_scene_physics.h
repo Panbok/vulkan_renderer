@@ -61,6 +61,11 @@ bool8_t vkr_scene_character_step(VkrScene *scene, VkrEntityId entity,
 bool8_t vkr_scene_character_get_state(VkrScene *scene, VkrEntityId entity,
                                       VkrPhysicsCharacterState *state,
                                       const char **error);
+/* The scene's characters and their states after the last step, up to
+   `capacity`; returns how many it wrote. */
+uint32_t vkr_scene_characters(const VkrScene *scene, VkrEntityId *entities,
+                              VkrPhysicsCharacterState *states,
+                              uint32_t capacity);
 
 /* How a box, sphere or capsule collider takes its size. */
 typedef enum VkrSceneColliderFit {

@@ -1270,6 +1270,25 @@ bool8_t vkr_scene_character_step(VkrScene *scene, VkrEntityId entity,
   return true_v;
 }
 
+uint32_t vkr_scene_characters(const VkrScene *scene, VkrEntityId *entities,
+                              VkrPhysicsCharacterState *states,
+                              uint32_t capacity) {
+  const VkrScenePhysics *physics = scene ? scene->physics : NULL;
+  if (!physics || physics->faulted) {
+    return 0u;
+  }
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < ArrayCount(physics->characters) && count < capacity;
+       ++i) {
+    const ScenePhysicsCharacter *character = &physics->characters[i];
+    if (character->entity.u64) {
+      entities[count] = character->entity;
+      states[count++] = character->current;
+    }
+  }
+  return count;
+}
+
 bool8_t vkr_scene_character_get_state(VkrScene *scene, VkrEntityId entity,
                                       VkrPhysicsCharacterState *state,
                                       const char **error) {

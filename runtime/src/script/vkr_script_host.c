@@ -985,6 +985,24 @@ static bool8_t script_host_before_physics(VkrScene *scene, uint64_t tick,
                                           void *context) {
   (void)tick;
   VkrScriptHost *host = context;
+  /* Automatic doors and lifts sense where the last step left each player. */
+  VkrIoCharacter characters[VKR_IO_CHARACTERS_MAX];
+  uint32_t character_count = 0u;
+  for (uint32_t s = 0; s < host->io.scene_count; ++s) {
+    VkrEntityId entities[VKR_IO_CHARACTERS_MAX];
+    VkrPhysicsCharacterState states[VKR_IO_CHARACTERS_MAX];
+    const uint32_t found =
+        vkr_scene_characters(host->io.scenes[s], entities, states,
+                             VKR_IO_CHARACTERS_MAX - character_count);
+    for (uint32_t i = 0; i < found; ++i) {
+      const float32_t *foot = states[i].foot_position;
+      characters[character_count++] =
+          (VkrIoCharacter){.entity = entities[i],
+                           .foot = vec3_new(foot[0], foot[1], foot[2]),
+                           .ground = {.u64 = states[i].ground_entity_id}};
+    }
+  }
+  vkr_io_router_sense(&host->io, characters, character_count);
   /* Movers move first, so behaviors and physics see this tick's poses. */
   if (!host->faulted &&
       !vkr_io_router_step(&host->io, VKR_SCENE_SIMULATION_FIXED_DT)) {

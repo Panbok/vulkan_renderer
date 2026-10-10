@@ -14064,8 +14064,11 @@ static const OpsDef s_ops[] = {
      "plane and face the same way, so they flicker ('entity' and 'other', "
      "'value' the shared square meters, 'normal' the way they face), and "
      "mover_timing: a looping mover "
-     "with no stay, or a door its arrival opens that is still open when it "
-     "leaves ('value' the seconds). 'kinds' reports only the named kinds; "
+     "with no stay, a door its arrival opens that is still open when it "
+     "leaves, or for a vehicle that departs on request (use, ride or a "
+     "delay) a door its arrival opens that closes by itself or one its "
+     "on_depart closes that outlasts its delay ('value' the seconds). "
+     "'kinds' reports only the named kinds; "
      "'found' above the issues returned means 'limit' cut the list.",
      "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
      "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA

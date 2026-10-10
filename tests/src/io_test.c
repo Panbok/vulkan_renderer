@@ -818,6 +818,217 @@ static void io_test_button(void) {
   printf("  io_test_button PASSED\n");
 }
 
+/* Steps the router one 60 Hz tick with `character` sensed, `ticks` times;
+   returns the tick count it ran. */
+static void io_test_run(IoTest *test, const VkrIoCharacter *character,
+                        uint32_t ticks, uint32_t *tick) {
+  const float64_t dt = 1.0 / 60.0;
+  for (uint32_t i = 0; i < ticks; ++i) {
+    vkr_io_router_sense(&test->router, character, character ? 1u : 0u);
+    assert(vkr_io_router_step(&test->router, dt));
+    *tick += 1u;
+    assert(vkr_io_router_tick(&test->router, &test->scene, *tick * dt));
+  }
+}
+
+/* An auto door (ADR-084) 2 m along +X at 2 m/s with a 2 m reach and a
+ * 0.5 s wait; without brushes its box is its origin. Oracles: its offset
+ * and what a probe records as a player comes, stays, leaves and returns.
+ * It stays open for as long as the player stays near, however long (the
+ * trigger-and-wait doors closed on a player who never left), closes the
+ * wait after the player left, opens again on return, holds open a little
+ * past its reach and refuses while locked. */
+static void io_test_mover_auto(void) {
+  printf("  Running io_test_mover_auto...\n");
+  IoTest test;
+  io_test_begin(&test);
+  const SceneMover settings = {.direction = vec3_new(1.0f, 0.0f, 0.0f),
+                               .distance = 2.0f,
+                               .speed = 2.0f,
+                               .wait = 0.5f,
+                               .activation = VKR_SCENE_MOVER_AUTO,
+                               .reach = 2.0f};
+  const VkrEntityId door =
+      io_test_entity(&test, "door", &vkr_scene_mover_type, &settings);
+  const Vec3 saved = vec3_new(5.0f, 1.0f, -3.0f);
+  assert(vkr_scene_set_transform(&test.scene, door, saved, vkr_quat_identity(),
+                                 vec3_one()));
+  const VkrEntityId probe = io_test_entity(&test, "probe", &s_probe_type, NULL);
+  (void)io_test_connect(&test, door, "on_opened", probe, "record", "1", 0.0f,
+                        0u);
+  (void)io_test_connect(&test, door, "on_closed", probe, "record", "2", 0.0f,
+                        0u);
+  vkr_scene_update_transforms(&test.scene);
+  io_test_publish(&test);
+  uint32_t tick = 0u;
+
+  VkrIoCharacter player = {.foot = vec3_new(5.0f, 1.0f, 10.0f)};
+  io_test_run(&test, &player, 60u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 0.0f);
+  assert(test.record_count == 0u);
+  /* Nobody sensed at all keeps it closed too. */
+  io_test_run(&test, NULL, 60u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 0.0f);
+
+  /* 1.5 m away: it opens over 1 s and stays open for 20 s. */
+  player.foot = vec3_new(5.0f, 1.0f, -1.5f);
+  io_test_run(&test, &player, 70u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 2.0f);
+  assert(test.record_count == 1u && test.records[0].value == 1);
+  io_test_run(&test, &player, 1200u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 2.0f);
+  assert(test.record_count == 1u);
+
+  /* 2.3 m away: within the reach it holds while open. */
+  player.foot = vec3_new(5.0f, 1.0f, -0.7f);
+  io_test_run(&test, &player, 120u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 2.0f);
+
+  /* Gone: it waits 0.5 s, then closes over 1 s. */
+  player.foot = vec3_new(5.0f, 1.0f, 10.0f);
+  io_test_run(&test, &player, 25u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 2.0f);
+  io_test_run(&test, &player, 70u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 0.0f);
+  assert(test.record_count == 2u && test.records[1].value == 2);
+
+  /* 2.3 m away while closed does not open it. */
+  player.foot = vec3_new(5.0f, 1.0f, -0.7f);
+  io_test_run(&test, &player, 60u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 0.0f);
+
+  /* Back within reach, it opens again. */
+  player.foot = vec3_new(6.0f, 1.0f, -2.0f);
+  io_test_run(&test, &player, 70u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 2.0f);
+  assert(test.record_count == 3u && test.records[2].value == 1);
+
+  /* A storey above is not near. Locked, it closes and refuses. */
+  player.foot = vec3_new(5.0f, 4.5f, -2.0f);
+  io_test_run(&test, &player, 120u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 0.0f);
+  assert(vkr_io_router_send(&test.router, door,
+                            io_test_input_of(&test, door, "lock"), NULL,
+                            false_v));
+  player.foot = vec3_new(5.0f, 1.0f, -2.0f);
+  io_test_run(&test, &player, 120u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 0.0f);
+  assert(vkr_io_router_send(&test.router, door,
+                            io_test_input_of(&test, door, "unlock"), NULL,
+                            false_v));
+  io_test_run(&test, &player, 70u, &tick);
+  assert(io_test_mover_offset(&test, door, saved) == 2.0f);
+  io_test_end(&test);
+  printf("  io_test_mover_auto PASSED\n");
+}
+
+/* A riding lift (ADR-084) 6 m up at 3 m/s with a 0.5 s delay and a 2 m
+ * reach, and a use door beside a scripted one. Oracles: the lift's height
+ * and on_depart, on_opened and on_closed as a probe records them. A player
+ * spawned aboard does not send it; boarding does, after on_depart and the
+ * delay; it stays up while ridden and after the rider left; a player at
+ * the bottom landing calls it down; the use key toggles the use door and
+ * the riding lift and leaves the scripted door. */
+static void io_test_mover_ride(void) {
+  printf("  Running io_test_mover_ride...\n");
+  IoTest test;
+  io_test_begin(&test);
+  const SceneMover settings = {.direction = vec3_new(0.0f, 1.0f, 0.0f),
+                               .distance = 6.0f,
+                               .speed = 3.0f,
+                               .wait = 4.0f,
+                               .activation = VKR_SCENE_MOVER_RIDE,
+                               .reach = 2.0f,
+                               .delay = 0.5f};
+  const VkrEntityId lift =
+      io_test_entity(&test, "lift", &vkr_scene_mover_type, &settings);
+  SceneMover door_settings = {.direction = vec3_new(1.0f, 0.0f, 0.0f),
+                              .distance = 1.0f,
+                              .speed = 10.0f,
+                              .wait = -1.0f,
+                              .activation = VKR_SCENE_MOVER_USE};
+  const VkrEntityId use_door =
+      io_test_entity(&test, "use door", &vkr_scene_mover_type, &door_settings);
+  door_settings.activation = VKR_SCENE_MOVER_SCRIPTED;
+  const VkrEntityId scripted = io_test_entity(
+      &test, "scripted door", &vkr_scene_mover_type, &door_settings);
+  const Vec3 doors_at = vec3_new(40.0f, 0.0f, 0.0f);
+  assert(vkr_scene_set_transform(&test.scene, use_door, doors_at,
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_transform(&test.scene, scripted, doors_at,
+                                 vkr_quat_identity(), vec3_one()));
+  const VkrEntityId probe = io_test_entity(&test, "probe", &s_probe_type, NULL);
+  (void)io_test_connect(&test, lift, "on_depart", probe, "record", "1", 0.0f,
+                        0u);
+  (void)io_test_connect(&test, lift, "on_opened", probe, "record", "2", 0.0f,
+                        0u);
+  (void)io_test_connect(&test, lift, "on_closed", probe, "record", "3", 0.0f,
+                        0u);
+  vkr_scene_update_transforms(&test.scene);
+  io_test_publish(&test);
+  uint32_t tick = 0u;
+
+  VkrIoCharacter player = {.foot = vec3_zero(), .ground = lift};
+  io_test_run(&test, &player, 120u, &tick);
+  assert(io_test_mover_position(&test, lift).y == 0.0f);
+  assert(test.record_count == 0u);
+
+  /* Off 5 m away, then aboard: on_depart at once, 0.5 s, then 2 s up. */
+  player = (VkrIoCharacter){.foot = vec3_new(5.0f, 0.0f, 0.0f)};
+  io_test_run(&test, &player, 60u, &tick);
+  assert(test.record_count == 0u);
+  player = (VkrIoCharacter){.foot = vec3_zero(), .ground = lift};
+  io_test_run(&test, &player, 1u, &tick);
+  assert(test.record_count == 1u && test.records[0].value == 1);
+  io_test_run(&test, &player, 29u, &tick);
+  assert(io_test_mover_position(&test, lift).y == 0.0f);
+  io_test_run(&test, &player, 125u, &tick);
+  assert(io_test_mover_position(&test, lift).y == 6.0f);
+  assert(test.record_count == 2u && test.records[1].value == 2);
+
+  /* Ridden at the top, then left there: it stays well past its wait. */
+  player.foot = vec3_new(0.0f, 6.0f, 0.0f);
+  io_test_run(&test, &player, 600u, &tick);
+  player = (VkrIoCharacter){.foot = vec3_new(1.5f, 6.0f, 0.0f)};
+  io_test_run(&test, &player, 600u, &tick);
+  assert(io_test_mover_position(&test, lift).y == 6.0f);
+  assert(test.record_count == 2u);
+
+  /* Waiting at the bottom landing calls it down. */
+  player.foot = vec3_new(1.5f, 0.0f, 0.0f);
+  io_test_run(&test, &player, 180u, &tick);
+  assert(io_test_mover_position(&test, lift).y == 0.0f);
+  assert(test.record_count == 4u && test.records[2].value == 1 &&
+         test.records[3].value == 3);
+  io_test_run(&test, &player, 300u, &tick);
+  assert(test.record_count == 4u);
+
+  /* The use key: the use door and the lift move, the scripted door not. */
+  const VkrIoValue activator = {.kind = VKR_IO_ENTITY,
+                                .entity = {.id = probe.u64}};
+  player.foot = vec3_new(20.0f, 0.0f, 0.0f);
+  assert(vkr_io_router_send(&test.router, use_door,
+                            io_test_input_of(&test, use_door, "use"),
+                            &activator, false_v));
+  assert(vkr_io_router_send(&test.router, scripted,
+                            io_test_input_of(&test, scripted, "use"),
+                            &activator, false_v));
+  assert(vkr_io_router_send(&test.router, lift,
+                            io_test_input_of(&test, lift, "use"), &activator,
+                            false_v));
+  io_test_run(&test, &player, 180u, &tick);
+  assert(io_test_mover_position(&test, use_door).x == 41.0f);
+  assert(io_test_mover_position(&test, scripted).x == 40.0f);
+  assert(io_test_mover_position(&test, lift).y == 6.0f);
+  assert(vkr_io_router_send(&test.router, use_door,
+                            io_test_input_of(&test, use_door, "use"),
+                            &activator, false_v));
+  io_test_run(&test, &player, 60u, &tick);
+  assert(io_test_mover_position(&test, use_door).x == 40.0f);
+  io_test_end(&test);
+  printf("  io_test_mover_ride PASSED\n");
+}
+
 bool32_t run_io_tests(void) {
   printf("--- Starting IO Tests ---\n");
   io_test_order();
@@ -833,6 +1044,8 @@ bool32_t run_io_tests(void) {
   io_test_mover_loop();
   io_test_mover_ease();
   io_test_mover_carried();
+  io_test_mover_auto();
+  io_test_mover_ride();
   io_test_button();
   printf("--- IO Tests Completed ---\n");
   return true_v;

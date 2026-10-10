@@ -43,6 +43,8 @@
 #define VKR_IO_CHAIN_MAX 64u
 /* Filtered entities one trigger tracks at once. */
 #define VKR_IO_TRIGGER_OCCUPANTS 16u
+/* Characters automatic movers sense in one step; more are ignored. */
+#define VKR_IO_CHARACTERS_MAX 8u
 #define VKR_IO_ERROR_CAPACITY 256u
 
 /* Inputs every entity has, after its components' inputs. */
@@ -82,6 +84,14 @@ struct IoConnection;
 struct IoDelivery;
 struct IoFired;
 struct IoTrigger;
+/* A character automatic movers sense: where its feet are and what it
+   stands on (an entity of a mover's, or none). */
+typedef struct VkrIoCharacter {
+  VkrEntityId entity;
+  Vec3 foot;
+  VkrEntityId ground;
+} VkrIoCharacter;
+
 struct IoRelay;
 struct IoTimer;
 struct IoCounter;
@@ -129,6 +139,9 @@ typedef struct VkrIoRouter {
   uint32_t fired_count;
   VkrPhysicsSensorEvent *events;
   uint32_t event_capacity;
+  /* What the next step's automatic movers sense (vkr_io_router_sense). */
+  VkrIoCharacter characters[VKR_IO_CHARACTERS_MAX];
+  uint32_t character_count;
   /* Connections publication refused, and deliveries whose target died. */
   uint32_t problems;
   uint64_t dropped;
@@ -194,8 +207,15 @@ bool8_t vkr_io_router_send(VkrIoRouter *router, VkrEntityId target,
  * timers, deferred fires and deliveries. False when the router faulted;
  * `error` says why. */
 bool8_t vkr_io_router_tick(VkrIoRouter *router, VkrScene *scene, float64_t now);
-/** Before physics in a tick of `dt` seconds: moves each mover toward where
- * it heads, easing with its acceleration, and counts down its wait; then
+/** The characters the next step's automatic movers sense (SceneMover
+ * `activation` auto and ride), as the last physics step left them; the
+ * first VKR_IO_CHARACTERS_MAX count. */
+void vkr_io_router_sense(VkrIoRouter *router, const VkrIoCharacter *characters,
+                         uint32_t count);
+/** Before physics in a tick of `dt` seconds: opens and closes automatic
+ * movers for the characters sensed, starts delayed departures that came
+ * due, moves each mover toward where it heads, easing with its
+ * acceleration, and counts down its wait; then
  * writes the evaluated pose and brushes' kinematic target of each mover
  * that moved or whose carrier, the nearest mover above it, did: its own
  * motion carried by its carrier's. Outputs it fires deliver at the tick's

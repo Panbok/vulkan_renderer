@@ -520,7 +520,32 @@ typedef struct SceneMover {
   /* Speed gained or lost per second as it sets off and stops, in metres or
      degrees per second squared; zero moves at `speed` at once. */
   float32_t acceleration;
+  /* Who moves it besides its inputs (VkrSceneMoverActivation). */
+  uint32_t activation;
+  /* Metres from its box at rest within which a player's feet open an
+     automatic door or call a riding lift to that end. */
+  float32_t reach;
+  /* Seconds from a request at rest to setting off; `on_depart` fires at
+     the request, so a lift closes its doors first. */
+  float32_t delay;
 } SceneMover;
+
+/* What moves a mover besides its inputs (SceneMover.activation). Its box is
+ * the brushes it moves, at rest; without brushes, its origin. */
+typedef enum VkrSceneMoverActivation {
+  /* Only inputs, as triggers, buttons and timers send for scripted events. */
+  VKR_SCENE_MOVER_SCRIPTED = 0,
+  /* The use key on it toggles it, as an interactable door or lift. */
+  VKR_SCENE_MOVER_USE,
+  /* Opens while a player's feet are within `reach` of its box at rest and
+     closes `wait` seconds after the last one left, as an automatic door. */
+  VKR_SCENE_MOVER_AUTO,
+  /* A player boarding it at rest sends it to its other end, where it stays;
+     one within `reach` of the end it is not at calls it there while nobody
+     rides, as an automatic lift. */
+  VKR_SCENE_MOVER_RIDE,
+  VKR_SCENE_MOVER_ACTIVATION_COUNT,
+} VkrSceneMoverActivation;
 
 /* One connection, a child entity of its source: when the source fires
  * `output`, `target` receives `input` after `delay` seconds. `value`, when
@@ -1065,6 +1090,9 @@ typedef struct VkrSceneLightmaps {
   /** Every lamp group's light is in the texture, so static lamps leave the
       runtime light lists. */
   bool8_t lamps_baked;
+  /** The set's brush and blockout charts match the runtime's (VKLM v6);
+      otherwise shapes draw without its lightmap. */
+  bool8_t shape_charts_current;
   uint32_t instance_count;
   VkrLightmapInstance *instances;
   /** One per instance: the frame's rectangle table. */
