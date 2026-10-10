@@ -50,6 +50,8 @@ typedef struct VkrBake {
   char repo[VKR_BAKE_PATH];
   char error[4096];
   bool8_t failed;
+  /* Exit status of the last baker vkr_bake_run_baker ran. */
+  int32_t baker_code;
 } VkrBake;
 
 #define VKR_BAKE_TRY(expression)                                               \
@@ -749,6 +751,7 @@ vkr_internal bool8_t vkr_bake_run_baker(VkrBake *bake,
   VKR_BAKE_TRY(vkr_bake_run(bake, bake->config->self_path, arguments->items,
                             arguments->count, bake->repo, log, 0u, NULL, 0u,
                             &code));
+  bake->baker_code = code;
   if (code == 0) {
     return true_v;
   }
@@ -1005,7 +1008,8 @@ vkr_internal bool8_t vkr_bake_publish(VkrBake *bake,
 vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
                                       const char *output, const char *sidecar,
                                       const char *manifest_destination,
-                                      bool8_t *out_no_volume) {
+                                      bool8_t *out_no_volume,
+                                      bool8_t *out_too_large) {
   char scene[VKR_BAKE_PATH];
   char job[VKR_BAKE_PATH];
   char inspect_path[VKR_BAKE_PATH];
@@ -1013,8 +1017,12 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   VKR_BAKE_TRY(vkr_bake_existing_file(bake, args->scene, "--scene", scene));
   VKR_BAKE_TRY(vkr_bake_job_directory(bake, args->workspace_root, "diffuse_",
                                       "diffuse_volume_bake", job));
-  VKR_BAKE_TRY(
-      vkr_bake_run_inspect(bake, args, scene, job, "inspect", inspect_path));
+  if (!vkr_bake_run_inspect(bake, args, scene, job, "inspect", inspect_path)) {
+    /* Bounds too large for the brick budget at this spacing leave the scene
+       without a volume, as a scene without geometry does. */
+    *out_too_large = bake->baker_code == VKR_DIFFUSE_VOLUME_OVER_BUDGET_EXIT;
+    return false_v;
+  }
   VkrBakeryJson *inspect = NULL;
   VkrBakeryJson *dependencies = NULL;
   VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, &vkr_bake_diffuse_kind,
@@ -1385,16 +1393,18 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
     (void)vkr_bake_resolve(joined, manifest);
   }
   bool8_t no_volume = false_v;
+  bool8_t too_large = false_v;
   const bool8_t ok = args.inspect
                          ? vkr_bake_diffuse_inspect(bake, &args, manifest)
                          : vkr_bake_diffuse(bake, &args, output, sidecar,
-                                            manifest, &no_volume);
+                                            manifest, &no_volume, &too_large);
   if (ok) {
     return 0;
   }
-  if (no_volume) {
+  if (no_volume || too_large) {
     fprintf(stderr, "Diffuse-volume bake skipped: %s\n", bake->error);
-    return VKR_BAKERY_BAKE_NO_VOLUME;
+    return no_volume ? VKR_BAKERY_BAKE_NO_VOLUME
+                     : VKR_BAKERY_BAKE_VOLUME_TOO_LARGE;
   }
   fprintf(stderr, "Diffuse-volume bake failed: %s\n", bake->error);
   return 1;

@@ -26,6 +26,7 @@
 #define VKR_PROJECT_MAX_ENTITIES 65536u
 /* bake_diffuse_volume status: no closed-room cell, so no volume published. */
 #define VKR_PROJECT_DIFFUSE_NO_VOLUME 3
+#define VKR_PROJECT_DIFFUSE_TOO_LARGE 5
 /* bake lightmap status: nothing to bake on this host, no model carries
    lightmap UVs (ADR-087) or a desktop host's scene has no static lamps
    (ADR-104). */

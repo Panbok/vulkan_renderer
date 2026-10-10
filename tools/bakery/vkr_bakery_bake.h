@@ -16,6 +16,11 @@
  * (ADR-104); nothing is published. */
 #define VKR_BAKERY_BAKE_NO_LIGHTMAPPED_INSTANCES 4
 
+/** Exit status of `bake diffuse` when the scene's bounds need more
+ * indirection entries or bricks than a volume holds at the requested
+ * spacing; nothing is published (ADR-054). */
+#define VKR_BAKERY_BAKE_VOLUME_TOO_LARGE 5
+
 /** `argv[0]` is "diffuse", "probe", "lightmap" or "proxies"; the remaining
  * entries are its options. */
 int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv);

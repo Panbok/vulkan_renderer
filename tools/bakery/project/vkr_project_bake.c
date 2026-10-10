@@ -1222,26 +1222,44 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
     VKR_PROJECT_TRY(vkr_project_argument_push(
         job, &arguments, vkr_project_argument(job, value)));
   }
-  int32_t code = 0;
-  VKR_PROJECT_TRY(vkr_project_run_bakery(job, arguments.items, arguments.count,
-                                         "Baking diffuse volume", "diffuse",
-                                         VKR_PROJECT_DIFFUSE_NO_VOLUME, &code));
+  /* Both skips leave the scene without a volume; any other failure fails
+     the bake. */
+  const char *label = "Baking diffuse volume";
+  VKR_PROJECT_TRY(vkr_project_progress(
+      job, label, -1.0,
+      vkr_bakery_path_name(vkr_project_json_text(runtime, "runtime_path"))));
+  fflush(stdout);
+  int32_t code = -1;
+  VKR_PROJECT_TRY(vkr_project_run_program(job, job->config->self_path,
+                                          arguments.items, arguments.count,
+                                          label, NULL, &code));
+  if (code != 0 && code != VKR_PROJECT_DIFFUSE_NO_VOLUME &&
+      code != VKR_PROJECT_DIFFUSE_TOO_LARGE) {
+    return vkr_project_fail(job, "%s failed (exit %d); see the job log", label,
+                            code);
+  }
   const VkrBakeryJson *previous_reference = vkr_bakery_json_get(
       vkr_bakery_json_get(scene, "diffuse_volume"), "asset");
   VkrBakeryJson *previous = vkr_project_record_by_id(
       job->assets, vkr_project_json_text(previous_reference, "id"));
-  if (code == VKR_PROJECT_DIFFUSE_NO_VOLUME) {
-    /* A scene without geometry has no volume. A previous volume describes
-       other geometry, so it is dropped. */
+  if (code != 0) {
+    /* A scene without geometry, or too large for a volume at this spacing,
+       has no volume. A previous volume describes other geometry or
+       settings, so it is dropped. */
     (void)vkr_project_remove_tree(directory);
     if (previous) {
       vkr_project_remove_record(job->assets, previous);
     }
     vkr_bakery_json_remove(scene, "diffuse_volume");
     const char *warning =
-        "Diffuse volume skipped: the scene has no geometry to place probes "
-        "near, so it keeps environment and reflection-probe diffuse "
-        "lighting";
+        code == VKR_PROJECT_DIFFUSE_NO_VOLUME
+            ? "Diffuse volume skipped: the scene has no geometry to place "
+              "probes near, so it keeps environment and reflection-probe "
+              "diffuse lighting"
+            : "Diffuse volume skipped: the scene needs more probe bricks than "
+              "a volume holds at this probe spacing, so it keeps environment "
+              "and reflection-probe diffuse lighting; raise Probe spacing in "
+              "Bake settings or set a diffuse box";
     vkr_bakery_json_append(job->warnings, vkr_bakery_json_cstr(arena, warning));
     printf("Warning: %s\n", warning);
     fflush(stdout);

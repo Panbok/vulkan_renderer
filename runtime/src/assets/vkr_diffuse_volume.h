@@ -41,6 +41,10 @@ extern "C" {
 /* The runtime's moment atlas, 512 tiles wide and at most 16384 texels
    high, holds 1638 rows of 512 probes. */
 #define VKR_DIFFUSE_VOLUME_MAX_BRICKS 13104u
+/* Exit status of the diffuse baker when the bounds need more indirection
+   entries or bricks than these limits allow at the given spacing; vkr_bakery
+   skips the volume rather than failing the bake. */
+#define VKR_DIFFUSE_VOLUME_OVER_BUDGET_EXIT 4
 
 /* An indirection entry names the brick that covers it and that brick's
    level, or is empty: no probe covers it and lighting keeps the environment

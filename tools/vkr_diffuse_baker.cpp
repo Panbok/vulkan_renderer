@@ -1059,10 +1059,12 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
   return 0;
 }
 
-/* Builds the BVH of a scene with geometry and places its bricks. */
+/* Builds the BVH of a scene with geometry and places its bricks.
+   `out_over_budget` reports a placement that exceeds the DVOL limits. */
 bool place_bricks(const Options &options, VkrBakeScene &scene, Arena *arena,
                   VkrBakeBvh *bvh, std::vector<VkrBakeBrickMaterial> *materials,
-                  VkrBakeBrickLayout *layout) {
+                  VkrBakeBrickLayout *layout, bool *out_over_budget) {
+  *out_over_budget = false;
   if (scene.triangles.size() > VKR_BAKE_BVH_MAX_TRIANGLES)
     return false;
   if (!vkr_bake_bvh_build(
@@ -1109,6 +1111,9 @@ bool place_bricks(const Options &options, VkrBakeScene &scene, Arena *arena,
                  "indirection entries and %u bricks; raise --spacing or "
                  "lower --margin\n",
                  VKR_DIFFUSE_VOLUME_MAX_ENTRIES, VKR_DIFFUSE_VOLUME_MAX_BRICKS);
+    /* The spacing, levels, margin and bounds were checked above, so only
+       the limits remain. */
+    *out_over_budget = true;
     return false;
   }
   return true;
@@ -1199,9 +1204,11 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
   VkrBakeBvh bvh = {};
   Volume volume;
   std::vector<VkrBakeBrickMaterial> materials;
+  bool over_budget = false;
   if (!scene.triangles.empty() &&
-      !place_bricks(options, scene, arena, &bvh, &materials, &volume.layout)) {
-    return 1;
+      !place_bricks(options, scene, arena, &bvh, &materials, &volume.layout,
+                    &over_budget)) {
+    return over_budget ? VKR_DIFFUSE_VOLUME_OVER_BUDGET_EXIT : 1;
   }
   const VkrBakeBrickLayout &layout = volume.layout;
   uint32_t levels[3];
