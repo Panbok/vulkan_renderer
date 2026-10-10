@@ -13,12 +13,13 @@ Accepted (partial). Phase 4 of the
 one editor hosts a session over the transport of
 [ADR-105](105-network-transport-and-asset-depot.md), other editors join it,
 and every edit that changes a scene journal applies on every editor in the
-host's order. Agents of every editor share the host's claims, task board
-and change feed. Presence travels but no editor draws it yet. Live gesture
-previews, edits that do not travel yet (listed under
-[Decision](#what-travels)), capability-based task assignment, a Session
-window and published assets stay in the proposal. Every check ran on one
-Windows host; macOS and cross-machine runs are unverified.
+host's order. A Session window hosts and joins, and the Scene draws other
+editors' cameras and selections. Agents of every editor share the host's
+claims, task board (with capabilities) and change feed, and their batches
+wait for review on every editor. Live gesture previews, edits that do not
+travel yet (listed under [Decision](#what-travels)) and published assets
+stay in the proposal. Every check ran on one Windows host; macOS and
+cross-machine runs are unverified.
 
 ## Context
 
@@ -62,16 +63,19 @@ container's journal.
   batch, undo, redo, or a revert naming the batch by session sequence), so
   the host relays a participant's body unchanged.
 - A creation gets its document id before it leaves the editor, so every
-  editor gives the new entity the same id.
+  editor gives the new entity the same id. A duplicate gets a seed instead:
+  `vkr_scene_edit_duplicate` derives each copy's id from the seed and its
+  original's id (SHA-256, as a version 4 UUID), so every editor makes the
+  same copies under the same ids and names.
 
 ### What travels
 
 APPLY of name, transform, visibility, the three lights and one world
-component; CREATE, DELETE, REPARENT and component add, remove and replace;
-batches of those; undo, redo and batch reverts; gizmo moves. Duplicate (each
-editor would draw fresh ids), terrain strokes, physics, collision layers,
-scene settings, partition edits and scene or World loads are refused while a
-session runs, with a Console warning or a batch result saying so.
+component; CREATE, DUPLICATE, DELETE, REPARENT and component add, remove and
+replace; batches of those; undo, redo and batch reverts; gizmo moves.
+Terrain strokes, physics, collision layers, scene settings, partition edits
+and scene or World loads are refused while a session runs, with a Console
+warning or a batch result saying so.
 
 ### Order and verification
 
@@ -97,8 +101,8 @@ session runs, with a Console warning or a batch result saying so.
   Journal group IDs differ between editors; each editor maps session
   sequence to its own group, so author-scoped undo (`VKR-AGENT-0009`) and
   reverts name the same batch everywhere.
-- Another author's single creation applies as a batch of one, which leaves
-  the local selection alone.
+- Another author's single creation or duplicate applies as a batch of
+  one, which leaves the local selection alone.
 
 ### Gizmo drags
 
@@ -145,11 +149,30 @@ carries what they share.
   author reverts because it touched a claim still reads as applied, with
   no entities, in other editors' feeds.
 - **Task board** ([editor_ops.c](../../editor/src/editor_ops.c), also
-  without a session). `task.add` opens a task of a kind with a title and an
-  optional region; `task.next` gives an agent its assigned task or the
-  oldest open task of the kinds it names; `task.done` finishes the
-  assignee's task as done or failed with a note; `task.list` reads the
-  board. A full board (256) drops its oldest finished task.
+  without a session). `task.add` opens a task of a kind with a title, an
+  optional region and the capabilities it `requires`; `task.next` gives an
+  agent its assigned task or the oldest open task of the kinds it names
+  whose requirements its capabilities cover: its editor's platform
+  (`windows`, `macos`) and pipeline class (`desktop`, `tiled`;
+  [ADR-087](087-gpu-class-graphics-pipelines.md)) and any it lists itself;
+  `task.done` finishes the assignee's task as done or failed with a note;
+  `task.list` reads the board. A full board (256) drops its oldest finished
+  task.
+- **Reviews.** EDIT and APPLIED carry whether a batch waits for review.
+  Every editor lists every editor's review batches in its Agent changes
+  window, by its own journal group. Reject reverts the batch, which the
+  session carries to every editor; Accept sends REVIEWED with the batch's
+  session sequence, and every editor drops it from review.
+
+### Session window and Scene overlay
+
+The Collaborative session window (View menu, Cmd `window session`) hosts
+with a name and an address to listen on, or joins with an address and the
+host's key, and while a session runs shows the address, the key with a
+Copy button, and each peer in its colour with its camera position and a
+Go to view button that moves the Scene camera to that peer's view. The
+Scene draws each peer's camera as a small frustum and its selection's
+bounds as a box, in the peer's colour, among the editor's overlay lines.
 
 ### Operations
 
@@ -197,11 +220,11 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
   runs two headless editors on Bistro over loopback: the host creates,
   names and moves a cube before anyone joins; the guest joins (digest
   match), replays three edits, sees the cube at (1, 2, 3), creates, names
-  and moves its own cube twice, undoes once and has a duplicate refused.
-  Both end at session sequence 9 with digest `c992abb1…` (random document
-  ids change it between runs); the host reads the guest's cube at
-  (4, 5, 6); the entity count stays 5,991 after the refused duplicate.
-  Passes.
+  and moves its own cube twice, undoes once, duplicates it (5,991 to 5,992
+  entities) and has a physics edit refused. Both end at session sequence
+  10 with equal digests (random document ids change them between runs);
+  the host reads the guest's cube and its copy `GuestCube (1)` at
+  (4, 5, 6). Passes.
 - `python tools/checks/check_agent_federation.py --editor
   build_debug/editor/vkr_editor.exe --mcp build_debug/tools/vkr_mcp.exe`
   ([check_agent_federation.py](../../tools/checks/check_agent_federation.py))
@@ -211,12 +234,23 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
   agent cannot claim over `painter@beta`'s claim (`VKR-AGENT-0010`); each
   agent's creation inside the other's claim is reverted with
   `VKR-AGENT-0010`; each feed holds the other editor's applied batch with
-  its entity; both editors end at sequence 7 with equal digests. Passes.
+  its entity; the guest's batch waits for review on the host until the
+  guest accepts it; of two tasks that require the `tiled` and `desktop`
+  classes, a third agent on the Windows host gets the `desktop` one; both
+  editors end at sequence 7 with equal digests. Passes.
+- A headless window capture of the host while the guest looks at the
+  scene from (2, 2, 10) shows the Session window with the guest `beta`, its
+  colour, position and Go to view button, and the guest's camera frustum
+  in the Scene. The guest's selection box lay behind the window in that
+  view and is not confirmed by a capture.
+- `vulkan_renderer_tester --suite scene_edit` passes with the seeded
+  duplicate, and `test_net_scene_edit_replication` duplicates a subtree on
+  one scene and checks the other holds the same ids, names and parents.
 - Not exercised: gizmo drags (no headless drag script), batch reverts across
   editors, history trimming, macOS, two machines.
 
 ## Revisit when
 
-Terrain, brush or duplicate edits must travel (journal results), a session
-needs edits faster than one per build, or joining must tolerate a host with
+Terrain or brush edits must travel (journal results), a session needs
+edits faster than one per build, or joining must tolerate a host with
 unsaved edits (snapshot transfer).

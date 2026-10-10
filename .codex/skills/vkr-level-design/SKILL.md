@@ -19,8 +19,9 @@ sets the order of work and the checks that prove a level.
    `undo` takes only your batches.
 3. Read before writing: `editor.status`, `claims.list`, `changes.feed` with
    `after` 0, and `scene.describe` with a `region` around your area.
-4. When agents share a board, take work with `task.next` (your `kinds`)
-   and finish it with `task.done`; a task's `region` is the one to claim.
+4. When agents share a board, take work with `task.next` (your `kinds`,
+   and `capabilities` beyond your editor's platform and pipeline class) and
+   finish it with `task.done`; a task's `region` is the one to claim.
    In a collaborative session (`session.status`) claims, tasks and the
    feed span every editor, and authors read `agent@editor` (ADR-106).
 
