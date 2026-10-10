@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-10
 authority: adr
 ---
 
@@ -24,7 +24,9 @@ need explicit shared GPU data and graph dependencies.
 
 Build a bounded static-first main instance/submesh candidate stream plus a
 transmission side stream, with stable identity and nonzero publication generations. Each backend packs completion-
-protected GPU tables, classifies camera and cascade views, compacts state buckets
+protected GPU tables, classifies camera and cascade views (then, while dynamic
+casters exist, one dynamic-caster view per cascade, ADR-041, then local
+faces; the static/dynamic caster filter applies to every view), compacts state buckets
 and emits native indirect commands: Metal ICBs and Vulkan indirect-count draws.
 There is no CPU opaque/transmission/shadow draw fallback or legacy world selector.
 

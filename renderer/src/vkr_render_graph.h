@@ -682,6 +682,17 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t shadow_cascade_count;
   /** Bits of repeated shadow passes that must be instantiated this frame. */
   uint32_t shadow_cascade_render_mask;
+  /** The world has dynamic casters: the shared static cascade image exists
+   * and cascades may compose their layer from it (ADR-041). */
+  bool8_t shadow_cascade_static_active;
+  /** Cascades whose static layer draws, whose static layer is copied into
+   * their shadow-map layer, and whose copy takes the dynamic casters. */
+  uint32_t shadow_cascade_static_render_mask;
+  uint32_t shadow_cascade_copy_mask;
+  uint32_t shadow_cascade_dynamic_render_mask;
+  /** Dynamic-caster culling views after the cascade views: the cascade
+   * count while a dynamic draw over a copied layer runs, else zero. */
+  uint32_t shadow_cascade_dynamic_view_count;
   /** Far cascades keep EVSM moments, one layer per cascade from
    * VKR_SHADOW_EVSM_FIRST_CASCADE; the render mask shifted to those layers
    * selects the moments a redrawn cascade rebuilds. */
@@ -726,6 +737,65 @@ typedef struct VkrRenderGraphFrameInfo {
   /** Transmission array layers: the configured face budget. */
   uint32_t local_shadow_map_layer_count;
 } VkrRenderGraphFrameInfo;
+
+/*
+ * GPU culling views, in order: the camera; one view per cascade, which draws
+ * the cascade whole or its static layer; one dynamic-caster view per cascade
+ * while any cascade draws its dynamic casters over a copy; the drawn local
+ * faces; then
+ * their transmission views.
+ */
+
+/** Culling view of the dynamic casters of `cascade`'s composed layer. */
+vkr_internal INLINE uint32_t vkr_render_graph_cascade_dynamic_view(
+    const VkrRenderGraphFrameInfo *frame, uint32_t cascade) {
+  return 1u + frame->shadow_cascade_count + cascade;
+}
+
+/** Cascade a directional culling view in [1, local first view) draws. */
+vkr_internal INLINE uint32_t vkr_render_graph_view_cascade(
+    const VkrRenderGraphFrameInfo *frame, uint32_t view) {
+  return view > frame->shadow_cascade_count
+             ? view - 1u - frame->shadow_cascade_count
+             : view - 1u;
+}
+
+vkr_internal INLINE uint32_t
+vkr_render_graph_local_shadow_first_view(const VkrRenderGraphFrameInfo *frame) {
+  return 1u + frame->shadow_cascade_count +
+         frame->shadow_cascade_dynamic_view_count;
+}
+
+vkr_internal INLINE uint32_t
+vkr_render_graph_gpu_draw_view_count(const VkrRenderGraphFrameInfo *frame) {
+  return vkr_render_graph_local_shadow_first_view(frame) +
+         frame->local_shadow_render_count +
+         frame->local_shadow_transmission_render_count;
+}
+
+/**
+ * Directional culling views whose pass does not run this frame. They still
+ * classify, so a retained cascade keeps counting its casters, but encode no
+ * commands (ADR-041). A cascade view draws for a whole cascade or its static
+ * layer; a dynamic view draws over a copied layer.
+ */
+vkr_internal INLINE uint64_t
+vkr_render_graph_cascade_idle_view_mask(const VkrRenderGraphFrameInfo *frame) {
+  const uint32_t drawn = frame->shadow_cascade_render_mask |
+                         frame->shadow_cascade_static_render_mask;
+  uint64_t mask = 0u;
+  for (uint32_t cascade = 0u; cascade < frame->shadow_cascade_count;
+       ++cascade) {
+    const uint32_t bit = UINT32_C(1) << cascade;
+    if ((drawn & bit) == 0u)
+      mask |= UINT64_C(1) << (1u + cascade);
+    if (cascade < frame->shadow_cascade_dynamic_view_count &&
+        (frame->shadow_cascade_dynamic_render_mask & bit) == 0u)
+      mask |=
+          UINT64_C(1) << vkr_render_graph_cascade_dynamic_view(frame, cascade);
+  }
+  return mask;
+}
 
 /**
  * @brief Resource lifetime statistics for graph-owned allocations (imports

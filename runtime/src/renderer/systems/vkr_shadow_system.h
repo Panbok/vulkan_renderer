@@ -426,11 +426,21 @@ vkr_shadow_config_get_max_map_size(const VkrShadowConfig *config) {
  * contents they come from the committed rendered fit, never from the current
  * raw fit; pairing a reused layer with a raw fit's texel size or depth span
  * would misconvert every texel-denominated bias for that cascade.
+ *
+ * While the world has dynamic casters `static_active` is set, and a cascade
+ * a dynamic caster can reach, or whose layer is stale, is composed instead
+ * of drawn whole: its static layer, drawn when invalid, is copied into the
+ * shadow map and the dynamic casters draw over the copy. `cascade_render_mask`
+ * keeps the cascades drawn whole and is disjoint from `copy_mask`.
  */
 typedef struct VkrShadowFrameData {
   bool8_t enabled;
   uint32_t cascade_count;
   uint32_t cascade_render_mask;
+  bool8_t static_active;
+  uint32_t static_render_mask;
+  uint32_t copy_mask;
+  uint32_t dynamic_render_mask;
   float32_t split_near[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t split_far[VKR_SHADOW_CASCADE_COUNT_MAX];
   Mat4 view_projection[VKR_SHADOW_CASCADE_COUNT_MAX];
@@ -442,7 +452,13 @@ typedef struct VkrShadowFrameData {
   uint32_t correctness_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t proactive_refreshed[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t dynamic_candidates_tested[VKR_SHADOW_CASCADE_COUNT_MAX];
+  /** A dynamic caster can reach the cascade: drawn whole, or over the
+   * copy of its static layer when composed. */
   uint32_t dynamic_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
+  /** The layer is a copy of the static layer; static_rendered when that
+   * layer was drawn this frame too. */
+  uint32_t composited[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t static_rendered[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowSdsmStatus sdsm_status;
   uint32_t sdsm_source_lag;
   uint32_t sdsm_occupied_count;
@@ -452,6 +468,9 @@ typedef struct VkrShadowFrameData {
 
 typedef struct VkrShadowCascadeHistory {
   bool8_t static_only_contents;
+  /** The layer was copied from the static layer drawn with this descriptor;
+   * without static_only_contents dynamic casters were drawn over it. */
+  bool8_t composite;
   VkrShadowFit rendered_fit;
   Mat4 rendered_light_view;
   Mat4 rendered_view_projection;
@@ -469,6 +488,9 @@ typedef struct VkrShadowPendingHistory {
   uint32_t image_index;
   uint32_t cascade_mask;
   bool8_t active;
+  /** Static layers drawn by the frame in flight, which every image shares. */
+  VkrShadowCascadeHistory static_cascades[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t static_mask;
 } VkrShadowPendingHistory;
 
 /** Camera state that drives local-shadow priority and the fade-in. */
@@ -601,6 +623,9 @@ typedef struct VkrShadowSystem {
    * selecting its CPU metadata never proves another image's depth contents. */
   VkrShadowCascadeHistory cascade_history[VKR_SHADOW_TARGET_IMAGE_COUNT_MAX]
                                          [VKR_SHADOW_CASCADE_COUNT_MAX];
+  /** Submitted static layers of the shared static cascade image; their
+   * content is proven by the retained token's static mask. */
+  VkrShadowCascadeHistory static_history[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowPendingHistory pending_history;
 
   /** Resident local-light faces shared by every frame in flight. */

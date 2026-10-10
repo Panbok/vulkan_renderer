@@ -23,6 +23,10 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
  */
 typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_SHADOW = 0,
+  /** Copies a cascade's static layer into its shadow-map layer. */
+  VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY,
+  /** Draws a cascade's dynamic casters over its copied layer. */
+  VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC,
   VKR_RG_EXECUTOR_LOCAL_SHADOW,
   VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0,
   VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1,

@@ -1062,6 +1062,12 @@ typedef struct VkrRetainedShadowToken {
    * moments hold content derived from their retained depth; zero while the
    * moments image does not exist. */
   uint32_t moments_valid_cascade_mask;
+  /** The static cascade image every frame in flight shares, which holds
+   * each cascade drawn with its static casters while dynamic casters exist;
+   * zero while that image does not exist. */
+  uint64_t static_resource_generation;
+  /** Static cascade layers with retained content, a bit each. */
+  uint32_t static_valid_layer_mask;
 } VkrRetainedShadowToken;
 
 /** Proven retained state of the local-shadow cache, which every frame in

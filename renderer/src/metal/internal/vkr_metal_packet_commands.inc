@@ -150,7 +150,8 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
       slot->gpu_draw_diagnostics_readback) {
     vkr_metal_packet_decode_gpu_draw_diagnostics(
         &slot->pending_result, slot->gpu_draw_diagnostics_readback,
-        slot->shadow_cascade_count, slot->gpu_draw_view_count);
+        slot->shadow_cascade_count, slot->shadow_cascade_dynamic_render_mask,
+        slot->gpu_draw_view_count);
   }
   if (slot->custom_late_readback) {
     slot->pending_result.custom_late_count = *slot->custom_late_readback;
@@ -267,6 +268,7 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->custom_late_readback = NULL;
   slot->exposure_readback = NULL;
   slot->shadow_cascade_count = 0u;
+  slot->shadow_cascade_dynamic_render_mask = 0u;
   slot->gpu_draw_view_count = 0u;
   slot->gpu_draw_diagnostics_requested = false_v;
   slot->exposure_requested = false_v;

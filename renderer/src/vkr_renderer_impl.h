@@ -30,9 +30,10 @@ enum {
      local faces (a face drawn into a dynamic square takes a copy and a draw
      and no transmission, so it never adds passes), the local shadow mask, the
      layered deferred-lighting kernel and the diffuse-volume composition, total
-     412 passes without temporal upscaling. This path retains the 15-pass HZB
-     build, so it exceeds the FSR31 variant. */
-  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 415,
+     412 passes without temporal upscaling. Composing every cascade from its
+     static layer adds a static draw and a copy per cascade, 428 in all. This
+     path retains the 15-pass HZB build, so it exceeds the FSR31 variant. */
+  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 431,
   VKR_RENDERER_IMPL_MAX_PASS_TIMINGS = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
   VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT = VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
   VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT = 8,

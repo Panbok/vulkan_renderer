@@ -353,6 +353,8 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
   VkrVulkanPreparedReadback *prepared = &slot->deferred_readback;
   prepared->count = 0u;
   slot->shadow_cascade_count = 0u;
+  slot->local_shadow_first_view = 0u;
+  slot->shadow_cascade_dynamic_render_mask = 0u;
   slot->local_shadow_render_count = 0u;
   slot->local_shadow_transmission_render_count = 0u;
   // UI-only frames have no Scene producers. Clear prior slot readbacks before
@@ -371,17 +373,20 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
        (!slot->exposure_histogram || !slot->exposure_state_output)))
     return false_v;
   slot->shadow_cascade_count = renderer->prepared_frame.shadow_cascade_count;
+  slot->local_shadow_first_view =
+      vkr_render_graph_local_shadow_first_view(&renderer->prepared_frame);
+  slot->shadow_cascade_dynamic_render_mask =
+      renderer->prepared_frame.shadow_cascade_dynamic_view_count > 0u
+          ? renderer->prepared_frame.shadow_cascade_dynamic_render_mask
+          : 0u;
   slot->local_shadow_render_count =
       renderer->prepared_frame.local_shadow_render_count;
   slot->local_shadow_transmission_render_count =
       renderer->prepared_frame.local_shadow_transmission_render_count;
   const VkBufferCopy copies[] = {
       {.dstOffset = VKR_VULKAN_READBACK_DRAW_STATE_OFFSET,
-       .size =
-           (1u + renderer->prepared_frame.shadow_cascade_count +
-            renderer->prepared_frame.local_shadow_render_count +
-            renderer->prepared_frame.local_shadow_transmission_render_count) *
-           sizeof(VkrGpuDrawCompactionState)},
+       .size = vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame) *
+               sizeof(VkrGpuDrawCompactionState)},
       {.dstOffset = VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET,
        .size = sizeof(VkrGpuTransmissionDiagnostics)},
       {.dstOffset = VKR_VULKAN_READBACK_SDSM_STATE_OFFSET,
@@ -504,9 +509,9 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
   const uint32_t view_count =
       transmission
           ? 1u
-          : 1u + renderer->prepared_frame.shadow_cascade_count +
-                renderer->prepared_frame.local_shadow_render_count +
-                renderer->prepared_frame.local_shadow_transmission_render_count;
+          : vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame);
+  const uint32_t local_first =
+      vkr_render_graph_local_shadow_first_view(&renderer->prepared_frame);
   uint64_t views_address = 0u;
   uint64_t planes_address = 0u;
   uint64_t lod_views_address = 0u;
@@ -542,15 +547,17 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
                              source->normal.z, source->d};
     }
     for (uint32_t i = 1u; i < view_count; ++i) {
-      const uint32_t cascade_count =
-          renderer->prepared_frame.shadow_cascade_count;
-      /* Opaque then transmission culling views, one per render slot. */
+      /* Cascade and dynamic-caster views, then opaque and transmission
+         culling views, one per render slot. */
       views[i] =
-          i <= cascade_count
-              ? packet->input.shadow->cascades[i - 1u].light_view_projection
+          i < local_first
+              ? packet->input.shadow
+                    ->cascades[vkr_render_graph_view_cascade(
+                        &renderer->prepared_frame, i)]
+                    .light_view_projection
               : packet->input.local_shadow
                     ->views[packet->input.local_shadow
-                                ->render_views[(i - 1u - cascade_count) %
+                                ->render_views[(i - local_first) %
                                                renderer->prepared_frame
                                                    .local_shadow_render_count]]
                     .light_view_projection;
@@ -591,11 +598,9 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       .camera_required_flags =
           transmission ? 0u : VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE,
       .shadow_required_flags = VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
-      .local_shadow_first_view =
-          1u + renderer->prepared_frame.shadow_cascade_count,
+      .local_shadow_first_view = local_first,
       .transmission_first_view =
-          1u + renderer->prepared_frame.shadow_cascade_count +
-          renderer->prepared_frame.local_shadow_render_count,
+          local_first + renderer->prepared_frame.local_shadow_render_count,
       .transmission_required_flags =
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER |
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION,
@@ -607,16 +612,12 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
           transmission ? 0u : slot->gpu_static_candidate_count,
   };
   /* A retained cascade draws nothing this frame: its view still counts
-     casters for the cascade metrics, but encodes no commands. */
-  for (uint32_t cascade = 0u;
-       !transmission &&
-       cascade < renderer->prepared_frame.shadow_cascade_count &&
-       cascade + 1u < 32u;
-       ++cascade) {
-    if ((renderer->prepared_frame.shadow_cascade_render_mask &
-         (UINT32_C(1) << cascade)) == 0u)
-      out_root->encode_idle_view_mask |= UINT32_C(1) << (cascade + 1u);
-  }
+     casters for the cascade metrics, but encodes no commands. Directional
+     views end below bit 1 + 2 * VKR_SHADOW_CASCADE_COUNT_MAX. */
+  if (!transmission)
+    out_root->encode_idle_view_mask =
+        (uint32_t)vkr_render_graph_cascade_idle_view_mask(
+            &renderer->prepared_frame);
   for (uint32_t mip = 0u; mip < VKR_VULKAN_TEXTURE_MIP_MAX; ++mip)
     out_root->hzb_textures[mip] = UINT32_MAX;
   if (pipeline == VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY && !transmission) {
@@ -1107,9 +1108,9 @@ bool8_t vkr_vk_prepare_deferred_cull(VkrVulkanRenderer *renderer,
 
 bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedRaster *prepared,
-                                       const VkrRgPass *pass, bool8_t shadow,
+                                       const VkrRgPass *pass,
                                        bool8_t transmission,
-                                       uint32_t local_shadow_slot) {
+                                       uint32_t view_index) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   VkrVulkanGraphBufferInstance *visible =
@@ -1121,23 +1122,22 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
   if (!visible || !states || !commands)
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
-  /* A local face draws with the culling view of its render slot, which
-     names the view it draws; UINT32_MAX marks other passes. */
-  const bool8_t local_shadow = local_shadow_slot != UINT32_MAX;
-  const uint32_t layer =
-      local_shadow ? local_shadow_slot
-                   : pass->desc.depth_attachment.desc.slice.base_layer;
-  const uint32_t view_index =
-      shadow ? 1u + layer +
-                   (local_shadow ? renderer->prepared_frame.shadow_cascade_count
-                                 : 0u)
-             : 0u;
+  /* View zero is the camera. A shadow pass draws with the culling view it
+     names: a cascade's, its dynamic casters' or a local face's render
+     slot's. */
+  const bool8_t shadow = view_index != 0u;
+  const uint32_t local_first =
+      vkr_render_graph_local_shadow_first_view(&renderer->prepared_frame);
+  const bool8_t local_shadow = view_index >= local_first;
   const Mat4 view_projection =
-      local_shadow
-          ? packet->input.local_shadow
-                ->views[packet->input.local_shadow->render_views[layer]]
-                .light_view_projection
-      : shadow ? packet->input.shadow->cascades[layer].light_view_projection
+      local_shadow ? packet->input.local_shadow
+                         ->views[packet->input.local_shadow
+                                     ->render_views[view_index - local_first]]
+                         .light_view_projection
+      : shadow ? packet->input.shadow
+                     ->cascades[vkr_render_graph_view_cascade(
+                         &renderer->prepared_frame, view_index)]
+                     .light_view_projection
                : mat4_mul(packet->temporal.jittered_projection,
                           packet->input.globals.view);
   const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
@@ -1252,7 +1252,7 @@ bool8_t vkr_vk_prepare_local_shadow_transmission(
                    packet->input.local_shadow, render_slot))
     return false_v;
   const uint32_t view_index =
-      1u + renderer->prepared_frame.shadow_cascade_count +
+      vkr_render_graph_local_shadow_first_view(&renderer->prepared_frame) +
       renderer->prepared_frame.local_shadow_render_count + render_slot;
   const VkrLocalShadowView *view =
       &packet->input.local_shadow
@@ -3027,10 +3027,13 @@ vkr_vk_froxel_image_generation(VkrVulkanRenderer *renderer, const char *name) {
   return image && image->live ? image->graph_generation : 0u;
 }
 
+/* Cascade layers with content once this frame's drawn and copied layers
+   are written. */
 vkr_internal uint32_t vkr_vk_froxel_shadow_valid_mask(
     const VkrPreparedFrame *packet, uint32_t retained_mask) {
   return retained_mask |
-         (packet->input.shadow ? packet->input.shadow->cascade_render_mask
+         (packet->input.shadow ? packet->input.shadow->cascade_render_mask |
+                                     packet->input.shadow->copy_mask
                                : 0u);
 }
 

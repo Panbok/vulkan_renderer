@@ -3946,10 +3946,13 @@ vkr_internal bool8_t scene_loader_attach_source_mesh(
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
   }
+  /* A mesh whose entity moves (a mover or a moving physics body) casts as a
+     moving object whatever its document says. */
   (void)vkr_mesh_manager_instance_set_shadow_mobility(
       &assets->mesh_manager, instance,
-      shadow_static ? VKR_SHADOW_CASTER_MOBILITY_STATIC
-                    : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
+      shadow_static && !vkr_scene_entity_moves(scene, entity)
+          ? VKR_SHADOW_CASTER_MOBILITY_STATIC
+          : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
   return true_v;
 }
 

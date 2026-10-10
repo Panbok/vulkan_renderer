@@ -12,8 +12,8 @@
 
 #define VKR_GPU_LOD_VIEW_CONSTANT 1u
 #define VKR_GPU_LOD_VIEW_MORPH 2u
-// A local-shadow view draws only the candidates below the static count, or
-// only those at or above it; without either bit every caster.
+// A local-shadow or cascade view draws only the candidates below the static
+// count, or only those at or above it; without either bit every caster.
 #define VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY 4u
 #define VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY 8u
 #define VKR_GPU_LOD_MORPH_START 0.75f

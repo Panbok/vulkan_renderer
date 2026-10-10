@@ -977,6 +977,26 @@ vkr_internal VkrRendererError vkr_frame_input_validate_shadow(
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.cascade_render_mask",
                         "contains a bit outside cascade_count");
+    /* A copy reads a static layer that holds content only when this frame
+       or a retained earlier one drew it, and a dynamic draw loads the copy;
+       the graph proves the retained content, this proves the composition. */
+    if (shadow->static_active > 1u ||
+        (!shadow->static_active &&
+         (shadow->static_render_mask | shadow->copy_mask |
+          shadow->dynamic_render_mask) != 0u))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.static_active",
+                        "must be zero or one and set for any static mask");
+    if (((shadow->static_render_mask | shadow->copy_mask |
+          shadow->dynamic_render_mask) &
+         ~cascade_mask) != 0u ||
+        (shadow->static_render_mask & ~shadow->copy_mask) != 0u ||
+        (shadow->dynamic_render_mask & ~shadow->copy_mask) != 0u ||
+        (shadow->copy_mask & shadow->cascade_render_mask) != 0u)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.copy_mask",
+                        "requires static and dynamic draws within copied "
+                        "cascades, none drawn whole");
     if (shadow->evsm_enabled > 1u ||
         (shadow->evsm_enabled &&
          shadow->cascade_count <= VKR_SHADOW_EVSM_FIRST_CASCADE))

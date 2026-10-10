@@ -1204,7 +1204,9 @@ std::string box_brush_entities(const char *name, int32_t parent, int32_t first,
 /* A brush or blockout shape a mover moves stays out of the bake (ADR-088):
    below a mover, through a group without one, a box brush and stairs add no
    triangle and no lightmap instance, while the static box brush beside them
-   adds its 12 triangles within its own box and its one lightmap instance. */
+   adds its 12 triangles within its own box and its one lightmap instance.
+   An enabled dynamic physics body keeps the brush below it out too
+   (ADR-108), while a static body's brush bakes. */
 void test_bake_scene_leaves_out_moving_brushes() {
   FilePath directory = {};
   directory.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp");
@@ -1214,7 +1216,9 @@ void test_bake_scene_leaves_out_moving_brushes() {
   const char *path = PROJECT_SOURCE_DIR "tests/tmp/bake_scene_mover.json";
   write_text_file(material, "type=pbr\nbase_color=0.5,0.5,0.5,1\n");
   /* 0-6 the static wall, 7 the door's mover, 8 a group under it, 9-15 the
-     door brush under the group, 16 stairs under the mover. */
+     door brush under the group, 16 stairs under the mover, 17 a dynamic
+     body with 18-24 a crate brush under it, 25 a static body with 26-32 a
+     ledge brush under it. */
   const std::string scene_text =
       "{\"version\": 2, \"entities\": [" +
       box_brush_entities("wall", -1, 0, 0.0f, material) +
@@ -1227,7 +1231,15 @@ void test_bake_scene_leaves_out_moving_brushes() {
       "{\"blockout\": {\"shape\": \"Stairs\", \"stairs\": \"Straight\", "
       "\"height\": 1, \"width\": 1, \"length\": 2, \"step_height\": 0.25, "
       "\"thickness\": 0, \"material\": \"" +
-      material + "\"}}}]}";
+      material +
+      "\"}}}, {\"name\": \"crate_body\", \"parent\": null, \"transform\": "
+      "{\"pos\": [10, 0, 0], \"rot\": [0, 0, 0, 1], \"scale\": [1, 1, 1]}, "
+      "\"physics_body\": {\"motion\": 2, \"enabled\": true}}, " +
+      box_brush_entities("crate", 17, 18, 0.0f, material) +
+      ", {\"name\": \"ledge_body\", \"parent\": null, \"transform\": "
+      "{\"pos\": [-10, 0, 0], \"rot\": [0, 0, 0, 1], \"scale\": [1, 1, 1]}, "
+      "\"physics_body\": {\"motion\": 0, \"enabled\": true}}, " +
+      box_brush_entities("ledge", 25, 26, 0.0f, material) + "]}";
   write_text_file(path, scene_text.c_str());
 
   Arena *arena = arena_create(MB(4), MB(4));
@@ -1239,16 +1251,18 @@ void test_bake_scene_leaves_out_moving_brushes() {
     VkrBakeSceneError error = VkrBakeSceneError::None;
     assert(vkr_bake_scene_load(&scene, path, &error));
     assert(error == VkrBakeSceneError::None && scene.diagnostic.empty());
-    assert(scene.triangles.size() == 12u);
+    assert(scene.triangles.size() == 24u);
     for (const VkrBakeTriangle &triangle : scene.triangles) {
       for (const VkrBakeVertex &vertex : triangle.vertex) {
-        assert(fabsf(vertex.position.x) <= 0.5f + 1.0e-4f);
+        assert(fabsf(vertex.position.x) <= 0.5f + 1.0e-4f ||
+               fabsf(vertex.position.x + 10.0f) <= 0.5f + 1.0e-4f);
         assert(fabsf(vertex.position.y) <= 0.5f + 1.0e-4f);
         assert(fabsf(vertex.position.z) <= 0.5f + 1.0e-4f);
       }
     }
-    assert(scene.lightmap_instances.size() == 1u);
+    assert(scene.lightmap_instances.size() == 2u);
     assert(scene.lightmap_instances[0].entity_index == 0u);
+    assert(scene.lightmap_instances[1].entity_index == 26u);
   }
   arena_destroy(arena);
   remove(path);

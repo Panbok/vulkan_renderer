@@ -75,6 +75,9 @@ typedef struct VkrShadowMetrics {
   uint32_t proactive_refreshed[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t dynamic_candidates_tested[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t dynamic_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
+  /** Layer copied from the static cascade layer; that layer drawn too. */
+  uint32_t composited[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t static_rendered[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t sdsm_status;
   uint32_t sdsm_source_lag;
   uint32_t sdsm_occupied_count;

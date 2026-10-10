@@ -618,8 +618,20 @@ typedef struct VkrShadowPassPayload {
    * variance moments that deferred lighting samples instead of PCF; requires
    * cascade_count above that cascade. */
   bool8_t evsm_enabled;
-  /** Bit i is set only when cascade i must execute its graph pass. */
+  /** Bit i is set only when cascade i must execute its graph pass, which
+   * draws every caster into the cascade's shadow-map layer. */
   uint32_t cascade_render_mask;
+  /** The world has dynamic casters: the static cascade image exists and a
+   * cascade may be composed from its static layer and a dynamic draw. The
+   * three masks below are zero without it. */
+  bool8_t static_active;
+  /** Cascades whose static layer draws the static casters this frame. */
+  uint32_t static_render_mask;
+  /** Cascades whose static layer is copied into their shadow-map layer;
+   * disjoint from cascade_render_mask and includes static_render_mask. */
+  uint32_t copy_mask;
+  /** Copied cascades that then draw the dynamic casters over the copy. */
+  uint32_t dynamic_render_mask;
   VkrShadowCascadePacketData cascades[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowReceiverPacketData receiver;
   const VkrShadowConfigOverride *config_override;

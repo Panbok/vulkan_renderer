@@ -65,6 +65,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_BAKED_LAMP_SHADOWS_ACTIVE},
     {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
     {"shadow_evsm_active", VKR_RG_JSON_CONDITION_SHADOW_EVSM_ACTIVE},
+    {"shadow_cascade_static_active",
+     VKR_RG_JSON_CONDITION_SHADOW_CASCADE_STATIC_ACTIVE},
     {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
     {"!transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE},
@@ -2078,6 +2080,9 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->shadow_cascade_count > 0u;
   case VKR_RG_JSON_CONDITION_SHADOW_EVSM_ACTIVE:
     return frame->shadow_evsm_active && frame->shadow_moments_layer_count > 0u;
+  case VKR_RG_JSON_CONDITION_SHADOW_CASCADE_STATIC_ACTIVE:
+    return frame->shadow_cascade_static_active &&
+           frame->shadow_cascade_count > 0u;
   case VKR_RG_JSON_CONDITION_SDSM_ENABLED:
     return frame->sdsm_enabled;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING:
@@ -2314,6 +2319,26 @@ vkr_internal bool8_t vkr_rg_json_repeat_iteration_enabled(
                                 "shadow_cascade_render_mask")) {
     *out_enabled = repeat_index < 32u && (frame->shadow_cascade_render_mask &
                                           (UINT32_C(1) << repeat_index)) != 0u;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
+                                "shadow_cascade_static_render_mask")) {
+    *out_enabled =
+        repeat_index < 32u && (frame->shadow_cascade_static_render_mask &
+                               (UINT32_C(1) << repeat_index)) != 0u;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
+                                "shadow_cascade_copy_mask")) {
+    *out_enabled = repeat_index < 32u && (frame->shadow_cascade_copy_mask &
+                                          (UINT32_C(1) << repeat_index)) != 0u;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
+                                "shadow_cascade_dynamic_render_mask")) {
+    *out_enabled =
+        repeat_index < 32u && (frame->shadow_cascade_dynamic_render_mask &
+                               (UINT32_C(1) << repeat_index)) != 0u;
     return true_v;
   }
   if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
@@ -2848,9 +2873,7 @@ vkr_internal bool8_t vkr_rg_json_create_buffer(
       count = frame->gpu_draw_candidate_capacity;
       break;
     case VKR_RG_JSON_DRAW_COUNT_VIEWS:
-      count = 1u + frame->shadow_cascade_count +
-              frame->local_shadow_render_count +
-              frame->local_shadow_transmission_render_count;
+      count = vkr_render_graph_gpu_draw_view_count(frame);
       break;
     case VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS:
     case VKR_RG_JSON_DRAW_COUNT_VISIBLE:
@@ -2872,9 +2895,7 @@ vkr_internal bool8_t vkr_rg_json_create_buffer(
     }
     desc.size = (uint64_t)count * resource->buffer.bytes_per_element;
     if (resource->buffer.draw_count_source == VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS)
-      desc.size *= 1u + frame->shadow_cascade_count +
-                   frame->local_shadow_render_count +
-                   frame->local_shadow_transmission_render_count;
+      desc.size *= vkr_render_graph_gpu_draw_view_count(frame);
   } else {
     desc.size = resource->buffer.size;
   }

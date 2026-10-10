@@ -210,8 +210,8 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   uint classification_index = view_index * root.visible_capacity + index;
   uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
   uint bucket = vkr_gpu_draw_state_bucket(candidate.state_flags);
-  /* A static square holds the static casters; a dynamic square adds the
-     dynamic ones over a copy of it. */
+  /* A static square or cascade layer holds the static casters; a dynamic
+     square or composed cascade adds the dynamic ones over a copy of it. */
   uint mobility = root.lod_views[view_index].flags;
   bool static_candidate = index < root.static_candidate_count;
   bool mobility_excluded =

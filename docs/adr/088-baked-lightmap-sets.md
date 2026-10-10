@@ -88,7 +88,13 @@ neither occludes nor bounces baked light, so a closed door no longer stops
 baked light between rooms. The diffuse volume and runtime lights light it.
 At runtime such a brush builds without lightmap UVs, so a set baked before
 this rule, which still holds an instance for it, leaves it on the volume
-instead of its saved-pose lightmap. A point or rectangle light under a mover
+instead of its saved-pose lightmap. Since 2026-10-10 an entity under an
+enabled kinematic or dynamic physics body (the body's entity or an
+ancestor within 64 levels) is out of every bake in the same way, whatever
+it draws: Bakery's lowering writes an overlay record's body as
+`physics_body` {motion, enabled}, and `moves_at_runtime` in
+[`vkr_bake_scene.cpp`](../../tools/bake/vkr_bake_scene.cpp) applies the
+runtime's rule (`vkr_scene_entity_moves`, ADR-108). A point or rectangle light under a mover
 still bakes when it is static: the runtime drops static lights while a set
 is loaded, so leaving it out of the bake would remove it.
 

@@ -1,6 +1,7 @@
 #include "render_graph_barrier_test.h"
 #include "container_test_allocator.h"
 #include "vkr_frame_input.h"
+#include "vkr_packet_constants.h"
 #include "vkr_render_graph_frame.h"
 #include "vkr_renderer_impl.h"
 #include "vkr_rg_json.h"
@@ -1489,6 +1490,303 @@ vkr_internal void test_same_image_layer_copy_barriers(void) {
   printf("  test_same_image_layer_copy_barriers PASSED\n");
 }
 
+/* Composed cascades: the frame lowers the static masks, adds one
+   dynamic-caster view per cascade before the local faces, gives those views
+   and the drawn static layers their mobility, and rebuilds the moments of
+   every rewritten far layer. */
+vkr_internal void test_composed_cascade_frame_lowering(void) {
+  printf("  Running test_composed_cascade_frame_lowering...\n");
+  VkrShadowPassPayload shadow = {
+      .cascade_count = 4u,
+      .evsm_enabled = true_v,
+      .cascade_render_mask = 0x1u,
+      .static_active = true_v,
+      .static_render_mask = 0x2u,
+      .copy_mask = 0xau,
+      .dynamic_render_mask = 0x8u,
+  };
+  VkrPreparedFrame packet = {.scene_rendering = true_v};
+  packet.input.shadow = &shadow;
+  VkrRenderGraphFrameInfo frame = {.target_width = 16u, .target_height = 16u};
+  VkrGtaoGpuParams gtao = {0};
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(frame.shadow_cascade_static_active);
+  assert(frame.shadow_cascade_static_render_mask == 0x2u);
+  assert(frame.shadow_cascade_copy_mask == 0xau);
+  assert(frame.shadow_cascade_dynamic_render_mask == 0x8u);
+  assert(frame.shadow_cascade_dynamic_view_count == 4u);
+  /* Layers 0, 1 and 3 are rewritten; of those only far layer 3 has
+     moments, at bit 1. */
+  assert(frame.shadow_moments_render_mask == 0x2u);
+  assert(vkr_render_graph_local_shadow_first_view(&frame) == 9u);
+  assert(vkr_render_graph_gpu_draw_view_count(&frame) == 9u);
+  assert(vkr_render_graph_cascade_dynamic_view(&frame, 3u) == 8u);
+  assert(vkr_render_graph_view_cascade(&frame, 2u) == 1u);
+  assert(vkr_render_graph_view_cascade(&frame, 8u) == 3u);
+  /* Cascade views 3 and 4 and dynamic views 5, 6 and 7 draw nothing. */
+  assert(vkr_render_graph_cascade_idle_view_mask(&frame) ==
+         ((UINT64_C(1) << 3u) | (UINT64_C(1) << 4u) | (UINT64_C(1) << 5u) |
+          (UINT64_C(1) << 6u) | (UINT64_C(1) << 7u)));
+
+  VkrGpuLodView views[9] = {0};
+  vkr_packet_write_lod_views(&packet, &frame, views, ArrayCount(views));
+  const uint32_t mobility = VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY |
+                            VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY;
+  for (uint32_t view = 1u; view < 9u; ++view) {
+    const uint32_t expected = view == 2u ? VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY
+                              : view >= 5u
+                                  ? VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY
+                                  : 0u;
+    assert((views[view].flags & mobility) == expected);
+  }
+
+  /* Copies with no dynamic draw add no dynamic-caster views. */
+  shadow.dynamic_render_mask = 0u;
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(frame.shadow_cascade_copy_mask == 0xau);
+  assert(frame.shadow_cascade_dynamic_view_count == 0u);
+  assert(vkr_render_graph_local_shadow_first_view(&frame) == 5u);
+  assert(vkr_render_graph_cascade_idle_view_mask(&frame) ==
+         ((UINT64_C(1) << 3u) | (UINT64_C(1) << 4u)));
+  shadow.dynamic_render_mask = 0x8u;
+
+  /* Without the static image the masks lower to nothing and no view is
+     added, whatever the payload carried. */
+  shadow.static_active = false_v;
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(!frame.shadow_cascade_static_active);
+  assert(frame.shadow_cascade_copy_mask == 0u &&
+         frame.shadow_cascade_static_render_mask == 0u &&
+         frame.shadow_cascade_dynamic_render_mask == 0u);
+  assert(frame.shadow_cascade_dynamic_view_count == 0u);
+  assert(vkr_render_graph_local_shadow_first_view(&frame) == 5u);
+  assert(frame.shadow_moments_render_mask == 0u);
+  printf("  test_composed_cascade_frame_lowering PASSED\n");
+}
+
+/* Retained state the previous submission left: every valid static layer
+   copied, the shadow map sampled. */
+typedef struct RgCascadeRetainedStore {
+  uint32_t static_image;
+  uint32_t shadow_map;
+  uint32_t static_valid_mask;
+} RgCascadeRetainedStore;
+
+vkr_internal void rg_cascade_retained_read(void *context, uint32_t image_index,
+                                           uint32_t instance_index,
+                                           uint32_t subresource,
+                                           VkrRgRetainedState *out_state) {
+  const RgCascadeRetainedStore *store = context;
+  (void)instance_index;
+  if (image_index == store->static_image && subresource < 32u &&
+      (store->static_valid_mask & (UINT32_C(1) << subresource)) != 0u) {
+    *out_state = (VkrRgRetainedState){
+        .access = VKR_RG_IMAGE_ACCESS_TRANSFER_SRC,
+        .stages = VKR_GPU_STAGE_TRANSFER,
+        .layout = VKR_TEXTURE_LAYOUT_TRANSFER_SRC,
+        .content_valid = true_v,
+    };
+  } else if (image_index == store->shadow_map) {
+    *out_state = (VkrRgRetainedState){
+        .access = VKR_RG_IMAGE_ACCESS_SAMPLED,
+        .stages = VKR_GPU_STAGE_FRAGMENT_SHADER,
+        .layout = VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY,
+        .content_valid = true_v,
+    };
+  }
+}
+
+vkr_internal void rg_cascade_retained_commit(void *context,
+                                             uint32_t image_index,
+                                             uint32_t instance_index,
+                                             uint32_t subresource,
+                                             const VkrRgRetainedState *state) {
+  (void)context;
+  (void)image_index;
+  (void)instance_index;
+  (void)subresource;
+  (void)state;
+}
+
+vkr_internal const VkrRgPass *rg_find_named_pass(const VkrRenderGraph *graph,
+                                                 const char *name,
+                                                 uint64_t *out_order) {
+  for (uint64_t order = 0u; order < graph->execution_order.length; ++order) {
+    const VkrRgPass *pass =
+        rg_barrier_test_pass(graph, graph->execution_order.data[order]);
+    if (vkr_string8_equals_cstr(&pass->desc.name, name)) {
+      if (out_order)
+        *out_order = order;
+      return pass;
+    }
+  }
+  return NULL;
+}
+
+/* The one barrier `pass` takes on `image` layer `layer`, or NULL. */
+vkr_internal const VkrRgImageBarrier *rg_layer_barrier(const VkrRgPass *pass,
+                                                       VkrRgImageHandle image,
+                                                       uint32_t layer) {
+  const VkrRgImageBarrier *found = NULL;
+  for (uint64_t i = 0u; i < pass->pre_image_barriers.length; ++i) {
+    const VkrRgImageBarrier *barrier = array_get_VkrRgImageBarrier(
+        (Array_VkrRgImageBarrier *)&pass->pre_image_barriers, i);
+    if (barrier->image.id != image.id || layer < barrier->range.base_layer ||
+        layer >= barrier->range.base_layer + barrier->range.layer_count)
+      continue;
+    assert(!found);
+    found = barrier;
+  }
+  return found;
+}
+
+/* Both graphs compose a cascade with a draw into the shared static layer, a
+   copy into this image's shadow map and a dynamic draw over it. Copies across
+   the two images take their transitions from either image's previous state,
+   including the previous submission's copy, and a copy of a static layer
+   with no content fails to compile. */
+vkr_internal void test_cascade_static_layer_copy_barriers(void) {
+  printf("  Running test_cascade_static_layer_copy_barriers...\n");
+  const char *paths[] = {"assets/render_graphs/tiled.rendergraph.json",
+                         "assets/render_graphs/main.rendergraph.json"};
+  for (uint32_t path = 0u; path < ArrayCount(paths); ++path) {
+    Arena *arena = arena_create(MB(16), MB(2));
+    VkrAllocator allocator = {.ctx = arena};
+    assert(vkr_allocator_arena(&allocator));
+    VkrRgJsonGraph json = {0};
+    assert(vkr_rg_json_load_file(&allocator, paths[path], &json));
+    VkrRgExecutorRegistry registry = {0};
+    assert(vkr_rg_executor_registry_init(&registry, &allocator));
+    assert(vkr_render_graph_register_executors(&registry));
+    assert(vkr_rg_json_bind_executors(&json, &registry));
+    VkrRenderGraph *graph = vkr_rg_create(&allocator);
+    assert(graph);
+    RgCascadeRetainedStore store = {
+        .static_image = UINT32_MAX,
+        .shadow_map = UINT32_MAX,
+        .static_valid_mask = 0x6u,
+    };
+    const VkrRgRetainedStateProvider provider = {
+        .context = &store,
+        .read = rg_cascade_retained_read,
+        .commit = rg_cascade_retained_commit,
+    };
+    vkr_rg_set_retained_state_provider(graph, &provider);
+
+    /* Cascade 0 draws whole; 1 redraws its static layer, which the previous
+       submission copied; 2 copies its retained static layer; both take
+       their dynamic casters; 3 is reused. */
+    VkrRenderGraphFrameInfo frame = {
+        .scene_rendering = true_v,
+        .gpu_draw_candidate_capacity = 1u,
+        .gpu_draw_visible_capacity = 8u,
+        .transmission_gpu_draw_candidate_capacity = 1u,
+        .transmission_gpu_draw_visible_capacity = 8u,
+        .target_width = 1000u,
+        .target_height = 800u,
+        .window_width = 1000u,
+        .window_height = 800u,
+        .scene_output_width = 1000u,
+        .scene_output_height = 800u,
+        .viewport_width = 1000u,
+        .viewport_height = 800u,
+        .render_scale = 1.0f,
+        .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
+        .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+        .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+        .shadow_map_size = 2048u,
+        .shadow_map_layer_count = 4u,
+        .shadow_cascade_count = 4u,
+        .shadow_cascade_render_mask = 0x1u,
+        .shadow_cascade_static_active = true_v,
+        .shadow_cascade_static_render_mask = 0x2u,
+        .shadow_cascade_copy_mask = 0x6u,
+        .shadow_cascade_dynamic_render_mask = 0x6u,
+        .shadow_cascade_dynamic_view_count = 4u,
+        .exposure_automatic = true_v,
+    };
+    assert(vkr_rg_begin_frame(graph, &frame));
+    assert(vkr_rg_build_from_json(graph, &json, &frame));
+    const VkrRgImageHandle static_layers =
+        vkr_rg_find_image(graph, string8_lit("shadow_cascade_static"));
+    const VkrRgImageHandle shadow_map =
+        vkr_rg_find_image(graph, string8_lit("shadow_map"));
+    assert(vkr_rg_image_handle_valid(static_layers) &&
+           vkr_rg_image_handle_valid(shadow_map));
+    store.static_image = static_layers.id - 1u;
+    store.shadow_map = shadow_map.id - 1u;
+    assert(vkr_rg_compile_schedule(graph));
+
+    uint64_t static_order = 0u;
+    uint64_t copy_order = 0u;
+    uint64_t dynamic_order = 0u;
+    uint64_t reused_copy_order = 0u;
+    uint64_t reused_dynamic_order = 0u;
+    const VkrRgPass *static_draw =
+        rg_find_named_pass(graph, "Shadow.Cascade.Static.1", &static_order);
+    const VkrRgPass *copy =
+        rg_find_named_pass(graph, "Shadow.Cascade.Copy.1", &copy_order);
+    const VkrRgPass *dynamic =
+        rg_find_named_pass(graph, "Shadow.Cascade.Dynamic.1", &dynamic_order);
+    const VkrRgPass *reused_copy =
+        rg_find_named_pass(graph, "Shadow.Cascade.Copy.2", &reused_copy_order);
+    const VkrRgPass *reused_dynamic = rg_find_named_pass(
+        graph, "Shadow.Cascade.Dynamic.2", &reused_dynamic_order);
+    assert(static_draw && copy && dynamic && reused_copy && reused_dynamic);
+    assert(rg_find_named_pass(graph, "Shadow.Cascade.0", NULL));
+    assert(!rg_find_named_pass(graph, "Shadow.Cascade.1", NULL));
+    assert(!rg_find_named_pass(graph, "Shadow.Cascade.Static.2", NULL));
+    assert(!rg_find_named_pass(graph, "Shadow.Cascade.Copy.3", NULL));
+    assert(static_order < copy_order && copy_order < dynamic_order);
+    assert(reused_copy_order < reused_dynamic_order);
+
+    /* The redrawn static layer waits for the previous submission's copy. */
+    const VkrRgImageBarrier *barrier =
+        rg_layer_barrier(static_draw, static_layers, 1u);
+    assert(barrier);
+    assert(barrier->dst_layout == VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT);
+    assert((barrier->dependency.src_stages & VKR_GPU_STAGE_TRANSFER) != 0u);
+
+    barrier = rg_layer_barrier(copy, static_layers, 1u);
+    assert(barrier && barrier->dst_layout == VKR_TEXTURE_LAYOUT_TRANSFER_SRC);
+    assert(barrier->src_layout == VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT);
+    barrier = rg_layer_barrier(copy, shadow_map, 1u);
+    assert(barrier && barrier->dst_layout == VKR_TEXTURE_LAYOUT_TRANSFER_DST);
+    assert(barrier->range.layer_count == 1u);
+    assert((barrier->dependency.src_stages & VKR_GPU_STAGE_FRAGMENT_SHADER) !=
+           0u);
+
+    /* A retained static layer is read where the last copy left it. */
+    barrier = rg_layer_barrier(reused_copy, static_layers, 2u);
+    assert(!barrier || barrier->dst_layout == VKR_TEXTURE_LAYOUT_TRANSFER_SRC);
+    barrier = rg_layer_barrier(reused_copy, shadow_map, 2u);
+    assert(barrier && barrier->dst_layout == VKR_TEXTURE_LAYOUT_TRANSFER_DST);
+
+    const VkrRgPass *dynamic_draws[] = {dynamic, reused_dynamic};
+    for (uint32_t i = 0u; i < ArrayCount(dynamic_draws); ++i) {
+      barrier = rg_layer_barrier(dynamic_draws[i], shadow_map, 1u + i);
+      assert(barrier);
+      assert(barrier->src_layout == VKR_TEXTURE_LAYOUT_TRANSFER_DST);
+      assert(barrier->dst_layout ==
+             VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT);
+      assert((barrier->dependency.src_stages & VKR_GPU_STAGE_TRANSFER) != 0u);
+    }
+    vkr_rg_end_frame(graph);
+
+    /* A copy of a static layer that holds nothing and does not draw this
+       frame would publish undefined depth. */
+    store.static_valid_mask = 0x2u;
+    assert(vkr_rg_begin_frame(graph, &frame));
+    assert(vkr_rg_build_from_json(graph, &json, &frame));
+    assert(!vkr_rg_compile_schedule(graph));
+    vkr_rg_end_frame(graph);
+
+    vkr_rg_destroy(graph);
+    arena_destroy(arena);
+  }
+  printf("  test_cascade_static_layer_copy_barriers PASSED\n");
+}
+
 vkr_internal void test_capture_read_uses_exact_array_slice(void) {
   printf("  Running test_capture_read_uses_exact_array_slice...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -1737,6 +2035,7 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
     VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 412u,
     VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 399u,
     VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 398u,
+    VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT = 428u,
   };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -1866,6 +2165,36 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   assert(lighting_passes == 1u);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
+
+  /* Composing every cascade adds a static draw and a copy to each, and a
+     dynamic-caster culling view per cascade. */
+  frame.shadow_cascade_render_mask = 0u;
+  frame.shadow_cascade_static_active = true_v;
+  frame.shadow_cascade_static_render_mask = 0xffu;
+  frame.shadow_cascade_copy_mask = 0xffu;
+  frame.shadow_cascade_dynamic_render_mask = 0xffu;
+  frame.shadow_cascade_dynamic_view_count = VKR_SHADOW_CASCADE_COUNT_MAX;
+  assert(vkr_rg_begin_frame(runtime, &frame));
+  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  assert(runtime->passes.length == VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT);
+  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  for (uint64_t i = 0u; i < runtime->buffers.length; ++i) {
+    const VkrRgBuffer *buffer = &runtime->buffers.data[i];
+    if (vkr_string8_equals_cstr(&buffer->name, "gpu_draw_compaction_state"))
+      assert(buffer->desc.size ==
+             (1u + 2u * VKR_SHADOW_CASCADE_COUNT_MAX +
+              frame.local_shadow_render_count +
+              frame.local_shadow_transmission_render_count) *
+                 sizeof(VkrGpuDrawCompactionState));
+  }
+  assert(vkr_rg_compile_schedule(runtime));
+  vkr_rg_end_frame(runtime);
+  frame.shadow_cascade_render_mask = 0xffu;
+  frame.shadow_cascade_static_active = false_v;
+  frame.shadow_cascade_static_render_mask = 0u;
+  frame.shadow_cascade_copy_mask = 0u;
+  frame.shadow_cascade_dynamic_render_mask = 0u;
+  frame.shadow_cascade_dynamic_view_count = 0u;
 
   frame.hzb_build_enabled = false_v;
   frame.fsr31_enabled = true_v;
@@ -2595,6 +2924,8 @@ bool32_t run_render_graph_barrier_tests() {
   test_disjoint_layer_writes_coalesce_on_read();
   test_capture_read_uses_exact_array_slice();
   test_same_image_layer_copy_barriers();
+  test_cascade_static_layer_copy_barriers();
+  test_composed_cascade_frame_lowering();
 
   printf("--- RenderGraph barrier tests completed. ---\n");
   return true;

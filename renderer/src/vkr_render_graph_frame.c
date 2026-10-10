@@ -196,18 +196,34 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->local_shadow_transmission_map_size =
       vkr_local_shadow_transmission_map_size(
           frame->local_shadow_map_size, frame->local_shadow_map_layer_count);
-  frame->shadow_cascade_render_mask =
-      packet->input.shadow ? packet->input.shadow->cascade_render_mask : 0u;
-  frame->shadow_evsm_active =
-      packet->input.shadow && packet->input.shadow->evsm_enabled;
+  const VkrShadowPassPayload *shadow = packet->input.shadow;
+  frame->shadow_cascade_render_mask = shadow ? shadow->cascade_render_mask : 0u;
+  frame->shadow_cascade_static_active = shadow && shadow->static_active;
+  frame->shadow_cascade_static_render_mask =
+      frame->shadow_cascade_static_active ? shadow->static_render_mask : 0u;
+  frame->shadow_cascade_copy_mask =
+      frame->shadow_cascade_static_active ? shadow->copy_mask : 0u;
+  frame->shadow_cascade_dynamic_render_mask =
+      frame->shadow_cascade_static_active ? shadow->dynamic_render_mask : 0u;
+  /* Dynamic-caster views exist only in frames that draw over a copy, so
+     classification and command capacity pay for them only then; every
+     consumer numbers views through the same helpers. */
+  frame->shadow_cascade_dynamic_view_count =
+      frame->shadow_cascade_dynamic_render_mask != 0u
+          ? frame->shadow_cascade_count
+          : 0u;
+  frame->shadow_evsm_active = shadow && shadow->evsm_enabled;
   frame->shadow_moments_layer_count =
       frame->shadow_evsm_active
           ? frame->shadow_cascade_count - VKR_SHADOW_EVSM_FIRST_CASCADE
           : 0u;
-  frame->shadow_moments_render_mask =
-      frame->shadow_evsm_active
-          ? frame->shadow_cascade_render_mask >> VKR_SHADOW_EVSM_FIRST_CASCADE
-          : 0u;
+  /* A layer drawn whole or composed from its static layer rebuilds its
+     moments. */
+  frame->shadow_moments_render_mask = frame->shadow_evsm_active
+                                          ? (frame->shadow_cascade_render_mask |
+                                             frame->shadow_cascade_copy_mask) >>
+                                                VKR_SHADOW_EVSM_FIRST_CASCADE
+                                          : 0u;
 
   /* Exact-grid history reuse is useful for stable unjittered samples. Avoid
      producing depth history while temporal jitter changes that grid. */
@@ -294,6 +310,10 @@ typedef struct VkrRgExecutorSpec {
 vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
     [VKR_RG_EXECUTOR_SHADOW] = {"pass.shadow.cascade",
                                 VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY] = {"pass.shadow.cascade.copy",
+                                             VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC] = {"pass.shadow.cascade.dynamic",
+                                                VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_LOCAL_SHADOW] = {"pass.local_shadow",
                                       VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0] =

@@ -275,8 +275,10 @@ enum {
 };
 
 enum {
+  /* The camera, the cascades and their dynamic-caster views, then opaque
+     and transmission views per local render slot. */
   VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX =
-      1 + VKR_SHADOW_CASCADE_COUNT_MAX +
+      1 + 2 * VKR_SHADOW_CASCADE_COUNT_MAX +
       2 * VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
   /* The final target can be RGBA8 or RGBA16F. A tightly packed 1x1 image
    * copy therefore occupies eight bytes in the extended-linear case. */
@@ -2686,6 +2688,10 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t local_shadow_views;
   uint64_t local_shadow_transmission;
   uint32_t shadow_cascade_count;
+  /** Culling view of local render slot zero, after the directional ones. */
+  uint32_t local_shadow_first_view;
+  /** Cascades whose dynamic-caster view drew over a copied layer. */
+  uint32_t shadow_cascade_dynamic_render_mask;
   /** Local-shadow culling views read back: one per render slot each. */
   uint32_t local_shadow_render_count;
   uint32_t local_shadow_transmission_render_count;
@@ -3560,11 +3566,13 @@ bool8_t vkr_vk_prepare_deferred_cull(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_local_shadow_transmission(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedRaster *prepared,
     const VkrRgPass *pass, bool8_t overflow);
+/* `view_index` is the culling view the pass draws: zero for the camera, or
+   a cascade's, its dynamic casters' or a local render slot's view. */
 bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedRaster *prepared,
-                                       const VkrRgPass *pass, bool8_t shadow,
+                                       const VkrRgPass *pass,
                                        bool8_t transmission,
-                                       uint32_t local_shadow_slot);
+                                       uint32_t view_index);
 bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);

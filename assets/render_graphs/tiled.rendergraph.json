@@ -24,11 +24,31 @@
       "usage": [
         "DEPTH_STENCIL_ATTACHMENT",
         "SAMPLED",
-        "TRANSFER_SRC"
+        "TRANSFER_SRC",
+        "TRANSFER_DST"
       ],
       "flags": [
         "RETAINED",
         "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "shadow_cascade_static",
+      "condition": "scene_rendering && shadow_cascade_static_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "shadow_map_size"
+      },
+      "layers_source": "shadow_map_layer_count",
+      "format": "SHADOW_DEPTH",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
         "RESIZABLE"
       ]
     },
@@ -776,6 +796,142 @@
         }
       },
       "execute": "pass.shadow.cascade"
+    },
+    {
+      "name": "Shadow.Cascade.Static.${i}",
+      "condition": "scene_rendering && shadow_cascade_static_active",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": {
+        "count_source": "shadow_cascade_count",
+        "condition_mask_source": "shadow_cascade_static_render_mask"
+      },
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "shadow_cascade_static",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          },
+          "slice": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      },
+      "execute": "pass.shadow.cascade"
+    },
+    {
+      "name": "Shadow.Cascade.Copy.${i}",
+      "condition": "scene_rendering && shadow_cascade_static_active",
+      "type": "transfer",
+      "repeat": {
+        "count_source": "shadow_cascade_count",
+        "condition_mask_source": "shadow_cascade_copy_mask"
+      },
+      "reads": [
+        {
+          "image": "shadow_cascade_static",
+          "access": "TRANSFER_SRC",
+          "binding": 0,
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "writes": [
+        {
+          "image": "shadow_map",
+          "access": "TRANSFER_DST",
+          "binding": 1,
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "execute": "pass.shadow.cascade.copy"
+    },
+    {
+      "name": "Shadow.Cascade.Dynamic.${i}",
+      "condition": "scene_rendering && shadow_cascade_static_active",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": {
+        "count_source": "shadow_cascade_count",
+        "condition_mask_source": "shadow_cascade_dynamic_render_mask"
+      },
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "shadow_map",
+          "load": "LOAD",
+          "store": "STORE",
+          "slice": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      },
+      "execute": "pass.shadow.cascade.dynamic"
     },
     {
       "name": "Shadow.Local.Clear.${i}",

@@ -126,8 +126,9 @@ vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
   };
 }
 
-/* LOD policy of each culling view in their order: the camera, cascades, then
-   opaque and transmitting local faces (ADR-084). */
+/* LOD policy of each culling view in their order: the camera, cascades,
+   the cascades' dynamic casters, then opaque and transmitting local faces
+   (ADR-084). */
 void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
                                 const VkrRenderGraphFrameInfo *frame,
                                 VkrGpuLodView *out_views, uint32_t view_count) {
@@ -136,16 +137,24 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
       (float32_t)frame->scene_output_height * frame->render_scale,
       packet->input.globals.view_position,
       packet->temporal.previous_view_position, true_v);
-  const uint32_t cascade_count = frame->shadow_cascade_count;
+  const uint32_t local_first = vkr_render_graph_local_shadow_first_view(frame);
   for (uint32_t view = 1u; view < view_count; ++view) {
-    if (view <= cascade_count) {
+    if (view < local_first) {
+      const uint32_t cascade = vkr_render_graph_view_cascade(frame, view);
       out_views[view] = vkr_gpu_lod_view(
-          packet->input.shadow->cascades[view - 1u].light_view_projection,
+          packet->input.shadow->cascades[cascade].light_view_projection,
           (float32_t)frame->shadow_map_size, vec3_zero(), vec3_zero(), false_v);
+      /* A composed cascade draws its static casters into its static layer
+         and its dynamic casters over the copy of that layer. */
+      if (view > frame->shadow_cascade_count)
+        out_views[view].flags |= VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY;
+      else if ((frame->shadow_cascade_static_render_mask &
+                (UINT32_C(1) << cascade)) != 0u)
+        out_views[view].flags |= VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY;
       continue;
     }
     const uint32_t slot =
-        (view - 1u - cascade_count) % Max(frame->local_shadow_render_count, 1u);
+        (view - local_first) % Max(frame->local_shadow_render_count, 1u);
     const VkrLocalShadowView *face =
         &packet->input.local_shadow
              ->views[packet->input.local_shadow->render_views[slot]];
@@ -162,7 +171,7 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
        ones into a static square, the dynamic ones over a copied one.
        Transmission views draw every refractive caster. */
     const VkrLocalShadowPassPayload *local = packet->input.local_shadow;
-    if (view - 1u - cascade_count >= frame->local_shadow_render_count)
+    if (view - local_first >= frame->local_shadow_render_count)
       continue;
     if (slot >= vkr_local_shadow_dynamic_render_first(local))
       out_views[view].flags |= VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY;

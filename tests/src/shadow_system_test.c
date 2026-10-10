@@ -1673,9 +1673,13 @@ vkr_internal void test_dynamic_overlap_and_publication_fail_closed(void) {
       .resource_generation = 3u,
       .valid_layer_mask = cascade_mask(&system),
       .moments_valid_cascade_mask = cascade_mask(&system),
+      .static_resource_generation = 5u,
   };
   update_for_reuse(&system, &camera);
 
+  /* A dynamic caster inside cascade 0 composes that cascade instead of
+     drawing it whole: its static layer, which no frame has drawn, draws, is
+     copied into the shadow map, and the caster draws over the copy. */
   VkrWorldDrawCandidate dynamic =
       dynamic_candidate_at_history(&system.cascade_history[0][0], true_v);
   payload.gpu_candidates = &dynamic;
@@ -1684,25 +1688,36 @@ vkr_internal void test_dynamic_overlap_and_publication_fail_closed(void) {
   VkrShadowFrameData frame = {0};
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
-  assert((frame.cascade_render_mask & 1u) != 0u);
-  assert(frame.dynamic_forced[0] == 1u);
+  assert(frame.static_active);
+  assert(frame.cascade_render_mask == 0u);
+  assert((frame.copy_mask & 1u) != 0u);
+  assert((frame.static_render_mask & 1u) != 0u);
+  assert((frame.dynamic_render_mask & 1u) != 0u);
+  assert(frame.dynamic_forced[0] == 1u && frame.composited[0] == 1u);
   vkr_shadow_system_discard_frame(&system);
 
+  /* A caster no cascade can reach keeps every retained layer: the static
+     image exists but nothing is copied. */
   dynamic.local_bounding_sphere =
       vec4_new(100000.0f, 100000.0f, 100000.0f, 1.0f);
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
-  assert(frame.cascade_render_mask == 0u);
+  assert(frame.static_active);
+  assert(frame.cascade_render_mask == 0u && frame.copy_mask == 0u);
   for (uint32_t i = 0u; i < config.cascade_count; ++i) {
     assert(frame.dynamic_candidates_tested[i] == 1u);
-    assert(frame.dynamic_forced[i] == 0u);
+    assert(frame.dynamic_forced[i] == 0u && frame.reused[i] == 1u);
   }
   vkr_shadow_system_discard_frame(&system);
 
+  /* Casters the scan cannot place, over its budget or without bounds, draw
+     every cascade whole: no composition may omit them. */
   system.config.reuse_dynamic_scan_budget = 0u;
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
   assert(frame.cascade_render_mask == cascade_mask(&system));
+  assert(frame.copy_mask == 0u && frame.static_render_mask == 0u &&
+         frame.dynamic_render_mask == 0u);
   for (uint32_t i = 0u; i < config.cascade_count; ++i)
     assert(frame.dynamic_forced[i] == 1u);
   vkr_shadow_system_discard_frame(&system);
@@ -1713,16 +1728,306 @@ vkr_internal void test_dynamic_overlap_and_publication_fail_closed(void) {
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
   assert(frame.cascade_render_mask == cascade_mask(&system));
+  assert(frame.copy_mask == 0u && frame.static_render_mask == 0u &&
+         frame.dynamic_render_mask == 0u);
   for (uint32_t i = 0u; i < config.cascade_count; ++i)
     assert(frame.dynamic_forced[i] == 1u);
   vkr_shadow_system_discard_frame(&system);
+  dynamic.flags = VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID;
 
-  payload.gpu_shadow_candidate_count = 0u;
+  /* Pending publications leave the contents unknown: every cascade draws
+     whole even though the only dynamic caster is out of reach. */
   payload.publication_pending = true_v;
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.static_active);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  assert(frame.copy_mask == 0u && frame.static_render_mask == 0u);
+  vkr_shadow_system_discard_frame(&system);
+
+  payload.gpu_shadow_candidate_count = 0u;
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(!frame.static_active);
   assert(frame.cascade_render_mask == cascade_mask(&system));
   vkr_shadow_system_shutdown(&system);
+}
+
+/* Resolves one frame of a composed-cascade sequence on `image`. */
+vkr_internal VkrShadowFrameData resolve_composed(VkrShadowSystem *system,
+                                                 uint32_t image,
+                                                 VkrRetainedShadowToken token,
+                                                 VkrWorldPassPayload *payload) {
+  VkrShadowFrameData frame = {0};
+  vkr_shadow_system_resolve_frame(system, image, token, payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  return frame;
+}
+
+/* Every frame in flight shares the static layers: a layer drawn once is
+   copied into the other target images, a caster that leaves restores the
+   layer by copy alone, and only the token proves static content. */
+vkr_internal void
+test_composed_cascades_share_static_layers_across_images(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t all = (UINT32_C(1) << config.cascade_count) - 1u;
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  update_for_reuse(&system, &camera);
+  /* A small caster at the far cascade's center leaves the near ones. */
+  const uint32_t far = config.cascade_count - 1u;
+  VkrWorldDrawCandidate dynamic =
+      dynamic_candidate_at_history(&system.cascade_history[0][far], true_v);
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  VkrRetainedShadowToken drawn = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+      .static_resource_generation = 5u,
+  };
+  const VkrRetainedShadowToken fresh = {
+      .resource_generation = 3u,
+      .static_resource_generation = 5u,
+  };
+
+  /* Image 0: the cascades the caster reaches compose, drawing their static
+     layers first; the rest keep their retained layers. */
+  VkrShadowFrameData frame = resolve_composed(&system, 0u, drawn, &payload);
+  const uint32_t reached = frame.copy_mask;
+  const uint32_t far_bit = UINT32_C(1) << far;
+  assert((reached & far_bit) != 0u && (reached & 1u) == 0u);
+  assert(frame.cascade_render_mask == 0u);
+  assert(frame.static_render_mask == reached);
+  assert(frame.dynamic_render_mask == reached);
+  for (uint32_t cascade = 0u; cascade < config.cascade_count; ++cascade)
+    assert(frame.reused[cascade] ==
+           ((reached & (UINT32_C(1) << cascade)) != 0u ? 0u : 1u));
+  vkr_shadow_system_commit_frame(&system, 18u);
+  assert(system.static_history[far].last_submit_value == 18u);
+  assert(system.static_history[0].last_submit_value == 0u);
+  assert(system.cascade_history[0][far].composite &&
+         !system.cascade_history[0][far].static_only_contents);
+  assert(!system.cascade_history[0][0].composite);
+
+  /* Images 1 and 2 hold nothing yet. The reached static layers are not
+     drawn again; the others draw once, for the first image, and image 2
+     copies every layer without drawing any. */
+  VkrRetainedShadowToken static_proof = fresh;
+  static_proof.static_valid_layer_mask = reached;
+  frame = resolve_composed(&system, 1u, static_proof, &payload);
+  assert(frame.cascade_render_mask == 0u && frame.copy_mask == all);
+  assert(frame.static_render_mask == (all & ~reached));
+  assert(frame.dynamic_render_mask == reached);
+  vkr_shadow_system_commit_frame(&system, 19u);
+  static_proof.static_valid_layer_mask = all;
+  frame = resolve_composed(&system, 2u, static_proof, &payload);
+  assert(frame.cascade_render_mask == 0u && frame.copy_mask == all);
+  assert(frame.static_render_mask == 0u);
+  assert(frame.dynamic_render_mask == reached);
+  vkr_shadow_system_commit_frame(&system, 20u);
+
+  /* Back on image 0 only the cascades under the caster are recomposed. */
+  drawn.static_valid_layer_mask = all;
+  frame = resolve_composed(&system, 0u, drawn, &payload);
+  assert(frame.cascade_render_mask == 0u && frame.static_render_mask == 0u);
+  assert(frame.copy_mask == reached && frame.dynamic_render_mask == reached);
+  vkr_shadow_system_commit_frame(&system, 21u);
+
+  /* Submitted history alone does not prove a static layer's content. */
+  drawn.static_valid_layer_mask = all & ~far_bit;
+  frame = resolve_composed(&system, 0u, drawn, &payload);
+  assert(frame.static_render_mask == far_bit);
+  assert(frame.copy_mask == reached && frame.cascade_render_mask == 0u);
+  vkr_shadow_system_discard_frame(&system);
+  drawn.static_valid_layer_mask = all;
+
+  /* The caster leaves: each layer it was drawn into is restored by a copy of
+     its static layer, with no draw, and is then reused. */
+  dynamic.local_bounding_sphere =
+      vec4_new(100000.0f, 100000.0f, 100000.0f, 1.0f);
+  frame = resolve_composed(&system, 0u, drawn, &payload);
+  assert(frame.cascade_render_mask == 0u && frame.static_render_mask == 0u);
+  assert(frame.copy_mask == reached && frame.dynamic_render_mask == 0u);
+  vkr_shadow_system_commit_frame(&system, 22u);
+  assert(system.cascade_history[0][far].composite &&
+         system.cascade_history[0][far].static_only_contents);
+  frame = resolve_composed(&system, 0u, drawn, &payload);
+  assert(frame.copy_mask == 0u && frame.cascade_render_mask == 0u);
+  for (uint32_t cascade = 0u; cascade < config.cascade_count; ++cascade)
+    assert(frame.reused[cascade] == 1u);
+
+  /* A far cascade whose EVSM moments were lost restores them from a copy
+     of its static layer, not a whole draw. */
+  assert(config.far_cascade_evsm);
+  drawn.moments_valid_cascade_mask = all & ~far_bit;
+  frame = resolve_composed(&system, 0u, drawn, &payload);
+  assert(frame.copy_mask == far_bit && frame.cascade_render_mask == 0u);
+  assert(frame.static_render_mask == 0u && frame.dynamic_render_mask == 0u);
+  vkr_shadow_system_shutdown(&system);
+}
+
+/* A static change inside a static layer's volume makes it stale, so the layer
+   draws again; one outside leaves it valid. */
+vkr_internal void test_static_change_reaching_fit_redraws_static_layer(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t all = (UINT32_C(1) << config.cascade_count) - 1u;
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  update_for_reuse(&system, &camera);
+  VkrWorldDrawCandidate dynamic =
+      dynamic_candidate_at_history(&system.cascade_history[0][0], true_v);
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+      .static_resource_generation = 5u,
+  };
+  VkrShadowFrameData frame = resolve_composed(&system, 0u, token, &payload);
+  const uint32_t reached = frame.copy_mask;
+  assert(frame.static_render_mask == reached && reached != 0u);
+  vkr_shadow_system_commit_frame(&system, 18u);
+  token.static_valid_layer_mask = all;
+
+  const uint64_t generation = payload.static_generation;
+  const Vec3 caster =
+      vec3_new(dynamic.local_bounding_sphere.x, dynamic.local_bounding_sphere.y,
+               dynamic.local_bounding_sphere.z);
+  const VkrStaticChange changes[] = {
+      {.generation = generation + 1u,
+       .min = {1.0e5f, 0.0f, 1.0e5f},
+       .max = {1.0e5f + 10.0f, 10.0f, 1.0e5f + 10.0f},
+       .bounded = true_v},
+      {.generation = generation + 2u,
+       .min = vec3_sub(caster, vec3_new(0.5f, 0.5f, 0.5f)),
+       .max = vec3_add(caster, vec3_new(0.5f, 0.5f, 0.5f)),
+       .bounded = true_v},
+  };
+  payload.static_changes = changes;
+  payload.static_change_floor = generation;
+  payload.static_change_count = 1u;
+  payload.static_generation = generation + 1u;
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert(frame.static_render_mask == 0u && frame.cascade_render_mask == 0u);
+  assert(frame.copy_mask == reached);
+  vkr_shadow_system_discard_frame(&system);
+  assert(system.static_history[0].static_generation == generation + 1u);
+
+  payload.static_change_count = 2u;
+  payload.static_generation = generation + 2u;
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert((frame.static_render_mask & 1u) != 0u);
+  assert(frame.cascade_render_mask == 0u && (frame.copy_mask & 1u) != 0u);
+  assert(system.pending_history.static_cascades[0].static_generation ==
+         generation + 2u);
+  vkr_shadow_system_shutdown(&system);
+}
+
+/* Without dynamic casters the static image is gone and its layers and token
+   cannot change a frame: it is the whole-cascade path alone. */
+vkr_internal void test_without_dynamic_casters_static_layers_stay_unused(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t all = (UINT32_C(1) << config.cascade_count) - 1u;
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  update_for_reuse(&system, &camera);
+  VkrWorldDrawCandidate dynamic =
+      dynamic_candidate_at_history(&system.cascade_history[0][0], true_v);
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+      .static_resource_generation = 5u,
+  };
+  (void)resolve_composed(&system, 0u, token, &payload);
+  vkr_shadow_system_commit_frame(&system, 18u);
+  assert(system.static_history[0].last_submit_value == 18u);
+
+  payload.gpu_candidates = NULL;
+  payload.gpu_shadow_candidate_count = 0u;
+  const VkrRetainedShadowToken with_static = {
+      .resource_generation = 3u,
+      .static_resource_generation = 5u,
+      .static_valid_layer_mask = all,
+  };
+  const VkrRetainedShadowToken without_static = {.resource_generation = 3u};
+  const VkrShadowFrameData first =
+      resolve_composed(&system, 1u, with_static, &payload);
+  const VkrShadowPendingHistory first_pending = system.pending_history;
+  assert(first_pending.static_mask == 0u);
+  MemZero(system.static_history, sizeof(system.static_history));
+  const VkrShadowFrameData second =
+      resolve_composed(&system, 1u, without_static, &payload);
+  assert(MemCompare(&first, &second, sizeof(first)) == 0);
+  assert(MemCompare(&first_pending, &system.pending_history,
+                    sizeof(first_pending)) == 0);
+  assert(!first.static_active && first.copy_mask == 0u &&
+         first.static_render_mask == 0u && first.dynamic_render_mask == 0u);
+  assert(first.cascade_render_mask == all);
+  vkr_shadow_system_shutdown(&system);
+}
+
+/* Composition masks the graph trusts: copies only within the static image,
+   static and dynamic draws only over copies, none over a whole draw. */
+vkr_internal void test_shadow_static_composition_packet_validation(void) {
+  VkrShadowPassPayload shadow = test_shadow_valid_payload();
+  shadow.cascade_count = 2u;
+  shadow.cascades[1] = shadow.cascades[0];
+  const VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE,
+                  .color_contrast = 1.0f,
+                  .color_saturation = 1.0f},
+      .shadow = &shadow,
+  };
+  VkrValidationError validation = {0};
+  shadow.static_active = true_v;
+  shadow.cascade_render_mask = 1u;
+  shadow.copy_mask = 2u;
+  shadow.static_render_mask = 2u;
+  shadow.dynamic_render_mask = 2u;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
+         VKR_RENDERER_ERROR_NONE);
+
+  const struct {
+    bool8_t active;
+    uint32_t render;
+    uint32_t copy;
+    uint32_t static_draw;
+    uint32_t dynamic_draw;
+    const char *field;
+  } rejected[] = {
+      {false_v, 1u, 2u, 0u, 0u, "packet.shadow.static_active"},
+      {false_v, 0u, 0u, 0u, 1u, "packet.shadow.static_active"},
+      {2u, 0u, 0u, 0u, 0u, "packet.shadow.static_active"},
+      {true_v, 0u, 4u, 0u, 0u, "packet.shadow.copy_mask"},
+      {true_v, 0u, 1u, 2u, 0u, "packet.shadow.copy_mask"},
+      {true_v, 0u, 1u, 0u, 2u, "packet.shadow.copy_mask"},
+      {true_v, 1u, 1u, 0u, 0u, "packet.shadow.copy_mask"},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(rejected); ++i) {
+    shadow.static_active = rejected[i].active;
+    shadow.cascade_render_mask = rejected[i].render;
+    shadow.copy_mask = rejected[i].copy;
+    shadow.static_render_mask = rejected[i].static_draw;
+    shadow.dynamic_render_mask = rejected[i].dynamic_draw;
+    assert(vkr_frame_input_validate(&packet, &validation) ==
+           VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+    assert(strcmp(validation.field_path, rejected[i].field) == 0);
+  }
 }
 
 vkr_internal void
@@ -2030,7 +2335,8 @@ test_retained_images_converge_without_publishing_cancelled_fit(void) {
   system.cascade_history[3][0].static_generation++;
   system.cascade_history[3][0].last_submit_value = 100u;
   const VkrRetainedShadowToken valid = {.resource_generation = 3u,
-                                        .valid_layer_mask = 1u};
+                                        .valid_layer_mask = 1u,
+                                        .static_resource_generation = 5u};
   VkrShadowFrameData frame = {0};
 
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
@@ -2087,10 +2393,28 @@ test_retained_images_converge_without_publishing_cancelled_fit(void) {
   payload.gpu_shadow_candidate_count = 1u;
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  /* The cascade composes over the chosen wider fit: its static layer draws
+     with that fit and the caster draws over the copy. */
+  assert(frame.cascade_render_mask == 0u && frame.copy_mask == 1u);
+  assert(frame.static_render_mask == 1u && frame.dynamic_render_mask == 1u);
+  assert(frame.dynamic_forced[0] == 1u);
+  assert(MemCompare(&frame.view_projection[0], &wider.rendered_view_projection,
+                    sizeof(Mat4)) == 0);
+  assert(
+      MemCompare(
+          &system.pending_history.static_cascades[0].rendered_view_projection,
+          &wider.rendered_view_projection, sizeof(Mat4)) == 0);
+  vkr_shadow_system_discard_frame(&system);
+  /* Drawn whole, because the scan cannot place the caster, the cascade takes
+     a fresh guarded fit instead. */
+  system.config.reuse_dynamic_scan_budget = 0u;
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
   assert(frame.cascade_render_mask == 1u && frame.dynamic_forced[0] == 1u);
   assert(system.pending_history.cascades[0].rendered_fit.extent <
          wider.rendered_fit.extent);
   vkr_shadow_system_discard_frame(&system);
+  system.config.reuse_dynamic_scan_budget = config.reuse_dynamic_scan_budget;
 
   payload.gpu_candidates = NULL;
   payload.gpu_shadow_candidate_count = 0u;
@@ -2270,6 +2594,133 @@ test_sdsm_cached_range_rejects_scene_and_projection_changes(void) {
   }
 }
 
+/* The token's first frame with the static image names no resource, so a
+   static layer drawn then would record none and draw again: that frame
+   draws whole, the next draws the static layer once, and the one after
+   copies it. */
+vkr_internal void test_static_image_first_frame_draws_whole(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t all = (UINT32_C(1) << config.cascade_count) - 1u;
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  update_for_reuse(&system, &camera);
+  VkrWorldDrawCandidate dynamic =
+      dynamic_candidate_at_history(&system.cascade_history[0][0], true_v);
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+  };
+  VkrShadowFrameData frame = resolve_composed(&system, 0u, token, &payload);
+  assert(frame.static_active);
+  assert(frame.copy_mask == 0u && frame.static_render_mask == 0u);
+  assert((frame.cascade_render_mask & 1u) != 0u);
+  assert(system.pending_history.static_mask == 0u);
+  vkr_shadow_system_commit_frame(&system, 18u);
+
+  token.static_resource_generation = 5u;
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert((frame.cascade_render_mask & 1u) == 0u);
+  assert((frame.copy_mask & 1u) != 0u && (frame.static_render_mask & 1u) != 0u);
+  assert(system.pending_history.static_cascades[0].resource_generation == 5u);
+  vkr_shadow_system_commit_frame(&system, 19u);
+
+  token.static_valid_layer_mask = all;
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert((frame.copy_mask & 1u) != 0u && frame.static_render_mask == 0u);
+  vkr_shadow_system_shutdown(&system);
+}
+
+/* A static layer drawn by a frame that was discarded never reached the GPU:
+   its history stays empty, so a token bit alone cannot make it a copy. */
+vkr_internal void test_discarded_static_layer_draws_again(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t all = (UINT32_C(1) << config.cascade_count) - 1u;
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  update_for_reuse(&system, &camera);
+  VkrWorldDrawCandidate dynamic =
+      dynamic_candidate_at_history(&system.cascade_history[0][0], true_v);
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+      .static_resource_generation = 5u,
+  };
+  VkrShadowFrameData frame = resolve_composed(&system, 0u, token, &payload);
+  assert((frame.static_render_mask & 1u) != 0u);
+  vkr_shadow_system_discard_frame(&system);
+  assert(system.static_history[0].last_submit_value == 0u);
+
+  token.static_valid_layer_mask = all;
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert((frame.static_render_mask & 1u) != 0u);
+  assert((frame.copy_mask & 1u) != 0u);
+  vkr_shadow_system_shutdown(&system);
+}
+
+/* A sun turning past every tolerance each frame never keeps a fit, so a
+   static layer drawn now would never be copied: every cascade draws whole,
+   as without the static image. Once the sun stops, a held fit composes and
+   its static layer is then copied without drawing. */
+vkr_internal void test_turning_sun_draws_cascades_whole(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t all = (UINT32_C(1) << config.cascade_count) - 1u;
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  VkrWorldDrawCandidate dynamic =
+      dynamic_candidate_at_history(&system.cascade_history[0][0], true_v);
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  const VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+      .static_resource_generation = 5u,
+      .static_valid_layer_mask = all,
+  };
+  Vec3 light = vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f));
+  for (uint32_t step = 0u; step < 4u; ++step) {
+    light = turn_light(light, 5.0f);
+    vkr_shadow_system_update(&system, &camera, true_v, light, NULL);
+    const VkrShadowFrameData frame =
+        resolve_composed(&system, step % 3u, token, &payload);
+    assert(frame.static_active);
+    assert(frame.cascade_render_mask == all);
+    assert(frame.copy_mask == 0u && frame.static_render_mask == 0u &&
+           frame.dynamic_render_mask == 0u);
+    vkr_shadow_system_commit_frame(&system, 30u + step);
+  }
+
+  bool8_t drew_static = false_v;
+  bool8_t copied_static = false_v;
+  for (uint32_t step = 0u; step < 8u && !copied_static; ++step) {
+    vkr_shadow_system_update(&system, &camera, true_v, light, NULL);
+    const VkrShadowFrameData frame =
+        resolve_composed(&system, 0u, token, &payload);
+    drew_static = drew_static || frame.static_render_mask != 0u;
+    copied_static = drew_static && frame.copy_mask != 0u &&
+                    frame.static_render_mask == 0u &&
+                    frame.cascade_render_mask == 0u;
+    vkr_shadow_system_commit_frame(&system, 40u + step);
+  }
+  assert(drew_static && copied_static);
+  vkr_shadow_system_shutdown(&system);
+}
+
 bool32_t run_shadow_system_tests(void) {
   printf("--- Starting Shadow System Tests ---\n");
   printf("  Running test_growth_is_never_deadbanded...\n");
@@ -2331,6 +2782,12 @@ bool32_t run_shadow_system_tests(void) {
   test_retained_history_reuses_per_image_and_commits_only_on_submit();
   test_retained_history_guard_contains_small_motion_not_large_motion();
   test_dynamic_overlap_and_publication_fail_closed();
+  test_composed_cascades_share_static_layers_across_images();
+  test_static_change_reaching_fit_redraws_static_layer();
+  test_without_dynamic_casters_static_layers_stay_unused();
+  test_static_image_first_frame_draws_whole();
+  test_discarded_static_layer_draws_again();
+  test_turning_sun_draws_cascades_whole();
   test_retained_history_signatures_and_invalidation_fail_closed();
   test_stale_dynamic_contents_render_once_after_caster_leaves();
   test_proactive_refresh_is_bounded_to_reusable_cascades();
@@ -2345,6 +2802,9 @@ bool32_t run_shadow_system_tests(void) {
   printf("  Running test_shadow_raster_bias_packet_validation...\n");
   test_shadow_raster_bias_packet_validation();
   printf("  test_shadow_raster_bias_packet_validation PASSED\n");
+  printf("  Running test_shadow_static_composition_packet_validation...\n");
+  test_shadow_static_composition_packet_validation();
+  printf("  test_shadow_static_composition_packet_validation PASSED\n");
   printf("  Running test_shadow_receiver_packet_validation...\n");
   test_shadow_receiver_packet_validation();
   printf("  test_shadow_receiver_packet_validation PASSED\n");

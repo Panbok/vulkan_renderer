@@ -14,9 +14,10 @@ the forward shader samples them bicubically. Lamps with an emitter radius
 bake soft shadows on both bakers. Moving casters shadow the two baked lamps
 that light them most on the tiled pipeline as they do on the desktop
 pipeline ([ADR-104](104-desktop-baked-lamps.md)). The Metal bake and runtime
-ran on the M1 Pro. The Vulkan kernel change compiles only. Of the tiled
-moving-caster shadows, one capture pair shows a fan's shadow; the level
-itself has no moving casters (see Consequences).
+ran on the M1 Pro. The Vulkan kernel change compiles only. Entities that
+move at runtime (moving physics bodies, mover-driven brushes) cast as
+moving objects and stay out of the bake; the level's doors, lifts, tram and
+fans shadow its baked lamps at runtime.
 
 ## Context
 
@@ -95,6 +96,18 @@ take runtime shadows from the lamps that light them most.
    surface's irradiance each lamp's light times its static view's
    visibility minus its composite view's, through the tiled tent filter
    (`vkr_metal_tiled_moving_shadow`); the inspection variant does too.
+6. **What moves.** An entity moves at runtime when it or an ancestor
+   within 64 levels carries an enabled kinematic or dynamic physics body,
+   or, for a brush or blockout shape, a `mover`
+   (`vkr_scene_entity_moves` in
+   [`vkr_scene_system.c`](../../runtime/src/renderer/systems/vkr_scene_system.c);
+   owner rule, 2026-10-10: no or static collision is static, dynamic
+   physics is dynamic). Its meshes cast as moving objects: a brush or shape
+   when its mesh publishes, an imported mesh when it attaches, and every
+   mesh again after a body edit (`shadow_mobility_dirty`); a mesh renderer
+   that stops moving keeps moving-caster mobility until it reloads. The
+   bake leaves the same entities out (ADR-088), so no shadow is both baked
+   and subtracted at runtime.
 
 ## Consequences
 
@@ -111,14 +124,14 @@ take runtime shadows from the lamps that light them most.
   level's lamp-direct gather took 58.1 s instead of 45.5 s.
 - The editor saves this level in about 10 minutes after the lamp edits,
   which the bake's own `scene.save` does not need.
-- In this level only the player moves, and the first-person player body is
-  hidden, so it casts no shadow and the `CASTERS` variant does not run.
-  Brushes under a `mover` (doors, lifts, the tram, fans) stay out of the
-  bake (ADR-088) and are static shadow casters at runtime, so they cast no
-  lamp shadow on the tiled pipeline, as before this ADR. Classifying them
-  as moving casters showed their shadows but forced the sun cascades,
-  which redraw whole while a moving caster is in them, to redraw every
-  frame: passes rose from 2.2 to 5.4 ms in the lobby view below.
+- In this level the first-person player body is hidden, so it casts no
+  shadow. Its doors, lifts, tram and fans move, so they cast lamp shadows
+  through the moving-caster views. Before 2026-10-10 they were static
+  casters, out of the bake, and cast no lamp shadow on the tiled pipeline;
+  making them moving casters then forced the sun cascades, which redrew
+  whole while a moving caster was in them, to redraw every frame (lobby
+  passes 2.2 to 5.4 ms). The cascades now keep a static layer and draw
+  only the moving casters over a copy of it (ADR-041).
 
 ## Alternatives considered
 
@@ -147,10 +160,25 @@ Release, M1 Pro, Metal, 2026-10-10; local and non-authoritative.
   about 181 s, of which the lamp-direct pages 43.6 s; set 318,982,400 bytes.
 - **Captures.** The headless editor at Epic shows soft lamp shadows without
   texel steps in the lobby, at the reception chairs and in the cafeteria.
-- **Moving casters.** With a temporary build that made mover brushes
-  moving casters, a fan under the hall ceiling cast a soft runtime shadow
-  of a baked lamp on the ceiling that disappears when the fan's mover is
-  removed (Edit mode, Epic).
+- **Moving casters.** A fan under the hall ceiling casts a soft runtime
+  shadow of a baked lamp on the ceiling, which disappeared when its mover
+  was removed (Edit mode, Epic). `run_scene_physics_tests`
+  (`physics_test_moves`: a dynamic body's child moves, a static body's
+  does not, a brush below a mover moves and a plain entity there does not;
+  a body edit marks mobility dirty) and `run_lightmap_bake_tests`
+  (`test_bake_scene_leaves_out_moving_brushes`: a brush below a dynamic
+  body adds nothing to the bake, one below a static body bakes) pass.
+- **Movers' cost.** Same scene (4,275 lightmapped instances, 76 mover
+  brushes), headless editor at Epic, `VKR_RG_GPU_TIMING=1`, median of the
+  last 40 frames, passes in ms for the lobby, cafeteria and fan views:
+  movers as static casters 2.29, 2.48, 2.59; movers as moving casters with
+  whole cascade redraws 5.61, 5.67, 5.77; with the cascades' static layers
+  (ADR-041) 3.27, 3.35, 3.84. The remaining cost is `Cull.Encode` for the
+  moving-caster views (0.5 to 0.7 ms) and the `CASTERS` variant (0.2 ms,
+  0.45 ms with the fan in view). One build per row from the same tree;
+  local and non-authoritative.
+- **Metal API validation.** `MTL_DEBUG_LAYER=1`, the fan view and Play,
+  about 3,570 frames: no validation message.
 - **Timing.** The headless editor's Scene view at Epic with
   `VKR_RG_GPU_TIMING=1`, median of the last 40 frames, against the
   stationary build's frames with the stationary shading left out, which
@@ -160,5 +188,5 @@ Release, M1 Pro, Metal, 2026-10-10; local and non-authoritative.
   3.57 and 2.80 ms. Not a matched Release A/B of the same commit; no
   timing here is authoritative.
 - **Unavailable.** Metal shader validation aborts the editor on this level
-  (a residency-set limit that predates this ADR); the Vulkan bake and the
-  desktop runtime did not run.
+  (a residency-set limit that predates this ADR); the Vulkan bake, the
+  desktop runtime and the desktop cascade composition did not run.

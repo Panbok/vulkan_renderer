@@ -2355,6 +2355,28 @@ bool8_t vkr_mesh_manager_set_visible(VkrMeshManager *manager, uint32_t index,
   return true_v;
 }
 
+bool8_t vkr_mesh_manager_set_shadow_mobility(VkrMeshManager *manager,
+                                             uint32_t index,
+                                             VkrShadowCasterMobility mobility) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (index >= manager->meshes.length)
+    return false_v;
+
+  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, index);
+  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
+    return false_v;
+
+  /* A retained cascade may already hold this caster's depth under the old
+     contract, so the classification change itself must invalidate. */
+  if (mesh->shadow_mobility != mobility) {
+    mesh->shadow_mobility = mobility;
+    vkr_mesh_manager_note_topology_change(manager);
+  }
+
+  return true_v;
+}
+
 bool8_t vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
                                        uint32_t render_id) {
   assert_log(manager != NULL, "Manager is NULL");

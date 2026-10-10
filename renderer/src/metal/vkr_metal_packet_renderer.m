@@ -523,6 +523,8 @@ typedef struct VkrMetalPacketCommandSlot {
   const uint8_t *gpu_draw_diagnostics_readback;
   const uint8_t *exposure_readback;
   uint32_t shadow_cascade_count;
+  /** Cascades whose dynamic-caster view drew over a copied layer. */
+  uint32_t shadow_cascade_dynamic_render_mask;
   uint32_t gpu_draw_view_count;
   bool8_t gpu_draw_diagnostics_requested;
   bool8_t exposure_requested;

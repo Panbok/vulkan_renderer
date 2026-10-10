@@ -794,6 +794,7 @@ void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
   if (system) {
     system->fit_history.valid = false_v;
     MemZero(system->cascade_history, sizeof(system->cascade_history));
+    MemZero(system->static_history, sizeof(system->static_history));
     system->pending_history = (VkrShadowPendingHistory){0};
     /* The local-shadow cache is not tied to the target; its retained token
      * proves the shared pool, and light identity proves its content. */
@@ -1366,6 +1367,14 @@ void vkr_shadow_system_commit_frame(VkrShadowSystem *system,
           pending->cascades[cascade];
     }
   }
+  /* Static layers belong to no target image. */
+  for (uint32_t cascade = 0u; cascade < system->config.cascade_count;
+       ++cascade) {
+    if ((pending->static_mask & (UINT32_C(1) << cascade)) == 0u)
+      continue;
+    pending->static_cascades[cascade].last_submit_value = submit_value;
+    system->static_history[cascade] = pending->static_cascades[cascade];
+  }
   *pending = (VkrShadowPendingHistory){0};
 
   vkr_local_shadow_cache_commit(&system->local_cache,
@@ -1404,29 +1413,35 @@ vkr_internal bool8_t vkr_shadow_static_change_reaches_fit(
   return false_v;
 }
 
-/* Retained cascades drawn before static changes that miss their volume hold
-   what the current static world would draw there, so they take its
-   generation. */
+vkr_internal void
+vkr_shadow_advance_static_history(VkrShadowCascadeHistory *history,
+                                  const VkrWorldPassPayload *world) {
+  if (history->last_submit_value != 0u &&
+      history->static_generation != world->static_generation &&
+      !vkr_shadow_static_change_reaches_fit(world, history->static_generation,
+                                            &history->rendered_light_view,
+                                            &history->rendered_fit)) {
+    history->static_generation = world->static_generation;
+  }
+}
+
+/* Retained cascades and static layers drawn before static changes that miss
+   their volume hold what the current static world would draw there, so they
+   take its generation. A change that reaches one leaves it stale. */
 vkr_internal void
 vkr_shadow_advance_static_histories(VkrShadowSystem *system,
                                     const VkrWorldPassPayload *world) {
   if (!world) {
     return;
   }
-  for (uint32_t image = 0u; image < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX;
-       ++image) {
-    for (uint32_t cascade = 0u; cascade < system->config.cascade_count;
-         ++cascade) {
-      VkrShadowCascadeHistory *history =
-          &system->cascade_history[image][cascade];
-      if (history->last_submit_value != 0u &&
-          history->static_generation != world->static_generation &&
-          !vkr_shadow_static_change_reaches_fit(
-              world, history->static_generation, &history->rendered_light_view,
-              &history->rendered_fit)) {
-        history->static_generation = world->static_generation;
-      }
+  for (uint32_t cascade = 0u; cascade < system->config.cascade_count;
+       ++cascade) {
+    for (uint32_t image = 0u; image < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX;
+         ++image) {
+      vkr_shadow_advance_static_history(
+          &system->cascade_history[image][cascade], world);
     }
+    vkr_shadow_advance_static_history(&system->static_history[cascade], world);
   }
 }
 
@@ -1461,6 +1476,27 @@ vkr_internal bool8_t vkr_shadow_rendered_descriptor_equal(
              b->rendered_fit.world_units_per_texel;
 }
 
+/* The descriptor and signature of a layer this frame draws or copies. */
+vkr_internal VkrShadowCascadeHistory vkr_shadow_drawn_history(
+    const VkrWorldPassPayload *candidates, const Mat4 *light_view,
+    const VkrShadowFit *fit, const Mat4 *view_projection,
+    uint64_t bias_signature, uint64_t light_signature,
+    uint64_t resource_generation) {
+  return (VkrShadowCascadeHistory){
+      .rendered_fit = *fit,
+      .rendered_light_view = *light_view,
+      .rendered_view_projection = *view_projection,
+      .static_generation = candidates ? candidates->static_generation : 0u,
+      .publication_generation =
+          vkr_world_content_publication_generation(candidates),
+      .caster_bounds_generation =
+          candidates ? candidates->caster_bounds_generation : 0u,
+      .bias_signature = bias_signature,
+      .light_signature = light_signature,
+      .resource_generation = resource_generation,
+  };
+}
+
 void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
                                      uint32_t image_index,
                                      VkrRetainedShadowToken retained_token,
@@ -1490,8 +1526,6 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
 
   VkrShadowFit guarded_fits[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   const VkrShadowCascadeHistory *desired[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
-  bool8_t desired_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
-  bool8_t guarded_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   float32_t remaining_margin[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   const bool8_t publication_pending =
       candidates && candidates->publication_pending;
@@ -1529,6 +1563,67 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
   const uint32_t static_count =
       candidates ? Min(candidates->static_candidate_count, shadow_count) : 0u;
   const uint32_t dynamic_count = shadow_count - static_count;
+  /* While dynamic casters exist the static cascade image does too, and a
+     cascade they reach composes its layer from its static one instead of
+     drawing every caster; unknown contents draw whole as before. The
+     image's first frame draws whole too: its layers could record no
+     resource generation, so they would draw again next frame. */
+  out_data->static_active = dynamic_count > 0u;
+  const bool8_t compose = out_data->static_active && !publication_pending &&
+                          retained_token.static_resource_generation != 0u;
+
+  /* The fit a cascade keeps: its static layer's while that still matches and
+     contains the cascade, else the newest submitted static-only one, else
+     the newest submitted one of any contents whose light and bias still
+     hold, so a static layer drawn with it now is reused next frame. A
+     cascade with none, such as one whose light turned past its tolerance,
+     draws whole. Dynamic casters are tested against the kept fit, since its
+     layer is what they would draw over. */
+  const VkrShadowCascadeHistory *fit_history[VKR_SHADOW_CASCADE_COUNT_MAX] = {
+      0};
+  float32_t fit_margin[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  bool8_t static_fit[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
+    fit_history[cascade] = desired[cascade];
+    fit_margin[cascade] = remaining_margin[cascade];
+    if (!compose)
+      continue;
+    const VkrShadowCascadeHistory *layer = &system->static_history[cascade];
+    const float32_t layer_margin =
+        vkr_shadow_submitted_signature_matches(
+            layer, candidates, retained_token.static_resource_generation,
+            bias_signature, light_signatures[cascade])
+            ? vkr_shadow_rendered_fit_margin(layer, &system->cascades[cascade])
+            : -1.0f;
+    if (layer_margin >= 0.0f) {
+      fit_history[cascade] = layer;
+      fit_margin[cascade] = layer_margin;
+      static_fit[cascade] = true_v;
+      continue;
+    }
+    if (desired[cascade])
+      continue;
+    for (uint32_t image = 0u; image < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX;
+         ++image) {
+      const VkrShadowCascadeHistory *history =
+          &system->cascade_history[image][cascade];
+      if (history->last_submit_value == 0u ||
+          history->bias_signature != bias_signature ||
+          history->light_signature != light_signatures[cascade] ||
+          (fit_history[cascade] && history->last_submit_value <=
+                                       fit_history[cascade]->last_submit_value))
+        continue;
+      const float32_t margin =
+          vkr_shadow_rendered_fit_margin(history, &system->cascades[cascade]);
+      if (margin < 0.0f)
+        continue;
+      fit_history[cascade] = history;
+      fit_margin[cascade] = margin;
+    }
+  }
+
+  bool8_t fit_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  bool8_t guarded_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   bool8_t dynamic_scan_failed =
       dynamic_count > system->config.reuse_dynamic_scan_budget;
   if (!dynamic_scan_failed) {
@@ -1544,11 +1639,11 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
       vkr_shadow_candidate_world_sphere(candidate, &center, &radius);
       for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
         out_data->dynamic_candidates_tested[cascade]++;
-        const VkrShadowCascadeHistory *history = desired[cascade];
+        const VkrShadowCascadeHistory *history = fit_history[cascade];
         if (history && vkr_shadow_sphere_intersects_fit(
                            center, radius, &history->rendered_light_view,
                            &history->rendered_fit))
-          desired_dynamic_overlap[cascade] = true_v;
+          fit_dynamic_overlap[cascade] = true_v;
         if (vkr_shadow_sphere_intersects_fit(
                 center, radius, &system->cascades[cascade].light_view,
                 &guarded_fits[cascade]))
@@ -1556,6 +1651,9 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
       }
     }
   }
+  /* A failed scan cannot place the dynamic casters; every cascade draws
+     whole as without the static image. */
+  const bool8_t composed = compose && !dynamic_scan_failed;
 
   VkrShadowPendingHistory *pending = &system->pending_history;
   pending->image_index = image_index;
@@ -1567,13 +1665,13 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     VkrShadowCascadeHistory *history =
         image_valid ? &system->cascade_history[image_index][cascade] : NULL;
     const bool8_t descriptor_matches =
-        history && desired[cascade] &&
+        history && fit_history[cascade] &&
         vkr_shadow_submitted_signature_matches(
             history, candidates, retained_token.resource_generation,
             bias_signature, light_signatures[cascade]) &&
-        vkr_shadow_rendered_descriptor_equal(history, desired[cascade]);
+        vkr_shadow_rendered_descriptor_equal(history, fit_history[cascade]);
     const bool8_t dynamic_forced =
-        dynamic_scan_failed || desired_dynamic_overlap[cascade];
+        dynamic_scan_failed || fit_dynamic_overlap[cascade];
     /* A filtered far cascade also needs moments built from that depth. */
     const bool8_t moments_required = system->config.far_cascade_evsm &&
                                      cascade >= VKR_SHADOW_EVSM_FIRST_CASCADE;
@@ -1581,7 +1679,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         (retained_token.valid_layer_mask & bit) != 0u &&
         (!moments_required ||
          (retained_token.moments_valid_cascade_mask & bit) != 0u) &&
-        descriptor_matches && remaining_margin[cascade] >= 0.0f &&
+        descriptor_matches && fit_margin[cascade] >= 0.0f &&
         !publication_pending && !dynamic_forced;
   }
 
@@ -1592,9 +1690,9 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     float32_t selected_margin = VKR_FLOAT_MAX;
     for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
       if (reusable[cascade] && !proactive[cascade] &&
-          remaining_margin[cascade] < selected_margin) {
+          fit_margin[cascade] < selected_margin) {
         selected = cascade;
-        selected_margin = remaining_margin[cascade];
+        selected_margin = fit_margin[cascade];
       }
     }
     if (selected == UINT32_MAX)
@@ -1607,7 +1705,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     VkrShadowCascadeHistory *history =
         image_valid ? &system->cascade_history[image_index][cascade] : NULL;
     const bool8_t dynamic_forced =
-        dynamic_scan_failed || desired_dynamic_overlap[cascade];
+        dynamic_scan_failed || fit_dynamic_overlap[cascade];
 
     if (reusable[cascade] && !proactive[cascade]) {
       out_data->view_projection[cascade] = history->rendered_view_projection;
@@ -1618,10 +1716,52 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
       continue;
     }
 
-    out_data->cascade_render_mask |= bit;
     out_data->rendered[cascade] = 1u;
     out_data->correctness_forced[cascade] = reusable[cascade] ? 0u : 1u;
     out_data->proactive_refreshed[cascade] = proactive[cascade] ? 1u : 0u;
+
+    /* A proactive refresh takes a fresh guarded fit, and a cascade without
+       a kept fit has nothing a static layer drawn now would be reused with:
+       both draw whole. */
+    const VkrShadowCascadeHistory *kept =
+        composed && !proactive[cascade] ? fit_history[cascade] : NULL;
+    if (kept) {
+      /* The layer is its static layer's copy, drawn first when invalid, with
+         the dynamic casters drawn over it when one can reach the kept fit. */
+      const Mat4 light_view = kept->rendered_light_view;
+      const VkrShadowFit fit = kept->rendered_fit;
+      out_data->view_projection[cascade] = kept->rendered_view_projection;
+      vkr_shadow_publish_cascade_receiver(&light_view, &fit, cascade, out_data);
+      const bool8_t overlap = fit_dynamic_overlap[cascade];
+      const bool8_t static_valid =
+          static_fit[cascade] &&
+          (retained_token.static_valid_layer_mask & bit) != 0u;
+      out_data->copy_mask |= bit;
+      out_data->composited[cascade] = 1u;
+      out_data->dynamic_forced[cascade] = overlap ? 1u : 0u;
+      if (overlap)
+        out_data->dynamic_render_mask |= bit;
+      if (!static_valid) {
+        out_data->static_render_mask |= bit;
+        out_data->static_rendered[cascade] = 1u;
+        pending->static_mask |= bit;
+        pending->static_cascades[cascade] = vkr_shadow_drawn_history(
+            candidates, &light_view, &fit, &out_data->view_projection[cascade],
+            bias_signature, light_signatures[cascade],
+            retained_token.static_resource_generation);
+        pending->static_cascades[cascade].static_only_contents = true_v;
+      }
+      pending->cascade_mask |= bit;
+      pending->cascades[cascade] = vkr_shadow_drawn_history(
+          candidates, &light_view, &fit, &out_data->view_projection[cascade],
+          bias_signature, light_signatures[cascade],
+          retained_token.resource_generation);
+      pending->cascades[cascade].static_only_contents = !overlap;
+      pending->cascades[cascade].composite = true_v;
+      continue;
+    }
+
+    out_data->cascade_render_mask |= bit;
     out_data->dynamic_forced[cascade] = dynamic_forced ? 1u : 0u;
     // Explicit proactive refresh still creates a fresh guarded fit. Ordinary
     // convergence redraws adopt the selected submitted descriptor exactly.
@@ -1639,23 +1779,14 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     vkr_shadow_publish_cascade_receiver(&light_view, &fit, cascade, out_data);
 
     pending->cascade_mask |= bit;
-    pending->cascades[cascade] = (VkrShadowCascadeHistory){
-        .static_only_contents =
-            !publication_pending && !dynamic_scan_failed &&
-            !(adopt_submitted ? desired_dynamic_overlap[cascade]
-                              : guarded_dynamic_overlap[cascade]),
-        .rendered_fit = fit,
-        .rendered_light_view = light_view,
-        .rendered_view_projection = out_data->view_projection[cascade],
-        .static_generation = candidates ? candidates->static_generation : 0u,
-        .publication_generation =
-            vkr_world_content_publication_generation(candidates),
-        .caster_bounds_generation =
-            candidates ? candidates->caster_bounds_generation : 0u,
-        .bias_signature = bias_signature,
-        .light_signature = light_signatures[cascade],
-        .resource_generation = retained_token.resource_generation,
-    };
+    pending->cascades[cascade] = vkr_shadow_drawn_history(
+        candidates, &light_view, &fit, &out_data->view_projection[cascade],
+        bias_signature, light_signatures[cascade],
+        retained_token.resource_generation);
+    pending->cascades[cascade].static_only_contents =
+        !publication_pending && !dynamic_scan_failed &&
+        !(adopt_submitted ? fit_dynamic_overlap[cascade]
+                          : guarded_dynamic_overlap[cascade]);
   }
   pending->active = pending->cascade_mask != 0u;
 }

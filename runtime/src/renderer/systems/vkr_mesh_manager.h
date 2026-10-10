@@ -322,6 +322,18 @@ bool8_t vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
                                    Mat4 model);
 
 /**
+ * @brief Set a mesh's shadow-caster mobility, under the contract of
+ * vkr_mesh_manager_instance_set_shadow_mobility; a change is a topology change.
+ * @param manager The mesh manager.
+ * @param index The index of the mesh.
+ * @param mobility The mobility to set.
+ * @return true if the mesh exists, false otherwise.
+ */
+bool8_t vkr_mesh_manager_set_shadow_mobility(VkrMeshManager *manager,
+                                             uint32_t index,
+                                             VkrShadowCasterMobility mobility);
+
+/**
  * @brief Set mesh visibility flag used by view/picking systems.
  * @param manager The mesh manager.
  * @param index The index of the mesh.

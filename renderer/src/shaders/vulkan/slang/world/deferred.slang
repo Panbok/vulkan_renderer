@@ -787,22 +787,20 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
                                            : root.shadow_required_flags;
     uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
     uint excluded_flags = 0u;
-    bool mobility_excluded = false;
     if (view_index >= root.transmission_first_view)
         required_flags = root.transmission_required_flags;
     else if (view_index >= root.local_shadow_first_view)
-    {
         excluded_flags = root.local_shadow_excluded_flags;
-        // A static square holds the static casters; a dynamic square adds
-        // the dynamic ones over a copy of it.
-        uint mobility = root.lod_views[view_index].flags;
-        bool static_candidate = candidate_index < root.static_candidate_count;
-        mobility_excluded =
-            ((mobility & VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY) != 0u &&
-             !static_candidate) ||
-            ((mobility & VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY) != 0u &&
-             static_candidate);
-    }
+    // A static square or cascade layer holds the static casters; a dynamic
+    // square or composed cascade adds the dynamic ones over a copy of it.
+    // The camera and transmission views keep every mobility.
+    uint mobility = root.lod_views[view_index].flags;
+    bool static_candidate = candidate_index < root.static_candidate_count;
+    bool mobility_excluded =
+        ((mobility & VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY) != 0u &&
+         !static_candidate) ||
+        ((mobility & VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY) != 0u &&
+         static_candidate);
     uint bucket = vkr_gpu_draw_state_bucket(candidate.state_flags);
     if ((candidate_flags & required_flags) != required_flags ||
         (candidate_flags & excluded_flags) != 0u || mobility_excluded)

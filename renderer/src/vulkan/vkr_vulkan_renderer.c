@@ -1613,11 +1613,29 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
     MemCopy(out_result->shadow_gpu_bucket_counts[cascade],
             opaque[cascade + 1u].bucket_counts,
             sizeof(out_result->shadow_gpu_bucket_counts[cascade]));
+    /* A composed cascade also draws its dynamic casters over the copy. */
+    if ((best->shadow_cascade_dynamic_render_mask & (UINT32_C(1) << cascade)) ==
+        0u)
+      continue;
+    const VkrGpuDrawCompactionState *dynamic =
+        &opaque[1u + best->shadow_cascade_count + cascade];
+    out_result->shadow_gpu_visible_count[cascade] += dynamic->visible_count;
+    out_result->shadow_gpu_overflow_count[cascade] += dynamic->overflow_count;
+    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+         ++bucket)
+      out_result->shadow_gpu_bucket_counts[cascade][bucket] +=
+          dynamic->bucket_counts[bucket];
+  }
+  /* Dynamic-caster views of composed cascades join the failure totals. */
+  for (uint32_t view = 1u + best->shadow_cascade_count;
+       view < best->local_shadow_first_view; ++view) {
+    out_result->gpu_overflow_count += opaque[view].overflow_count;
+    out_result->gpu_resolve_invalid_count += opaque[view].resolve_invalid_count;
   }
   out_result->local_shadow_render_count = best->local_shadow_render_count;
   for (uint32_t slot = 0u; slot < best->local_shadow_render_count; ++slot) {
     const VkrGpuDrawCompactionState *state =
-        &opaque[1u + best->shadow_cascade_count + slot];
+        &opaque[best->local_shadow_first_view + slot];
     out_result->local_shadow_gpu_visible_count[slot] = state->visible_count;
     out_result->local_shadow_gpu_overflow_count[slot] = state->overflow_count;
   }
@@ -1626,7 +1644,7 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       best->local_shadow_transmission_render_count;
   for (uint32_t view = 0u; view < local_view_count; ++view) {
     const VkrGpuDrawCompactionState *state =
-        &opaque[1u + best->shadow_cascade_count + view];
+        &opaque[best->local_shadow_first_view + view];
     out_result->gpu_overflow_count += state->overflow_count;
     out_result->gpu_resolve_invalid_count += state->resolve_invalid_count;
   }

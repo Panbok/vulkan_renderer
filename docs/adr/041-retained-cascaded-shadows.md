@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-07
+updated: 2026-10-10
 authority: adr
 ---
 
@@ -49,8 +49,10 @@ meshes and editor shapes are static casters, because their transforms and
 geometry change only through mesh-manager calls that bump the static
 generation, adding and removing a drawn mesh included; an edit therefore
 redraws once. Runtime-created instances and
-skinned meshes stay dynamic, and a dynamic caster that overlaps a cascade or
-local light redraws it every frame. Pending fits and
+skinned meshes stay dynamic, as do meshes that move at runtime (ADR-108). A
+dynamic caster that overlaps a local light redraws its dynamic squares
+every frame (ADR-019); one that reaches a cascade composes it over the
+cascade's static layer (below). Pending fits and
 content validity commit only after successful submit. Reused cascades publish
 the fit that actually produced their depth.
 
@@ -121,6 +123,28 @@ runtime converts degrees once per frame. Changing this value changes receiver
 sampling and temporal radiance validity without invalidating retained depth maps.
 
 
+### Static layers and dynamic composition
+
+While the world has dynamic casters, the graph keeps one
+`shadow_cascade_static` image that every frame in flight shares: retained,
+not per image, with the shadow map's extent, format and layers, depth and
+transfer source. Each layer holds its cascade drawn with static casters
+only, against a submitted fit, and the retained token proves its content and
+resource generation (`static_resource_generation`, `static_valid_layer_mask`).
+A cascade that is not reusable composes: its static layer draws only when
+invalid, `Shadow.Cascade.Copy.${i}` copies it into this image's
+`shadow_map` layer, and `Shadow.Cascade.Dynamic.${i}` draws the dynamic
+casters over the copy through their own culling view, which follows the
+cascade views. The kept fit is the static layer's while it still matches
+and contains the cascade, otherwise the newest submitted static-only fit,
+otherwise a fresh guarded fit; dynamic casters are tested against that fit.
+A caster that leaves restores the layer by a copy alone. A failed scan or a
+pending publication draws every cascade whole as before, and without
+dynamic casters there is no image and no masks. Far-cascade moments rebuild
+for drawn or copied layers. Receivers still sample only `shadow_map`
+([`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
+`static_render_mask`, `copy_mask`, `dynamic_render_mask`).
+
 ### Far-cascade EVSM
 
 The **Filtered far shadows** setting (`VkrShadowConfig.far_cascade_evsm`) gives
@@ -161,8 +185,11 @@ holds. Independent per-image projections can remain different after camera
 movement, alternating shadow sampling and preventing checked temporal scene
 signatures from matching. Converging them can add up to one render per stale
 image/cascade for each adopted fit, spread across normal completion-safe image
-reuse. Once the images agree, static frames omit those passes again. No new GPU
-storage, copies or waits are required.
+reuse. Once the images agree, static frames omit those passes again. Static
+frames need no new GPU storage, copies or waits; while the world has dynamic
+casters, the static layers take one more shadow-map-sized depth image (64 MiB
+at four 2048² cascades) and a composed cascade one copy of its layer per
+frame.
 
 While the light moves, a cascade's shadow can lag the lit direction by up to
 its tolerance: under 7 mm for a 15 m caster in cascade 0 and 5.2 cm in cascade
@@ -318,6 +345,21 @@ Report digests (prefixes): orbit at 1024, 2048 and 4096 with fixed splits
 SDSM `sha256:68d09855617a` (incomplete), `sha256:a830cfddfe18` and
 `sha256:5d37452a303f`. Plaza captures with fixed splits
 `sha256:70ce061372e0`, `sha256:1e7a37f46cb8` and `sha256:7f359d236056`.
+
+## Static-layer composition evidence
+
+M1 Pro, Metal, Release, 2026-10-10, local and non-authoritative. The
+Testbed "Level Design Test" scene with its 76 mover brushes as dynamic
+casters, headless editor at Epic, `VKR_RG_GPU_TIMING=1`, median of the
+last 40 frames: the four cascades took 2.32 to 2.83 ms per frame drawn
+whole and 0.17 to 0.28 ms composed; all passes fell from 5.61 to 3.27 ms
+in the lobby view, 5.67 to 3.35 ms in the cafeteria and 5.77 to 3.84 ms
+with a turning fan in view. `MTL_DEBUG_LAYER=1` over about 3,570 frames,
+Play included, reported nothing. `run_shadow_system_tests` (composition
+cases, first frame of the static image, a turning sun drawing whole, a
+discarded static layer redrawn) and `run_render_graph_barrier_tests`
+(static draw, copy and dynamic draw barriers on both graphs) pass. The
+Vulkan path compiles and its graph tests pass; it did not run.
 
 ## Retained-cascade culling evidence
 

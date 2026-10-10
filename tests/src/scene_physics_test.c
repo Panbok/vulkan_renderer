@@ -529,6 +529,50 @@ static void physics_test_generated_turn(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+/* An entity moves at runtime, and so casts as a moving object and stays out
+   of bakes, when it or an ancestor has an enabled kinematic or dynamic
+   body, or, for a brush, a mover: a dynamic body's child moves, a static
+   body's does not, and below a mover a brush moves while a plain entity does
+   not, since movers move only brushes. A body edit asks for the meshes'
+   mobility to be reclassified. */
+static void physics_test_moves(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 11, 16, NULL));
+  const char *error = NULL;
+  const VkrEntityId crate = physics_test_entity(&scene, vec3_new(0, 5, 0));
+  const VkrEntityId label = physics_test_entity(&scene, vec3_zero());
+  vkr_scene_set_parent(&scene, label, crate);
+  VkrScenePhysicsSnapshot config = vkr_scene_physics_default();
+  config.body.motion = VKR_PHYSICS_DYNAMIC;
+  scene.shadow_mobility_dirty = false_v;
+  assert(vkr_scene_physics_apply(&scene, crate, &config, &error));
+  assert(scene.shadow_mobility_dirty);
+  assert(vkr_scene_entity_moves(&scene, crate));
+  assert(vkr_scene_entity_moves(&scene, label));
+
+  const VkrEntityId ledge = physics_test_entity(&scene, vec3_new(5, 0, 0));
+  config.body.motion = VKR_PHYSICS_STATIC;
+  assert(vkr_scene_physics_apply(&scene, ledge, &config, &error));
+  assert(!vkr_scene_entity_moves(&scene, ledge));
+
+  const VkrEntityId door = physics_test_entity(&scene, vec3_new(-5, 0, 0));
+  SceneMover mover;
+  vkr_scene_mover_type.defaults(&mover);
+  mover.direction = vec3_new(0, 1, 0);
+  mover.distance = 2.0f;
+  assert(vkr_scene_set_typed(&scene, door, &vkr_scene_mover_type, &mover));
+  const VkrEntityId leaf = physics_test_entity(&scene, vec3_zero());
+  const VkrEntityId sign = physics_test_entity(&scene, vec3_zero());
+  vkr_scene_set_parent(&scene, leaf, door);
+  vkr_scene_set_parent(&scene, sign, door);
+  SceneBrushSettings brush;
+  vkr_scene_brush_type.defaults(&brush);
+  assert(vkr_scene_set_typed(&scene, leaf, &vkr_scene_brush_type, &brush));
+  assert(vkr_scene_entity_moves(&scene, leaf));
+  assert(!vkr_scene_entity_moves(&scene, sign));
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_scene_physics_tests(void) {
   printf("--- Starting Scene Physics Tests ---\n");
   physics_test_descriptors();
@@ -542,6 +586,7 @@ bool32_t run_scene_physics_tests(void) {
   physics_test_generated_kinematic(&allocator);
   physics_test_generated_turn(&allocator);
   physics_test_rebase(&allocator);
+  physics_test_moves(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 31, 16, NULL));
   VkrEntityId owner = physics_test_entity(&scene, vec3_new(0, 10, 0));

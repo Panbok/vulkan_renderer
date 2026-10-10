@@ -1116,11 +1116,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     return false_v;
   const uint32_t candidate_count = renderer->gpu_draw_count;
   const uint64_t instances_gpu = upload->gpu_draw_instances_gpu;
-  /* The camera, the directional cascades and the drawn local faces; tiled
-     frames draw no local transmission layers (ADR-087). */
+  /* The camera, the directional cascades, their dynamic-caster views and
+     the drawn local faces; tiled frames draw no local transmission layers
+     (ADR-087). */
   const uint32_t view_count =
-      1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_render_count;
+      vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame);
   if (candidate_count == 0u)
     return true_v;
   uint64_t root_gpu = 0u;
@@ -1225,10 +1225,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   VkrMetalPacketDrawRoot *draw_roots =
       (VkrMetalPacketDrawRoot *)(upload->root_cpu + draw_roots_offset);
   upload->root_cursor += draw_root_slots;
+  const uint32_t first_local_view =
+      vkr_render_graph_local_shadow_first_view(&renderer->prepared_frame);
   for (uint32_t view = 0u; view < view_count; ++view) {
     const bool8_t camera_view = view == 0u;
-    const uint32_t first_local_view =
-        1u + renderer->prepared_frame.shadow_cascade_count;
     const bool8_t local_view = view >= first_local_view;
     /* Local culling views follow render slots; each draws one view. */
     const uint32_t local_face =
@@ -1250,7 +1250,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
                   renderer->convert_vulkan_clip_y,
                   local_view ? packet->input.local_shadow->views[local_face]
                                    .light_view_projection
-                             : packet->input.shadow->cascades[view - 1u]
+                             : packet->input.shadow
+                                   ->cascades[vkr_render_graph_view_cascade(
+                                       &renderer->prepared_frame, view)]
                                    .light_view_projection);
     uint64_t frame_root_gpu = 0u;
     uint32_t view_frame_flags = 0u;
@@ -1287,13 +1289,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     return false_v;
   prepared->gpu_encode.group_count = encode_group_count;
   prepared->gpu_encode.candidate_count = candidate_count;
-  prepared->gpu_encode.idle_view_mask = 0u;
-  for (uint32_t cascade = 0u;
-       cascade < renderer->prepared_frame.shadow_cascade_count; ++cascade) {
-    if ((renderer->prepared_frame.shadow_cascade_render_mask &
-         (UINT32_C(1) << cascade)) == 0u)
-      prepared->gpu_encode.idle_view_mask |= UINT64_C(1) << (cascade + 1u);
-  }
+  prepared->gpu_encode.idle_view_mask =
+      vkr_render_graph_cascade_idle_view_mask(&renderer->prepared_frame);
   for (uint32_t group = 0u; group < encode_group_count; ++group) {
     const uint32_t first_view = group * encode_group_size;
     const uint32_t group_view_count =
@@ -2230,7 +2227,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
   VkrRgExecutorKind kind;
   if (!vkr_render_graph_executor_kind(pass, &kind))
     return false_v;
-  if (kind == VKR_RG_EXECUTOR_SHADOW) {
+  if (kind == VKR_RG_EXECUTOR_SHADOW ||
+      kind == VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC) {
+    /* A cascade draws whole or into its static layer with its own culling
+       view, and its dynamic casters over the copy with the dynamic one. */
     if (!packet->input.shadow)
       return true_v;
     const uint32_t cascade = pass->desc.repeat_index;
@@ -2238,8 +2238,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
       return true_v;
     if (!packet->input.world || renderer->gpu_draw_count == 0u)
       return true_v;
+    const uint32_t view = kind == VKR_RG_EXECUTOR_SHADOW
+                              ? 1u + cascade
+                              : vkr_render_graph_cascade_dynamic_view(
+                                    &renderer->prepared_frame, cascade);
     return vkr_metal_packet_prepare_gpu_shadow(
-        renderer, pass, packet, prepared, cascade + 1u,
+        renderer, pass, packet, prepared, view,
         packet->input.shadow->config_override, (uint32_t)target.width,
         (uint32_t)target.height, result);
   }
@@ -2266,8 +2270,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     if (packet->input.world && renderer->gpu_draw_count > 0u &&
         !vkr_metal_packet_prepare_gpu_shadow(
             renderer, pass, packet, prepared,
-            1u + renderer->prepared_frame.shadow_cascade_count + slot, NULL,
-            (uint32_t)target.width, (uint32_t)target.height, result))
+            vkr_render_graph_local_shadow_first_view(
+                &renderer->prepared_frame) +
+                slot,
+            NULL, (uint32_t)target.width, (uint32_t)target.height, result))
       return false_v;
     const Vec4 rect = packet->input.local_shadow->views[face].atlas_rect;
     const float32_t atlas = (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
@@ -2624,6 +2630,9 @@ typedef struct VkrMetalPacketFrameSubmission {
   VkrMetalPacketFrameUpload frame_upload;
   VkrMetalDependency capture_barrier;
   VkrMetalDependency shadow_capture_barrier;
+  /* The same after a copied static layer, the shadow map's last writer. */
+  VkrMetalDependency shadow_copy_capture_barrier;
+  bool8_t shadow_copy_last_writer;
   VkrMetalDependency ibl_bake_barrier;
   VkrMetalDependency batch_capture_barrier;
   VkrMetalPacketPreparedPass *prepared_passes;
@@ -2856,8 +2865,7 @@ vkr_internal void vkr_metal_packet_plan_frame_submission(
   submission->readback_layout = vkr_metal_packet_readback_layout(
       submission->deferred_diagnostics,
       renderer->prepared_frame.exposure_automatic,
-      1u + renderer->prepared_frame.shadow_cascade_count +
-          renderer->prepared_frame.local_shadow_render_count);
+      vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame));
 }
 
 /* Plans capture copies after the readback prefix and reserves their capture
@@ -2952,6 +2960,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
       .dst_stages = VKR_GPU_STAGE_TRANSFER,
       .visibility = VKR_GPU_VISIBILITY_DEVICE,
   };
+  const VkrGpuDependency shadow_copy_capture_dependency = {
+      .src_stages = VKR_GPU_STAGE_TRANSFER,
+      .dst_stages = VKR_GPU_STAGE_TRANSFER,
+      .visibility = VKR_GPU_VISIBILITY_DEVICE,
+  };
   /* IBL.Bake writes no graph resource; every later encoder may sample its
      prefilters and SH coefficients. */
   const VkrGpuDependency ibl_bake_dependency = {
@@ -2971,6 +2984,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
                                  &submission->capture_barrier) &&
       vkr_metal_dependency_lower(&shadow_capture_dependency,
                                  &submission->shadow_capture_barrier) &&
+      vkr_metal_dependency_lower(&shadow_copy_capture_dependency,
+                                 &submission->shadow_copy_capture_barrier) &&
       vkr_metal_dependency_lower(&ibl_bake_dependency,
                                  &submission->ibl_bake_barrier) &&
       vkr_metal_dependency_lower(&batch_capture_dependency,
@@ -3043,6 +3058,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
     prepared->preparation_cpu_ms =
         (CACurrentMediaTime() - preparation_cpu_begin) * 1000.0;
   }
+  if (passed)
+    vkr_metal_packet_mark_last_shadow_writer(
+        renderer, submission->prepared_passes, submission->prepared_count);
   submission->present =
       vkr_metal_packet_texture(renderer, renderer->graph->present_image);
   submission->shadow =
@@ -3153,9 +3171,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_graph_pass(
     vkr_metal_dependency_encode_producer(encoder, &submission->capture_barrier);
     out_result->dependency_count++;
   }
-  if (prepared->kind == VKR_RG_EXECUTOR_SHADOW &&
-      pass->desc.repeat_index + 1u ==
-          renderer->prepared_frame.shadow_cascade_count) {
+  if (prepared->last_shadow_writer) {
     vkr_metal_dependency_encode_producer(encoder,
                                          &submission->shadow_capture_barrier);
     out_result->dependency_count++;
@@ -3194,11 +3210,13 @@ vkr_internal bool8_t vkr_metal_packet_encode_compute_run(
   VkrMetalDependency wait = {0};
   VkrMetalDependency signal = {0};
   bool8_t ibl_baked = false_v;
+  bool8_t shadow_copied = false_v;
   for (uint64_t order = first; order < end; ++order) {
     const VkrMetalPacketPreparedPass *prepared =
         &submission->prepared_passes[order];
     if (prepared->source->culled)
       continue;
+    shadow_copied = shadow_copied || prepared->last_shadow_writer;
     for (uint32_t i = 0u; i < prepared->consumer_count; ++i)
       vkr_metal_packet_merge_dependency(&wait, &prepared->consumers[i]);
     for (uint32_t i = 0u; i < prepared->producer_count; ++i)
@@ -3277,6 +3295,12 @@ vkr_internal bool8_t vkr_metal_packet_encode_compute_run(
 
   if (signal.src_stages != 0u)
     vkr_metal_dependency_encode_producer(encoder, &signal);
+  if (shadow_copied) {
+    vkr_metal_dependency_encode_producer(
+        encoder, &submission->shadow_copy_capture_barrier);
+    submission->shadow_copy_last_writer = true_v;
+    out_result->dependency_count++;
+  }
   if (ibl_baked) {
     vkr_metal_dependency_encode_producer(encoder,
                                          &submission->ibl_bake_barrier);
@@ -3306,8 +3330,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_readback(
                                        &submission->capture_barrier);
   out_result->dependency_count++;
   if (packet->scene_rendering) {
-    vkr_metal_dependency_encode_consumer(capture_encoder,
-                                         &submission->shadow_capture_barrier);
+    vkr_metal_dependency_encode_consumer(
+        capture_encoder, submission->shadow_copy_last_writer
+                             ? &submission->shadow_copy_capture_barrier
+                             : &submission->shadow_capture_barrier);
     out_result->dependency_count++;
   }
   if (submission->capture_count > 0u || submission->deferred_diagnostics ||
@@ -3512,9 +3538,12 @@ vkr_internal void vkr_metal_packet_record_slot_readbacks(
       submission->readback_layout.exposure_size > 0u;
   command_slot->shadow_cascade_count =
       renderer->prepared_frame.shadow_cascade_count;
+  command_slot->shadow_cascade_dynamic_render_mask =
+      renderer->prepared_frame.shadow_cascade_dynamic_view_count > 0u
+          ? renderer->prepared_frame.shadow_cascade_dynamic_render_mask
+          : 0u;
   command_slot->gpu_draw_view_count =
-      1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_render_count;
+      vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame);
   if (submission->deferred_diagnostics) {
     command_slot->gpu_draw_diagnostics_readback =
         (const uint8_t *)submission->readback.cpu_address +
@@ -3573,6 +3602,7 @@ vkr_internal void vkr_metal_packet_read_synchronous_results(
         (const uint8_t *)submission->readback.cpu_address +
             submission->readback_layout.deferred_diagnostics,
         renderer->prepared_frame.shadow_cascade_count,
+        command_slot->shadow_cascade_dynamic_render_mask,
         command_slot->gpu_draw_view_count);
     out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
     log_info("Metal deferred validation: candidates=%u visible=%u buckets="

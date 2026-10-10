@@ -1090,6 +1090,97 @@ const VkrEntityId *vkr_scene_get_children(const VkrScene *scene,
   return slot->children;
 }
 
+/* Ancestors past this many find no mover or body above them. */
+#define SCENE_MOVES_DEPTH_MAX 64u
+
+bool8_t vkr_scene_entity_moves(const VkrScene *scene, VkrEntityId entity) {
+  if (!scene || !scene->world) {
+    return false_v;
+  }
+  /* A mover moves the brushes and blockout shapes below it, not their other
+     descendants; a body moves its entity and everything below it. */
+  const bool8_t brush =
+      vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) ||
+      vkr_scene_get_typed(scene, entity, &vkr_scene_blockout_type);
+  for (uint32_t depth = 0u; entity.u64 && depth < SCENE_MOVES_DEPTH_MAX;
+       ++depth) {
+    if (brush && vkr_scene_get_typed(scene, entity, &vkr_scene_mover_type)) {
+      return true_v;
+    }
+    /* Bodies are rare, so the full snapshot is read only where one is. */
+    VkrScenePhysicsSnapshot body;
+    if (vkr_entity_has_component_if_alive(scene->world, entity,
+                                          scene->comp_physics_body) &&
+        vkr_scene_physics_read(scene, entity, &body) && body.present &&
+        body.body.enabled && body.body.motion != VKR_PHYSICS_STATIC) {
+      return true_v;
+    }
+    const SceneTransform *transform = vkr_entity_get_component_if_alive(
+        scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return false_v;
+}
+
+/* Shapes (brushes, blockouts, generated meshes) cast as moving objects
+   exactly while their entity moves. A mesh renderer that comes to move
+   casts as a moving object from then on; one that stops keeps it until it
+   reloads, which only costs it the static shadow cache. */
+vkr_internal void scene_shadow_mobility_shapes(const VkrArchetype *arch,
+                                               VkrChunk *chunk, void *user) {
+  (void)arch;
+  VkrScene *scene = (VkrScene *)user;
+  const uint32_t count = vkr_entity_chunk_count(chunk);
+  const VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
+  const SceneShape *shapes =
+      (const SceneShape *)vkr_entity_chunk_column(chunk, scene->comp_shape);
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (shapes[i].mesh_index != VKR_INVALID_ID) {
+      (void)vkr_mesh_manager_set_shadow_mobility(
+          &scene->assets->mesh_manager, shapes[i].mesh_index,
+          vkr_scene_entity_moves(scene, entities[i])
+              ? VKR_SHADOW_CASTER_MOBILITY_DYNAMIC
+              : VKR_SHADOW_CASTER_MOBILITY_STATIC);
+    }
+  }
+}
+
+vkr_internal void scene_shadow_mobility_renderers(const VkrArchetype *arch,
+                                                  VkrChunk *chunk, void *user) {
+  (void)arch;
+  VkrScene *scene = (VkrScene *)user;
+  const uint32_t count = vkr_entity_chunk_count(chunk);
+  const VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
+  const SceneMeshRenderer *renderers =
+      (const SceneMeshRenderer *)vkr_entity_chunk_column(
+          chunk, scene->comp_mesh_renderer);
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (renderers[i].instance.id != 0u &&
+        vkr_scene_entity_moves(scene, entities[i])) {
+      (void)vkr_mesh_manager_instance_set_shadow_mobility(
+          &scene->assets->mesh_manager, renderers[i].instance,
+          VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
+    }
+  }
+}
+
+/* Reclassifies every mesh's shadow mobility after a physics body changed. */
+vkr_internal void scene_refresh_shadow_mobility(VkrScene *scene) {
+  if (!scene->shadow_mobility_dirty || !scene->assets) {
+    return;
+  }
+  scene->shadow_mobility_dirty = false_v;
+  VkrQuery query;
+  vkr_entity_query_build(scene->world, &scene->comp_shape, 1u, NULL, 0u,
+                         &query);
+  vkr_entity_query_each_chunk(scene->world, &query,
+                              scene_shadow_mobility_shapes, scene);
+  vkr_entity_query_build(scene->world, &scene->comp_mesh_renderer, 1u, NULL, 0u,
+                         &query);
+  vkr_entity_query_each_chunk(scene->world, &query,
+                              scene_shadow_mobility_renderers, scene);
+}
+
 vkr_internal bool8_t scene_child_index_ensure_built(VkrScene *scene) {
   if (!scene || !scene->queries_valid) {
     return false_v;
@@ -2120,6 +2211,7 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
 
   vkr_scene_update_transforms(scene);
   vkr_scene_brush_update(scene);
+  scene_refresh_shadow_mobility(scene);
   vkr_scene_material_override_update(scene);
   vkr_scene_terrain_update(scene);
   vkr_scene_population_update(scene);

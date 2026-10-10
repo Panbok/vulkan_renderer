@@ -1327,6 +1327,9 @@ typedef struct VkrScene {
   uint32_t render_dirty_count;
   uint32_t render_dirty_capacity;
   bool8_t render_full_sync_needed; // Set on scene load or dirty overflow
+  /** A physics body was added, changed or removed, so the shadow mobility
+      of the scene's meshes is reclassified (vkr_scene_entity_moves). */
+  bool8_t shadow_mobility_dirty;
   /** Editor Show filter (VKR_SCENE_SHOW_HIDE_*): geometry kinds the viewport
       neither draws nor picks, without editing the scene. Zero shows all. */
   uint32_t editor_hidden_kinds;
@@ -1825,6 +1828,14 @@ String8 vkr_scene_get_name(const VkrScene *scene, VkrEntityId entity);
 const VkrEntityId *vkr_scene_get_children(const VkrScene *scene,
                                           VkrEntityId parent,
                                           uint32_t *out_count);
+
+/**
+ * Whether `entity` moves at runtime: it or one of its first ancestors (64
+ * entities in all) carries an enabled kinematic or dynamic physics body, or,
+ * for a brush or blockout shape, a `mover`. Its meshes then cast as moving
+ * objects, and bakes leave it out (ADR-108).
+ */
+bool8_t vkr_scene_entity_moves(const VkrScene *scene, VkrEntityId entity);
 
 /**
  * @brief Add or update transform component.

@@ -60,6 +60,23 @@ vkr_internal void vkr_project_apply_wrapper(VkrProjectJob *job,
   Arena *arena = job->arena;
   int64_t fields = 0;
   (void)vkr_project_integer(vkr_bakery_json_get(edit, "fields"), &fields);
+  /* An edit's physics body, as `physics_body` {motion, enabled}: a moving one
+     keeps its entity and everything below it out of the bake (ADR-108). */
+  const VkrBakeryJson *physics = vkr_bakery_json_get(edit, "physics");
+  bool8_t present = false_v;
+  int64_t motion = 0;
+  if (physics && physics->type == VKR_BAKERY_JSON_OBJECT &&
+      vkr_bakery_json_get_bool(physics, "present", &present) && present &&
+      vkr_project_integer(vkr_bakery_json_get(physics, "motion"), &motion)) {
+    bool8_t enabled = true_v;
+    (void)vkr_bakery_json_get_bool(physics, "enabled", &enabled);
+    VkrBakeryJson *body = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, body, "motion",
+                        vkr_bakery_json_int(arena, motion));
+    vkr_bakery_json_set(arena, body, "enabled",
+                        vkr_bakery_json_bool(arena, enabled));
+    vkr_bakery_json_set(arena, entity, "physics_body", body);
+  }
   if (fields & 1) {
     VkrBakeryJson *transform = vkr_bakery_json_object(arena);
     vkr_bakery_json_set(arena, transform, "pos",

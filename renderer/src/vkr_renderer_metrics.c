@@ -713,6 +713,8 @@ vkr_internal bool8_t vkr_renderer_metrics_register_shadows(
     VKR_REGISTER_CASCADE(shadow_dynamic_candidates_tested,
                          "dynamic_candidates_tested");
     VKR_REGISTER_CASCADE(shadow_dynamic_forced, "dynamic_forced");
+    VKR_REGISTER_CASCADE(shadow_composited, "composited");
+    VKR_REGISTER_CASCADE(shadow_static_rendered, "static_rendered");
 #undef VKR_REGISTER_CASCADE
   }
   VKR_REGISTER_U64(shadow_sdsm_status, "draw.shadow.sdsm.status",
@@ -1789,6 +1791,10 @@ vkr_renderer_metrics_collect_shadows(VkrMetrics *metrics,
                               shadow->dynamic_candidates_tested[i]);
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_dynamic_forced[i],
                               shadow->dynamic_forced[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_composited[i],
+                              shadow->composited[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_static_rendered[i],
+                              shadow->static_rendered[i]);
   }
   VKR_SET_U64(shadow_sdsm_status, shadow->sdsm_status);
   VKR_SET_U64(shadow_sdsm_source_lag, shadow->sdsm_source_lag);
@@ -2243,6 +2249,8 @@ vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
       VKR_READ_U32(shadow->dynamic_candidates_tested[i],
                    ids->shadow_dynamic_candidates_tested[i]);
       VKR_READ_U32(shadow->dynamic_forced[i], ids->shadow_dynamic_forced[i]);
+      VKR_READ_U32(shadow->composited[i], ids->shadow_composited[i]);
+      VKR_READ_U32(shadow->static_rendered[i], ids->shadow_static_rendered[i]);
     }
     VKR_READ_U32(shadow->sdsm_status, ids->shadow_sdsm_status);
     VKR_READ_U32(shadow->sdsm_source_lag, ids->shadow_sdsm_source_lag);

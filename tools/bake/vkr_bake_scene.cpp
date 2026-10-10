@@ -65,6 +65,9 @@ struct EntityImport {
   std::unique_ptr<SceneBlockout> blockout;
   /* It carries a `mover`, which moves it and the brushes below it. */
   bool mover = false;
+  /* It carries an enabled kinematic or dynamic physics body, which moves it
+     and everything below it. */
+  bool moving_body = false;
   Vec3 position = {0.0f, 0.0f, 0.0f};
   VkrQuat rotation = vkr_quat_identity();
   Vec3 scale = {1.0f, 1.0f, 1.0f};
@@ -718,6 +721,36 @@ bool parse_mover(const VkrJsonReader *entity, EntityImport *out) {
   return true;
 }
 
+/* A `physics_body` block {motion, enabled} (motion 0 static, 1 kinematic,
+   2 dynamic, as VkrPhysicsMotion, or its name): only whether it moves
+   matters to the bake, which leaves its entity and descendants out. */
+bool parse_physics_body(const VkrJsonReader *entity, EntityImport *out) {
+  VkrJsonReader reader = {};
+  if (!find_block(entity, "physics_body", &reader) || parse_null(&reader)) {
+    return true;
+  }
+  VkrJsonReader object = {};
+  if (!vkr_json_enter_object(&reader, &object)) {
+    return false;
+  }
+  bool8_t enabled = true_v;
+  if (!read_optional_bool(&object, "enabled", &enabled)) {
+    return false;
+  }
+  float32_t motion = 0.0f;
+  std::string name;
+  if (read_string(&object, "motion", &name)) {
+    if (name != "static" && name != "kinematic" && name != "dynamic") {
+      return false;
+    }
+    motion = name == "static" ? 0.0f : 1.0f;
+  } else if (!read_optional_float(&object, "motion", &motion)) {
+    return false;
+  }
+  out->moving_body = enabled && motion != 0.0f;
+  return true;
+}
+
 /* The blockout type's enum names, as the scene writes them. */
 constexpr const char *k_blockout_shape_names[] = {"Stairs", "Corridor",
                                                   nullptr};
@@ -868,6 +901,7 @@ constexpr BlockParser k_block_parsers[] = {
     {"surface_theme", parse_surface_theme},
     {"blockout", parse_blockout},
     {"mover", parse_mover},
+    {"physics_body", parse_physics_body},
     {"transform", parse_transform},
     {"mesh", parse_mesh},
     {"shape", parse_shape},
@@ -1206,14 +1240,18 @@ bool compute_entity_worlds(const std::vector<EntityImport> &entities,
   return true;
 }
 
-/* Whether the entity or one of its first ancestors (k_max_mover_depth
-   entities in all) carries a mover, as the runtime's brush_mover_of finds
-   one. compute_entity_worlds has proven the parent chains acyclic and in
+/* Whether the entity moves at runtime, as vkr_scene_entity_moves finds: it
+   or one of its first ancestors (k_max_mover_depth entities in all) carries
+   a moving physics body or, for a brush or blockout shape, a mover.
+   compute_entity_worlds has proven the parent chains acyclic and in
    range. */
-bool moved_by_mover(const std::vector<EntityImport> &entities, uint32_t index) {
+bool moves_at_runtime(const std::vector<EntityImport> &entities,
+                      uint32_t index) {
+  const bool brush = entities[index].brush || entities[index].blockout;
   int32_t at = (int32_t)index;
   for (uint32_t depth = 0u; at >= 0 && depth < k_max_mover_depth; ++depth) {
-    if (entities[(size_t)at].mover) {
+    if ((brush && entities[(size_t)at].mover) ||
+        entities[(size_t)at].moving_body) {
       return true;
     }
     at = entities[(size_t)at].parent;
@@ -1919,7 +1957,12 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
                         ": its light's world position or direction is not "
                         "finite");
       }
-      if (!entity.skip_geometry && !entity.mesh_path.empty() &&
+      /* An entity that moves at runtime is out of every bake: it takes no
+         lightmap and neither blocks nor bounces baked light, since the bake
+         would hold it at its saved pose. Runtime lights and the
+         moving-caster shadows of baked lamps light and shadow it. */
+      const bool moves = moves_at_runtime(entities, i);
+      if (!entity.skip_geometry && !entity.mesh_path.empty() && !moves &&
           !append_mesh(scene, entity.mesh_path, entity, i, worlds[i],
                        &next_instance)) {
         return fail(VkrBakeSceneError::CookedMesh,
@@ -1929,18 +1972,13 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
                         "does not load");
       }
       if (entity.shape == ShapeKind::Unsupported ||
-          (entity.shape == ShapeKind::Cube &&
+          (entity.shape == ShapeKind::Cube && !moves &&
            !append_cube(scene, entity, worlds[i], next_instance++))) {
         return fail(VkrBakeSceneError::Unsupported,
                     describe_entity(entity, i) +
                         ": its cube shape's material does not load or its "
                         "world transform is singular");
       }
-      /* A brush or blockout shape a mover moves is out of every bake: it
-         takes no lightmap and neither blocks nor bounces baked light, since
-         the bake would hold it at its saved pose. Runtime lights light it. */
-      const bool moves =
-          (entity.brush || entity.blockout) && moved_by_mover(entities, i);
       AppendFailure failure;
       if (entity.brush && entity.brush_draws && !moves &&
           !append_brush(scene, entities, brush_faces[i], i, worlds[i],

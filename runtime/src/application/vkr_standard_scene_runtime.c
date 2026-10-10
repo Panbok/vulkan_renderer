@@ -1124,6 +1124,10 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
         shadow_config->far_cascade_evsm &&
         shadow_cascade_count > VKR_SHADOW_EVSM_FIRST_CASCADE;
     shadow_payload->cascade_render_mask = shadow_frame->cascade_render_mask;
+    shadow_payload->static_active = shadow_frame->static_active;
+    shadow_payload->static_render_mask = shadow_frame->static_render_mask;
+    shadow_payload->copy_mask = shadow_frame->copy_mask;
+    shadow_payload->dynamic_render_mask = shadow_frame->dynamic_render_mask;
     for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
       shadow_payload->cascades[i] = (VkrShadowCascadePacketData){
           .light_view_projection = shadow_frame->view_projection[i],
@@ -1854,6 +1858,9 @@ vkr_internal void vkr_standard_scene_runtime_finish_submit(
         shadow_frame->dynamic_candidates_tested[cascade];
     metrics->shadow.dynamic_forced[cascade] =
         shadow_frame->dynamic_forced[cascade];
+    metrics->shadow.composited[cascade] = shadow_frame->composited[cascade];
+    metrics->shadow.static_rendered[cascade] =
+        shadow_frame->static_rendered[cascade];
   }
   metrics->shadow.sdsm_status = (uint32_t)shadow_frame->sdsm_status;
   metrics->shadow.sdsm_source_lag = shadow_frame->sdsm_source_lag;

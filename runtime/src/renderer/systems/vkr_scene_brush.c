@@ -681,6 +681,24 @@ static VkrGeometryHandle brush_geometry_create(VkrScene *scene,
                                     &error);
 }
 
+/* A brush or shape that moves (vkr_scene_entity_moves: a mover or a moving
+   physics body) casts as a moving object: it is out of every bake
+   (ADR-088), so a baked lamp shadows it only through the moving-caster
+   shadows (ADR-104, ADR-108). Others are static casters. */
+static void brush_set_mobility(VkrScene *scene, VkrEntityId entity) {
+  const SceneShape *shape = vkr_entity_get_component_if_alive_const(
+      scene->world, entity, scene->comp_shape);
+  if (!shape || shape->mesh_index == VKR_INVALID_ID) {
+    return;
+  }
+  const VkrShadowCasterMobility mobility =
+      vkr_scene_entity_moves(scene, entity)
+          ? VKR_SHADOW_CASTER_MOBILITY_DYNAMIC
+          : VKR_SHADOW_CASTER_MOBILITY_STATIC;
+  (void)vkr_mesh_manager_set_shadow_mobility(&scene->assets->mesh_manager,
+                                             shape->mesh_index, mobility);
+}
+
 /* Builds the brush's mesh, one submesh per distinct face material. */
 static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
                                 BrushRecord *record, SceneBrushRole role,
@@ -824,6 +842,9 @@ static bool8_t brush_publish_mesh(VkrScene *scene, VkrSceneBrushes *state,
       ok = vkr_scene_attach_generated_mesh(scene, record->entity, submeshes,
                                            submesh_count, &scene_error);
     }
+    if (ok) {
+      brush_set_mobility(scene, record->entity);
+    }
     /* The mesh holds its own references now, or none after a failure. */
     for (uint32_t i = 0; i < submesh_count; ++i) {
       vkr_geometry_system_release(&assets->geometry_system,
@@ -889,6 +910,9 @@ static void brush_pending_attach(VkrScene *scene, VkrSceneBrushes *state) {
       vkr_scene_detach_generated_mesh(scene, entity);
       ok = vkr_scene_attach_generated_mesh(scene, entity, pending->submeshes,
                                            pending->submesh_count, &error);
+    }
+    if (ok) {
+      brush_set_mobility(scene, entity);
     }
     /* The mesh holds its own references now, or none after a failure. */
     brush_pending_release(scene, pending);

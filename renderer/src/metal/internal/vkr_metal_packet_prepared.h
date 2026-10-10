@@ -73,9 +73,11 @@ typedef struct VkrMetalPacketBufferCopy {
 
 /* Two candidate ranges, each with its candidate and instance rows, then the
    zeroed compaction state. */
-/** A region copy between two slices of one texture. */
+/** A region copy between slices of one texture or of two textures of the
+ * same format. */
 typedef struct VkrMetalPacketTextureCopy {
-  id<MTLTexture> texture;
+  id<MTLTexture> source;
+  id<MTLTexture> destination;
   NSUInteger source_slice;
   NSUInteger destination_slice;
   MTLOrigin source_origin;
@@ -98,6 +100,8 @@ typedef struct VkrMetalPacketPreparedPass {
   float64_t preparation_cpu_ms;
   bool8_t active;
   bool8_t last_present_writer;
+  /** The last pass this frame that writes the shadow map. */
+  bool8_t last_shadow_writer;
   VkrMetalDependency *consumers;
   VkrMetalDependency *producers;
   uint32_t consumer_count;

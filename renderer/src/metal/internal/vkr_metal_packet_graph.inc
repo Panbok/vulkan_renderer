@@ -297,6 +297,8 @@ vkr_internal bool8_t
 vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   switch (kind) {
   case VKR_RG_EXECUTOR_SHADOW:
+  case VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY:
+  case VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_COPY:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC:
@@ -1216,6 +1218,37 @@ void vkr_metal_packet_renderer_retained_editor_extent(
   }
 }
 
+/* The static cascade layers every frame in flight shares; one instance with
+   the shadow map's extent, format and layers, or nothing. */
+vkr_internal void
+vkr_metal_packet_retained_static_cascades(VkrMetalPacketRenderer *renderer,
+                                          const VkrRgImageDesc *shadow_map,
+                                          VkrRetainedShadowToken *out_token) {
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image ||
+        !vkr_string8_equals_cstr(&image->name, "shadow_cascade_static"))
+      continue;
+    const VkrMetalPacketImage *slot = &renderer->images[i];
+    if (!slot->live || slot->graph_generation == 0u ||
+        slot->graph_generation != image->generation ||
+        slot->instance_count != 1u || slot->desc.mip_levels != 1u ||
+        slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
+        slot->desc.type != VKR_TEXTURE_TYPE_2D ||
+        slot->desc.width != shadow_map->width ||
+        slot->desc.height != shadow_map->height ||
+        slot->desc.format != shadow_map->format ||
+        slot->desc.layers != shadow_map->layers || !slot->instances[0].live)
+      return;
+    out_token->static_resource_generation = slot->graph_generation;
+    for (uint32_t layer = 0u; layer < MIN(slot->desc.layers, 32u); ++layer) {
+      if (slot->instances[0].retained_states[layer].content_valid)
+        out_token->static_valid_layer_mask |= UINT32_C(1) << layer;
+    }
+    return;
+  }
+}
+
 void vkr_metal_packet_renderer_retained_shadow_token(
     VkrMetalPacketRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token) {
@@ -1245,6 +1278,7 @@ void vkr_metal_packet_renderer_retained_shadow_token(
       if (instance->retained_states[layer].content_valid)
         out_token->valid_layer_mask |= UINT32_C(1) << layer;
     }
+    vkr_metal_packet_retained_static_cascades(renderer, &slot->desc, out_token);
     return;
   }
 }
@@ -1656,7 +1690,8 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
 
 vkr_internal void vkr_metal_packet_decode_gpu_draw_diagnostics(
     VkrMetalPacketResult *result, const uint8_t *camera_and_shadow_readback,
-    uint32_t shadow_cascade_count, uint32_t gpu_draw_view_count) {
+    uint32_t shadow_cascade_count, uint32_t dynamic_render_mask,
+    uint32_t gpu_draw_view_count) {
   if (!result || !camera_and_shadow_readback)
     return;
   const VkrGpuDrawCompactionState *camera =
@@ -1676,6 +1711,18 @@ vkr_internal void vkr_metal_packet_decode_gpu_draw_diagnostics(
             sizeof(result->shadow_gpu_bucket_counts[cascade]));
     result->shadow_gpu_overflow_count[cascade] = shadow->overflow_count;
     result->shadow_draw_count += shadow->visible_count;
+    /* A composed cascade also draws its dynamic casters over the copy. */
+    if ((dynamic_render_mask & (UINT32_C(1) << cascade)) == 0u)
+      continue;
+    const VkrGpuDrawCompactionState *dynamic =
+        camera + 1u + shadow_cascade_count + cascade;
+    result->shadow_gpu_visible_count[cascade] += dynamic->visible_count;
+    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+         ++bucket)
+      result->shadow_gpu_bucket_counts[cascade][bucket] +=
+          dynamic->bucket_counts[bucket];
+    result->shadow_gpu_overflow_count[cascade] += dynamic->overflow_count;
+    result->shadow_draw_count += dynamic->visible_count;
   }
   // Camera and directional counters retain their existing per-view meaning;
   // the aggregate failure counters also cover every local view.
@@ -1983,7 +2030,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_local_shadow_copy(
   const float32_t atlas_size = (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
   const NSUInteger size = (NSUInteger)(source.z * atlas_size);
   prepared->transfer.texture_copy = (VkrMetalPacketTextureCopy){
-      .texture = atlas,
+      .source = atlas,
+      .destination = atlas,
       .source_slice = read->slice.base_layer,
       .destination_slice = write->slice.base_layer,
       .source_origin = MTLOriginMake((NSUInteger)(source.x * atlas_size),
@@ -1998,10 +2046,47 @@ vkr_internal bool8_t vkr_metal_packet_prepare_local_shadow_copy(
   return true_v;
 }
 
+/* Copies cascade `repeat_index`'s static layer, which every frame in flight
+   shares, into the same layer of this target image's shadow map. */
+vkr_internal bool8_t vkr_metal_packet_prepare_cascade_copy(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared)
+    API_AVAILABLE(macos(26.0)) {
+  const VkrShadowPassPayload *shadow = packet->input.shadow;
+  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  const uint32_t cascade = pass->desc.repeat_index;
+  if (!shadow || cascade >= shadow->cascade_count ||
+      (shadow->copy_mask & (UINT32_C(1) << cascade)) == 0u || !read || !write ||
+      !read->has_slice || !write->has_slice ||
+      read->image.id == write->image.id || read->slice.base_layer != cascade ||
+      write->slice.base_layer != cascade)
+    return false_v;
+  id<MTLTexture> source = vkr_metal_packet_texture(renderer, read->image);
+  id<MTLTexture> destination = vkr_metal_packet_texture(renderer, write->image);
+  if (!source || !destination || source.width != destination.width ||
+      source.height != destination.height ||
+      source.pixelFormat != destination.pixelFormat)
+    return false_v;
+  prepared->transfer.texture_copy = (VkrMetalPacketTextureCopy){
+      .source = source,
+      .destination = destination,
+      .source_slice = cascade,
+      .destination_slice = cascade,
+      .source_origin = MTLOriginMake(0u, 0u, 0u),
+      .destination_origin = MTLOriginMake(0u, 0u, 0u),
+      .size = MTLSizeMake(source.width, source.height, 1u),
+  };
+  prepared->transfer.has_texture_copy = true_v;
+  prepared->active = true_v;
+  return true_v;
+}
+
 /* Copies the frame's packed candidate rows and a zeroed compaction state
-   into the culling buffers, or a local face's static square into its
-   dynamic square; Cull.Upload and Shadow.Local.Copy are the only transfer
-   passes the executor check admits. */
+   into the culling buffers, a local face's static square into its dynamic
+   square, or a cascade's static layer into the shadow map; Cull.Upload,
+   Shadow.Local.Copy and Shadow.Cascade.Copy are the only transfer passes the
+   executor check admits. */
 vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -2010,6 +2095,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
   if (prepared->kind == VKR_RG_EXECUTOR_LOCAL_SHADOW_COPY)
     return vkr_metal_packet_prepare_local_shadow_copy(renderer, pass, packet,
                                                       prepared);
+  if (prepared->kind == VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY)
+    return vkr_metal_packet_prepare_cascade_copy(renderer, pass, packet,
+                                                 prepared);
   if (prepared->kind != VKR_RG_EXECUTOR_GPU_DRAW_UPLOAD)
     return false_v;
   VkrMetalPacketTransferPass *transfer = &prepared->transfer;
@@ -2030,10 +2118,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
   VkrMetalPacketGraphBufferInstance *state =
       state_use ? vkr_metal_packet_graph_buffer(renderer, state_use->buffer)
                 : NULL;
-  const uint64_t state_bytes =
-      (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count +
-                 renderer->prepared_frame.local_shadow_render_count) *
-      sizeof(VkrGpuDrawCompactionState);
+  const uint64_t state_bytes = (uint64_t)vkr_render_graph_gpu_draw_view_count(
+                                   &renderer->prepared_frame) *
+                               sizeof(VkrGpuDrawCompactionState);
   if (!candidates || !instances || !state ||
       state_bytes > state->resource.length)
     return false_v;
@@ -2092,12 +2179,12 @@ vkr_metal_packet_record_transfer(id<MTL4ComputeCommandEncoder> encoder,
   }
   if (transfer->has_texture_copy) {
     const VkrMetalPacketTextureCopy *copy = &transfer->texture_copy;
-    [encoder copyFromTexture:copy->texture
+    [encoder copyFromTexture:copy->source
                  sourceSlice:copy->source_slice
                  sourceLevel:0u
                 sourceOrigin:copy->source_origin
                   sourceSize:copy->size
-                   toTexture:copy->texture
+                   toTexture:copy->destination
             destinationSlice:copy->destination_slice
             destinationLevel:0u
            destinationOrigin:copy->destination_origin];
@@ -2173,4 +2260,30 @@ vkr_internal bool8_t vkr_metal_packet_is_last_present_writer(
       return false_v;
   }
   return true_v;
+}
+
+/* Marks the last pass this frame that writes the shadow map: a cascade drawn
+   whole, a static layer copied into it or a dynamic draw over that copy. The
+   readback of the shadow-map probe follows that writer. */
+vkr_internal void vkr_metal_packet_mark_last_shadow_writer(
+    const VkrMetalPacketRenderer *renderer,
+    VkrMetalPacketPreparedPass *prepared_passes, uint64_t prepared_count) {
+  const VkrRgImageHandle shadow_map =
+      vkr_rg_find_image(renderer->graph, string8_lit("shadow_map"));
+  for (uint64_t order = prepared_count; order > 0u; --order) {
+    VkrMetalPacketPreparedPass *prepared = &prepared_passes[order - 1u];
+    const VkrRgPass *pass = prepared->source;
+    if (pass->culled)
+      continue;
+    const bool8_t whole_cascade =
+        prepared->kind == VKR_RG_EXECUTOR_SHADOW &&
+        pass->desc.has_depth_attachment &&
+        pass->desc.depth_attachment.image.id == shadow_map.id;
+    if (whole_cascade ||
+        prepared->kind == VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY ||
+        prepared->kind == VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC) {
+      prepared->last_shadow_writer = true_v;
+      return;
+    }
+  }
 }

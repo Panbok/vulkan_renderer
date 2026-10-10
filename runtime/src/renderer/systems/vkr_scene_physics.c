@@ -1999,6 +1999,8 @@ void vkr_scene_physics_commit(VkrScenePhysicsPrepared *prepared) {
   physics->editing = false_v;
   scene->hierarchy_dirty = true_v;
   scene->render_full_sync_needed = true_v;
+  /* A body that moves its entity makes its meshes moving casters. */
+  scene->shadow_mobility_dirty = true_v;
   scene->structure_revision++;
   if (!physics->prepared) {
     physics_publish_joint_graph(scene);

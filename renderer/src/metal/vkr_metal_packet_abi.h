@@ -441,9 +441,10 @@ enum {
 };
 
 enum {
-  /* Camera, directional cascades, then the local render slots. */
+  /* Camera, directional cascades, their dynamic-caster views, then the
+     local render slots. */
   VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX =
-      1u + VKR_SHADOW_CASCADE_COUNT_MAX +
+      1u + 2u * VKR_SHADOW_CASCADE_COUNT_MAX +
       VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
 };
 

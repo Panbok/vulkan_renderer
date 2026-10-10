@@ -2353,8 +2353,7 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_sources(
     return false_v;
   if (!vkr_metal_packet_prepare_gpu_draw_icbs(
           renderer, plan->source_gpu_draw_count,
-          1u + renderer->prepared_frame.shadow_cascade_count +
-              renderer->prepared_frame.local_shadow_render_count,
+          vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame),
           out_error))
     return false_v;
   const uint64_t direct_run_count =
@@ -2397,8 +2396,7 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
   if (plan->direct_draw_count > 0u)
     plan->root_count += direct_pass_count;
   const uint32_t frame_root_gpu_draw_view_count =
-      1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_render_count;
+      vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame);
   {
     const uint32_t gpu_draw_icb_group_count =
         (frame_root_gpu_draw_view_count +
@@ -2417,8 +2415,7 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
                         renderer->prepared_frame.hzb_reduce_pass_count +
                         gpu_draw_icb_group_count + custom_cells;
   }
-  plan->root_count += renderer->prepared_frame.shadow_cascade_count +
-                      renderer->prepared_frame.local_shadow_render_count;
+  plan->root_count += frame_root_gpu_draw_view_count - 1u;
   if (packet->input.picking && packet->input.picking->pending)
     plan->root_count += 1u;
   plan->root_count += plan->ui_batch_count;
@@ -2570,8 +2567,7 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
   plan->sky_offset = vkr_metal_packet_align_up(
       plan->fog_offset + sizeof(VkrFogGpuParams), AlignOf(VkrMetalPacketSky));
   plan->gpu_draw_view_count =
-      1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_render_count;
+      vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame);
   plan->gpu_draw_icb_group_count =
       plan->gpu_draw_view_count > 0u
           ? (plan->gpu_draw_view_count +
@@ -3278,22 +3274,25 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
         (VkrGpuLodView *)(cpu + plan->gpu_draw_lod_views_offset),
         plan->gpu_draw_view_count);
     upload->gpu_draw_lod_views_gpu = gpu + plan->gpu_draw_lod_views_offset;
-    for (uint32_t cascade = 0u;
-         cascade < renderer->prepared_frame.shadow_cascade_count; ++cascade) {
+    /* The cascade views, then each cascade's dynamic-caster view. */
+    const uint32_t first_local_view =
+        vkr_render_graph_local_shadow_first_view(&renderer->prepared_frame);
+    const uint64_t idle_views =
+        vkr_render_graph_cascade_idle_view_mask(&renderer->prepared_frame);
+    for (uint32_t view = 1u; view < first_local_view; ++view) {
+      const uint32_t cascade =
+          vkr_render_graph_view_cascade(&renderer->prepared_frame, view);
       const VkrFrustum shadow = vkr_frustum_from_matrix(
           packet->input.shadow->cascades[cascade].light_view_projection);
       vkr_metal_packet_pack_gpu_draw_view(
-          &views[cascade + 1u], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
+          &views[view], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
           false_v, renderer->frustum_enabled);
-      /* A retained cascade draws nothing this frame: its view still counts
-         casters for the cascade metrics, but encodes no commands. */
-      if ((renderer->prepared_frame.shadow_cascade_render_mask &
-           (UINT32_C(1) << cascade)) == 0u)
-        views[cascade + 1u].encode_idle = 1u;
+      /* A view whose pass does not run this frame still counts casters for
+         the cascade metrics, but encodes no commands. */
+      if ((idle_views & (UINT64_C(1) << view)) != 0u)
+        views[view].encode_idle = 1u;
     }
     /* Only drawn faces have culling views; reused faces have none. */
-    const uint32_t first_local_view =
-        1u + renderer->prepared_frame.shadow_cascade_count;
     const uint32_t render_count =
         renderer->prepared_frame.local_shadow_render_count;
     for (uint32_t slot = 0u; slot < render_count; ++slot) {

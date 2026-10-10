@@ -146,6 +146,10 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     `Shadow.LocalMask` baked-lamp variants do (ADR-104), through the tiled
     tent instead of the Poisson disk. Native evidence: one Metal Release
     capture pair of the Level Design Test scene; no Metal validation run.
+  - GPU culling applies the static/dynamic caster filter to every view on
+    both backends (`deferred.slang` before applied it to local views only),
+    so the cascades' dynamic-caster views of ADR-041 take only dynamic
+    casters. Native evidence: Metal only; the Vulkan change compiles.
   - The tiled class draws no FXAA; its alpha-tested surfaces use alpha to
     coverage and its opaque pass a tone-mapped tile resolve
     (`vkr_metal_tiled_resolve_tile`), a class difference the owner accepted

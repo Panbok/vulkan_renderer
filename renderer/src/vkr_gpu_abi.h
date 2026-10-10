@@ -219,10 +219,10 @@ _Static_assert(sizeof(VkrGpuGeometryLodRow) == 128,
 #define VKR_GPU_LOD_VIEW_CONSTANT 0x1u
 /* A view morphs terrain grids toward their next level (the camera). */
 #define VKR_GPU_LOD_VIEW_MORPH 0x2u
-/* A local-shadow view draws only the static casters, the candidates below
-   the culling root's static count (a static square), or only the dynamic
-   ones (a dynamic square over a copy of its static square). Without either
-   bit it draws every caster. */
+/* A shadow view draws only the static casters, the candidates below the
+   culling root's static count (a static square or cascade layer), or only
+   the dynamic ones (a dynamic square or composed cascade over a copy of the
+   static one). Without either bit it draws every caster. */
 #define VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY 0x4u
 #define VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY 0x8u
 /* A level begins morphing toward the next at this share of the distance at
