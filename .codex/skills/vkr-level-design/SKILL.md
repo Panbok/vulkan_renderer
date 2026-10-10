@@ -154,7 +154,14 @@ sets the order of work and the checks that prove a level.
 - Lettering is an entity with a `text` component (`content`, `size`,
   `color`, `align`) and `rotation` [0, yaw, 0]: yaw 0 faces +z, 180 faces
   -z, 90 faces +x and -90 faces -x. Place it 1 to 2 cm in front of its
-  plate.
+  plate. Its position is the corner of a fixed 1 x 0.25 m box, whatever its
+  `size`, read along local +x, right = (cos yaw, 0, -sin yaw): centred text
+  goes at its centre minus 0.5 right and 0.125 up, left-aligned text at the
+  line's start minus 0.125 up. Check every new sign in a capture: a pilaster
+  or a crane cable in front of it cuts the words.
+- `brush.cylinder` rises `height` from `center`, the centre of its base:
+  a drum centred at floor + half its height floats by that half, and a
+  dynamic one drops when Play starts.
 - Turned pieces: give `brush.box` a `rotation` about one axis at a time.
   Yaw -θ points a box's local +x along ground angle θ, measured from +x
   toward +z. Size ring segments on the inner radius so neighbours never
@@ -162,9 +169,51 @@ sets the order of work and the checks that prove a level.
   an arm and its pylon, or a strut and its boom, so they share no plane.
 - Shells: run the floor and ceiling between the walls, or the walls between
   the floor and ceiling, but never both to the same outer face.
+- Physics props: agent operations cannot add a body, so drive Cmd:
+  `select <group>`, `component.add physics_body`, `physics.motion dynamic`
+  (or `kinematic`) and `sel.physics_body.mass = <kg>`. Build the prop's
+  brushes first, group them under an empty entity at their centre and make
+  them `visual` children; the body fits a box `Collider` child. Agents
+  cannot delete a body afterwards. The player pushes with 100 N, so keep
+  loose props light: a crate about 14 kg per cubic metre (at least 6), a
+  chair 7, a drum 15. Kinematic motion is a mover: `loop` for a crane or a
+  gantry, `spin` for a beacon, turntable or fan; a mover's brushes form one
+  body of at most 32 solid brushes (rails and posts beyond that go
+  `visual`).
 - New lamps light at runtime with shadows until the next bake. A detail
   pass that adds lamps can slow every frame several times over, so bake
   before you judge the look or the frame time.
+
+## Terrain and scenery
+
+- Generate a landscape as data by script, not brush by brush: heights as a
+  16-bit grayscale PNG for `terrain.stamp` `mode` set (`center` y the
+  stored minimum, `height_scale` the range) and layer weights as an RGBA PNG
+  for `mode` paint (red to alpha weigh layers 1 to 4, which are `layer0` to
+  `layer3`). Give `image` an absolute path; a relative one resolves against
+  the scene's asset root. One pixel per sample (a 2,048 m terrain at 2 m
+  takes 1,025 pixels) stamps exactly.
+- Mountains read as mountains after erosion: run a droplet erosion over a
+  ridged noise, then carve valleys and level constraints again, because
+  erosion fills valley floors with sediment. Paint by slope, height above
+  the valley floor, facing and settled sediment: grass low, rock where steep,
+  scree on talus and high ground, snow above a line lower on north faces.
+- Terrain UVs project straight down, so faces over about 65 degrees stretch
+  their texture: keep visible walls under it, and hide sheer cuts behind
+  concrete. A portal or window in a cliff is a concrete block set into the
+  slope with a `terrain.hole` on grid lines behind it; the block covers the
+  hole's edges and the cut below the opening.
+- The far edge of a terrain shows as a void: surround the playable terrain
+  with a coarse backdrop terrain (16 m spacing, the same generator), sunk
+  under the playable one inside it and equal to it along its border.
+  `view.camera` `far` sets how far captures see.
+- Scatter cooked glTF props: a cooked OBJ has no mesh nodes, so a scatter of
+  one places nothing. A scene holds 4,096 copies across its scatters; paint
+  areas with centres on the ground near where the view needs them most.
+- Light the mood with the hour: a low afternoon sun (World `time_of_day`
+  `hour`, tried live with `lighting.time`) shades valley floors and lights
+  the peaks; noon flattens a valley. The World's hour applies to every
+  scene of the project, so name the change to the designer.
 
 ## Lighting
 
@@ -175,6 +224,9 @@ sets the order of work and the checks that prove a level.
   do not leak through walls; brushes under a mover are not baked.
 - Brushes added after a bake have no lightmap and draw unlit until the next
   one: rebake after geometry edits before judging how a space looks.
+- Bakes leave terrain out; every brush and mesh widens the diffuse volume's
+  bounds, so a far outpost or a tall pier grows the volume and can pass its
+  brick budget (the bake then warns and drops the volume).
 - An indoor level overrides the World's sky before its bake: scene objects
   with `atmosphere`, `clouds` and `fog` disabled and a disabled
   `directional_light`; the World's fog washes out a deep level.
@@ -216,7 +268,8 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    `hidden` (collision between the camera and the point); judge look and
    scale from the picture, not positions. In the designer's windowed
    editor a capture waits until they stop working; capture-heavy work
-   belongs in a headless editor.
+   belongs in a headless editor. Cmd `grid off` before judging scenery;
+   a headless editor starts with the grid on.
 
 6. Walk the routes with the player (`vkr-editor-cmd`, Drive the player):
    steer toward points from `query.reachable` paths, or your own where it
@@ -258,6 +311,10 @@ Put the checks in the same `level_run.py` plan as the writes, each with
      from the vehicle while it rests before and after the ride; a change
      beyond 5 cm means the player slid on its deck.
    - For a drop, aim 0.6 m past the edge, or the capsule stays on it.
+   - A walk that moves the Player Start puts it back afterwards; read its
+     position first. Start the player clear of stairs and props.
+   - A ridden vehicle needs its doors on the platform side at both ends:
+     walk on at one stop and off at the other before calling it done.
 
 Reads wait for rebuilds; repeat a read that answers `settled` false. Only
 collision counts in checks: Bistro's own meshes have none, so checks see
@@ -323,8 +380,9 @@ Save only when the task keeps the level. Run Cmd `scene.save`, then confirm
 `editor.status` answers `scene.unsaved` false before your last client
 disconnects: a headless editor quits once its `--exec` script has ended and
 no client is connected, discarding unsaved edits. A scene file holds at most
-65,536 created objects (a box brush is 7) and a save over that is refused;
-build a larger level in world partition cells.
+65,536 created objects (a box brush is 7) and 64 MiB (about 450 bytes an
+object), and a save over either is refused; build a larger level in world
+partition cells.
 
 ## Done when
 
