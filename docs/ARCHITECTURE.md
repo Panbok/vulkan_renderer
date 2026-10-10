@@ -47,6 +47,13 @@ scene runtime. It exposes C value/handle operations and owns no renderer state;
 [ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) records its pinned
 dependency and simulation boundary.
 
+`vkr_net` is the network transport, its binary data format and sessions; it
+depends only on the foundation (which owns UDP sockets) and the vendored
+libsodium (`vkr_sodium`), so servers and tools link it without the renderer.
+`vkr_depot_lib` and the `vkr_depot` command serve and sync the asset depot
+over it, through Bakery's file-system helpers (`vkr_bakery_os`)
+([ADR-105](adr/105-network-transport-and-asset-depot.md)).
+
 `assets/` contains asset data only. Shared reader code lives in
 `runtime/src/assets/`, offline producers in `tools/assets/`, and renderer code
 directly in `renderer/src/`.
@@ -173,6 +180,8 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | World partition | Cell assignment, the cell table and load plans; cell documents and the unload rules; per-frame streaming, Play holds, proxies and the origin rebase; the World Partition window and `partition.*` operations; `bake proxies` | `runtime/src/renderer/systems/vkr_scene_partition.c`, `runtime/src/renderer/systems/vkr_scene_edit.c`, `runtime/src/vkr_sample_runtime.c`, `editor/src/editor_partition.c`, `tools/bakery/vkr_bakery_bake.c` |
 | Entity IO | Publication of connections, the session's sensor drain, trigger, relay, timer, counter and mover state, delivery order, limits and the `[io]` trace; the editor's Outputs, Inputs and Route sections and Scene lines | `runtime/src/script/vkr_io_router.c`, `editor/src/editor_io.c` |
 | Level checks | Walkable-floor sampling against the player capsule, `level.lint`, reachability, face picking and the Level checks window | `editor/src/editor_level.c` |
+| Network transport | UDP sockets, the sans-I/O core (handshake, packets, channels, recovery, congestion control), the UDP host, the simulator, the bit stream, the wire codec and sessions ([ADR-105](adr/105-network-transport-and-asset-depot.md)) | `lib/src/platform/vkr_udp_socket.h`, `net/src/` |
+| Asset depot | Depot objects, the content-addressed store, FastCDC chunking, working copies, the depot service, server, client and command ([ADR-105](adr/105-network-transport-and-asset-depot.md)) | `tools/depot/` |
 | Surface tags | Brush faces' surface tags and marks, their fixed greybox looks per face orientation, the greybox view and the migration of retired dev materials; surface themes that bind tags to materials per container over the World's, and faces sized by a material's `world_size` ([ADR-094](adr/094-surface-themes-and-art-pass.md)) | `runtime/src/level/vkr_surface.c`, `runtime/src/renderer/systems/vkr_scene_brush.c` |
 | Material graphs | `.mtg` graphs, Standard lowering to `.mt` definitions, layered Standard materials blended by vertex colour, mask texture, slope or height ([ADR-095](adr/095-layered-standard-materials.md)), graph instances expanded by the material loader and the lightmap baker; the editor's material documents, their journal, the node canvas, the Material panel and `material.*` operations ([ADR-093](adr/093-material-graphs-and-art-workbench.md)); Custom graphs generated to MSL, the project library `vkr_bakery materials` compiles, per-graph tiled pipelines and GPU buckets with a Standard fallback on Metal ([ADR-096](adr/096-custom-material-graphs.md)) | `runtime/src/assets/vkr_material_graph.c`, `runtime/src/assets/vkr_material_codegen.c`, `runtime/src/renderer/resources/loaders/material_loader.c`, `renderer/src/metal/internal/vkr_metal_packet_custom.inc`, `tools/bakery/vkr_bakery_materials.c`, `editor/src/editor_material.c`, `editor/src/editor_graph.c` |
 | Look volumes | `look_volume` components gathered at world resolution and blended at the camera each frame into the post-process globals, height fog, sky light and the metering range ([ADR-097](adr/097-look-volumes.md)) | `runtime/src/renderer/systems/vkr_scene_look.c`, `runtime/src/application/vkr_standard_scene_runtime.c` |

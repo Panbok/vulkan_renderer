@@ -237,3 +237,17 @@ Object model terms ([ADR-076](adr/076-project-object-model.md)):
 | Content folder / tag | Virtual folder path or comma-separated label over an item ID in `content.labels.json`; files never move. System folders (Objects, Editor, Scene assets, Presets) are fixed. | [project store](../editor/src/editor_project_store.h) |
 | Outliner / Details | The World's entity tree with loaded scenes nested under it / the descriptor-generated property editor below it. | [scene panels](../editor/src/editor_scene_panels.c), [Details](../editor/src/editor_details.h) |
 | Preferences | Machine-local graphics gates edited through descriptors; never project content. | [vkr_graphics_settings.h](../runtime/src/vkr_graphics_settings.h) |
+
+## Network
+
+| Term | Meaning in VKR | Owner |
+|---|---|---|
+| Transport core | The sans-I/O state machine of all connections: datagrams and a time in, datagrams and a deadline out. | [vkr_net_core.h](../net/src/vkr_net_core.h) |
+| Connection ID | The 32-bit ID a peer puts in every packet to this side: shard, random bits and slot. | [vkr_net_core.h](../net/src/vkr_net_core.h) |
+| Channel / delivery class | One of up to 64 message streams of a connection / its guarantee: unreliable, sequenced, reliable ordered, reliable unordered or deadline. | [vkr_net_core.h](../net/src/vkr_net_core.h) |
+| Service | A versioned protocol (depot, collaboration, world) that opens its channels on a connection through the session. | [vkr_net_session.h](../net/src/vkr_net_session.h) |
+| Schema / schema hash | C descriptor tables of a service's binary messages / 64 bits of the SHA-256 of their wire layout, compared when a service opens. | [vkr_wire.h](../net/src/vkr_wire.h) |
+| Depot | A versioned, content-addressed asset store served over the network, with branches, commits and path locks. | [ADR-105](adr/105-network-transport-and-asset-depot.md) |
+| Chunk / blob / tree / commit | Depot objects: a FastCDC piece of a file / a file's chunk list / a directory listing / a snapshot with parents, author and message, each named by the SHA-256 of its bytes. | [vkr_depot_object.h](../tools/depot/vkr_depot_object.h) |
+| Working copy | A directory synced with a depot branch, with `.vkrdepot/` holding its state, index and local store. | [vkr_depot_workspace.h](../tools/depot/vkr_depot_workspace.h) |
+
