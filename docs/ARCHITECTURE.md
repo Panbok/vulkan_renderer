@@ -1448,6 +1448,15 @@ These are limits of current code or retained acceptance, not scheduled promises:
   backing capacity stays fixed, and final teardown releases every range without
   resource warnings. Material slot reuse preserves live materials after reload.
   Native evidence remains separate from allocator tests.
+- One geometry capacity, `VKR_GEOMETRY_CAPACITY` (32,768 since 2026-10-11,
+  from 16,384), sizes the geometry system's ID space, Metal's mesh table and
+  Vulkan's publication records. Each brush material group and each terrain
+  tile is a geometry, so a 45,000-entity level with two terrains passed 16,384
+  geometries while its mesh and instance counts stayed far lower, and brushes
+  past the bound built no mesh. The raise grows Metal's capacity-sized
+  geometry-row upload span by 640 KiB (it still writes only reachable rows) and
+  Vulkan's publication records by about 4 MiB. It has no matched Bistro timing
+  and no native Vulkan check.
 - Interactive editor runs have produced two macOS AGX firmware data aborts with
   the same fault signature. The second occurred with Scene rendering stopped
   and Metal API/shader validation disabled; the editor stack was waiting for

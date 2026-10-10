@@ -20,6 +20,11 @@ _Static_assert(sizeof(VkrTextVertex) == 32u,
 /** Fixed P3 candidate/visible capacity; growth publishes a later generation. */
 #define VKR_GPU_DRAW_CANDIDATE_CAPACITY 262144u
 #define VKR_TEMPORAL_TRANSFORM_CAPACITY 32768u
+/** Geometry IDs the geometry system hands out. Metal's mesh table and
+ * Vulkan's publication records are indexed by them, so all three take this.
+ * Every brush material group is a geometry, so a large level reaches it
+ * before its mesh or instance counts. */
+#define VKR_GEOMETRY_CAPACITY 32768u
 /** Bounded per-view deformation capacity. Overflow rejects the packet. */
 #define VKR_SKINNING_BINDING_CAPACITY 64u
 #define VKR_SKINNING_JOINT_CAPACITY 65536u

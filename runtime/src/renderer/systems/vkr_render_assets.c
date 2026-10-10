@@ -53,7 +53,7 @@ bool8_t vkr_render_assets_initialize(
 
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   VkrGeometrySystemConfig geometry_config = {
-      .max_geometries = 16384,
+      .max_geometries = VKR_GEOMETRY_CAPACITY,
       .asset_publisher = assets->asset_publisher,
   };
   if (!vkr_geometry_system_init(&assets->geometry_system, &geometry_config,

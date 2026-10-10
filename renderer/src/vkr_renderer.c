@@ -594,7 +594,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .max_images = 128,
       .max_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
       .max_material_rows = 8192,
-      .max_meshes = 16384,
+      .max_meshes = VKR_GEOMETRY_CAPACITY,
       .max_textures = 16384,
       .max_draws = 262144,
       .max_instances = 262144,
@@ -646,10 +646,10 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .storage_image_capacity = 1024u,
       .sampler_capacity = 2048u,
       // Publication records are indexed directly by logical handle id, so these
-      // two must cover the geometry and texture systems' whole ID spaces. They
-      // are configured below at max_geometries and max_texture_count; keep the
-      // three in step. Neither is a descriptor-heap bound.
-      .geometry_capacity = 16384u,
+      // two must cover the geometry and texture systems' whole ID spaces: the
+      // geometry system's VKR_GEOMETRY_CAPACITY and max_texture_count. Neither
+      // is a descriptor-heap bound.
+      .geometry_capacity = VKR_GEOMETRY_CAPACITY,
       .texture_capacity = 16384u,
       .material_record_capacity = 8192u,
       .material_slot_capacity = 16385u,
