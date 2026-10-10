@@ -262,7 +262,7 @@ bool8_t vkr_project_remap_overlay(VkrProjectJob *job, const char *path,
                                   const char *source_root, bool8_t managed) {
   Arena *arena = job->arena;
   VkrBakeryJson *overlay =
-      vkr_project_load_json(job, path, VKR_PROJECT_MAX_JSON_BYTES);
+      vkr_project_load_json(job, path, VKR_PROJECT_MAX_OVERLAY_BYTES);
   VKR_PROJECT_TRY(overlay);
   VKR_PROJECT_TRY(vkr_project_checked_overlay(job, overlay));
   VKR_PROJECT_TRY(vkr_project_remap_overlay_indices(

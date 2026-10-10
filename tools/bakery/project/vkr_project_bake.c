@@ -707,7 +707,7 @@ vkr_internal bool8_t vkr_project_append_world(VkrProjectJob *job,
   *out_world_end = first + world_count;
   if (vkr_bakery_is_file(overlay_path)) {
     VkrBakeryJson *overlay =
-        vkr_project_load_json(job, overlay_path, VKR_PROJECT_MAX_JSON_BYTES);
+        vkr_project_load_json(job, overlay_path, VKR_PROJECT_MAX_OVERLAY_BYTES);
     VKR_PROJECT_TRY(overlay && vkr_project_checked_overlay(job, overlay));
     VKR_PROJECT_TRY(
         vkr_project_append_created(job, overlay, entities, first, world_count));
@@ -833,7 +833,7 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
     return NULL;
   }
   VkrBakeryJson *journal =
-      vkr_project_load_json(job, overlay, VKR_PROJECT_MAX_JSON_BYTES);
+      vkr_project_load_json(job, overlay, VKR_PROJECT_MAX_OVERLAY_BYTES);
   if (!journal || !vkr_project_checked_overlay(job, journal)) {
     return NULL;
   }

@@ -20,6 +20,11 @@
 /* Created objects one overlay or cell document holds. Load rejects a larger
    document, so save refuses to write one. */
 #define VKR_SCENE_EDIT_CREATED_MAX 65536u
+/* Bytes of an overlay or cell document a load reads, room for
+   VKR_SCENE_EDIT_CREATED_MAX objects of a brush face's size (about 450
+   bytes each); save refuses to write a larger one, and the project jobs read
+   overlays up to it (VKR_PROJECT_MAX_OVERLAY_BYTES). */
+#define VKR_SCENE_EDIT_OVERLAY_BYTES MB(64)
 
 typedef enum VkrSceneEditAction {
   VKR_SCENE_EDIT_NONE,

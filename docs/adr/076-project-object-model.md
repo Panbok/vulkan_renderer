@@ -147,7 +147,13 @@ components' own bytes, where a record with eight 1 KiB component slots took
 9.1 KiB: a level of 17,379 created objects grew that array to 32,768
 records, 306 MB. Parent links then find created ids in a copy sorted once:
 a scan per link held the Debug scene edit suite, which loads a 65,536-object
-document, at 19 s, and the sorted copy brought it to 2.6 s. New objects come from built-in **object
+document, at 19 s, and the sorted copy brought it to 2.6 s. The overlay's
+bytes share one bound, `VKR_SCENE_EDIT_OVERLAY_BYTES` (64 MiB): load and the
+project jobs read up to it, and save refuses to write past it and keeps the
+last overlay. Load and the jobs had stopped at 16 MiB while save wrote any
+size, so a level of about 37,600 created objects (a brush face's record is
+about 450 bytes) saved a 16.9 MB overlay and then would not open
+(2026-10-11). New objects come from built-in **object
 kinds** (empty, four light kinds, one per live world type and the Player Start),
 grouped under headings in menus; Cmd `create` also accepts each registered
 script component type. A new object lands by the Scene's Snapping settings

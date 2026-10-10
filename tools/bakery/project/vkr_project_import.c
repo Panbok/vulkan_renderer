@@ -2908,8 +2908,8 @@ VkrBakeryJson *vkr_project_import_managed_scene(VkrProjectJob *job,
       return NULL;
     }
     if (vkr_bakery_is_file(overlay_path)) {
-      VkrBakeryJson *overlay =
-          vkr_project_load_json(job, overlay_path, VKR_PROJECT_MAX_JSON_BYTES);
+      VkrBakeryJson *overlay = vkr_project_load_json(
+          job, overlay_path, VKR_PROJECT_MAX_OVERLAY_BYTES);
       if (!overlay) {
         return NULL;
       }

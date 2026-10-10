@@ -533,7 +533,7 @@ vkr_internal bool8_t vkr_project_lower_overlay(VkrProjectJob *job,
           job, "Selected authored override journal is unavailable");
     }
     VkrBakeryJson *journal =
-        vkr_project_load_json(job, edit_path, VKR_PROJECT_MAX_JSON_BYTES);
+        vkr_project_load_json(job, edit_path, VKR_PROJECT_MAX_OVERLAY_BYTES);
     VKR_PROJECT_TRY(journal);
     VKR_PROJECT_TRY(vkr_project_checked_overlay(job, journal));
     VKR_PROJECT_TRY(
@@ -546,7 +546,7 @@ vkr_internal bool8_t vkr_project_lower_overlay(VkrProjectJob *job,
     VkrBakeryJson *selected = NULL;
     if (has_overlay) {
       selected =
-          vkr_project_load_json(job, edit_path, VKR_PROJECT_MAX_JSON_BYTES);
+          vkr_project_load_json(job, edit_path, VKR_PROJECT_MAX_OVERLAY_BYTES);
       VKR_PROJECT_TRY(selected);
     } else {
       selected = vkr_bakery_json_object(arena);
@@ -809,7 +809,7 @@ VkrBakeryJson *vkr_project_package_world(VkrProjectJob *job) {
   }
   if (vkr_bakery_is_file(overlay_path)) {
     VkrBakeryJson *overlay =
-        vkr_project_load_json(job, overlay_path, VKR_PROJECT_MAX_JSON_BYTES);
+        vkr_project_load_json(job, overlay_path, VKR_PROJECT_MAX_OVERLAY_BYTES);
     (void)vkr_bakery_path_join(edit_path, sizeof(edit_path),
                                job->runtime_directory, "world.editor.json");
     if (!overlay || !vkr_project_checked_overlay(job, overlay) ||
@@ -1385,7 +1385,7 @@ VkrBakeryJson *vkr_project_prepare_unbuilt(VkrProjectJob *job, const char *path,
     if (!vkr_project_contained(job, scene_root,
                                vkr_project_json_text(scene, "edit_overlay"),
                                true_v, overlay) ||
-        !vkr_project_load_json(job, overlay, VKR_PROJECT_MAX_JSON_BYTES)) {
+        !vkr_project_load_json(job, overlay, VKR_PROJECT_MAX_OVERLAY_BYTES)) {
       return NULL;
     }
   }
@@ -2174,7 +2174,7 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
     if (!vkr_project_contained(job, scene_root,
                                vkr_project_json_text(scene, "edit_overlay"),
                                true_v, overlay) ||
-        !vkr_project_load_json(job, overlay, VKR_PROJECT_MAX_JSON_BYTES)) {
+        !vkr_project_load_json(job, overlay, VKR_PROJECT_MAX_OVERLAY_BYTES)) {
       return NULL;
     }
   }

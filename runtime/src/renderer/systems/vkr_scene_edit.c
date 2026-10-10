@@ -2947,6 +2947,20 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
       !vkr_json_writer_name(w, string8_lit("collision_settings")) ||
       !write_collision_layers(w, &settings) || !vkr_json_writer_end_object(w))
     goto failed;
+  /* A load reads at most VKR_SCENE_EDIT_OVERLAY_BYTES, so a larger overlay
+     never replaces the last one that loads. */
+  const long written = vkr_json_writer_flush(w) && fflush(file.file) == 0
+                           ? ftell(file.file)
+                           : -1;
+  if (written < 0 || (uint64_t)written > VKR_SCENE_EDIT_OVERLAY_BYTES) {
+    vkr_json_file_writer_abort(&file);
+    snprintf(s->status, sizeof(s->status),
+             "Save blocked: the scene's edits pass %llu MiB; move objects into "
+             "world partition cells or another scene.",
+             (unsigned long long)(VKR_SCENE_EDIT_OVERLAY_BYTES / MB(1)));
+    log_error("Editor override save blocked: %.*s", (int)path.length, path.str);
+    return false_v;
+  }
   /* Cell documents are written beside their files first: an object moving
      between the overlay and a cell is never missing from both. */
   EditCellsSave cells;
@@ -4749,7 +4763,8 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
     return true_v;
   }
   if (!file || fseek(file, 0, SEEK_END) != 0 || (length = ftell(file)) <= 0 ||
-      length > 16 * 1024 * 1024 || fseek(file, 0, SEEK_SET) != 0)
+      (uint64_t)length > VKR_SCENE_EDIT_OVERLAY_BYTES ||
+      fseek(file, 0, SEEK_SET) != 0)
     goto cleanup;
   bytes = vkr_allocator_alloc(s->allocator, (uint64_t)length, EDIT_TAG);
   if (!bytes) {
@@ -5031,7 +5046,8 @@ bool8_t vkr_scene_edit_peek_settings(VkrAllocator *allocator, String8 path,
   uint8_t *bytes = NULL;
   long length = 0;
   if (fseek(file, 0, SEEK_END) != 0 || (length = ftell(file)) <= 0 ||
-      length > 16 * 1024 * 1024 || fseek(file, 0, SEEK_SET) != 0) {
+      (uint64_t)length > VKR_SCENE_EDIT_OVERLAY_BYTES ||
+      fseek(file, 0, SEEK_SET) != 0) {
     goto cleanup;
   }
   bytes = vkr_allocator_alloc(allocator, (uint64_t)length, EDIT_TAG);
@@ -5115,7 +5131,8 @@ static bool8_t edit_read_file(VkrSceneEditState *s, const char *path,
     return false_v;
   }
   bool8_t ok = fseek(file, 0, SEEK_END) == 0 && (length = ftell(file)) > 0 &&
-               length <= 64 * 1024 * 1024 && fseek(file, 0, SEEK_SET) == 0;
+               (uint64_t)length <= VKR_SCENE_EDIT_OVERLAY_BYTES &&
+               fseek(file, 0, SEEK_SET) == 0;
   if (ok) {
     out->bytes = vkr_allocator_alloc(s->allocator, (uint64_t)length, EDIT_TAG);
     out->capacity = out->bytes ? (uint64_t)length : 0u;

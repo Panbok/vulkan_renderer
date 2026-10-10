@@ -78,8 +78,8 @@ vkr_internal bool8_t vkr_project_scene_references(VkrProjectCleanup *cleanup,
     if (vkr_project_contained(job, scene_root,
                               vkr_project_json_text(scene, "edit_overlay"),
                               true_v, overlay_path)) {
-      overlay =
-          vkr_project_load_json(job, overlay_path, VKR_PROJECT_MAX_JSON_BYTES);
+      overlay = vkr_project_load_json(job, overlay_path,
+                                      VKR_PROJECT_MAX_OVERLAY_BYTES);
     }
     if (!overlay) {
       raw = NULL;
