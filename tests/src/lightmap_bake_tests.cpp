@@ -101,6 +101,32 @@ void test_pack_sizes_and_places_rects() {
   printf("  test_pack_sizes_and_places_rects PASSED\n");
 }
 
+/* Two rectangles taller than half a page and wider than half of it each take
+   a page, and the room beside them takes the small rectangles that follow:
+   two pages in all, where a single open shelf needs three. */
+void test_pack_fills_room_beside_tall_rects() {
+  printf("  test_pack_fills_room_beside_tall_rects...\n");
+  std::vector<VkrBakeLightmapInstance> instances = {
+      make_instance(0u, 160u, 200u, 1.0f), make_instance(1u, 160u, 200u, 1.0f)};
+  for (uint32_t i = 2u; i < 10u; ++i) {
+    instances.push_back(make_instance(i, 64u, 64u, 1.0f));
+  }
+  VkrBakeLightmapLayout layout;
+  assert(vkr_bake_lightmap_pack(instances, 256u, 8.0f, &layout));
+  assert(layout.page_count == 2u);
+  for (size_t i = 0; i < layout.rects.size(); ++i) {
+    const VkrBakeLightmapRect &rect = layout.rects[i];
+    assert(rect.x + rect.width <= layout.page_size &&
+           rect.y + rect.height <= layout.page_size);
+    if (rect.width == 64u) {
+      assert(rect.x >= 160u);
+    }
+    for (size_t j = i + 1u; j < layout.rects.size(); ++j)
+      assert(!rects_overlap(rect, layout.rects[j]));
+  }
+  printf("  test_pack_fills_room_beside_tall_rects PASSED\n");
+}
+
 VkrBakeVertex quad_vertex(float32_t x, float32_t y) {
   VkrBakeVertex vertex = {};
   vertex.position = vec3_new(2.0f * x, 3.0f * y, 1.0f);
@@ -408,6 +434,22 @@ void test_lightmap_set_round_trip_and_rejects() {
          decoded.instances[2].document_id[15] == 0x7fu);
   assert(decoded.plane_count == 5u &&
          decoded.planes[4].format == VKR_LIGHTMAP_FORMAT_RGB9E5);
+  assert(decoded.shape_charts_current);
+  /* A version 5 set still decodes, but its brush and blockout rectangles
+     hold the former charts, so shapes must not sample it. */
+  {
+    std::vector<uint8_t> v5 = file;
+    vkr_store_le_u32(v5.data() + 4u, VKR_LIGHTMAP_SET_VERSION_V5);
+    uint32_t crc = vkr_crc32_update(VKR_CRC32_INITIAL, v5.data(), 88u);
+    const uint8_t zero_crc[4] = {0u, 0u, 0u, 0u};
+    crc = vkr_crc32_update(crc, zero_crc, sizeof(zero_crc));
+    crc = vkr_crc32_update(crc, v5.data() + 92u,
+                           VKR_LIGHTMAP_SET_HEADER_BYTES - 92u);
+    vkr_store_le_u32(v5.data() + 88u, ~crc);
+    VkrLightmapSet old = {};
+    assert(vkr_lightmap_set_decode(v5.data(), v5.size(), arena, &old));
+    assert(!old.shape_charts_current && old.instance_count == 3u);
+  }
   const uint64_t astc_bytes =
       vkr_lightmap_set_plane_bytes(VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR, 16u);
   const uint64_t rgb9e5_bytes =
@@ -1620,6 +1662,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_rasterize_covers_a_quad_once();
   test_cooked_cube_texels_lie_on_its_faces();
   test_pack_fitted_shrinks_small_scenes();
+  test_pack_fills_room_beside_tall_rects();
   test_compose_fills_each_rect_alone();
   test_astc_hdr_round_trip_keeps_range();
   test_lightmap_set_round_trip_and_rejects();

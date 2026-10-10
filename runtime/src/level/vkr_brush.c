@@ -291,8 +291,13 @@ VkrBrushLightmapChart vkr_brush_lightmap_chart(const VkrBrushGeometry *geometry,
   }
   chart.present = true_v;
   chart.normal = geometry->normals[face];
-  chart.projected_min = vec2_new(min_u, min_v);
-  chart.projected_max = vec2_new(max_u, max_v);
+  /* The long side lies along u: shelves of wide charts stay full, where a
+     long chart standing on end would make a shelf as tall as it. */
+  chart.rotated = max_v - min_v > max_u - min_u;
+  chart.projected_min =
+      chart.rotated ? vec2_new(min_v, min_u) : vec2_new(min_u, min_v);
+  chart.projected_max =
+      chart.rotated ? vec2_new(max_v, max_u) : vec2_new(max_u, max_v);
   return chart;
 }
 
@@ -394,13 +399,14 @@ Vec2 vkr_brush_lightmap_chart_uv(const VkrBrushLightmapAtlas *atlas,
   Vec3 u;
   Vec3 v;
   brush_lightmap_basis(chart->normal, &u, &v);
-  return vec2_new(
-      (chart->corner.x +
-       (vec3_dot(point, u) - chart->projected_min.x) * atlas->texels_per_unit) /
-          (float32_t)atlas->width,
-      (chart->corner.y +
-       (vec3_dot(point, v) - chart->projected_min.y) * atlas->texels_per_unit) /
-          (float32_t)atlas->height);
+  const float32_t s = vec3_dot(point, chart->rotated ? v : u);
+  const float32_t t = vec3_dot(point, chart->rotated ? u : v);
+  return vec2_new((chart->corner.x +
+                   (s - chart->projected_min.x) * atlas->texels_per_unit) /
+                      (float32_t)atlas->width,
+                  (chart->corner.y +
+                   (t - chart->projected_min.y) * atlas->texels_per_unit) /
+                      (float32_t)atlas->height);
 }
 
 bool8_t vkr_brush_lightmap_layout(const VkrBrushGeometry *geometry,

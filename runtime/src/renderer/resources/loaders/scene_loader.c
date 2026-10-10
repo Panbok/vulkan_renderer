@@ -2045,6 +2045,7 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
   lightmaps->page_count = set.page_count;
   lightmaps->layer_count = set.layer_count;
   lightmaps->instance_count = set.instance_count;
+  lightmaps->shape_charts_current = set.shape_charts_current;
   MemCopy(lightmaps->layers, set.layers,
           set.layer_count * sizeof(VkrLightLayer));
   MemCopy(lightmaps->instances, set.instances,

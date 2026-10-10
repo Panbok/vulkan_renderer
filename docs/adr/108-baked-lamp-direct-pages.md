@@ -48,22 +48,37 @@ take runtime shadows from the lamps that light them most.
    term's 3×3 footprint grid and, for buried-texel detection, first hits
    only (`bake_direct_pages`, flag 64 of the gather kernels). Buried texels
    take their neighbours' light; nothing is smoothed. The pages encode as
-   ASTC 4×4 HDR.
+   ASTC 4×4 HDR. Since 2026-10-10 every page layout, the regular pages'
+   too, places each rectangle, tallest first, at the lowest, then leftmost,
+   place on the first page whose skyline holds it
+   (`vkr_bake_lightmap_pack` in
+   [`vkr_bake_lightmap.cpp`](../../tools/bake/vkr_bake_lightmap.cpp)); a
+   single open shelf had left the room beside each tall rectangle empty.
+   Brush and blockout charts lie with their longer side along the atlas's
+   x (`vkr_brush_lightmap_chart`); a long face standing on end had made a
+   long brush's atlas square and nearly empty.
 2. **Soft lamp shadows.** A point or spot lamp's `source_radius` reaches
-   the bake. The texel direct term casts 4 shadow rays from each footprint
-   point toward a golden-angle spiral on the lamp's disc facing the
-   receiver, and a bounce path casts one toward a random disc point
+   the bake. The texel direct term casts 8 shadow rays from each of its 9
+   footprint points toward a golden-angle spiral of 72 points on the lamp's
+   disc facing the receiver, turned once per texel: the k-th ray of point
+   p takes spiral point p + 9k, so the footprint samples the disc
+   stratified as a whole (before 2026-10-10, 4 rays per point at a random
+   turn each, which left grain in wide penumbrae). A bounce path casts one
+   ray toward a random disc point
    (`sphere_light_point` in
    [`vkr_bake_metal.mm`](../../tools/bake/vkr_bake_metal.mm) and
    [`vkr_bake_lightmap.slang`](../../tools/bake/vkr_bake_lightmap.slang)).
    The unshadowed light stays the point light's. A zero radius bakes as
    before, with the same random draws.
-3. **VKLM v5** ([`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h)):
+3. **VKLM v5 and v6** ([`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h)):
    `VKR_LIGHTMAP_PLANE_LAMP_DIRECT` planes on lamp groups; the header names
    the lamp-direct page count, density and rectangle table (bytes 104 to
    119); each instance has a 20-byte rectangle on those pages, all zero for
    an instance no lamp reaches; the lamp-direct pages follow every other
-   page in the payload. Version 4 files still decode.
+   page in the payload. Version 6 is the same file with the turned brush
+   and blockout charts; a version 4 or 5 set still decodes, but brushes and
+   shapes do not bind it (`shape_charts_current`), since their UVs would
+   map onto other texels, so they keep the volume's light until a rebake.
 4. **Runtime.** The loader uploads the lamp-direct pages as a second 2D
    array, slice page × planes + plane, and the rectangles
    ([`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c));
@@ -87,9 +102,13 @@ take runtime shadows from the lamps that light them most.
   radius and the lamp-direct density, not Shadow quality.
 - A frame samples four more bilinear taps per active lamp group on
   lightmapped surfaces.
-- The level's set grew from 101 MB to 319 MB: 13 lamp-direct pages of 4096²
-  for 132 million rectangle texels, of which the triangles cover about a
-  quarter; every instance there lies within a lamp's range.
+- The level's set grew from 101 MB to 319 MB with 13 lamp-direct pages of
+  4096²; five of them each held one long transit brush's square, nearly
+  empty atlas. The skyline packing and turned charts bring it to 151 MB:
+  2 regular and 5 lamp-direct pages, 66.6 million lamp-direct rectangle
+  texels instead of 132.1 million (same exported scene, 2026-10-10).
+- The stratified spiral doubles the texel direct term's shadow rays: the
+  level's lamp-direct gather took 58.1 s instead of 45.5 s.
 - The editor saves this level in about 10 minutes after the lamp edits,
   which the bake's own `scene.save` does not need.
 - In this level only the player moves, and the first-person player body is

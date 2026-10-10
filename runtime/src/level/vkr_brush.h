@@ -75,7 +75,8 @@ Vec2 vkr_brush_uv(Vec3 point, Vec3 normal, Vec2 offset, Vec2 scale,
                   float32_t rotation);
 
 /* Lightmap UVs of a built brush (ADR-088). Every face with a polygon is one
-   chart: its polygon projected on an orthonormal basis of the face plane at
+   chart: its polygon projected on an orthonormal basis of the face plane,
+   its longer extent along the atlas's x, at
    VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT texels per brush unit, with
    VKR_BRUSH_LIGHTMAP_PADDING texels around it, shelf-packed tallest first
    into an atlas about as wide as it is tall. A brush whose atlas would pass
@@ -94,7 +95,10 @@ typedef struct VkrBrushLightmapChart {
   bool8_t present;
   /* The face's unit normal, which picks the basis. */
   Vec3 normal;
-  /* The polygon's bounds on that basis, in brush units. */
+  /* The basis axes swap so that the polygon's longer extent runs along the
+     atlas's x. */
+  bool8_t rotated;
+  /* The polygon's bounds on the (swapped) basis, in brush units. */
   Vec2 projected_min;
   Vec2 projected_max;
   /* Set by vkr_brush_lightmap_pack: the chart's lower corner in texels,

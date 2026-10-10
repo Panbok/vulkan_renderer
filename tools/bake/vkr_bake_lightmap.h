@@ -69,8 +69,9 @@ struct VkrBakeLightmapTexel {
 /*
  * Sizes each instance's rectangle for texels_per_world_unit: its atlas times
  * the instance's uniform world scale times the ratio of that density to the
- * atlas's local density, in whole 4x4 blocks, and shelf-packs the
- * rectangles tallest first onto page_size pages. A rectangle larger than a
+ * atlas's local density, in whole 4x4 blocks, and packs the rectangles
+ * tallest first onto page_size pages, each at the lowest, then leftmost,
+ * place on the first page whose skyline holds it. A rectangle larger than a
  * page is scaled down to fit. Instances without an atlas get no rectangle.
  * page_size is a positive multiple of four.
  */

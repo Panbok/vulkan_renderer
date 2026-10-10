@@ -263,8 +263,11 @@ uint32_t vkr_scene_bind_lightmaps(VkrScene *scene) {
   SceneLightmapGather gather = {.scene = scene};
   scene_lightmap_gather_query(&gather, scene->comp_mesh_renderer,
                               scene_lightmap_gather_renderers);
-  scene_lightmap_gather_query(&gather, scene->comp_shape,
-                              scene_lightmap_gather_shapes);
+  /* Brushes and blockout shapes sample only a set with their current
+     charts; an older one would map their UVs onto other texels. */
+  if (lightmaps->shape_charts_current)
+    scene_lightmap_gather_query(&gather, scene->comp_shape,
+                                scene_lightmap_gather_shapes);
   scene_lightmap_gather_query(&gather, scene->comp_source_identity,
                               scene_lightmap_gather_refs);
   scene_lightmap_gather_query(&gather, scene->comp_entity_ref,

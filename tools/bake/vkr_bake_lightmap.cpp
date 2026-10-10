@@ -36,6 +36,82 @@ float64_t luminance(Vec3 value) {
   return 0.2126 * value.x + 0.7152 * value.y + 0.0722 * value.z;
 }
 
+/* One run of a page's skyline: the free space above `y` from `x` for
+   `width` texels. A page's segments are ordered by x and cover it. */
+struct SkylineSegment {
+  uint32_t x;
+  uint32_t y;
+  uint32_t width;
+};
+
+/* The lowest, then leftmost, place for a `width` x `height` rectangle on a
+   page of `page_size` texels; false when none holds it. */
+bool skyline_find(const std::vector<SkylineSegment> &skyline,
+                  uint32_t page_size, uint32_t width, uint32_t height,
+                  uint32_t *out_x, uint32_t *out_y) {
+  bool found = false;
+  for (size_t first = 0u; first < skyline.size(); ++first) {
+    const uint32_t x = skyline[first].x;
+    if (x + width > page_size) {
+      break;
+    }
+    uint32_t top = 0u;
+    uint32_t covered = 0u;
+    for (size_t i = first; i < skyline.size() && covered < width; ++i) {
+      top = std::max(top, skyline[i].y);
+      covered += skyline[i].width;
+    }
+    if (top + height > page_size || (found && top >= *out_y)) {
+      continue;
+    }
+    *out_x = x;
+    *out_y = top;
+    found = true;
+  }
+  return found;
+}
+
+/* Raises the skyline to `top` over [x, x + width) and merges level runs. */
+void skyline_place(std::vector<SkylineSegment> *skyline, uint32_t x,
+                   uint32_t top, uint32_t width) {
+  std::vector<SkylineSegment> next;
+  next.reserve(skyline->size() + 2u);
+  const uint32_t end = x + width;
+  bool placed = false;
+  for (const SkylineSegment &segment : *skyline) {
+    const uint32_t segment_end = segment.x + segment.width;
+    if (segment_end <= x || segment.x >= end) {
+      if (segment.x >= end && !placed) {
+        next.push_back({x, top, width});
+        placed = true;
+      }
+      next.push_back(segment);
+      continue;
+    }
+    if (segment.x < x) {
+      next.push_back({segment.x, segment.y, x - segment.x});
+    }
+    if (!placed) {
+      next.push_back({x, top, width});
+      placed = true;
+    }
+    if (segment_end > end) {
+      next.push_back({end, segment.y, segment_end - end});
+    }
+  }
+  if (!placed) {
+    next.push_back({x, top, width});
+  }
+  skyline->clear();
+  for (const SkylineSegment &segment : next) {
+    if (!skyline->empty() && skyline->back().y == segment.y) {
+      skyline->back().width += segment.width;
+    } else {
+      skyline->push_back(segment);
+    }
+  }
+}
+
 } // namespace
 
 bool vkr_bake_lightmap_pack(
@@ -84,7 +160,7 @@ bool vkr_bake_lightmap_pack(
       layout.rects.push_back(rect);
     }
 
-    /* Tallest first keeps shelves full; ties break on width, then instance,
+    /* Tallest first keeps the skylines low; ties break on width, then instance,
        so the layout is deterministic. */
     std::vector<uint32_t> order(layout.rects.size());
     for (uint32_t i = 0; i < order.size(); ++i) {
@@ -99,31 +175,32 @@ bool vkr_bake_lightmap_pack(
         return ra.width > rb.width;
       return ra.source_instance_index < rb.source_instance_index;
     });
-    uint32_t page = 0u;
-    uint32_t shelf_y = 0u;
-    uint32_t shelf_height = 0u;
-    uint32_t x = 0u;
+    /* Each rectangle takes the lowest, then leftmost, place on the first
+       page whose skyline holds it, so the room beside a tall rectangle
+       still takes later ones. */
+    std::vector<std::vector<SkylineSegment>> pages;
     for (uint32_t index : order) {
       VkrBakeLightmapRect &rect = layout.rects[index];
-      if (x + rect.width > page_size) {
-        shelf_y += shelf_height;
-        shelf_height = 0u;
-        x = 0u;
-      }
-      if (shelf_y + rect.height > page_size) {
+      uint32_t page = 0u;
+      uint32_t x = 0u;
+      uint32_t y = 0u;
+      while (page < pages.size() &&
+             !skyline_find(pages[page], page_size, rect.width, rect.height, &x,
+                           &y)) {
         ++page;
-        shelf_y = 0u;
-        shelf_height = 0u;
-        x = 0u;
       }
+      if (page == pages.size()) {
+        pages.push_back({SkylineSegment{0u, 0u, page_size}});
+        x = 0u;
+        y = 0u;
+      }
+      skyline_place(&pages[page], x, y + rect.height, rect.width);
       rect.page = page;
       rect.x = x;
-      rect.y = shelf_y;
-      x += rect.width;
-      shelf_height = std::max(shelf_height, rect.height);
+      rect.y = y;
       layout.rect_by_instance[rect.source_instance_index] = index;
     }
-    layout.page_count = layout.rects.empty() ? 0u : page + 1u;
+    layout.page_count = (uint32_t)pages.size();
     *out_layout = std::move(layout);
     return true;
   } catch (const std::bad_alloc &) {

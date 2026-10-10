@@ -66,9 +66,10 @@ editor's Bakery panel option "Lightmap UVs on model import and rebuild" sends
 A solid or visual brush is lightmapped from its geometry alone
 ([`vkr_brush.h`](../../runtime/src/level/vkr_brush.h),
 `vkr_brush_lightmap_layout`): every face is a chart projected on an
-orthonormal basis of its plane at 8 texels per brush unit with two texels of
-padding, shelf-packed tallest first; a brush whose atlas would pass 1,024
-texels halves its density. The bake and the runtime compute the same UVs
+orthonormal basis of its plane, its longer extent along the atlas's x since
+2026-10-10, at 8 texels per brush unit with two texels of padding,
+shelf-packed tallest first; a brush whose atlas would pass 1,024 texels
+halves its density. The bake and the runtime compute the same UVs
 from the same planes, so brushes need no cooked lightmap data.
 
 A blockout shape (stairs, corridors; ADR-084) is one lightmap instance
@@ -95,8 +96,9 @@ is loaded, so leaving it out of the bake would remove it.
 
 [`vkr_bake_lightmap.h`](../../tools/bake/vkr_bake_lightmap.h) gives every
 lightmapped instance one rectangle sized for a world density (atlas size ×
-instance scale × density / atlas density) in whole 4×4 blocks, and
-shelf-packs the rectangles onto square pages (4096 by default). When everything
+instance scale × density / atlas density) in whole 4×4 blocks, and packs the
+rectangles tallest first onto square pages (4096 by default), each at the
+lowest, then leftmost, place on the first page whose skyline holds it. When everything
 fits on one smaller page without scaling, the smallest power-of-two page from
 256 upward is used. A page's texels are rasterized from the instances' lightmap
 UVs, one triangle per texel.
@@ -313,8 +315,10 @@ near-zero sum published infinite texels.
 ### VKLM file
 
 [`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h) defines
-VKLM v5, which adds the lamp-direct pages of
-[ADR-108](108-baked-lamp-direct-pages.md) and still reads v4: a 128-byte
+VKLM v6, which adds the lamp-direct pages of
+[ADR-108](108-baked-lamp-direct-pages.md) (v5) and turned brush and
+blockout charts (v6), and still reads v4 and v5 without binding their
+brush and shape instances: a 128-byte
 header, the layer table (64-byte light-layer records:
 kind, number, sun direction and, for a lamp group, its group name), the plane
 table (16-byte records of layer, kind — irradiance or direction — and

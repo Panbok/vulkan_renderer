@@ -726,9 +726,12 @@ float3 leave_surface(float3 position, float3 geometric, float3 direction)
     return position + geometric * (side * 1.0e-3f);
 }
 
-/* Shadow rays a texel's direct term casts toward each footprint point's
-   view of a sphere light (ADR-108); bounce paths cast one. */
-static const uint kSoftShadowRays = 4u;
+/* Shadow rays a texel's direct term casts from each footprint point toward
+   a sphere light (ADR-108); bounce paths cast one. The footprint's points
+   interleave one spiral of kSoftShadowRays x kFootprintPoints disc points,
+   so together they sample the disc stratified. */
+static const uint kSoftShadowRays = 8u;
+static const uint kFootprintPoints = 9u;
 
 /* The k-th of `count` points on a sphere light's disc facing the receiver:
    a golden-angle spiral of equal-area rings turned by `turn` radians. */
@@ -749,7 +752,9 @@ float3 sphere_light_point(float3 center, float radius, float3 toward_receiver,
    point with this normal. A point or spot light with an emitter radius is
    seen through `soft_rays` shadow rays across its disc, so its shadow takes
    the penumbra of a sphere light; its unshadowed light stays the point
-   light's. As in the CPU integrator, a light above the shading
+   light's. With several rays, the k-th takes point `soft_index + k *
+   soft_stride` of a spiral of `soft_rays * soft_stride` points turned by
+   `soft_turn`; one ray takes a random point. As in the CPU integrator, a light above the shading
    normal counts even when it is below the geometric surface; its shadow ray
    leaves on the light's side. With a positive `direction_weight`, each
    light's contribution also adds its luminance times that weight, times its
@@ -757,7 +762,8 @@ float3 sphere_light_point(float3 center, float radius, float3 toward_receiver,
 float3 direct_irradiance(Transport transport, uint first_light, uint end_light,
                          float3 position, float3 normal, float3 geometric,
                          inout Rng rng, inout float4 direction_sum,
-                         float direction_weight, uint soft_rays)
+                         float direction_weight, uint soft_rays,
+                         uint soft_index, uint soft_stride, float soft_turn)
 {
     float3 result = float3(0.0f);
     for (uint i = first_light; i < end_light; ++i)
@@ -783,17 +789,21 @@ float3 direct_irradiance(Transport transport, uint first_light, uint end_light,
         if (!rectangle && radius > 0.0f && !isinf(sample.distance) &&
             light.cone.z != 0.0f && shadow_distance > 0.0f)
         {
-            /* One random disc point, or a turned spiral of `soft_rays`; the
-               draws in Metal's order. */
+            /* One random disc point, or this point's share of the
+               spiral; the draws in Metal's order. */
             uint count = max(soft_rays, 1u);
-            float turn = 6.28318531f * rng.next();
+            float turn = soft_turn;
+            if (count <= 1u)
+            {
+                turn = 6.28318531f * rng.next();
+            }
             float3 center = position + sample.direction * sample.distance;
             float3 origin = leave_surface(position, geometric, sample.direction);
             visibility = float3(0.0f);
             for (uint k = 0u; k < count; ++k)
             {
-                uint index = k;
-                uint total = count;
+                uint index = soft_index + k * soft_stride;
+                uint total = count * soft_stride;
                 if (count <= 1u)
                 {
                     index = uint(rng.next() * 64.0f);
@@ -926,7 +936,7 @@ float3 path_radiance(Transport transport, float3 origin, float3 direction,
         radiance += throughput * albedo * (1.0f / kPi) *
                     direct_irradiance(transport, 0u, transport.light_count,
                                       hit.position, hit.normal, hit.geometric,
-                                      rng, untracked, 0.0f, 1u);
+                                      rng, untracked, 0.0f, 1u, 0u, 1u, 0.0f);
         throughput *= albedo;
         /* As in the CPU integrator, a direction sampled about the shading
            normal continues even below the geometric surface. */
@@ -998,6 +1008,8 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
         /* These lights draw no random numbers. */
         Rng unused;
         unused.state = texel_seed;
+        /* One turn of the shared spiral per texel. */
+        float soft_turn = 6.28318531f * unused.next();
         float points = 0.0f;
         float4 point_directions = float4(0.0f);
         for (int y = -1; y <= 1; ++y)
@@ -1015,7 +1027,8 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
                 direct_total += direct_irradiance(
                     transport, 0u, args.rectangle_first, point, texel_normal,
                     texel_normal, unused, point_directions,
-                    use_direction ? 1.0f : 0.0f, kSoftShadowRays);
+                    use_direction ? 1.0f : 0.0f, kSoftShadowRays,
+                    uint((y + 1) * 3 + (x + 1)), kFootprintPoints, soft_turn);
                 points += 1.0f;
             }
         }
@@ -1055,7 +1068,8 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
                 direct_irradiance(transport, args.rectangle_first,
                                   args.light_count, point, texel_normal,
                                   texel_normal, rng, direction_sum,
-                                  use_direction ? inverse_samples : 0.0f, 1u);
+                                  use_direction ? inverse_samples : 0.0f, 1u,
+                                  0u, 1u, 0.0f);
         }
         float first_draw = rng.next();
         float second_draw = rng.next();

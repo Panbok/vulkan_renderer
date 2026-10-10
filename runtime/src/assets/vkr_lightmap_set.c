@@ -432,6 +432,7 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
   if (vkr_load_le_u32(header + VKR_LIGHTMAP_SET_H_MAGIC) !=
           VKR_LIGHTMAP_SET_MAGIC ||
       (version != VKR_LIGHTMAP_SET_VERSION &&
+       version != VKR_LIGHTMAP_SET_VERSION_V5 &&
        version != VKR_LIGHTMAP_SET_VERSION_V4) ||
       vkr_load_le_u32(header + VKR_LIGHTMAP_SET_H_ENDIAN) !=
           VKR_LIGHTMAP_SET_ENDIAN_TAG ||
@@ -464,6 +465,7 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
           vkr_load_le_u32(header + VKR_LIGHTMAP_SET_H_DIRECT_PAGE_COUNT),
       .direct_texels_per_unit =
           vkr_load_le_f32(header + VKR_LIGHTMAP_SET_H_DIRECT_TEXELS_PER_UNIT),
+      .shape_charts_current = version >= VKR_LIGHTMAP_SET_VERSION,
   };
   const uint64_t plane_offset =
       VKR_LIGHTMAP_SET_HEADER_BYTES +

@@ -437,6 +437,26 @@ static void brush_test_lightmap(VkrBrushGeometry *geometry) {
       }
     }
   }
+  /* A rail 40 units long on x lays every long face along the atlas's x, so its
+     atlas stays a strip whose charts fill most of it; standing the long
+     faces on end made a square atlas over 90% empty. */
+  {
+    const uint32_t count = vkr_brush_box_planes(
+        vec3_new(0.0f, 0.0f, 0.0f), vec3_new(40.0f, 2.0f, 1.0f), planes);
+    assert(vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK);
+    VkrBrushLightmapLayout rail;
+    assert(vkr_brush_lightmap_layout(geometry, &rail));
+    float32_t used = 0.0f;
+    for (uint32_t face = 0; face < geometry->face_count; ++face) {
+      const VkrBrushLightmapChart *chart = &rail.charts[face];
+      const Vec2 extent = vec2_sub(chart->projected_max, chart->projected_min);
+      assert(extent.x >= extent.y);
+      used += extent.x * extent.y * rail.atlas.texels_per_unit *
+              rail.atlas.texels_per_unit;
+    }
+    assert(used >
+           0.5f * (float32_t)rail.atlas.width * (float32_t)rail.atlas.height);
+  }
   /* 600 units at 8 texels each would pass the atlas limit. */
   const uint32_t count = vkr_brush_box_planes(
       vec3_new(0.0f, 0.0f, 0.0f), vec3_new(600.0f, 4.0f, 600.0f), planes);

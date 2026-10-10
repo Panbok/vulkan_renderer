@@ -29,19 +29,22 @@ extern "C" {
  * Packaging may leave out the planes a platform does not sample; a runtime
  * publishes only the planes its pipeline class samples.
  *
- * VKLM v5 writes every scalar explicitly in little-endian order: a fixed
+ * VKLM v6 writes every scalar explicitly in little-endian order: a fixed
  * header, the layer table (vkr_light_layers.h records), the plane table, the
  * instance table, the lamp-direct rectangles when the set has lamp-direct
  * planes, padding to VKR_LIGHTMAP_SET_PAYLOAD_ALIGNMENT, then for each page
  * one image per plane other than lamp direct in table order, then for each
  * lamp-direct page one image per lamp-direct plane in table order. Producers
  * stream the payload and write the prefix last, so a set never needs to be
- * held in memory whole. Version 4, the same file without lamp-direct planes,
- * still decodes; version 3 (ASTC irradiance only) is refused.
+ * held in memory whole. Version 6 marks brush and blockout charts laid
+ * with their long side along u; version 5, the same file with the former
+ * charts, and version 4, without lamp-direct planes, still decode, without
+ * lighting brushes and shapes; version 3 (ASTC irradiance only) is refused.
  */
 
 #define VKR_LIGHTMAP_SET_MAGIC 0x4d4c4b56u /* "VKLM" in little-endian. */
-#define VKR_LIGHTMAP_SET_VERSION 5u
+#define VKR_LIGHTMAP_SET_VERSION 6u
+#define VKR_LIGHTMAP_SET_VERSION_V5 5u
 #define VKR_LIGHTMAP_SET_VERSION_V4 4u
 #define VKR_LIGHTMAP_SET_ENDIAN_TAG 0x01020304u
 #define VKR_LIGHTMAP_SET_HEADER_BYTES 128u
@@ -139,6 +142,10 @@ typedef struct VkrLightmapSet {
   uint32_t direct_page_count;
   float32_t direct_texels_per_unit;
   const VkrLightmapDirectRect *direct_rects;
+  /** Version 6 and later: brush and blockout charts lie with their long side
+      along u (vkr_brush_lightmap_chart). An older set's rectangles hold the
+      former charts, so brushes and shapes do not sample it. */
+  bool8_t shape_charts_current;
   const uint8_t *payload;
 } VkrLightmapSet;
 
