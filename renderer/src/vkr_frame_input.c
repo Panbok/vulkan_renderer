@@ -784,35 +784,18 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
                       "names a slot past render_count");
 
   /* Views are the faces of shadowed lights and the two blocks of each baked
-     lamp, each face owned exactly once. The shadowed stationary lamps follow
-     the point lights (ADR-107). */
+     lamp, each face owned exactly once. */
   uint64_t owned_views[(VKR_LOCAL_SHADOW_VIEW_CAPACITY + 63u) / 64u] = {0};
   uint32_t owned_count = 0u;
-  const VkrLightmapBinding *lightmap = &packet->lighting->lightmap;
   for (uint32_t i = 0; i < VKR_MAX_SCENE_POINT_LIGHTS; ++i) {
     const uint32_t first = local->light_first_view[i];
     if (!first)
       continue;
-    const VkrPointLight *light = i < packet->lighting->point_light_count
-                                     ? &packet->lighting->point_lights[i]
-                                     : NULL;
-    /* The lighting checks validate the stationary records later; bound the
-       lookup here. */
-    for (uint32_t s = 0u; !light && lightmap->stationary &&
-                          s < Min(lightmap->shadowed_count,
-                                  VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX);
-         ++s) {
-      if (lightmap->shadowed[s] >= lightmap->stationary_count)
-        continue;
-      const VkrLightmapStationaryLight *lamp =
-          &lightmap->stationary[lightmap->shadowed[s]];
-      if (lamp->shadow_light == i)
-        light = &lamp->light;
-    }
-    if (!light)
+    if (i >= packet->lighting->point_light_count)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.local_shadow.light_first_view",
                         "references a missing light");
+    const VkrPointLight *light = &packet->lighting->point_lights[i];
     const uint32_t count =
         light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT ? 1u : 6u;
     if (!vkr_frame_input_own_light_views(local, light, first - 1u, count,
@@ -1281,34 +1264,20 @@ vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
         layers_valid = lightmap->active_layers[i] < lightmap->layer_count &&
                        isfinite(lightmap->active_weights[i]) &&
                        lightmap->active_weights[i] >= 0.0f;
+      for (uint32_t i = 0u; layers_valid && i < lightmap->active_layer_count;
+           ++i)
+        layers_valid =
+            lightmap->active_direct[i] == VKR_LIGHTMAP_NO_DIRECT ||
+            lightmap->active_direct[i] < lightmap->direct_layer_count;
       if (!layers_valid || lightmap->page_size == 0u ||
           lightmap->layer_count == 0u ||
-          (lightmap->rect_count && !lightmap->rects))
+          (lightmap->rect_count && !lightmap->rects) ||
+          (lightmap->direct_layer_count &&
+           (!lightmap->direct_rects || lightmap->lamp_direct.id == 0u)))
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.lighting.lightmap",
                           "requires a page size, layers, a rectangle table "
                           "and at most six active layers of finite weight");
-      /* Stationary lamps (ADR-107): the candidates and rectangle ranges were
-         validated when the set loaded; the frame's lamps and shadowed list
-         must cover them. */
-      bool8_t stationary_valid =
-          lightmap->stationary_count <= VKR_LIGHTMAP_STATIONARY_MAX &&
-          (lightmap->stationary_count == 0u ||
-           (lightmap->stationary && lightmap->shadow_mask.id != 0u &&
-            (lightmap->candidate_count == 0u || lightmap->candidates))) &&
-          lightmap->shadowed_count <= VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX;
-      for (uint32_t i = 0u; stationary_valid && i < lightmap->shadowed_count;
-           ++i) {
-        const uint32_t lamp = lightmap->shadowed[i];
-        stationary_valid = lamp < lightmap->stationary_count &&
-                           lightmap->stationary[lamp].shadow_light <
-                               VKR_MAX_SCENE_POINT_LIGHTS;
-      }
-      if (!stationary_valid)
-        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                          "packet.lighting.lightmap",
-                          "stationary lamps need their records, a shadow "
-                          "mask and shadowed lamps among them");
     }
     if (lighting->rectangle_light_count > VKR_MAX_SCENE_RECTANGLE_LIGHTS ||
         (lighting->rectangle_light_count && !lighting->rectangle_lights))

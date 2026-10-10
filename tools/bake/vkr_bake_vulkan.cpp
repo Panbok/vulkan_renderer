@@ -3,7 +3,6 @@
 
 #include "bake/vkr_bake_gpu.h"
 #include "bake/vkr_bake_sh.h"
-#include "bake/vkr_bake_stationary.h"
 
 extern "C" {
 #include "platform/vkr_platform.h"
@@ -223,7 +222,7 @@ struct GpuLight {
   float right_half_width[4];
   float up_half_height[4];
   float cone[4];
-  float stationary[4];
+  float source[4];
 };
 static_assert(sizeof(GpuLight) == 128u, "GpuLight matches the kernel");
 
@@ -1365,7 +1364,7 @@ bool upload_lights(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
         // an unshadowed lamp lit the far side of every wall.
         {std::cos(light.inner_cone_angle), std::cos(light.outer_cone_angle),
          1.0f, light.enabled ? 1.0f : 0.0f},
-        {light.stationary ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f}};
+        {light.source_radius, 0.0f, 0.0f, 0.0f}};
   }
   return upload_buffer(context, context->host_lights.data(),
                        context->host_lights.size() * sizeof(GpuLight),
@@ -1866,29 +1865,6 @@ bool vkr_bake_gpu_update_lighting(VkrBakeGpuContext *context,
   return context && upload_lights(context, scene) && upload_sky(context, scene);
 }
 
-bool vkr_bake_gpu_set_stationary(VkrBakeGpuContext *context,
-                                 const VkrBakeStationaryPlan &plan) {
-  if (!context) {
-    return false;
-  }
-  if (!plan.lamps.empty()) {
-    std::fprintf(stderr, "Stationary shadow masks bake on Metal hosts; a "
-                         "Vulkan host bakes desktop sets\n");
-    return false;
-  }
-  return true;
-}
-
-bool vkr_bake_gpu_stationary_mask(
-    VkrBakeGpuContext *context, const std::vector<VkrBakeLightmapTexel> &texels,
-    std::vector<Vec4> *out_mask, double *out_gpu_seconds) {
-  (void)context;
-  (void)texels;
-  (void)out_mask;
-  (void)out_gpu_seconds;
-  return false;
-}
-
 namespace {
 
 /* The host-visible buffers of one benchmark or gather call, released when
@@ -2213,7 +2189,8 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
   const uint32_t flags =
       (layer.sky ? 1u : 0u) | (layer.emission ? 2u : 0u) |
       (layer.texel_direct ? 4u : 0u) | (settings.occlusion ? 8u : 0u) |
-      (settings.backface ? 16u : 0u) | (settings.direction ? 32u : 0u);
+      (settings.backface ? 16u : 0u) | (settings.direction ? 32u : 0u) |
+      (settings.direct_only ? 64u : 0u);
   /* Each batch of texels takes its samples in runs of kSamplesPerDispatch, a
      submission each. */
   const uint32_t runs =

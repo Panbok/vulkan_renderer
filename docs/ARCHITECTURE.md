@@ -761,9 +761,10 @@ The tiled pipeline runs `tiled.rendergraph.json`. Its `Tiled.Opaque` pass
 shades the culled opaque draws forward in one four-sample render pass
 resolved on chip, with baked lightmaps for static
 diffuse light; a scene without a lightmap set draws its static lights as
-dynamic lights. Stationary lamps shade their direct light at runtime, the
-nearest through runtime shadow maps and the others through the set's shadow
-mask ([ADR-107](adr/107-stationary-lamps.md)). `Tiled.Atmosphere` lays the clouds, aerial perspective and
+dynamic lights. A lamp group's direct light may come from denser
+lamp-direct pages, sampled bicubically, and moving casters shadow the two
+baked lamps that light them most ([ADR-108](adr/108-baked-lamp-direct-pages.md)).
+`Tiled.Atmosphere` lays the clouds, aerial perspective and
 analytic height fog over the resolved image, splitting pixels that mix sky
 and surface samples between their media, and `Tiled.Blend` draws glass
 with the blended surfaces, back to front; glass volumes refract and rough

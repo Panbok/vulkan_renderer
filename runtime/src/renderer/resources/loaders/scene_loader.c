@@ -1818,40 +1818,73 @@ scene_loader_lightmap_directions(const VkrLightmapSet *set,
   return true_v;
 }
 
-/* The upload of a tiled set's stationary shadow mask (ADR-107): its ASTC 4x4
-   LDR plane, one slice per page, copied from the set's payload. False when
-   the set has none or the copy cannot be allocated. */
-vkr_internal bool8_t scene_loader_lightmap_mask(const VkrLightmapSet *set,
-                                                VkrTexturePreparedLoad *out) {
+/* The upload of a tiled set's lamp-direct planes (ADR-108) for `lightmaps`'
+   slice layers: one 2D array whose slice page * direct_layer_count + d is
+   lamp-direct plane d of that lamp-direct page, copied from the set's
+   payload, and each instance's lamp-direct rectangle. Leaves the upload
+   empty, and returns true, without lamp-direct planes; false only when an
+   allocation fails. */
+vkr_internal bool8_t scene_loader_lightmap_lamp_direct(
+    const VkrLightmapSet *set, VkrSceneLightmaps *lightmaps,
+    VkrTexturePreparedLoad *out) {
   MemZero(out, sizeof(*out));
-  const uint32_t plane = vkr_lightmap_set_find_plane(
-      set, 0u, VKR_LIGHTMAP_PLANE_SHADOW_MASK, false_v);
-  if (plane == UINT32_MAX ||
-      set->planes[plane].format != VKR_LIGHTMAP_FORMAT_ASTC_4X4_LDR) {
-    return false_v;
+  lightmaps->direct_layer_count = 0u;
+  uint32_t planes[VKR_LIGHTMAP_SET_MAX_LAYERS];
+  for (uint32_t i = 0u; i < lightmaps->slice_layer_count; ++i) {
+    const uint32_t plane =
+        vkr_lightmap_set_find_plane(set, lightmaps->slice_layers[i],
+                                    VKR_LIGHTMAP_PLANE_LAMP_DIRECT, false_v);
+    lightmaps->slice_direct[i] = UINT32_MAX;
+    if (plane != UINT32_MAX &&
+        set->planes[plane].format == VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR) {
+      lightmaps->slice_direct[i] = lightmaps->direct_layer_count;
+      planes[lightmaps->direct_layer_count++] = plane;
+    }
   }
-  const uint64_t plane_bytes =
-      vkr_lightmap_set_plane_bytes(set->planes[plane].format, set->page_size);
-  uint8_t *bytes = (uint8_t *)malloc((size_t)(plane_bytes * set->page_count));
+  if (lightmaps->direct_layer_count == 0u || set->direct_page_count == 0u) {
+    lightmaps->direct_layer_count = 0u;
+    return true_v;
+  }
+  const uint64_t plane_bytes = vkr_lightmap_set_plane_bytes(
+      VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR, set->page_size);
+  const uint32_t slice_count =
+      set->direct_page_count * lightmaps->direct_layer_count;
+  uint8_t *bytes = (uint8_t *)malloc((size_t)(plane_bytes * slice_count));
   VkrTextureUploadRegion *regions =
-      (VkrTextureUploadRegion *)malloc(set->page_count * sizeof(*regions));
-  if (!bytes || !regions) {
+      (VkrTextureUploadRegion *)malloc(slice_count * sizeof(*regions));
+  lightmaps->direct_rects = (VkrLightmapRect *)malloc(
+      (size_t)Max(set->instance_count, 1u) * sizeof(VkrLightmapRect));
+  if (!bytes || !regions || !lightmaps->direct_rects) {
     free(bytes);
     free(regions);
     return false_v;
   }
-  for (uint32_t page = 0u; page < set->page_count; ++page) {
-    MemCopy(bytes + (uint64_t)page * plane_bytes,
+  for (uint32_t slice = 0u; slice < slice_count; ++slice) {
+    const uint32_t page = slice / lightmaps->direct_layer_count;
+    const uint32_t plane = planes[slice % lightmaps->direct_layer_count];
+    MemCopy(bytes + (uint64_t)slice * plane_bytes,
             set->payload + vkr_lightmap_set_plane_offset(set, page, plane),
             plane_bytes);
-    regions[page] = (VkrTextureUploadRegion){
+    regions[slice] = (VkrTextureUploadRegion){
         .mip_level = 0u,
-        .array_layer = page,
+        .array_layer = slice,
         .width = set->page_size,
         .height = set->page_size,
         .depth = 1u,
-        .byte_offset = (uint64_t)page * plane_bytes,
+        .byte_offset = (uint64_t)slice * plane_bytes,
         .byte_size = plane_bytes,
+    };
+  }
+  /* Rectangles lie within their page, so they fit 16 bits; an instance no
+     lamp reaches takes page VKR_LIGHTMAP_NO_DIRECT. */
+  for (uint32_t i = 0u; i < set->instance_count; ++i) {
+    const VkrLightmapDirectRect *rect = &set->direct_rects[i];
+    lightmaps->direct_rects[i] = (VkrLightmapRect){
+        .page = rect->width == 0u ? VKR_LIGHTMAP_NO_DIRECT : rect->page,
+        .x = (uint16_t)rect->x,
+        .y = (uint16_t)rect->y,
+        .width = (uint16_t)rect->width,
+        .height = (uint16_t)rect->height,
     };
   }
   *out = (VkrTexturePreparedLoad){
@@ -1861,9 +1894,9 @@ vkr_internal bool8_t scene_loader_lightmap_mask(const VkrLightmapSet *set,
               .height = set->page_size,
               .channels = 4u,
               .mip_levels = 1u,
-              .array_layers = set->page_count,
+              .array_layers = slice_count,
               .type = VKR_TEXTURE_TYPE_2D_ARRAY,
-              .format = VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM,
+              .format = VKR_TEXTURE_FORMAT_ASTC_4x4_HDR,
               .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
               .sample_count = VKR_SAMPLE_COUNT_1,
               .properties = vkr_texture_property_flags_create(),
@@ -1876,56 +1909,14 @@ vkr_internal bool8_t scene_loader_lightmap_mask(const VkrLightmapSet *set,
               .anisotropy_enable = false_v,
           },
       .upload_data = bytes,
-      .upload_data_size = plane_bytes * set->page_count,
+      .upload_data_size = plane_bytes * slice_count,
       .upload_regions = regions,
-      .upload_region_count = set->page_count,
+      .upload_region_count = slice_count,
       .upload_mip_levels = 1u,
-      .upload_array_layers = set->page_count,
+      .upload_array_layers = slice_count,
       .upload_is_compressed = true_v,
       .upload_ownership = VKR_TEXTURE_UPLOAD_TRANSFERRED,
   };
-  return true_v;
-}
-
-/* Copies a tiled set's stationary lamp records and candidates into
-   `lightmaps` and packs each rectangle's candidate range (ADR-107). False
-   when they cannot be allocated or the candidates overflow the packing. */
-vkr_internal bool8_t scene_loader_lightmap_stationary(
-    const VkrLightmapSet *set, VkrSceneLightmaps *lightmaps) {
-  if (set->stationary_count == 0u) {
-    return true_v;
-  }
-  if (set->candidate_count > VKR_LIGHTMAP_RECT_CANDIDATE_FIRST_MASK) {
-    return false_v;
-  }
-  lightmaps->stationary = (VkrLightmapStationaryLamp *)malloc(
-      set->stationary_count * sizeof(VkrLightmapStationaryLamp));
-  lightmaps->candidates = (uint16_t *)malloc(
-      (size_t)Max(set->candidate_count, 1u) * sizeof(uint16_t));
-  lightmaps->stationary_entities =
-      (VkrEntityId *)calloc(set->stationary_count, sizeof(VkrEntityId));
-  lightmaps->stationary_by_entity = (VkrSceneStationaryRef *)malloc(
-      set->stationary_count * sizeof(VkrSceneStationaryRef));
-  if (!lightmaps->stationary || !lightmaps->candidates ||
-      !lightmaps->stationary_entities || !lightmaps->stationary_by_entity) {
-    return false_v;
-  }
-  lightmaps->stationary_count = set->stationary_count;
-  lightmaps->candidate_count = set->candidate_count;
-  MemCopy(lightmaps->stationary, set->stationary,
-          set->stationary_count * sizeof(VkrLightmapStationaryLamp));
-  if (set->candidate_count != 0u) {
-    MemCopy(lightmaps->candidates, set->candidates,
-            set->candidate_count * sizeof(uint16_t));
-  }
-  for (uint32_t i = 0u; i < set->instance_count; ++i) {
-    const VkrLightmapStationaryRange range = set->candidate_ranges[i];
-    lightmaps->rects[i].stationary =
-        range.count == 0u
-            ? 0u
-            : range.first |
-                  (range.count << VKR_LIGHTMAP_RECT_CANDIDATE_FIRST_BITS);
-  }
   return true_v;
 }
 
@@ -2093,25 +2084,19 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
              "baked lamps shade without direction",
              (int)path.length, path.str);
   }
-  /* The tiled pipeline's stationary lamps take the second upload for their
-     shadow mask (ADR-107); the desktop pipeline lights them as dynamic
-     lamps. Without a mask their baked shadows would be lost. */
-  if (!desktop && set.stationary_count != 0u &&
-      (!scene_loader_lightmap_mask(&set, &out_prepared[1]) ||
-       !scene_loader_lightmap_stationary(&set, lightmaps))) {
-    vkr_texture_system_release_prepared_load(&out_prepared[1]);
-    free(lightmaps->stationary);
-    free(lightmaps->candidates);
-    free(lightmaps->stationary_entities);
-    free(lightmaps->stationary_by_entity);
+  /* The tiled pipeline's lamp-direct pages take the second upload
+     (ADR-108). */
+  if (!desktop &&
+      !scene_loader_lightmap_lamp_direct(&set, lightmaps, &out_prepared[1])) {
+    free(lightmaps->direct_rects);
     free(lightmaps->instances);
     free(lightmaps->rects);
     free(lightmaps);
     free(regions);
     arena_destroy(decode_arena);
     free(bytes);
-    log_error("Scene loader: lightmap set '%.*s' has stationary lamps without "
-              "a usable shadow mask; bake lighting again",
+    log_error("Scene loader: lightmap set '%.*s' lamp-direct allocation "
+              "failed",
               (int)path.length, path.str);
     return false_v;
   }
@@ -2192,26 +2177,27 @@ scene_loader_apply_lightmaps(VkrScene *scene, struct VkrRenderAssets *assets,
   vkr_texture_system_add_ref_by_handle(&assets->texture_system, texture);
   (*lightmaps)->texture = texture;
   /* The second upload is the desktop direction planes or the tiled
-     stationary shadow mask. */
-  const bool8_t mask = (*lightmaps)->stationary_count != 0u;
+     lamp-direct pages. */
+  const bool8_t lamp_direct = (*lightmaps)->direct_layer_count != 0u;
   if (prepared[1].upload_data) {
     char name[512];
     snprintf(name, sizeof(name), "%.*s#%s", (int)import->path.length,
-             import->path.str, mask ? "shadow_mask" : "direction");
+             import->path.str, lamp_direct ? "lamp_direct" : "direction");
     VkrTextureHandle second = VKR_TEXTURE_HANDLE_INVALID;
     if (vkr_texture_system_finalize_prepared_load(
             &assets->texture_system,
             string8_create_from_cstr((const uint8_t *)name, strlen(name)),
             &prepared[1], &second, &error)) {
       vkr_texture_system_add_ref_by_handle(&assets->texture_system, second);
-      if (mask) {
-        (*lightmaps)->shadow_mask = second;
+      if (lamp_direct) {
+        (*lightmaps)->lamp_direct = second;
       } else {
         (*lightmaps)->direction = second;
       }
-    } else if (mask) {
-      log_warn("Scene loader: lightmap shadow mask upload failed for '%s'; "
-               "stationary lamps shade unshadowed",
+    } else if (lamp_direct) {
+      (*lightmaps)->direct_layer_count = 0u;
+      log_warn("Scene loader: lamp-direct upload failed for '%s'; lamps "
+               "shade without their direct light",
                name);
     } else {
       log_warn("Scene loader: lightmap direction upload failed for '%s'; "
@@ -2220,12 +2206,15 @@ scene_loader_apply_lightmaps(VkrScene *scene, struct VkrRenderAssets *assets,
     }
   }
   log_info("Scene lightmaps: %u instances, %u of %u layers on %u pages of "
-           "%u texels%s, %u stationary lamps",
+           "%u texels%s",
            (*lightmaps)->instance_count, (*lightmaps)->slice_layer_count,
            (*lightmaps)->layer_count, (*lightmaps)->page_count,
            (*lightmaps)->page_size,
-           (*lightmaps)->lamps_baked ? ", static lamps baked" : "",
-           (*lightmaps)->stationary_count);
+           (*lightmaps)->lamps_baked ? ", static lamps baked" : "");
+  if ((*lightmaps)->direct_layer_count != 0u) {
+    log_info("Scene lightmaps: %u lamp-direct planes",
+             (*lightmaps)->direct_layer_count);
+  }
   scene->lightmaps = *lightmaps;
   *lightmaps = NULL;
 }
@@ -3277,27 +3266,17 @@ vkr_internal void scene_json_parse_shape(const VkrJsonReader *entity_reader,
 }
 
 /* The baking fields of a point or rectangle light block (ADR-088):
-   "mobility" is "static", "dynamic" or, where allow_stationary holds (point
-   lights only), "stationary"; "light_group" is a group name. */
+   "mobility" is "static" or "dynamic" and "light_group" a group name. */
 vkr_internal bool8_t scene_json_parse_light_baking(
     const VkrJsonReader *object, uint32_t entity_index, const char *block,
-    bool8_t allow_stationary, VkrLightMobility *out_mobility, char *out_group) {
+    VkrLightMobility *out_mobility, char *out_group) {
   String8 text = {0};
   if (scene_json_read_string_field(object, "mobility", &text)) {
     if (vkr_string8_equals_cstr(&text, "static")) {
       *out_mobility = VKR_LIGHT_MOBILITY_STATIC;
     } else if (vkr_string8_equals_cstr(&text, "dynamic")) {
       *out_mobility = VKR_LIGHT_MOBILITY_DYNAMIC;
-    } else if (allow_stationary &&
-               vkr_string8_equals_cstr(&text, "stationary")) {
-      *out_mobility = VKR_LIGHT_MOBILITY_STATIONARY;
-    } else if (allow_stationary) {
-      log_error("Scene loader: entity %u %s mobility must be \"static\", "
-                "\"dynamic\" or \"stationary\"",
-                entity_index, block);
-      return false_v;
     } else {
-      /* Only point lights can be stationary. */
       log_error("Scene loader: entity %u %s mobility must be \"static\" or "
                 "\"dynamic\"",
                 entity_index, block);
@@ -3380,7 +3359,7 @@ vkr_internal bool8_t scene_json_parse_point_light(
   }
 
   if (!scene_json_parse_light_baking(&point_light_obj, entity_index,
-                                     "point_light", true_v,
+                                     "point_light",
                                      &out_entity->point_light.mobility,
                                      out_entity->point_light.light_group)) {
     return false_v;
@@ -3450,8 +3429,7 @@ vkr_internal bool8_t scene_json_parse_rectangle_light(
       !scene_json_parse_vec2(&field, &light.size))
     goto invalid;
   if (!scene_json_parse_light_baking(&object, entity_index, "rectangle_light",
-                                     false_v, &light.mobility,
-                                     light.light_group)) {
+                                     &light.mobility, light.light_group)) {
     return false_v;
   }
   if (light.enabled > 1u || !isfinite(light.color.x) ||

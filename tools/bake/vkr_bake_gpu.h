@@ -67,6 +67,10 @@ struct VkrBakeGpuGatherSettings {
   /* Whether the gather returns each texel's luminance-weighted incident
      direction (ADR-104). */
   bool direction = false;
+  /* Whether the gather takes only the texel direct term (and, with
+     `backface`, the first hits' back-face fraction), for lamp-direct pages
+     (ADR-108); indirect light stays zero. */
+  bool direct_only = false;
 };
 
 /* One layer's gathered light per texel. Direct is the layer lights'
@@ -107,27 +111,6 @@ void vkr_bake_gpu_destroy(VkrBakeGpuContext *context);
    between calls, so the previous buffers are free. */
 bool vkr_bake_gpu_update_lighting(VkrBakeGpuContext *context,
                                   const VkrBakeScene &scene);
-
-struct VkrBakeStationaryPlan;
-
-/* Hands the context a tiled bake's stationary plan (ADR-107,
-   vkr_bake_stationary.h). Until then, and with a plan without lamps, a
-   texel's direct term leaves out every stationary light, which a desktop
-   set lights at runtime everywhere; with lamps it leaves one out only where
-   it is a candidate of the texel's instance and owns its channel or has
-   none. Bounce paths keep every stationary light. The plan is copied. Vulkan
-   hosts, which bake desktop sets, report false for a plan with lamps. */
-bool vkr_bake_gpu_set_stationary(VkrBakeGpuContext *context,
-                                 const VkrBakeStationaryPlan &plan);
-
-/* The shadow mask of a page's texels after vkr_bake_gpu_set_stationary with
-   lamps: per channel, the visibility in [0, 1] of the lamp that owns it at
-   the texel's center, the mean over the reaching points of the texel direct
-   term's 3x3 footprint grid; one where no lamp owns it. Reports the GPU time
-   in seconds. */
-bool vkr_bake_gpu_stationary_mask(
-    VkrBakeGpuContext *context, const std::vector<VkrBakeLightmapTexel> &texels,
-    std::vector<Vec4> *out_mask, double *out_gpu_seconds);
 
 /* Throughput measurement: traces `samples` cosine-weighted closest-hit rays
  * from every texel and writes each texel's hit fraction. Reports the GPU time

@@ -2,7 +2,6 @@
 
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
-#include "math/vkr_math.h"
 
 #include <limits.h>
 #include <math.h>
@@ -31,10 +30,10 @@ _Static_assert(sizeof(float32_t) == 4u, "VKLM requires 32-bit float32_t");
 #define VKR_LIGHTMAP_SET_H_PAYLOAD_CRC 84u
 #define VKR_LIGHTMAP_SET_H_HEADER_CRC 88u
 #define VKR_LIGHTMAP_SET_H_PLANE_OFFSET 96u
-/* Version 5: the stationary lamp tables. */
-#define VKR_LIGHTMAP_SET_H_STATIONARY_COUNT 104u
-#define VKR_LIGHTMAP_SET_H_CANDIDATE_COUNT 108u
-#define VKR_LIGHTMAP_SET_H_STATIONARY_OFFSET 112u
+/* Version 5: the lamp-direct pages. */
+#define VKR_LIGHTMAP_SET_H_DIRECT_PAGE_COUNT 104u
+#define VKR_LIGHTMAP_SET_H_DIRECT_TEXELS_PER_UNIT 108u
+#define VKR_LIGHTMAP_SET_H_DIRECT_RECT_OFFSET 112u
 /* Bytes 92 to 95 and 120 to 127 are reserved and zero, and so are 104 to
    119 in version 4. */
 #define VKR_LIGHTMAP_SET_H_RESERVED_A 92u
@@ -43,12 +42,8 @@ _Static_assert(sizeof(float32_t) == 4u, "VKLM requires 32-bit float32_t");
 typedef struct VkrLightmapSetLayout {
   uint64_t plane_offset;
   uint64_t instance_offset;
-  /* The stationary lamp records, the instances' candidate ranges and the
-     candidate indices; all three end at `instance_offset`'s table end
-     without stationary lamps. */
-  uint64_t stationary_offset;
-  uint64_t range_offset;
-  uint64_t candidate_offset;
+  /* The lamp-direct rectangles, which end the tables. */
+  uint64_t direct_rect_offset;
   uint64_t tables_end;
   uint64_t payload_offset;
   uint64_t payload_bytes;
@@ -90,21 +85,42 @@ uint64_t vkr_lightmap_set_plane_bytes(VkrLightmapPlaneFormat format,
   return 0u;
 }
 
-uint64_t vkr_lightmap_set_page_stride(const VkrLightmapSet *set) {
+/* Bytes of one page's images of the planes on lamp-direct pages
+   (`direct`) or on the other pages. */
+static uint64_t vkr_lightmap_set_stride(const VkrLightmapSet *set,
+                                        bool8_t direct) {
   uint64_t stride = 0u;
   for (uint32_t i = 0u; i < set->plane_count; ++i) {
-    stride +=
-        vkr_lightmap_set_plane_bytes(set->planes[i].format, set->page_size);
+    if ((set->planes[i].kind == VKR_LIGHTMAP_PLANE_LAMP_DIRECT) == direct) {
+      stride +=
+          vkr_lightmap_set_plane_bytes(set->planes[i].format, set->page_size);
+    }
   }
   return stride;
 }
 
+uint64_t vkr_lightmap_set_page_stride(const VkrLightmapSet *set) {
+  return vkr_lightmap_set_stride(set, false_v);
+}
+
+uint64_t vkr_lightmap_set_direct_page_stride(const VkrLightmapSet *set) {
+  return vkr_lightmap_set_stride(set, true_v);
+}
+
 uint64_t vkr_lightmap_set_plane_offset(const VkrLightmapSet *set, uint32_t page,
                                        uint32_t plane) {
-  uint64_t offset = (uint64_t)page * vkr_lightmap_set_page_stride(set);
+  const bool8_t direct =
+      set->planes[plane].kind == VKR_LIGHTMAP_PLANE_LAMP_DIRECT;
+  /* Lamp-direct pages follow every other page. */
+  uint64_t offset =
+      direct ? (uint64_t)set->page_count * vkr_lightmap_set_page_stride(set) +
+                   (uint64_t)page * vkr_lightmap_set_direct_page_stride(set)
+             : (uint64_t)page * vkr_lightmap_set_page_stride(set);
   for (uint32_t i = 0u; i < plane; ++i) {
-    offset +=
-        vkr_lightmap_set_plane_bytes(set->planes[i].format, set->page_size);
+    if ((set->planes[i].kind == VKR_LIGHTMAP_PLANE_LAMP_DIRECT) == direct) {
+      offset +=
+          vkr_lightmap_set_plane_bytes(set->planes[i].format, set->page_size);
+    }
   }
   return offset;
 }
@@ -140,32 +156,30 @@ static bool8_t vkr_lightmap_set_compute_layout(const VkrLightmapSet *set,
       (uint64_t)set->layer_count * VKR_LIGHT_LAYER_RECORD_BYTES;
   const uint64_t instance_offset =
       plane_offset + (uint64_t)set->plane_count * VKR_LIGHTMAP_SET_PLANE_BYTES;
-  if (set->stationary_count > VKR_LIGHTMAP_SET_MAX_STATIONARY ||
-      (set->stationary_count == 0u && set->candidate_count != 0u)) {
+  if (set->direct_page_count > VKR_LIGHTMAP_SET_MAX_PAGES) {
     return false_v;
   }
-  uint64_t stationary_offset = 0u;
+  uint64_t direct_rect_offset = 0u;
   uint64_t payload_bytes = 0u;
+  uint64_t direct_bytes = 0u;
   uint64_t file_size = 0u;
   if (!vkr_checked_mul_u64(set->instance_count, VKR_LIGHTMAP_SET_INSTANCE_BYTES,
-                           &stationary_offset) ||
-      !vkr_checked_add_u64(stationary_offset, instance_offset,
-                           &stationary_offset) ||
+                           &direct_rect_offset) ||
+      !vkr_checked_add_u64(direct_rect_offset, instance_offset,
+                           &direct_rect_offset) ||
       !vkr_checked_mul_u64(vkr_lightmap_set_page_stride(set), set->page_count,
-                           &payload_bytes)) {
+                           &payload_bytes) ||
+      !vkr_checked_mul_u64(vkr_lightmap_set_direct_page_stride(set),
+                           set->direct_page_count, &direct_bytes) ||
+      !vkr_checked_add_u64(payload_bytes, direct_bytes, &payload_bytes)) {
     return false_v;
   }
-  /* Instance counts fit in 32 bits, so these products cannot overflow. */
-  const uint64_t range_offset =
-      stationary_offset +
-      (uint64_t)set->stationary_count * VKR_LIGHTMAP_SET_STATIONARY_BYTES;
-  const uint64_t candidate_offset =
-      range_offset + (set->stationary_count != 0u
-                          ? (uint64_t)set->instance_count *
-                                VKR_LIGHTMAP_SET_STATIONARY_RANGE_BYTES
-                          : 0u);
+  /* Instance counts fit in 32 bits, so this product cannot overflow. */
   const uint64_t tables_end =
-      candidate_offset + (uint64_t)set->candidate_count * sizeof(uint16_t);
+      direct_rect_offset +
+      (set->direct_page_count != 0u
+           ? (uint64_t)set->instance_count * VKR_LIGHTMAP_SET_DIRECT_RECT_BYTES
+           : 0u);
   const uint64_t payload_offset =
       vkr_align_up_u64(tables_end, VKR_LIGHTMAP_SET_PAYLOAD_ALIGNMENT);
   if (payload_offset < tables_end ||
@@ -174,9 +188,7 @@ static bool8_t vkr_lightmap_set_compute_layout(const VkrLightmapSet *set,
   }
   out->plane_offset = plane_offset;
   out->instance_offset = instance_offset;
-  out->stationary_offset = stationary_offset;
-  out->range_offset = range_offset;
-  out->candidate_offset = candidate_offset;
+  out->direct_rect_offset = direct_rect_offset;
   out->tables_end = tables_end;
   out->payload_offset = payload_offset;
   out->payload_bytes = payload_bytes;
@@ -184,21 +196,14 @@ static bool8_t vkr_lightmap_set_compute_layout(const VkrLightmapSet *set,
   return true_v;
 }
 
-/* Known encodings of a kind they can hold, desktop encodings of light only
-   on lamp groups, a shadow mask only on layer 0 of a set with stationary
-   lamps, in strict (layer, kind, format) order. */
+/* Known encodings of a kind they can hold, desktop encodings and lamp
+   direct only on lamp groups, lamp direct exactly when the set has
+   lamp-direct pages, in strict (layer, kind, format) order. */
 static bool8_t vkr_lightmap_set_planes_valid(const VkrLightmapSet *set) {
+  bool8_t lamp_direct = false_v;
   for (uint32_t i = 0u; i < set->plane_count; ++i) {
     const VkrLightmapPlane *plane = &set->planes[i];
-    if (plane->kind == VKR_LIGHTMAP_PLANE_SHADOW_MASK) {
-      const bool8_t mask_format =
-          plane->format == VKR_LIGHTMAP_FORMAT_ASTC_4X4_LDR ||
-          plane->format == VKR_LIGHTMAP_FORMAT_RGBA8 ||
-          plane->format == VKR_LIGHTMAP_FORMAT_BC7;
-      if (plane->layer != 0u || !mask_format || set->stationary_count == 0u) {
-        return false_v;
-      }
-    }
+    lamp_direct = lamp_direct || plane->kind == VKR_LIGHTMAP_PLANE_LAMP_DIRECT;
     const bool8_t irradiance_format =
         plane->format == VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR ||
         plane->format == VKR_LIGHTMAP_FORMAT_RGB9E5 ||
@@ -210,11 +215,12 @@ static bool8_t vkr_lightmap_set_planes_valid(const VkrLightmapSet *set) {
     if (plane->layer >= set->layer_count ||
         (plane->kind == VKR_LIGHTMAP_PLANE_IRRADIANCE && !irradiance_format) ||
         (plane->kind == VKR_LIGHTMAP_PLANE_DIRECTION && !direction_format) ||
+        (plane->kind == VKR_LIGHTMAP_PLANE_LAMP_DIRECT && !irradiance_format) ||
         (plane->kind != VKR_LIGHTMAP_PLANE_IRRADIANCE &&
          plane->kind != VKR_LIGHTMAP_PLANE_DIRECTION &&
-         plane->kind != VKR_LIGHTMAP_PLANE_SHADOW_MASK) ||
-        (plane->kind != VKR_LIGHTMAP_PLANE_SHADOW_MASK &&
-         vkr_lightmap_format_desktop(plane->format) &&
+         plane->kind != VKR_LIGHTMAP_PLANE_LAMP_DIRECT) ||
+        ((vkr_lightmap_format_desktop(plane->format) ||
+          plane->kind == VKR_LIGHTMAP_PLANE_LAMP_DIRECT) &&
          set->layers[plane->layer].kind != VKR_LIGHT_LAYER_LAMP_GROUP)) {
       return false_v;
     }
@@ -236,16 +242,23 @@ static bool8_t vkr_lightmap_set_planes_valid(const VkrLightmapSet *set) {
       }
     }
   }
-  return true_v;
+  return lamp_direct == (set->direct_page_count != 0u);
+}
+
+static bool8_t vkr_lightmap_set_rect_valid(uint32_t page_count,
+                                           uint32_t page_size, uint32_t page,
+                                           uint32_t x, uint32_t y,
+                                           uint32_t width, uint32_t height) {
+  return page < page_count && width >= 4u && height >= 4u && x % 4u == 0u &&
+         y % 4u == 0u && width % 4u == 0u && height % 4u == 0u &&
+         x <= page_size && y <= page_size && width <= page_size - x &&
+         height <= page_size - y;
 }
 
 static bool8_t vkr_lightmap_set_instance_valid(const VkrLightmapSet *set,
                                                const VkrLightmapInstance *i) {
-  return i->page < set->page_count && i->width >= 4u && i->height >= 4u &&
-         i->x % 4u == 0u && i->y % 4u == 0u && i->width % 4u == 0u &&
-         i->height % 4u == 0u && i->x <= set->page_size &&
-         i->y <= set->page_size && i->width <= set->page_size - i->x &&
-         i->height <= set->page_size - i->y;
+  return vkr_lightmap_set_rect_valid(set->page_count, set->page_size, i->page,
+                                     i->x, i->y, i->width, i->height);
 }
 
 /* Strict (entity, instance) order: sorted and unique. */
@@ -257,63 +270,29 @@ static bool8_t vkr_lightmap_set_instance_before(const VkrLightmapInstance *a,
   return a->instance_index < b->instance_index;
 }
 
-static bool8_t vkr_lightmap_set_finite_vec3(Vec3 v) {
-  return isfinite(v.x) && isfinite(v.y) && isfinite(v.z);
-}
-
-static bool8_t
-vkr_lightmap_set_stationary_valid(const VkrLightmapStationaryLamp *lamp) {
-  return vkr_lightmap_set_finite_vec3(lamp->position) &&
-         vkr_lightmap_set_finite_vec3(lamp->direction) &&
-         isfinite(lamp->range) && lamp->range > 0.0f &&
-         isfinite(lamp->weight) && lamp->weight >= 0.0f &&
-         isfinite(lamp->cos_inner) && isfinite(lamp->cos_outer) &&
-         (lamp->kind == 1u || lamp->kind == 2u) &&
-         (lamp->channel < VKR_LIGHTMAP_STATIONARY_CHANNELS ||
-          lamp->channel == VKR_LIGHTMAP_STATIONARY_NO_CHANNEL);
-}
-
-/* Lamps, then each instance's range inside the candidates, at most
-   VKR_LIGHTMAP_SET_MAX_CANDIDATES strictly ascending lamp indices. */
-static bool8_t
-vkr_lightmap_set_stationary_tables_valid(const VkrLightmapSet *set) {
-  if (set->stationary_count == 0u) {
-    return set->candidate_count == 0u;
-  }
-  if (!set->stationary ||
-      (set->instance_count != 0u && !set->candidate_ranges) ||
-      (set->candidate_count != 0u && !set->candidates)) {
-    return false_v;
-  }
-  for (uint32_t i = 0u; i < set->stationary_count; ++i) {
-    if (!vkr_lightmap_set_stationary_valid(&set->stationary[i])) {
-      return false_v;
-    }
-  }
-  for (uint32_t i = 0u; i < set->instance_count; ++i) {
-    const VkrLightmapStationaryRange range = set->candidate_ranges[i];
-    if (range.count > VKR_LIGHTMAP_SET_MAX_CANDIDATES ||
-        range.first > set->candidate_count ||
-        range.count > set->candidate_count - range.first) {
-      return false_v;
-    }
-    for (uint32_t c = 0u; c < range.count; ++c) {
-      const uint16_t lamp = set->candidates[range.first + c];
-      if (lamp >= set->stationary_count ||
-          (c > 0u && set->candidates[range.first + c - 1u] >= lamp)) {
-        return false_v;
-      }
-    }
-  }
-  return true_v;
-}
-
 static bool8_t vkr_lightmap_set_tables_valid(const VkrLightmapSet *set) {
   if (!isfinite(set->texels_per_unit) || !(set->texels_per_unit > 0.0f) ||
       (set->layer_count != 0u && !set->layers) ||
-      (set->instance_count != 0u && !set->instances) ||
-      !vkr_lightmap_set_stationary_tables_valid(set)) {
+      (set->instance_count != 0u && !set->instances)) {
     return false_v;
+  }
+  if (set->direct_page_count != 0u) {
+    if (!isfinite(set->direct_texels_per_unit) ||
+        !(set->direct_texels_per_unit > 0.0f) ||
+        (set->instance_count != 0u && !set->direct_rects)) {
+      return false_v;
+    }
+    /* An all-zero rectangle marks an instance no lamp reaches. */
+    for (uint32_t i = 0u; i < set->instance_count; ++i) {
+      const VkrLightmapDirectRect *r = &set->direct_rects[i];
+      const bool8_t empty = r->page == 0u && r->x == 0u && r->y == 0u &&
+                            r->width == 0u && r->height == 0u;
+      if (!empty && !vkr_lightmap_set_rect_valid(set->direct_page_count,
+                                                 set->page_size, r->page, r->x,
+                                                 r->y, r->width, r->height)) {
+        return false_v;
+      }
+    }
   }
   if (!vkr_light_layers_valid(set->layers, set->layer_count) ||
       !vkr_lightmap_set_planes_valid(set)) {
@@ -343,73 +322,6 @@ bool8_t vkr_lightmap_set_layout(const VkrLightmapSet *set,
   *out_payload_offset = layout.payload_offset;
   *out_file_size = layout.file_size;
   return true_v;
-}
-
-static void vkr_lightmap_set_write_vec3(uint8_t *dst, Vec3 v) {
-  vkr_store_le_f32(dst, v.x);
-  vkr_store_le_f32(dst + 4u, v.y);
-  vkr_store_le_f32(dst + 8u, v.z);
-}
-
-static Vec3 vkr_lightmap_set_read_vec3(const uint8_t *src) {
-  return vec3_new(vkr_load_le_f32(src), vkr_load_le_f32(src + 4u),
-                  vkr_load_le_f32(src + 8u));
-}
-
-/* 64 bytes: document id, position, range, direction, weight, cone cosines,
-   kind and channel. */
-static void
-vkr_lightmap_set_write_stationary(uint8_t *dst,
-                                  const VkrLightmapStationaryLamp *lamp) {
-  MemCopy(dst, lamp->document_id, sizeof(lamp->document_id));
-  vkr_lightmap_set_write_vec3(dst + 16u, lamp->position);
-  vkr_store_le_f32(dst + 28u, lamp->range);
-  vkr_lightmap_set_write_vec3(dst + 32u, lamp->direction);
-  vkr_store_le_f32(dst + 44u, lamp->weight);
-  vkr_store_le_f32(dst + 48u, lamp->cos_inner);
-  vkr_store_le_f32(dst + 52u, lamp->cos_outer);
-  vkr_store_le_u32(dst + 56u, lamp->kind);
-  vkr_store_le_u32(dst + 60u, lamp->channel);
-}
-
-static VkrLightmapStationaryLamp
-vkr_lightmap_set_read_stationary(const uint8_t *src) {
-  VkrLightmapStationaryLamp lamp = {
-      .position = vkr_lightmap_set_read_vec3(src + 16u),
-      .range = vkr_load_le_f32(src + 28u),
-      .direction = vkr_lightmap_set_read_vec3(src + 32u),
-      .weight = vkr_load_le_f32(src + 44u),
-      .cos_inner = vkr_load_le_f32(src + 48u),
-      .cos_outer = vkr_load_le_f32(src + 52u),
-      .kind = vkr_load_le_u32(src + 56u),
-      .channel = vkr_load_le_u32(src + 60u),
-  };
-  MemCopy(lamp.document_id, src, sizeof(lamp.document_id));
-  return lamp;
-}
-
-float32_t vkr_lightmap_stationary_metric(const VkrLightmapStationaryLamp *lamp,
-                                         Vec3 point) {
-  const Vec3 to_point = vec3_sub(point, lamp->position);
-  const float32_t distance_squared = vec3_dot(to_point, to_point);
-  if (distance_squared > lamp->range * lamp->range) {
-    return 0.0f;
-  }
-  const float32_t ratio = distance_squared / (lamp->range * lamp->range);
-  const float32_t window = vkr_clamp_f32(1.0f - ratio * ratio, 0.0f, 1.0f);
-  float32_t metric =
-      lamp->weight * window * window / vkr_max_f32(distance_squared, 1.0e-4f);
-  if (lamp->kind == 2u) {
-    const float32_t distance = sqrtf(distance_squared);
-    const float32_t cosine =
-        distance > 0.0f ? vec3_dot(lamp->direction, to_point) / distance : 1.0f;
-    const float32_t cone = vkr_clamp_f32(
-        (cosine - lamp->cos_outer) /
-            vkr_max_f32(lamp->cos_inner - lamp->cos_outer, 1.0e-4f),
-        0.0f, 1.0f);
-    metric *= cone * cone;
-  }
-  return metric;
 }
 
 static void vkr_lightmap_set_write_instance(uint8_t *dst,
@@ -454,24 +366,15 @@ bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
         instances + (uint64_t)i * VKR_LIGHTMAP_SET_INSTANCE_BYTES,
         &set->instances[i]);
   }
-  for (uint32_t i = 0u; i < set->stationary_count; ++i) {
-    vkr_lightmap_set_write_stationary(out_prefix + layout.stationary_offset +
-                                          (uint64_t)i *
-                                              VKR_LIGHTMAP_SET_STATIONARY_BYTES,
-                                      &set->stationary[i]);
-  }
-  for (uint32_t i = 0u; set->stationary_count != 0u && i < set->instance_count;
+  for (uint32_t i = 0u; set->direct_page_count != 0u && i < set->instance_count;
        ++i) {
-    uint8_t *record = out_prefix + layout.range_offset +
-                      (uint64_t)i * VKR_LIGHTMAP_SET_STATIONARY_RANGE_BYTES;
-    vkr_store_le_u32(record, set->candidate_ranges[i].first);
-    vkr_store_le_u32(record + 4u, set->candidate_ranges[i].count);
-  }
-  for (uint32_t i = 0u; i < set->candidate_count; ++i) {
-    uint8_t *record =
-        out_prefix + layout.candidate_offset + (uint64_t)i * sizeof(uint16_t);
-    record[0] = (uint8_t)(set->candidates[i] & 0xffu);
-    record[1] = (uint8_t)(set->candidates[i] >> 8u);
+    uint8_t *record = out_prefix + layout.direct_rect_offset +
+                      (uint64_t)i * VKR_LIGHTMAP_SET_DIRECT_RECT_BYTES;
+    vkr_store_le_u32(record, set->direct_rects[i].page);
+    vkr_store_le_u32(record + 4u, set->direct_rects[i].x);
+    vkr_store_le_u32(record + 8u, set->direct_rects[i].y);
+    vkr_store_le_u32(record + 12u, set->direct_rects[i].width);
+    vkr_store_le_u32(record + 16u, set->direct_rects[i].height);
   }
   const uint64_t tables_bytes =
       layout.tables_end - VKR_LIGHTMAP_SET_HEADER_BYTES;
@@ -493,12 +396,13 @@ bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
   vkr_store_le_u32(header + VKR_LIGHTMAP_SET_H_PLANE_COUNT, set->plane_count);
   vkr_store_le_u64(header + VKR_LIGHTMAP_SET_H_PLANE_OFFSET,
                    layout.plane_offset);
-  vkr_store_le_u32(header + VKR_LIGHTMAP_SET_H_STATIONARY_COUNT,
-                   set->stationary_count);
-  vkr_store_le_u32(header + VKR_LIGHTMAP_SET_H_CANDIDATE_COUNT,
-                   set->candidate_count);
-  vkr_store_le_u64(header + VKR_LIGHTMAP_SET_H_STATIONARY_OFFSET,
-                   layout.stationary_offset);
+  vkr_store_le_u32(header + VKR_LIGHTMAP_SET_H_DIRECT_PAGE_COUNT,
+                   set->direct_page_count);
+  vkr_store_le_f32(header + VKR_LIGHTMAP_SET_H_DIRECT_TEXELS_PER_UNIT,
+                   set->direct_page_count != 0u ? set->direct_texels_per_unit
+                                                : 0.0f);
+  vkr_store_le_u64(header + VKR_LIGHTMAP_SET_H_DIRECT_RECT_OFFSET,
+                   layout.direct_rect_offset);
   vkr_store_le_f32(header + VKR_LIGHTMAP_SET_H_TEXELS_PER_UNIT,
                    set->texels_per_unit);
   vkr_store_le_u64(header + VKR_LIGHTMAP_SET_H_LAYER_OFFSET,
@@ -539,7 +443,7 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
     return false_v;
   }
   for (uint32_t offset = version == VKR_LIGHTMAP_SET_VERSION_V4
-                             ? VKR_LIGHTMAP_SET_H_STATIONARY_COUNT
+                             ? VKR_LIGHTMAP_SET_H_DIRECT_PAGE_COUNT
                              : VKR_LIGHTMAP_SET_H_RESERVED_B;
        offset < VKR_LIGHTMAP_SET_HEADER_BYTES; ++offset) {
     if (header[offset] != 0u) {
@@ -556,10 +460,10 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
           vkr_load_le_u32(header + VKR_LIGHTMAP_SET_H_INSTANCE_COUNT),
       .texels_per_unit =
           vkr_load_le_f32(header + VKR_LIGHTMAP_SET_H_TEXELS_PER_UNIT),
-      .stationary_count =
-          vkr_load_le_u32(header + VKR_LIGHTMAP_SET_H_STATIONARY_COUNT),
-      .candidate_count =
-          vkr_load_le_u32(header + VKR_LIGHTMAP_SET_H_CANDIDATE_COUNT),
+      .direct_page_count =
+          vkr_load_le_u32(header + VKR_LIGHTMAP_SET_H_DIRECT_PAGE_COUNT),
+      .direct_texels_per_unit =
+          vkr_load_le_f32(header + VKR_LIGHTMAP_SET_H_DIRECT_TEXELS_PER_UNIT),
   };
   const uint64_t plane_offset =
       VKR_LIGHTMAP_SET_HEADER_BYTES +
@@ -601,8 +505,8 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
       vkr_load_le_u64(header + VKR_LIGHTMAP_SET_H_INSTANCE_OFFSET) !=
           layout.instance_offset ||
       (version != VKR_LIGHTMAP_SET_VERSION_V4 &&
-       vkr_load_le_u64(header + VKR_LIGHTMAP_SET_H_STATIONARY_OFFSET) !=
-           layout.stationary_offset) ||
+       vkr_load_le_u64(header + VKR_LIGHTMAP_SET_H_DIRECT_RECT_OFFSET) !=
+           layout.direct_rect_offset) ||
       vkr_load_le_u64(header + VKR_LIGHTMAP_SET_H_PAYLOAD_OFFSET) !=
           layout.payload_offset ||
       vkr_load_le_u64(header + VKR_LIGHTMAP_SET_H_PAYLOAD_BYTES) !=
@@ -638,30 +542,15 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
         arena, (uint64_t)set.instance_count * sizeof(VkrLightmapInstance),
         ARENA_MEMORY_TAG_ARRAY);
   }
-  VkrLightmapStationaryLamp *stationary = NULL;
-  VkrLightmapStationaryRange *ranges = NULL;
-  uint16_t *candidates = NULL;
-  if (set.stationary_count != 0u) {
-    stationary = (VkrLightmapStationaryLamp *)arena_alloc(
-        arena,
-        (uint64_t)set.stationary_count * sizeof(VkrLightmapStationaryLamp),
+  VkrLightmapDirectRect *direct_rects = NULL;
+  if (set.direct_page_count != 0u && set.instance_count != 0u) {
+    direct_rects = (VkrLightmapDirectRect *)arena_alloc(
+        arena, (uint64_t)set.instance_count * sizeof(VkrLightmapDirectRect),
         ARENA_MEMORY_TAG_ARRAY);
-    if (set.instance_count != 0u) {
-      ranges = (VkrLightmapStationaryRange *)arena_alloc(
-          arena,
-          (uint64_t)set.instance_count * sizeof(VkrLightmapStationaryRange),
-          ARENA_MEMORY_TAG_ARRAY);
-    }
-    if (set.candidate_count != 0u) {
-      candidates = (uint16_t *)arena_alloc(
-          arena, (uint64_t)set.candidate_count * sizeof(uint16_t),
-          ARENA_MEMORY_TAG_ARRAY);
-    }
   }
   if (!layers || (set.instance_count != 0u && !instances) ||
-      (set.stationary_count != 0u && !stationary) ||
-      (set.stationary_count != 0u && set.instance_count != 0u && !ranges) ||
-      (set.candidate_count != 0u && !candidates)) {
+      (set.direct_page_count != 0u && set.instance_count != 0u &&
+       !direct_rects)) {
     return false_v;
   }
   for (uint32_t i = 0u; i < set.layer_count; ++i) {
@@ -685,29 +574,20 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
     };
     MemCopy(instances[i].document_id, src, sizeof(instances[i].document_id));
   }
-  for (uint32_t i = 0u; i < set.stationary_count; ++i) {
-    stationary[i] = vkr_lightmap_set_read_stationary(
-        bytes + layout.stationary_offset +
-        (uint64_t)i * VKR_LIGHTMAP_SET_STATIONARY_BYTES);
-  }
-  for (uint32_t i = 0u; ranges && i < set.instance_count; ++i) {
-    const uint8_t *src = bytes + layout.range_offset +
-                         (uint64_t)i * VKR_LIGHTMAP_SET_STATIONARY_RANGE_BYTES;
-    ranges[i] = (VkrLightmapStationaryRange){
-        .first = vkr_load_le_u32(src),
-        .count = vkr_load_le_u32(src + 4u),
+  for (uint32_t i = 0u; direct_rects && i < set.instance_count; ++i) {
+    const uint8_t *src = bytes + layout.direct_rect_offset +
+                         (uint64_t)i * VKR_LIGHTMAP_SET_DIRECT_RECT_BYTES;
+    direct_rects[i] = (VkrLightmapDirectRect){
+        .page = vkr_load_le_u32(src),
+        .x = vkr_load_le_u32(src + 4u),
+        .y = vkr_load_le_u32(src + 8u),
+        .width = vkr_load_le_u32(src + 12u),
+        .height = vkr_load_le_u32(src + 16u),
     };
-  }
-  for (uint32_t i = 0u; i < set.candidate_count; ++i) {
-    const uint8_t *src =
-        bytes + layout.candidate_offset + (uint64_t)i * sizeof(uint16_t);
-    candidates[i] = (uint16_t)(src[0] | ((uint16_t)src[1] << 8u));
   }
   set.layers = layers;
   set.instances = instances;
-  set.stationary = stationary;
-  set.candidate_ranges = ranges;
-  set.candidates = candidates;
+  set.direct_rects = direct_rects;
   set.payload = payload;
   if (!vkr_lightmap_set_tables_valid(&set)) {
     return false_v;

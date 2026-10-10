@@ -86,7 +86,7 @@ struct VkrLightmapRect {
     uint page;
     uint origin;
     uint extent;
-    uint stationary;
+    uint reserved;
 };
 
 // Mirrors VkrMetalPacketLightmap in vkr_metal_packet_abi.h (ADR-088). Only
@@ -100,12 +100,15 @@ struct VkrMetalPacketLightmap {
     uint active_layer_count;
     uint4 active_layers[2];
     float4 active_weights[2];
-    uint64_t shadow_mask;
-    uint64_t stationary;
-    uint64_t candidates;
-    uint stationary_count;
-    uint shadowed_count;
-    uint4 shadowed[2];
+    uint64_t lamp_direct;
+    VkrLightmapRect* direct_rects;
+    uint4 active_direct[2];
+    uint direct_layer_count;
+    uint baked_lamp_count;
+    uint reserved0;
+    uint reserved1;
+    // Two VkrMetalPacketBakedLamp rows, which only MSL reads.
+    float4 baked_lamps[10];
 };
 
 // Mirrors VkrMetalPacketDecals in vkr_metal_packet_abi.h (ADR-092). Only MSL

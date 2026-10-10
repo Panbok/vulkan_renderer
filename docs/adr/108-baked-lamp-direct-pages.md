@@ -1,0 +1,145 @@
+---
+status: partial
+updated: 2026-10-10
+authority: adr
+---
+
+# ADR-108: Baked lamp direct pages
+
+## Status
+
+Accepted (partial). On the tiled pipeline (Metal), a lightmap set bakes each
+lamp group's direct light on its own pages at a higher texel density, and
+the forward shader samples them bicubically. Lamps with an emitter radius
+bake soft shadows on both bakers. Moving casters shadow the two baked lamps
+that light them most on the tiled pipeline as they do on the desktop
+pipeline ([ADR-104](104-desktop-baked-lamps.md)). The Metal bake and runtime
+ran on the M1 Pro. The Vulkan kernel change compiles only. Of the tiled
+moving-caster shadows, one capture pair shows a fan's shadow; the level
+itself has no moving casters (see Consequences).
+
+## Context
+
+On the tiled pipeline a scene with a lightmap set lights its static lamps
+only through the lightmap ([ADR-087](087-gpu-class-graphics-pipelines.md)
+decision 11). A lamp group's direct light and its bounce shared one plane at
+8 texels per metre (12.5 cm per texel), smoothed and sampled bilinearly, so
+the zero-radius lamps of the Testbed project's "Level Design Test" scene cast
+blurred, stepped shadows at every Shadow quality (user report, 2026-10-10).
+Stationary lamps ([ADR-107](107-stationary-lamps.md)) shaded the lamps at
+runtime instead; the owner's review found ownership seams, pixelation on
+Epic and a halved frame rate.
+
+Owner decision (2026-10-10): bake every static lamp again, its shadows
+included, at a higher density for direct light, with bicubic sampling and
+lamp-size penumbrae; moving objects, such as the player and physics bodies,
+take runtime shadows from the lamps that light them most.
+
+## Decision
+
+1. **Lamp-direct pages.** A tiled bake with `--direct-texels-per-unit`
+   above zero (Bakery's default 16; the Bake settings window's "Lamp shadow
+   density") packs the lightmapped instances that a lamp group's lamps may
+   reach a second time at that density
+   ([`vkr_lightmap_baker.cpp`](../../tools/vkr_lightmap_baker.cpp),
+   `lamp_lit_instances`). Each lamp group with lights then gathers only its
+   bounce, sky and emission on the regular pages, and its direct light on
+   the lamp-direct pages through a direct-only gather: the texel direct
+   term's 3×3 footprint grid and, for buried-texel detection, first hits
+   only (`bake_direct_pages`, flag 64 of the gather kernels). Buried texels
+   take their neighbours' light; nothing is smoothed. The pages encode as
+   ASTC 4×4 HDR.
+2. **Soft lamp shadows.** A point or spot lamp's `source_radius` reaches
+   the bake. The texel direct term casts 4 shadow rays from each footprint
+   point toward a golden-angle spiral on the lamp's disc facing the
+   receiver, and a bounce path casts one toward a random disc point
+   (`sphere_light_point` in
+   [`vkr_bake_metal.mm`](../../tools/bake/vkr_bake_metal.mm) and
+   [`vkr_bake_lightmap.slang`](../../tools/bake/vkr_bake_lightmap.slang)).
+   The unshadowed light stays the point light's. A zero radius bakes as
+   before, with the same random draws.
+3. **VKLM v5** ([`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h)):
+   `VKR_LIGHTMAP_PLANE_LAMP_DIRECT` planes on lamp groups; the header names
+   the lamp-direct page count, density and rectangle table (bytes 104 to
+   119); each instance has a 20-byte rectangle on those pages, all zero for
+   an instance no lamp reaches; the lamp-direct pages follow every other
+   page in the payload. Version 4 files still decode.
+4. **Runtime.** The loader uploads the lamp-direct pages as a second 2D
+   array, slice page × planes + plane, and the rectangles
+   ([`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c));
+   the frame's lightmap binding names each active layer's plane. The tiled
+   vertex stage maps the draw's lightmap UV into its lamp-direct rectangle,
+   and the fragment adds the plane to its layer's irradiance through a cubic
+   B-spline of four bilinear taps (`vkr_metal_tiled_lamp_direct` in
+   [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)).
+5. **Moving casters.** The lighting system's baked shadow-casting lamps
+   reach the local shadow resolve on both pipeline classes, so the two that
+   light the moving casters most take static and composite shadow views
+   (ADR-104). Frames with such lamps take the tiled `CASTERS` variant (every
+   dynamic light, as the ALL variant), which subtracts from a lightmapped
+   surface's irradiance each lamp's light times its static view's
+   visibility minus its composite view's, through the tiled tent filter
+   (`vkr_metal_tiled_moving_shadow`); the inspection variant does too.
+
+## Consequences
+
+- Lamp shadows show no texel steps; their softness follows the lamp's
+  radius and the lamp-direct density, not Shadow quality.
+- A frame samples four more bilinear taps per active lamp group on
+  lightmapped surfaces.
+- The level's set grew from 101 MB to 319 MB: 13 lamp-direct pages of 4096²
+  for 132 million rectangle texels, of which the triangles cover about a
+  quarter; every instance there lies within a lamp's range.
+- The editor saves this level in about 10 minutes after the lamp edits,
+  which the bake's own `scene.save` does not need.
+- In this level only the player moves, and the first-person player body is
+  hidden, so it casts no shadow and the `CASTERS` variant does not run.
+  Brushes under a `mover` (doors, lifts, the tram, fans) stay out of the
+  bake (ADR-088) and are static shadow casters at runtime, so they cast no
+  lamp shadow on the tiled pipeline, as before this ADR. Classifying them
+  as moving casters showed their shadows but forced the sun cascades,
+  which redraw whole while a moving caster is in them, to redraw every
+  frame: passes rose from 2.2 to 5.4 ms in the lobby view below.
+
+## Alternatives considered
+
+- **Stationary lamps** ([ADR-107](107-stationary-lamps.md)): removed.
+- **Baked distance-field shadows**: crisp edges at low density with a few
+  runtime-lit lamps per surface; the owner chose the plain bake.
+- **The whole lightmap at 16 texels per metre**: four times the indirect
+  bake time and memory for the same direct result.
+
+## Evidence and remaining checks
+
+Release, M1 Pro, Metal, 2026-10-10; local and non-authoritative.
+
+- **CPU.** `vulkan_renderer_tester --suite run_lightmap_bake_tests`
+  (`test_lightmap_set_lamp_direct_round_trip_and_rejects`: lamp-direct
+  pages after the other pages, rectangles and plane lookup survive a round
+  trip; a lamp-direct plane without pages, pages without a plane, a plane on
+  a sun key and a rectangle off its page are rejected; an all-zero rectangle
+  is accepted), `run_scene_loader_tests`, `run_metal_packet_abi_tests`,
+  `run_metal_material_tests`, `run_lighting_system_tests`,
+  `run_shadow_system_tests` and `run_scene_edit_tests` pass in Debug.
+- **Vulkan sources.** `slangc` compiles `lightmap_gather`, `probe_gather`
+  and `lightmap_trace_benchmark`; none ran.
+- **Bake.** The editor's `lighting.bake` of the Level Design Test scene
+  (lamp `source_radius` 0.25, volume spacing 1.5): the lightmap job took
+  about 181 s, of which the lamp-direct pages 43.6 s; set 318,982,400 bytes.
+- **Captures.** The headless editor at Epic shows soft lamp shadows without
+  texel steps in the lobby, at the reception chairs and in the cafeteria.
+- **Moving casters.** With a temporary build that made mover brushes
+  moving casters, a fan under the hall ceiling cast a soft runtime shadow
+  of a baked lamp on the ceiling that disappears when the fan's mover is
+  removed (Edit mode, Epic).
+- **Timing.** The headless editor's Scene view at Epic with
+  `VKR_RG_GPU_TIMING=1`, median of the last 40 frames, against the
+  stationary build's frames with the stationary shading left out, which
+  matched the baked frame (ADR-107): lobby passes 2.17 against 2.09 ms,
+  `Tiled.Opaque` 1.20 against 1.11 ms; cafeteria passes 2.21 against
+  2.05 ms, `Tiled.Opaque` 0.98 against 0.85 ms. Stationary lamps took
+  3.57 and 2.80 ms. Not a matched Release A/B of the same commit; no
+  timing here is authoritative.
+- **Unavailable.** Metal shader validation aborts the editor on this level
+  (a residency-set limit that predates this ADR); the Vulkan bake and the
+  desktop runtime did not run.

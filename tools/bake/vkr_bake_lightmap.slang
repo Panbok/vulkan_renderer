@@ -115,8 +115,8 @@ struct GpuLight
     float4 up_half_height;
     /* x cos inner, y cos outer, z casts shadow, w enabled. */
     float4 cone;
-    /* x one for a stationary light (ADR-107); yzw unused. */
-    float4 stationary;
+    /* x a point or spot light's emitter radius (ADR-108); yzw unused. */
+    float4 source;
 };
 
 /* Every member is a 32-bit scalar, so std140 and std430 lay it out alike;
@@ -726,11 +726,30 @@ float3 leave_surface(float3 position, float3 geometric, float3 direction)
     return position + geometric * (side * 1.0e-3f);
 }
 
+/* Shadow rays a texel's direct term casts toward each footprint point's
+   view of a sphere light (ADR-108); bounce paths cast one. */
+static const uint kSoftShadowRays = 4u;
+
+/* The k-th of `count` points on a sphere light's disc facing the receiver:
+   a golden-angle spiral of equal-area rings turned by `turn` radians. */
+float3 sphere_light_point(float3 center, float radius, float3 toward_receiver,
+                          uint k, uint count, float turn)
+{
+    float3 axis = normalize(toward_receiver);
+    float3 reference = abs(axis.y) < 0.9f ? float3(0.0f, 1.0f, 0.0f)
+                                          : float3(1.0f, 0.0f, 0.0f);
+    float3 u = normalize(cross(reference, axis));
+    float3 v = cross(axis, u);
+    float r = radius * sqrt((float(k) + 0.5f) / float(count));
+    float angle = float(k) * 2.39996323f + turn;
+    return center + (u * cos(angle) + v * sin(angle)) * r;
+}
+
 /* Direct irradiance from the layer lights [first_light, end_light) at a
-   point with this normal, without stationary lights when
-   `skip_stationary`: a Vulkan host bakes desktop sets, which light them at
-   runtime everywhere (ADR-107); the Metal kernel's ownership mode has no
-   counterpart here. As in the CPU integrator, a light above the shading
+   point with this normal. A point or spot light with an emitter radius is
+   seen through `soft_rays` shadow rays across its disc, so its shadow takes
+   the penumbra of a sphere light; its unshadowed light stays the point
+   light's. As in the CPU integrator, a light above the shading
    normal counts even when it is below the geometric surface; its shadow ray
    leaves on the light's side. With a positive `direction_weight`, each
    light's contribution also adds its luminance times that weight, times its
@@ -738,16 +757,12 @@ float3 leave_surface(float3 position, float3 geometric, float3 direction)
 float3 direct_irradiance(Transport transport, uint first_light, uint end_light,
                          float3 position, float3 normal, float3 geometric,
                          inout Rng rng, inout float4 direction_sum,
-                         float direction_weight, bool skip_stationary)
+                         float direction_weight, uint soft_rays)
 {
     float3 result = float3(0.0f);
     for (uint i = first_light; i < end_light; ++i)
     {
         GpuLight light = lights[layer_lights[i]];
-        if (skip_stationary && light.stationary.x != 0.0f)
-        {
-            continue;
-        }
         LightSample sample = sample_light(light, position, rng);
         if (!sample.valid)
         {
@@ -764,7 +779,42 @@ float3 direct_irradiance(Transport transport, uint first_light, uint end_light,
             isinf(sample.distance)
                 ? infinity()
                 : sample.distance - 2.0e-3f - punctual_occluder_clip(light);
-        if ((rectangle || light.cone.z != 0.0f) && shadow_distance > 0.0f)
+        float radius = light.source.x;
+        if (!rectangle && radius > 0.0f && !isinf(sample.distance) &&
+            light.cone.z != 0.0f && shadow_distance > 0.0f)
+        {
+            /* One random disc point, or a turned spiral of `soft_rays`; the
+               draws in Metal's order. */
+            uint count = max(soft_rays, 1u);
+            float turn = 6.28318531f * rng.next();
+            float3 center = position + sample.direction * sample.distance;
+            float3 origin = leave_surface(position, geometric, sample.direction);
+            visibility = float3(0.0f);
+            for (uint k = 0u; k < count; ++k)
+            {
+                uint index = k;
+                uint total = count;
+                if (count <= 1u)
+                {
+                    index = uint(rng.next() * 64.0f);
+                    total = 64u;
+                }
+                float3 target = sphere_light_point(center, radius,
+                                                   position - center, index,
+                                                   total, turn);
+                float3 to_target = target - origin;
+                float target_distance = length(to_target);
+                float3 direction = to_target / max(target_distance, 1.0e-6f);
+                float ray_distance =
+                    target_distance - 2.0e-3f - punctual_occluder_clip(light);
+                visibility += ray_distance > 0.0f
+                                  ? shadow_transmittance(transport, origin,
+                                                         direction, ray_distance)
+                                  : float3(1.0f);
+            }
+            visibility /= float(count);
+        }
+        else if ((rectangle || light.cone.z != 0.0f) && shadow_distance > 0.0f)
         {
             float3 origin = leave_surface(position, geometric, sample.direction);
             visibility = shadow_transmittance(
@@ -876,7 +926,7 @@ float3 path_radiance(Transport transport, float3 origin, float3 direction,
         radiance += throughput * albedo * (1.0f / kPi) *
                     direct_irradiance(transport, 0u, transport.light_count,
                                       hit.position, hit.normal, hit.geometric,
-                                      rng, untracked, 0.0f, false);
+                                      rng, untracked, 0.0f, 1u);
         throughput *= albedo;
         /* As in the CPU integrator, a direction sampled about the shading
            normal continues even below the geometric surface. */
@@ -936,6 +986,7 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
     bool use_occlusion = (args.flags & 8u) != 0u;
     bool use_backface = (args.flags & 16u) != 0u;
     bool use_direction = (args.flags & 32u) != 0u;
+    bool direct_only = (args.flags & 64u) != 0u;
     bool first_run = args.first_sample == 0u;
     float4 direction_sum = float4(0.0f);
     uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
@@ -964,7 +1015,7 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
                 direct_total += direct_irradiance(
                     transport, 0u, args.rectangle_first, point, texel_normal,
                     texel_normal, unused, point_directions,
-                    use_direction ? 1.0f : 0.0f, true);
+                    use_direction ? 1.0f : 0.0f, kSoftShadowRays);
                 points += 1.0f;
             }
         }
@@ -1004,13 +1055,23 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
                 direct_irradiance(transport, args.rectangle_first,
                                   args.light_count, point, texel_normal,
                                   texel_normal, rng, direction_sum,
-                                  use_direction ? inverse_samples : 0.0f,
-                                  true);
+                                  use_direction ? inverse_samples : 0.0f, 1u);
         }
         float first_draw = rng.next();
         float second_draw = rng.next();
         float3 direction =
             cosine_direction(texel_normal, first_draw, second_draw);
+        if (direct_only)
+        {
+            /* A direct-only gather still finds buried texels by their first
+               hits. */
+            if (use_backface)
+            {
+                Hit hit = trace_surface(transport, origin, direction, rng);
+                backface_hits += hit.found && hit.back_face ? 1.0f : 0.0f;
+            }
+            continue;
+        }
         FirstHit first;
         float3 radiance = path_radiance(transport, origin, direction, rng, first);
         if (first.found)

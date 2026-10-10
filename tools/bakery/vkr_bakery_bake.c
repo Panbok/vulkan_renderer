@@ -1426,6 +1426,9 @@ typedef struct VkrBakeLightmap {
   int64_t seed;
   int64_t page_size;
   float64_t texels_per_unit;
+  /* The tiled class's lamp-direct pages' density (ADR-108); zero bakes lamp
+     direct light into the lamp groups' irradiance. */
+  float64_t direct_texels_per_unit;
   /* Indirect-light denoising (ADR-088): on or off, its a-trous passes, and
      the largest luminance one indirect sample keeps (zero keeps all). */
   int64_t denoise;
@@ -1453,6 +1456,12 @@ vkr_internal bool8_t vkr_bake_lightmap_validate(VkrBake *bake,
       args->texels_per_unit > 1024.0) {
     return vkr_bake_fail(bake, "--texels-per-unit must be finite and in "
                                "(0, 1024]");
+  }
+  if (!isfinite(args->direct_texels_per_unit) ||
+      args->direct_texels_per_unit < 0.0 ||
+      args->direct_texels_per_unit > 1024.0) {
+    return vkr_bake_fail(bake, "--direct-texels-per-unit must be finite and "
+                               "in [0, 1024]");
   }
   if (args->denoise < 0 || args->denoise > 1 || args->denoise_iterations < 0 ||
       args->denoise_iterations > 8) {
@@ -1484,6 +1493,9 @@ vkr_internal void vkr_bake_lightmap_arguments(VkrBake *bake,
   vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->page_size));
   vkr_bake_push(out, "--texels-per-unit");
   vkr_bake_push(out, vkr_bake_printf(bake, "%.9g", args->texels_per_unit));
+  vkr_bake_push(out, "--direct-texels-per-unit");
+  vkr_bake_push(out,
+                vkr_bake_printf(bake, "%.9g", args->direct_texels_per_unit));
   vkr_bake_push(out, "--denoise");
   vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->denoise));
   vkr_bake_push(out, "--denoise-iterations");
@@ -1507,6 +1519,9 @@ vkr_bake_lightmap_recipe(VkrBake *bake, const VkrBakeLightmap *args) {
                       vkr_bakery_json_int(arena, args->page_size));
   vkr_bakery_json_set(arena, recipe, "texels_per_unit",
                       vkr_bakery_json_float(arena, args->texels_per_unit));
+  vkr_bakery_json_set(
+      arena, recipe, "direct_texels_per_unit",
+      vkr_bakery_json_float(arena, args->direct_texels_per_unit));
   vkr_bakery_json_set(arena, recipe, "denoise",
                       vkr_bakery_json_int(arena, args->denoise));
   vkr_bakery_json_set(arena, recipe, "denoise_iterations",
@@ -1718,6 +1733,7 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
                           .seed = 1,
                           .page_size = 4096,
                           .texels_per_unit = 8.0,
+                          .direct_texels_per_unit = 16.0,
                           .denoise = 1,
                           .denoise_iterations = 4,
                           .indirect_clamp = 0.0};
@@ -1746,6 +1762,9 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
       ok = vkr_bake_parse_integer(argv, argc, &i, &args.page_size);
     } else if (!strcmp(flag, "--texels-per-unit")) {
       ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.texels_per_unit);
+    } else if (!strcmp(flag, "--direct-texels-per-unit")) {
+      ok = vkr_bake_parse_numbers(argv, argc, &i, 1u,
+                                  &args.direct_texels_per_unit);
     } else if (!strcmp(flag, "--denoise")) {
       ok = vkr_bake_parse_integer(argv, argc, &i, &args.denoise);
     } else if (!strcmp(flag, "--denoise-iterations")) {

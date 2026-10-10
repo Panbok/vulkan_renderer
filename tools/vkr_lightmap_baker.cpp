@@ -14,7 +14,6 @@ extern "C" {
 #include "bake/vkr_bake_layers.h"
 #include "bake/vkr_bake_lightmap.h"
 #include "bake/vkr_bake_scene.h"
-#include "bake/vkr_bake_stationary.h"
 #include "filesystem/vkr_filesystem_cpp.h"
 #include "vkr_ibl_math.h"
 
@@ -72,6 +71,9 @@ constexpr uint32_t kRussianRouletteDepth = 2u;
    often than this lies inside a solid, such as floor under a wall, and takes
    its same-surface neighbors' light instead of its own. */
 constexpr float32_t kBuriedBackfaceFraction = 0.5f;
+/* Samples per texel of a lamp-direct gather (ADR-108): first hits that find
+   buried texels and footprint points of rectangle lights. */
+constexpr uint32_t kDirectSamples = 8u;
 /* World distance within which a first bounce occludes for the ambient
    occlusion every tiled layer's alpha carries (ADR-088). */
 constexpr float32_t kOcclusionRadius = 1.0f;
@@ -127,6 +129,9 @@ struct Options {
   bool inspect = false;
   uint32_t page_size = 4096u;
   float32_t texels_per_unit = 8.0f;
+  /* Density of the tiled class's lamp-direct pages (ADR-108); zero bakes
+     lamp direct light into the lamp groups' irradiance instead. */
+  float32_t direct_texels_per_unit = 0.0f;
   uint32_t samples = 16u;
   uint32_t max_depth = 4u;
   uint32_t pages = UINT32_MAX;
@@ -172,7 +177,9 @@ void usage() {
       stderr,
       "Lightmap baker: --scene <scene.json> [--output <set.vklm>] "
       "[--manifest <path>] [--inspect] [--page-size <texels>] "
-      "[--texels-per-unit <world density>] [--samples <n>] [--max-depth <n>] "
+      "[--texels-per-unit <world density>] "
+      "[--direct-texels-per-unit <world density, 0 off>] [--samples <n>] "
+      "[--max-depth <n>] "
       "[--pages <n>] [--threads <n>] [--seed <n>] [--gpu <trace|gather>] "
       "[--check-texels <n>] [--check-samples <n>] "
       "[--check-transport <all|sky|sun|lamps>] [--astc-effort <0-100>] "
@@ -230,6 +237,10 @@ bool parse(int argc, char **argv, Options *options) {
       }
     } else if (std::strcmp(flag, "--texels-per-unit") == 0) {
       options->texels_per_unit = std::strtof(value, nullptr);
+    } else if (std::strcmp(flag, "--direct-texels-per-unit") == 0) {
+      if (!parse_nonnegative(value, &options->direct_texels_per_unit)) {
+        return false;
+      }
     } else if (std::strcmp(flag, "--samples") == 0) {
       if (!parse_u32(value, &options->samples)) {
         return false;
@@ -368,7 +379,8 @@ bool parse(int argc, char **argv, Options *options) {
          options->check_samples > 0u && options->max_depth > 0u &&
          options->max_depth <= VKR_BAKE_INTEGRATOR_MAX_DEPTH &&
          std::isfinite(options->texels_per_unit) &&
-         options->texels_per_unit > 0.0f;
+         options->texels_per_unit > 0.0f &&
+         options->direct_texels_per_unit <= 1024.0f;
 }
 
 uint32_t mix_seed(uint32_t x) {
@@ -1039,35 +1051,168 @@ BakeLayer gpu_layer(const VkrBakeLayerPlan &plan) {
 }
 
 /*
- * Gathers a page's stationary shadow mask (ADR-107), fills its buried
- * texels from their neighbors as the layers do, lays it out as
- * vkr_bake_lightmap_compose_page does (channels 0 to 2 as color, channel 3
- * as alpha) and encodes it as ASTC 4x4 LDR into `blocks`.
+ * The lightmapped instances a lamp of a lamp-direct layer may light: those
+ * whose world bounds a point or spot lamp's range reaches, and every one
+ * when a lamp has no range or is a rectangle.
  */
-bool write_mask_page(const Options &options, VkrBakeGpuContext *gpu,
-                     const VkrBakeLightmapLayout &layout, uint32_t page,
-                     const std::vector<VkrBakeLightmapTexel> &texels,
-                     const VkrBakeLightmapFill &fill, uint32_t threads,
-                     std::vector<float32_t> *rgba, std::vector<uint8_t> *blocks,
-                     double *out_gpu_seconds) {
-  std::vector<Vec4> mask;
-  if (!vkr_bake_gpu_stationary_mask(gpu, texels, &mask, out_gpu_seconds)) {
-    std::fprintf(stderr, "The stationary shadow mask of page %u failed\n",
-                 page + 1u);
-    return false;
+std::vector<VkrBakeLightmapInstance>
+lamp_lit_instances(const VkrBakeScene &scene,
+                   const std::vector<BakeLayer> &layers,
+                   const std::vector<uint8_t> &lamp_direct) {
+  std::vector<uint32_t> lights;
+  bool unbounded = false;
+  for (size_t l = 0u; l < layers.size(); ++l) {
+    if (!lamp_direct[l]) {
+      continue;
+    }
+    for (uint32_t light : layers[l].transport.lights) {
+      const VkrBakeSceneLight &lamp = scene.lights[light];
+      const bool bounded = (lamp.kind == VkrBakeSceneLightKind::Point ||
+                            lamp.kind == VkrBakeSceneLightKind::Spot) &&
+                           lamp.range > 0.0f;
+      unbounded = unbounded || !bounded;
+      lights.push_back(light);
+    }
   }
-  std::vector<Vec3> color(mask.size());
-  std::vector<float32_t> alpha(mask.size());
-  for (size_t i = 0u; i < mask.size(); ++i) {
-    color[i] = vec3_new(mask[i].x, mask[i].y, mask[i].z);
-    alpha[i] = mask[i].w;
+  if (unbounded) {
+    return scene.lightmap_instances;
   }
-  vkr_bake_lightmap_apply_fill(fill, &color);
-  vkr_bake_lightmap_apply_fill(fill, &alpha);
-  return vkr_bake_lightmap_compose_page(layout, page, texels, color, &alpha,
-                                        options.dilation_passes, rgba) &&
-         vkr_bake_lightmap_encode_astc_ldr(
-             *rgba, layout.page_size, options.astc_effort, threads, blocks);
+  uint32_t source_count = 0u;
+  for (const VkrBakeLightmapInstance &instance : scene.lightmap_instances) {
+    source_count = std::max(source_count, instance.source_instance_index + 1u);
+  }
+  std::vector<Vec3> box_min(source_count,
+                            vec3_new(INFINITY, INFINITY, INFINITY));
+  std::vector<Vec3> box_max(source_count,
+                            vec3_new(-INFINITY, -INFINITY, -INFINITY));
+  for (const VkrBakeTriangle &triangle : scene.triangles) {
+    const uint32_t s = triangle.source_instance_index;
+    if (s >= source_count) {
+      continue;
+    }
+    for (const VkrBakeVertex &vertex : triangle.vertex) {
+      box_min[s] = vec3_new(std::min(box_min[s].x, vertex.position.x),
+                            std::min(box_min[s].y, vertex.position.y),
+                            std::min(box_min[s].z, vertex.position.z));
+      box_max[s] = vec3_new(std::max(box_max[s].x, vertex.position.x),
+                            std::max(box_max[s].y, vertex.position.y),
+                            std::max(box_max[s].z, vertex.position.z));
+    }
+  }
+  std::vector<VkrBakeLightmapInstance> lit;
+  for (const VkrBakeLightmapInstance &instance : scene.lightmap_instances) {
+    const uint32_t s = instance.source_instance_index;
+    for (uint32_t light : lights) {
+      const VkrBakeSceneLight &lamp = scene.lights[light];
+      const Vec3 p = lamp.position;
+      const float32_t dx =
+          std::max(std::max(box_min[s].x - p.x, 0.0f), p.x - box_max[s].x);
+      const float32_t dy =
+          std::max(std::max(box_min[s].y - p.y, 0.0f), p.y - box_max[s].y);
+      const float32_t dz =
+          std::max(std::max(box_min[s].z - p.z, 0.0f), p.z - box_max[s].z);
+      if (dx * dx + dy * dy + dz * dz < lamp.range * lamp.range) {
+        lit.push_back(instance);
+        break;
+      }
+    }
+  }
+  return lit;
+}
+
+/*
+ * Bakes and streams the lamp-direct pages (ADR-108): per page, each lamp
+ * group's direct light at the texels of the lamp-direct layout, gathered
+ * without indirect light. Buried texels, found by the first group's
+ * first-hit back faces, take their neighbors' light; nothing is smoothed,
+ * so shadow edges keep the footprint grid's and the emitter's own softness.
+ */
+bool bake_direct_pages(const Options &options, VkrBakeScene &scene,
+                       VkrBakeGpuContext *gpu,
+                       const std::vector<BakeLayer> &layers,
+                       const std::vector<uint8_t> &lamp_direct,
+                       const VkrBakeLightmapLayout &direct_layout,
+                       uint32_t threads, std::ofstream *stream,
+                       uint32_t *payload_crc, double *out_gpu_seconds) {
+  (void)scene;
+  VkrBakeGpuGatherSettings settings;
+  /* Rectangle lights take one footprint point per sample. */
+  settings.samples = kDirectSamples;
+  settings.max_depth = 1u;
+  settings.rr_start_depth = 0u;
+  settings.seed = options.seed;
+  settings.direct_only = true;
+  std::vector<float32_t> rgba;
+  std::vector<uint8_t> blocks;
+  for (uint32_t page = 0u; page < direct_layout.page_count; ++page) {
+    std::vector<VkrBakeLightmapTexel> texels;
+    VkrBakeLightmapNeighbors neighbors;
+    if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
+                                          (uint32_t)scene.triangles.size(),
+                                          direct_layout, page, &texels) ||
+        !vkr_bake_lightmap_neighbors(direct_layout.page_size, texels,
+                                     kOutlierNeighborTexels /
+                                         options.direct_texels_per_unit,
+                                     &neighbors)) {
+      return false;
+    }
+    std::vector<uint8_t> valid(texels.size(), 1u);
+    VkrBakeLightmapFill fill;
+    bool planned = false;
+    for (size_t l = 0u; l < layers.size(); ++l) {
+      if (!lamp_direct[l]) {
+        continue;
+      }
+      VkrBakeGpuLayer transport = layers[l].transport;
+      transport.texel_direct = true;
+      transport.sky = false;
+      transport.emission = false;
+      settings.backface = !planned && options.buried_backface > 0.0f;
+      VkrBakeGpuGatherResult gathered;
+      if (!vkr_bake_gpu_gather(gpu, texels, transport, settings, &gathered)) {
+        return false;
+      }
+      *out_gpu_seconds += gathered.gpu_seconds;
+      if (!planned) {
+        for (size_t i = 0u; settings.backface && i < texels.size(); ++i) {
+          if (gathered.backface[i] > options.buried_backface) {
+            valid[i] = 0u;
+          }
+        }
+        if (!vkr_bake_lightmap_plan_fill(neighbors, valid, &fill)) {
+          return false;
+        }
+        planned = true;
+      }
+      vkr_bake_lightmap_apply_fill(fill, &gathered.direct);
+      if (!vkr_bake_lightmap_compose_page(direct_layout, page, texels,
+                                          gathered.direct, nullptr,
+                                          options.dilation_passes, &rgba) ||
+          !vkr_bake_lightmap_encode_astc_hdr(rgba, direct_layout.page_size,
+                                             options.astc_effort, threads,
+                                             &blocks)) {
+        return false;
+      }
+      *payload_crc = vkr_crc32_update(*payload_crc, blocks.data(),
+                                      (uint64_t)blocks.size());
+      stream->write((const char *)blocks.data(),
+                    (std::streamsize)blocks.size());
+      if (!*stream) {
+        return false;
+      }
+      float64_t luminance_sum = 0.0;
+      for (const Vec3 &value : gathered.direct) {
+        luminance_sum += luminance(value);
+      }
+      std::printf("direct page=%u/%u lamp_group=%s texels=%zu gpu_s=%.2f "
+                  "mean_luminance=%.5g\n",
+                  page + 1u, direct_layout.page_count, layers[l].record.name,
+                  texels.size(), gathered.gpu_seconds,
+                  texels.empty() ? 0.0 : luminance_sum / texels.size());
+      std::fflush(stdout);
+    }
+  }
+  return true;
 }
 
 /*
@@ -1299,7 +1444,7 @@ bool finish_directions(const Options &options,
  * gathered; the header and tables, which carry the payload checksum, are
  * written last. The file appears under its name only when complete.
  */
-int bake_set(const Options &options, VkrBakeScene &scene, const VkrBakeBvh &bvh,
+int bake_set(const Options &options, VkrBakeScene &scene,
              const VkrBakeLightmapLayout &layout) {
   if (layout.rects.empty()) {
     std::fprintf(stderr, "The scene has no lightmapped instances\n");
@@ -1359,12 +1504,46 @@ int bake_set(const Options &options, VkrBakeScene &scene, const VkrBakeBvh &bvh,
   for (const BakeLayer &layer : layers) {
     layer_records.push_back(layer.record);
   }
+  /* On the tiled class, a lamp group with lights takes its direct light on
+     the lamp-direct pages and keeps bounce, sky and emission in its
+     irradiance (ADR-108). */
+  std::vector<uint8_t> lamp_direct(layers.size(), 0u);
+  bool any_lamp_direct = false;
+  for (size_t l = 0u;
+       !desktop && options.direct_texels_per_unit > 0.0f && l < layers.size();
+       ++l) {
+    if (layers[l].record.kind == VKR_LIGHT_LAYER_LAMP_GROUP &&
+        !layers[l].transport.lights.empty()) {
+      lamp_direct[l] = 1u;
+      layers[l].transport.texel_direct = false;
+      any_lamp_direct = true;
+    }
+  }
+  VkrBakeLightmapLayout direct_layout;
+  if (any_lamp_direct &&
+      !vkr_bake_lightmap_pack(lamp_lit_instances(scene, layers, lamp_direct),
+                              layout.page_size, options.direct_texels_per_unit,
+                              &direct_layout)) {
+    std::fprintf(stderr, "Lamp-direct packing failed\n");
+    return 1;
+  }
+  /* No lamp reaches a lightmapped instance: the lamp groups keep their
+     direct light. */
+  if (any_lamp_direct && direct_layout.page_count == 0u) {
+    for (size_t l = 0u; l < layers.size(); ++l) {
+      if (lamp_direct[l]) {
+        lamp_direct[l] = 0u;
+        layers[l].transport.texel_direct = true;
+      }
+    }
+    any_lamp_direct = false;
+  }
   std::vector<uint32_t> lightmap_by_source(layout.rect_by_instance.size(),
                                            UINT32_MAX);
   for (uint32_t i = 0u; i < scene.lightmap_instances.size(); ++i) {
     lightmap_by_source[scene.lightmap_instances[i].source_instance_index] = i;
   }
-  /* Each set instance's source instance index, in set order. */
+  /* Each set instance with its source instance index, in set order. */
   std::vector<std::pair<VkrLightmapInstance, uint32_t>> keyed;
   for (const VkrBakeLightmapRect &rect : layout.rects) {
     const VkrBakeLightmapInstance &source =
@@ -1393,43 +1572,37 @@ int bake_set(const Options &options, VkrBakeScene &scene, const VkrBakeBvh &bvh,
               return a.first.instance_index < b.first.instance_index;
             });
   std::vector<VkrLightmapInstance> instances;
+  std::vector<VkrLightmapDirectRect> direct_rects;
   for (const auto &entry : keyed) {
     instances.push_back(entry.first);
+    /* An instance no lamp reaches has an empty lamp-direct rectangle. */
+    const uint32_t direct_index =
+        any_lamp_direct && entry.second < direct_layout.rect_by_instance.size()
+            ? direct_layout.rect_by_instance[entry.second]
+            : UINT32_MAX;
+    if (any_lamp_direct && direct_index != UINT32_MAX) {
+      const VkrBakeLightmapRect &rect = direct_layout.rects[direct_index];
+      direct_rects.push_back(
+          {rect.page, rect.x, rect.y, rect.width, rect.height});
+    } else if (any_lamp_direct) {
+      direct_rects.push_back({0u, 0u, 0u, 0u, 0u});
+    }
   }
-
-  /* Stationary lamps (ADR-107): a tiled set keeps their bounce and holds
-     their records, candidates and shadow mask; a desktop set keeps only
-     their bounce and the desktop runtime lights them everywhere. */
-  VkrBakeStationaryPlan stationary;
-  std::vector<VkrLightmapStationaryRange> candidate_ranges;
-  if (!desktop) {
-    if (!vkr_bake_plan_stationary(scene, bvh,
-                                  (uint32_t)layout.rect_by_instance.size(),
-                                  &stationary)) {
-      return 1;
+  if (any_lamp_direct) {
+    uint64_t direct_texels = 0u;
+    for (const VkrBakeLightmapRect &rect : direct_layout.rects) {
+      direct_texels += (uint64_t)rect.width * rect.height;
     }
-    for (const auto &entry : keyed) {
-      candidate_ranges.push_back(stationary.ranges_by_source[entry.second]);
-    }
-    uint32_t channeled = 0u;
-    for (const VkrLightmapStationaryLamp &lamp : stationary.lamps) {
-      channeled += lamp.channel < VKR_LIGHTMAP_STATIONARY_CHANNELS ? 1u : 0u;
-    }
-    std::printf("stationary_lamps=%zu with_channel=%u shared_channel=%u "
-                "reach=%zu candidate_slots=%zu\n",
-                stationary.lamps.size(), channeled,
-                stationary.shared_channel_lamps, stationary.reach.size(),
-                stationary.candidates.size());
+    std::printf("direct_pages=%u direct_texels_per_unit=%g "
+                "direct_rect_texels=%llu\n",
+                direct_layout.page_count, options.direct_texels_per_unit,
+                (unsigned long long)direct_texels);
   }
-  const bool bake_mask = !stationary.lamps.empty();
 
   const auto setup_start = std::chrono::steady_clock::now();
   std::unique_ptr<VkrBakeGpuContext, decltype(&vkr_bake_gpu_destroy)> gpu(
       vkr_bake_gpu_create(scene), vkr_bake_gpu_destroy);
   if (!gpu) {
-    return 1;
-  }
-  if (!vkr_bake_gpu_set_stationary(gpu.get(), stationary)) {
     return 1;
   }
   std::printf("gpu_setup_s=%.2f layers=%zu\n", seconds_since(setup_start),
@@ -1462,10 +1635,9 @@ int bake_set(const Options &options, VkrBakeScene &scene, const VkrBakeBvh &bvh,
     if (!desktop) {
       planes.push_back(
           {l, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR});
-      /* The stationary shadow mask rides on layer 0 (ADR-107). */
-      if (l == 0u && bake_mask) {
-        planes.push_back({0u, VKR_LIGHTMAP_PLANE_SHADOW_MASK,
-                          VKR_LIGHTMAP_FORMAT_ASTC_4X4_LDR});
+      if (lamp_direct[l]) {
+        planes.push_back({l, VKR_LIGHTMAP_PLANE_LAMP_DIRECT,
+                          VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR});
       }
       continue;
     }
@@ -1486,11 +1658,9 @@ int bake_set(const Options &options, VkrBakeScene &scene, const VkrBakeBvh &bvh,
   set.layers = layer_records.data();
   set.planes = planes.data();
   set.instances = instances.data();
-  set.stationary_count = (uint32_t)stationary.lamps.size();
-  set.candidate_count = (uint32_t)stationary.candidates.size();
-  set.stationary = stationary.lamps.data();
-  set.candidate_ranges = candidate_ranges.data();
-  set.candidates = stationary.candidates.data();
+  set.direct_page_count = any_lamp_direct ? direct_layout.page_count : 0u;
+  set.direct_texels_per_unit = options.direct_texels_per_unit;
+  set.direct_rects = direct_rects.data();
   uint64_t payload_offset = 0u;
   uint64_t file_size = 0u;
   if (!vkr_lightmap_set_layout(&set, &payload_offset, &file_size)) {
@@ -1545,13 +1715,6 @@ int bake_set(const Options &options, VkrBakeScene &scene, const VkrBakeBvh &bvh,
          vkr_bake_lightmap_neighbors(
              layout.page_size, texels,
              kOutlierNeighborTexels / options.texels_per_unit, &neighbors);
-    /* The page's instances choose their stationary candidates before the
-       gathers rank them (ADR-107). */
-    if (ok && bake_mask) {
-      ok =
-          vkr_bake_stationary_choose_candidates(&stationary, texels, threads) &&
-          vkr_bake_gpu_set_stationary(gpu.get(), stationary);
-    }
     /* The page's ambient occlusion and buried texels come from its first
        layer's first-bounce rays; occlusion goes into every layer's alpha, so
        whichever layers a frame weighs carry it (ADR-088), and every layer
@@ -1637,21 +1800,6 @@ int bake_set(const Options &options, VkrBakeScene &scene, const VkrBakeBvh &bvh,
       payload_crc =
           vkr_crc32_update(payload_crc, blocks.data(), (uint64_t)blocks.size());
       stream.write((const char *)blocks.data(), (std::streamsize)blocks.size());
-      if (l == 0u && bake_mask) {
-        double mask_seconds = 0.0;
-        ok = write_mask_page(options, gpu.get(), layout, page, texels, fill,
-                             threads, &rgba, &blocks, &mask_seconds);
-        gpu_seconds += mask_seconds;
-        if (!ok) {
-          break;
-        }
-        payload_crc = vkr_crc32_update(payload_crc, blocks.data(),
-                                       (uint64_t)blocks.size());
-        stream.write((const char *)blocks.data(),
-                     (std::streamsize)blocks.size());
-        std::printf("mask page=%u/%u gpu_s=%.2f\n", page + 1u,
-                    layout.page_count, mask_seconds);
-      }
       std::vector<Vec3> directions;
       float64_t mean_directionality = 0.0;
       BcReport direction_bc;
@@ -1722,20 +1870,19 @@ int bake_set(const Options &options, VkrBakeScene &scene, const VkrBakeBvh &bvh,
       std::fflush(stdout);
     }
   }
+  /* The lamp-direct pages follow every other page (ADR-108). */
+  if (ok && any_lamp_direct) {
+    const auto direct_start = std::chrono::steady_clock::now();
+    double direct_gpu_seconds = 0.0;
+    ok = bake_direct_pages(options, scene, gpu.get(), layers, lamp_direct,
+                           direct_layout, threads, &stream, &payload_crc,
+                           &direct_gpu_seconds);
+    gpu_seconds += direct_gpu_seconds;
+    std::printf("direct_s=%.2f direct_gpu_s=%.2f\n",
+                seconds_since(direct_start), direct_gpu_seconds);
+  }
   gpu.reset();
 
-  /* Every page chose its instances' candidates. */
-  for (size_t i = 0u; bake_mask && i < keyed.size(); ++i) {
-    candidate_ranges[i] = stationary.ranges_by_source[keyed[i].second];
-  }
-  if (bake_mask) {
-    uint64_t chosen = 0u;
-    for (const VkrLightmapStationaryRange &range : candidate_ranges) {
-      chosen += range.count;
-    }
-    std::printf("stationary candidates=%llu capped_instances=%u\n",
-                (unsigned long long)chosen, stationary.capped_instances);
-  }
   ok = ok && vkr_lightmap_set_write_prefix(&set, ~payload_crc, prefix.data(),
                                            prefix.size());
   if (ok) {
@@ -1773,7 +1920,6 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
                  scene.diagnostic.c_str());
     return 1;
   }
-  (void)vkr_bake_stationary_disable_unkeyed(&scene);
   if (scene.triangles.size() > VKR_BAKE_BVH_MAX_TRIANGLES) {
     std::fprintf(stderr, "The scene has %zu triangles; a bake holds %u\n",
                  scene.triangles.size(), VKR_BAKE_BVH_MAX_TRIANGLES);
@@ -1817,7 +1963,7 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
     return 0;
   }
   if (options.output) {
-    return bake_set(options, scene, bvh, layout);
+    return bake_set(options, scene, layout);
   }
 
   VkrBakeIntegratorSettings settings = {};

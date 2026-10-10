@@ -574,8 +574,9 @@ typedef enum VkrMetalTiledLighting {
   VKR_METAL_TILED_LIGHTING_ALL = 3,
   /* Every light, and the editor's inspection modes. */
   VKR_METAL_TILED_LIGHTING_INSPECT = 4,
-  /* Stationary lamps besides every dynamic light (ADR-107). */
-  VKR_METAL_TILED_LIGHTING_STATIONARY = 5,
+  /* Moving casters' shadows of the baked lamps besides every dynamic light
+     (ADR-108). */
+  VKR_METAL_TILED_LIGHTING_CASTERS = 5,
   VKR_METAL_TILED_LIGHTING_COUNT = 6,
 } VkrMetalTiledLighting;
 

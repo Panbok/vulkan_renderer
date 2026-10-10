@@ -18,6 +18,8 @@ typedef struct VkrEditorLightmapSettings {
   uint32_t seed;
   uint32_t page_size;
   float32_t texels_per_unit;
+  /* Lamp direct light's texel density (ADR-108). */
+  float32_t direct_texels_per_unit;
   /* 0 Bakery's default, 1 on, 2 off. */
   uint32_t denoise;
   uint32_t denoise_iterations;

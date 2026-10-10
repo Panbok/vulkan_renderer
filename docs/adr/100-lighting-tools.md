@@ -33,8 +33,10 @@ Lights and bakes) found these gaps:
 1. **Bake settings.** [editor_lighting.c](../../editor/src/editor_lighting.c)
    describes both groups with type descriptors:
    - lightmap: `samples`, `max_depth`, `seed`, `page_size`,
-     `texels_per_unit`, `denoise` (default, on or off),
-     `denoise_iterations` and `indirect_clamp`;
+     `texels_per_unit`, `direct_texels_per_unit` (the lamp-direct pages'
+     density, "Lamp shadow density", [ADR-108](108-baked-lamp-direct-pages.md)),
+     `denoise` (default, on or off), `denoise_iterations` and
+     `indirect_clamp`;
    - diffuse volume: `spacing` (the finest probe spacing in metres),
      `face_size` (cube-face pixels per edge), `samples`, `max_depth`, `seed`,
      `photons` and `photon_radius`, the diffuse baker's options of those
@@ -77,9 +79,7 @@ Lights and bakes) found these gaps:
    - **Selected**: the selected light's Details rows, edited in place.
    - **Lights**: every light of the primary scene, then the World's, in
      entity order. Each row has an Enabled check box, the name (a click
-     selects it), its mobility (a click cycles a point light through Static,
-     Stationary and Dynamic, a rectangle light between Static and Dynamic;
-     [ADR-107](107-stationary-lamps.md)), and the group
+     selects it), Static or Dynamic (a click switches it), and the group
      and intensity. Edits are undoable. Only the rows in view are built.
 5. **Operations.**
    - `lighting.list`: the lights with their kind (`directional`, `point`,
@@ -99,7 +99,7 @@ Lights and bakes) found these gaps:
   the level. Keeping it is a separate, undoable edit.
 - Bake quality is set per session; a project does not store it yet.
 - A dynamic light belongs to no group ([ADR-090](090-time-of-day.md)), so
-  the group list shows only static and stationary lights' groups.
+  the group list shows only static lights' groups.
 - Outlines show the selection only, so a level with hundreds of lights stays
   readable.
 

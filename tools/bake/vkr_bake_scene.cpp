@@ -77,8 +77,7 @@ struct EntityImport {
   Vec4 shape_color = {1.0f, 1.0f, 1.0f, 1.0f};
   std::string shape_material_path;
   bool has_point_light = false;
-  // A dynamic point or rectangle light is never baked; a stationary point
-  // light bakes its bounce (VkrBakeSceneLight::stationary).
+  // A dynamic point or rectangle light is never baked.
   bool point_light_static = true;
   VkrBakeSceneLight point_light = {};
   bool has_directional_light = false;
@@ -422,19 +421,15 @@ bool parse_shape(const VkrJsonReader *entity, EntityImport *out) {
 
 /*
  * The baking fields of a point or rectangle light block (ADR-088): its
- * group, the default group when it names none, and whether it bakes: static
- * and stationary lights bake, and only a point light may be stationary
- * (ADR-107).
+ * group, the default group when it names none, and whether it is static.
  */
 bool parse_light_baking(const VkrJsonReader *object, VkrBakeSceneLight *light,
-                        bool allow_stationary, bool *out_static) {
+                        bool *out_static) {
   std::string text;
   *out_static = true;
   if (read_string(object, "mobility", &text)) {
     if (text == "dynamic") {
       *out_static = false;
-    } else if (text == "stationary" && allow_stationary) {
-      light->stationary = true_v;
     } else if (text != "static") {
       return false;
     }
@@ -477,6 +472,7 @@ bool parse_point_light(const VkrJsonReader *entity, EntityImport *out) {
   (void)read_vec3(&object, "direction_local", &light.direction);
   (void)read_float(&object, "inner_cone_angle", &light.inner_cone_angle);
   (void)read_float(&object, "outer_cone_angle", &light.outer_cone_angle);
+  (void)read_float(&object, "source_radius", &light.source_radius);
   float32_t kind = 0.0f;
   if (read_float(&object, "kind", &kind)) {
     if (kind == 0.0f)
@@ -503,9 +499,13 @@ bool parse_point_light(const VkrJsonReader *entity, EntityImport *out) {
       !std::isfinite(light.constant) || !std::isfinite(light.linear) ||
       !std::isfinite(light.quadratic) ||
       !std::isfinite(light.inner_cone_angle) ||
-      !std::isfinite(light.outer_cone_angle))
+      !std::isfinite(light.outer_cone_angle) ||
+      !std::isfinite(light.source_radius))
     return false;
-  if (!parse_light_baking(&object, &light, true, &out->point_light_static))
+  /* The runtime clamps an authored radius to this range (vkr_lighting.h). */
+  light.source_radius =
+      std::clamp(light.source_radius, 0.0f, VKR_POINT_LIGHT_SOURCE_RADIUS_MAX);
+  if (!parse_light_baking(&object, &light, &out->point_light_static))
     return false;
   out->point_light = light;
   out->has_point_light = true;
@@ -587,7 +587,7 @@ bool parse_rectangle_light(const VkrJsonReader *entity, EntityImport *out) {
     return false;
   light.half_width = size.x * 0.5f;
   light.half_height = size.y * 0.5f;
-  if (!parse_light_baking(&object, &light, false, &out->rectangle_light_static))
+  if (!parse_light_baking(&object, &light, &out->rectangle_light_static))
     return false;
   out->rectangle_light = light;
   out->has_rectangle_light = true;
@@ -1757,8 +1757,6 @@ bool append_authored_lights(VkrBakeScene *scene, const EntityImport &entity,
                             bool suppress_directional) {
   auto append = [&](VkrBakeSceneLight light) {
     light.position = mat4_mul_vec3(world, vec3_zero());
-    light.document_id = entity.document_id;
-    light.has_document_id = entity.has_document_id;
     light.direction = transform_direction(world, light.direction);
     if (!finite_vec3(light.position) || !finite_vec3(light.direction) ||
         vec3_length(light.direction) <= 1.0e-8f)

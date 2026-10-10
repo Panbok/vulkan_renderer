@@ -127,9 +127,7 @@ light bakes none.
 ### Light mobility and groups
 
 Point and rectangle lights carry `mobility`, `"static"` (the default) or
-`"dynamic"`, and point lights also `"stationary"`, whose bounce bakes while
-its direct light stays at runtime ([ADR-107](107-stationary-lamps.md)), and
-`light_group`, a name of at most 31 letters, digits, `_` or
+`"dynamic"`, and `light_group`, a name of at most 31 letters, digits, `_` or
 `-`; an empty or absent name is the group `default`
 ([`vkr_scene_system.h`](../../runtime/src/renderer/systems/vkr_scene_system.h),
 `vkr_light_group_name_valid` in
@@ -175,8 +173,10 @@ GPU. A gather returns a texel's direct and indirect light apart. Direct
 light at the texel (lamp groups only) covers the texel's footprint, the
 world offsets of one texel step along the page's axes on its triangle
 (`VkrBakeLightmapTexel::step_x`, `step_y`). Point, spot and directional
-lights, which draw no random numbers, are evaluated once per texel as the
-mean over a 3×3 grid of the footprint's ninths; rectangle lights at one
+lights are evaluated once per texel as the mean over a 3×3 grid of the
+footprint's ninths, a point or spot light with a `source_radius` through 4
+shadow rays per grid point toward its disc
+([ADR-108](108-baked-lamp-direct-pages.md)); rectangle lights at one
 random footprint point per sample. A hard shadow edge crossing a texel
 then leaves its covered share, which bilinear filtering draws as a smooth
 edge; from the texel's center alone, every texel was lit or shadowed and
@@ -307,8 +307,9 @@ near-zero sum published infinite texels.
 ### VKLM file
 
 [`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h) defines
-VKLM v5, which adds the stationary lamp tables and shadow mask plane of
-[ADR-107](107-stationary-lamps.md) and still reads v4: a 128-byte header, the layer table (64-byte light-layer records:
+VKLM v5, which adds the lamp-direct pages of
+[ADR-108](108-baked-lamp-direct-pages.md) and still reads v4: a 128-byte
+header, the layer table (64-byte light-layer records:
 kind, number, sun direction and, for a lamp group, its group name), the plane
 table (16-byte records of layer, kind — irradiance or direction — and
 encoding, sorted by layer, kind and encoding, at most one tiled and one

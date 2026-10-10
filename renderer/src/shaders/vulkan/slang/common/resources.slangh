@@ -154,15 +154,13 @@ struct VkrVulkanIblProbe
 static const uint VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV = 2u;
 
 // A lightmapped instance's page rectangle in texels: x and y in `origin`,
-// width and height in `extent`, low 16 bits first; `stationary` packs the
-// tiled pipeline's stationary lamp candidates (ADR-107), which the desktop
-// pipeline does not read. Mirrors VkrLightmapRect.
+// width and height in `extent`, low 16 bits first. Mirrors VkrLightmapRect.
 struct VkrLightmapRect
 {
     uint page;
     uint origin;
     uint extent;
-    uint stationary;
+    uint reserved;
 };
 
 struct VkrGpuRectangleLightRow

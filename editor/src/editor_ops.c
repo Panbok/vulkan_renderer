@@ -14238,8 +14238,7 @@ static const OpsDef s_ops[] = {
     {"lighting.list",
      "The open scene's and the World's lights (kind directional, point, "
      "spot or rectangle; 'from' scene or world; component values, with "
-     "mobility static, stationary or dynamic (rectangle lights static or "
-     "dynamic) and light_group) and the scene's light groups with their "
+     "mobility and light_group) and the scene's light groups with their "
      "live intensity and current factor.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_lighting_list, NULL,
      OPS_QUICK},
@@ -14255,7 +14254,8 @@ static const OpsDef s_ops[] = {
      "Start the open project scene's Bake lighting job: reflection probes, "
      "the diffuse volume and, with 'lightmap' (default the Bakery panel's "
      "option), lightmaps. 'lightmap_settings' (samples, max_depth, seed, "
-     "page_size, texels_per_unit, denoise default|on|off, "
+     "page_size, texels_per_unit, direct_texels_per_unit, denoise "
+     "default|on|off, "
      "denoise_iterations, indirect_clamp) and 'diffuse_settings' "
      "(spacing, face_size, samples, max_depth, seed, photons, "
      "photon_radius) replace the Bake settings window's values; 0 keeps "

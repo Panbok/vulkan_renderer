@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -42,15 +41,11 @@ struct VkrBakeSceneLight {
   float32_t half_width = 0.0f;
   float32_t half_height = 0.0f;
   float32_t radiance = 0.0f;
+  /* A point or spot light's emitter radius, which softens its baked
+     shadows (ADR-108); zero for a point emitter. */
+  float32_t source_radius = 0.0f;
   bool8_t casts_shadow = false_v;
   bool8_t enabled = true_v;
-  /* A stationary point or spot light (ADR-107): its bounce bakes into its
-     group's layer, its direct light stays at runtime except where the
-     lightmap set names it baked. */
-  bool8_t stationary = false_v;
-  /* The entity's document id, which keys a stationary light in the set. */
-  std::array<uint8_t, 16> document_id = {};
-  bool has_document_id = false;
   /* The light group of a point or rectangle light, VKR_LIGHT_GROUP_DEFAULT
      when the scene names none; empty for other lights. Null-terminated. */
   char group[VKR_LIGHT_GROUP_NAME_BYTES] = {};

@@ -181,10 +181,6 @@ typedef struct VkrShadowCasterDepthBounds {
  */
 typedef struct VkrShadowConfig {
   uint32_t local_shadow_face_budget;
-  /** Stationary lamps nearest the camera that take runtime shadow maps on
-   * the tiled pipeline; the others shade through the baked shadow mask
-   * (ADR-107). At most VKR_LIGHTMAP_STATIONARY_SHADOWED_MAX. */
-  uint32_t stationary_shadow_lamps;
   /** Largest local shadow face; a light's faces follow its range. */
   uint32_t local_shadow_map_size;
   /** Camera distance in metres at which a light's local shadow has faded out,
@@ -280,10 +276,6 @@ typedef struct VkrShadowConfig {
 #define VKR_LOCAL_SHADOW_FADE_BAND_METRES 5.0f
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH 30u
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED 12u
-/* Stationary lamps with runtime shadows per preset (ADR-107): a point lamp
-   holds six cached faces, so High keeps 36 faces resident for them. */
-#define VKR_STATIONARY_SHADOW_LAMPS_HIGH 6u
-#define VKR_STATIONARY_SHADOW_LAMPS_BALANCED 3u
 
 /**
  * @brief High-quality CSM preset (recommended on modern GPUs).
@@ -311,7 +303,6 @@ typedef struct VkrShadowConfig {
 #define VKR_SHADOW_CONFIG_HIGH                                                 \
   ((VkrShadowConfig){                                                          \
       .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH,           \
-      .stationary_shadow_lamps = VKR_STATIONARY_SHADOW_LAMPS_HIGH,             \
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,              \
       .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
       .local_shadow_soft = true_v,                                             \
@@ -363,7 +354,6 @@ typedef struct VkrShadowConfig {
 #define VKR_SHADOW_CONFIG_BALANCED                                             \
   ((VkrShadowConfig){                                                          \
       .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED,       \
-      .stationary_shadow_lamps = VKR_STATIONARY_SHADOW_LAMPS_BALANCED,         \
       .local_shadow_map_size = 512u,                                           \
       .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
       .local_shadow_soft = true_v,                                             \

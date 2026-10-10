@@ -91,8 +91,9 @@ on Metal. It shares kernels and host records with the desktop pipeline:
 
 - **Changed contracts.**
   - The Metal frame root carries `lightmap` at byte 544, the address
-    of a 160-byte `VkrMetalPacketLightmap` (its stationary lamp fields from
-    byte 96, [ADR-107](107-stationary-lamps.md)), `terrain_materials` at byte 552
+    of a 320-byte `VkrMetalPacketLightmap` (its lamp-direct fields from byte
+    96 and two 80-byte baked lamp rows from byte 160,
+    [ADR-108](108-baked-lamp-direct-pages.md)), `terrain_materials` at byte 552
     and `transmission_materials` at byte 560; the tiled sky root is 128
     bytes. Both are pinned in
     `vkr_metal_packet_abi.c` and checked against reflection at pipeline
@@ -138,15 +139,13 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     contribution bound through the `ContributionCutoff` parameter of
     `vkr_metal_packet_layered_rectangle_lights`; a receiver that no row faces
     skips the LTC table reads, which changes no result.
-  - The tiled `STATIONARY` variant shades stationary lamps
-    (`vkr_metal_tiled_stationary`, [ADR-107](107-stationary-lamps.md)): its
-    ownership metric repeats `vkr_lightmap_stationary_metric` and the Metal
-    bake kernel's `stationary_metric`; a shadowed lamp reads the same
-    tent sample and blends from the mask channel by the shadow's strength.
-    `VkrLightmapRect::stationary`, the former reserved word, packs each
-    rectangle's candidate range; the Vulkan mirror renames it and reads
-    nothing. Native evidence: Metal Release captures of the Level Design Test
-    scene only; no Metal validation run.
+  - The tiled `CASTERS` variant (`vkr_metal_tiled_moving_shadow`,
+    [ADR-108](108-baked-lamp-direct-pages.md)) subtracts from lightmapped
+    irradiance the light that moving casters hide from the two selected
+    baked lamps, `L · max(v_static − v_composite, 0)`, as the Vulkan
+    `Shadow.LocalMask` baked-lamp variants do (ADR-104), through the tiled
+    tent instead of the Poisson disk. Native evidence: one Metal Release
+    capture pair of the Level Design Test scene; no Metal validation run.
   - The tiled class draws no FXAA; its alpha-tested surfaces use alpha to
     coverage and its opaque pass a tone-mapped tile resolve
     (`vkr_metal_tiled_resolve_tile`), a class difference the owner accepted

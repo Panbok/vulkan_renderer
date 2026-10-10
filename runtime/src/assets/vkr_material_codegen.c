@@ -656,7 +656,7 @@ bool8_t vkr_material_codegen_msl_entries(const char *function,
       {"_punctual", "VKR_METAL_TILED_LIGHTING_PUNCTUAL"},
       {"_shadowed", "VKR_METAL_TILED_LIGHTING_SHADOWED"},
       {"_all", "VKR_METAL_TILED_LIGHTING_ALL"},
-      {"_stationary", "VKR_METAL_TILED_LIGHTING_STATIONARY"},
+      {"_casters", "VKR_METAL_TILED_LIGHTING_CASTERS"},
   };
   CodegenText text = {.allocator = allocator};
   for (uint32_t coverage = 0; coverage < 2u; ++coverage) {

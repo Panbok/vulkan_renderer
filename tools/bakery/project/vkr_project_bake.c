@@ -30,9 +30,8 @@ vkr_internal VkrBakeryJson *vkr_project_edit_first(VkrProjectJob *job,
 }
 
 /* A point or rectangle light's baking fields from the overlay's
-   `<prefix>_mobility` (0 static, 1 dynamic, 2 stationary; the overlay reader
-   accepts 2 only for point lights) and `<prefix>_group`, in the scene
-   document's form (ADR-088). Absent values keep the defaults. */
+   `<prefix>_mobility` (0 static, 1 dynamic) and `<prefix>_group`, in the
+   scene document's form (ADR-088). Absent values keep the defaults. */
 vkr_internal void vkr_project_apply_light_baking(VkrProjectJob *job,
                                                  VkrBakeryJson *light,
                                                  const VkrBakeryJson *edit,
@@ -42,14 +41,10 @@ vkr_internal void vkr_project_apply_light_baking(VkrProjectJob *job,
   int64_t mobility = 0;
   (void)snprintf(key, sizeof(key), "%s_mobility", prefix);
   if (vkr_project_integer(vkr_bakery_json_get(edit, key), &mobility)) {
-    String8 name = string8_lit("static");
-    if (mobility == 1) {
-      name = string8_lit("dynamic");
-    } else if (mobility == 2) {
-      name = string8_lit("stationary");
-    }
-    vkr_bakery_json_set(arena, light, "mobility",
-                        vkr_bakery_json_string(arena, name));
+    vkr_bakery_json_set(
+        arena, light, "mobility",
+        vkr_bakery_json_string(arena, mobility == 1 ? string8_lit("dynamic")
+                                                    : string8_lit("static")));
   }
   (void)snprintf(key, sizeof(key), "%s_group", prefix);
   const VkrBakeryJson *group = vkr_bakery_json_get(edit, key);
@@ -1330,9 +1325,14 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
       vkr_bakery_json_get(job->request, "lightmap_settings");
   VkrBakeryJson *settings = requested ? vkr_bakery_json_clone(arena, requested)
                                       : vkr_bakery_json_object(arena);
-  static const char *const scalars[] = {
-      "samples",         "max_depth",          "seed",          "page_size",
-      "texels_per_unit", "denoise_iterations", "indirect_clamp"};
+  static const char *const scalars[] = {"samples",
+                                        "max_depth",
+                                        "seed",
+                                        "page_size",
+                                        "texels_per_unit",
+                                        "direct_texels_per_unit",
+                                        "denoise_iterations",
+                                        "indirect_clamp"};
   for (uint32_t i = 0u; i < ArrayCount(scalars); ++i) {
     const VkrBakeryJson *value = vkr_bakery_json_get(settings, scalars[i]);
     if (!value) {

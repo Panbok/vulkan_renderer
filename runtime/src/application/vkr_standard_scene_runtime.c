@@ -68,11 +68,6 @@ typedef struct VkrStandardSceneRuntimeDrawContext {
      casters' shadows; none on the tiled pipeline. */
   const VkrPointLight *baked_lamps;
   uint32_t baked_lamp_count;
-  /* The lights the frame's local shadows resolve: the point lights, then the
-     stationary lamps with runtime shadows (ADR-107), whose records name
-     their index here. */
-  VkrPointLight shadow_lights[VKR_MAX_SCENE_POINT_LIGHTS];
-  uint32_t shadow_light_count;
   VkrAnimationPreviewInput animation_preview;
   bool8_t has_animation_preview;
 } VkrStandardSceneRuntimeDrawContext;
@@ -1106,17 +1101,11 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     vkr_shadow_system_set_light_contribution_sample(
         &application->shadow_system,
         &application->renderer.timing_result.local_light_contribution);
-    const bool8_t stationary_shadows =
-        draw->shadow_light_count > draw->frame_lighting.point_light_count;
     vkr_shadow_system_resolve_local_shadows(
         &application->shadow_system, setup->retained_local_shadow,
-        &draw->world_payload,
-        stationary_shadows ? draw->shadow_lights
-                           : draw->frame_lighting.point_lights,
-        stationary_shadows ? draw->shadow_light_count
-                           : draw->frame_lighting.point_light_count,
-        draw->baked_lamps, draw->baked_lamp_count, &camera,
-        &draw->local_shadow_payload);
+        &draw->world_payload, draw->frame_lighting.point_lights,
+        draw->frame_lighting.point_light_count, draw->baked_lamps,
+        draw->baked_lamp_count, &camera, &draw->local_shadow_payload);
   }
 
   const VkrShadowFrameData *shadow_frame = &draw->shadow_frame;
@@ -1646,39 +1635,11 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
   vkr_scene_lightmap_binding(active_scene, &draw->frame_lighting.lightmap);
   const bool8_t desktop =
       application->renderer.graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED;
-  /* Stationary lamps (ADR-107): their records, the lamps with runtime
-     shadows, and those lamps' lights after the point lights for the local
-     shadows. */
-  const VkrLightingSystem *lights = &application->lighting_system;
-  VkrLightmapBinding *lightmap = &draw->frame_lighting.lightmap;
-  draw->shadow_light_count = 0u;
-  if (!desktop && lights->stationary_count != 0u &&
-      lightmap->shadow_mask.id != 0u) {
-    lightmap->stationary = lights->stationary;
-    lightmap->stationary_count = lights->stationary_count;
-    lightmap->shadowed_count = lights->stationary_shadowed_count;
-    MemCopy(lightmap->shadowed, lights->stationary_shadowed,
-            lights->stationary_shadowed_count * sizeof(uint32_t));
-    const uint32_t point_count = lights->point_light_count;
-    if (lights->stationary_shadowed_count != 0u &&
-        point_count + lights->stationary_shadowed_count <=
-            ArrayCount(draw->shadow_lights)) {
-      MemCopy(draw->shadow_lights, lights->point_lights,
-              point_count * sizeof(VkrPointLight));
-      for (uint32_t i = 0u; i < lights->stationary_shadowed_count; ++i) {
-        draw->shadow_lights[point_count + i] =
-            lights->stationary[lights->stationary_shadowed[i]].light;
-      }
-      draw->shadow_light_count =
-          point_count + lights->stationary_shadowed_count;
-    }
-  } else {
-    lightmap->candidates = NULL;
-    lightmap->candidate_count = 0u;
-  }
-  draw->baked_lamps = desktop ? application->lighting_system.baked_lamps : NULL;
-  draw->baked_lamp_count =
-      desktop ? application->lighting_system.baked_lamp_count : 0u;
+  /* Both pipeline classes shade moving casters' shadows of the baked lamps
+     (ADR-104, ADR-108). */
+  (void)desktop;
+  draw->baked_lamps = application->lighting_system.baked_lamps;
+  draw->baked_lamp_count = application->lighting_system.baked_lamp_count;
   if (active_scene && active_scene->world_state.diffuse_volume.enabled) {
     vkr_scene_diffuse_volume_binding(active_scene,
                                      &application->assets.texture_system,
@@ -2066,15 +2027,6 @@ vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
   }
 
   VkrFrameLighting *lighting = &draw->frame_lighting;
-  if (lighting->lightmap.stationary_count) {
-    lighting->lightmap.stationary = vkr_standard_scene_runtime_scratch_copy(
-        scratch, lighting->lightmap.stationary,
-        (uint64_t)lighting->lightmap.stationary_count *
-            sizeof(*lighting->lightmap.stationary));
-    if (!lighting->lightmap.stationary) {
-      return false_v;
-    }
-  }
   if (lighting->point_light_count) {
     lighting->point_lights = vkr_standard_scene_runtime_scratch_copy(
         scratch, lighting->point_lights,
@@ -2658,19 +2610,11 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     }
     /* It draws a bounded set of the dynamic lights nearest the camera, and
        shadows fewer still. */
-    if (tiled && camera) {
+    if (tiled && camera)
       vkr_lighting_system_limit_point_lights(
           &application->lighting_system, camera->position, (float32_t)delta,
           VKR_STANDARD_SCENE_TILED_LIGHT_MAX,
           VKR_STANDARD_SCENE_TILED_SHADOWED_LIGHT_MAX);
-      /* Stationary lamps nearest the camera take runtime shadow maps, as
-         many as the shadow quality allows (ADR-107). */
-      vkr_lighting_system_shadow_stationary(
-          &application->lighting_system, camera->position,
-          application->disable_local_shadows
-              ? 0u
-              : application->shadow_config.stationary_shadow_lamps);
-    }
   }
 
   /* The frame fits and resolves shadows once acquired, on the thread that

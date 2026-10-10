@@ -76,10 +76,7 @@ Owner decisions:
    [`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c)).
    `vkr_standard_scene_runtime_static_lights_baked` then drops its static
    lamps from the point lights, the light grid, contribution ranking and
-   local shadows. A scene without such a set keeps runtime lamps. A
-   stationary lamp is not static: a desktop bake keeps only its bounce, and
-   the desktop pipeline lights it as a dynamic lamp with local shadows
-   ([ADR-107](107-stationary-lamps.md)).
+   local shadows. A scene without such a set keeps runtime lamps.
 3. **Static receivers.** For a draw with a lightmap slot, `pass.gbuffer.resolve`
    maps the decoded lightmap UV into the draw's rectangle and sums the
    active lamp layers at their weights. It writes the irradiance into
@@ -126,7 +123,10 @@ Owner decisions:
    views name the same square adds nothing and samples nothing. Deferred
    lighting subtracts it from the baked irradiance, clamped at zero, before
    the undirected and directed split. Without a selected lamp the graph drops
-   the image, and the default mask kernels carry no baked-lamp code.
+   the image, and the default mask kernels carry no baked-lamp code. The
+   tiled pipeline selects and publishes the same two lamps; its forward
+   `CASTERS` variant subtracts the same term from the lightmap irradiance
+   ([ADR-108](108-baked-lamp-direct-pages.md)).
 
 ## Consequences
 
@@ -236,7 +236,8 @@ local and non-authoritative.
 Mac (Apple M1 Pro, Metal 4, Release), 2026-10-10, local non-authoritative
 runs on a dirty tree. The tiled pipeline takes none of this ADR's planes; its
 moving receivers take the lamp direct bands from the volume
-([ADR-054](054-baked-diffuse-volumes.md)).
+([ADR-054](054-baked-diffuse-volumes.md)), and its moving-caster shadows
+are recorded in [ADR-108](108-baked-lamp-direct-pages.md).
 - **Tiled bake.** `vkr_bakery bake lightmap --scene
   assets/scenes/fixtures/bistro_tiled_local.scene.json --output
   assets/scenes/bistro_tiled.vklm --samples 16`: 601.7 s, 6.2 GB peak,

@@ -833,28 +833,29 @@ static const VkrMetalTiledEntries
                 .coverage_label = @"VKR tiled alpha-tested forward inspection",
                 .blend_label = @"VKR tiled blend inspection",
             },
-        [VKR_METAL_TILED_LIGHTING_STATIONARY] =
+        [VKR_METAL_TILED_LIGHTING_CASTERS] =
             {
-                .forward =
-                    {{"vkr_metal_tiled_forward_stationary_fragment",
-                      "vkr_metal_tiled_forward_stationary_probes_fragment"},
-                     {"vkr_metal_tiled_forward_stationary_decals_fragment",
-                      "vkr_metal_tiled_forward_stationary_probes_decals_"
-                      "fragment"}},
+                .forward = {{"vkr_metal_tiled_forward_casters_fragment",
+                             "vkr_metal_tiled_forward_casters_probes_fragment"},
+                            {"vkr_metal_tiled_forward_casters_decals_fragment",
+                             "vkr_metal_tiled_forward_casters_probes_decals_"
+                             "fragment"}},
                 .coverage =
-                    {{"vkr_metal_tiled_forward_stationary_coverage_fragment",
-                      "vkr_metal_tiled_forward_stationary_coverage_probes_"
+                    {{"vkr_metal_tiled_forward_casters_coverage_fragment",
+                      "vkr_metal_tiled_forward_casters_coverage_probes_"
                       "fragment"},
-                     {"vkr_metal_tiled_forward_stationary_coverage_decals_"
+                     {"vkr_metal_tiled_forward_casters_coverage_decals_"
                       "fragment",
-                      "vkr_metal_tiled_forward_stationary_coverage_probes_"
+                      "vkr_metal_tiled_forward_casters_coverage_probes_"
                       "decals_fragment"}},
-                .blend = {"vkr_metal_tiled_blend_stationary_fragment",
-                          "vkr_metal_tiled_blend_stationary_probes_fragment"},
-                .forward_label = @"VKR tiled forward with stationary lamps",
-                .coverage_label =
-                    @"VKR tiled alpha-tested forward with stationary lamps",
-                .blend_label = @"VKR tiled blend with stationary lamps",
+                .blend = {"vkr_metal_tiled_blend_casters_fragment",
+                          "vkr_metal_tiled_blend_casters_probes_fragment"},
+                .forward_label =
+                    @"VKR tiled forward with moving casters' lamp shadows",
+                .coverage_label = @"VKR tiled alpha-tested forward with "
+                                  @"moving casters' lamp shadows",
+                .blend_label =
+                    @"VKR tiled blend with moving casters' lamp shadows",
             },
 };
 

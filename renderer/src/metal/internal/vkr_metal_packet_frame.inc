@@ -2071,10 +2071,12 @@ vkr_metal_packet_tiled_lighting(const VkrPreparedFrame *packet) {
   if (!lighting) {
     return VKR_METAL_TILED_LIGHTING_NONE;
   }
-  /* A sampled set's stationary lamps light every frame (ADR-107). */
-  if (lighting->lightmap.stationary_count > 0u &&
+  /* Moving casters shadow the baked lamps that light them most (ADR-108). */
+  if (packet->input.local_shadow &&
+      packet->input.local_shadow->view_count > 0u &&
+      packet->input.local_shadow->baked_lamp_count > 0u &&
       vkr_metal_packet_lightmap_sampled(packet)) {
-    return VKR_METAL_TILED_LIGHTING_STATIONARY;
+    return VKR_METAL_TILED_LIGHTING_CASTERS;
   }
   if (lighting->rectangle_light_count > 0u) {
     return VKR_METAL_TILED_LIGHTING_ALL;

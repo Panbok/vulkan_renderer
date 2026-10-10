@@ -490,104 +490,82 @@ void test_lightmap_set_round_trip_and_rejects() {
   printf("  test_lightmap_set_round_trip_and_rejects PASSED\n");
 }
 
-/* Stationary lamps (ADR-107): their records, each instance's candidate
-   range and the candidates survive a round trip at the offsets the header
-   names, and a set rejects a shadow mask without lamps, a candidate past the
-   lamps, candidates out of order and a lamp without a range. */
-void test_lightmap_set_stationary_round_trip_and_rejects() {
+/* Lamp-direct pages (ADR-108): a lamp group's lamp-direct plane lives on its
+   own pages after every other page, each instance's rectangle on them
+   survives a round trip, and a set rejects a lamp-direct plane without its
+   pages, pages without a plane, a plane on a sun key and a rectangle off
+   its page. */
+void test_lightmap_set_lamp_direct_round_trip_and_rejects() {
   const VkrLightLayer layers[] = {
+      {VKR_LIGHT_LAYER_SUN_KEY, 0u, vec3_new(0.0f, 0.6f, 0.8f), ""},
       {VKR_LIGHT_LAYER_LAMP_GROUP, 0u, vec3_zero(), "default"}};
   const VkrLightmapInstance instances[] = {{{0u}, 1u, 0u, 0u, 0u, 0u, 8u, 8u},
-                                           {{0u}, 2u, 0u, 0u, 8u, 0u, 8u, 8u},
-                                           {{0u}, 3u, 0u, 0u, 0u, 8u, 8u, 8u}};
+                                           {{0u}, 2u, 0u, 0u, 8u, 0u, 8u, 8u}};
   const VkrLightmapPlane planes[] = {
       {0u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
-      {0u, VKR_LIGHTMAP_PLANE_SHADOW_MASK, VKR_LIGHTMAP_FORMAT_ASTC_4X4_LDR}};
-  VkrLightmapStationaryLamp lamps[2] = {};
-  lamps[0].document_id[0] = 0x11u;
-  lamps[0].position = vec3_new(1.0f, 3.0f, -2.0f);
-  lamps[0].range = 12.0f;
-  lamps[0].direction = vec3_new(0.0f, -1.0f, 0.0f);
-  lamps[0].weight = 40.0f;
-  lamps[0].cos_inner = 0.9f;
-  lamps[0].cos_outer = 0.8f;
-  lamps[0].kind = 2u;
-  lamps[0].channel = 3u;
-  lamps[1] = lamps[0];
-  lamps[1].document_id[15] = 0x22u;
-  lamps[1].kind = 1u;
-  lamps[1].channel = VKR_LIGHTMAP_STATIONARY_NO_CHANNEL;
-  const VkrLightmapStationaryRange ranges[] = {{0u, 2u}, {2u, 0u}, {2u, 1u}};
-  const uint16_t candidates[] = {0u, 1u, 1u};
+      {1u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
+      {1u, VKR_LIGHTMAP_PLANE_LAMP_DIRECT, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR}};
+  const VkrLightmapDirectRect direct[] = {{0u, 0u, 0u, 16u, 16u},
+                                          {1u, 0u, 0u, 16u, 12u}};
   VkrLightmapSet set = {};
   set.page_size = 16u;
   set.page_count = 1u;
-  set.layer_count = 1u;
-  set.plane_count = 2u;
-  set.instance_count = 3u;
+  set.layer_count = 2u;
+  set.plane_count = 3u;
+  set.instance_count = 2u;
   set.texels_per_unit = 8.0f;
   set.layers = layers;
   set.planes = planes;
   set.instances = instances;
-  set.stationary_count = 2u;
-  set.candidate_count = 3u;
-  set.stationary = lamps;
-  set.candidate_ranges = ranges;
-  set.candidates = candidates;
+  set.direct_page_count = 2u;
+  set.direct_texels_per_unit = 16.0f;
+  set.direct_rects = direct;
   const std::vector<uint8_t> file = write_lightmap_set(set);
 
   Arena *arena = arena_create(KB(64), KB(64));
   assert(arena);
   VkrLightmapSet decoded = {};
   assert(vkr_lightmap_set_decode(file.data(), file.size(), arena, &decoded));
-  assert(decoded.stationary_count == 2u && decoded.candidate_count == 3u);
-  assert(decoded.stationary[0].document_id[0] == 0x11u &&
-         decoded.stationary[1].document_id[15] == 0x22u);
-  assert(decoded.stationary[0].position.z == -2.0f &&
-         decoded.stationary[0].range == 12.0f &&
-         decoded.stationary[0].weight == 40.0f &&
-         decoded.stationary[0].cos_outer == 0.8f &&
-         decoded.stationary[0].kind == 2u &&
-         decoded.stationary[0].channel == 3u);
-  assert(decoded.stationary[1].channel == VKR_LIGHTMAP_STATIONARY_NO_CHANNEL);
-  assert(decoded.candidate_ranges[0].count == 2u &&
-         decoded.candidate_ranges[2].first == 2u &&
-         decoded.candidate_ranges[2].count == 1u);
-  assert(decoded.candidates[1] == 1u && decoded.candidates[2] == 1u);
+  assert(decoded.direct_page_count == 2u &&
+         decoded.direct_texels_per_unit == 16.0f);
+  assert(decoded.direct_rects[1].page == 1u &&
+         decoded.direct_rects[1].height == 12u);
+  const uint64_t astc_bytes =
+      vkr_lightmap_set_plane_bytes(VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR, 16u);
+  assert(vkr_lightmap_set_page_stride(&decoded) == 2u * astc_bytes);
+  assert(vkr_lightmap_set_direct_page_stride(&decoded) == astc_bytes);
+  /* Lamp-direct page 1 follows the page and lamp-direct page 0. */
+  assert(vkr_lightmap_set_plane_offset(&decoded, 1u, 2u) == 3u * astc_bytes);
+  assert(decoded.payload + 4u * astc_bytes == file.data() + file.size());
   assert(vkr_lightmap_set_find_plane(
-             &decoded, 0u, VKR_LIGHTMAP_PLANE_SHADOW_MASK, false_v) == 1u);
-  assert(decoded.payload + vkr_lightmap_set_page_stride(&decoded) ==
-         file.data() + file.size());
-  /* A spot lamp's metric falls off outside its cone and past its range. */
-  assert(vkr_lightmap_stationary_metric(&lamps[0],
-                                        vec3_new(1.0f, 0.0f, -2.0f)) > 0.0f);
-  assert(vkr_lightmap_stationary_metric(&lamps[0],
-                                        vec3_new(4.0f, 3.0f, -2.0f)) == 0.0f);
-  assert(vkr_lightmap_stationary_metric(&lamps[1],
-                                        vec3_new(1.0f, 3.0f, 11.0f)) == 0.0f);
+             &decoded, 1u, VKR_LIGHTMAP_PLANE_LAMP_DIRECT, false_v) == 2u);
 
   uint64_t payload_offset = 0u;
   uint64_t file_size = 0u;
-  set.stationary_count = 0u;
-  set.candidate_count = 0u;
+  set.direct_page_count = 0u;
   assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
-  set.stationary_count = 2u;
-  set.candidate_count = 3u;
-  const uint16_t past[] = {0u, 2u, 1u};
-  set.candidates = past;
+  set.direct_page_count = 2u;
+  set.plane_count = 2u;
   assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
-  const uint16_t descending[] = {1u, 0u, 1u};
-  set.candidates = descending;
+  set.plane_count = 3u;
+  VkrLightmapPlane sun_direct[] = {planes[0], planes[1], planes[2]};
+  sun_direct[1] = {0u, VKR_LIGHTMAP_PLANE_LAMP_DIRECT,
+                   VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR};
+  sun_direct[2] = planes[1];
+  set.planes = sun_direct;
   assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
-  set.candidates = candidates;
-  VkrLightmapStationaryLamp unbounded[] = {lamps[0], lamps[1]};
-  unbounded[1].range = 0.0f;
-  set.stationary = unbounded;
+  set.planes = planes;
+  VkrLightmapDirectRect off_page[] = {direct[0], direct[1]};
+  off_page[1].page = 2u;
+  set.direct_rects = off_page;
   assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
-  set.stationary = lamps;
+  /* An instance no lamp reaches has an all-zero rectangle. */
+  off_page[1] = {0u, 0u, 0u, 0u, 0u};
+  assert(vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  set.direct_rects = direct;
   assert(vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
   arena_destroy(arena);
-  printf("  test_lightmap_set_stationary_round_trip_and_rejects PASSED\n");
+  printf("  test_lightmap_set_lamp_direct_round_trip_and_rejects PASSED\n");
 }
 
 /* RGB9E5 keeps exact powers of two and values on its mantissa grid, rounds
@@ -1635,7 +1613,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_compose_fills_each_rect_alone();
   test_astc_hdr_round_trip_keeps_range();
   test_lightmap_set_round_trip_and_rejects();
-  test_lightmap_set_stationary_round_trip_and_rejects();
+  test_lightmap_set_lamp_direct_round_trip_and_rejects();
   test_rgb9e5_round_trip();
   test_light_layer_sun_weights();
   test_diffuse_volume_v3_round_trip_and_rejects();

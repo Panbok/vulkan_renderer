@@ -85,26 +85,20 @@ const VkrTypeDesc vkr_scene_visibility_type = {
 static const char *const s_point_light_kind_names[] = {"polynomial", "point",
                                                        "spot", NULL};
 
-/* Indexed by VkrLightMobility. Point lights offer all three; rectangle lights
-   cannot be stationary, so their table stops at dynamic and the enum count
-   check rejects the stationary value for them. */
-static const char *const s_point_light_mobility_names[] = {"static", "dynamic",
-                                                           "stationary", NULL};
-
-static const char *const s_rectangle_light_mobility_names[] = {"static",
-                                                               "dynamic", NULL};
+static const char *const s_light_mobility_names[] = {"static", "dynamic", NULL};
 
 _Static_assert(sizeof(VkrLightMobility) == sizeof(uint32_t),
                "ENUM properties store four bytes");
 
 /* The light-baking properties of point and rectangle lights (ADR-088). */
-#define SCENE_LIGHT_MOBILITY_PROPERTY(type, mobility_names, tip)               \
+#define SCENE_LIGHT_MOBILITY_PROPERTY(type)                                    \
   {                                                                            \
       .name = "mobility",                                                      \
       .label = "Mobility",                                                     \
       .group = "Baking",                                                       \
-      .tooltip = tip,                                                          \
-      .names = mobility_names,                                                 \
+      .tooltip = "Static lights bake into their group's lightmaps on tiled "   \
+                 "GPUs; dynamic lights light at runtime",                      \
+      .names = s_light_mobility_names,                                         \
       .offset = TYPE_OFFSET(type, mobility),                                   \
       .kind = VKR_PROPERTY_ENUM,                                               \
   }
@@ -233,11 +227,7 @@ static const VkrPropertyDesc s_point_light_properties[] = {
      .flags = VKR_PROPERTY_FLAG_HIDDEN,
      .min = 0.0f,
      .max = FLT_MAX},
-    SCENE_LIGHT_MOBILITY_PROPERTY(
-        ScenePointLight, s_point_light_mobility_names,
-        "Static lights bake into their group's lightmaps on tiled GPUs; "
-        "stationary lights bake only their bounce and light directly at "
-        "runtime; dynamic lights light at runtime"),
+    SCENE_LIGHT_MOBILITY_PROPERTY(ScenePointLight),
     SCENE_LIGHT_GROUP_PROPERTY(ScenePointLight),
 };
 
@@ -287,8 +277,7 @@ static VkrPropertyState point_light_state(const void *value, uint32_t property,
       offset == offsetof(ScenePointLight, source_radius)) {
     state.flags |= VKR_PROPERTY_STATE_DISABLED;
   }
-  /* Only baked lights belong to a group; a stationary light's bounce is
-     baked, so it keeps its group. */
+  /* Only baked lights belong to a group. */
   if (light->mobility == VKR_LIGHT_MOBILITY_DYNAMIC &&
       offset == offsetof(ScenePointLight, light_group)) {
     state.flags |= VKR_PROPERTY_STATE_DISABLED;
@@ -480,10 +469,7 @@ static const VkrPropertyDesc s_rectangle_light_properties[] = {
      .min = 0.0f,
      .max = FLT_MAX,
      .step = 0.01f},
-    SCENE_LIGHT_MOBILITY_PROPERTY(
-        SceneRectangleLight, s_rectangle_light_mobility_names,
-        "Static lights bake into their group's lightmaps on tiled GPUs; "
-        "dynamic lights light at runtime"),
+    SCENE_LIGHT_MOBILITY_PROPERTY(SceneRectangleLight),
     SCENE_LIGHT_GROUP_PROPERTY(SceneRectangleLight),
 };
 
