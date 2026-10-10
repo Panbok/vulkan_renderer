@@ -289,27 +289,21 @@ persistence are outside this proposal.
 
 [ADR-106](../adr/106-collaborative-editing-session.md) implements the core:
 host and join, host-ordered edit requests with mirrored journals, replay
-from the session base, shared undo, gizmo moves, seeded duplicates, the
-Session window and other editors' cameras and selections in the Scene. The
-rest:
+from the session base, shared undo, gizmo moves and their previews,
+seeded duplicates, terrain as results, the Session window and other
+editors' cameras, names and selections in the Scene. The rest:
 
 - **Joining from a depot commit.** A participant pulls the project from the
   depot, or confirms its working copy matches the host's commit, and the
   host sends a snapshot of what changed since the commit, so a host with
   unsaved edits or a long history can take new participants.
-- **Journal results.** Terrain strokes and brush geometry travel as each
-  entry's resulting state (entity values, structure changes, after-state
-  rectangles of terrain samples). Floating-point operations can differ
-  between ARM and x86, so applying results keeps peers identical. Physics,
-  collision layers, scene settings and partition edits follow.
-- **Gestures.** A drag, gizmo move, slider scrub or terrain stroke sends
-  `GESTURE` messages on a `SEQUENCED` channel at the display rate: gesture
-  ID, entity and quantized value. Other editors draw a preview; the end of
-  the gesture is the edit that already travels.
+- **The remaining edits.** Physics, collision layers, scene settings and
+  partition edits travel, as values or results.
 - **Richer presence.** `PRESENCE` adds each participant's cursor ray and
-  tool, and editors draw names beside the cameras.
+  tool.
 - **Published assets.** A file created during the session, such as an
-  import or a material graph, is pushed to the depot. The host broadcasts
+  import or a material graph (a new terrain is staged on every editor
+  already), is pushed to the depot. The host broadcasts
   `ASSET_PUBLISHED` with the identity and hash, and participants fetch it
   when they need it. Each platform cooks its own variant or takes it from
   the shared Bakery cache.
@@ -321,12 +315,9 @@ rest:
 
 [ADR-106](../adr/106-collaborative-editing-session.md#agent-federation)
 implements authors across editors, the host's claims and task board with
-capability matching, the session-wide change feed and reviews across
-editors. The rest:
+capability matching and slots, the session-wide change feed and reviews
+across editors. The rest:
 
-- **Agent slots.** Participants advertise how many agents they run, such as
-  a lightmap bake host with one slot, and the host balances tasks across
-  them instead of answering whichever agent asks first.
 - **A reverted batch in the feed.** Other editors feed a batch its author
   reverted for a claim as applied; a `reverted` event would correct it.
 - Each participant renders its own captures on its own GPU. A Mac draws
@@ -378,7 +369,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | Owner | Path | Contents |
 |---|---|---|
 | `vkr_runtime` | `runtime/src/net/` | `world`, `stream` and `view` services, the remote content mount |
-| Editor | `editor/src/editor_session.c` | The `collab` service, Session window, Scene overlay and agent federation (ADR-106); next gestures and richer presence |
+| Editor | `editor/src/editor_session.c` | The `collab` service, Session window, Scene overlay and agent federation (ADR-106); next richer presence |
 | Renderer | Encoder and decoder hooks | Separate design and ADR in phase 7 |
 | `vkr_net` | `net/src/` | Threaded host; replication helpers on the bit stream |
 
@@ -393,7 +384,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
-| 4. Editor collaboration and agents | Remaining after ADR-106: depot joining, journal results for terrain and brushes, gestures, richer presence, published assets, agent slots | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
+| 4. Editor collaboration and agents | Remaining after ADR-106: depot joining, physics and settings edits, richer presence, published assets | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
 | 5. Game sessions | `world` service, opt-in components, input, prediction for the FPS module | 20 clients (bots) on a Bistro session with measured bytes per client and correction counts under 2% loss |
 | 6. Asset streaming | Remote content mount, then progressive mips and LOD ranges | Bistro streamed from a depot: time to first frame and to full detail; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |

@@ -104,7 +104,7 @@ thread during the editor's build.
 | `query.raycast` | First physics surface along a ray |
 | `view.capture` | A PNG of the Scene or the whole window, optionally from another view, framed on an entity or box, with grid labels |
 | `session.host`, `session.join`, `session.leave`, `session.status` | The collaborative editing session ([ADR-106](106-collaborative-editing-session.md)) |
-| `task.add`, `task.next`, `task.done`, `task.list` | The task board agents divide work with; the session host's in a session ([ADR-106](106-collaborative-editing-session.md#agent-federation)) |
+| `task.add`, `task.next`, `task.done`, `task.list`, `task.slots` | The task board agents divide work with; the session host's in a session ([ADR-106](106-collaborative-editing-session.md#agent-federation)) |
 
 An entity argument is `"<world>:<index>:<generation>"`, a unique exact name,
 or `"$k"` for the entity operation `k` of the same batch created. A name

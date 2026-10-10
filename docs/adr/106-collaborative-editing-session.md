@@ -13,13 +13,15 @@ Accepted (partial). Phase 4 of the
 one editor hosts a session over the transport of
 [ADR-105](105-network-transport-and-asset-depot.md), other editors join it,
 and every edit that changes a scene journal applies on every editor in the
-host's order. A Session window hosts and joins, and the Scene draws other
-editors' cameras and selections. Agents of every editor share the host's
-claims, task board (with capabilities) and change feed, and their batches
-wait for review on every editor. Live gesture previews, edits that do not
-travel yet (listed under [Decision](#what-travels)) and published assets
-stay in the proposal. Every check ran on one Windows host; macOS and
-cross-machine runs are unverified.
+host's order, terrain strokes as the samples they made on the host. A
+Session window hosts and joins, and the Scene draws other editors' cameras
+with their names, selections and gizmo drags in progress. Agents of every
+editor share the host's claims, task board (with capabilities and slots)
+and change feed, and their batches wait for review on every editor. Edits
+that do not travel yet (listed under [Decision](#what-travels)), joining
+from a depot commit and published files other than new terrains stay in
+the proposal. Every check ran on one Windows host; macOS and cross-machine
+runs are unverified.
 
 ## Context
 
@@ -71,11 +73,27 @@ container's journal.
 ### What travels
 
 APPLY of name, transform, visibility, the three lights and one world
-component; CREATE, DUPLICATE, DELETE, REPARENT and component add, remove and
-replace; batches of those; undo, redo and batch reverts; gizmo moves.
-Terrain strokes, physics, collision layers, scene settings, partition edits
-and scene or World loads are refused while a session runs, with a Console
+component; CREATE, DUPLICATE, DELETE, REPARENT, component add, remove and
+replace, and terrain ops; batches of those; undo, redo and batch reverts;
+gizmo moves. Physics, collision layers, scene settings, partition edits and
+scene or World loads are refused while a session runs, with a Console
 warning or a batch result saying so.
+
+### Terrain
+
+A terrain op's result is floating-point work that can differ between
+machines, so it travels as a request but applies everywhere as its result.
+The op travels with its parameters, a stamp's image and a road's points
+(raw arrays, 16-byte aligned so the reader borrows them). The host notes
+the samples each terrain op of an edit may change
+(`vkr_scene_edit_terrain_rect`), applies the op, then reads those samples'
+heights and paint weights and appends them to APPLIED. Every other editor
+writes them through `VKR_HEIGHTFIELD_OP_SAMPLES` in place of the op, in the
+same journal path, so a stroke folds into one undo step there as on the
+host. A small terrain an agent creates exists only in its editor's memory
+until a save (`vkr_scene_terrain_stage`); the batch names it, and every
+editor stages the same flat field before the batch applies unless the file
+exists.
 
 ### Order and verification
 
@@ -156,8 +174,10 @@ carries what they share.
   (`windows`, `macos`) and pipeline class (`desktop`, `tiled`;
   [ADR-087](087-gpu-class-graphics-pipelines.md)) and any it lists itself;
   `task.done` finishes the assignee's task as done or failed with a note;
-  `task.list` reads the board. A full board (256) drops its oldest finished
-  task.
+  `task.list` reads the board. `task.slots` sets how many tasks an
+  editor's agents may hold at once; the host gives an editor that holds
+  that many no new task, so the rest go to editors with room. A full board
+  (256) drops its oldest finished task.
 - **Reviews.** EDIT and APPLIED carry whether a batch waits for review.
   Every editor lists every editor's review batches in its Agent changes
   window, by its own journal group. Reject reverts the batch, which the
@@ -171,8 +191,13 @@ with a name and an address to listen on, or joins with an address and the
 host's key, and while a session runs shows the address, the key with a
 Copy button, and each peer in its colour with its camera position and a
 Go to view button that moves the Scene camera to that peer's view. The
-Scene draws each peer's camera as a small frustum and its selection's
-bounds as a box, in the peer's colour, among the editor's overlay lines.
+Scene draws each peer's camera as a small frustum with its name above it,
+and its selection's bounds as a box, in the peer's colour. While an editor
+drags a gizmo, its PRESENCE (every 33 ms instead of 100 ms) carries the
+dragged entity and its world matrix, and other editors draw the entity's
+box where the drag holds it, joined to where it rests, until the drag
+records and travels as an edit. Slider scrubs and terrain strokes need no
+preview: each step travels as an edit.
 
 ### Operations
 
@@ -246,11 +271,20 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
 - `vulkan_renderer_tester --suite scene_edit` passes with the seeded
   duplicate, and `test_net_scene_edit_replication` duplicates a subtree on
   one scene and checks the other holds the same ids, names and parents.
-- Not exercised: gizmo drags (no headless drag script), batch reverts across
-  editors, history trimming, macOS, two machines.
+- The federation check also creates a 64 m terrain on the host, raises it
+  from the guest and smooths it from the host; `terrain.sample` over a
+  21 x 21 grid reads the same heights on both editors (peak 2.61 m). With
+  one slot, the guest editor's second agent gets no task while its first
+  holds one, and a host agent takes the next. `vulkan_renderer_tester
+  --suite heightfield` checks that SAMPLES copies a brush's heights and
+  paint exactly; the codec test round-trips a terrain op with its image and
+  road points.
+- A second capture shows the guest's name above its camera.
+- Not exercised: gizmo drags and their preview (no headless drag script),
+  batch reverts across editors, history trimming, macOS, two machines.
 
 ## Revisit when
 
-Terrain or brush edits must travel (journal results), a session needs
-edits faster than one per build, or joining must tolerate a host with
-unsaved edits (snapshot transfer).
+Physics or settings edits must travel, a session needs edits faster than
+one per build, or joining must tolerate a host with unsaved edits
+(snapshot transfer).
