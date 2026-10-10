@@ -10,6 +10,7 @@
 #include "editor_scripts.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include <ctype.h>
@@ -22,6 +23,9 @@
 #define CONTENT_CACHE_COUNT 64u
 #define CONTENT_NONE UINT32_MAX
 #define CONTENT_PATH 1024u
+/* Address space the listing's own pool reserves: a full listing, its
+   growth copy and the largest document it reads fit with room to spare. */
+#define CONTENT_MEMORY_RESERVE MB(128)
 /* Virtual folders and tags (ADR-076): a folder tree and labels over item IDs,
    stored beside project.json; files never move. Content is the World: its
    root lists the World's objects, the project's scenes, assets and folders,
@@ -150,6 +154,12 @@ typedef struct ContentPreview {
 } ContentPreview;
 
 struct VkrEditorContent {
+  /* The listing's own pool, so a large scene's object rows never crowd the
+     UI's retained text out of the pool `parent` names, which holds this
+     struct. */
+  VkrAllocator *parent;
+  VkrDMemory memory;
+  VkrAllocator memory_allocator;
   VkrAllocator *allocator;
   VkrRenderAssets *assets;
   ContentAsset *entries;
@@ -486,7 +496,15 @@ VkrEditorContent *vkr_editor_content_create(VkrAllocator *allocator,
     return NULL;
   }
   MemZero(content, sizeof(*content));
-  content->allocator = allocator;
+  content->parent = allocator;
+  if (!vkr_dmemory_create(MB(1), CONTENT_MEMORY_RESERVE, &content->memory)) {
+    vkr_allocator_free(allocator, content, sizeof(*content),
+                       VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    return NULL;
+  }
+  content->memory_allocator.ctx = &content->memory;
+  vkr_dmemory_allocator_create(&content->memory_allocator);
+  content->allocator = &content->memory_allocator;
   content->assets = assets;
   content->size = 128;
   content->selected = CONTENT_NONE;
@@ -555,7 +573,10 @@ void vkr_editor_content_destroy(VkrEditorContent *content) {
                            VKR_EDITOR_PRESET_MAX,
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
-  vkr_allocator_free(content->allocator, content, sizeof(*content),
+  /* Documents and previews left in the pool go with it. */
+  vkr_allocator_release_global_accounting(&content->memory_allocator);
+  vkr_dmemory_allocator_destroy(&content->memory_allocator);
+  vkr_allocator_free(content->parent, content, sizeof(*content),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
 }
 
