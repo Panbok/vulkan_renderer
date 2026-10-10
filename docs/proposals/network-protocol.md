@@ -297,10 +297,10 @@ editors' cameras, names and selections in the Scene. The rest:
   depot, or confirms its working copy matches the host's commit, and the
   host sends a snapshot of what changed since the commit, so a host with
   unsaved edits or a long history can take new participants.
-- **The remaining edits.** Physics, collision layers, scene settings and
-  partition edits travel, as values or results.
-- **Richer presence.** `PRESENCE` adds each participant's cursor ray and
-  tool.
+- **Partition edits.** Loading and pinning world partition cells travels,
+  so every editor holds the same cells.
+- **Cursor ray.** `PRESENCE` adds each participant's cursor ray, which
+  other editors draw.
 - **Published assets.** A file created during the session, such as an
   import or a material graph (a new terrain is staged on every editor
   already), is pushed to the depot. The host broadcasts
@@ -315,11 +315,9 @@ editors' cameras, names and selections in the Scene. The rest:
 
 [ADR-106](../adr/106-collaborative-editing-session.md#agent-federation)
 implements authors across editors, the host's claims and task board with
-capability matching and slots, the session-wide change feed and reviews
-across editors. The rest:
+capability matching and slots, the session-wide change feed with
+reverted batches, and reviews across editors. The rest:
 
-- **A reverted batch in the feed.** Other editors feed a batch its author
-  reverted for a claim as applied; a `reverted` event would correct it.
 - Each participant renders its own captures on its own GPU. A Mac draws
   the tiled pipeline and a Windows machine draws the desktop pipeline
   ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md)). Agents that
@@ -369,7 +367,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | Owner | Path | Contents |
 |---|---|---|
 | `vkr_runtime` | `runtime/src/net/` | `world`, `stream` and `view` services, the remote content mount |
-| Editor | `editor/src/editor_session.c` | The `collab` service, Session window, Scene overlay and agent federation (ADR-106); next richer presence |
+| Editor | `editor/src/editor_session.c` | The `collab` service, Session window, Scene overlay and agent federation (ADR-106); next the cursor ray |
 | Renderer | Encoder and decoder hooks | Separate design and ADR in phase 7 |
 | `vkr_net` | `net/src/` | Threaded host; replication helpers on the bit stream |
 
@@ -384,7 +382,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
-| 4. Editor collaboration and agents | Remaining after ADR-106: depot joining, physics and settings edits, richer presence, published assets | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
+| 4. Editor collaboration and agents | Remaining after ADR-106: depot joining, partition edits, the cursor ray, published assets | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
 | 5. Game sessions | `world` service, opt-in components, input, prediction for the FPS module | 20 clients (bots) on a Bistro session with measured bytes per client and correction counts under 2% loss |
 | 6. Asset streaming | Remote content mount, then progressive mips and LOD ranges | Bistro streamed from a depot: time to first frame and to full detail; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |

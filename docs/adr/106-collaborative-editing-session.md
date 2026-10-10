@@ -72,12 +72,16 @@ container's journal.
 
 ### What travels
 
-APPLY of name, transform, visibility, the three lights and one world
-component; CREATE, DUPLICATE, DELETE, REPARENT, component add, remove and
-replace, and terrain ops; batches of those; undo, redo and batch reverts;
-gizmo moves. Physics, collision layers, scene settings, partition edits and
-scene or World loads are refused while a session runs, with a Console
-warning or a batch result saying so.
+APPLY of name, transform, visibility, the three lights, physics settings
+and one world component; CREATE, DUPLICATE, DELETE, REPARENT, component
+add, remove and replace, and terrain ops; batches of those; physics
+batches (a ragdoll's bodies), collision layers and scene settings as edits
+of their own; undo, redo and batch reverts; gizmo moves. Physics settings
+travel as values: the body and each collider by their descriptors (with
+the collider's authored id), the attachment and joints field by field, and
+the reader validates the snapshot. Partition edits and scene or World
+loads are refused while a session runs, with a Console warning or a batch
+result saying so.
 
 ### Terrain
 
@@ -164,8 +168,8 @@ carries what they share.
 - **Change feed.** Each editor records the agent batches other editors
   applied, with author, label and entities, beside its own events, and
   feeds claims that appear, move or leave in the host's copy. A batch its
-  author reverts because it touched a claim still reads as applied, with
-  no entities, in other editors' feeds.
+  author reverts, as one that touched a claim, follows as a `reverted`
+  event.
 - **Task board** ([editor_ops.c](../../editor/src/editor_ops.c), also
   without a session). `task.add` opens a task of a kind with a title, an
   optional region and the capabilities it `requires`; `task.next` gives an
@@ -192,7 +196,8 @@ host's key, and while a session runs shows the address, the key with a
 Copy button, and each peer in its colour with its camera position and a
 Go to view button that moves the Scene camera to that peer's view. The
 Scene draws each peer's camera as a small frustum with its name above it,
-and its selection's bounds as a box, in the peer's colour. While an editor
+and its selection's bounds as a box, in the peer's colour. PRESENCE names
+the peer's Scene tool or gizmo, which the window lists. While an editor
 drags a gizmo, its PRESENCE (every 33 ms instead of 100 ms) carries the
 dragged entity and its world matrix, and other editors draw the entity's
 box where the drag holds it, joined to where it rests, until the drag
@@ -246,10 +251,11 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
   names and moves a cube before anyone joins; the guest joins (digest
   match), replays three edits, sees the cube at (1, 2, 3), creates, names
   and moves its own cube twice, undoes once, duplicates it (5,991 to 5,992
-  entities) and has a physics edit refused. Both end at session sequence
-  10 with equal digests (random document ids change them between runs);
-  the host reads the guest's cube and its copy `GuestCube (1)` at
-  (4, 5, 6). Passes.
+  entities) and gives the copy a physics body. Both end at session
+  sequence 11 with equal digests (random document ids change them between
+  runs); the host reads the guest's cube and its copy `GuestCube (1)` at
+  (4, 5, 6), and its own `component.add physics_body` on the copy fails
+  with "already has a physics body". Passes.
 - `python tools/checks/check_agent_federation.py --editor
   build_debug/editor/vkr_editor.exe --mcp build_debug/tools/vkr_mcp.exe`
   ([check_agent_federation.py](../../tools/checks/check_agent_federation.py))
@@ -261,8 +267,10 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
   `VKR-AGENT-0010`; each feed holds the other editor's applied batch with
   its entity; the guest's batch waits for review on the host until the
   guest accepts it; of two tasks that require the `tiled` and `desktop`
-  classes, a third agent on the Windows host gets the `desktop` one; both
-  editors end at sequence 7 with equal digests. Passes.
+  classes, a third agent on the Windows host gets the `desktop` one; each
+  feed shows the other editor's intruding batch as `reverted`; the host's
+  `session.status` names the guest's tool; both editors end with equal
+  digests. Passes.
 - A headless window capture of the host while the guest looks at the
   scene from (2, 2, 10) shows the Session window with the guest `beta`, its
   colour, position and Go to view button, and the guest's camera frustum
@@ -278,7 +286,9 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
   holds one, and a host agent takes the next. `vulkan_renderer_tester
   --suite heightfield` checks that SAMPLES copies a brush's heights and
   paint exactly; the codec test round-trips a terrain op with its image and
-  road points.
+  road points, a body's physics settings with a collider and a joint,
+  collision layers (refused without room to read into) and scene
+  settings.
 - A second capture shows the guest's name above its camera.
 - Not exercised: gizmo drags and their preview (no headless drag script),
   batch reverts across editors, history trimming, macOS, two machines.
