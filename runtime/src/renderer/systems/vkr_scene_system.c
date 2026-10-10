@@ -3348,6 +3348,88 @@ vkr_internal void scene_bounds_add_box(Mat4 model, Vec3 minimum, Vec3 maximum,
   }
 }
 
+/* Adds one entity's mesh and shape boxes, in the frame `to_local`. */
+vkr_internal bool8_t scene_bounds_add_entity(const VkrScene *scene,
+                                             VkrEntityId candidate,
+                                             const Mat4 *to_local, Vec3 *lower,
+                                             Vec3 *upper) {
+  VkrMeshManager *meshes = &scene->assets->mesh_manager;
+  bool8_t found = false_v;
+  const SceneMeshRenderer *renderer = vkr_entity_get_component(
+      scene->world, candidate, scene->comp_mesh_renderer);
+  const VkrMeshInstance *instance =
+      renderer ? vkr_mesh_manager_get_instance(meshes, renderer->instance)
+               : NULL;
+  const VkrMeshAsset *asset =
+      instance ? vkr_mesh_manager_get_live_asset(meshes, instance->asset)
+               : NULL;
+  if (asset) {
+    const Mat4 model = mat4_mul(*to_local, instance->model);
+    for (uint64_t s = 0; s < asset->submeshes.length; ++s) {
+      const VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
+      scene_bounds_add_box(model, submesh->min_extents, submesh->max_extents,
+                           lower, upper);
+      found = true_v;
+    }
+  }
+
+  const SceneShape *shape =
+      vkr_entity_get_component(scene->world, candidate, scene->comp_shape);
+  const VkrMesh *mesh =
+      shape ? vkr_mesh_manager_get(meshes, shape->mesh_index) : NULL;
+  if (mesh) {
+    const Mat4 model = mat4_mul(*to_local, mesh->model);
+    for (uint64_t s = 0; s < mesh->submeshes.length; ++s) {
+      const VkrSubMesh *submesh = &mesh->submeshes.data[s];
+      scene_bounds_add_box(model, submesh->min_extents, submesh->max_extents,
+                           lower, upper);
+      found = true_v;
+    }
+  }
+  return found;
+}
+
+/* Subtree entities a bounds walk holds pending before it falls back to
+   scanning the whole hierarchy. */
+#define SCENE_BOUNDS_STACK_MAX 1024u
+
+/* Walks the subtree through the child index; false when the index is
+   stale or the subtree overflows the stack, so the caller scans instead. */
+vkr_internal bool8_t scene_bounds_walk_children(const VkrScene *scene,
+                                                VkrEntityId entity,
+                                                const Mat4 *to_local,
+                                                Vec3 *lower, Vec3 *upper,
+                                                bool8_t *found) {
+  if (!scene->child_index_valid) {
+    return false_v;
+  }
+  VkrEntityId stack[SCENE_BOUNDS_STACK_MAX];
+  uint32_t depth = 0u;
+  stack[depth++] = entity;
+  while (depth > 0u) {
+    const VkrEntityId candidate = stack[--depth];
+    if (scene_bounds_add_entity(scene, candidate, to_local, lower, upper)) {
+      *found = true_v;
+    }
+
+    uint32_t child_count = 0u;
+    const VkrEntityId *children =
+        vkr_scene_get_children(scene, candidate, &child_count);
+    for (uint32_t c = 0; c < child_count; ++c) {
+      const SceneTransform *child = vkr_entity_get_component_if_alive_const(
+          scene->world, children[c], scene->comp_transform);
+      if (!child || child->parent.u64 != candidate.u64) {
+        continue;
+      }
+      if (depth == SCENE_BOUNDS_STACK_MAX) {
+        return false_v;
+      }
+      stack[depth++] = children[c];
+    }
+  }
+  return true_v;
+}
+
 bool8_t vkr_scene_entity_local_bounds(const VkrScene *scene, VkrEntityId entity,
                                       Vec3 *out_min, Vec3 *out_max) {
   if (!scene || !scene->world || !scene->assets || !out_min || !out_max) {
@@ -3359,50 +3441,27 @@ bool8_t vkr_scene_entity_local_bounds(const VkrScene *scene, VkrEntityId entity,
     return false_v;
   }
   const Mat4 to_local = mat4_inverse_affine(root->world);
-  VkrMeshManager *meshes = &scene->assets->mesh_manager;
   Vec3 lower = vec3_new(INFINITY, INFINITY, INFINITY);
   Vec3 upper = vec3_new(-INFINITY, -INFINITY, -INFINITY);
   bool8_t found = false_v;
-  for (uint32_t i = 0; i < scene->topo_count; ++i) {
-    const VkrEntityId candidate = scene->topo_order[i];
-    VkrEntityId ancestor = candidate;
-    while (ancestor.u64 && ancestor.u64 != entity.u64) {
-      const SceneTransform *parent = vkr_entity_get_component(
-          scene->world, ancestor, scene->comp_transform);
-      ancestor = parent ? parent->parent : VKR_ENTITY_ID_INVALID;
-    }
-    if (!ancestor.u64) {
-      continue;
-    }
-
-    const SceneMeshRenderer *renderer = vkr_entity_get_component(
-        scene->world, candidate, scene->comp_mesh_renderer);
-    const VkrMeshInstance *instance =
-        renderer ? vkr_mesh_manager_get_instance(meshes, renderer->instance)
-                 : NULL;
-    const VkrMeshAsset *asset =
-        instance ? vkr_mesh_manager_get_live_asset(meshes, instance->asset)
-                 : NULL;
-    if (asset) {
-      const Mat4 model = mat4_mul(to_local, instance->model);
-      for (uint64_t s = 0; s < asset->submeshes.length; ++s) {
-        const VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
-        scene_bounds_add_box(model, submesh->min_extents, submesh->max_extents,
-                             &lower, &upper);
-        found = true_v;
+  if (!scene_bounds_walk_children(scene, entity, &to_local, &lower, &upper,
+                                  &found)) {
+    lower = vec3_new(INFINITY, INFINITY, INFINITY);
+    upper = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    found = false_v;
+    for (uint32_t i = 0; i < scene->topo_count; ++i) {
+      const VkrEntityId candidate = scene->topo_order[i];
+      VkrEntityId ancestor = candidate;
+      while (ancestor.u64 && ancestor.u64 != entity.u64) {
+        const SceneTransform *parent = vkr_entity_get_component(
+            scene->world, ancestor, scene->comp_transform);
+        ancestor = parent ? parent->parent : VKR_ENTITY_ID_INVALID;
       }
-    }
-
-    const SceneShape *shape =
-        vkr_entity_get_component(scene->world, candidate, scene->comp_shape);
-    const VkrMesh *mesh =
-        shape ? vkr_mesh_manager_get(meshes, shape->mesh_index) : NULL;
-    if (mesh) {
-      const Mat4 model = mat4_mul(to_local, mesh->model);
-      for (uint64_t s = 0; s < mesh->submeshes.length; ++s) {
-        const VkrSubMesh *submesh = &mesh->submeshes.data[s];
-        scene_bounds_add_box(model, submesh->min_extents, submesh->max_extents,
-                             &lower, &upper);
+      if (!ancestor.u64) {
+        continue;
+      }
+      if (scene_bounds_add_entity(scene, candidate, &to_local, &lower,
+                                  &upper)) {
         found = true_v;
       }
     }
