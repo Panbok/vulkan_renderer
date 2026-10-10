@@ -87,6 +87,8 @@ typedef enum OpsFeedKind {
   OPS_FEED_REJECTED,
   OPS_FEED_CLAIMED,
   OPS_FEED_RELEASED,
+  /* Another editor's agent batch its author reverted after it applied. */
+  OPS_FEED_REVERTED,
   OPS_FEED_KIND_COUNT,
 } OpsFeedKind;
 
@@ -10622,7 +10624,7 @@ static VkrEditorOpStatus ops_run_task_list(OpsContext *ctx) {
 /* changes.feed: the events after sequence `after`, oldest first. */
 static VkrEditorOpStatus ops_run_feed(OpsContext *ctx) {
   static const char *const kinds[OPS_FEED_KIND_COUNT] = {
-      "applied", "accepted", "rejected", "claimed", "released"};
+      "applied", "accepted", "rejected", "claimed", "released", "reverted"};
   const VkrEditorOps *ops = ctx->ops;
   Arena *arena = ops_arena(ctx);
   float64_t after_value = 0.0;
@@ -13279,6 +13281,8 @@ static VkrBakeryJson *ops_session_status(OpsContext *ctx) {
     VkrBakeryJson *row = vkr_bakery_json_object(arena);
     ops_set(ctx, row, "id", vkr_bakery_json_int(arena, peer->id));
     ops_set(ctx, row, "name", vkr_bakery_json_cstr(arena, peer->name));
+    ops_set(ctx, row, "tool", vkr_bakery_json_cstr(arena, peer->tool));
+    ops_set(ctx, row, "dragging", vkr_bakery_json_bool(arena, peer->dragging));
     if (peer->has_camera) {
       VkrBakeryJson *camera = vkr_bakery_json_object(arena);
       ops_set(ctx, camera, "position", ops_vec3(ctx, peer->camera_position));
@@ -14729,6 +14733,11 @@ static void ops_session_update(VkrEditorOps *ops, VkrEditorSession *session,
   }
   VkrEditorSessionApplied applied;
   while (vkr_editor_session_take_applied(session, &applied)) {
+    if (applied.reverted) {
+      (void)ops_feed_add(ops, OPS_FEED_REVERTED, applied.container,
+                         applied.author, applied.label);
+      continue;
+    }
     const VkrScene *scene = ops_scene(frame, applied.container);
     OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_APPLIED, applied.container,
                                        applied.author, applied.label);

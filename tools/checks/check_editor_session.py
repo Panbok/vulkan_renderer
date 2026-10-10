@@ -6,8 +6,8 @@ and edits before anyone joins, then a headless guest editor that joins with
 the host's key, replays that history and edits through the host. Both print
 `session.status`; the check passes when both editors end at the same session
 sequence with the same scene digest, the guest saw the host's edits, the
-host saw the guest's, including a duplicate, and the guest's physics edit,
-which cannot travel, was refused.
+host saw the guest's, including a duplicate and a physics body on it (the
+host's own physics_body add on the copy then fails, so it edits nothing).
 
     python tools/checks/check_editor_session.py --editor build_debug/editor/vkr_editor.exe
 """
@@ -38,6 +38,7 @@ select GuestCube
 sel.position
 select GuestCube (1)
 sel.position
+component.add physics_body
 op session.status
 """
 
@@ -210,8 +211,10 @@ def main() -> int:
     if len(entity_counts) < 2 or entity_counts[-1] != entity_counts[-2] + 1:
         failures.append(f"the guest's duplicate did not apply: "
                         f"{entity_counts}")
-    if "do not reach a collaborative session" not in guest_text:
-        failures.append("the guest's physics edit was not refused")
+    if "do not reach a collaborative session" in guest_text:
+        failures.append("the session refused a guest edit")
+    if "already has a physics body" not in host_text:
+        failures.append("the guest's physics body did not reach the host")
     for failure in failures:
         print("FAIL:", failure)
     print("host log:", host_log)

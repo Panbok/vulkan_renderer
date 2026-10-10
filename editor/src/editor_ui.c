@@ -605,6 +605,18 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
         allowed);
   }
   /* Last, after everything that may request an edit this build. */
+  {
+    const VkrEditorSceneTool scene_tool = vkr_editor_scene_tool(editor);
+    uint32_t gizmo = 0u;
+    while (gizmo < 3u &&
+           vkr_editor_cmd_tool_modes[gizmo] != frame->view_state.gizmo_tool) {
+      ++gizmo;
+    }
+    vkr_editor_session_set_tool(editor->session,
+                                scene_tool != VKR_EDITOR_SCENE_TOOL_NONE
+                                    ? vkr_editor_scene_tool_name(scene_tool)
+                                    : vkr_editor_cmd_tools[gizmo]);
+  }
   vkr_editor_session_update(editor->session, frame);
   return dock_capture;
 }

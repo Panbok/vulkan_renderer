@@ -12,16 +12,26 @@
  * Only edits every peer reproduces exactly travel: APPLY (transform, name,
  * visibility, lights and one world component; not physics), CREATE with a
  * document id chosen ahead, DUPLICATE with the seed its copies' ids derive
- * from, DELETE, REPARENT, component add, remove and replace, and terrain
- * ops. A terrain op's result can differ between machines (floating point),
- * so the session host sends the samples it changed beside the op, and other
- * editors write those (VKR_HEIGHTFIELD_OP_SAMPLES). Physics, settings or
- * partition edits do not travel yet; the writer refuses them.
+ * from, DELETE, REPARENT, component add, remove and replace, terrain ops,
+ * physics settings (in APPLY and CREATE values, and as a batch of bodies),
+ * collision layers and scene settings. A terrain op's result can differ between
+ * machines (floating point), so the session host sends the samples it changed
+ * beside the op, and other editors write those (VKR_HEIGHTFIELD_OP_SAMPLES).
+ * Partition edits do not travel yet; the writer refuses them.
  *
  * A stamp's image and a road's points travel as raw arrays in place, 16-byte
  * aligned from the start of the encoded bytes and in the little-endian
  * order of every supported host. A reader whose bytes start 16-byte aligned
  * borrows them, so the request lives no longer than those bytes. */
+
+/* Room the reader fills for edits whose values the request points to:
+   collision layers and a physics batch. Without it those edits fail to
+   read. Valid until the request is consumed. */
+typedef struct VkrNetSceneEditStorage {
+  VkrSceneCollisionLayers *collision_layers;
+  VkrScenePhysicsChange *physics_changes;
+  uint32_t physics_capacity;
+} VkrNetSceneEditStorage;
 
 typedef struct VkrNetSceneEditScenes {
   /* The loaded containers by world id: 0 the primary scene, 1 to
@@ -54,6 +64,7 @@ const void *vkr_net_read_array(VkrBitReader *reader, uint32_t size);
    with a message, on a malformed edit or an entity this editor lacks. */
 bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
                                 const VkrNetSceneEditScenes *scenes,
+                                const VkrNetSceneEditStorage *storage,
                                 VkrSceneEditRequest *out_request,
                                 int32_t *out_entity_ref,
                                 int32_t *out_parent_ref, char *error,

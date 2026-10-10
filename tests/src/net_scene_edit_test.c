@@ -4,6 +4,7 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "net/vkr_net_scene_edit.h"
 #include "net/vkr_net_type.h"
+#include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 
 #include <assert.h>
@@ -92,7 +93,7 @@ static void net_edit_replicate(EditPeer *a, EditPeer *b,
   int32_t entity_ref = 0;
   int32_t parent_ref = 0;
   const VkrNetSceneEditScenes scenes_b = net_edit_scenes(b);
-  if (!vkr_net_scene_edit_read(&reader, &scenes_b, &decoded, &entity_ref,
+  if (!vkr_net_scene_edit_read(&reader, &scenes_b, NULL, &decoded, &entity_ref,
                                &parent_ref, error, sizeof(error))) {
     printf("    decode failed: %s\n", error);
     assert(false && "decode");
@@ -338,7 +339,7 @@ static void test_net_scene_edit_replication(void) {
     vkr_bit_reader_init(&terrain_reader, encoded, encoded_size);
     VkrSceneEditRequest decoded_terrain;
     int32_t refs[2];
-    assert(vkr_net_scene_edit_read(&terrain_reader, &terrain_scenes,
+    assert(vkr_net_scene_edit_read(&terrain_reader, &terrain_scenes, NULL,
                                    &decoded_terrain, &refs[0], &refs[1],
                                    terrain_error, sizeof(terrain_error)));
     const VkrHeightfieldOp *op = &decoded_terrain.terrain;
@@ -359,6 +360,110 @@ static void test_net_scene_edit_replication(void) {
     assert(!vkr_net_scene_edit_write(&terrain_writer, &terrain_scenes, &terrain,
                                      -1, -1, terrain_error,
                                      sizeof(terrain_error)));
+  }
+
+  /* Physics settings, collision layers and scene settings travel as
+     values; the reader puts layers in the room it is given. */
+  {
+    _Alignas(16) uint8_t encoded[16384];
+    char physics_error[256];
+    const VkrNetSceneEditScenes physics_scenes = net_edit_scenes(&a);
+    VkrSceneEditRequest body = {.action = VKR_SCENE_EDIT_APPLY,
+                                .entity = net_edit_find(&a, 2u)};
+    assert(vkr_scene_edit_read(&a.scene, body.entity, &body.values));
+    body.values.fields = VKR_SCENE_EDIT_PHYSICS;
+    VkrScenePhysicsSnapshot *physics = &body.values.physics;
+    MemZero(physics, sizeof(*physics));
+    physics->present = true_v;
+    vkr_type_defaults(&vkr_scene_physics_body_type, &physics->body);
+    physics->body.mass = 12.5f;
+    physics->body.friction = 0.3f;
+    physics->collision_layer = 3u;
+    physics->collision_mask = 0x00f0u;
+    physics->collider_count = 1u;
+    vkr_type_defaults(&vkr_scene_physics_collider_type, &physics->colliders[0]);
+    physics->colliders[0].authored_id = 0x1234567890abcdefull;
+    physics->colliders[0].radius = 0.75f;
+    physics->joint_count = 1u;
+    VkrSceneJointConfig *joint = &physics->joints[0];
+    joint->authored_id = 42u;
+    joint->target_source.source_fingerprint = 99u;
+    joint->type = VKR_PHYSICS_JOINT_FIXED;
+    joint->anchor_a = vec3_new(1.0f, 2.0f, 3.0f);
+    joint->axis_a = joint->axis_b = vec3_new(1.0f, 0.0f, 0.0f);
+    joint->normal_a = joint->normal_b = vec3_new(0.0f, 1.0f, 0.0f);
+    joint->max_limit = 1.25f;
+    joint->enabled = true_v;
+    VkrBitWriter physics_writer;
+    vkr_bit_writer_init(&physics_writer, encoded, sizeof(encoded));
+    assert(vkr_net_scene_edit_write(&physics_writer, &physics_scenes, &body, -1,
+                                    -1, physics_error, sizeof(physics_error)));
+    VkrBitReader physics_reader;
+    vkr_bit_reader_init(&physics_reader, encoded,
+                        vkr_bit_writer_finish(&physics_writer));
+    VkrSceneEditRequest decoded_body;
+    int32_t refs[2];
+    assert(vkr_net_scene_edit_read(&physics_reader, &physics_scenes, NULL,
+                                   &decoded_body, &refs[0], &refs[1],
+                                   physics_error, sizeof(physics_error)));
+    const VkrScenePhysicsSnapshot *got = &decoded_body.values.physics;
+    assert(got->present && got->body.mass == 12.5f &&
+           got->body.friction == 0.3f && got->collision_layer == 3u &&
+           got->collision_mask == 0x00f0u);
+    assert(got->collider_count == 1u &&
+           got->colliders[0].authored_id == 0x1234567890abcdefull &&
+           got->colliders[0].radius == 0.75f &&
+           got->colliders[0].shape == physics->colliders[0].shape);
+    assert(got->joint_count == 1u && got->joints[0].authored_id == 42u &&
+           got->joints[0].anchor_a.z == 3.0f &&
+           got->joints[0].max_limit == 1.25f && got->joints[0].enabled);
+
+    VkrSceneCollisionLayers layers = vkr_scene_collision_layers_default();
+    snprintf(layers.names[5], sizeof(layers.names[5]), "debris");
+    const char *layers_invalid = NULL;
+    assert(vkr_scene_collision_layers_validate(&layers, &layers_invalid));
+    VkrSceneEditRequest layer_edit = {.action =
+                                          VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS,
+                                      .collision_layers = &layers};
+    vkr_bit_writer_init(&physics_writer, encoded, sizeof(encoded));
+    assert(vkr_net_scene_edit_write(&physics_writer, &physics_scenes,
+                                    &layer_edit, -1, -1, physics_error,
+                                    sizeof(physics_error)));
+    const uint32_t layer_size = vkr_bit_writer_finish(&physics_writer);
+    VkrSceneCollisionLayers room;
+    const VkrNetSceneEditStorage storage = {.collision_layers = &room};
+    vkr_bit_reader_init(&physics_reader, encoded, layer_size);
+    VkrSceneEditRequest decoded_layers;
+    assert(vkr_net_scene_edit_read(&physics_reader, &physics_scenes, &storage,
+                                   &decoded_layers, &refs[0], &refs[1],
+                                   physics_error, sizeof(physics_error)));
+    assert(decoded_layers.collision_layers == &room);
+    assert(MemCompare(room.names, layers.names, sizeof(layers.names)) == 0 &&
+           MemCompare(room.matrix, layers.matrix, sizeof(layers.matrix)) == 0 &&
+           room.preset_count == layers.preset_count);
+    /* Without room the layers are refused, not lost. */
+    vkr_bit_reader_init(&physics_reader, encoded, layer_size);
+    assert(!vkr_net_scene_edit_read(&physics_reader, &physics_scenes, NULL,
+                                    &decoded_layers, &refs[0], &refs[1],
+                                    physics_error, sizeof(physics_error)));
+
+    VkrSceneEditRequest settings = {
+        .action = VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS,
+        .container = 0u,
+        .scene_settings = {.inherit_world = true_v,
+                           .texture_max_extent = 2048u}};
+    vkr_bit_writer_init(&physics_writer, encoded, sizeof(encoded));
+    assert(vkr_net_scene_edit_write(&physics_writer, &physics_scenes, &settings,
+                                    -1, -1, physics_error,
+                                    sizeof(physics_error)));
+    vkr_bit_reader_init(&physics_reader, encoded,
+                        vkr_bit_writer_finish(&physics_writer));
+    VkrSceneEditRequest decoded_settings;
+    assert(vkr_net_scene_edit_read(&physics_reader, &physics_scenes, NULL,
+                                   &decoded_settings, &refs[0], &refs[1],
+                                   physics_error, sizeof(physics_error)));
+    assert(decoded_settings.scene_settings.inherit_world &&
+           decoded_settings.scene_settings.texture_max_extent == 2048u);
   }
 
   /* What cannot travel is refused at the writer: here a duplicate without
@@ -396,8 +501,9 @@ static void test_net_scene_edit_replication(void) {
   int32_t entity_ref = 0;
   int32_t parent_ref = 0;
   const VkrNetSceneEditScenes scenes_b = net_edit_scenes(&b);
-  assert(!vkr_net_scene_edit_read(&reader, &scenes_b, &decoded, &entity_ref,
-                                  &parent_ref, message, sizeof(message)));
+  assert(!vkr_net_scene_edit_read(&reader, &scenes_b, NULL, &decoded,
+                                  &entity_ref, &parent_ref, message,
+                                  sizeof(message)));
   assert(strstr(message, "no entity") != NULL);
 
   /* Random bytes never crash the reader. */
@@ -411,8 +517,9 @@ static void test_net_scene_edit_replication(void) {
       bytes[k] = (uint8_t)state;
     }
     vkr_bit_reader_init(&reader, bytes, length);
-    (void)vkr_net_scene_edit_read(&reader, &scenes_b, &decoded, &entity_ref,
-                                  &parent_ref, message, sizeof(message));
+    (void)vkr_net_scene_edit_read(&reader, &scenes_b, NULL, &decoded,
+                                  &entity_ref, &parent_ref, message,
+                                  sizeof(message));
   }
 
   net_edit_peer_destroy(&a, &allocator);

@@ -42,7 +42,7 @@
  *   UNDO, REDO  empty
  *   REVERT  container 16, the session sequence of the batch it reverts */
 #define SESSION_SERVICE_VERSION 1u
-#define SESSION_SCHEMA_HASH 0x434f4c4c41420008ull
+#define SESSION_SCHEMA_HASH 0x434f4c4c4142000aull
 #define SESSION_EDIT_CHANNEL 0u
 #define SESSION_PRESENCE_CHANNEL 1u
 #define SESSION_MESSAGE_MAX (8u << 20)
@@ -67,6 +67,8 @@
 #define SESSION_ACCEPTED_MAX 64u
 /* New terrains one batch stages on every editor. */
 #define SESSION_STAGE_MAX 16u
+/* Bodies one physics batch of the session holds, as a ragdoll's. */
+#define SESSION_PHYSICS_CHANGE_MAX 128u
 
 typedef enum SessionMessage {
   SESSION_MSG_HELLO = 1,
@@ -176,11 +178,14 @@ typedef struct SessionAnswerSlot {
   VkrEditorSessionAnswer answer;
 } SessionAnswerSlot;
 
-/* The journal group a session batch made here, for a later revert. */
+/* The journal group a session batch made here, for a later revert, and
+   the agent that made it, for the feed. */
 typedef struct SessionGroup {
   uint64_t seq;
   uint64_t group;
   uint16_t container;
+  char agent[VKR_EDITOR_AUTHOR_CAPACITY];
+  char label[96];
 } SessionGroup;
 
 /* A participant's connection, on the host. */
@@ -288,6 +293,10 @@ struct VkrEditorSession {
   SessionTerrain *terrain;
   uint32_t terrain_capacity;
   SessionBuffer results;
+  /* What an injected single edit's request points to: collision layers or
+     a physics batch. */
+  VkrSceneCollisionLayers edit_layers;
+  VkrScenePhysicsChange *edit_physics;
   VkrSampleEditBatchResult refused;
   VkrSceneEditRequest scratch;
   SessionBuffer payload;
@@ -299,6 +308,7 @@ struct VkrEditorSession {
 
   /* The Session window's fields; they survive a reset. */
   char form_name[VKR_EDITOR_SESSION_NAME_MAX];
+  char tool[24];
   char form_bind[64];
   char form_address[128];
   char form_key[72];
@@ -722,7 +732,8 @@ static SessionEdit session_queue_pop(VkrEditorSession *session) {
 }
 
 static void session_group_add(VkrEditorSession *session, uint64_t seq,
-                              uint16_t container, uint64_t group) {
+                              uint16_t container, uint64_t group,
+                              const SessionEdit *edit) {
   if (!group) {
     return;
   }
@@ -737,8 +748,12 @@ static void session_group_add(VkrEditorSession *session, uint64_t seq,
     session->groups = grown;
     session->group_capacity = capacity;
   }
-  session->groups[session->group_count++] =
-      (SessionGroup){.seq = seq, .group = group, .container = container};
+  SessionGroup *entry = &session->groups[session->group_count++];
+  *entry = (SessionGroup){.seq = seq, .group = group, .container = container};
+  if (edit) {
+    snprintf(entry->agent, sizeof(entry->agent), "%s", edit->agent);
+    snprintf(entry->label, sizeof(entry->label), "%s", edit->label);
+  }
 }
 
 static uint64_t session_group_of_seq(const VkrEditorSession *session,
@@ -1122,6 +1137,7 @@ static uint32_t session_encode_presence(const VkrEditorSessionPeer *peer,
   vkr_bit_write(&writer, SESSION_MSG_PRESENCE, 4u);
   vkr_bit_write(&writer, peer->id, 8u);
   session_write_text(&writer, peer->name);
+  session_write_text(&writer, peer->tool);
   vkr_bit_write(&writer, peer->has_camera, 1u);
   if (peer->has_camera) {
     session_write_float(&writer, peer->camera_position.x);
@@ -1150,7 +1166,8 @@ static bool8_t session_read_presence(VkrBitReader *reader,
                                      VkrEditorSessionPeer *out) {
   MemZero(out, sizeof(*out));
   out->id = (uint8_t)vkr_bit_read(reader, 8u);
-  if (!session_read_text(reader, out->name, sizeof(out->name))) {
+  if (!session_read_text(reader, out->name, sizeof(out->name)) ||
+      !session_read_text(reader, out->tool, sizeof(out->tool))) {
     return false_v;
   }
   out->has_camera = (bool8_t)vkr_bit_read(reader, 1u);
@@ -1447,7 +1464,7 @@ static void session_host_commit(VkrEditorSession *session, SessionEdit *edit,
   default:
     break;
   }
-  session_group_add(session, edit->seq, container, group);
+  session_group_add(session, edit->seq, container, group, edit);
   const uint32_t size = session_encode_edit(session, SESSION_MSG_APPLIED, edit);
   uint8_t *bytes = size ? malloc(size) : NULL;
   if (session->log_count == session->log_capacity) {
@@ -1874,17 +1891,8 @@ static void session_pump(VkrEditorSession *session) {
 
 static const char *session_action_name(VkrSceneEditAction action) {
   switch (action) {
-  case VKR_SCENE_EDIT_APPLY:
-  case VKR_SCENE_EDIT_CREATE:
-    return "Physics";
-  case VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS:
-    return "Collision layer";
-  case VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH:
-    return "Physics";
-  case VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS:
-    return "Scene settings";
   case VKR_SCENE_EDIT_TERRAIN:
-    return "Terrain";
+    return "Terrain sample";
   case VKR_SCENE_EDIT_PARTITION:
     return "World partition";
   default:
@@ -2038,6 +2046,17 @@ static void session_intercept(VkrEditorSession *session,
   } else {
     for (uint32_t i = 0u;
          payload.kind == SESSION_EDIT_BATCH && i < payload.count; ++i) {
+      const VkrSceneEditAction action = payload.items[i].request.action;
+      if (action == VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS ||
+          action == VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH) {
+        char message[192];
+        snprintf(message, sizeof(message),
+                 "Edit %u: collision layers and physics batches travel in a "
+                 "collaborative session only as edits of their own.",
+                 i);
+        session_answer_batch(session, frame, token, message);
+        return;
+      }
       if (!vkr_net_scene_edit_supported(&payload.items[i].request)) {
         char message[192];
         snprintf(message, sizeof(message),
@@ -2377,8 +2396,17 @@ static bool8_t session_place(VkrEditorSession *session,
     int32_t entity_ref = -1;
     int32_t parent_ref = -1;
     VkrSceneEditRequest *request = frame->scene_edit;
-    if (!vkr_net_scene_edit_read(&reader, &scenes, request, &entity_ref,
-                                 &parent_ref, error, capacity) ||
+    if (!session->edit_physics) {
+      session->edit_physics =
+          calloc(SESSION_PHYSICS_CHANGE_MAX, sizeof(*session->edit_physics));
+    }
+    const VkrNetSceneEditStorage storage = {
+        .collision_layers = &session->edit_layers,
+        .physics_changes = session->edit_physics,
+        .physics_capacity =
+            session->edit_physics ? SESSION_PHYSICS_CHANGE_MAX : 0u};
+    if (!vkr_net_scene_edit_read(&reader, &scenes, &storage, request,
+                                 &entity_ref, &parent_ref, error, capacity) ||
         !vkr_bit_reader_at_end(&reader)) {
       MemZero(request, sizeof(*request));
       return false_v;
@@ -2429,7 +2457,7 @@ static bool8_t session_place(VkrEditorSession *session,
     }
     for (uint32_t i = 0u; i < count; ++i) {
       VkrSampleEditBatchItem *item = &session->items[i];
-      if (!vkr_net_scene_edit_read(&reader, &scenes, &item->request,
+      if (!vkr_net_scene_edit_read(&reader, &scenes, NULL, &item->request,
                                    &item->entity_ref, &item->parent_ref, error,
                                    capacity)) {
         return false_v;
@@ -2502,7 +2530,7 @@ static void session_inject(VkrEditorSession *session,
         /* The host ordered the oldest drag this editor applied ahead, with
            nothing between: it stays as applied. */
         session_group_add(session, head->seq, session->speculative[0].container,
-                          session->speculative[0].group);
+                          session->speculative[0].group, head);
         session->speculative_count -= 1u;
         memmove(session->speculative, session->speculative + 1,
                 session->speculative_count * sizeof(session->speculative[0]));
@@ -2621,6 +2649,41 @@ static void session_note_applied(VkrEditorSession *session,
   }
 }
 
+/* A reverted agent batch of another editor leaves the feed's story with a
+   `reverted` event; its own editor told its agent already. */
+static void session_note_reverted(VkrEditorSession *session,
+                                  const SessionEdit *edit, uint16_t container) {
+  VkrBitReader reader;
+  vkr_bit_reader_init(&reader, edit->payload, edit->size);
+  (void)vkr_bit_read(&reader, 16u);
+  const uint64_t seq = vkr_bit_read_varuint(&reader);
+  const SessionGroup *reverted = NULL;
+  for (uint32_t i = 0u; i < session->group_count; ++i) {
+    if (session->groups[i].seq == seq &&
+        session->groups[i].container == container) {
+      reverted = &session->groups[i];
+    }
+  }
+  const bool8_t others = session->mode == VKR_EDITOR_SESSION_HOST
+                             ? !edit->local
+                             : edit->author != session->self_id;
+  if (!reverted || !reverted->agent[0] || !others) {
+    return;
+  }
+  VkrEditorSessionApplied *notice =
+      &session->applied[(session->applied_head + session->applied_count) %
+                        SESSION_APPLIED_MAX];
+  if (session->applied_count == SESSION_APPLIED_MAX) {
+    session->applied_head = (session->applied_head + 1u) % SESSION_APPLIED_MAX;
+  } else {
+    session->applied_count += 1u;
+  }
+  *notice = (VkrEditorSessionApplied){
+      .container = container, .reverted = true_v, .group = reverted->group};
+  snprintf(notice->author, sizeof(notice->author), "%s", reverted->agent);
+  snprintf(notice->label, sizeof(notice->label), "%s", reverted->label);
+}
+
 /* Checks the edit injected in the last build against the journals, then
    orders it (host) or counts it (participant). */
 static void session_verify(VkrEditorSession *session,
@@ -2664,6 +2727,9 @@ static void session_verify(VkrEditorSession *session,
     session_note_applied(session, &edit, inflight->container,
                          inflight->item_count, result);
   }
+  if (ok && edit.kind == SESSION_EDIT_REVERT) {
+    session_note_reverted(session, &edit, inflight->container);
+  }
   if (inflight->rollback) {
     if (!ok) {
       session_fail(session, "A local edit could not be undone to follow the "
@@ -2689,7 +2755,7 @@ static void session_verify(VkrEditorSession *session,
       session_host_refuse(session, &edit, SESSION_REFUSED_FAILED);
     }
   } else if (ok) {
-    session_group_add(session, edit.seq, inflight->container, group);
+    session_group_add(session, edit.seq, inflight->container, group, &edit);
     session->apply_seq += 1u;
   } else {
     session_fail(session, "Session edit %llu did not apply here; join again",
@@ -2709,6 +2775,7 @@ static void session_presence(VkrEditorSession *session,
                                                 : SESSION_PRESENCE_US);
   VkrEditorSessionPeer self = {.id = session->self_id};
   snprintf(self.name, sizeof(self.name), "%s", session->name);
+  snprintf(self.tool, sizeof(self.tool), "%s", session->tool);
   self.has_camera = frame->scene_recall.camera_valid;
   self.camera_position = frame->scene_recall.position;
   self.camera_yaw = frame->scene_recall.yaw;
@@ -2798,6 +2865,7 @@ static void session_reset(VkrEditorSession *session) {
   free(session->items);
   free(session->terrain);
   free(session->results.data);
+  free(session->edit_physics);
   free(session->payload.data);
   free(session->message.data);
   session_edit_release(&session->inflight.edit);
@@ -3460,11 +3528,11 @@ static void session_window_peers(VkrEditorUi *editor,
     swatch.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
     vkr_ui_label(ui, string8_lit("swatch"), (String8){0}, &swatch);
     if (peer.has_camera) {
-      snprintf(text, sizeof(text), "%s  (%.1f, %.1f, %.1f)", peer.name,
-               peer.camera_position.x, peer.camera_position.y,
+      snprintf(text, sizeof(text), "%s  %s  (%.1f, %.1f, %.1f)", peer.name,
+               peer.tool, peer.camera_position.x, peer.camera_position.y,
                peer.camera_position.z);
     } else {
-      snprintf(text, sizeof(text), "%s", peer.name);
+      snprintf(text, sizeof(text), "%s  %s", peer.name, peer.tool);
     }
     session_label(ui, "name", text, 32, *y, width - 150, theme->text);
     if (peer.has_camera && frame->editor_state_request &&
@@ -3606,4 +3674,10 @@ bool8_t vkr_editor_session_take_accepted(VkrEditorSession *session,
   *out_container = accepted.container;
   *out_group = accepted.group;
   return true_v;
+}
+
+void vkr_editor_session_set_tool(VkrEditorSession *session, const char *tool) {
+  if (session) {
+    snprintf(session->tool, sizeof(session->tool), "%s", tool ? tool : "");
+  }
 }

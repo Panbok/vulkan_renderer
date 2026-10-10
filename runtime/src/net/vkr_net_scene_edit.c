@@ -27,13 +27,18 @@ enum {
 static const uint32_t net_edit_value_fields =
     VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_VISIBILITY |
     VKR_SCENE_EDIT_POINT_LIGHT | VKR_SCENE_EDIT_DIRECTIONAL_LIGHT |
-    VKR_SCENE_EDIT_RECTANGLE_LIGHT | VKR_SCENE_EDIT_COMPONENT;
+    VKR_SCENE_EDIT_RECTANGLE_LIGHT | VKR_SCENE_EDIT_PHYSICS |
+    VKR_SCENE_EDIT_COMPONENT;
 
 bool8_t vkr_net_scene_edit_supported(const VkrSceneEditRequest *request) {
   switch (request->action) {
   case VKR_SCENE_EDIT_APPLY:
   case VKR_SCENE_EDIT_CREATE:
     return (request->values.fields & ~net_edit_value_fields) == 0u;
+  case VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS:
+  case VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS:
+  case VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH:
+    return true_v;
   case VKR_SCENE_EDIT_TERRAIN:
     /* Results travel apart from the request (vkr_net_scene_edit_samples). */
     return request->terrain.kind < VKR_HEIGHTFIELD_OP_SAMPLES;
@@ -175,6 +180,12 @@ static bool8_t net_edit_read_entity(VkrBitReader *reader,
   return true_v;
 }
 
+static bool8_t net_edit_write_physics(VkrBitWriter *writer,
+                                      const VkrScenePhysicsSnapshot *physics);
+static bool8_t net_edit_read_physics(VkrBitReader *reader,
+                                     VkrScenePhysicsSnapshot *out, char *error,
+                                     uint32_t capacity);
+
 static bool8_t net_edit_write_values(VkrBitWriter *writer,
                                      const VkrSceneEditValues *values,
                                      bool8_t create, char *error,
@@ -217,6 +228,9 @@ static bool8_t net_edit_write_values(VkrBitWriter *writer,
   if (fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) {
     ok = ok && vkr_net_type_write(writer, &vkr_scene_rectangle_light_type,
                                   &values->rectangle_light);
+  }
+  if (fields & VKR_SCENE_EDIT_PHYSICS) {
+    ok = ok && net_edit_write_physics(writer, &values->physics);
   }
   if (fields & VKR_SCENE_EDIT_COMPONENT) {
     ok = ok && net_edit_write_type_name(writer, values->component_type) &&
@@ -284,6 +298,10 @@ static bool8_t net_edit_read_values(VkrBitReader *reader,
   if ((values->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) &&
       !vkr_net_type_read(reader, &vkr_scene_rectangle_light_type,
                          &values->rectangle_light, error, capacity)) {
+    return false_v;
+  }
+  if ((values->fields & VKR_SCENE_EDIT_PHYSICS) &&
+      !net_edit_read_physics(reader, &values->physics, error, capacity)) {
     return false_v;
   }
   if (values->fields & VKR_SCENE_EDIT_COMPONENT) {
@@ -454,6 +472,253 @@ static bool8_t net_edit_read_terrain(VkrBitReader *reader,
   return true_v;
 }
 
+/* Whether an edit names one entity: all but a creation and the edits of a
+   whole container. */
+static bool8_t net_edit_has_entity(uint32_t action) {
+  return action != VKR_SCENE_EDIT_CREATE &&
+         action != VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS &&
+         action != VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS &&
+         action != VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH;
+}
+
+// =============================================================================
+// Physics, collision layers and scene settings
+// =============================================================================
+
+static void net_edit_write_quat(VkrBitWriter *writer, VkrQuat value) {
+  net_edit_write_float(writer, value.x);
+  net_edit_write_float(writer, value.y);
+  net_edit_write_float(writer, value.z);
+  net_edit_write_float(writer, value.w);
+}
+
+static VkrQuat net_edit_read_quat(VkrBitReader *reader) {
+  const float32_t x = net_edit_read_float(reader);
+  const float32_t y = net_edit_read_float(reader);
+  const float32_t z = net_edit_read_float(reader);
+  const float32_t w = net_edit_read_float(reader);
+  return vkr_quat_new(x, y, z, w);
+}
+
+static void net_edit_write_source(VkrBitWriter *writer,
+                                  const SceneSourceIdentity *source) {
+  vkr_bit_write_varuint(writer, source->scene_entity_index);
+  vkr_bit_write_varuint(writer, source->gltf_node_index);
+  vkr_bit_write_varuint(writer, source->gltf_mesh_index);
+  vkr_bit_write_varuint(writer, source->gltf_camera_index);
+  vkr_bit_write_varuint(writer, source->gltf_skin_index);
+  vkr_bit_write_varuint(writer, source->gltf_light_index);
+  vkr_bit_write(writer, source->source_fingerprint, 64u);
+}
+
+static void net_edit_read_source(VkrBitReader *reader,
+                                 SceneSourceIdentity *out) {
+  out->scene_entity_index = (uint32_t)vkr_bit_read_varuint(reader);
+  out->gltf_node_index = (uint32_t)vkr_bit_read_varuint(reader);
+  out->gltf_mesh_index = (uint32_t)vkr_bit_read_varuint(reader);
+  out->gltf_camera_index = (uint32_t)vkr_bit_read_varuint(reader);
+  out->gltf_skin_index = (uint32_t)vkr_bit_read_varuint(reader);
+  out->gltf_light_index = (uint32_t)vkr_bit_read_varuint(reader);
+  out->source_fingerprint = vkr_bit_read(reader, 64u);
+}
+
+/* A body's authored physics: the body by its descriptor, its layers, its
+   attachment, joints and colliders. */
+static bool8_t net_edit_write_physics(VkrBitWriter *writer,
+                                      const VkrScenePhysicsSnapshot *physics) {
+  vkr_bit_write(writer, physics->present, 1u);
+  if (!physics->present) {
+    return true_v;
+  }
+  if (!vkr_net_type_write(writer, &vkr_scene_physics_body_type,
+                          &physics->body) ||
+      physics->joint_count > VKR_SCENE_PHYSICS_MAX_JOINTS ||
+      physics->collider_count > VKR_SCENE_PHYSICS_MAX_COLLIDERS) {
+    return false_v;
+  }
+  vkr_bit_write(writer, physics->collision_layer, 16u);
+  vkr_bit_write(writer, physics->collision_mask, 16u);
+  const VkrScenePhysicsAttachment *attachment = &physics->attachment;
+  vkr_bit_write(writer, attachment->enabled, 1u);
+  net_edit_write_source(writer, &attachment->animation_source);
+  vkr_bit_write_varuint(writer, attachment->source_node);
+  vkr_bit_write(writer, attachment->drive_bone, 1u);
+  net_edit_write_vec3(writer, attachment->position);
+  net_edit_write_quat(writer, attachment->rotation);
+  vkr_bit_write_varuint(writer, physics->joint_count);
+  for (uint32_t i = 0u; i < physics->joint_count; ++i) {
+    const VkrSceneJointConfig *joint = &physics->joints[i];
+    vkr_bit_write(writer, joint->authored_id, 64u);
+    net_edit_write_source(writer, &joint->target_source);
+    vkr_bit_write_varuint(writer, (uint64_t)joint->type);
+    net_edit_write_vec3(writer, joint->anchor_a);
+    net_edit_write_vec3(writer, joint->anchor_b);
+    net_edit_write_vec3(writer, joint->axis_a);
+    net_edit_write_vec3(writer, joint->axis_b);
+    net_edit_write_vec3(writer, joint->normal_a);
+    net_edit_write_vec3(writer, joint->normal_b);
+    net_edit_write_float(writer, joint->min_limit);
+    net_edit_write_float(writer, joint->max_limit);
+    net_edit_write_float(writer, joint->swing_normal_limit);
+    net_edit_write_float(writer, joint->swing_plane_limit);
+    vkr_bit_write(writer, joint->enabled, 1u);
+  }
+  vkr_bit_write_varuint(writer, physics->collider_count);
+  for (uint32_t i = 0u; i < physics->collider_count; ++i) {
+    const VkrSceneColliderConfig *collider = &physics->colliders[i];
+    /* The descriptor leaves out the id that keeps a collider across saves. */
+    vkr_bit_write(writer, collider->authored_id, 64u);
+    if (!vkr_net_type_write(writer, &vkr_scene_physics_collider_type,
+                            collider)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+static bool8_t net_edit_read_physics(VkrBitReader *reader,
+                                     VkrScenePhysicsSnapshot *out, char *error,
+                                     uint32_t capacity) {
+  MemZero(out, sizeof(*out));
+  out->present = (bool8_t)vkr_bit_read(reader, 1u);
+  if (!out->present) {
+    return !reader->overflow;
+  }
+  if (!vkr_net_type_read(reader, &vkr_scene_physics_body_type, &out->body,
+                         error, capacity)) {
+    return false_v;
+  }
+  out->collision_layer = (uint16_t)vkr_bit_read(reader, 16u);
+  out->collision_mask = (uint16_t)vkr_bit_read(reader, 16u);
+  VkrScenePhysicsAttachment *attachment = &out->attachment;
+  attachment->enabled = (bool8_t)vkr_bit_read(reader, 1u);
+  net_edit_read_source(reader, &attachment->animation_source);
+  attachment->source_node = (uint32_t)vkr_bit_read_varuint(reader);
+  attachment->drive_bone = (bool8_t)vkr_bit_read(reader, 1u);
+  attachment->position = net_edit_read_vec3(reader);
+  attachment->rotation = net_edit_read_quat(reader);
+  const uint64_t joints = vkr_bit_read_varuint(reader);
+  if (joints > VKR_SCENE_PHYSICS_MAX_JOINTS) {
+    snprintf(error, capacity, "too many joints");
+    return false_v;
+  }
+  out->joint_count = (uint32_t)joints;
+  for (uint32_t i = 0u; i < out->joint_count; ++i) {
+    VkrSceneJointConfig *joint = &out->joints[i];
+    joint->authored_id = vkr_bit_read(reader, 64u);
+    net_edit_read_source(reader, &joint->target_source);
+    joint->type = (VkrPhysicsJointType)vkr_bit_read_varuint(reader);
+    joint->anchor_a = net_edit_read_vec3(reader);
+    joint->anchor_b = net_edit_read_vec3(reader);
+    joint->axis_a = net_edit_read_vec3(reader);
+    joint->axis_b = net_edit_read_vec3(reader);
+    joint->normal_a = net_edit_read_vec3(reader);
+    joint->normal_b = net_edit_read_vec3(reader);
+    joint->min_limit = net_edit_read_float(reader);
+    joint->max_limit = net_edit_read_float(reader);
+    joint->swing_normal_limit = net_edit_read_float(reader);
+    joint->swing_plane_limit = net_edit_read_float(reader);
+    joint->enabled = (bool8_t)vkr_bit_read(reader, 1u);
+  }
+  const uint64_t colliders = vkr_bit_read_varuint(reader);
+  if (colliders > VKR_SCENE_PHYSICS_MAX_COLLIDERS) {
+    snprintf(error, capacity, "too many colliders");
+    return false_v;
+  }
+  out->collider_count = (uint32_t)colliders;
+  for (uint32_t i = 0u; i < out->collider_count; ++i) {
+    VkrSceneColliderConfig *collider = &out->colliders[i];
+    const uint64_t authored_id = vkr_bit_read(reader, 64u);
+    if (!vkr_net_type_read(reader, &vkr_scene_physics_collider_type, collider,
+                           error, capacity)) {
+      return false_v;
+    }
+    collider->authored_id = authored_id;
+  }
+  const char *invalid = NULL;
+  if (reader->overflow || !vkr_scene_physics_snapshot_validate(out, &invalid)) {
+    snprintf(error, capacity, "%s",
+             invalid ? invalid : "physics settings end early");
+    return false_v;
+  }
+  return true_v;
+}
+
+static void net_edit_write_layers(VkrBitWriter *writer,
+                                  const VkrSceneCollisionLayers *layers) {
+  for (uint32_t i = 0u; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    const uint8_t *end = memchr(layers->names[i], 0, sizeof(layers->names[i]));
+    const uint32_t length =
+        end ? (uint32_t)(end - (const uint8_t *)layers->names[i]) : 0u;
+    vkr_bit_write_varuint(writer, length);
+    vkr_bit_write_bytes(writer, layers->names[i], length);
+    vkr_bit_write(writer, layers->matrix[i], 16u);
+  }
+  const uint32_t presets =
+      Min(layers->preset_count, (uint32_t)VKR_COLLISION_PRESET_CAPACITY);
+  vkr_bit_write_varuint(writer, presets);
+  for (uint32_t i = 0u; i < presets; ++i) {
+    const VkrSceneCollisionPreset *preset = &layers->presets[i];
+    const uint8_t *end = memchr(preset->name, 0, sizeof(preset->name));
+    const uint32_t length =
+        end ? (uint32_t)(end - (const uint8_t *)preset->name) : 0u;
+    vkr_bit_write_varuint(writer, length);
+    vkr_bit_write_bytes(writer, preset->name, length);
+    vkr_bit_write(writer, preset->membership, 16u);
+    vkr_bit_write(writer, preset->mask, 16u);
+    vkr_bit_write(writer, preset->sensor, 1u);
+  }
+}
+
+static bool8_t net_edit_read_text(VkrBitReader *reader, char *out,
+                                  uint32_t capacity) {
+  const uint64_t length = vkr_bit_read_varuint(reader);
+  const uint8_t *bytes =
+      length < capacity ? vkr_bit_read_bytes(reader, (uint32_t)length) : NULL;
+  if (!bytes || memchr(bytes, 0, (size_t)length)) {
+    return false_v;
+  }
+  MemCopy(out, bytes, length);
+  out[length] = '\0';
+  return true_v;
+}
+
+static bool8_t net_edit_read_layers(VkrBitReader *reader,
+                                    VkrSceneCollisionLayers *out, char *error,
+                                    uint32_t capacity) {
+  MemZero(out, sizeof(*out));
+  for (uint32_t i = 0u; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    if (!net_edit_read_text(reader, out->names[i], sizeof(out->names[i]))) {
+      snprintf(error, capacity, "malformed collision layer name");
+      return false_v;
+    }
+    out->matrix[i] = (uint16_t)vkr_bit_read(reader, 16u);
+  }
+  const uint64_t presets = vkr_bit_read_varuint(reader);
+  if (presets > VKR_COLLISION_PRESET_CAPACITY) {
+    snprintf(error, capacity, "too many collision presets");
+    return false_v;
+  }
+  out->preset_count = (uint32_t)presets;
+  for (uint32_t i = 0u; i < out->preset_count; ++i) {
+    VkrSceneCollisionPreset *preset = &out->presets[i];
+    if (!net_edit_read_text(reader, preset->name, sizeof(preset->name))) {
+      snprintf(error, capacity, "malformed collision preset name");
+      return false_v;
+    }
+    preset->membership = (uint16_t)vkr_bit_read(reader, 16u);
+    preset->mask = (uint16_t)vkr_bit_read(reader, 16u);
+    preset->sensor = (bool8_t)vkr_bit_read(reader, 1u);
+  }
+  const char *invalid = NULL;
+  if (reader->overflow || !vkr_scene_collision_layers_validate(out, &invalid)) {
+    snprintf(error, capacity, "%s",
+             invalid ? invalid : "collision layers end early");
+    return false_v;
+  }
+  return true_v;
+}
+
 bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
                                  const VkrNetSceneEditScenes *scenes,
                                  const VkrSceneEditRequest *request,
@@ -466,7 +731,7 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
   const VkrSceneEditAction action = request->action;
   vkr_bit_write(writer, (uint32_t)action, NET_EDIT_ACTION_BITS);
   vkr_bit_write_varuint(writer, request->gesture);
-  const bool8_t has_entity = action != VKR_SCENE_EDIT_CREATE;
+  const bool8_t has_entity = net_edit_has_entity(action);
   const bool8_t has_parent =
       action == VKR_SCENE_EDIT_CREATE || action == VKR_SCENE_EDIT_REPARENT;
   if (has_entity && !net_edit_write_entity(writer, scenes, request->entity,
@@ -498,6 +763,37 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
   case VKR_SCENE_EDIT_TERRAIN:
     net_edit_write_terrain(writer, &request->terrain);
     return true_v;
+  case VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS:
+    vkr_bit_write(writer, request->container, 16u);
+    vkr_bit_write(writer, request->scene_settings.inherit_world, 1u);
+    vkr_bit_write_varuint(writer, request->scene_settings.texture_max_extent);
+    return true_v;
+  case VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS:
+    if (!request->collision_layers) {
+      snprintf(error, capacity, "collision layers without values");
+      return false_v;
+    }
+    net_edit_write_layers(writer, request->collision_layers);
+    return true_v;
+  case VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH:
+    if (!request->physics_batch && request->physics_batch_count) {
+      snprintf(error, capacity, "a physics batch without values");
+      return false_v;
+    }
+    vkr_bit_write_varuint(writer, request->physics_batch_count);
+    for (uint32_t i = 0u; i < request->physics_batch_count; ++i) {
+      if (!net_edit_write_entity(writer, scenes,
+                                 request->physics_batch[i].entity, -1, error,
+                                 capacity) ||
+          !net_edit_write_physics(writer,
+                                  &request->physics_batch[i].snapshot)) {
+        if (!error[0]) {
+          snprintf(error, capacity, "a physics change cannot travel");
+        }
+        return false_v;
+      }
+    }
+    return true_v;
   case VKR_SCENE_EDIT_DUPLICATE:
     /* Every editor derives the copies' ids from this seed. */
     if (vkr_entity_ref_empty(&request->values.ref)) {
@@ -520,6 +816,7 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
 
 bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
                                 const VkrNetSceneEditScenes *scenes,
+                                const VkrNetSceneEditStorage *storage,
                                 VkrSceneEditRequest *out_request,
                                 int32_t *out_entity_ref,
                                 int32_t *out_parent_ref, char *error,
@@ -537,7 +834,7 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
     snprintf(error, capacity, "unsupported edit action %u", action);
     return false_v;
   }
-  const bool8_t has_entity = action != VKR_SCENE_EDIT_CREATE;
+  const bool8_t has_entity = net_edit_has_entity(action);
   const bool8_t has_parent =
       action == VKR_SCENE_EDIT_CREATE || action == VKR_SCENE_EDIT_REPARENT;
   if (has_entity && !net_edit_read_entity(reader, scenes, &request->entity,
@@ -587,6 +884,39 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
   case VKR_SCENE_EDIT_TERRAIN:
     ok = net_edit_read_terrain(reader, &request->terrain, error, capacity);
     break;
+  case VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS:
+    request->container = (uint16_t)vkr_bit_read(reader, 16u);
+    request->scene_settings.inherit_world = (bool8_t)vkr_bit_read(reader, 1u);
+    request->scene_settings.texture_max_extent =
+        (uint32_t)vkr_bit_read_varuint(reader);
+    break;
+  case VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS:
+    ok = storage && storage->collision_layers &&
+         net_edit_read_layers(reader, storage->collision_layers, error,
+                              capacity);
+    request->collision_layers = ok ? storage->collision_layers : NULL;
+    if (!storage || !storage->collision_layers) {
+      snprintf(error, capacity, "collision layers need room to read into");
+    }
+    break;
+  case VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH: {
+    const uint64_t count = vkr_bit_read_varuint(reader);
+    if (!storage || count > storage->physics_capacity) {
+      snprintf(error, capacity, "a physics batch needs room to read into");
+      return false_v;
+    }
+    for (uint32_t i = 0u; ok && i < count; ++i) {
+      VkrScenePhysicsChange *change = &storage->physics_changes[i];
+      int32_t batch_ref = -1;
+      ok = net_edit_read_entity(reader, scenes, &change->entity, &batch_ref,
+                                error, capacity) &&
+           batch_ref < 0 && change->entity.u64 &&
+           net_edit_read_physics(reader, &change->snapshot, error, capacity);
+    }
+    request->physics_batch = storage->physics_changes;
+    request->physics_batch_count = (uint32_t)count;
+    break;
+  }
   case VKR_SCENE_EDIT_DUPLICATE:
     vkr_store_le_u64(request->values.ref.bytes, vkr_bit_read(reader, 64u));
     vkr_store_le_u64(request->values.ref.bytes + 8, vkr_bit_read(reader, 64u));

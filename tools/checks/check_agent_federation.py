@@ -14,7 +14,8 @@ passes when the task board, the claims and the change feed are shared:
 - a terrain one agent creates, another raises and the first smooths holds
   the same samples on both editors;
 - each editor's change feed names the other editor's agent batch, which
-  also waits for review there until the guest accepts it;
+  also waits for review there until the guest accepts it, and its
+  intruding batch as reverted;
 - both editors end with the same scene digest.
 
     python tools/checks/check_agent_federation.py \
@@ -217,13 +218,23 @@ def main() -> int:
         for agent, author, name in ((mason, "painter@beta", "PainterBox"),
                                     (painter, "mason@alpha", "MasonBox")):
             feed = expect(agent, "changes.feed", {"after": 0, "limit": 128})
+            events = feed.get("events", [])
             if not any(event.get("kind") == "applied" and
                        event.get("author") == author and
                        any(entity.get("name") == name
                            for entity in event.get("entities", []))
-                       for event in feed.get("events", [])):
+                       for event in events):
                 failures.append(f"{agent.name}'s feed lacks {author}'s "
                                 f"{name}")
+            # The other editor's intruder applied, then its author reverted it.
+            if not any(event.get("kind") == "reverted" and
+                       event.get("author") == author for event in events):
+                failures.append(f"{agent.name}'s feed lacks {author}'s "
+                                "reverted batch")
+        # Presence names each peer's tool.
+        if not any(peer.get("tool") for peer in
+                   expect(mason, "session.status", {}).get("peers", [])):
+            failures.append("the host's peers name no tool")
 
         # Reviews span the editors: the guest's batch waits for review on the
         # host too, and accepting it on the guest clears it there.

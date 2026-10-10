@@ -19,9 +19,8 @@
  * session base: the same scene with no unsaved edits, which a scene digest
  * checks when it joins; edits made since are replayed to it in order.
  *
- * Edits that cannot travel yet (vkr_net_scene_edit.h: terrain, physics,
- * settings, partition, scene loads) are refused while a session runs, with
- * a Console message. */
+ * Edits that cannot travel yet (vkr_net_scene_edit.h: partition edits and
+ * scene loads) are refused while a session runs, with a Console message. */
 
 #define VKR_EDITOR_SESSION_PORT 7330u
 #define VKR_EDITOR_SESSION_PEERS_MAX 32u
@@ -36,6 +35,9 @@ typedef enum VkrEditorSessionMode {
 typedef struct VkrEditorSessionPeer {
   uint8_t id;
   char name[VKR_EDITOR_SESSION_NAME_MAX];
+  /* The Scene tool or gizmo the peer works with, such as `move` or
+     `terrain`. */
+  char tool[24];
   bool8_t has_camera;
   Vec3 camera_position;
   float32_t camera_yaw;
@@ -88,6 +90,10 @@ bool8_t vkr_editor_session_join(VkrEditorSession *session,
 
 void vkr_editor_session_leave(VkrEditorSession *session);
 
+/* The tool this editor's presence names; call each build before the
+   update. */
+void vkr_editor_session_set_tool(VkrEditorSession *session, const char *tool);
+
 /* Runs the session for one UI build; call after everything else that may
    edit the scene. */
 void vkr_editor_session_update(VkrEditorSession *session,
@@ -130,10 +136,12 @@ void vkr_editor_session_note_terrain(VkrEditorSession *session,
 
 /* An agent batch of another editor that applied here, for the change
    feed, and for review when `review` is set: `group` is its journal group
-   here. */
+   here. With `reverted`, the session reverted such a batch instead: its
+   author undid it, as for a claim it touched. */
 typedef struct VkrEditorSessionApplied {
   uint16_t container;
   bool8_t review;
+  bool8_t reverted;
   uint64_t group;
   char author[VKR_EDITOR_AUTHOR_CAPACITY];
   char label[96];
