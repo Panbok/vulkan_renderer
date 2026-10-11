@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-10
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -12,8 +12,9 @@ Accepted (partial). The sparse brick volume replaced the room-proof grid on
 2026-10-09. The desktop pipeline (Vulkan) bakes, loads, composes and samples
 it, with native evidence on Bistro. The tiled pipeline (Metal) composes and
 samples it too, with native evidence on Bistro and the leak fixture since
-2026-10-10, and a Mac bakes volumes on Metal ray tracing. Light paths are not
-yet shared across layers.
+2026-10-10, and a Mac bakes volumes on Metal ray tracing. Since 2026-10-11
+baked sky light scales environment reflections on both pipelines, with
+native evidence on Metal only. Light paths are not yet shared across layers.
 
 ## Context
 
@@ -186,10 +187,12 @@ group's factor. When a weight moves by more than one percent, at most every
 `DiffuseVolume.Compose`, a compute pass in both render graphs, then writes the
 weighted sum into the composed texture's first band. On a frame that samples
 baked lamps, the active lamp groups and their direct bands go to the second
-band instead. The tiled pipeline has no second band: it looks the volume up
-only for draws without a lightmap, so while a lightmap is sampled its compose
-adds each active lamp group's direct band into the single sum (owner decision,
-2026-10-10). The compose waits at queue level for earlier frames' reads of the
+band instead. The tiled pipeline keeps no lamp band apart: it looks the volume
+up only for draws without a lightmap, so while a lightmap is sampled its
+compose adds each active lamp group's direct band into the single sum (owner
+decision, 2026-10-10). Its second band holds, in each probe's first texel,
+the Rec. 709 luminance of the sun-key layers' weighted L1, which the
+reflection scale below reads. The compose waits at queue level for earlier frames' reads of the
 composed texture before rewriting it in place.
 
 **Lookup** ([`diffuse_volume_kernel.slangh`](../../renderer/src/shaders/shared/diffuse_volume_kernel.slangh),
@@ -201,7 +204,8 @@ composed texture before rewriting it in place.
   (`facing²`) × Chebyshev visibility to the sixth power. Weights below 0.2 are
   crushed.
 - The weighted L1 evaluated at the normal replaces only diffuse indirect
-  light. Environment and probe specular stay, and so does ambient occlusion.
+  light. Ambient occlusion stays; environment and probe specular stay but
+  are scaled by baked sky light (below).
 - SSGI does not add bounce on covered pixels.
 
 **On the desktop pipeline** the lookup runs outside deferred lighting
@@ -222,6 +226,71 @@ call the lookup inline. The tiled pipeline calls it inline in
 moment rows, lamp band offset and dimensions
 ([ADR-044](044-shader-cross-backend-contract.md) owns the ABI checks).
 
+### Baked sky in environment reflections
+
+A surface that cannot see the sky must not reflect it. Without local probes
+the environment specular of rooms, tunnels and a transit chasm showed sky and
+clouds (Black Mesa test level, 2026-10-11). The global and probe cubes are
+captured from one point; only baked light knows what a surface sees.
+
+A surface with baked light, from its lightmap
+([ADR-088](088-baked-lightmap-sets.md)) or the volume, reflects
+
+`L = D + (E − D) · V`, with
+`V = min(1, lum(D_sky) / lum(D_env))`
+([`sh_l2_kernel.slangh`](../../renderer/src/shaders/shared/sh_l2_kernel.slangh),
+`vkr_sh_l2_sky_visibility`, `vkr_sh_l2_occluded_radiance`):
+
+- `E` is the environment's prefiltered radiance along the reflection: the
+  probe or global cube, the cloud layer included, with the probe's radiance
+  scale and specular gain, pre-exposed.
+- `D` is the surface's baked diffuse response E/π, the one its indirect
+  diffuse uses. It stands for its surroundings' mean radiance.
+- `D_sky` is the part of `D` from sun-key layers: sky light and sun bounce,
+  without the lamp groups ([`vkr_light_layers.h`](../../runtime/src/assets/vkr_light_layers.h)).
+- `D_env` is the response the same environment's SH gives at the normal, with
+  its radiance scale but without the authored diffuse and specular gains.
+
+An open surface, whose baked sky light matches or exceeds the environment's,
+keeps `V = 1` and reflects the environment unchanged. An enclosed one reflects
+its lit surroundings at their mean radiance. The frame's IBL specular gain,
+horizon fade, specular occlusion and, on the desktop pipeline, GTAO's cone
+still apply after. A surface without baked light keeps the environment.
+
+Per backend:
+- **Tiled (Metal).** A lightmapped draw sums its sun-key layers beside its
+  irradiance; `VkrLightmapBinding::active_lamp_mask` marks the lamp-group
+  layers and reaches the shader in `VkrMetalPacketLightmap`. A draw on the
+  volume reads the composed sun-key luminance from the second band (row
+  offset in `VkrMetalPacketDiffuseVolume::dimensions.w`). `D_env` is the
+  draw's probe or the global SH, evaluated for every baked surface.
+- **Desktop (Vulkan).** `packet_diffuse_volume_lookup` returns the sky share
+  `lum(rows 0) / lum(total)` when the frame keeps the lamp band apart, else
+  one: the single sum then holds the lamp groups' indirect light too. The
+  volume images carry the share in alpha (at least 1/1024, so a covered pixel
+  stays nonzero); deferred lighting, forward and transmission shading pass it
+  with `D` to `packet_environment_specular_radiance`, which blends the
+  probes' SH with the same weights as their radiance. `SSR.Composite` reads
+  the volume image (binding 13) so that the environment reflection it
+  replaces is the one lighting added; an SSR hit stays unscaled.
+
+Cost per baked pixel on Metal: one L2 SH evaluation (seven `float4`
+constant reads, about 30 FMA), one multiply-add per sun-key layer, two
+luminance dots, a division and the blend; a volume draw adds one texel read
+per corner. Measured on the baked Bistro orbit at 2560 × 1440 on this M1
+(`tools/cases/local/tiled_bistro_baked_native.case.json`,
+`tools/profiles/local-windowed-gpu.json`, local and dirty, so not
+authoritative, alternated with a build of the parent commit): `Tiled.Opaque`
+mean / p95 10.41 / 16.66, 10.41 / 16.68, 10.41 / 16.62, 10.41 / 16.62 and
+10.42 / 16.64 ms before; 10.72 / 17.11 and 10.72 / 17.12 ms after, the second
+run's warmup unstable
+(`sha256:586273b70c105aef8bfbc4f2372f281e3357906ab6d0b7f5a2a4da3bd06463c1`
+last before, `sha256:e2513bbd4804a46b44170e42af1c53a1a7fac0cde58c13994c80eb969c888598`
+and `sha256:8b59e0e002f043f33a6c86c215815ba0fb13bf1f8ec8f9aa40a5de10b8add06f`
+after). Frame wall time p50 rose 14.69 to 14.82 ms. The time is register pressure, not arithmetic: replacing the SH by a
+constant or dropping the sun-key sums left it within 0.1 ms, and computing the
+share before the cube sample cost 2.4 ms.
+
 ## Consequences
 
 - Static geometry, material, light or layer changes need a rebake.
@@ -230,6 +299,13 @@ moment rows, lamp band offset and dimensions
 - The volume does not supply dynamic indirect light, sharp caustics or runtime
   glass transport.
 - L1 loses the quadratic band's directional detail.
+- Baked sky light scales a reflection by one number per pixel. A mirror in a
+  half-open place loses sky detail in the directions that do see the sky, and
+  an enclosed one reflects a uniform colour, not the shapes around it: local
+  probes or planar reflections supply those.
+- On the desktop pipeline, a frame that keeps no lamp band apart (no baked
+  lamps) counts the lamp groups' bounce light as sky light, so lamp-lit
+  rooms there keep more of the sky than on the tiled pipeline.
 - Moments trade some light near thin occluders for leak control. At the
   previous 6 × 6 interior, a probe just past a thin roof saw its hits and
   escapes in one texel, and light leaked through.
@@ -248,6 +324,15 @@ moment rows, lamp band offset and dimensions
   registers cost 0.24 ms.
 - **The upsample inside lighting.** Lighting rose 0.47 ms.
 - **Packed RGB9E5 images.** No gain over RGBA16F.
+- **Reflection normalization by total baked light**, the common ratio of
+  lightmap to capture irradiance. On the Black Mesa level the lamp-lit
+  warehouse, terminal and chasm had a ratio of about one, so they kept
+  reflecting the sky; only the sun-key part separates sky from lamps.
+- **GTAO as specular occlusion.** It is screen-space and short-range, and the
+  tiled pipeline has none.
+- **A baked sky-visibility or bent-normal term.** Neither bake produces one;
+  it would remove the runtime SH evaluation and the dependence on matching
+  bake and runtime sky units.
 
 ## Evidence and remaining checks
 
@@ -344,6 +429,31 @@ Unavailable:
 - an authoritative clean-tree timing;
 - a Bistro night capture across the café facade.
 
+Baked sky in reflections (2026-10-11, Release, validation unset, M1):
+- Metal Bistro snapshots, `vkr_harness snapshot --case
+  tools/cases/local/tiled_bistro_baked_capture.case.json` and
+  `tiled_bistro_sparse_volume_on_capture.case.json` with
+  `tools/profiles/local-offscreen.json`, before (parent-commit build) and
+  after. Two before runs differ at 67.8 dB PSNR; before against after is
+  28.3 dB on both cases. The change is reflection-only: bright sky rims on
+  window frames, grilles and lanterns in the alley turn to the street's
+  colour; mean luma 104.9 to 103.4. Reports
+  `sha256:b4f078d659e521cda93d364f9fe54468bd744be09cfa4a2d1cd42e03cb908d29`,
+  `sha256:77b7461ea003a6205583ed2a4605b3ec0476b6dcddb5c6da7d5227eb6663dc91`
+  before and
+  `sha256:34b989e0795c4ef791d80780eb735c2d665412fb314f93af1488e47766ec8695`,
+  `sha256:5c615b060c09e5dda209f06186411f6a1a69e0d5a3113e4c132baf4e43028a1e`
+  after.
+- Black Mesa test level in the headless editor (`view.capture`): a debug map
+  of `V` read zero on the warehouse, terminal and chasm surfaces, lightmapped
+  and volume-lit alike, and one on the bridge deck by the lake; the chasm's
+  pipes and walls lost their sky sheen and the lake views did not change
+  beyond the clouds' motion.
+- Vulkan: every SPIR-V module of the build passes `spirv-val --target-env
+  vulkan1.4 --scalar-block-layout`; CPU suites pass. No native Vulkan run:
+  the desktop pipeline's reflections, the volume images' alpha and the SSR
+  composite's subtraction are unchecked on hardware.
+
 ## Revisit when
 
 - **Path sharing.** Sharing light paths across layers would cut bake time:
@@ -355,6 +465,9 @@ Unavailable:
   surfaces: the non-negative clamp halves a lamp band's linear term.
 - **Cost.** An authoritative timing exceeds the owner's budget, or the
   half-resolution softening shows at contact shadows in review.
+- **Reflection detail.** A review asks enclosed glossy surfaces to show
+  their surroundings, not their mean colour: author local probes, or bake
+  sky visibility with a bent normal and drop the runtime SH evaluation.
 - **Size.** A scene needs more than 13,104 bricks: the moment atlas limit,
   reached at about 0.5 m spacing on Bistro.
 

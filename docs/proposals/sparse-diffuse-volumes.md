@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-10
+updated: 2026-10-11
 authority: proposal
 ---
 
@@ -9,7 +9,8 @@ authority: proposal
 Sparse brick volumes shipped on 2026-10-09: placement, relocation, distance
 moments, L1 layers with lamp direct bands, `DVOL` v3, the GPU composition
 pass, the desktop pipeline's half-resolution lookup, the tiled pipeline's
-inline lookup and the Metal probe gather ([ADR-054](../adr/054-baked-diffuse-volumes.md)). This proposal keeps the
+inline lookup, the Metal probe gather, and environment reflections scaled
+by baked sky light ([ADR-054](../adr/054-baked-diffuse-volumes.md)). This proposal keeps the
 parts that are not implemented and the evidence still missing.
 
 ## Baseline
@@ -34,10 +35,7 @@ time per sun key and 183 s for the lamp group.
 2. **SSGI from unbaked light.** Let SSGI add dynamic lights and the emission
    of dynamic objects on covered pixels without counting baked light twice;
    ADR-060 names this revisit.
-3. **Specular occlusion from the volume.** Scale environment specular by the
-   ratio of volume to environment irradiance, so glossy surfaces inside the
-   café stop reflecting the sky.
-4. **Runtime ray-traced updates** of the same bricks and moments on the
+3. **Runtime ray-traced updates** of the same bricks and moments on the
    desktop pipeline, for dynamic lights and time of day without baked
    layers.
 

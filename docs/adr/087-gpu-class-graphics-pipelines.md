@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-10
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -179,7 +179,12 @@ pipeline rather than a backend mechanism.
    `sha256:4acbb6970105fbab718dcf2f1e2bbba1f3bde70fc7baa05b8e0e7806947fe4cb`,
    `sha256:3d997af39190c2f9509c53699ecb461bb6158eb84bd7c8a6d4034d28caec4a91`,
    `sha256:12fddc9dd2ba7295ac64a6fdccf432e849011c4b276d4ddca3c0e0cc4cd7ce07`;
-   2026-10-06, both on the set with visibility). A terrain material blends its
+   2026-10-06, both on the set with visibility).
+   A surface with a lightmap or the volume reflects the environment only in
+   the share its baked sky light supports and its surroundings' baked light
+   in the rest, so rooms and tunnels do not reflect the sky
+   ([ADR-054](054-baked-diffuse-volumes.md)); that cost `Tiled.Opaque` about
+   0.3 ms on the baked orbit (2026-10-11). A terrain material blends its
    four layers by the vertex colour's weights as the G-buffer resolve does
    ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), reading the
    material table's terrain rows through the frame root. Projected decals

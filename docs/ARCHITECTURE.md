@@ -905,7 +905,10 @@ visibility from the `Shadow.LocalMask` pass, which filters each shadowed
 light's maps once per pixel into the pixel's next overlap slot, in light
 order, and multiplies in a short screen-space contact-shadow march; lights
 past the eight slots are filtered inline. Valid baked-volume cells skip environment
-diffuse evaluation while retaining environment specular.
+diffuse evaluation and keep environment specular only in the share their
+baked sky light supports, reflecting their baked light in the rest
+([ADR-054](adr/054-baked-diffuse-volumes.md)); the tiled pipeline does the
+same for lightmapped and volume-lit draws.
 
 Thin-sheet diffuse transmission partitions residual base diffuse into front
 reflection and tinted direct backlighting. Material-wide strength/color use

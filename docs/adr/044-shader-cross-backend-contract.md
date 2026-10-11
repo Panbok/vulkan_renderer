@@ -829,6 +829,17 @@ captures and timing on Bistro (2026-10-09), and on Metal the
 API validation run (2026-10-10), recorded in ADR-054.
 [ADR-054](054-baked-diffuse-volumes.md) owns asset and sampling semantics.
 
+Baked sky in environment reflections is shared:
+`vkr_sh_l2_sky_visibility` and `vkr_sh_l2_occluded_radiance` in
+`sh_l2_kernel.slangh` give both classes one meaning. Metal's compose root
+names the active lamp groups in `lamp_mask` at byte 28 and writes the sun-key
+luminance into the composed texture's second band, whose row
+`VkrMetalPacketDiffuseVolume::dimensions.w` names; `VkrMetalPacketLightmap`
+carries `active_lamp_mask` at byte 152. Vulkan's volume images hold the sky
+share in alpha, and the 432-byte SSR composite root names the volume image
+at byte 416. Native evidence: Metal Bistro snapshots and Black Mesa captures
+(2026-10-11, ADR-054); Vulkan is compiled and passes `spirv-val` only.
+
 Rectangle LTC is shared and appends a 32-byte light/table block after those
 volume fields: the Metal frame pointer is at 496 and the Vulkan block pointer
 at 560. Each block references 64-byte rectangle rows and two immutable 64×64
