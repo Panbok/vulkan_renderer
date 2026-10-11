@@ -121,8 +121,13 @@ from the caller's thread.
 - **Store** ([vkr_depot_store.h](../../tools/depot/vkr_depot_store.h)): a
   content-addressed directory; each file is a 5-byte header (raw or zstd,
   decoded size) and the payload, kept compressed when that saves a tenth.
-  Every write checks the hash and renames a temporary. Files split into
-  64 KiB–1 MiB chunks by FastCDC with a fixed gear table.
+  Every write checks the hash and renames a temporary. Object writes are
+  not flushed (owner decision, 2026-10-11): a flush per object cost a seek
+  each on the Windows store's hard disk, and a 1.46 GB scene cloned in
+  4 min 33 s; without it, 1 min 29 s. Every read checks the hash instead
+  and removes a file a crash left torn, so it counts as missing and is
+  fetched again; branch moves stay flushed. Files split into 64 KiB–1 MiB
+  chunks by FastCDC with a fixed gear table.
 - **Working copies**
   ([vkr_depot_workspace.h](../../tools/depot/vkr_depot_workspace.h)):
   `.vkrdepot/` holds the state (remote, server key, branch, base commit,
