@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-10
+updated: 2026-10-11
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -81,6 +81,7 @@ dependable channel for scripts.
 | `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes\|level\|terrain\|partition\|environment\|bake\|lights\|session> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window, `level` the Level checks window and `terrain` the Terrain window (ADR-084); `environment` is the Environment window (ADR-098), `bake` Bake settings and `lights` the Lights window (ADR-100); `session` the Collaborative session window (ADR-106) |
 | `build.game`, `build.run` | `[profile]` | Package the project with a build profile (quoted when it has spaces; the selected profile by default), then for `build.run` run the game ([ADR-078](078-project-build-and-packaging.md)) |
 | `build.settings`, `build.open` | | Build Settings window; the last package's folder |
+| `build.camera` | `[clear]` | Set `game.json`'s startup camera from the startup scene's Scene view, or clear it, and save ([ADR-078](078-project-build-and-packaging.md)) |
 | `layout.reset` | | The active workbench's default dock layout (ADR-089); restores a maximized Scene |
 | `layout.maximize` | | Maximize the Scene over the panels and top bar, or restore it (G, F11; [ADR-027](027-immediate-mode-grid-ui.md)) |
 | `workbench.duplicate`, `workbench.delete` | `[workbench]` | Copy a workbench, or the active one, after it and switch to the copy; delete a custom one (ADR-089) |

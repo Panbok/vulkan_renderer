@@ -202,6 +202,13 @@ vkr_editor_projects_project(const VkrEditorProjects *projects);
 const char *
 vkr_editor_projects_workspace_root(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_read_only(const VkrEditorProjects *projects);
+/* The Scene viewport of project scene `scene_id`: the live view while that
+   scene is open, else the view this machine last recalled for it. False
+   when neither has a camera. */
+bool8_t vkr_editor_projects_scene_view(const VkrEditorProjects *projects,
+                                       const VkrSampleUiFrame *frame,
+                                       const char *scene_id,
+                                       VkrSampleSceneRecall *out);
 /* After a build that finalized project assets: publishes the report's
    inventory while the project's inventory still has the SHA-256 `expected`
    it had when the build started, then points World models at the new

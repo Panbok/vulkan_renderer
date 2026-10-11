@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-08
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -13,7 +13,8 @@ Lighting, Scripting, Art ([ADR-093](093-material-graphs-and-art-workbench.md))
 and custom copies, their palettes, the docked Level checks, Script editor,
 Terrain and Material panels, switching, the keys, the tab menu
 and inline rename, Cmd `workbench*` statements and `ui.workbench`, the
-`workbench.*` agent operations, and persistence in project settings and in
+`workbench.*` agent operations, and persistence in the project's
+per-machine settings ([ADR-069](069-editor-projects-and-workspaces.md)) and in
 the layout file are implemented and verified headless on Windows/Vulkan.
 Each tab keeps its own project scene, the scene a switch closes keeps its
 meshes, materials and textures loaded for a switch back, and Delete,
@@ -252,7 +253,9 @@ points; a drag that holds the mouse fails it with `VKR-AGENT-0006`.
 ### Persistence
 
 Project settings store a `workbenches` member in place of `layout`, written by
-`vkr_editor_workbench_write_json`:
+`vkr_editor_workbench_write_json`. Like every editor setting but the animation
+graph, it lives in the project's per-machine file, so each machine sharing a
+project keeps its own workbenches ([ADR-069](069-editor-projects-and-workspaces.md)):
 
 ```json
 "workbenches": {
@@ -331,7 +334,7 @@ the body itself.
 
 ## Revisit when
 
-Teams sharing a project want per-user layouts, a task needs a palette the
+A task needs a palette the
 five kinds do not cover, warm assets cost more memory than a project can
 spare, switches back need to skip rebuilding objects too (two live scenes),
 or rotate and scale need to act on the whole selection.

@@ -40,9 +40,7 @@ def main():
         jobs.atomic_json(manifest, {
             'version': 1, 'id': project_id, 'name': name+' verification',
             'default_font': {'scope': 'editor', 'id': 'default-scene-font'},
-            'editor_settings': {'version': 1, 'graphics': {}, 'layout': {},
-                                'viewport': {}, 'input': {}, 'panels': {}, 'bakery': {}},
-            'scene_editor_state': {}, 'assets': [], 'scenes': []})
+            'assets': [], 'scenes': []})
         request = {'version': 1, 'operation': 'create_scene',
                    'workspace_root': str(workspace), 'project_path': str(manifest),
                    'scene_id': scene_id, 'scene_name': name,

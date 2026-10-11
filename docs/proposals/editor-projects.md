@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-27
+updated: 2026-10-11
 authority: proposal
 ---
 # Editor Projects
@@ -334,16 +334,6 @@ settings record. Existing validators remain authoritative for graphics values.
   "id": "016fb5a2-8843-433a-a91e-8d987ef266a1",
   "name": "Bistro Lighting",
   "default_font": { "scope": "editor", "id": "default-scene-font" },
-  "editor_settings": {
-    "version": 1,
-    "graphics": {},
-    "layout": {},
-    "viewport": {},
-    "input": {},
-    "panels": {},
-    "bakery": {}
-  },
-  "scene_editor_state": {},
   "assets": [],
   "scenes": [
     {
@@ -359,9 +349,11 @@ Editor bundle IDs such as `default-scene-font` are reserved stable symbolic keys
 resolved within an explicitly versioned bundle; generated user assets use UUIDs.
 The project scene entry owns the display name. Scene JSON owns the same scene ID
 but does not duplicate a mutable name; rename updates the project entry atomically.
-Scene order is the project array order. `scene_editor_state` is keyed by scene ID
-and stores editor camera pose, hierarchy expansion and other per-scene UI recall.
-Removing a scene also removes those preference entries.
+Scene order is the project array order. Editor settings and the per-scene
+`scene_editor_state` recall are per-machine state in
+`.vkreditor/local/projects/<project id>.json`; `project.json` keeps only the
+shared `editor_settings.animation` ([ADR-069](../adr/069-editor-projects-and-workspaces.md)).
+Removing a scene also removes its recall entry.
 
 Project `assets` entries contain ID, kind, display name, managed source path when
 available, import ID, recipe/configuration, dependency IDs, fingerprint, artifact
@@ -434,10 +426,10 @@ choice; it must not silently weaken fingerprint conflict protection.
 
 | Persistent state | Owner | Application policy |
 |---|---|---|
-| All `VkrGraphicsSettings` fields | Project `editor_settings.graphics` | Retain validation; apply live-supported values and expose restart-required ones. |
+| All `VkrGraphicsSettings` fields | Project per-machine `editor_settings.graphics` | Retain validation; apply live-supported values and expose restart-required ones. |
 | Dock layout, visible panels, floating overlay positions | Project settings | Serialize currently transient supported UI geometry; clamp on smaller displays. |
 | Viewport presentation, grid/gizmo/label/debug preferences, camera speed and input bindings | Project settings | Persist exposed user choices; this does not require building a new shortcut editor. |
-| Editor camera pose, hierarchy expansion, selection recall, scene-specific UI tab state | Project `scene_editor_state[scene-id]` | Restore only valid identities; no ECS pointers or runtime handles. |
+| Editor camera pose, hierarchy expansion, selection recall, scene-specific UI tab state | Project per-machine `scene_editor_state[scene-id]` | Restore only valid identities; no ECS pointers or runtime handles. |
 | Console filters/follow mode, browser sort/filter/size, Bakery recipe defaults | Project settings | Persist preferences, not console contents, process handles or running-job state. |
 | Lights, environment, probes, fog, authored camera/lens, entity transforms/material overrides and scene bake configuration | Scene content | Existing component/renderer validation and scene save/undo semantics. |
 | Workspace locator, last opened project/scene, file-dialog directories, actual window/display placement and device capabilities | OS-local locator / workspace local state | Never changes portable project intent. |

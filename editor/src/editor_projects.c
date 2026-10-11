@@ -227,6 +227,9 @@ typedef struct ProjectSettingsSave {
   VkrEditorProjectError error;
   VkrThread worker;
   VkrAtomicBool complete;
+  /* The shared animation settings changed, so project.json is saved after
+     the per-machine file. */
+  bool8_t shared;
   bool8_t succeeded;
   uint64_t capacity;
   uint8_t bytes[];
@@ -751,9 +754,19 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
   return true_v;
 }
 
+/* Settings and the scene recall are per-machine state (ADR-069): only the
+   local file changes, unless the shared animation settings did. */
+static bool8_t project_publish_settings(VkrEditorProject *project,
+                                        bool8_t shared,
+                                        VkrEditorProjectError *error) {
+  return vkr_editor_project_local_save(project, error) &&
+         (!shared || vkr_editor_project_save(project, error));
+}
+
 static void *project_settings_save_worker(void *context) {
   ProjectSettingsSave *save = context;
-  save->succeeded = vkr_editor_project_save(&save->project, &save->error);
+  save->succeeded =
+      project_publish_settings(&save->project, save->shared, &save->error);
   vkr_atomic_bool_store(&save->complete, true_v, VKR_MEMORY_ORDER_RELEASE);
   return NULL;
 }
@@ -809,7 +822,9 @@ static bool8_t project_save_settings(VkrEditorProjects *projects,
   VkrEditorProjectError error = {0};
   const String8 previous = projects->project->editor_settings;
   projects->project->editor_settings = string8_create(bytes, length);
-  if (!vkr_editor_project_save(projects->project, &error)) {
+  const bool8_t shared = vkr_editor_project_shared_settings_changed(
+      previous, projects->project->editor_settings);
+  if (!project_publish_settings(projects->project, shared, &error)) {
     projects->project->editor_settings = previous;
     projects->settings_dirty = true_v;
     project_error(projects, &error);
@@ -887,6 +902,8 @@ static void project_queue_settings_save(VkrEditorProjects *projects,
     offset += views[i].length;
   }
   save->error = (VkrEditorProjectError){0};
+  save->shared = vkr_editor_project_shared_settings_changed(
+      projects->project->editor_settings, save->project.editor_settings);
   save->succeeded = false_v;
   vkr_atomic_bool_store(&save->complete, false_v, VKR_MEMORY_ORDER_RELAXED);
   if (!vkr_thread_create(projects->allocator, &save->worker,
@@ -1370,6 +1387,21 @@ static bool8_t project_load(VkrEditorProjects *projects, const char *id,
     vkr_allocator_release_global_accounting(&allocator);
     arena_destroy(arena);
     return false_v;
+  }
+
+  /* Per-machine settings and recall (ADR-069). A project without the local
+     file still carries them in project.json, or has none after a depot
+     clone: a writer moves what it has into the local file now, and its next
+     manifest save drops them from project.json. */
+  bool8_t local_found = false_v;
+  if (!vkr_editor_project_local_load(candidate, &allocator, &local_found,
+                                     &error)) {
+    log_warn("Editor state of project %s: %s; project.json's is used.", id,
+             error.message);
+  } else if (!local_found && !projects->read_only &&
+             !vkr_editor_project_local_save(candidate, &error)) {
+    log_warn("Cannot move the editor state of project %s: %s", id,
+             error.message);
   }
   if (projects->project_arena) {
     vkr_allocator_release_global_accounting(&projects->project_allocator);
@@ -2954,6 +2986,37 @@ static void project_delete_project(VkrEditorProjects *projects,
   project_refresh(projects);
 }
 
+/* A depot clone carries .vkreditor/projects but not workspace.json, which
+   each machine keeps for itself: opening the clone initializes the
+   workspace. A folder without projects opens without changes. */
+static bool8_t project_workspace_clone(const char *directory) {
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  const int32_t length =
+      snprintf(path, sizeof(path), "%s/.vkreditor/workspace.json", directory);
+  if (length <= 0 || (uint32_t)length >= sizeof(path)) {
+    return false_v;
+  }
+  const FilePath manifest = {.path = project_string(path),
+                             .type = FILE_PATH_TYPE_ABSOLUTE};
+  if (file_exists(&manifest)) {
+    return false_v;
+  }
+  snprintf(path, sizeof(path), "%s/.vkreditor/projects", directory);
+  const FilePath listing = {.path = project_string(path),
+                            .type = FILE_PATH_TYPE_ABSOLUTE};
+  return file_exists(&listing);
+}
+
+/* Reads of assets/... prefer the workspace folder's own copy, so a depot
+   working copy opened as the workspace carries its meshes, materials and
+   textures. NULL ends the overlay. */
+static void project_overlay_workspace(const char *directory) {
+  if (!vkr_vfs_set_overlay_root(directory)) {
+    log_warn("Workspace assets are not overlaid: the path is too long: %s",
+             directory ? directory : "");
+  }
+}
+
 static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
                            const VkrSampleUiFrame *frame) {
   VkrEditorProjectError error = {0};
@@ -2970,6 +3033,7 @@ static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
       project_error(projects, &error);
       return;
     }
+    project_overlay_workspace(projects->workspace_directory);
   }
   if (!project_save_settings(projects, editor, frame->dock)) {
     return;
@@ -3528,7 +3592,8 @@ static void project_choose_workspace(VkrEditorProjects *projects,
   }
   VkrEditorProjectError error = {0};
   VkrEditorWorkspace workspace = {0};
-  if (!vkr_editor_workspace_open(selected, false_v, &workspace, &error)) {
+  if (!vkr_editor_workspace_open(selected, project_workspace_clone(selected),
+                                 &workspace, &error)) {
     project_error(projects, &error);
     return;
   }
@@ -3560,6 +3625,7 @@ static void project_choose_workspace(VkrEditorProjects *projects,
   projects->creating_project = false_v;
   vkr_editor_workspace_lease_release(&projects->lease);
   projects->workspace = workspace;
+  project_overlay_workspace(selected);
   projects->read_only = false_v;
   projects->message[0] = '\0';
   if (workspace.initialized && !vkr_editor_workspace_lease_acquire(
@@ -3639,10 +3705,13 @@ VkrEditorProjects *vkr_editor_projects_create(VkrAllocator *allocator, int argc,
   }
   if (projects->workspace_directory[0]) {
     VkrEditorProjectError error = {0};
-    if (!vkr_editor_workspace_open(projects->workspace_directory, false_v,
-                                   &projects->workspace, &error)) {
+    if (!vkr_editor_workspace_open(
+            projects->workspace_directory,
+            project_workspace_clone(projects->workspace_directory),
+            &projects->workspace, &error)) {
       project_error(projects, &error);
     } else {
+      project_overlay_workspace(projects->workspace_directory);
       if (projects->workspace.initialized &&
           !vkr_editor_workspace_lease_acquire(&projects->workspace,
                                               &projects->lease, &error)) {
@@ -3675,6 +3744,7 @@ bool8_t vkr_editor_projects_destroy(VkrEditorProjects *projects,
   }
   project_release_template_previews(projects);
   vkr_editor_workspace_lease_release(&projects->lease);
+  project_overlay_workspace(NULL);
   if (projects->settings_save) {
     vkr_allocator_free(projects->allocator, projects->settings_save,
                        sizeof(*projects->settings_save) +
@@ -7468,6 +7538,30 @@ String8 vkr_editor_projects_scene_id(const VkrEditorProjects *projects) {
     return (String8){0};
   }
   return project_string(projects->project->scenes[projects->active_scene].id);
+}
+
+bool8_t vkr_editor_projects_scene_view(const VkrEditorProjects *projects,
+                                       const VkrSampleUiFrame *frame,
+                                       const char *scene_id,
+                                       VkrSampleSceneRecall *out) {
+  if (!projects || !projects->project || !scene_id || !scene_id[0]) {
+    return false_v;
+  }
+  const String8 runtime_path = project_string(projects->runtime_path);
+  const bool8_t open =
+      frame->scene && projects->active_scene < projects->project->scene_count &&
+      strcmp(projects->project->scenes[projects->active_scene].id, scene_id) ==
+          0 &&
+      string8_equals(&frame->scene_path, &runtime_path);
+  if (open) {
+    *out = frame->scene_recall;
+    return out->camera_valid;
+  }
+  const String8 recall = project_member(
+      project_member(projects->project->scene_editor_state, scene_id),
+      "viewport");
+  return recall.length && vkr_sample_scene_recall_read_json(recall, out) &&
+         out->camera_valid;
 }
 
 bool8_t vkr_editor_projects_switch_ready(const VkrEditorProjects *projects) {

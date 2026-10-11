@@ -36,6 +36,14 @@ bool8_t vkr_editor_build_has_package(const VkrEditorBuild *build);
 /** Selects the profile named `name`; false when none has that name. */
 bool8_t vkr_editor_build_select_profile(VkrEditorBuild *build,
                                         const char *name);
+/** Sets game.json's startup camera from the startup scene's Scene view, or
+ * clears it for the default camera, and saves game.json (ADR-078). False
+ * with a message when the view or the save is unavailable. */
+bool8_t vkr_editor_build_startup_camera(VkrEditorBuild *build,
+                                        VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        bool8_t clear, char *message,
+                                        uint32_t capacity);
 /** The last build's outcome line, empty before the first. */
 const char *vkr_editor_build_result(const VkrEditorBuild *build,
                                     bool8_t *out_succeeded);

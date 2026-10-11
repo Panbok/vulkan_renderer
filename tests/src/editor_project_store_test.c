@@ -450,6 +450,27 @@ static void project_test_game(const VkrEditorProject *project,
   assert(vkr_editor_game_load(project, allocator, &game, &exists, &error));
   assert(strstr(game.graphics, "\"vsync\":false") != NULL);
   assert(!strcmp(game.window_mode, "borderless"));
+  // The startup camera is one authored value: a replaced or cleared camera
+  // must not keep members of the previous one through game.json's merge.
+  snprintf(game.startup_camera, sizeof(game.startup_camera), "%s",
+           "{\"version\":1,\"camera_valid\":true,\"selection_valid\":false,"
+           "\"x\":1,\"y\":2,\"z\":3,\"yaw\":0,\"pitch\":0,\"fov\":60,"
+           "\"near\":0.1,\"far\":500,\"grid_height\":2}");
+  assert(vkr_editor_game_save(project, &game, allocator, &error));
+  assert(vkr_editor_game_load(project, allocator, &game, &exists, &error));
+  assert(strstr(game.startup_camera, "\"grid_height\":2") != NULL);
+  snprintf(game.startup_camera, sizeof(game.startup_camera), "%s",
+           "{\"version\":1,\"camera_valid\":true,\"selection_valid\":false,"
+           "\"x\":4,\"y\":5,\"z\":6,\"yaw\":0,\"pitch\":0,\"fov\":60,"
+           "\"near\":0.1,\"far\":500}");
+  assert(vkr_editor_game_save(project, &game, allocator, &error));
+  assert(vkr_editor_game_load(project, allocator, &game, &exists, &error));
+  assert(strstr(game.startup_camera, "\"x\":4") != NULL);
+  assert(strstr(game.startup_camera, "grid_height") == NULL);
+  game.startup_camera[0] = '\0';
+  assert(vkr_editor_game_save(project, &game, allocator, &error));
+  assert(vkr_editor_game_load(project, allocator, &game, &exists, &error));
+  assert(!game.startup_camera[0]);
   snprintf(game.startup_scene, sizeof(game.startup_scene), "%s",
            "00000000-0000-4000-8000-000000000000");
   game.scene_count = 0u;
@@ -459,6 +480,71 @@ static void project_test_game(const VkrEditorProject *project,
   assert(!vkr_editor_game_validate(&game, project, &error));
   FilePath file = project_test_path(path);
   assert(file_remove(&file) == FILE_ERROR_NONE);
+}
+
+/* A manifest written before the per-machine split carries every editor
+   setting and the scene recall. Without a local file they load from
+   project.json, the local file takes them, and the next manifest save drops
+   them while keeping the shared animation settings. */
+static void project_test_migration(const VkrEditorWorkspace *workspace,
+                                   VkrEditorProject *project,
+                                   VkrAllocator *allocator) {
+  VkrEditorProjectError error = {0};
+  char local_path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  assert(vkr_editor_project_local_path(project, local_path));
+  FilePath local = project_test_path(local_path);
+  assert(file_remove(&local) == FILE_ERROR_NONE);
+  char manifest[1024];
+  snprintf(manifest, sizeof(manifest),
+           "{\"version\":1,\"id\":\"%s\",\"name\":\"Renamed 日\","
+           "\"default_font\":{},\"editor_settings\":{\"version\":1,"
+           "\"graphics\":{\"exposure\":2},\"animation\":{\"fingerprint\":"
+           "\"00000000000000aa\"}},\"scene_editor_state\":{"
+           "\"00000000-0000-4000-8000-000000000020\":{\"marker\":20}},"
+           "\"assets\":[],\"scenes\":[]}",
+           project->id);
+  FilePath manifest_file = project_test_path(project->manifest_path);
+  assert(file_remove(&manifest_file) == FILE_ERROR_NONE);
+  project_test_write(project->manifest_path, manifest);
+  const char *recall_id = "00000000-0000-4000-8000-000000000020";
+
+  assert(vkr_editor_project_load(workspace, project->id, allocator, project,
+                                 &error));
+  bool8_t found = true_v;
+  assert(vkr_editor_project_local_load(project, allocator, &found, &error));
+  assert(!found);
+  String8 member = {0};
+  assert(vkr_editor_project_json_member(project->editor_settings, "graphics",
+                                        &member, &error));
+  assert(vkr_editor_project_json_member(project->scene_editor_state, recall_id,
+                                        &member, &error));
+  assert(vkr_editor_project_local_save(project, &error));
+  assert(vkr_editor_project_save(project, &error));
+
+  String8 bytes = {0};
+  uint64_t fingerprint = 0;
+  String8 settings = {0};
+  assert(vkr_editor_project_json_read_file(project->manifest_path, allocator,
+                                           &bytes, &fingerprint, &error));
+  assert(vkr_editor_project_json_member(bytes, "editor_settings", &settings,
+                                        &error));
+  assert(
+      vkr_editor_project_json_member(settings, "animation", &member, &error));
+  assert(
+      !vkr_editor_project_json_member(settings, "graphics", &member, &error));
+  assert(!vkr_editor_project_json_member(bytes, "scene_editor_state", &member,
+                                         &error));
+
+  assert(vkr_editor_project_load(workspace, project->id, allocator, project,
+                                 &error));
+  assert(vkr_editor_project_local_load(project, allocator, &found, &error));
+  assert(found);
+  assert(vkr_editor_project_json_member(project->editor_settings, "graphics",
+                                        &member, &error));
+  assert(vkr_editor_project_json_member(project->editor_settings, "animation",
+                                        &member, &error));
+  assert(vkr_editor_project_json_member(project->scene_editor_state, recall_id,
+                                        &member, &error));
 }
 
 static void project_test_presets(void) {
@@ -547,6 +633,16 @@ bool32_t run_editor_project_store_tests(void) {
   String8 bytes = {.str = (uint8_t *)valid, .length = strlen(valid)};
   assert(vkr_editor_project_parse(bytes, &s_project, &error));
   assert(strcmp(s_project.name, "A 日 😀") == 0);
+  // Manifests after the per-machine split may omit both editor sections.
+  const char *shared_only =
+      "{\"version\":1,\"id\":\"00000000-0000-4000-8000-000000000001\","
+      "\"name\":\"Shared\",\"default_font\":{},\"assets\":[],\"scenes\":[]}";
+  assert(vkr_editor_project_parse(
+      (String8){.str = (uint8_t *)shared_only, .length = strlen(shared_only)},
+      &s_loaded, &error));
+  const String8 empty_object = string8_lit("{}");
+  assert(string8_equals(&s_loaded.editor_settings, &empty_object));
+  assert(string8_equals(&s_loaded.scene_editor_state, &empty_object));
   const char *bad[] = {"{\"version\":1,\"version\":1}",
                        "{\"version\":1,\"\\u0076ersion\":1}",
                        "{\"version\":2}",
@@ -689,6 +785,28 @@ bool32_t run_editor_project_store_tests(void) {
       string8_lit("{\"version\":1,\"graphics\":{\"exposure\":1.75},\"future\":{"
                   "\"text\":\"日\",\"n\":9007199254740993}}");
   assert(vkr_editor_project_save(&s_project, &error));
+  // Settings are per-machine state: saving them changes the local file and
+  // leaves project.json's bytes as they were, so machines sharing the
+  // project through a depot never conflict on it.
+  String8 shared = {0};
+  uint64_t shared_fingerprint = 0;
+  uint64_t unchanged_fingerprint = 0;
+  assert(vkr_editor_project_json_read_file(s_project.manifest_path, &allocator,
+                                           &shared, &shared_fingerprint,
+                                           &error));
+  assert(!strstr((const char *)shared.str, "graphics"));
+  assert(!strstr((const char *)shared.str, "scene_editor_state"));
+  assert(vkr_editor_project_local_save(&s_project, &error));
+  assert(vkr_editor_project_json_read_file(s_project.manifest_path, &allocator,
+                                           &shared, &unchanged_fingerprint,
+                                           &error));
+  assert(unchanged_fingerprint == shared_fingerprint);
+  char local_path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  assert(vkr_editor_project_local_path(&s_project, local_path));
+  char expected_local[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  snprintf(expected_local, sizeof(expected_local), "%s/local/projects/%s.json",
+           workspace.root, s_project.id);
+  assert(!strcmp(local_path, expected_local));
   project_test_game(&s_project, &allocator);
   visits = 0;
   assert(vkr_editor_workspace_visit(&workspace, project_test_visit, &visits,
@@ -696,6 +814,10 @@ bool32_t run_editor_project_store_tests(void) {
   assert(visits == 1);
   assert(vkr_editor_project_load(&workspace, s_project.id, &allocator,
                                  &s_loaded, &error));
+  bool8_t local_found = false_v;
+  assert(vkr_editor_project_local_load(&s_loaded, &allocator, &local_found,
+                                       &error));
+  assert(local_found);
   assert(s_loaded.editor_settings.length == s_project.editor_settings.length);
   assert(MemCompare(s_loaded.editor_settings.str, s_project.editor_settings.str,
                     s_project.editor_settings.length) == 0);
@@ -771,6 +893,10 @@ bool32_t run_editor_project_store_tests(void) {
   assert(vkr_editor_project_load(&workspace, s_loaded.id, &allocator,
                                  &s_project, &error));
   assert(s_project.scene_count == 2);
+  assert(vkr_editor_project_local_load(&s_project, &allocator, &local_found,
+                                       &error));
+  assert(local_found);
+  assert(strstr((char *)s_project.scene_editor_state.str, "marker\":12"));
   // A failed lookup clears its output, including for malformed documents.
   String8 malformed_member = string8_lit("stale");
   assert(!vkr_editor_project_json_member(string8_lit("not json"), "version",
@@ -790,6 +916,10 @@ bool32_t run_editor_project_store_tests(void) {
   assert(vkr_editor_project_load(&workspace, s_loaded.id, &allocator,
                                  &s_project, &error));
   assert(s_project.scene_count == 0);
+  assert(vkr_editor_project_local_load(&s_project, &allocator, &local_found,
+                                       &error));
+  assert(string8_equals(&s_project.scene_editor_state, &empty_recall));
+  project_test_migration(&workspace, &s_project, &allocator);
   String8 replaced;
   assert(vkr_editor_project_json_replace_member(
       &allocator, string8_lit("{\"untouched\":9007199254740993,\"value\":1}"),
@@ -871,6 +1001,13 @@ bool32_t run_editor_project_store_tests(void) {
 #endif
   project_test_remove_directory(project_root);
   snprintf(cleanup, sizeof(cleanup), "%s/projects", workspace.root);
+  project_test_remove_directory(cleanup);
+  assert(vkr_editor_project_local_path(&s_loaded, cleanup));
+  FilePath local_state = project_test_path(cleanup);
+  assert(file_remove(&local_state) == FILE_ERROR_NONE);
+  snprintf(cleanup, sizeof(cleanup), "%s/local/projects", workspace.root);
+  project_test_remove_directory(cleanup);
+  snprintf(cleanup, sizeof(cleanup), "%s/local", workspace.root);
   project_test_remove_directory(cleanup);
   snprintf(cleanup, sizeof(cleanup), "%s/workspace.json", workspace.root);
   FilePath workspace_manifest = project_test_path(cleanup);

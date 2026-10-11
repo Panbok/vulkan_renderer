@@ -1308,6 +1308,106 @@ static void build_settings_options(VkrEditorBuild *build, VkrUiSystem *ui,
   *y += 30;
 }
 
+/* The startup scene's Scene view as the draft's startup camera, without the
+   selection; `clear` returns the game to the default camera. */
+static bool8_t build_set_startup_camera(VkrEditorBuild *build,
+                                        VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        bool8_t clear, char *message,
+                                        uint32_t capacity) {
+  VkrEditorGame *game = &build->draft;
+  if (clear) {
+    game->startup_camera[0] = '\0';
+    return true_v;
+  }
+  VkrSampleSceneRecall view;
+  if (!vkr_editor_projects_scene_view(editor->projects, frame,
+                                      game->startup_scene, &view)) {
+    snprintf(message, capacity,
+             "Open the startup scene to use its Scene view as the startup "
+             "camera.");
+    return false_v;
+  }
+  view.selection_valid = false_v;
+  MemZero(&view.selection, sizeof(view.selection));
+  char text[VKR_EDITOR_GAME_CAMERA_CAPACITY];
+  BuildTextSink sink = {.bytes = text, .capacity = sizeof(text) - 1u};
+  VkrJsonWriter writer;
+  vkr_json_writer_init(&writer, build_text_sink, &sink);
+  if (!vkr_sample_scene_recall_write_json(&view, &writer) ||
+      !vkr_json_writer_complete(&writer)) {
+    snprintf(message, capacity, "The Scene view cannot be stored.");
+    return false_v;
+  }
+  text[sink.length] = '\0';
+  snprintf(game->startup_camera, sizeof(game->startup_camera), "%s", text);
+  return true_v;
+}
+
+bool8_t vkr_editor_build_startup_camera(VkrEditorBuild *build,
+                                        VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        bool8_t clear, char *message,
+                                        uint32_t capacity) {
+  const VkrEditorProject *project =
+      vkr_editor_projects_project(editor->projects);
+  if (!project || strcmp(build->project_id, project->id)) {
+    snprintf(message, capacity, "Open a project to set its startup camera.");
+    return false_v;
+  }
+  if (!build_set_startup_camera(build, editor, frame, clear, message,
+                                capacity)) {
+    return false_v;
+  }
+  if (!build_save(build, project,
+                  vkr_editor_projects_read_only(editor->projects),
+                  frame->ui->frame_allocator)) {
+    snprintf(message, capacity, "%s", build->message);
+    return false_v;
+  }
+  snprintf(message, capacity,
+           clear ? "The game starts at the default camera."
+                 : "The game starts at the startup scene's Scene view.");
+  return true_v;
+}
+
+static void build_settings_camera(VkrEditorBuild *build, VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame, float32_t *y,
+                                  float32_t width) {
+  VkrUiSystem *ui = frame->ui;
+  VkrSampleSceneRecall view;
+  VkrUiWidgetConfig c = build_widget(12, *y, 220, 24);
+  vkr_editor_action_style(&c, editor->heading_font);
+  c.icon = VKR_UI_ICON_CAMERA;
+  c.icon_size_pt = 13.0f;
+  c.tooltip = string8_lit("Without a player, the game starts at the startup "
+                          "scene's current Scene view");
+  c.disabled = !vkr_editor_projects_scene_view(
+      editor->projects, frame, build->draft.startup_scene, &view);
+  if (vkr_ui_button(ui, string8_lit("option.camera"),
+                    string8_lit("Use startup scene view"), &c)) {
+    (void)build_set_startup_camera(build, editor, frame, false_v,
+                                   build->message, sizeof(build->message));
+  }
+  const bool8_t authored = build->draft.startup_camera[0] != '\0';
+  c = vkr_editor_icon_button_config(0, 0, VKR_UI_ICON_TRASH,
+                                    string8_lit("Start at the default camera"));
+  c.placement = build_widget(238, *y, 26, 24).placement;
+  c.disabled = !authored;
+  if (vkr_ui_button(ui, string8_lit("option.camera.clear"), (String8){0}, &c)) {
+    (void)build_set_startup_camera(build, editor, frame, true_v, build->message,
+                                   sizeof(build->message));
+  }
+  c = build_widget(270, *y, width - 282, 24);
+  c.style.text_color = vkr_ui_theme()->text_secondary;
+  c.style.font_size_pt = vkr_ui_theme()->font_caption;
+  vkr_ui_label(ui, string8_lit("option.camera.state"),
+               authored ? string8_lit("The game starts at the chosen camera")
+                        : string8_lit("The game starts at the default camera"),
+               &c);
+  *y += 30;
+}
+
 void vkr_editor_build_settings_build(VkrEditorBuild *build, VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect bounds) {
@@ -1367,6 +1467,7 @@ void vkr_editor_build_settings_build(VkrEditorBuild *build, VkrEditorUi *editor,
     build_settings_target(build, editor, frame, &y, width, &dialog);
     if (!dialog) {
       build_settings_options(build, ui, editor->heading_font, frame, &y, width);
+      build_settings_camera(build, editor, frame, &y, width);
       build->settings_height = y + 12.0f;
     }
     vkr_ui_scroll_area_end(ui);

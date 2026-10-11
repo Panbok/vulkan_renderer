@@ -398,6 +398,22 @@ static bool8_t cmd_run_build(CmdContext *ctx, const CmdDef *def, String8 arg) {
   return true_v;
 }
 
+/* `build.camera [clear]`: game.json's startup camera becomes the startup
+   scene's Scene view, or the default camera, and game.json is saved. */
+static bool8_t cmd_run_build_camera(CmdContext *ctx, const CmdDef *def,
+                                    String8 arg) {
+  (void)def;
+  const String8 option = cmd_trim(arg);
+  const bool8_t clear = vkr_string8_equals_cstr(&option, "clear");
+  if (option.length && !clear) {
+    snprintf(ctx->message, sizeof(ctx->message), "Usage: build.camera [clear]");
+    return false_v;
+  }
+  return vkr_editor_build_startup_camera(ctx->editor->build, ctx->editor,
+                                         ctx->frame, clear, ctx->message,
+                                         sizeof(ctx->message));
+}
+
 static bool8_t cmd_require_scene(CmdContext *ctx) {
   if (ctx->frame->scene || ctx->frame->world)
     return true_v;
@@ -2193,6 +2209,10 @@ static const CmdDef cmd_defs[] = {
     CMD_SIMPLE("build.settings", "Show or hide Build Settings",
                CMD_BUILD_SETTINGS),
     CMD_SIMPLE("build.open", "Open the last package's folder", CMD_BUILD_OPEN),
+    {"build.camera", CMD_ARG_TEXT, "[clear]",
+     "Start the game at the startup scene's Scene view, or clear for the "
+     "default camera",
+     cmd_run_build_camera, CMD_COUNT, 0u},
     CMD_SIMPLE("layout.reset",
                "Restore the active workbench's default panel layout",
                CMD_RESET_LAYOUT),

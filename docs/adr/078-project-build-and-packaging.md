@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -28,12 +28,13 @@ menu.
 
 **Game settings.** `game.json` beside `project.json` holds the `game` object
 (name, version, company, executable name, startup scene, ordered included
-scenes, window size and Graphics defaults) and a `profiles` array (name,
+scenes, window size, Graphics defaults and an optional startup camera) and a
+`profiles` array (name,
 platform, `development` or `shipping`, output folder, project-relative extra
 includes, `bake_lighting`, `run_after_build`). The
 [project store](../../editor/src/editor_project_store.h) parses and writes it.
 It saves through a staged file and merges members it does not own back under
-its own. Without a file, a project packages every scene, starts in the first,
+its own; the startup camera is replaced whole, so a cleared one stays `null`. Without a file, a project packages every scene, starts in the first,
 and has one development profile named after the project. The bundle command
 applies the same rules and owns validation: the name, an executable name without
 separator or extension, a window mode of `windowed`, `fullscreen` or
@@ -84,8 +85,11 @@ engine's UbuntuMono configuration; each text font past the default that a
 scene, overlay or World text names joins under its name, from
 `assets/fonts/<name>.fontcfg`), `window`, `graphics`, `script_library`
 (the script library relative to the content root, present only when the
-project has scripts), and `startup_camera`,
-the startup scene's editor viewport recall without selection. The
+project has scripts), and `startup_camera`, `game.json`'s authored
+`game.startup_camera` (a Scene viewport recall) without selection. Without
+one the bundle has no camera and the player keeps its default camera. The
+editor's per-machine viewport recall ([ADR-069](069-editor-projects-and-workspaces.md))
+no longer reaches a package. The
 [vfs](../../lib/src/filesystem/vkr_vfs.h) reads only root members, through
 `vkr_json_find_root_field`, and keeps the description for the player. It
 finds `bundle.json` beside the executable, or in `Contents/Resources` for an
@@ -135,7 +139,11 @@ builds on that platform.
 Build, Build log) and a Develop menu (Bakery, Draws and render graph, Memory)
 sit beside Scene; Scene gains Bake lighting. The Build settings window edits
 profiles, game fields, included scenes with order and Startup, configuration,
-output folder, extra includes, bake and run options and Graphics defaults.
+output folder, extra includes, bake and run options, Graphics defaults and the
+startup camera: Use startup scene view takes the startup scene's live Scene
+view, or the view this machine last recalled for it, and the clear button
+returns to the default camera. Cmd `build.camera [clear]` does the same and
+saves `game.json`.
 Build saves `game.json`, then runs the preflight: the existing Save/Discard/
 Cancel prompt for any container with unsaved edits, then a drained preference
 writer. The package job runs as `EDITOR_BAKE_PACKAGE` on Bakery's single worker,

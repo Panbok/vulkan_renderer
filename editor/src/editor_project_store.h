@@ -40,6 +40,9 @@ typedef struct VkrEditorProject {
   // caller's allocator and expire when it is reset. New projects use immutable
   // literals.
   String8 default_font;
+  // All editor settings. project.json keeps only the shared `animation`
+  // member; every other member and the per-scene recall are per-machine
+  // state in the local file (ADR-069).
   String8 editor_settings;
   String8 scene_editor_state;
   String8 assets;
@@ -78,12 +81,42 @@ bool8_t vkr_editor_project_unpublish(const VkrEditorWorkspace *workspace,
                                      VkrEditorProjectError *error);
 // Synchronously validates and atomically replaces the manifest. Refuses a stale
 // fingerprint and concurrent writers; failure preserves the previous manifest.
+// Writes the shared members only: editor_settings holds just `animation`, and
+// the per-machine sections stay in the local file.
 bool8_t vkr_editor_project_save(VkrEditorProject *project,
                                 VkrEditorProjectError *error);
-// Atomically removes membership and recall; failure restores the in-memory
-// project. Updated recall is allocated from allocator and must outlive project
-// use (or be copied). Files are retained until the editor stops their consumers
-// and dispatches the delete_scene job. Requires the workspace write lease.
+
+// Per-machine editor state (ADR-069): every editor_settings member except the
+// shared `animation`, and all of scene_editor_state, in
+// <workspace>/local/projects/<id>.json, which a depot does not share
+// (`.vkreditor/local/` belongs in .vkrdepotignore). False when the manifest
+// path is not <workspace>/projects/<id>/project.json.
+bool8_t
+vkr_editor_project_local_path(const VkrEditorProject *project,
+                              char out[VKR_EDITOR_PROJECT_PATH_CAPACITY]);
+// Replaces the project's per-machine sections with the local file's, keeping
+// the shared `animation` settings of project.json. A missing file keeps the
+// sections project.json carried (manifests before the split hold them there)
+// and sets *out_found false, so a writer saves them to migrate. Views borrow
+// allocator storage.
+bool8_t vkr_editor_project_local_load(VkrEditorProject *project,
+                                      VkrAllocator *allocator,
+                                      bool8_t *out_found,
+                                      VkrEditorProjectError *error);
+// Whether two settings objects differ in what project.json keeps of them,
+// the shared `animation` member; an invalid object counts as a change.
+bool8_t vkr_editor_project_shared_settings_changed(String8 previous,
+                                                   String8 next);
+// Atomically replaces the local file without touching project.json. Callers
+// hold the workspace write lease; a read-only editor writes neither file.
+bool8_t vkr_editor_project_local_save(const VkrEditorProject *project,
+                                      VkrEditorProjectError *error);
+// Atomically removes membership from project.json, then rewrites the local
+// recall without the scene (best effort); a failed manifest save restores the
+// in-memory project. Updated recall is allocated from allocator and must
+// outlive project use (or be copied). Files are retained until the editor
+// stops their consumers and dispatches the delete_scene job. Requires the
+// workspace write lease.
 bool8_t vkr_editor_project_remove_scene(VkrEditorProject *project,
                                         uint32_t index, VkrAllocator *allocator,
                                         VkrEditorProjectError *error);
@@ -308,6 +341,7 @@ bool8_t vkr_editor_project_local_graphics_path(
 #define VKR_EDITOR_GAME_TEXT_CAPACITY 129u
 #define VKR_EDITOR_GAME_EXECUTABLE_CAPACITY 65u
 #define VKR_EDITOR_GAME_GRAPHICS_CAPACITY 2048u
+#define VKR_EDITOR_GAME_CAMERA_CAPACITY 512u
 
 typedef struct VkrEditorGameProfile {
   char name[64];
@@ -338,6 +372,10 @@ typedef struct VkrEditorGame {
   char window_mode[16];
   // Graphics settings defaults, a JSON object the runtime's reader applies.
   char graphics[VKR_EDITOR_GAME_GRAPHICS_CAPACITY];
+  // Where the startup scene's view starts without a player: a flat Scene
+  // viewport recall object (vkr_sample_scene_recall_write_json) without a
+  // selection, or empty for the default camera. Authored and shared.
+  char startup_camera[VKR_EDITOR_GAME_CAMERA_CAPACITY];
   VkrEditorGameProfile profiles[VKR_EDITOR_GAME_PROFILE_MAX];
   uint32_t profile_count;
 } VkrEditorGame;
@@ -369,6 +407,7 @@ bool8_t vkr_editor_game_load(const VkrEditorProject *project,
                              VkrAllocator *allocator, VkrEditorGame *game,
                              bool8_t *out_exists, VkrEditorProjectError *error);
 // Atomically replaces game.json, keeping members this editor does not know.
+// The startup camera is replaced whole, so a cleared one stays cleared.
 bool8_t vkr_editor_game_save(const VkrEditorProject *project,
                              const VkrEditorGame *game, VkrAllocator *scratch,
                              VkrEditorProjectError *error);

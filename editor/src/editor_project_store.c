@@ -547,6 +547,22 @@ static bool8_t project_json_section(s_ProjectJson *json, const char *name,
   return true_v;
 }
 
+/* A section older manifests carry and newer ones may omit: a missing member
+   reads as an empty object; a present one must be an object. */
+static bool8_t project_json_optional_object(s_ProjectJson *json,
+                                            const char *name, String8 *out) {
+  uint32_t field = project_json_field(json, 0, name);
+  if (field == UINT32_MAX) {
+    *out = string8_lit("{}");
+    return true_v;
+  }
+  if (json->tokens[field].kind != '{') {
+    return false_v;
+  }
+  *out = project_json_view(json, field);
+  return true_v;
+}
+
 static uint64_t project_fingerprint(String8 bytes) {
   uint64_t value = UINT64_C(14695981039346656037);
   for (uint64_t i = 0; i < bytes.length; ++i) {
@@ -587,15 +603,21 @@ bool8_t vkr_editor_project_parse(String8 bytes, VkrEditorProject *project,
   }
   if (!project_json_section(&json, "default_font", '{',
                             &project->default_font) ||
-      !project_json_section(&json, "editor_settings", '{',
-                            &project->editor_settings) ||
-      !project_json_section(&json, "scene_editor_state", '{',
-                            &project->scene_editor_state) ||
       !project_json_section(&json, "assets", '[', &project->assets)) {
     return project_json_finish(
         &json,
-        project_error(error, "Project requires default_font, editor_settings, "
-                             "scene_editor_state and assets"));
+        project_error(error, "Project requires default_font and assets"));
+  }
+  /* Manifests written before the per-machine split carry every editor setting
+     and the scene recall; current ones carry at most the shared animation
+     settings. vkr_editor_project_local_load adds the per-machine state. */
+  if (!project_json_optional_object(&json, "editor_settings",
+                                    &project->editor_settings) ||
+      !project_json_optional_object(&json, "scene_editor_state",
+                                    &project->scene_editor_state)) {
+    return project_json_finish(
+        &json, project_error(error, "Project editor_settings and "
+                                    "scene_editor_state must be objects"));
   }
   uint32_t scenes = project_json_field(&json, 0, "scenes");
   if (scenes == UINT32_MAX || json.tokens[scenes].kind != '[') {
@@ -892,6 +914,8 @@ static bool8_t project_write_extensions(FileHandle *file, String8 document,
         &json,
         project_error(error, "Original project document is no longer valid"));
   }
+  /* The per-machine sections older manifests carry stay known, so a save
+     drops them instead of copying them back. */
   static const char *known[] = {"version",
                                 "id",
                                 "name",
@@ -922,20 +946,59 @@ static bool8_t project_write_extensions(FileHandle *file, String8 document,
   return project_json_finish(&json, true_v);
 }
 
+/* The shared editor setting (ADR-069): the authored animation graph, or an
+   empty view when the settings hold none or an empty one. Every other member
+   is per-machine state of the local file. */
+static bool8_t project_shared_settings(String8 settings, String8 *animation,
+                                       VkrEditorProjectError *error) {
+  *animation = (String8){0};
+  s_ProjectJson json = {0};
+  if (!project_json_parse(&json, settings) || json.tokens[0].kind != '{') {
+    return project_json_finish(
+        &json, project_error(error, "Invalid project editor settings"));
+  }
+  const uint32_t field = project_json_field(&json, 0, "animation");
+  if (field != UINT32_MAX &&
+      (json.tokens[field].kind != '{' ||
+       json.tokens[field].child != json.tokens[field].next)) {
+    *animation = project_json_view(&json, field);
+  }
+  return project_json_finish(&json, true_v);
+}
+
+bool8_t vkr_editor_project_shared_settings_changed(String8 previous,
+                                                   String8 next) {
+  String8 before = {0};
+  String8 after = {0};
+  if (!project_shared_settings(previous, &before, NULL) ||
+      !project_shared_settings(next, &after, NULL)) {
+    return true_v;
+  }
+  return !string8_equals(&before, &after);
+}
+
 static bool8_t project_write_manifest(FileHandle *file,
                                       VkrEditorProject *project,
                                       VkrEditorProjectError *error) {
+  String8 animation = {0};
+  if (!project_shared_settings(project->editor_settings, &animation, error)) {
+    return false_v;
+  }
   if (!project_write_text(file, "{\"version\":1,\"id\":") ||
       !project_write_quote(file, project->id) ||
       !project_write_text(file, ",\"name\":") ||
       !project_write_quote(file, project->name) ||
       !project_write_section(file, ",\"default_font\":", project->default_font,
-                             '{', error) ||
-      !project_write_section(file, ",\"editor_settings\":",
-                             project->editor_settings, '{', error) ||
-      !project_write_section(file, ",\"scene_editor_state\":",
-                             project->scene_editor_state, '{', error) ||
-      !project_write_section(file, ",\"assets\":", project->assets, '[',
+                             '{', error)) {
+    return false_v;
+  }
+  if (animation.length &&
+      (!project_write_text(file, ",\"editor_settings\":{\"animation\":") ||
+       !project_write_sink(file, animation.str, animation.length) ||
+       !project_write_text(file, "}"))) {
+    return false_v;
+  }
+  if (!project_write_section(file, ",\"assets\":", project->assets, '[',
                              error) ||
       !project_write_text(file, ",\"scenes\":[")) {
     return false_v;
@@ -1768,6 +1831,12 @@ bool8_t vkr_editor_project_remove_scene(VkrEditorProject *project,
     return false_v;
   }
   MemZero(&project->scenes[project->scene_count], sizeof(removed));
+
+  /* The recall lives in the per-machine file. A stale entry there names no
+     scene and is never restored, so failing to rewrite it keeps the
+     removal. */
+  VkrEditorProjectError local_error = {0};
+  (void)vkr_editor_project_local_save(project, &local_error);
   return true_v;
 }
 
@@ -1796,10 +1865,17 @@ bool8_t vkr_editor_project_json_read_file(const char *path,
 // World models (ADR-076)
 // =============================================================================
 
+/* Writes one whole document to its staged file. */
+typedef bool8_t (*s_ProjectDocumentWriter)(FileHandle *file,
+                                           const void *context,
+                                           VkrEditorProjectError *error);
+
 /* Replaces the document at `path` through a synced staged file, so a failure
    leaves the previous document. */
-static bool8_t project_publish_document(const char *path, String8 bytes,
-                                        VkrEditorProjectError *error) {
+static bool8_t project_publish_stream(const char *path,
+                                      s_ProjectDocumentWriter write,
+                                      const void *context,
+                                      VkrEditorProjectError *error) {
   char transaction[37];
   char staged_path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   if (!vkr_editor_project_id_generate(transaction, error)) {
@@ -1820,8 +1896,7 @@ static bool8_t project_publish_document(const char *path, String8 bytes,
     return project_error(error, "Cannot stage document: %s", path);
   }
   const bool8_t written =
-      project_write_sink(&output, bytes.str, bytes.length) &&
-      file_sync(&output) == FILE_ERROR_NONE;
+      write(&output, context, error) && file_sync(&output) == FILE_ERROR_NONE;
   file_close(&output);
   if (!written ||
       file_rename(&staged, &destination, true_v) != FILE_ERROR_NONE) {
@@ -1830,6 +1905,168 @@ static bool8_t project_publish_document(const char *path, String8 bytes,
         error, "Cannot publish document; previous version preserved: %s", path);
   }
   return true_v;
+}
+
+static bool8_t project_write_bytes(FileHandle *file, const void *context,
+                                   VkrEditorProjectError *error) {
+  (void)error;
+  const String8 *bytes = context;
+  return project_write_sink(file, bytes->str, bytes->length);
+}
+
+static bool8_t project_publish_document(const char *path, String8 bytes,
+                                        VkrEditorProjectError *error) {
+  return project_publish_stream(path, project_write_bytes, &bytes, error);
+}
+
+// =============================================================================
+// Per-machine editor state (ADR-069)
+// =============================================================================
+
+static bool8_t project_ensure_directory(const char *path);
+
+/* Cuts `path` at its last separator and returns the removed name. */
+static const char *project_path_cut(char *path) {
+  char *separator = strrchr(path, '/');
+#if defined(PLATFORM_WINDOWS)
+  char *backslash = strrchr(path, '\\');
+  if (backslash && (!separator || backslash > separator)) {
+    separator = backslash;
+  }
+#endif
+  if (!separator || separator == path) {
+    return NULL;
+  }
+  *separator = '\0';
+  return separator + 1;
+}
+
+bool8_t
+vkr_editor_project_local_path(const VkrEditorProject *project,
+                              char out[VKR_EDITOR_PROJECT_PATH_CAPACITY]) {
+  char root[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!project || !project_id_valid(project->id) ||
+      !vkr_string_copy_bounded(root, sizeof(root), project->manifest_path)) {
+    return false_v;
+  }
+  /* The manifest is <workspace>/projects/<id>/project.json. */
+  const char *manifest = project_path_cut(root);
+  const char *directory = manifest ? project_path_cut(root) : NULL;
+  const char *projects = directory ? project_path_cut(root) : NULL;
+  if (!projects || strcmp(manifest, "project.json") ||
+      strcmp(directory, project->id) || strcmp(projects, "projects")) {
+    return false_v;
+  }
+  const int32_t length =
+      snprintf(out, VKR_EDITOR_PROJECT_PATH_CAPACITY,
+               "%s/local/projects/%s.json", root, project->id);
+  return length > 0 && (uint32_t)length < VKR_EDITOR_PROJECT_PATH_CAPACITY;
+}
+
+bool8_t vkr_editor_project_local_load(VkrEditorProject *project,
+                                      VkrAllocator *allocator,
+                                      bool8_t *out_found,
+                                      VkrEditorProjectError *error) {
+  *out_found = false_v;
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!allocator || !vkr_editor_project_local_path(project, path)) {
+    return project_error(error, "Project has no per-machine state path");
+  }
+  FilePath file = project_path(path);
+  if (!file_exists(&file)) {
+    return true_v;
+  }
+  String8 bytes = {0};
+  if (!project_read(path, allocator, &bytes, error)) {
+    return false_v;
+  }
+  s_ProjectJson json = {0};
+  String8 settings = {0};
+  String8 recall = {0};
+  char id[37] = {0};
+  const uint32_t version =
+      project_json_parse(&json, bytes) && json.tokens[0].kind == '{'
+          ? project_json_field(&json, 0, "version")
+          : UINT32_MAX;
+  bool8_t valid =
+      version != UINT32_MAX &&
+      json.tokens[version].end - json.tokens[version].start == 1 &&
+      bytes.str[json.tokens[version].start] == '1' &&
+      project_json_text(&json, 0, "id", id, sizeof(id)) &&
+      strcmp(id, project->id) == 0 &&
+      project_json_optional_object(&json, "editor_settings", &settings) &&
+      project_json_optional_object(&json, "scene_editor_state", &recall);
+  (void)project_json_finish(&json, true_v);
+
+  /* The shared animation settings of project.json join the local ones. */
+  String8 animation = {0};
+  String8 combined = settings;
+  valid = valid &&
+          project_shared_settings(project->editor_settings, &animation, error);
+  if (valid && animation.length) {
+    valid = vkr_editor_project_json_replace_member(
+        allocator, settings, "animation", animation, &combined, error);
+  }
+  if (!valid) {
+    vkr_allocator_free(allocator, bytes.str, bytes.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    return project_error(error, "Malformed per-machine editor state: %s", path);
+  }
+  project->editor_settings = combined;
+  project->scene_editor_state = recall;
+  *out_found = true_v;
+  return true_v;
+}
+
+/* {"version":1,"id":...,"editor_settings":{every member but animation},
+   "scene_editor_state":...} */
+static bool8_t project_write_local(FileHandle *file, const void *context,
+                                   VkrEditorProjectError *error) {
+  const VkrEditorProject *project = context;
+  s_ProjectJson json = {0};
+  if (!project_json_parse(&json, project->editor_settings) ||
+      json.tokens[0].kind != '{') {
+    return project_json_finish(
+        &json, project_error(error, "Invalid project editor settings"));
+  }
+  bool8_t ok = project_write_text(file, "{\"version\":1,\"id\":") &&
+               project_write_quote(file, project->id) &&
+               project_write_text(file, ",\"editor_settings\":{");
+  bool8_t comma = false_v;
+  for (uint32_t key = json.tokens[0].child; ok && key < json.tokens[0].next;
+       key = json.tokens[key + 1].next) {
+    char name[256];
+    ok = project_json_decode(&json, key, name, sizeof(name));
+    if (!ok || !strcmp(name, "animation")) {
+      continue;
+    }
+    const uint32_t start = json.tokens[key].start;
+    const uint32_t end = json.tokens[key + 1].end;
+    ok = (!comma || project_write_text(file, ",")) &&
+         project_write_sink(file, project->editor_settings.str + start,
+                            end - start);
+    comma = true_v;
+  }
+  ok = project_json_finish(&json, ok) && project_write_text(file, "}") &&
+       project_write_section(file, ",\"scene_editor_state\":",
+                             project->scene_editor_state, '{', error) &&
+       project_write_text(file, "}\n");
+  return ok;
+}
+
+bool8_t vkr_editor_project_local_save(const VkrEditorProject *project,
+                                      VkrEditorProjectError *error) {
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char directory[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!vkr_editor_project_local_path(project, path) ||
+      !vkr_string_copy_bounded(directory, sizeof(directory), path) ||
+      !project_path_cut(directory)) {
+    return project_error(error, "Project has no per-machine state path");
+  }
+  if (!project_ensure_directory(directory)) {
+    return project_error(error, "Cannot create directory: %s", directory);
+  }
+  return project_publish_stream(path, project_write_local, project, error);
 }
 
 /* Name and mesh artifact path of project mesh `id` in the parsed inventory;
@@ -3297,6 +3534,14 @@ bool8_t vkr_editor_game_parse(String8 bytes, VkrEditorGame *game,
       game->graphics[view.length] = '\0';
     }
   }
+  const uint32_t camera = project_json_field(&json, settings, "startup_camera");
+  if (camera != UINT32_MAX && json.tokens[camera].kind == '{') {
+    const String8 view = project_json_view(&json, camera);
+    if (view.length < sizeof(game->startup_camera)) {
+      MemCopy(game->startup_camera, view.str, view.length);
+      game->startup_camera[view.length] = '\0';
+    }
+  }
   const uint32_t profiles = project_json_field(&json, 0, "profiles");
   if (profiles != UINT32_MAX && json.tokens[profiles].kind == '[') {
     for (uint32_t item = json.tokens[profiles].child;
@@ -3322,7 +3567,7 @@ static bool8_t game_text(VkrJsonWriter *writer, const char *name,
          vkr_json_writer_string(writer, project_string(value));
 }
 
-/* Writes a JSON object this module parsed back out as raw members. */
+/* Writes a flat JSON object this module parsed back out as raw members. */
 static bool8_t game_raw_object(VkrJsonWriter *writer, const char *text) {
   s_ProjectJson json = {0};
   bool8_t ok = project_json_parse(&json, project_string(text)) &&
@@ -3351,7 +3596,8 @@ static bool8_t game_raw_object(VkrJsonWriter *writer, const char *text) {
       scalar[view.length] = '\0';
       ok = vkr_json_writer_f64(writer, strtod(scalar, NULL));
     } else {
-      /* Graphics settings are flat; nested values are not kept. */
+      /* Graphics settings and cameras are flat; nested values are not
+         kept. */
       ok = vkr_json_writer_null(writer);
     }
   }
@@ -3389,6 +3635,9 @@ bool8_t vkr_editor_game_write(VkrJsonWriter *writer,
        game_raw_object(writer, game->graphics[0]
                                    ? game->graphics
                                    : PROJECT_GAME_DEFAULT_GRAPHICS) &&
+       vkr_json_writer_name(writer, string8_lit("startup_camera")) &&
+       (game->startup_camera[0] ? game_raw_object(writer, game->startup_camera)
+                                : vkr_json_writer_null(writer)) &&
        vkr_json_writer_end_object(writer) &&
        vkr_json_writer_name(writer, string8_lit("profiles")) &&
        vkr_json_writer_begin_array(writer);
@@ -3539,11 +3788,23 @@ bool8_t vkr_editor_game_save(const VkrEditorProject *project,
                vkr_json_writer_complete(&writer);
   String8 document = {.str = sink.bytes, .length = sink.length};
   /* Members another tool added survive: the previous file's objects merge
-     under the ones this editor owns. */
+     under the ones this editor owns. The startup camera is one value, not a
+     member set: the previous one is dropped before the merge. */
   FilePath file = project_path(path);
   String8 previous = {0};
   if (ok && file_exists(&file) &&
       project_read(path, scratch, &previous, NULL)) {
+    String8 settings = {0};
+    String8 cleared = {0};
+    String8 replaced = {0};
+    if (vkr_editor_project_json_member(previous, "game", &settings, NULL) &&
+        vkr_editor_project_json_replace_member(
+            scratch, settings, "startup_camera", string8_lit("null"), &cleared,
+            NULL) &&
+        vkr_editor_project_json_replace_member(scratch, previous, "game",
+                                               cleared, &replaced, NULL)) {
+      previous = replaced;
+    }
     String8 merged = {0};
     if (vkr_editor_project_json_merge_objects(scratch, previous, document,
                                               &merged, NULL)) {

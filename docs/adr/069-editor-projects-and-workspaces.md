@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-08
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -62,7 +62,8 @@ are saved.
 [Project storage](../../editor/src/editor_project_store.c) owns a versioned
 workspace manifest and UUID-named project directories. Each project has a
 `project.json` with a display name, ordered scene references, asset inventory,
-default font, editor settings and scene-specific editor recall. Each scene has
+default font and the shared animation settings; the per-machine editor settings
+and scene recall are in the project's local file. Each scene has
 its own `scenes/<id>/scene.json` and artifact directories. Scene version 4 keeps
 its asset records in an immutable `inventory/<id>.json` revision named by the
 manifest, so a scene manifest stays within the 1 MiB scene-document limit while
@@ -121,12 +122,17 @@ Unlisted scene directories and project directories without `project.json` are
 removed after one hour, and job directories after seven days.
 The editor holds an OS-backed workspace write lease. A second editor can inspect
 the workspace without publishing changes or previews into it.
+Opening a folder whose `.vkreditor/projects` exists without `workspace.json`,
+as a depot clone has (each machine keeps its own workspace identity),
+initializes the workspace; any other folder without `workspace.json` opens
+unchanged until a project is created.
 
 The Scenes list offers confirmed permanent deletion in writable, idle projects.
 Deleting the active scene discards its edits and waits for the runtime unload
 before publication; deleting another scene preserves the active scene. The
-project store atomically removes membership and scene recall with stale-write
-rollback. A background `delete_scene` job then erases only the unreferenced
+project store atomically removes membership with stale-write rollback, then
+rewrites the local recall without the scene; a failed rewrite leaves an entry
+no scene restores. A background `delete_scene` job then erases only the unreferenced
 `scenes/<id>` directory, preserving project-shared assets. It refuses links and
 Windows reparse points. File-removal failure or cancellation leaves membership
 removed and offers Retry to finish cleanup; it does not claim the files survived
@@ -161,7 +167,20 @@ a new project whose first job stopped then opens with its saved settings.
 Projects and Scenes use the shared navigation-button style on the left before Metrics,
 with a distinct background highlight.
 Graphics controls, runtime input/presentation preferences, layout, panel state,
-Console filters, Bakery defaults and Content preferences belong to the project.
+Console filters, Bakery defaults and Content preferences belong to the project
+and are per-machine state: the editor keeps them, with the scene recall below,
+in `.vkreditor/local/projects/<project id>.json`, not in `project.json`, so two
+machines sharing a project through a depot
+([ADR-105](105-network-transport-and-asset-depot.md)) never conflict on it;
+`.vkreditor/local/` belongs in `.vkrdepotignore`. `project.json` keeps only
+`editor_settings.animation`, the authored animation graph, which every machine
+shares. Settings saves and the 0.25 s recall save write only the local file,
+plus `project.json` when the animation settings changed; shared saves write
+only `project.json`. A read-only editor writes neither. A project opened
+without the local file takes the settings and recall `project.json` still
+carries (manifests written before the split), and a writer publishes them to
+the local file at once; the next `project.json` save drops them. A depot clone
+without either starts from default settings.
 Graphics settings that apply only at start (vsync, HDR, temporal upscaling,
 dynamic resolution and render scale) belong to the
 machine: the editor starts from the last applied settings in a machine-local
@@ -272,6 +291,22 @@ retirement owners; the browser retains at most 64 texture requests and prunes it
 generated disk cache through a bounded worker operation.
 
 ## Verification and limits
+
+On 2026-10-11 the per-machine split passed the Release
+`vulkan_renderer_tester --suite editor_project_store`: a settings save leaves
+the bytes of `project.json` unchanged, a manifest written before the split
+loads its settings and recall, moves them to the local file and drops them at
+its next save, scene removal rewrites the local recall, and a replaced or
+cleared `game.json` startup camera keeps no member of the previous one.
+[check_default_templates.py](../../tools/checks/check_default_templates.py)
+passed with manifests that omit both editor sections. A headless Release
+editor on Metal (M1 Pro) opened an APFS copy of the Blank template project
+whose `project.json` carried pre-split settings and recall and whose workspace
+had no `workspace.json`. It created `workspace.json` and the local file with
+the migrated settings and recall; the SHA-1 of `project.json` did not change
+while settings and recall saves ran, and `build.camera` wrote
+`game.startup_camera`. That run checks file ownership only, not rendering.
+A cross-machine depot exchange of the split files has not run.
 
 On 2026-09-30, `./build_editor.bat Release` compiled the starter selector and
 `./build_test.bat` passed the Debug CPU suite and the 28 shared path cases.
@@ -447,7 +482,8 @@ The navigation marks this state `[RO]`; Content disables asset-writing actions.
 ## Consequences
 
 A copied workspace carries scene dependencies and preferences without preserving
-absolute import-machine paths. Large source imports require additional disk space.
+absolute import-machine paths. A depot clone carries the shared project but not
+`.vkreditor/local`, so each machine keeps its own layout, settings and views. Large source imports require additional disk space.
 Atomic manifest replacement preserves the previous referenced revisions on a
 failed publication; unreferenced revisions can remain until explicit cleanup.
 Only one world scene is resident. A failed replacement leaves an error/selection

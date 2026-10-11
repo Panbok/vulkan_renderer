@@ -680,6 +680,13 @@ vkr_internal bool8_t vkr_package_game_settings(VkrPackage *package,
     return vkr_package_fail(package, game_path,
                             "graphics must be a Graphics settings object");
   }
+  const VkrBakeryJson *camera = vkr_bakery_json_get(game, "startup_camera");
+  if (camera && camera->type != VKR_BAKERY_JSON_OBJECT &&
+      camera->type != VKR_BAKERY_JSON_NULL) {
+    return vkr_package_fail(package, game_path,
+                            "startup_camera must be a Scene viewport object "
+                            "or null");
+  }
 
   /* Included scenes in their listed order; the World is always included. */
   const VkrBakeryJson *scenes = vkr_bakery_json_get(game, "scenes");
@@ -1733,13 +1740,11 @@ vkr_internal VkrBakeryJson *vkr_package_game_object(VkrPackage *package) {
   vkr_bakery_json_set(
       arena, game, "startup_overlay",
       vkr_bakery_json_cstr(arena, startup ? startup->overlay : ""));
-  /* Without a player, the game starts where the author last viewed the
-     startup scene: its editor viewport recall, without the selection. */
-  const VkrBakeryJson *recall = vkr_bakery_json_get(
-      vkr_bakery_json_get(
-          vkr_bakery_json_get(package->project, "scene_editor_state"),
-          startup ? startup->id : ""),
-      "viewport");
+  /* Without a player, the game starts at the authored startup camera of
+     game.json: a Scene viewport recall, sent without a selection. Without
+     one the game uses the default camera. */
+  const VkrBakeryJson *recall =
+      startup ? vkr_bakery_json_get(settings, "startup_camera") : NULL;
   bool8_t camera_valid = false_v;
   if (recall &&
       vkr_bakery_json_get_bool(recall, "camera_valid", &camera_valid) &&
