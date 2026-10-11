@@ -6,7 +6,10 @@
  * (docs/proposals/network-protocol.md, "Verification"). Endpoints are
  * cores with addresses; each direction between two endpoints is a link
  * with latency, jitter, loss, duplication, a bandwidth limit with a
- * drop-tail router queue, and an MTU. Time is virtual and every random
+ * drop-tail router queue, and an MTU. Several links can also share one
+ * bottleneck: a router queue with its own bandwidth, buffer and latency
+ * that serves their datagrams in the order they reach it, as when
+ * connections compete for one uplink. Time is virtual and every random
  * choice comes from one seeded generator, so a run repeats exactly. */
 
 typedef struct VkrNetSimLink {
@@ -55,6 +58,17 @@ void vkr_net_sim_set_address(VkrNetSim *sim, uint32_t endpoint,
 void vkr_net_sim_set_link(VkrNetSim *sim, uint32_t from, uint32_t to,
                           const VkrNetSimLink *link);
 
+/* Adds a bottleneck several links can share; returns its index or
+   UINT32_MAX. Only `latency_us`, `bandwidth` and `queue_bytes` apply. */
+uint32_t vkr_net_sim_add_bottleneck(VkrNetSim *sim, const VkrNetSimLink *link);
+
+/* Sends the link from `from` to `to` through `bottleneck` after the link's
+   own loss and MTU and before its latency and jitter; UINT32_MAX removes
+   the route. A routed link should keep its own bandwidth unlimited, so the
+   shared queue sees datagrams in send order. */
+void vkr_net_sim_route(VkrNetSim *sim, uint32_t from, uint32_t to,
+                       uint32_t bottleneck);
+
 /* Runs every core's timers, takes every datagram they can send and
    delivers the datagrams due by `now_us`. */
 void vkr_net_sim_step(VkrNetSim *sim, uint64_t now_us);
@@ -65,6 +79,10 @@ uint64_t vkr_net_sim_next_time(const VkrNetSim *sim);
 /* Statistics of the link from one endpoint to another. */
 VkrNetSimStats vkr_net_sim_stats(const VkrNetSim *sim, uint32_t from,
                                  uint32_t to);
+
+/* Statistics of every datagram routed through a bottleneck. */
+VkrNetSimStats vkr_net_sim_bottleneck_stats(const VkrNetSim *sim,
+                                            uint32_t bottleneck);
 
 /* A deterministic value from the simulation's generator. */
 uint64_t vkr_net_sim_random(VkrNetSim *sim);

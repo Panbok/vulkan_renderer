@@ -3,16 +3,30 @@
 #include <string.h>
 
 #define SIM_ENDPOINT_MAX 16u
+#define SIM_BOTTLENECK_MAX 8u
 #define SIM_DATAGRAM_BYTES VKR_NET_DATAGRAM_JUMBO
+
+/* A drop-tail router queue in front of a bandwidth limit. */
+typedef struct SimQueue {
+  /* When the queue finishes serializing the datagrams it holds. */
+  uint64_t busy_until;
+  VkrNetSimStats stats;
+} SimQueue;
 
 typedef struct SimLinkState {
   VkrNetSimLink link;
-  /* When the bottleneck finishes serializing the queued datagrams. */
-  uint64_t busy_until;
+  SimQueue queue;
   /* The latest arrival so far; in-order datagrams arrive no earlier. */
   uint64_t last_arrival;
-  VkrNetSimStats stats;
+  /* One more than the shared bottleneck this link goes through; zero for
+     none. */
+  uint32_t bottleneck;
 } SimLinkState;
+
+typedef struct SimBottleneck {
+  VkrNetSimLink link;
+  SimQueue queue;
+} SimBottleneck;
 
 typedef struct SimEndpoint {
   VkrNetCore *core;
@@ -36,6 +50,8 @@ struct VkrNetSim {
   SimEndpoint endpoints[SIM_ENDPOINT_MAX];
   uint32_t endpoint_count;
   SimLinkState links[SIM_ENDPOINT_MAX][SIM_ENDPOINT_MAX];
+  SimBottleneck bottlenecks[SIM_BOTTLENECK_MAX];
+  uint32_t bottleneck_count;
   SimDatagram *flight;
   uint32_t flight_count;
   uint32_t flight_capacity;
@@ -107,6 +123,23 @@ void vkr_net_sim_set_link(VkrNetSim *sim, uint32_t from, uint32_t to,
   }
 }
 
+uint32_t vkr_net_sim_add_bottleneck(VkrNetSim *sim, const VkrNetSimLink *link) {
+  if (sim->bottleneck_count == SIM_BOTTLENECK_MAX) {
+    return UINT32_MAX;
+  }
+  const uint32_t index = sim->bottleneck_count++;
+  sim->bottlenecks[index] = (SimBottleneck){.link = *link};
+  return index;
+}
+
+void vkr_net_sim_route(VkrNetSim *sim, uint32_t from, uint32_t to,
+                       uint32_t bottleneck) {
+  if (from < SIM_ENDPOINT_MAX && to < SIM_ENDPOINT_MAX) {
+    sim->links[from][to].bottleneck =
+        bottleneck < sim->bottleneck_count ? bottleneck + 1u : 0u;
+  }
+}
+
 static uint32_t sim_find(const VkrNetSim *sim, const VkrNetAddress *address) {
   for (uint32_t i = 0u; i < sim->endpoint_count; ++i) {
     if (vkr_net_address_equal(&sim->endpoints[i].address, address)) {
@@ -154,7 +187,35 @@ static void sim_enqueue(VkrNetSim *sim, uint32_t from, uint32_t to,
   };
 }
 
-/* Applies the link to one sent datagram. */
+/* Queues a datagram that reaches `queue` at `now` behind the datagrams it
+   holds. Returns false when the queue drops it; otherwise `*out_depart` is
+   when it leaves the bandwidth limit. */
+static bool8_t sim_queue_admit(SimQueue *queue, const VkrNetSimLink *link,
+                               uint32_t size, uint64_t now,
+                               uint64_t *out_depart) {
+  *out_depart = now;
+  if (link->bandwidth == 0u) {
+    return true_v;
+  }
+  const uint64_t start = Max(now, queue->busy_until);
+  uint64_t queue_limit = link->queue_bytes;
+  if (queue_limit == 0u) {
+    queue_limit =
+        Max(link->bandwidth * Max(link->latency_us, 1000u) * 2u / 1000000u,
+            (uint64_t)64u * 1024u);
+  }
+  const uint64_t queued = (start - now) * link->bandwidth / 1000000u;
+  if (queued + size > queue_limit) {
+    return false_v;
+  }
+  const uint64_t serialize =
+      Max((uint64_t)size * 1000000u / link->bandwidth, 1u);
+  queue->busy_until = start + serialize;
+  *out_depart = queue->busy_until;
+  return true_v;
+}
+
+/* Applies the link, then its shared bottleneck, to one sent datagram. */
 static void sim_send(VkrNetSim *sim, uint32_t from, const VkrNetAddress *to,
                      const uint8_t *bytes, uint32_t size, uint64_t now) {
   const uint32_t target = sim_find(sim, to);
@@ -163,33 +224,35 @@ static void sim_send(VkrNetSim *sim, uint32_t from, const VkrNetAddress *to,
   }
   SimLinkState *state = &sim->links[from][target];
   const VkrNetSimLink *link = &state->link;
-  state->stats.datagrams_sent += 1u;
-  state->stats.bytes_sent += size;
+  SimBottleneck *bottleneck =
+      state->bottleneck ? &sim->bottlenecks[state->bottleneck - 1u] : NULL;
+  state->queue.stats.datagrams_sent += 1u;
+  state->queue.stats.bytes_sent += size;
 
   const uint32_t mtu = link->mtu ? link->mtu : VKR_UDP_DATAGRAM_MAX;
   if (size > mtu || (link->loss > 0.0f && sim_unit(sim) < link->loss)) {
-    state->stats.datagrams_dropped += 1u;
+    state->queue.stats.datagrams_dropped += 1u;
     return;
   }
 
   uint64_t depart = now;
-  if (link->bandwidth > 0u) {
-    const uint64_t start = Max(now, state->busy_until);
-    uint64_t queue_limit = link->queue_bytes;
-    if (queue_limit == 0u) {
-      queue_limit =
-          Max(link->bandwidth * Max(link->latency_us, 1000u) * 2u / 1000000u,
-              (uint64_t)64u * 1024u);
-    }
-    const uint64_t queued = (start - now) * link->bandwidth / 1000000u;
-    if (queued + size > queue_limit) {
-      state->stats.datagrams_dropped += 1u;
+  if (!sim_queue_admit(&state->queue, link, size, now, &depart)) {
+    state->queue.stats.datagrams_dropped += 1u;
+    return;
+  }
+  if (bottleneck) {
+    /* The shared queue takes datagrams in the order they reach it. Routed
+       links leave their own bandwidth unlimited, so that order is the send
+       order of every link it carries. */
+    bottleneck->queue.stats.datagrams_sent += 1u;
+    bottleneck->queue.stats.bytes_sent += size;
+    if (!sim_queue_admit(&bottleneck->queue, &bottleneck->link, size, depart,
+                         &depart)) {
+      state->queue.stats.datagrams_dropped += 1u;
+      bottleneck->queue.stats.datagrams_dropped += 1u;
       return;
     }
-    const uint64_t serialize =
-        Max((uint64_t)size * 1000000u / link->bandwidth, 1u);
-    state->busy_until = start + serialize;
-    depart = state->busy_until;
+    depart += bottleneck->link.latency_us;
   }
   uint64_t arrival = depart + link->latency_us;
   if (link->jitter_us > 0u) {
@@ -231,8 +294,13 @@ static void sim_deliver_due(VkrNetSim *sim, uint64_t now) {
     SimDatagram datagram = sim->flight[best];
     sim->flight[best] = sim->flight[--sim->flight_count];
     SimLinkState *state = &sim->links[datagram.from][datagram.to];
-    state->stats.datagrams_delivered += 1u;
-    state->stats.bytes_delivered += datagram.size;
+    state->queue.stats.datagrams_delivered += 1u;
+    state->queue.stats.bytes_delivered += datagram.size;
+    if (state->bottleneck) {
+      SimQueue *shared = &sim->bottlenecks[state->bottleneck - 1u].queue;
+      shared->stats.datagrams_delivered += 1u;
+      shared->stats.bytes_delivered += datagram.size;
+    }
     vkr_net_core_receive(sim->endpoints[datagram.to].core, &datagram.source,
                          datagram.bytes, datagram.size, now);
     vkr_allocator_free(sim->allocator, datagram.bytes, datagram.size,
@@ -271,5 +339,13 @@ VkrNetSimStats vkr_net_sim_stats(const VkrNetSim *sim, uint32_t from,
   if (from >= SIM_ENDPOINT_MAX || to >= SIM_ENDPOINT_MAX) {
     return (VkrNetSimStats){0};
   }
-  return sim->links[from][to].stats;
+  return sim->links[from][to].queue.stats;
+}
+
+VkrNetSimStats vkr_net_sim_bottleneck_stats(const VkrNetSim *sim,
+                                            uint32_t bottleneck) {
+  if (bottleneck >= sim->bottleneck_count) {
+    return (VkrNetSimStats){0};
+  }
+  return sim->bottlenecks[bottleneck].queue.stats;
 }

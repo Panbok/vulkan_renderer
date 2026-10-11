@@ -2,6 +2,11 @@
 
 #define CC_STARTUP_GAIN 2.885f
 #define CC_DRAIN_GAIN (1.0f / 2.885f)
+/* STARTUP and DRAIN cap the bytes in flight at twice the BDP, as BBRv3
+   does (draft-ietf-ccwg-bbr, BBRStartupCwndGain): a path with a buffer of
+   one BDP then holds the window without loss, where 2.885 overflowed it
+   once pacing ran at its full rate. */
+#define CC_STARTUP_CWND_GAIN 2.0f
 #define CC_PROBE_RTT_INTERVAL_US 10000000ull
 #define CC_PROBE_RTT_DURATION_US 200000ull
 #define CC_INITIAL_WINDOW_PACKETS 10u
@@ -9,6 +14,13 @@
 /* The RTT assumed until the first sample. */
 #define CC_INITIAL_RTT_US 100000ull
 #define CC_BACKGROUND_TARGET_US 25000ull
+/* Queueing delay background mode ignores: a sparse flow's acknowledgments
+   wait up to the 5 ms ack delay, and an RTT sample just under the minimum
+   plus that delay keeps it, so the smoothed RTT of an idle path sits up to
+   5 ms above the minimum. */
+#define CC_BACKGROUND_FLOOR_US 5000ull
+/* A background flow that scaled its rate to half or less has yielded. */
+#define CC_BACKGROUND_YIELD_SCALE 0.5
 
 static const float32_t cc_probe_bw_gains[8] = {1.25f, 0.75f, 1.0f, 1.0f,
                                                1.0f,  1.0f,  1.0f, 1.0f};
@@ -20,7 +32,7 @@ void vkr_net_cc_init(VkrNetCc *cc, uint32_t mss, bool8_t background,
       .background = background,
       .mode = VKR_NET_CC_STARTUP,
       .pacing_gain = CC_STARTUP_GAIN,
-      .cwnd_gain = CC_STARTUP_GAIN,
+      .cwnd_gain = CC_STARTUP_CWND_GAIN,
       .min_rtt_us = UINT64_MAX,
       .min_rtt_stamp = now_us,
       .cwnd = (uint64_t)mss * CC_INITIAL_WINDOW_PACKETS,
@@ -77,7 +89,7 @@ static void cc_enter_drain(VkrNetCc *cc) {
   cc->filled = true_v;
   cc->mode = VKR_NET_CC_DRAIN;
   cc->pacing_gain = CC_DRAIN_GAIN;
-  cc->cwnd_gain = CC_STARTUP_GAIN;
+  cc->cwnd_gain = CC_STARTUP_CWND_GAIN;
 }
 
 /* At a round's end: the startup plateau and the loss cap. */
@@ -117,6 +129,38 @@ static void cc_on_round_end(VkrNetCc *cc, const VkrNetCcSample *sample) {
       }
     }
   }
+}
+
+/* A background flow measures only the rate it sends, so while it yields its
+   bandwidth estimate falls with its own share, and once the competing
+   traffic stops, PROBE_BW's 1.25 gain would take minutes to find the
+   link again. A calm round (no yielding) after rounds that yielded
+   restarts STARTUP when the estimate fell below half of what it was when
+   the yielding began, which finds the free bandwidth within a few rounds;
+   the scale still holds it back if the queue grows again. A queue the
+   flow built itself leaves its estimate whole and restarts nothing. */
+static void cc_on_background_round_end(VkrNetCc *cc) {
+  if (!cc->background) {
+    return;
+  }
+  if (cc->round_yielding) {
+    if (!cc->yielded) {
+      cc->yield_bandwidth = cc->bandwidth;
+    }
+    cc->yielded = true_v;
+  } else if (cc->yielded) {
+    cc->yielded = false_v;
+    if (cc->mode == VKR_NET_CC_PROBE_BW &&
+        cc->bandwidth < cc->yield_bandwidth / 2u) {
+      cc->filled = false_v;
+      cc->full_bw = 0u;
+      cc->full_bw_count = 0u;
+      cc->mode = VKR_NET_CC_STARTUP;
+      cc->pacing_gain = CC_STARTUP_GAIN;
+      cc->cwnd_gain = CC_STARTUP_CWND_GAIN;
+    }
+  }
+  cc->round_yielding = false_v;
 }
 
 static void cc_update_mode(VkrNetCc *cc, const VkrNetCcSample *sample,
@@ -164,10 +208,31 @@ static void cc_update_mode(VkrNetCc *cc, const VkrNetCcSample *sample,
       } else {
         cc->mode = VKR_NET_CC_STARTUP;
         cc->pacing_gain = CC_STARTUP_GAIN;
-        cc->cwnd_gain = CC_STARTUP_GAIN;
+        cc->cwnd_gain = CC_STARTUP_CWND_GAIN;
       }
     }
   }
+}
+
+/* Background mode's share of the model's rate: 1 while the queueing delay
+   (smoothed RTT above the path's minimum) stays under the floor, falling
+   to 0.1 as it reaches the 25 ms target. */
+static float64_t cc_background_scale(const VkrNetCc *cc,
+                                     const VkrNetCcSample *sample) {
+  /* The path's lifetime minimum, not the model's: that one is a raw sample
+     where the smoothed RTT excludes acknowledgment delay, and PROBE_RTT
+     retakes it every ten seconds even while another flow's queue stands,
+     which hides that queue. */
+  const uint64_t base = sample->path_min_rtt_us;
+  if (!cc->background || base == 0u ||
+      sample->srtt_us <= base + CC_BACKGROUND_FLOOR_US) {
+    return 1.0;
+  }
+  const uint64_t queue = sample->srtt_us - base - CC_BACKGROUND_FLOOR_US;
+  const float64_t scale =
+      1.0 - (float64_t)queue /
+                (float64_t)(CC_BACKGROUND_TARGET_US - CC_BACKGROUND_FLOOR_US);
+  return Clamp(scale, 0.1, 1.0);
 }
 
 static void cc_update_window_and_rate(VkrNetCc *cc,
@@ -206,12 +271,8 @@ static void cc_update_window_and_rate(VkrNetCc *cc,
   if (!cc->filled && rate < cc->pacing_rate) {
     rate = cc->pacing_rate;
   }
-  if (cc->background && cc->min_rtt_us != UINT64_MAX &&
-      sample->srtt_us > cc->min_rtt_us) {
-    const uint64_t queue = sample->srtt_us - cc->min_rtt_us;
-    float64_t scale =
-        1.0 - (float64_t)queue / (float64_t)CC_BACKGROUND_TARGET_US;
-    scale = Clamp(scale, 0.1, 1.0);
+  const float64_t scale = cc_background_scale(cc, sample);
+  if (scale < 1.0) {
     rate = (uint64_t)((float64_t)rate * scale);
   }
   cc->pacing_rate = Max(rate, (uint64_t)cc->mss);
@@ -244,6 +305,11 @@ void vkr_net_cc_on_ack(VkrNetCc *cc, const VkrNetCcSample *sample) {
 
   if (round_start) {
     cc_on_round_end(cc, sample);
+    cc_on_background_round_end(cc);
+  }
+  if (cc->background &&
+      cc_background_scale(cc, sample) <= CC_BACKGROUND_YIELD_SCALE) {
+    cc->round_yielding = true_v;
   }
   cc_update_mode(cc, sample, min_rtt_expired);
   cc_update_window_and_rate(cc, sample);

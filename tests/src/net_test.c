@@ -1128,6 +1128,225 @@ static void test_net_garbage(void) {
 }
 
 // =============================================================================
+// Shared bottleneck
+// =============================================================================
+
+#define NET_TEST_PAIRS 2u
+
+/* One bulk sender and its receiver behind the shared bottleneck. */
+typedef struct NetTestPair {
+  NetTestSide server;
+  NetTestSide client;
+  /* Sends while set. */
+  bool8_t sending;
+  uint64_t delivered;
+} NetTestPair;
+
+typedef struct NetTestBottleneck {
+  ContainerTestAllocator state;
+  VkrAllocator allocator;
+  VkrNetSim *sim;
+  uint64_t now;
+  NetTestAccept accept;
+  NetTestPair pairs[NET_TEST_PAIRS];
+} NetTestBottleneck;
+
+/* The shared link: 4 MB/s with a 160 KB router buffer (one BDP of the
+   40 ms path), as one uplink that two transfers cross. */
+#define NET_TEST_BOTTLENECK_RATE 4000000ull
+
+static const VkrNetChannelConfig net_test_bulk_channel = {
+    .delivery = VKR_NET_RELIABLE_UNORDERED,
+    .max_message_size = 64u * 1024u,
+    .receive_window = 8u * 1024u * 1024u,
+    .send_queue = 64u};
+
+static void net_bottleneck_init(NetTestBottleneck *net,
+                                const bool8_t background[NET_TEST_PAIRS]) {
+  memset(net, 0, sizeof(*net));
+  net->allocator = container_test_allocator(&net->state);
+  net->sim = vkr_net_sim_create(&net->allocator, 29u);
+  assert(net->sim);
+  const uint32_t forward = vkr_net_sim_add_bottleneck(
+      net->sim, &(VkrNetSimLink){.latency_us = 10000u,
+                                 .bandwidth = NET_TEST_BOTTLENECK_RATE,
+                                 .queue_bytes = 160u * 1000u});
+  assert(forward != UINT32_MAX);
+  const VkrNetSimLink access = {.latency_us = 10000u};
+  const VkrNetSimLink back = {.latency_us = 20000u};
+  for (uint32_t i = 0u; i < NET_TEST_PAIRS; ++i) {
+    NetTestPair *pair = &net->pairs[i];
+    char text[32];
+    snprintf(text, sizeof(text), "10.0.1.%u:4000", i + 1u);
+    assert(vkr_net_address_parse(text, 0u, &pair->server.address));
+    snprintf(text, sizeof(text), "10.0.2.%u:5000", i + 1u);
+    assert(vkr_net_address_parse(text, 0u, &pair->client.address));
+    vkr_net_keypair_generate(&pair->server.keys);
+    vkr_net_keypair_generate(&pair->client.keys);
+    VkrNetCoreConfig server_config = {.static_keys = pair->server.keys,
+                                      .accept_incoming = true_v,
+                                      .accept = net_test_accept,
+                                      .accept_context = &net->accept,
+                                      .sent_packet_capacity = 16384u};
+    VkrNetCoreConfig client_config = {.static_keys = pair->client.keys,
+                                      .background = background[i],
+                                      .sent_packet_capacity = 16384u};
+    pair->server.core = vkr_net_core_create(&net->allocator, &server_config);
+    pair->client.core = vkr_net_core_create(&net->allocator, &client_config);
+    assert(pair->server.core && pair->client.core);
+    pair->server.endpoint =
+        vkr_net_sim_add(net->sim, pair->server.core, &pair->server.address);
+    pair->client.endpoint =
+        vkr_net_sim_add(net->sim, pair->client.core, &pair->client.address);
+    vkr_net_sim_set_link(net->sim, pair->client.endpoint, pair->server.endpoint,
+                         &access);
+    vkr_net_sim_route(net->sim, pair->client.endpoint, pair->server.endpoint,
+                      forward);
+    vkr_net_sim_set_link(net->sim, pair->server.endpoint, pair->client.endpoint,
+                         &back);
+  }
+}
+
+static void net_bottleneck_destroy(NetTestBottleneck *net) {
+  for (uint32_t i = 0u; i < NET_TEST_PAIRS; ++i) {
+    vkr_net_core_destroy(net->pairs[i].client.core);
+    vkr_net_core_destroy(net->pairs[i].server.core);
+  }
+  vkr_net_sim_destroy(net->sim);
+  assert(net->state.live_bytes == 0u);
+}
+
+static void net_bottleneck_poll(NetTestBottleneck *net) {
+  for (uint32_t i = 0u; i < NET_TEST_PAIRS; ++i) {
+    NetTestPair *pair = &net->pairs[i];
+    VkrNetEvent event;
+    while (vkr_net_core_poll(pair->server.core, &event)) {
+      if (event.type == VKR_NET_EVENT_CONNECTED) {
+        pair->server.connection = event.connection;
+        pair->server.connected = true_v;
+        assert(vkr_net_core_open_channel(pair->server.core, event.connection,
+                                         1u, &net_test_bulk_channel));
+      } else if (event.type == VKR_NET_EVENT_MESSAGE) {
+        pair->delivered += event.size;
+      }
+    }
+    while (vkr_net_core_poll(pair->client.core, &event)) {
+      if (event.type == VKR_NET_EVENT_CONNECTED) {
+        pair->client.connected = true_v;
+        assert(vkr_net_core_open_channel(pair->client.core,
+                                         pair->client.connection, 1u,
+                                         &net_test_bulk_channel));
+      }
+      assert(event.type != VKR_NET_EVENT_CLOSED);
+    }
+  }
+}
+
+/* Runs `duration` of virtual time with every sending pair's queue full. */
+static void net_bottleneck_run(NetTestBottleneck *net, uint64_t duration) {
+  static uint8_t payload[64u * 1024u];
+  const uint64_t limit = net->now + duration;
+  while (net->now < limit) {
+    for (uint32_t i = 0u; i < NET_TEST_PAIRS; ++i) {
+      NetTestPair *pair = &net->pairs[i];
+      if (!pair->sending || !pair->client.connected) {
+        continue;
+      }
+      while (vkr_net_core_send(pair->client.core, pair->client.connection, 1u,
+                               payload, sizeof(payload), NULL,
+                               net->now) == VKR_NET_SEND_OK) {
+      }
+      vkr_net_core_flush(pair->client.core);
+    }
+    const uint64_t next = vkr_net_sim_next_time(net->sim);
+    net->now = Min(Max(next, net->now + 1u), limit);
+    vkr_net_sim_step(net->sim, net->now);
+    net_bottleneck_poll(net);
+  }
+}
+
+static void net_bottleneck_connect(NetTestBottleneck *net) {
+  for (uint32_t i = 0u; i < NET_TEST_PAIRS; ++i) {
+    NetTestPair *pair = &net->pairs[i];
+    assert(vkr_net_core_connect(pair->client.core, &pair->server.address,
+                                pair->server.keys.public_key, NULL, 0u,
+                                net->now, &pair->client.connection));
+  }
+  net_bottleneck_run(net, NET_TEST_SECOND);
+  for (uint32_t i = 0u; i < NET_TEST_PAIRS; ++i) {
+    assert(net->pairs[i].client.connected && net->pairs[i].server.connected);
+  }
+}
+
+/* Bytes each pair delivers over `duration`, as a fraction of the link. */
+static void net_bottleneck_measure(NetTestBottleneck *net, uint64_t duration,
+                                   float64_t out_share[NET_TEST_PAIRS]) {
+  uint64_t before[NET_TEST_PAIRS];
+  for (uint32_t i = 0u; i < NET_TEST_PAIRS; ++i) {
+    before[i] = net->pairs[i].delivered;
+  }
+  net_bottleneck_run(net, duration);
+  const float64_t capacity = (float64_t)NET_TEST_BOTTLENECK_RATE *
+                             (float64_t)duration / NET_TEST_SECOND;
+  for (uint32_t i = 0u; i < NET_TEST_PAIRS; ++i) {
+    out_share[i] = (float64_t)(net->pairs[i].delivered - before[i]) / capacity;
+  }
+}
+
+/* Fails when two bulk connections through one bottleneck do not converge
+   to equal shares (each within 35-65% of what both delivered over the last
+   half of 16 s) or leave more than a fifth of the link unused. */
+static void test_net_shared_bottleneck_fairness(void) {
+  printf("  Running test_net_shared_bottleneck_fairness...\n");
+  NetTestBottleneck net;
+  const bool8_t background[NET_TEST_PAIRS] = {false_v, false_v};
+  net_bottleneck_init(&net, background);
+  net_bottleneck_connect(&net);
+  net.pairs[0].sending = true_v;
+  net.pairs[1].sending = true_v;
+  float64_t share[NET_TEST_PAIRS];
+  net_bottleneck_measure(&net, 8u * NET_TEST_SECOND, share);
+  net_bottleneck_measure(&net, 8u * NET_TEST_SECOND, share);
+  const float64_t total = share[0] + share[1];
+  printf("    shares of the link %.2f and %.2f\n", share[0], share[1]);
+  assert(total >= 0.8);
+  assert(share[0] / total >= 0.35 && share[0] / total <= 0.65);
+  net_bottleneck_destroy(&net);
+  printf("  test_net_shared_bottleneck_fairness PASSED\n");
+}
+
+/* Fails when a background connection does not yield to a normal one on a
+   shared bottleneck (more than 25% of what both delivered over the last
+   half of 16 s), when the normal one does not take the link it leaves (at
+   least 65%), or when the background connection, alone again, does not
+   recover at least 70% of the link within 8 s. */
+static void test_net_shared_bottleneck_background(void) {
+  printf("  Running test_net_shared_bottleneck_background...\n");
+  NetTestBottleneck net;
+  const bool8_t background[NET_TEST_PAIRS] = {false_v, true_v};
+  net_bottleneck_init(&net, background);
+  net_bottleneck_connect(&net);
+  net.pairs[0].sending = true_v;
+  net.pairs[1].sending = true_v;
+  float64_t share[NET_TEST_PAIRS];
+  net_bottleneck_measure(&net, 8u * NET_TEST_SECOND, share);
+  net_bottleneck_measure(&net, 8u * NET_TEST_SECOND, share);
+  const float64_t total = share[0] + share[1];
+  printf("    together: normal %.2f, background %.2f of the link\n", share[0],
+         share[1]);
+  assert(share[1] / total < 0.25);
+  assert(share[0] >= 0.65);
+
+  net.pairs[0].sending = false_v;
+  net_bottleneck_measure(&net, 4u * NET_TEST_SECOND, share);
+  net_bottleneck_measure(&net, 4u * NET_TEST_SECOND, share);
+  printf("    alone: background %.2f of the link\n", share[1]);
+  assert(share[1] >= 0.7);
+  net_bottleneck_destroy(&net);
+  printf("  test_net_shared_bottleneck_background PASSED\n");
+}
+
+// =============================================================================
 // Real sockets
 // =============================================================================
 
@@ -1697,6 +1916,8 @@ bool32_t run_net_tests(void) {
   test_net_flow_control();
   test_net_mtu_discovery();
   test_net_bulk_throughput();
+  test_net_shared_bottleneck_fairness();
+  test_net_shared_bottleneck_background();
   test_net_idle();
   test_net_close();
   test_net_migration();

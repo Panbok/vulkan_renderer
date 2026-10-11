@@ -16,8 +16,11 @@
  * more than 2% caps the bytes in flight at 85% of what was in flight.
  *
  * Background mode scales the pacing rate down as queueing delay (smoothed
- * RTT above the minimum) approaches 25 ms, so a bulk transfer yields to
- * interactive traffic on the same path. */
+ * RTT above the minimum, less a 5 ms floor for delayed acknowledgments)
+ * approaches 25 ms, so a bulk transfer yields to other traffic on the same
+ * path. When the other traffic stops, a round without yielding restarts
+ * STARTUP if yielding cost the flow over half its bandwidth estimate, so
+ * it takes the link back within a few rounds. */
 
 typedef enum VkrNetCcMode {
   VKR_NET_CC_STARTUP = 0,
@@ -56,6 +59,13 @@ typedef struct VkrNetCc {
   uint64_t probe_rtt_done_stamp;
   bool8_t probe_rtt_round_done;
 
+  /* Background mode: a sample of this round scaled the rate to half or
+     less; the last finished round did; the bandwidth estimate when that
+     run of yielding rounds began. */
+  bool8_t round_yielding;
+  bool8_t yielded;
+  uint64_t yield_bandwidth;
+
   uint64_t cwnd;
   uint64_t prior_cwnd;
   uint64_t inflight_hi;
@@ -76,6 +86,10 @@ typedef struct VkrNetCcSample {
   /* RTT sample, zero when none. */
   uint64_t rtt_us;
   uint64_t srtt_us;
+  /* The path's lifetime minimum RTT (RFC 9002), zero before a sample. The
+     smoothed RTT less this is the queueing delay background mode yields
+     to. */
+  uint64_t path_min_rtt_us;
   uint64_t bytes_in_flight;
 } VkrNetCcSample;
 

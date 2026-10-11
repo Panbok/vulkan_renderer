@@ -2028,16 +2028,36 @@ static uint32_t net_build_packet(VkrNetCore *core, NetConnection *conn,
         conn->bytes_in_flight + conn->mtu <= conn->cc.cwnd ||
         conn->probes_pending > 0u;
 
-    /* Pacing: refill the token bucket at the pacing rate. */
-    const uint64_t burst = (uint64_t)conn->mtu * NET_PACING_BURST_PACKETS;
-    if (now > conn->pacing_stamp) {
+    /* Pacing: refill the token bucket at the pacing rate, up to a burst.
+       A send may overdraw it, and the debt holds the next send back by
+       the packet's time at the rate, so packets leave at the rate on
+       average. Forgiving the debt while the release timer still counted
+       it, and asking for a whole datagram of tokens, held a flow whose
+       pacing gap exceeds its RTT to one packet per RTT: its delivery rate
+       then confirmed the low estimate and PROBE_BW's gain could not raise
+       it. The stamp advances only by the time the refill paid for, so
+       frequent calls at a low rate do not drop the fractions. */
+    const int64_t burst = (int64_t)conn->mtu * NET_PACING_BURST_PACKETS;
+    if (now > conn->pacing_stamp && conn->cc.pacing_rate > 0u) {
       const uint64_t elapsed = now - conn->pacing_stamp;
-      const uint64_t refill = conn->cc.pacing_rate * elapsed / 1000000u;
-      conn->pacing_tokens =
-          (int64_t)Min((uint64_t)Max(conn->pacing_tokens, 0) + refill, burst);
-      conn->pacing_stamp = now;
+      const uint64_t refill = elapsed >= 1000000u
+                                  ? (uint64_t)burst
+                                  : conn->cc.pacing_rate * elapsed / 1000000u;
+      if (conn->pacing_tokens + (int64_t)Min(refill, (uint64_t)burst) >=
+          burst) {
+        conn->pacing_tokens = burst;
+        conn->pacing_stamp = now;
+      } else if (refill > 0u) {
+        conn->pacing_tokens += (int64_t)refill;
+        conn->pacing_stamp += refill * 1000000u / conn->cc.pacing_rate;
+      }
     }
-    const bool8_t paced = conn->pacing_tokens >= (int64_t)conn->mtu ||
+    /* An empty path owes nothing: a send that restarts it does not delay
+       the next by the debt of the last. */
+    if (conn->bytes_in_flight == 0u && conn->pacing_tokens < 0) {
+      conn->pacing_tokens = 0;
+    }
+    const bool8_t paced = conn->pacing_tokens > 0 ||
                           conn->bytes_in_flight == 0u ||
                           conn->probes_pending > 0u;
     const bool8_t data_waiting = net_has_data(conn, now);
@@ -2046,10 +2066,11 @@ static uint32_t net_build_packet(VkrNetCore *core, NetConnection *conn,
     if (!want_ack && !net_has_control(conn) &&
         !(data_waiting && may_send_data)) {
       if (data_waiting && cwnd_open && !paced && conn->cc.pacing_rate > 0u) {
-        const uint64_t missing =
-            (uint64_t)((int64_t)conn->mtu - conn->pacing_tokens);
+        const uint64_t missing = (uint64_t)(1 - conn->pacing_tokens);
         conn->pacing_release =
-            now + Max(missing * 1000000u / conn->cc.pacing_rate, 1u);
+            now + Max((missing * 1000000u + conn->cc.pacing_rate - 1u) /
+                          conn->cc.pacing_rate,
+                      1u);
       }
       if (!data_waiting && conn->bytes_in_flight < conn->cc.cwnd) {
         conn->app_limited_until = conn->delivered + conn->bytes_in_flight;
@@ -2149,7 +2170,9 @@ static uint32_t net_build_packet(VkrNetCore *core, NetConnection *conn,
     conn->ack_eliciting_in_flight += 1u;
     conn->last_ack_eliciting_sent = now;
     if (!probe) {
-      conn->pacing_tokens -= (int64_t)packet_size;
+      /* Loss probes bypass pacing; the debt stays within one burst. */
+      conn->pacing_tokens = Max(conn->pacing_tokens - (int64_t)packet_size,
+                                -(int64_t)conn->mtu * NET_PACING_BURST_PACKETS);
     }
   }
   if (probe) {
@@ -2614,6 +2637,7 @@ static bool8_t net_process_ack(VkrNetCore *core, NetConnection *conn,
                       ? conn->latest_rtt
                       : 0u,
         .srtt_us = conn->srtt,
+        .path_min_rtt_us = conn->has_rtt ? conn->min_rtt : 0u,
         .bytes_in_flight = conn->bytes_in_flight,
     };
     if (interval < conn->min_rtt && conn->has_rtt) {
