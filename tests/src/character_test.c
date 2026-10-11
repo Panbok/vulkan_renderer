@@ -408,6 +408,87 @@ static void test_character_explicit_spawn(void) {
   vkr_dmemory_allocator_destroy(&allocator);
 }
 
+/* A kinematic box of `extent` at `position`, as a mover's body. */
+static VkrPhysicsBody character_test_kinematic(VkrPhysicsWorld *world,
+                                               uint64_t id, Vec3 position,
+                                               Vec3 extent) {
+  const VkrPhysicsColliderDesc collider = {
+      .entity_id = id + 1000,
+      .shape = VKR_PHYSICS_BOX,
+      .rotation = {0, 0, 0, 1},
+      .scale = {1, 1, 1},
+      .half_extent = {extent.x, extent.y, extent.z},
+      .enabled = true_v,
+  };
+  const VkrPhysicsBodyDesc desc = {
+      .entity_id = id,
+      .motion = VKR_PHYSICS_KINEMATIC,
+      .position = {position.x, position.y, position.z},
+      .rotation = {0, 0, 0, 1},
+      .mass = 1,
+      .friction = 0.5f,
+      .enabled = true_v,
+      .collision_layer = 1,
+      .collision_mask = UINT16_MAX,
+      .colliders = &collider,
+      .collider_count = 1,
+  };
+  VkrPhysicsBody body = VKR_PHYSICS_BODY_INVALID;
+  assert(vkr_physics_body_create(world, &desc, &body));
+  return body;
+}
+
+/* A character running back along a deck that moves forward at 8 m/s stops
+   at a gate riding on the deck behind it, as on still ground: the gate
+   moving with the deck must not shove it forward. */
+static void test_character_rides_against_comoving_body(void) {
+  VkrPhysicsWorld *world = vkr_physics_world_create(4);
+  assert(world != NULL);
+  const float32_t dt = 1.0f / 60.0f;
+  const float32_t speed = 8.0f;
+  const VkrPhysicsBody deck = character_test_kinematic(
+      world, 100, vec3_new(0, -0.25f, 0), vec3_new(20, 0.25f, 2));
+  const VkrPhysicsBody gate = character_test_kinematic(
+      world, 200, vec3_new(-1.2f, 1.0f, 0), vec3_new(0.05f, 1.0f, 1.5f));
+  VkrPhysicsCharacterDesc desc = vkr_physics_character_default();
+  desc.entity_id = 10;
+  desc.foot_position[1] = 0.02f;
+  VkrPhysicsCharacter character;
+  assert(vkr_physics_character_create(world, &desc, &character));
+  VkrPhysicsCharacterState state;
+  assert(vkr_physics_character_get_state(world, character, &state));
+  float32_t deck_x = 0.0f;
+  float32_t most_forward = -INFINITY;
+  for (uint32_t i = 0; i < 150; ++i) {
+    /* The deck and the gate set off together; the character stands for
+       half a second, then runs back toward the gate at 4 m/s. */
+    deck_x += speed * dt;
+    const float32_t deck_at[3] = {deck_x, -0.25f, 0};
+    const float32_t gate_at[3] = {deck_x - 1.2f, 1.0f, 0};
+    const float32_t still[4] = {0, 0, 0, 1};
+    assert(vkr_physics_body_move_kinematic(world, deck, deck_at, still, dt));
+    assert(vkr_physics_body_move_kinematic(world, gate, gate_at, still, dt));
+    const VkrPhysicsCharacterInput input = {
+        .velocity = {i < 30 ? 0.0f : -4.0f, 0, 0},
+        .gravity = {0, -9.81f, 0},
+        .dt = dt,
+    };
+    assert(vkr_physics_character_step(world, character, &input, &state));
+    assert(vkr_physics_step(world, dt));
+    if (i >= 30) {
+      most_forward = Max(most_forward, state.foot_position[0] - deck_x);
+    }
+  }
+  const float32_t on_deck = state.foot_position[0] - deck_x;
+  /* At rest against the gate's face (-1.15 m) at the capsule's radius, as
+     against a wall on still ground; a contact solved in the world's frame
+     instead leaves it held off the gate. */
+  assert(state.ground == VKR_PHYSICS_CHARACTER_ON_GROUND);
+  assert(fabsf(on_deck - (-1.15f + desc.radius)) < 0.04f);
+  assert(most_forward < 0.3f);
+  vkr_physics_world_destroy(world);
+}
+
 bool32_t run_character_tests(void) {
   printf("Running character tests...\n");
   test_character_identity_capacity_and_free_motion();
@@ -417,6 +498,7 @@ bool32_t run_character_tests(void) {
   test_character_sensor();
   test_character_scene_reset_and_evaluated_pose();
   test_character_explicit_spawn();
+  test_character_rides_against_comoving_body();
   printf("Character tests PASSED\n");
   return true_v;
 }

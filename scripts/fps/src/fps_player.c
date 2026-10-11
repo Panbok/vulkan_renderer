@@ -86,11 +86,11 @@ static bool8_t player_prepare_animation(VkrCtx *ctx, FpsPlayer *player,
   return true_v;
 }
 
+/* `motion` is the player's velocity over what carries it. */
 static FpsPlayerAnimationInput
-player_animation_input(const FpsPlayerState *state) {
+player_animation_input(const FpsPlayerState *state, Vec3 motion) {
   return (FpsPlayerAnimationInput){
-      .speed = sqrtf(state->velocity.x * state->velocity.x +
-                     state->velocity.z * state->velocity.z),
+      .speed = sqrtf(motion.x * motion.x + motion.z * motion.z),
       .shot_sequence = state->weapon.shot_sequence,
       .grounded = state->grounded,
       .crouched = state->crouched,
@@ -375,19 +375,29 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
   state->crouched = motor.crouched;
   player->camera.config.eye_height = state->crouched ? .9f : 1.6f;
   player->steps++;
+  /* Animation follows the motion over what carries the player: a rider
+     standing on a moving car stands, and a run back along it plays at the
+     run's pace, not the car's. */
+  const Vec2 carry =
+      motor.ground == VKR_GROUND_ON_GROUND
+          ? vec2_new(motor.ground_velocity.x, motor.ground_velocity.z)
+          : player->carried;
+  const Vec3 motion = vec3_new(state->velocity.x - carry.x, state->velocity.y,
+                               state->velocity.z - carry.y);
   if (player->locomotion_active) {
-    // Solved velocity in the body's frame: forward along the facing, right
-    // along (-sin, cos) as the camera rig defines it.
+    // Motion in the body's frame: forward along the facing, right along
+    // (-sin, cos) as the camera rig defines it.
     const float32_t c = cosf(player->facing);
     const float32_t s = sinf(player->facing);
-    player->locomotion_input = (FpsLocomotionInput){
-        .forward = state->velocity.x * c + state->velocity.z * s,
-        .right = -state->velocity.x * s + state->velocity.z * c,
-        .up = state->velocity.y,
-        .grounded = state->grounded,
-        .crouched = state->crouched};
+    player->locomotion_input =
+        (FpsLocomotionInput){.forward = motion.x * c + motion.z * s,
+                             .right = -motion.x * s + motion.z * c,
+                             .up = state->velocity.y,
+                             .grounded = state->grounded,
+                             .crouched = state->crouched};
   } else if (vkr_entity_valid(player->animation.entity)) {
-    const FpsPlayerAnimationInput animation = player_animation_input(state);
+    const FpsPlayerAnimationInput animation =
+        player_animation_input(state, motion);
     if (!fps_player_animation_update(ctx, &player->animation, &animation)) {
       return player_fail(player, "Player action animation failed");
     }
@@ -463,7 +473,8 @@ void fps_player_reset(VkrCtx *ctx, FpsPlayer *player) {
       player->commands.faulted = true_v;
     }
   } else if (vkr_entity_valid(player->animation.entity)) {
-    const FpsPlayerAnimationInput animation = player_animation_input(state);
+    const FpsPlayerAnimationInput animation =
+        player_animation_input(state, vec3_zero());
     if (!fps_player_animation_reset(ctx, &player->animation, &animation)) {
       player_fail(player, "Player animation reset failed");
       player->commands.faulted = true_v;

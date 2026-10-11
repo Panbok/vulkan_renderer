@@ -622,21 +622,26 @@ vkr_physics_character_get_state(VkrPhysicsWorld *world,
   return true_v;
 }
 
-/* While a character stands on a moving body, its own move sees that body
-   still; the step then carries it with the body (ride_position). */
+/* While a character stands on a moving body, its own move runs in that
+   body's frame: every body it touches moves at its velocity relative to the
+   ground body, so the ground stands still, a gate riding along with it
+   stands still too and a wall it passes comes at it. The step then carries
+   the character with the body (ride_position). */
 class s_RideListener final : public JPH::CharacterContactListener {
 public:
-  explicit s_RideListener(JPH::BodyID ground) : ground(ground) {}
+  s_RideListener(JPH::RVec3 center, JPH::Vec3 linear, JPH::Vec3 angular)
+      : center(center), linear(linear), angular(angular) {}
   void OnAdjustBodyVelocity(const JPH::CharacterVirtual *character,
-                            const JPH::Body &body, JPH::Vec3 &linear,
-                            JPH::Vec3 &angular) override {
+                            const JPH::Body &body, JPH::Vec3 &body_linear,
+                            JPH::Vec3 &body_angular) override {
     (void)character;
-    if (body.GetID() == ground) {
-      linear = JPH::Vec3::sZero();
-      angular = JPH::Vec3::sZero();
-    }
+    const JPH::Vec3 arm = JPH::Vec3(body.GetCenterOfMassPosition() - center);
+    body_linear = body_linear - linear - angular.Cross(arm);
+    body_angular = body_angular - angular;
   }
-  const JPH::BodyID ground;
+  const JPH::RVec3 center;
+  const JPH::Vec3 linear;
+  const JPH::Vec3 angular;
 };
 
 /* The body a character on the ground stands on when it moves, or an
@@ -721,7 +726,18 @@ vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
        motion through the step carries it: up, down, along and around,
        where it stands when the step ends. */
     const JPH::BodyID ground = ride_ground(world, *slot->character);
-    s_RideListener ride(ground);
+    JPH::RVec3 ground_center = JPH::RVec3::sZero();
+    JPH::Vec3 ground_linear = JPH::Vec3::sZero();
+    JPH::Vec3 ground_angular = JPH::Vec3::sZero();
+    if (!ground.IsInvalid()) {
+      JPH::BodyLockRead lock(world->system.GetBodyLockInterface(), ground);
+      if (lock.SucceededAndIsInBroadPhase()) {
+        ground_center = lock.GetBody().GetCenterOfMassPosition();
+        ground_linear = lock.GetBody().GetLinearVelocity();
+        ground_angular = lock.GetBody().GetAngularVelocity();
+      }
+    }
+    s_RideListener ride(ground_center, ground_linear, ground_angular);
     if (!ground.IsInvalid()) {
       slot->character->SetListener(&ride);
     }
