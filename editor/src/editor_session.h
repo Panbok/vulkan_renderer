@@ -25,6 +25,9 @@
 #define VKR_EDITOR_SESSION_PORT 7330u
 #define VKR_EDITOR_SESSION_PEERS_MAX 32u
 #define VKR_EDITOR_SESSION_NAME_MAX 48u
+/* Identity keys a host allows, and the editors it refused that it lists. */
+#define VKR_EDITOR_SESSION_ALLOWED_MAX 32u
+#define VKR_EDITOR_SESSION_REFUSED_MAX 4u
 
 typedef enum VkrEditorSessionMode {
   VKR_EDITOR_SESSION_NONE = 0,
@@ -51,7 +54,20 @@ typedef struct VkrEditorSessionPeer {
   uint16_t drag_container;
   VkrEntityRef drag;
   Mat4 drag_world;
+  /* The Scene pointer as a world ray: its origin, unit direction and the
+     distance to the terrain or brush it meets, zero for none. */
+  bool8_t has_cursor;
+  Vec3 cursor_origin;
+  Vec3 cursor_direction;
+  float32_t cursor_distance;
 } VkrEditorSessionPeer;
+
+/* An editor the host refused: the name it gave and its identity key in
+   hexadecimal. */
+typedef struct VkrEditorSessionRefused {
+  char name[VKR_EDITOR_SESSION_NAME_MAX];
+  char key[65];
+} VkrEditorSessionRefused;
 
 typedef struct VkrEditorSessionStatus {
   uint8_t mode; /**< VkrEditorSessionMode. */
@@ -72,6 +88,15 @@ typedef struct VkrEditorSessionStatus {
   char depot_branch[64];
   char depot_head[65];
   bool8_t depot_busy;
+  /* This editor's identity key (the depot identity), which a restricted
+     host must allow; empty when it could not be read or made. */
+  char identity[65];
+  /* Access this editor gives when it hosts. */
+  bool8_t restricted;
+  char allowed[VKR_EDITOR_SESSION_ALLOWED_MAX][65];
+  uint32_t allowed_count;
+  VkrEditorSessionRefused refused[VKR_EDITOR_SESSION_REFUSED_MAX];
+  uint32_t refused_count;
 } VkrEditorSessionStatus;
 
 typedef struct VkrEditorSession VkrEditorSession;
@@ -106,6 +131,31 @@ bool8_t vkr_editor_session_publish_files(VkrEditorSession *session,
 /* The tool this editor's presence names; call each build before the
    update. */
 void vkr_editor_session_set_tool(VkrEditorSession *session, const char *tool);
+
+/* The history the next or current hosted session keeps for joining
+   editors, in bytes; zero, or leaving the session, restores the default of
+   64 MiB. Past it, a host on a depot makes a new base for joiners and a
+   host without one refuses them. */
+void vkr_editor_session_set_history(VkrEditorSession *session, uint64_t bytes);
+
+/* Who may join this editor's sessions. Restricted, only editors whose
+   identity keys the host allowed join; otherwise anyone with the session's
+   key joins. Restricting while hosting allows every editor in the session
+   now. The list lives as long as the editor, across sessions. */
+void vkr_editor_session_restrict(VkrEditorSession *session, bool8_t restricted);
+
+/* Allows or disallows an identity key of 64 hexadecimal digits;
+   disallowing closes the connection of an editor in the session with it.
+   False for a malformed key or a full list. */
+bool8_t vkr_editor_session_allow(VkrEditorSession *session, const char *key_hex,
+                                 bool8_t allowed);
+
+/* The Scene pointer's world ray this editor's presence carries, as
+   VkrEditorSessionPeer's cursor; `valid` false while the pointer is
+   elsewhere. Call each build before the update. */
+void vkr_editor_session_set_cursor(VkrEditorSession *session, bool8_t valid,
+                                   Vec3 origin, Vec3 direction,
+                                   float32_t distance);
 
 /* Runs the session for one UI build; call after everything else that may
    edit the scene. */

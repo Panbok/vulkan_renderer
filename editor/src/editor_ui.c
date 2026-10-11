@@ -1,6 +1,7 @@
 #include "editor_agent.h"
 #include "editor_internal.h"
 #include "editor_io.h"
+#include "editor_level.h"
 #include "editor_material.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
@@ -616,6 +617,35 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                 scene_tool != VKR_EDITOR_SCENE_TOOL_NONE
                                     ? vkr_editor_scene_tool_name(scene_tool)
                                     : vkr_editor_cmd_tools[gizmo]);
+    /* The pointer's ray and the nearest terrain or brush it meets, only
+       while a session shows it to other editors. */
+    Vec3 origin = {0};
+    Vec3 direction = {0};
+    const bool8_t cursor =
+        (vkr_editor_session_hosting(editor->session) ||
+         vkr_editor_session_forwards(editor->session)) &&
+        editor->scene_pointer_free && frame->mapping_valid &&
+        vkr_editor_viewport_ray(frame,
+                                (Vec2){(float32_t)frame->ui->mouse_x,
+                                       (float32_t)frame->ui->mouse_y},
+                                &origin, &direction);
+    float32_t distance = 0.0f;
+    if (cursor) {
+      VkrEntityId terrain = VKR_ENTITY_ID_INVALID;
+      Vec3 point = {0};
+      if (vkr_editor_terrain_ray(frame, origin, direction, &terrain, &point)) {
+        distance = vec3_length(vec3_sub(point, origin));
+      }
+      VkrEntityId face = VKR_ENTITY_ID_INVALID;
+      float32_t face_distance = 0.0f;
+      if (vkr_editor_brush_pick(frame, origin, direction,
+                                distance > 0.0f ? distance : 10000.0f, &face,
+                                &face_distance)) {
+        distance = face_distance;
+      }
+    }
+    vkr_editor_session_set_cursor(editor->session, cursor, origin, direction,
+                                  distance);
   }
   vkr_editor_session_update(editor->session, frame);
   return dock_capture;

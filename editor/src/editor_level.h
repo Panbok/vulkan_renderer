@@ -168,10 +168,10 @@ bool8_t vkr_editor_brush_ray(const VkrScene *scene, VkrEntityId brush,
                              VkrEntityId *out_face);
 
 /* The nearest brush face a ray enters, among the brushes of every loaded
-   scene. */
+   scene, and its distance along the ray. */
 bool8_t vkr_editor_brush_pick(const VkrSampleUiFrame *frame, Vec3 origin,
                               Vec3 direction, float32_t max_distance,
-                              VkrEntityId *out_face);
+                              VkrEntityId *out_face, float32_t *out_distance);
 
 /* The world-space planes of `brush`'s faces, at most `capacity`, in the
    order vkr_scene_brush_faces lists them; zero when it has more. */

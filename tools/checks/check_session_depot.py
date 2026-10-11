@@ -3,14 +3,17 @@
 
 Serves a depot, commits the Bistro scene and its edit overlay to `main`,
 clones it twice, and opens a headless editor on each working copy. The host
-editor creates an object and leaves it unsaved, then hosts: it saves and
-commits a session base on a branch of its own. The guest editor joins from
-`main`: it checks the base out, reloads its scene and is welcomed. The host
-then writes a file into its working copy and publishes it; the guest
-fetches it. The check passes when the guest holds the host's unsaved object
-after joining, the published file arrives in the guest's working copy with
-the same bytes, and both editors end at the same depot commit and scene
-digest.
+editor creates an object and leaves it unsaved, then hosts with a 4 KiB
+history: it saves and commits a session base on a branch of its own. It
+then creates objects until its history passes the budget, which makes a
+new base for joiners, and one more after it. The guest editor joins from
+`main`: it checks the newest base out, reloads its scene, is welcomed and
+replays only the edits after that base. The host then writes a file into
+its working copy and publishes it; the guest fetches it. The check passes
+when the guest holds the host's unsaved object and the objects from before
+and after the newest base, the published file arrives in the guest's
+working copy with the same bytes, and both editors end at the same depot
+commit and scene digest.
 
     python tools/checks/check_session_depot.py \
         --editor build_debug/editor/vkr_editor.exe \
@@ -46,7 +49,7 @@ def run(command: list, env: dict, log) -> str:
 def launch(editor: str, work: pathlib.Path, scene: pathlib.Path,
            socket: str, log: pathlib.Path, env_extra: dict):
     work.mkdir(parents=True, exist_ok=True)
-    env = editor_env(work)
+    env = editor_env(work, autoclose=1800)
     env.update(env_extra)
     out = open(log, "w", encoding="utf-8", errors="replace")
     process = subprocess.Popen(
@@ -141,7 +144,8 @@ def main() -> int:
         time.sleep(2.0)
         answer = mason.call("session.host",
                             {"name": "alpha",
-                             "bind": f"127.0.0.1:{args.port}"})
+                             "bind": f"127.0.0.1:{args.port}",
+                             "history": 4096})
         session_key = answer.get("result", {}).get("key", "")
         hosted = poll(mason, lambda s: (s.get("depot") or {}).get("head", "")
                       .strip("0") != "", deadline, host)
@@ -149,6 +153,27 @@ def main() -> int:
         if not base.strip("0"):
             failures.append(f"the host made no depot base: {hosted}")
             raise RuntimeError("no base")
+
+        # Past the 4 KiB history the host makes a newer base for joiners.
+        bulk = 0
+        while bulk < 200 and time.time() < deadline:
+            mason.call("entity.create", {"name": f"Bulk {bulk}",
+                                         "position": [bulk * 0.5, 1, -4],
+                                         "review": False})
+            bulk += 1
+            if re.search(r"New editors join from base",
+                         (work / "host.log").read_text(
+                             encoding="utf-8", errors="replace")):
+                break
+        if not wait_for(work / "host.log", r"New editors join from base "
+                        r"[0-9a-f]+ at edit (\d+)", host, deadline):
+            failures.append(f"the host made no newer base after {bulk} "
+                            "objects")
+            raise RuntimeError("no newer base")
+        mason.call("entity.create", {"name": "AfterBase",
+                                     "position": [0, 1, -8],
+                                     "review": False})
+        time.sleep(2.0)
 
         guest, guest_out = launch(editor, work / "guest-editor",
                                   guest_copy / "scenes" / "bistro.scene.json",
@@ -169,10 +194,17 @@ def main() -> int:
         if not joined.get("joined"):
             failures.append(f"the guest did not join: {joined.get('error')}")
             raise RuntimeError("no join")
-        found = painter.call("entity.get", {"entity": "PreHost"})
-        if not found.get("ok"):
-            failures.append("the guest lacks the host's unsaved object: "
-                            f"{found.get('error')}")
+        for name in ("PreHost", "Bulk 0", "AfterBase"):
+            found = painter.call("entity.get", {"entity": name})
+            if not found.get("ok"):
+                failures.append(f"the guest lacks the host's {name}: "
+                                f"{found.get('error')}")
+        replay = re.search(r"replaying (\d+) edits",
+                           (work / "guest.log").read_text(
+                               encoding="utf-8", errors="replace"))
+        if not replay or not 0 < int(replay.group(1)) < bulk:
+            failures.append("the guest did not replay from the newer base: "
+                            f"{replay.group(0) if replay else None}")
 
         notes = host_copy / "scenes" / "notes.txt"
         notes.write_text("published through the session depot\n",
@@ -196,7 +228,8 @@ def main() -> int:
                             f"{(guest_state.get('depot') or {}).get('head')}")
         if guest_state.get("digest") != host_state.get("digest"):
             failures.append("the scene digests differ")
-        summary = f"base {base[:12]} head {head[:12]}"
+        summary = (f"base {base[:12]} head {head[:12]}, newer base after "
+                   f"{bulk} objects, guest {replay.group(0) if replay else ''}")
     except RuntimeError as error:
         failures.append(str(error))
         summary = ""

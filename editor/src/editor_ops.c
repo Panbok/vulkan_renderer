@@ -13273,6 +13273,28 @@ static VkrBakeryJson *ops_session_status(OpsContext *ctx) {
   ops_set(ctx, result, "address", vkr_bakery_json_cstr(arena, status.address));
   ops_set(ctx, result, "key", vkr_bakery_json_cstr(arena, status.key));
   ops_set(ctx, result, "error", vkr_bakery_json_cstr(arena, status.error));
+  ops_set(ctx, result, "identity",
+          vkr_bakery_json_cstr(arena, status.identity));
+  VkrBakeryJson *access = vkr_bakery_json_object(arena);
+  ops_set(ctx, access, "restricted",
+          vkr_bakery_json_bool(arena, status.restricted));
+  VkrBakeryJson *allowed = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < status.allowed_count; ++i) {
+    vkr_bakery_json_append(allowed,
+                           vkr_bakery_json_cstr(arena, status.allowed[i]));
+  }
+  ops_set(ctx, access, "allowed", allowed);
+  VkrBakeryJson *refused = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < status.refused_count; ++i) {
+    VkrBakeryJson *row = vkr_bakery_json_object(arena);
+    ops_set(ctx, row, "name",
+            vkr_bakery_json_cstr(arena, status.refused[i].name));
+    ops_set(ctx, row, "key",
+            vkr_bakery_json_cstr(arena, status.refused[i].key));
+    vkr_bakery_json_append(refused, row);
+  }
+  ops_set(ctx, access, "refused", refused);
+  ops_set(ctx, result, "access", access);
   if (status.depot_branch[0]) {
     VkrBakeryJson *depot = vkr_bakery_json_object(arena);
     ops_set(ctx, depot, "branch",
@@ -13298,6 +13320,15 @@ static VkrBakeryJson *ops_session_status(OpsContext *ctx) {
     ops_set(ctx, row, "name", vkr_bakery_json_cstr(arena, peer->name));
     ops_set(ctx, row, "tool", vkr_bakery_json_cstr(arena, peer->tool));
     ops_set(ctx, row, "dragging", vkr_bakery_json_bool(arena, peer->dragging));
+    if (peer->has_cursor) {
+      VkrBakeryJson *cursor = vkr_bakery_json_object(arena);
+      ops_set(ctx, cursor, "origin", ops_vec3(ctx, peer->cursor_origin));
+      ops_set(ctx, cursor, "direction", ops_vec3(ctx, peer->cursor_direction));
+      ops_set(ctx, cursor, "distance", ops_number(ctx, peer->cursor_distance));
+      ops_set(ctx, row, "cursor", cursor);
+    } else {
+      ops_set(ctx, row, "cursor", vkr_bakery_json_null(arena));
+    }
     if (peer->has_camera) {
       VkrBakeryJson *camera = vkr_bakery_json_object(arena);
       ops_set(ctx, camera, "position", ops_vec3(ctx, peer->camera_position));
@@ -13338,6 +13369,13 @@ static VkrEditorOpStatus ops_run_session_host(OpsContext *ctx) {
       !ops_arg_string(ctx, args, "name", name, sizeof(name))) {
     return VKR_EDITOR_OP_DONE;
   }
+  int64_t history = 0;
+  if (vkr_bakery_json_get(args, "history") &&
+      (!vkr_bakery_json_get_int(args, "history", &history) || history < 4096)) {
+    ops_fail(ctx, OPS_INVALID, "'history' is a byte count of at least 4096");
+    return VKR_EDITOR_OP_DONE;
+  }
+  vkr_editor_session_set_history(ctx->editor->session, (uint64_t)history);
   if (!vkr_editor_session_host(ctx->editor->session, ctx->frame, bind, name,
                                error, sizeof(error))) {
     ops_fail(ctx, OPS_BUSY, "%s", error);
@@ -13378,6 +13416,44 @@ static VkrEditorOpStatus ops_run_session_publish(OpsContext *ctx) {
                                         sizeof(error))) {
     ops_fail(ctx, OPS_BUSY, "%s", error);
     return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = ops_session_status(ctx);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* Allows or denies each key of the array `key`. */
+static bool8_t ops_session_keys(OpsContext *ctx, const char *key,
+                                bool8_t allowed) {
+  const VkrBakeryJson *value = vkr_bakery_json_get(ctx->call->args, key);
+  if (value && value->type != VKR_BAKERY_JSON_ARRAY) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' is an array of keys", key);
+  }
+  for (const VkrBakeryJson *entry = value ? value->first : NULL; entry;
+       entry = entry->next) {
+    char hex[80] = {0};
+    if (entry->type != VKR_BAKERY_JSON_STRING ||
+        entry->string.length >= sizeof(hex)) {
+      return ops_fail(ctx, OPS_INVALID, "'%s' is an array of keys", key);
+    }
+    MemCopy(hex, entry->string.str, entry->string.length);
+    if (!vkr_editor_session_allow(ctx->editor->session, hex, allowed)) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'%s' takes keys of 64 hexadecimal digits, at most %u "
+                      "allowed",
+                      key, VKR_EDITOR_SESSION_ALLOWED_MAX);
+    }
+  }
+  return true_v;
+}
+
+static VkrEditorOpStatus ops_run_session_access(OpsContext *ctx) {
+  if (!ops_session_keys(ctx, "allow", true_v) ||
+      !ops_session_keys(ctx, "deny", false_v)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  bool8_t restricted = false_v;
+  if (vkr_bakery_json_get_bool(ctx->call->args, "restricted", &restricted)) {
+    vkr_editor_session_restrict(ctx->editor->session, restricted);
   }
   ctx->call->result = ops_session_status(ctx);
   return VKR_EDITOR_OP_DONE;
@@ -14424,9 +14500,13 @@ static const OpsDef s_ops[] = {
     {"session.host",
      "Host a collaborative editing session of the open scene on 'bind' "
      "(default every interface, port 7330); answers the address and the key "
-     "others join with. Every edit then applies in the host's order.",
+     "others join with. Every edit then applies in the host's order. "
+     "'history' (bytes, default 64 MiB) bounds the edits kept for joiners; "
+     "past it a scene in a depot working copy gets a new base that joiners "
+     "start from, and undo and revert stop there.",
      "{\"type\":\"object\",\"properties\":{\"bind\":{\"type\":"
-     "\"string\"},\"name\":{\"type\":\"string\"}}}",
+     "\"string\"},\"name\":{\"type\":\"string\"},\"history\":{"
+     "\"type\":\"integer\",\"minimum\":4096}}}",
      ops_run_session_host, NULL},
     {"session.join",
      "Join the session at 'address' with the host's 64-digit 'key'. This "
@@ -14446,6 +14526,18 @@ static const OpsDef s_ops[] = {
      ops_run_session_publish, NULL},
     {"session.leave", "Leave or stop the collaborative session.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_session_leave, NULL},
+    {"session.access",
+     "Who may join this editor's sessions: 'restricted' true lets only "
+     "allowed identity keys join (restricting while hosting allows the "
+     "editors already in), false lets anyone with the session key join. "
+     "'allow' and 'deny' add and remove 64-digit identity keys; denying one "
+     "in the session closes its connection. session.status shows this "
+     "editor's 'identity' and the editors refused lately.",
+     "{\"type\":\"object\",\"properties\":{\"restricted\":{\"type\":"
+     "\"boolean\"},\"allow\":{\"type\":\"array\",\"items\":{\"type\":"
+     "\"string\"}},\"deny\":{\"type\":\"array\",\"items\":{\"type\":"
+     "\"string\"}}}}",
+     ops_run_session_access, NULL},
     {"task.add",
      "Add an open task of a 'kind' (layout, material, lighting and so on) "
      "with a 'title', optionally a 'region' box of a 'container', and the "
@@ -14491,7 +14583,8 @@ static const OpsDef s_ops[] = {
     {"session.status",
      "The session's mode, address and key, this editor's place in the edit "
      "order, edits waiting to apply, the last error, the digest of this "
-     "editor's scenes and each peer's name, camera and selection.",
+     "editor's scenes, each peer's name, camera, selection and Scene "
+     "pointer ray, this editor's identity key and who may join.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_session_status, NULL,
      OPS_QUICK},
 };

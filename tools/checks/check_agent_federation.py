@@ -111,8 +111,9 @@ def main() -> int:
     host, host_out = launch(
         editor, work / "host",
         "wait.scene\n"
+        'op session.access {"restricted":true}\n'
         f'op session.host {{"name":"alpha","bind":"127.0.0.1:{args.port}"}}\n'
-        "wait 600\n", host_log, host_socket)
+        "wait 600\n", host_log, host_socket, autoclose=1800)
     processes = [host]
     outputs = [host_out]
     agents = []
@@ -128,14 +129,15 @@ def main() -> int:
             "wait.scene\n"
             f'op session.join {{"address":"127.0.0.1:{args.port}",'
             f'"key":"{match.group(1)}","name":"beta"}}\n'
-            "wait 600\n", guest_log, guest_socket)
+            "wait 600\n", guest_log, guest_socket, autoclose=1800)
         processes.append(guest)
         outputs.append(guest_out)
-        if not wait_for(guest_log, r"Joined the session as participant",
+        # The host restricts joining, so it refuses the guest's key first.
+        if not wait_for(guest_log, r"The host does not allow this editor",
                         guest, deadline):
-            print("FAIL: the guest did not join; see", guest_log)
+            print("FAIL: the restricted host did not refuse the guest; see",
+                  guest_log)
             return 1
-        time.sleep(3.0)
         mason = Agent(mcp, host_socket, "mason", work / "mason.log")
         painter = Agent(mcp, guest_socket, "painter", work / "painter.log")
         agents = [mason, painter]
@@ -146,6 +148,27 @@ def main() -> int:
             if answer["ok"] != ok or (contains and contains not in text):
                 failures.append(f"{agent.name} {op}: {text[:400]}")
             return answer.get("result", {})
+
+        guest_key = expect(painter, "session.status", {}).get("identity")
+        refused = (expect(mason, "session.status", {}).get("access") or
+                   {}).get("refused", [])
+        if not any(row.get("name") == "beta" and row.get("key") == guest_key
+                   for row in refused):
+            failures.append(f"the host lists no refused beta with key "
+                            f"{guest_key}: {refused}")
+        expect(mason, "session.access", {"allow": [guest_key]},
+               contains=guest_key)
+        expect(painter, "session.join",
+               {"address": f"127.0.0.1:{args.port}", "key": match.group(1),
+                "name": "beta"})
+        joined = False
+        while time.time() < deadline and not joined:
+            time.sleep(1.0)
+            joined = bool(expect(painter, "session.status", {}).get("joined"))
+        if not joined:
+            print("FAIL: the allowed guest did not join; see", guest_log)
+            return 1
+        time.sleep(3.0)
 
         # The task board: the guest's agent adds, the host's takes it.
         added = expect(painter, "task.add",
@@ -275,6 +298,30 @@ def main() -> int:
             failures.append("the terrain was not raised: "
                             f"{json.dumps(host_rows)[:200]}")
 
+        # The guest's Scene pointer reaches the host as a unit ray.
+        active = expect(painter, "workbench.list", {}).get("active")
+        scene_rect = expect(painter, "workbench.switch",
+                            {"workbench": active}).get("scene_rect")
+        if scene_rect:
+            x = scene_rect[0] + scene_rect[2] * 0.5
+            y = scene_rect[1] + scene_rect[3] * 0.5
+            # Alt keeps the click off the GPU pick.
+            expect(painter, "cmd", {"line": f"ui.click {x:.0f} {y:.0f} 1 alt"})
+            time.sleep(2.0)
+            peers = expect(mason, "session.status", {}).get("peers", [])
+            cursors = [peer.get("cursor") for peer in peers
+                       if peer.get("name") == "beta" and peer.get("cursor")]
+            if not cursors:
+                failures.append(f"the host sees no guest cursor: {peers}")
+            else:
+                direction = cursors[0].get("direction") or [0, 0, 0]
+                length = sum(c * c for c in direction) ** 0.5
+                if abs(length - 1.0) > 1e-3:
+                    failures.append(f"the guest cursor is not a unit ray: "
+                                    f"{cursors[0]}")
+        else:
+            failures.append("the guest's Scene rectangle is unknown")
+
         expect(mason, "task.done", {"task": task_id, "note": "plaza built"})
         time.sleep(2.0)
         expect(painter, "task.list", {"state": "done"},
@@ -289,6 +336,18 @@ def main() -> int:
             failures.append("the session sequences differ")
         summary = (f"sequence {guest_status.get('sequence')} digest "
                    f"{guest_status.get('digest')}")
+
+        # Denying the guest's key closes its connection.
+        expect(mason, "session.access", {"deny": [guest_key]})
+        left = False
+        for _ in range(20):
+            time.sleep(1.0)
+            status = expect(painter, "session.status", {})
+            if status.get("mode") == "none":
+                left = "does not allow" in status.get("error", "")
+                break
+        if not left:
+            failures.append("denying the guest's key did not close it out")
     finally:
         for agent in agents:
             agent.close()

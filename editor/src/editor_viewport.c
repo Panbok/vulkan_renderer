@@ -1548,8 +1548,10 @@ static void viewport_face_tools(VkrEditorUi *editor,
         ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
         (VkrUiRect){image.x, image.y, image.z, image.w});
     VkrEntityId face = VKR_ENTITY_ID_INVALID;
+    float32_t face_distance = 0.0f;
     if (ui->mouse_pressed && has_ray &&
-        vkr_editor_brush_pick(frame, origin, direction, 100000.0f, &face)) {
+        vkr_editor_brush_pick(frame, origin, direction, 100000.0f, &face,
+                              &face_distance)) {
       *frame->scene_edit = (VkrSceneEditRequest){
           .action = VKR_SCENE_EDIT_SELECT, .entity = face};
     }

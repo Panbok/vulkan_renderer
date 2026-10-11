@@ -51,13 +51,17 @@
  *   UNDO, REDO  empty
  *   REVERT  container 16, the session sequence of the batch it reverts */
 #define SESSION_SERVICE_VERSION 1u
-#define SESSION_SCHEMA_HASH 0x434f4c4c4142000cull
+#define SESSION_SCHEMA_HASH 0x434f4c4c4142000dull
 #define SESSION_EDIT_CHANNEL 0u
 #define SESSION_PRESENCE_CHANNEL 1u
 #define SESSION_MESSAGE_MAX (8u << 20)
 #define SESSION_PRESENCE_US 100000ull
 /* Presence while this editor drags a gizmo, so others follow the drag. */
 #define SESSION_PRESENCE_DRAG_US 33000ull
+/* The farthest cursor hit presence carries, and how far a cursor that
+   meets nothing draws. */
+#define SESSION_CURSOR_DISTANCE_MAX 10000.0f
+#define SESSION_CURSOR_LENGTH 50.0f
 /* Applied edits the host keeps for editors that join later; past it, the
    ones every participant received leave and joining is refused. */
 #define SESSION_LOG_BYTES_MAX (64ull << 20)
@@ -151,6 +155,17 @@ typedef enum SessionDepotJobKind {
   SESSION_DEPOT_COMMIT = 1,
   SESSION_DEPOT_CHECKOUT,
 } SessionDepotJobKind;
+
+/* A host's new base for joiners once its history passes the budget: it
+   holds edits while the scene saves, then commits the saved scene to the
+   session's base branch while edits go on. FAILED stops trying; the history
+   then drops what every editor has, as without a depot. */
+typedef enum SessionRebase {
+  SESSION_REBASE_NONE = 0,
+  SESSION_REBASE_SAVING,
+  SESSION_REBASE_COMMITTING,
+  SESSION_REBASE_FAILED,
+} SessionRebase;
 
 /* One depot step on a worker thread, which owns every field but `done`
    until it sets `done`. */
@@ -252,6 +267,12 @@ typedef struct SessionLink {
   bool8_t based;
   VkrNetConnectionId connection;
   uint8_t id;
+  /* The participant's identity key. */
+  uint8_t key[32];
+  /* The base BASE sent it: the session sequence its scene holds, from
+     which the history replays, and that scene's digest. */
+  uint64_t base_seq;
+  uint8_t base_digest[32];
   /* Log entries sent to it. */
   uint32_t log_sent;
 } SessionLink;
@@ -330,6 +351,19 @@ struct VkrEditorSession {
   /* Steps of the session an undo or redo may reach. */
   uint32_t undo_depth;
   uint32_t redo_depth;
+  /* The newest base: the sequence its scene holds (`digest` is that
+     scene's), the history's bytes since and the budget past which a depot
+     host makes a new one. A batch at or below `revert_floor` cannot be
+     reverted, as an editor that joined from a newer base lacks it. */
+  uint64_t base_seq;
+  uint64_t base_bytes;
+  uint64_t history_budget;
+  uint64_t revert_floor;
+  uint8_t rebase;
+  uint32_t rebase_frames;
+  uint64_t rebase_seq;
+  uint64_t rebase_bytes;
+  uint8_t rebase_digest[32];
 
   /* Both: the next session sequence this editor applies (the host gives
      it), the queue, the batches' groups and the edit in flight. */
@@ -363,6 +397,11 @@ struct VkrEditorSession {
   VkrEditorSessionPeer peers[VKR_EDITOR_SESSION_PEERS_MAX];
   uint32_t peer_count;
   uint64_t presence_at;
+  /* This editor's Scene pointer, which presence carries. */
+  bool8_t has_cursor;
+  Vec3 cursor_origin;
+  Vec3 cursor_direction;
+  float32_t cursor_distance;
 
   /* Depot: the phase, the session branch, the commit this editor holds,
      the working copy's directory, the depot step running and the commits
@@ -373,6 +412,11 @@ struct VkrEditorSession {
      the history replays, and the newest published one. */
   VkrDepotId depot_base;
   VkrDepotId depot_head;
+  /* Host: the branch of the newer bases, its tip (zero before the first)
+     and the session commit the newest base was made on. */
+  char depot_base_branch[VKR_DEPOT_BRANCH_NAME];
+  VkrDepotId depot_base_tip;
+  VkrDepotId depot_base_parent;
   char depot_directory[1024];
   SessionDepotJob job;
   VkrDepotId fetches[SESSION_FETCH_MAX];
@@ -381,6 +425,17 @@ struct VkrEditorSession {
   bool8_t save_requested;
   bool8_t reload_requested;
   uint64_t reload_generation;
+
+  /* Who joins when this editor hosts (vkr_editor_session_restrict); it
+     survives a reset. */
+  bool8_t restricted;
+  uint8_t allowed[VKR_EDITOR_SESSION_ALLOWED_MAX][32];
+  uint32_t allowed_count;
+  VkrEditorSessionRefused refusals[VKR_EDITOR_SESSION_REFUSED_MAX];
+  uint32_t refused_count;
+  /* This editor's identity key in hexadecimal, read once. */
+  char identity[65];
+  bool8_t identity_read;
 
   /* The Session window's fields; they survive a reset. */
   char form_name[VKR_EDITOR_SESSION_NAME_MAX];
@@ -1235,7 +1290,38 @@ static uint32_t session_encode_presence(const VkrEditorSessionPeer *peer,
       session_write_float(&writer, peer->drag_world.elements[i]);
     }
   }
+  vkr_bit_write(&writer, peer->has_cursor, 1u);
+  if (peer->has_cursor) {
+    session_write_float(&writer, peer->cursor_origin.x);
+    session_write_float(&writer, peer->cursor_origin.y);
+    session_write_float(&writer, peer->cursor_origin.z);
+    session_write_float(&writer, peer->cursor_direction.x);
+    session_write_float(&writer, peer->cursor_direction.y);
+    session_write_float(&writer, peer->cursor_direction.z);
+    session_write_float(&writer, peer->cursor_distance);
+  }
   return vkr_bit_writer_finish(&writer);
+}
+
+/* A cursor ray other editors draw: finite, a direction near unit length
+   (normalized here) and a distance within SESSION_CURSOR_DISTANCE_MAX. */
+static bool8_t session_cursor_valid(Vec3 origin, Vec3 *direction,
+                                    float32_t distance) {
+  const float32_t values[7] = {origin.x,     origin.y,     origin.z,
+                               direction->x, direction->y, direction->z,
+                               distance};
+  for (uint32_t i = 0u; i < ArrayCount(values); ++i) {
+    if (!isfinite(values[i])) {
+      return false_v;
+    }
+  }
+  const float32_t length = vec3_length(*direction);
+  if (length < 0.5f || length > 2.0f || distance < 0.0f ||
+      distance > SESSION_CURSOR_DISTANCE_MAX) {
+    return false_v;
+  }
+  *direction = vec3_scale(*direction, 1.0f / length);
+  return true_v;
 }
 
 static bool8_t session_read_presence(VkrBitReader *reader,
@@ -1266,6 +1352,22 @@ static bool8_t session_read_presence(VkrBitReader *reader,
     session_read_ref(reader, &out->drag);
     for (uint32_t i = 0u; i < 16u; ++i) {
       out->drag_world.elements[i] = session_read_float(reader);
+    }
+  }
+  out->has_cursor = (bool8_t)vkr_bit_read(reader, 1u);
+  if (out->has_cursor) {
+    const float32_t ox = session_read_float(reader);
+    const float32_t oy = session_read_float(reader);
+    const float32_t oz = session_read_float(reader);
+    const float32_t dx = session_read_float(reader);
+    const float32_t dy = session_read_float(reader);
+    const float32_t dz = session_read_float(reader);
+    out->cursor_origin = vec3_new(ox, oy, oz);
+    out->cursor_direction = vec3_new(dx, dy, dz);
+    out->cursor_distance = session_read_float(reader);
+    if (!session_cursor_valid(out->cursor_origin, &out->cursor_direction,
+                              out->cursor_distance)) {
+      return false_v;
     }
   }
   return vkr_bit_reader_at_end(reader);
@@ -1318,16 +1420,59 @@ static SessionLink *session_link_by_id(VkrEditorSession *session, uint8_t id) {
   return NULL;
 }
 
+static bool8_t session_allowed(const VkrEditorSession *session,
+                               const uint8_t key[32]) {
+  for (uint32_t i = 0u; i < session->allowed_count; ++i) {
+    if (MemCompare(session->allowed[i], key, 32u) == 0) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Lists an editor a restricted host refused, newest last, once per key. The
+   name is the participant's credential, kept to printable characters. */
+static void session_note_refused(VkrEditorSession *session,
+                                 const uint8_t key[32],
+                                 const uint8_t *credential,
+                                 uint32_t credential_size) {
+  VkrEditorSessionRefused refused = {0};
+  session_hex(key, 32u, refused.key);
+  const uint32_t length =
+      Min(credential_size, (uint32_t)sizeof(refused.name) - 1u);
+  for (uint32_t i = 0u; i < length; ++i) {
+    const uint8_t c = credential[i];
+    refused.name[i] = c >= 0x20u && c < 0x7fu ? (char)c : '?';
+  }
+  uint32_t kept = 0u;
+  for (uint32_t i = 0u; i < session->refused_count; ++i) {
+    if (strcmp(session->refusals[i].key, refused.key) != 0) {
+      session->refusals[kept++] = session->refusals[i];
+    }
+  }
+  if (kept == VKR_EDITOR_SESSION_REFUSED_MAX) {
+    MemCopy(&session->refusals[0], &session->refusals[1],
+            (kept - 1u) * sizeof(session->refusals[0]));
+    kept -= 1u;
+  }
+  session->refusals[kept++] = refused;
+  session->refused_count = kept;
+  log_warn("Refused %s (key %s): its key is not allowed", refused.name,
+           refused.key);
+}
+
 static void session_host_accept(void *context, const VkrNetAddress *address,
                                 const uint8_t peer_key[32],
                                 const uint8_t *credential,
                                 uint32_t credential_size,
                                 VkrNetAcceptResult *out_result) {
   (void)address;
-  (void)peer_key;
-  (void)credential;
-  (void)credential_size;
   VkrEditorSession *session = context;
+  if (session->restricted && !session_allowed(session, peer_key)) {
+    session_note_refused(session, peer_key, credential, credential_size);
+    out_result->code = VKR_NET_CLOSE_ACCESS_DENIED;
+    return;
+  }
   uint32_t live = 0u;
   for (uint32_t i = 0u; i < VKR_EDITOR_SESSION_PEERS_MAX; ++i) {
     live += session->links[i].live;
@@ -1362,9 +1507,9 @@ static void session_host_hello(VkrEditorSession *session, SessionLink *link,
   }
   uint8_t status = SESSION_WELCOME_OK;
   uint8_t id = 0u;
-  if (MemCompare(digest, session->digest, 32u) != 0) {
+  if (!link->based || MemCompare(digest, link->base_digest, 32u) != 0) {
     status = SESSION_WELCOME_SCENE;
-  } else if (session->log_first > 0u) {
+  } else if (session->log_first > link->base_seq) {
     status = SESSION_WELCOME_HISTORY;
   } else {
     for (uint8_t candidate = 1u;
@@ -1381,6 +1526,7 @@ static void session_host_hello(VkrEditorSession *session, SessionLink *link,
   vkr_bit_write(&writer, SESSION_MSG_WELCOME, 4u);
   vkr_bit_write(&writer, status, 4u);
   vkr_bit_write(&writer, id, 8u);
+  vkr_bit_write_varuint(&writer, link->base_seq);
   vkr_bit_write_varuint(&writer, session->log_count);
   session_host_send_small(session, link->connection, bytes,
                           vkr_bit_writer_finish(&writer));
@@ -1395,7 +1541,7 @@ static void session_host_hello(VkrEditorSession *session, SessionLink *link,
   }
   link->welcomed = true_v;
   link->id = id;
-  link->log_sent = 0u;
+  link->log_sent = (uint32_t)link->base_seq;
   /* The claims and tasks come before the history replays. */
   if (session->shared_size) {
     (void)session_send(session, link->connection, SESSION_EDIT_CHANNEL,
@@ -1583,6 +1729,12 @@ static void session_host_commit(VkrEditorSession *session, SessionEdit *edit,
   MemCopy(bytes, session->message.data, size);
   session->log[session->log_count++] = (SessionBytes){bytes, size};
   session->log_bytes += size;
+  session->base_bytes += size;
+}
+
+static uint64_t session_history_budget(const VkrEditorSession *session) {
+  return session->history_budget ? session->history_budget
+                                 : SESSION_LOG_BYTES_MAX;
 }
 
 /* Sends each participant the history it has not received, and past the
@@ -1591,6 +1743,10 @@ static void session_host_send_log(VkrEditorSession *session) {
   uint32_t lowest = session->log_count;
   for (uint32_t i = 0u; i < VKR_EDITOR_SESSION_PEERS_MAX; ++i) {
     SessionLink *link = &session->links[i];
+    /* An editor between BASE and HELLO replays from its base. */
+    if (link->live && link->based && !link->welcomed) {
+      lowest = Min(lowest, (uint32_t)link->base_seq);
+    }
     if (!link->live || !link->welcomed) {
       continue;
     }
@@ -1607,7 +1763,12 @@ static void session_host_send_log(VkrEditorSession *session) {
     }
     lowest = Min(lowest, link->log_sent);
   }
-  while (session->log_bytes > SESSION_LOG_BYTES_MAX &&
+  /* A depot host keeps what joiners replay from its newest base. */
+  if (session->depot_phase == SESSION_DEPOT_READY &&
+      session->rebase != SESSION_REBASE_FAILED) {
+    lowest = Min(lowest, (uint32_t)session->base_seq);
+  }
+  while (session->log_bytes > session_history_budget(session) &&
          session->log_first < lowest) {
     SessionBytes *entry = &session->log[session->log_first++];
     session->log_bytes -= entry->size;
@@ -1688,8 +1849,9 @@ static void session_participant_message(VkrEditorSession *session,
   case SESSION_MSG_WELCOME: {
     const uint8_t status = (uint8_t)vkr_bit_read(reader, 4u);
     const uint8_t id = (uint8_t)vkr_bit_read(reader, 8u);
+    const uint64_t base = vkr_bit_read_varuint(reader);
     const uint64_t log = vkr_bit_read_varuint(reader);
-    if (!vkr_bit_reader_at_end(reader) || session->welcomed) {
+    if (!vkr_bit_reader_at_end(reader) || session->welcomed || base > log) {
       session_fail(session, "The host sent a malformed welcome.");
     } else if (status == SESSION_WELCOME_SCENE) {
       session_fail(session, "This scene is not the one the session started "
@@ -1704,8 +1866,11 @@ static void session_participant_message(VkrEditorSession *session,
       session->welcomed = true_v;
       session->self_id = id;
       session->welcome_log = log;
+      /* The base already holds the edits up to its sequence. */
+      session->apply_seq = base + 1u;
+      session->receive_seq = base + 1u;
       log_info("Joined the session as participant %u; replaying %llu edits", id,
-               (unsigned long long)log);
+               (unsigned long long)(log - base));
     }
     return;
   }
@@ -1967,6 +2132,8 @@ static void session_pump(VkrEditorSession *session) {
           if (!session->links[i].live) {
             session->links[i] =
                 (SessionLink){.live = true_v, .connection = event.connection};
+            MemCopy(session->links[i].key, event.peer_key,
+                    sizeof(session->links[i].key));
             break;
           }
         }
@@ -1982,6 +2149,12 @@ static void session_pump(VkrEditorSession *session) {
                                   VKR_NET_SERVICE_COLLAB, session->now)) {
           session_fail(session, "Could not open the session service.");
         }
+      } else if (event.type == VKR_NET_EVENT_CLOSED &&
+                 event.code == VKR_NET_CLOSE_ACCESS_DENIED) {
+        session_fail(session,
+                     "The host does not allow this editor; give the host "
+                     "your key %s.",
+                     session->identity);
       } else if (event.type == VKR_NET_EVENT_CLOSED) {
         session_fail(session,
                      session->welcomed
@@ -2615,6 +2788,14 @@ static bool8_t session_place(VkrEditorSession *session,
   }
 }
 
+/* The session sequence a REVERT edit reverts. */
+static uint64_t session_revert_seq(const SessionEdit *edit) {
+  VkrBitReader reader;
+  vkr_bit_reader_init(&reader, edit->payload, edit->size);
+  (void)vkr_bit_read(&reader, 16u);
+  return vkr_bit_read_varuint(&reader);
+}
+
 /* Puts the next queued edit, or a rollback, into the free request slots. */
 static void session_inject(VkrEditorSession *session,
                            const VkrSampleUiFrame *frame) {
@@ -2660,7 +2841,9 @@ static void session_inject(VkrEditorSession *session,
       return;
     }
     if (host && ((edit.kind == SESSION_EDIT_UNDO && !session->undo_depth) ||
-                 (edit.kind == SESSION_EDIT_REDO && !session->redo_depth))) {
+                 (edit.kind == SESSION_EDIT_REDO && !session->redo_depth) ||
+                 (edit.kind == SESSION_EDIT_REVERT &&
+                  session_revert_seq(&edit) <= session->revert_floor))) {
       session_host_refuse(session, &edit, SESSION_REFUSED_HISTORY);
       session_edit_release(&edit);
       continue;
@@ -2908,6 +3091,10 @@ static void session_presence(VkrEditorSession *session,
     self.drag = self.selection;
     self.drag_world = transform->world;
   }
+  self.has_cursor = session->has_cursor;
+  self.cursor_origin = session->cursor_origin;
+  self.cursor_direction = session->cursor_direction;
+  self.cursor_distance = session->cursor_distance;
   uint8_t bytes[384];
   const uint32_t size = session_encode_presence(&self, bytes, sizeof(bytes));
   if (!size) {
@@ -2931,8 +3118,9 @@ static void session_presence(VkrEditorSession *session,
 // =============================================================================
 
 static bool8_t session_depot_ready(const VkrEditorSession *session) {
-  return session->depot_phase == SESSION_DEPOT_OFF ||
-         session->depot_phase == SESSION_DEPOT_READY;
+  return (session->depot_phase == SESSION_DEPOT_OFF ||
+          session->depot_phase == SESSION_DEPOT_READY) &&
+         session->rebase != SESSION_REBASE_SAVING;
 }
 
 static void *session_depot_worker(void *argument) {
@@ -3062,13 +3250,21 @@ static void session_host_send_base(VkrEditorSession *session,
   const bool8_t depot = session->depot_phase == SESSION_DEPOT_READY;
   vkr_bit_write(&writer, depot, 1u);
   if (depot) {
+    /* A newer base sits beside the session's commits; the newest commit
+       is fetched only when something was published since. */
+    const bool8_t published =
+        !vkr_depot_id_equal(&session->depot_head, &session->depot_base_parent);
     session_write_text(&writer, session->depot_branch);
     vkr_bit_write_bytes(&writer, session->depot_base.bytes, 32u);
-    vkr_bit_write_bytes(&writer, session->depot_head.bytes, 32u);
+    vkr_bit_write_bytes(
+        &writer,
+        published ? session->depot_head.bytes : session->depot_base.bytes, 32u);
   }
   session_host_send_small(session, link->connection, bytes,
                           vkr_bit_writer_finish(&writer));
   link->based = true_v;
+  link->base_seq = session->base_seq;
+  MemCopy(link->base_digest, session->digest, sizeof(link->base_digest));
 }
 
 static void session_depot_base_message(VkrEditorSession *session,
@@ -3192,6 +3388,86 @@ static void session_depot_announce(VkrEditorSession *session) {
   }
 }
 
+/* Past the history budget, a depot host saves the scene with edits held,
+   then commits it as a new base for joiners. Undo, redo and revert stop at
+   it, since an editor that joins from it lacks what came before. */
+static void session_rebase_step(VkrEditorSession *session,
+                                const VkrSampleUiFrame *frame) {
+  SessionDepotJob *job = &session->job;
+  if (session->rebase == SESSION_REBASE_NONE) {
+    if (session->base_bytes > session_history_budget(session) &&
+        !job->running && !session->leave_pending) {
+      session->rebase = SESSION_REBASE_SAVING;
+      session->rebase_frames = 0u;
+      session->save_requested = false_v;
+      log_info("The session's history passed %llu bytes; making a new base",
+               (unsigned long long)session_history_budget(session));
+    }
+    return;
+  }
+  if (session->rebase != SESSION_REBASE_SAVING) {
+    return;
+  }
+  if (++session->rebase_frames > SESSION_SAVE_FRAMES) {
+    session->rebase = SESSION_REBASE_FAILED;
+    log_warn("The scene did not save for a new session base; new editors "
+             "cannot join once the history drops");
+    return;
+  }
+  /* What applied so far, with no edit in flight or drag unrecorded. */
+  if (session->inflight.active || frame->gizmo_edit_pending ||
+      frame->scene_loading || frame->additive_loading || frame->world_loading) {
+    return;
+  }
+  if (!session_journals_saved(frame)) {
+    if (!session->save_requested && frame->scene_edit &&
+        frame->scene_edit->action == VKR_SCENE_EDIT_NONE) {
+      frame->scene_edit->action = VKR_SCENE_EDIT_SAVE;
+      session->save_requested = true_v;
+    }
+    return;
+  }
+  session->rebase_seq = session->apply_seq - 1u;
+  session->rebase_bytes = session->base_bytes;
+  vkr_editor_session_digest(frame, session->rebase_digest);
+  session->undo_depth = 0u;
+  session->redo_depth = 0u;
+  session->revert_floor = session->rebase_seq;
+  job->from_base = false_v;
+  job->publish = false_v;
+  job->parent = session->depot_head;
+  job->expected = session->depot_base_tip;
+  snprintf(job->branch, sizeof(job->branch), "%s", session->depot_base_branch);
+  snprintf(job->message, sizeof(job->message), "Session base at edit %llu",
+           (unsigned long long)session->rebase_seq);
+  if (!session_depot_start(session, SESSION_DEPOT_COMMIT)) {
+    session->rebase = SESSION_REBASE_FAILED;
+    log_warn("The commit of a new session base could not start");
+    return;
+  }
+  session->rebase = SESSION_REBASE_COMMITTING;
+}
+
+static void session_rebase_finished(VkrEditorSession *session) {
+  const SessionDepotJob *job = &session->job;
+  if (!job->ok) {
+    session->rebase = SESSION_REBASE_FAILED;
+    log_warn("A new session base could not be committed: %s", job->error);
+    return;
+  }
+  session->depot_base = job->commit;
+  session->depot_base_tip = job->commit;
+  session->depot_base_parent = job->parent;
+  session->base_seq = session->rebase_seq;
+  session->base_bytes -= session->rebase_bytes;
+  MemCopy(session->digest, session->rebase_digest, sizeof(session->digest));
+  session->rebase = SESSION_REBASE_NONE;
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&session->depot_base, hex);
+  log_info("New editors join from base %.12s at edit %llu on %s", hex,
+           (unsigned long long)session->base_seq, session->depot_base_branch);
+}
+
 /* The depot's share of a build: the host saves and commits its base, a
    participant checks the base out and reloads, and everyone publishes and
    fetches session commits. */
@@ -3234,7 +3510,12 @@ static void session_depot_update(VkrEditorSession *session,
     }
     session->depot_base = job->commit;
     session->depot_head = job->commit;
+    session->depot_base_parent = job->commit;
     session->depot_phase = SESSION_DEPOT_READY;
+    /* Newer bases go to `<branch>.base`, cut so the suffix fits. */
+    snprintf(session->depot_base_branch, sizeof(session->depot_base_branch),
+             "%.*s.base", (int)(sizeof(session->depot_base_branch) - 6u),
+             session->depot_branch);
     /* Saved now; the scene is what the base holds. */
     vkr_editor_session_digest(frame, session->digest);
     vkr_depot_id_hex(&session->depot_head, hex);
@@ -3278,7 +3559,10 @@ static void session_depot_update(VkrEditorSession *session,
   default:
     return;
   }
-  if (finished && job->kind == SESSION_DEPOT_COMMIT) {
+  if (finished && job->kind == SESSION_DEPOT_COMMIT &&
+      session->rebase == SESSION_REBASE_COMMITTING) {
+    session_rebase_finished(session);
+  } else if (finished && job->kind == SESSION_DEPOT_COMMIT) {
     if (!job->ok) {
       log_warn("Publishing to the depot failed: %s", job->error);
       snprintf(session->error, sizeof(session->error), "Publish: %s",
@@ -3300,6 +3584,9 @@ static void session_depot_update(VkrEditorSession *session,
       log_info("Fetched %.12s from depot branch %s", hex,
                session->depot_branch);
     }
+  }
+  if (session->mode == VKR_EDITOR_SESSION_HOST) {
+    session_rebase_step(session, frame);
   }
   if (!job->running && session->fetch_count) {
     job->commit = session->fetches[0];
@@ -3402,6 +3689,16 @@ static void session_reset(VkrEditorSession *session) {
   const uint64_t epoch = session->epoch;
   char error[sizeof(session->error)];
   MemCopy(error, session->error, sizeof(error));
+  const bool8_t restricted = session->restricted;
+  const uint32_t allowed_count = session->allowed_count;
+  uint8_t allowed[VKR_EDITOR_SESSION_ALLOWED_MAX][32];
+  MemCopy(allowed, session->allowed, sizeof(allowed));
+  const uint32_t refused_count = session->refused_count;
+  VkrEditorSessionRefused refused[VKR_EDITOR_SESSION_REFUSED_MAX];
+  MemCopy(refused, session->refusals, sizeof(refused));
+  char identity[sizeof(session->identity)];
+  MemCopy(identity, session->identity, sizeof(identity));
+  const bool8_t identity_read = session->identity_read;
   char form[4][128];
   snprintf(form[0], sizeof(form[0]), "%s", session->form_name);
   snprintf(form[1], sizeof(form[1]), "%s", session->form_bind);
@@ -3415,6 +3712,32 @@ static void session_reset(VkrEditorSession *session) {
   snprintf(session->form_bind, sizeof(session->form_bind), "%s", form[1]);
   snprintf(session->form_address, sizeof(session->form_address), "%s", form[2]);
   snprintf(session->form_key, sizeof(session->form_key), "%s", form[3]);
+  session->restricted = restricted;
+  session->allowed_count = allowed_count;
+  MemCopy(session->allowed, allowed, sizeof(allowed));
+  session->refused_count = refused_count;
+  MemCopy(session->refusals, refused, sizeof(refused));
+  MemCopy(session->identity, identity, sizeof(identity));
+  session->identity_read = identity_read;
+}
+
+/* This editor's identity key pair (the depot identity, made when missing)
+   and its public half in hexadecimal; false when it cannot be read or
+   made. */
+static bool8_t session_identity(VkrEditorSession *session,
+                                VkrNetKeyPair *out_keys) {
+  VkrNetKeyPair keys;
+  if (!vkr_depot_identity(&keys, true_v)) {
+    session->identity_read = true_v;
+    return false_v;
+  }
+  session_hex(keys.public_key, 32u, session->identity);
+  session->identity_read = true_v;
+  if (out_keys) {
+    *out_keys = keys;
+  }
+  vkr_net_random(keys.secret_key, sizeof(keys.secret_key));
+  return true_v;
 }
 
 void vkr_editor_session_destroy(VkrEditorSession *session) {
@@ -3539,11 +3862,18 @@ bool8_t vkr_editor_session_join(VkrEditorSession *session,
     snprintf(error, capacity, "The network cryptography did not start.");
     return false_v;
   }
-  vkr_net_keypair_generate(&config.core.static_keys);
+  /* The identity key is what a restricted host allows; the name goes as
+     the credential so the host can tell who it refused. */
+  if (!session_identity(session, &config.core.static_keys)) {
+    log_warn("No identity key; joining with a fresh key, which a restricted "
+             "host refuses");
+    vkr_net_keypair_generate(&config.core.static_keys);
+  }
   session->mode = VKR_EDITOR_SESSION_PARTICIPANT;
   if (!session_start_network(session, &config) ||
       !vkr_net_core_connect(
-          vkr_net_host_core(session->host), &server, server_key, NULL, 0u,
+          vkr_net_host_core(session->host), &server, server_key,
+          (const uint8_t *)session->name, (uint32_t)strlen(session->name),
           vkr_net_host_now(session->host), &session->connection)) {
     session_reset(session);
     snprintf(error, capacity, "Could not start the connection.");
@@ -3630,6 +3960,81 @@ void vkr_editor_session_status(const VkrEditorSession *session,
   out_status->depot_busy = session->job.running;
   MemCopy(out_status->peers, session->peers,
           session->peer_count * sizeof(session->peers[0]));
+  snprintf(out_status->identity, sizeof(out_status->identity), "%s",
+           session->identity);
+  out_status->restricted = session->restricted;
+  out_status->allowed_count = session->allowed_count;
+  for (uint32_t i = 0u; i < session->allowed_count; ++i) {
+    session_hex(session->allowed[i], 32u, out_status->allowed[i]);
+  }
+  out_status->refused_count = session->refused_count;
+  MemCopy(out_status->refused, session->refusals, sizeof(session->refusals));
+}
+
+static bool8_t session_allow_key(VkrEditorSession *session,
+                                 const uint8_t key[32], bool8_t allowed);
+
+void vkr_editor_session_restrict(VkrEditorSession *session,
+                                 bool8_t restricted) {
+  if (!session || session->restricted == restricted) {
+    return;
+  }
+  session->restricted = restricted;
+  /* The editors already in the session stay. */
+  for (uint32_t i = 0u; restricted && i < VKR_EDITOR_SESSION_PEERS_MAX; ++i) {
+    if (session->links[i].live) {
+      (void)session_allow_key(session, session->links[i].key, true_v);
+    }
+  }
+  log_info("Session joining is %s", restricted ? "restricted to allowed keys"
+                                               : "open to the session key");
+}
+
+static bool8_t session_allow_key(VkrEditorSession *session,
+                                 const uint8_t key[32], bool8_t allowed) {
+  uint32_t kept = 0u;
+  for (uint32_t i = 0u; i < session->allowed_count; ++i) {
+    if (MemCompare(session->allowed[i], key, 32u) != 0) {
+      MemCopy(session->allowed[kept++], session->allowed[i], 32u);
+    }
+  }
+  session->allowed_count = kept;
+  if (allowed) {
+    if (kept == VKR_EDITOR_SESSION_ALLOWED_MAX) {
+      return false_v;
+    }
+    MemCopy(session->allowed[session->allowed_count++], key, 32u);
+    /* An allowed editor leaves the refused list. */
+    char hex[65];
+    session_hex(key, 32u, hex);
+    uint32_t left = 0u;
+    for (uint32_t i = 0u; i < session->refused_count; ++i) {
+      if (strcmp(session->refusals[i].key, hex) != 0) {
+        session->refusals[left++] = session->refusals[i];
+      }
+    }
+    session->refused_count = left;
+    return true_v;
+  }
+  for (uint32_t i = 0u; session->host && session->restricted &&
+                        session->mode == VKR_EDITOR_SESSION_HOST &&
+                        i < VKR_EDITOR_SESSION_PEERS_MAX;
+       ++i) {
+    if (session->links[i].live &&
+        MemCompare(session->links[i].key, key, 32u) == 0) {
+      vkr_net_core_close(vkr_net_host_core(session->host),
+                         session->links[i].connection,
+                         VKR_NET_CLOSE_ACCESS_DENIED, session->now);
+    }
+  }
+  return true_v;
+}
+
+bool8_t vkr_editor_session_allow(VkrEditorSession *session, const char *key_hex,
+                                 bool8_t allowed) {
+  uint8_t key[32];
+  return session && key_hex && session_parse_hex(key_hex, key, sizeof(key)) &&
+         session_allow_key(session, key, allowed);
 }
 
 // =============================================================================
@@ -3954,6 +4359,24 @@ uint32_t vkr_editor_session_lines(const VkrEditorSession *session,
       session_line(&lines, mat4_position(resting->world),
                    mat4_position(peer->drag_world), color);
     }
+    /* The pointer's ray, ending in a cross where it meets something. */
+    if (peer->has_cursor) {
+      const float32_t length = peer->cursor_distance > 0.0f
+                                   ? peer->cursor_distance
+                                   : SESSION_CURSOR_LENGTH;
+      const Vec3 end = vec3_add(peer->cursor_origin,
+                                vec3_scale(peer->cursor_direction, length));
+      session_line(&lines, peer->cursor_origin, end, color);
+      if (peer->cursor_distance > 0.0f) {
+        const float32_t size = Max(0.05f, length * 0.01f);
+        for (uint32_t axis = 0u; axis < 3u; ++axis) {
+          const Vec3 half =
+              vec3_new(axis == 0u ? size : 0.0f, axis == 1u ? size : 0.0f,
+                       axis == 2u ? size : 0.0f);
+          session_line(&lines, vec3_sub(end, half), vec3_add(end, half), color);
+        }
+      }
+    }
   }
   return out ? Min(lines.count, capacity) : lines.count;
 }
@@ -4074,6 +4497,41 @@ static bool8_t session_button(VkrEditorUi *editor, VkrUiSystem *ui,
   return vkr_ui_button(ui, session_string(id), session_string(text), &c);
 }
 
+/* Who may join: open or restricted, and the editors refused lately with
+   a button that allows each. */
+static void session_window_access(VkrEditorUi *editor, VkrUiSystem *ui,
+                                  VkrEditorSession *session, float32_t *y,
+                                  float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  char text[160];
+  if (session->restricted) {
+    snprintf(text, sizeof(text), "Only %u allowed editor%s join",
+             session->allowed_count, session->allowed_count == 1u ? "" : "s");
+  } else {
+    snprintf(text, sizeof(text), "Anyone with the key joins");
+  }
+  session_label(ui, "access", text, 12, *y, width - 160, theme->text);
+  if (session_button(editor, ui, "access.toggle",
+                     session->restricted ? "Open joining" : "Restrict",
+                     width - 136, *y, 124, false_v)) {
+    vkr_editor_session_restrict(session, !session->restricted);
+  }
+  *y += 34;
+  for (uint32_t i = 0u; i < session->refused_count; ++i) {
+    const VkrEditorSessionRefused refused = session->refusals[i];
+    (void)vkr_ui_push_id_u64(ui, i);
+    snprintf(text, sizeof(text), "Refused %s (%.12s...)", refused.name,
+             refused.key);
+    session_label(ui, "refused", text, 12, *y, width - 160, theme->warning);
+    if (session_button(editor, ui, "allow", "Allow", width - 136, *y, 124,
+                       false_v)) {
+      (void)vkr_editor_session_allow(session, refused.key, true_v);
+    }
+    (void)vkr_ui_pop_id(ui);
+    *y += 30;
+  }
+}
+
 static void session_window_peers(VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame,
                                  VkrEditorSession *session, float32_t *y,
@@ -4161,6 +4619,22 @@ void vkr_editor_session_window_build(VkrEditorUi *editor,
       snprintf(session->error, sizeof(session->error), "%s", error);
     }
     y += 36;
+    /* A restricted host allows this key. */
+    if (!session->identity_read) {
+      (void)session_identity(session, NULL);
+    }
+    if (session->identity[0]) {
+      snprintf(text, sizeof(text), "Your key %.16s...", session->identity);
+      session_label(ui, "identity", text, 12, y, width - 160,
+                    theme->text_secondary);
+      if (session_button(editor, ui, "identity.copy", "Copy your key",
+                         width - 136, y, 124, false_v)) {
+        (void)vkr_platform_clipboard_write_text(
+            (const uint8_t *)session->identity,
+            (uint32_t)strlen(session->identity));
+      }
+      y += 34;
+    }
   } else {
     const bool8_t host = session->mode == VKR_EDITOR_SESSION_HOST;
     if (host) {
@@ -4199,6 +4673,9 @@ void vkr_editor_session_window_build(VkrEditorUi *editor,
         snprintf(session->error, sizeof(session->error), "%s", publish_error);
       }
       y += 34;
+    }
+    if (host) {
+      session_window_access(editor, ui, session, &y, width);
     }
     session_window_peers(editor, frame, session, &y, width);
     y += 6;
@@ -4262,4 +4739,23 @@ void vkr_editor_session_set_tool(VkrEditorSession *session, const char *tool) {
   if (session) {
     snprintf(session->tool, sizeof(session->tool), "%s", tool ? tool : "");
   }
+}
+
+void vkr_editor_session_set_history(VkrEditorSession *session, uint64_t bytes) {
+  if (session) {
+    session->history_budget = bytes;
+  }
+}
+
+void vkr_editor_session_set_cursor(VkrEditorSession *session, bool8_t valid,
+                                   Vec3 origin, Vec3 direction,
+                                   float32_t distance) {
+  if (!session) {
+    return;
+  }
+  session->has_cursor =
+      valid && session_cursor_valid(origin, &direction, distance);
+  session->cursor_origin = origin;
+  session->cursor_direction = direction;
+  session->cursor_distance = distance;
 }

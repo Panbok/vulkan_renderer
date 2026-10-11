@@ -1709,7 +1709,7 @@ bool8_t vkr_editor_brush_ray(const VkrScene *scene, VkrEntityId brush,
 
 bool8_t vkr_editor_brush_pick(const VkrSampleUiFrame *frame, Vec3 origin,
                               Vec3 direction, float32_t max_distance,
-                              VkrEntityId *out_face) {
+                              VkrEntityId *out_face, float32_t *out_distance) {
   const VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX] = {frame->scene,
                                                          frame->world};
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
@@ -1740,6 +1740,7 @@ bool8_t vkr_editor_brush_pick(const VkrSampleUiFrame *frame, Vec3 origin,
       }
     }
   }
+  *out_distance = nearest;
   return found;
 }
 

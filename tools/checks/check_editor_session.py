@@ -71,7 +71,7 @@ echo guest-done
 """
 
 
-def editor_env(work: pathlib.Path) -> dict:
+def editor_env(work: pathlib.Path, autoclose: int = 600) -> dict:
     env = dict(os.environ)
     for name in ("MTL_DEBUG_LAYER", "MTL_SHADER_VALIDATION",
                  "VK_INSTANCE_LAYERS"):
@@ -82,20 +82,23 @@ def editor_env(work: pathlib.Path) -> dict:
     env["USERPROFILE"] = str(home)
     env["VKR_EDITOR_LAYOUT_PATH"] = str(work / "layout.json")
     env["VKR_GRAPHICS_SETTINGS_PATH"] = str(work / "graphics.json")
-    env["VKR_AUTOCLOSE_SECONDS"] = "600"
+    env["VKR_AUTOCLOSE_SECONDS"] = str(autoclose)
+    # Each editor has an identity key of its own, which hosts allow.
+    env["VKR_DEPOT_IDENTITY"] = str(work / "identity.key")
     return env
 
 
 def launch(editor: str, work: pathlib.Path, script: str, log: pathlib.Path,
-           socket: str = ""):
-    """Starts a headless editor on Bistro; `socket` opens its agent channel
-    there instead of none."""
+           socket: str = "", autoclose: int = 600):
+    """Starts a headless editor on Bistro that closes after `autoclose`
+    seconds; `socket` opens its agent channel there instead of none."""
     work.mkdir(parents=True, exist_ok=True)
     out = open(log, "w", encoding="utf-8", errors="replace")
     channel = ["--agent-socket", socket] if socket else ["--no-agent-socket"]
     process = subprocess.Popen(
         [editor, "--headless", *channel, "--scene", SCENE, "--exec", script],
-        cwd=ROOT, env=editor_env(work), stdout=out, stderr=subprocess.STDOUT)
+        cwd=ROOT, env=editor_env(work, autoclose), stdout=out,
+        stderr=subprocess.STDOUT)
     return process, out
 
 
