@@ -1646,6 +1646,9 @@ vkr_global const VkrVulkanReflectedField s_vk_ssr_composite_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, clearcoat_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, sheen_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, anisotropy_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot,
+                               diffuse_volume_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, reserved),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_ssgi_depth_base_fields[] = {

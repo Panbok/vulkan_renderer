@@ -2508,6 +2508,11 @@ bool8_t vkr_vk_prepare_ssr_composite(VkrVulkanRenderer *renderer,
   if (vkr_rg_pass_find_image_use(&pass->desc, 7u, 0u) &&
       !vkr_vk_deferred_sampled_index(renderer, pass, 7u, &gtao))
     return false_v;
+  /* The volume light deferred lighting scaled the replaced reflection by. */
+  uint32_t diffuse_volume = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 13u, 0u) &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 13u, &diffuse_volume))
+    return false_v;
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t frame_address = 0u;
@@ -2543,6 +2548,7 @@ bool8_t vkr_vk_prepare_ssr_composite(VkrVulkanRenderer *renderer,
       .clearcoat_texture = clearcoat,
       .sheen_texture = sheen,
       .anisotropy_texture = anisotropy,
+      .diffuse_volume_texture = diffuse_volume,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsrCompositeRoot),

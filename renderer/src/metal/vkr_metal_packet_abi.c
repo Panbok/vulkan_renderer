@@ -347,6 +347,8 @@ vkr_global const VkrMetalPacketAbiField
         VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, rows, "rows", 20),
         VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot,
                       active_layer_count, "active_layer_count", 24),
+        VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, lamp_mask,
+                      "lamp_mask", 28),
         VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, active_layers,
                       "active_layers", 32),
         VKR_ABI_FIELD(VkrMetalPacketDiffuseVolumeComposeRoot, active_weights,
@@ -463,6 +465,8 @@ vkr_global const VkrMetalPacketAbiField vkr_lightmap_fields[] = {
                   "direct_layer_count", 144),
     VKR_ABI_FIELD(VkrMetalPacketLightmap, baked_lamp_count, "baked_lamp_count",
                   148),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, active_lamp_mask, "active_lamp_mask",
+                  152),
     VKR_ABI_FIELD(VkrMetalPacketLightmap, baked_lamps, "baked_lamps", 160),
 };
 

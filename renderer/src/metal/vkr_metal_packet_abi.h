@@ -31,7 +31,8 @@ vkr_internal INLINE Mat4 vkr_metal_packet_slang_draw_matrix(Mat4 matrix) {
     common/draw.metalh and draw.slangh: the indirection, probe, moment and
     composed SH texture IDs, the origin with the finest probe spacing in w,
     the SH scale and the moment atlas's tile rows in params, and the
-    indirection dimensions. */
+    indirection dimensions with, in w, the row of the composed SH texture
+    where the sun-key layers' luminance starts (ADR-054). */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolume {
   uint64_t indirection;
   uint64_t probes;
@@ -48,14 +49,15 @@ _Static_assert(sizeof(VkrMetalPacketDiffuseVolume) == 80u,
     texture; mirrors VkrMetalPacketDiffuseVolumeComposeRoot in
     msl/world/diffuse_volume.metal. `active_direct` names each active lamp
     group's direct band, VKR_DIFFUSE_VOLUME_NO_BAND without one or while no
-    lightmap is sampled. */
+    lightmap is sampled; bit i of `lamp_mask` marks active layer i a lamp
+    group (VkrDiffuseVolumeBinding::active_lamp_mask). */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolumeComposeRoot {
   uint64_t layer_sh;
   uint64_t sh;
   uint32_t probe_count;
   uint32_t rows;
   uint32_t active_layer_count;
-  uint32_t reserved;
+  uint32_t lamp_mask;
   uint32_t active_layers[8];
   float32_t active_weights[8];
   uint32_t active_direct[8];
@@ -99,7 +101,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketLightmap {
   uint32_t active_direct[8];
   uint32_t direct_layer_count;
   uint32_t baked_lamp_count;
-  uint32_t reserved[2];
+  /* VkrLightmapBinding::active_lamp_mask. */
+  uint32_t active_lamp_mask;
+  uint32_t reserved;
   VkrMetalPacketBakedLamp baked_lamps[VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX];
 } VkrMetalPacketLightmap;
 _Static_assert(sizeof(VkrMetalPacketLightmap) == 320u,

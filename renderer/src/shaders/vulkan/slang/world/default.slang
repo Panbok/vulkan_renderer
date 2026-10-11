@@ -1282,12 +1282,17 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
 // outside the volume and where no probe sees the receiver; the caller then
 // keeps the environment path. A surface whose lightmap holds the static
 // lamps (`include_lamps` false) leaves out the lamp groups' part the frame
-// keeps apart.
-bool packet_diffuse_volume_response(VkrVulkanPacketFrameRoot *frame,
-                                    float3 world_position, float3 normal,
-                                    bool include_lamps, out float3 response)
+// keeps apart. `sky_share` is the luminance share of the response that is
+// not that part, the baked sky light environment reflections scale by
+// (ADR-054); it is one while the frame keeps no part apart, whose single
+// sum holds the lamp groups' indirect light too.
+bool packet_diffuse_volume_lookup(VkrVulkanPacketFrameRoot *frame,
+                                  float3 world_position, float3 normal,
+                                  bool include_lamps, out float3 response,
+                                  out float sky_share)
 {
     response = 0.0f;
+    sky_share = 1.0f;
     uint4 textures = frame.diffuse_volume_textures;
     // Descriptor slot zero is the renderer's permanent sentinel.
     if (textures.x == 0u)
@@ -1315,6 +1320,9 @@ bool packet_diffuse_volume_response(VkrVulkanPacketFrameRoot *frame,
     float4 red = 0.0f;
     float4 green = 0.0f;
     float4 blue = 0.0f;
+    float4 lamp_red = 0.0f;
+    float4 lamp_green = 0.0f;
+    float4 lamp_blue = 0.0f;
     float total = 0.0f;
     [unroll] for (uint corner = 0u; corner < 8u; ++corner)
     {
@@ -1346,51 +1354,96 @@ bool packet_diffuse_volume_response(VkrVulkanPacketFrameRoot *frame,
             int3(int2(vkr_diffuse_volume_sh_texel(probe, 2u, 0u)), 0));
         if (lamp_rows != 0u)
         {
-            red += weight * g_textures[textures.w].Load(
+            lamp_red += weight * g_textures[textures.w].Load(
                 int3(int2(vkr_diffuse_volume_sh_texel(probe, 0u, lamp_rows)), 0));
-            green += weight * g_textures[textures.w].Load(
+            lamp_green += weight * g_textures[textures.w].Load(
                 int3(int2(vkr_diffuse_volume_sh_texel(probe, 1u, lamp_rows)), 0));
-            blue += weight * g_textures[textures.w].Load(
+            lamp_blue += weight * g_textures[textures.w].Load(
                 int3(int2(vkr_diffuse_volume_sh_texel(probe, 2u, lamp_rows)), 0));
         }
         total += weight;
     }
     if (total < VKR_DIFFUSE_VOLUME_MIN_WEIGHT)
         return false;
-    response = vkr_diffuse_volume_l1(red, green, blue, normal) *
-               (frame.diffuse_volume_params.x / total);
+    float scale = frame.diffuse_volume_params.x / total;
+    float3 sky = vkr_diffuse_volume_l1(red, green, blue, normal) * scale;
+    response = sky;
+    if (lamp_rows != 0u)
+    {
+        response = vkr_diffuse_volume_l1(red + lamp_red, green + lamp_green,
+                                         blue + lamp_blue, normal) *
+                   scale;
+        const float3 luminance = float3(0.2126f, 0.7152f, 0.0722f);
+        float response_luminance = dot(response, luminance);
+        sky_share = response_luminance > 0.0f
+                        ? saturate(dot(sky, luminance) / response_luminance)
+                        : 1.0f;
+    }
     return true;
 }
 
-// A covered pixel's volume light replaces only diffuse indirect light.
+bool packet_diffuse_volume_response(VkrVulkanPacketFrameRoot *frame,
+                                    float3 world_position, float3 normal,
+                                    bool include_lamps, out float3 response)
+{
+    float unused_sky_share;
+    return packet_diffuse_volume_lookup(frame, world_position, normal,
+                                        include_lamps, response,
+                                        unused_sky_share);
+}
+
+// A surface's baked diffuse light, which scales its environment
+// reflections (ADR-054): its pre-exposed response E/pi and the sun-key part
+// of it. `valid` is false where the surface has none.
+struct VkrVulkanBakedLight
+{
+    float3 response;
+    float3 sky;
+    bool valid;
+};
+
+VkrVulkanBakedLight packet_no_baked_light()
+{
+    VkrVulkanBakedLight baked;
+    baked.response = 0.0f;
+    baked.sky = 0.0f;
+    baked.valid = false;
+    return baked;
+}
+
+// From a volume response, pre-exposed, and its sky share.
+VkrVulkanBakedLight packet_volume_baked_light(float3 response, float sky_share)
+{
+    VkrVulkanBakedLight baked;
+    baked.response = response;
+    baked.sky = response * sky_share;
+    baked.valid = true;
+    return baked;
+}
+
+// A covered pixel's volume light replaces only diffuse indirect light;
+// `baked` carries it for the environment reflection.
 bool packet_diffuse_volume_terms(VkrVulkanPacketFrameRoot *frame,
-                           float3 world_position, float3 normal,
-                           float3 albedo, float metallic, float ao,
-                           bool include_lamps,
-                           VkrGgxMaterialEnergy energy, out float3 diffuse, out float3 irradiance)
+                                 float3 world_position, float3 normal,
+                                 float3 albedo, float metallic, float ao,
+                                 bool include_lamps,
+                                 VkrGgxMaterialEnergy energy,
+                                 out float3 diffuse,
+                                 out VkrVulkanBakedLight baked)
 {
     diffuse = 0.0f;
-    irradiance = 0.0f;
+    baked = packet_no_baked_light();
     float3 volume;
-    if (!packet_diffuse_volume_response(frame, world_position, normal,
-                                        include_lamps, volume))
+    float sky_share;
+    if (!packet_diffuse_volume_lookup(frame, world_position, normal,
+                                      include_lamps, volume, sky_share))
         return false;
     // The baked volume stores physical E/pi; lighting is pre-exposed.
     float3 response = volume * frame.pre_exposure;
-    irradiance = response * ao;
+    baked = packet_volume_baked_light(response, sky_share);
     diffuse = energy.diffuse_weight * (1.0f - metallic) * albedo * ao *
               response;
     return true;
-}
-
-bool packet_diffuse_volume(VkrVulkanPacketFrameRoot *frame,
-                           float3 world_position, float3 normal,
-                           float3 albedo, float metallic, float ao,
-                           VkrGgxMaterialEnergy energy, out float3 diffuse) {
-    float3 unused_irradiance;
-    return packet_diffuse_volume_terms(frame, world_position, normal, albedo,
-                                       metallic, ao, true, energy, diffuse,
-                                       unused_irradiance);
 }
 
 // Global environment plus weighted local probes. `horizon_normal` is the
@@ -1534,12 +1587,20 @@ packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
         metallic, roughness, ao, energy);
 }
 
+// The environment's prefiltered radiance along the reflection about
+// `normal`, its probes blended with the global environment, pre-exposed and
+// with the probes' specular gains. With `baked` light the surface reflects
+// the environment only in the share its baked sky light supports and its
+// surroundings in the rest (ADR-054); that compares the baked light with the
+// response the same blend's SH gives at `normal`.
 float3 packet_environment_specular_radiance(
     VkrVulkanPacketFrameRoot *frame, float3 world_position, float3 normal,
-    float3 view, float roughness)
+    float3 view, float roughness, VkrVulkanBakedLight baked)
 {
     float3 reflection = reflect(-view, normal);
+    VkrShL2Evaluation sh_evaluation = vkr_sh_l2_prepare_evaluation(normal);
     float3 radiance = 0.0f;
+    float3 response = 0.0f;
     float local_weight_sum = 0.0f;
     uint probe_count = min(frame.ibl_probe_count, 16u);
     for (uint i = 0u; i < probe_count; ++i)
@@ -1567,13 +1628,27 @@ float3 packet_environment_specular_radiance(
                             roughness * float(max(frame.prefilter_mip_count, 1u) - 1u))
                         .rgb * probe.intensity_box.x * probe.intensity_box.z *
                     weight;
+        if (baked.valid)
+            response += vkr_sh_l2_evaluate(
+                            frame.sh_coefficients[probe.sh_slot],
+                            sh_evaluation) *
+                        probe.intensity_box.x * weight;
     }
     float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
     radiance += packet_global_prefiltered(
                     frame, reflection,
                     roughness * float(max(frame.prefilter_mip_count, 1u) - 1u)) *
                 global_weight;
-    return radiance;
+    radiance *= frame.ibl_controls.x;
+    if (!baked.valid)
+        return radiance;
+    response += vkr_sh_l2_evaluate(frame.sh_coefficients[frame.sh_global_slot],
+                                   sh_evaluation) *
+                global_weight;
+    return vkr_sh_l2_occluded_radiance(
+        radiance, baked.response,
+        vkr_sh_l2_sky_visibility(baked.sky,
+                                 response * frame.ibl_controls.x));
 }
 
 float3 packet_environment_specular_weight(float3 normal, float3 horizon_normal,
@@ -1592,30 +1667,32 @@ float3 packet_environment_specular(VkrVulkanPacketFrameRoot *frame,
                                    float3 world_position, float3 normal,
                                    float3 horizon_normal, float3 view,
                                    float roughness, float ao,
-                                   VkrGgxMaterialEnergy energy)
+                                   VkrGgxMaterialEnergy energy,
+                                   VkrVulkanBakedLight baked)
 {
     return packet_environment_specular_radiance(frame, world_position,
                 vkr_anisotropy_environment_normal(normal, view, energy), view,
-                vkr_anisotropy_environment_roughness(roughness, energy)) *
+                vkr_anisotropy_environment_roughness(roughness, energy),
+                baked) *
            packet_environment_specular_weight(normal, horizon_normal, view,
                                               roughness, ao, energy) *
-           frame.ibl_controls.z * frame.ibl_controls.x;
+           frame.ibl_controls.z;
 }
 
 float3 packet_sheen_environment(VkrVulkanPacketFrameRoot *frame,
                                 float3 world_position, float3 normal,
                                 float3 view, float ao, float gtao_specular_cone,
-                                VkrSheenLayer sheen)
+                                VkrSheenLayer sheen, VkrVulkanBakedLight baked)
 {
     float no_v = max(dot(normal, view), 0.0f);
     VkrGgxMaterialEnergy approximation = packet_prepare_brdf(
         frame, no_v, sheen.roughness, float3(1.0f));
     float3 incoming = packet_environment_specular_radiance(
-        frame, world_position, normal, view, sheen.roughness);
+        frame, world_position, normal, view, sheen.roughness, baked);
     float3 receiver = packet_environment_specular_weight(
         normal, normal, view, sheen.roughness, ao, approximation);
     return sheen.color * sheen.directional_albedo * incoming * receiver *
-           gtao_specular_cone * frame.ibl_controls.z * frame.ibl_controls.x;
+           gtao_specular_cone * frame.ibl_controls.z;
 }
 
 float3 packet_environment(VkrVulkanPacketFrameRoot *frame,
@@ -1986,30 +2063,46 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
     float3 indirect_specular = 0.0f;
     float3 clearcoat_indirect = 0.0f;
     float3 sheen_indirect = 0.0f;
+    // A covered pixel takes its diffuse light from the volume, which also
+    // scales its environment reflections.
+    float3 volume_diffuse;
+    VkrVulkanBakedLight baked;
+    bool volume_valid = packet_diffuse_volume_terms(
+        frame, input.world_position, normal, base.rgb, metallic, ao, true,
+        energy, volume_diffuse, baked);
     if ((frame.flags & 2u) != 0u)
     {
-        VkrVulkanEnvironmentResult environment = packet_environment_terms(
-            frame, input.world_position, normal, geometric_normal, view,
-            base.rgb, metallic, roughness, ao, energy);
-        indirect_diffuse = environment.diffuse;
-        indirect_specular = environment.specular;
+        if (volume_valid)
+        {
+            indirect_diffuse = volume_diffuse;
+            indirect_specular = packet_environment_specular(
+                frame, input.world_position, normal, geometric_normal, view,
+                roughness, ao, energy, baked);
+        }
+        else
+        {
+            VkrVulkanEnvironmentResult environment = packet_environment_terms(
+                frame, input.world_position, normal, geometric_normal, view,
+                base.rgb, metallic, roughness, ao, energy);
+            indirect_diffuse = environment.diffuse;
+            indirect_specular = environment.specular;
+        }
         if (clearcoat_active)
             clearcoat_indirect = clearcoat.factor * packet_environment_specular(
                 frame, input.world_position, clearcoat.normal, clearcoat.normal, view,
-                clearcoat.roughness, ao, clearcoat.energy);
+                clearcoat.roughness, ao, clearcoat.energy, baked);
         if (sheen_active)
             sheen_indirect = packet_sheen_environment(
-                frame, input.world_position, normal, view, ao, 1.0f, sheen);
+                frame, input.world_position, normal, view, ao, 1.0f, sheen,
+                baked);
     }
     else
     {
-        indirect_diffuse = frame.ambient_color.rgb * base.rgb * ao *
-                           (1.0f - metallic) * energy.diffuse_weight;
+        indirect_diffuse = volume_valid
+                               ? volume_diffuse
+                               : frame.ambient_color.rgb * base.rgb * ao *
+                                     (1.0f - metallic) * energy.diffuse_weight;
     }
-    float3 volume_diffuse;
-    if (packet_diffuse_volume(frame, input.world_position, normal, base.rgb,
-                              metallic, ao, energy, volume_diffuse))
-        indirect_diffuse = volume_diffuse;
     analytic_diffuse *= base_transmission;
     analytic_specular *= base_transmission;
     indirect_diffuse *= base_transmission;

@@ -4,7 +4,10 @@
 // diffuse_volume_compose in vulkan/slang/world/diffuse_volume.slang, without
 // its lamp band: the tiled pipeline looks the volume up only for draws
 // without a lightmap, so while a lightmap holds the baked lamps each active
-// lamp group's direct band joins the single sum (ADR-104).
+// lamp group's direct band joins the single sum (ADR-104). The second `rows`
+// rows take, in each probe's first texel, the luminance of the sun-key
+// layers' part, the baked sky light that scales environment reflections
+// (ADR-054).
 
 struct alignas(16) VkrMetalPacketDiffuseVolumeComposeRoot {
   texture2d<float, access::read> layer_sh;
@@ -12,7 +15,8 @@ struct alignas(16) VkrMetalPacketDiffuseVolumeComposeRoot {
   uint probe_count;
   uint rows;
   uint active_layer_count;
-  uint reserved;
+  // Bit i marks active layer i a lamp group.
+  uint lamp_mask;
   uint4 active_layers[2];
   float4 active_weights[2];
   // Band of an active lamp group's direct light, 0xffffffff without one.
@@ -26,14 +30,19 @@ kernel void vkr_metal_packet_diffuse_volume_compose(
   if (probe >= root.probe_count)
     return;
   float4 sum[3] = {float4(0.0f), float4(0.0f), float4(0.0f)};
+  float4 sky[3] = {float4(0.0f), float4(0.0f), float4(0.0f)};
   for (uint a = 0u; a < root.active_layer_count; ++a) {
     uint layer = root.active_layers[a / 4u][a % 4u];
     float weight = root.active_weights[a / 4u][a % 4u];
     uint direct = root.active_direct[a / 4u][a % 4u];
+    bool sun_key = (root.lamp_mask & (1u << a)) == 0u;
     for (uint channel = 0u; channel < 3u; ++channel) {
-      sum[channel] += weight *
+      float4 value = weight *
           root.layer_sh.read(
               vkr_diffuse_volume_sh_texel(probe, channel, layer * root.rows));
+      sum[channel] += value;
+      if (sun_key)
+        sky[channel] += value;
       if (direct != 0xffffffffu) {
         sum[channel] += weight *
             root.layer_sh.read(vkr_diffuse_volume_sh_texel(
@@ -44,4 +53,7 @@ kernel void vkr_metal_packet_diffuse_volume_compose(
   for (uint channel = 0u; channel < 3u; ++channel) {
     root.sh.write(sum[channel], vkr_diffuse_volume_sh_texel(probe, channel, 0u));
   }
+  // Rec. 709 luminance is linear, so it applies to the L1 coefficients.
+  root.sh.write(0.2126f * sky[0] + 0.7152f * sky[1] + 0.0722f * sky[2],
+                vkr_diffuse_volume_sh_texel(probe, 0u, root.rows));
 }

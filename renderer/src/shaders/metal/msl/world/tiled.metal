@@ -298,13 +298,16 @@ static float3 vkr_metal_tiled_lamp_direct(
 // layers each scaled by its weight, a lamp group's lamp-direct page at
 // `direct_uv` on `direct_page` included (ADR-108), and in alpha the baked
 // ambient visibility every layer's alpha carries (ADR-088; one for sets
-// baked without it or with no active layer).
+// baked without it or with no active layer). `sky_luminance` receives the
+// luminance of the sun-key layers' part, the sky light and sun bounce
+// (ADR-054).
 static float4 vkr_metal_tiled_lightmap_irradiance(
     constant VkrMetalPacketLightmap &lightmap, float2 uv, uint page,
-    float2 direct_uv, uint direct_page) {
+    float2 direct_uv, uint direct_page, thread float &sky_luminance) {
   constexpr sampler lightmap_sampler(coord::normalized, address::clamp_to_edge,
                                      filter::linear);
   float4 irradiance = float4(0.0f, 0.0f, 0.0f, 1.0f);
+  sky_luminance = 0.0f;
   const uint slice_base = page * lightmap.layer_count;
   const uint direct_base = direct_page * lightmap.direct_layer_count;
   for (uint i = 0u; i < lightmap.active_layer_count; ++i) {
@@ -315,6 +318,9 @@ static float4 vkr_metal_tiled_lightmap_irradiance(
           lightmap, lightmap_sampler, direct_uv,
           direct_base + lightmap.active_direct[i]);
     irradiance.rgb += layer.rgb * lightmap.active_weights[i];
+    if ((lightmap.active_lamp_mask & (1u << i)) == 0u)
+      sky_luminance += dot(layer.rgb, float3(0.2126f, 0.7152f, 0.0722f)) *
+                       lightmap.active_weights[i];
     if (i == 0u)
       irradiance.a = saturate(layer.a);
   }
@@ -740,15 +746,20 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   // Diffuse light: the lightmap stores irradiance, the volume and the global
   // environment the Lambertian response; each is pre-exposed here.
   float3 diffuse_light = float3(0.0f);
+  // The baked sky light's part of it, the sun-key layers' light.
+  float3 baked_sky = float3(0.0f);
   bool environment_diffuse = false;
   // The lightmap's diffuse light already holds its occlusion; its baked
   // ambient visibility only occludes environment specular.
   float baked_occlusion = 1.0f;
   if (input.lightmap_page != ~0u) {
+    float sky_luminance;
     float4 lightmap = vkr_metal_tiled_lightmap_irradiance(
         *frame->lightmap, input.lightmap_uv, input.lightmap_page,
-        input.lightmap_direct_uv, input.lightmap_direct_page);
+        input.lightmap_direct_uv, input.lightmap_direct_page, sky_luminance);
     diffuse_light = lightmap.rgb * (frame->pre_exposure / M_PI_F);
+    // A grey of that luminance: Rec. 709 weights sum to one.
+    baked_sky = float3(sky_luminance * (frame->pre_exposure / M_PI_F));
     baked_occlusion = lightmap.a;
     // Moving casters shadow the baked lamps that light them most (ADR-108).
     if (Lighting == VKR_METAL_TILED_LIGHTING_CASTERS ||
@@ -759,10 +770,13 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                                   M_PI_F,
                           float3(0.0f));
   } else {
+    float sky_luminance;
     float4 volume =
         vkr_metal_packet_diffuse_volume(frame, input.world_position, normal,
-                                        view);
+                                        view, sky_luminance);
     diffuse_light = volume.rgb;
+    // A grey of that luminance: Rec. 709 weights sum to one.
+    baked_sky = float3(sky_luminance);
     environment_diffuse = volume.w == 0.0f;
   }
   if ((frame->flags & 2u) != 0u) {
@@ -777,7 +791,11 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     // so the probe costs the pass few registers.
     float3 prefiltered;
     uint sh_slot = frame->sh_global_slot;
-    float diffuse_scale = 1.0f;
+    // The environment's radiance scale and its authored diffuse and
+    // specular gains.
+    float radiance_scale = 1.0f;
+    float diffuse_gain = 1.0f;
+    float specular_gain = 1.0f;
     if (probe != 0u) {
       const device VkrMetalPacketIblProbe &local =
           frame->ibl_probes[probe - 1u];
@@ -789,25 +807,40 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
               : reflection;
       prefiltered =
           local.prefilter.sample(environment_sampler, direction, level(lod))
-              .rgb *
-          (local.intensity_box.x * local.intensity_box.z);
+              .rgb;
       sh_slot = local.sh_slot;
-      diffuse_scale = local.intensity_box.x * local.intensity_box.y;
+      radiance_scale = local.intensity_box.x;
+      diffuse_gain = local.intensity_box.y;
+      specular_gain = local.intensity_box.z;
     } else {
       prefiltered = vkr_metal_packet_global_prefiltered(
           frame, environment_sampler, reflection, lod);
     }
+    // The environment's radiance, with a probe's specular gain, and the
+    // diffuse response it gives at the normal, pre-exposed.
+    const float environment_scale = radiance_scale * frame->ibl_controls.x;
+    float3 incoming = prefiltered * (environment_scale * specular_gain);
+    const float3 environment_response =
+        vkr_sh_l2_evaluate(frame->sh_coefficients[sh_slot],
+                           vkr_sh_l2_prepare_evaluation(normal)) *
+        environment_scale;
+    // A surface without baked light takes its diffuse light from the
+    // environment. One with baked light reflects the environment in the
+    // share its baked sky light supports and its surroundings in the rest,
+    // so a room or tunnel does not reflect the sky (ADR-054).
     if (environment_diffuse)
-      diffuse_light = vkr_sh_l2_evaluate(frame->sh_coefficients[sh_slot],
-                                         vkr_sh_l2_prepare_evaluation(normal)) *
-                      diffuse_scale * frame->ibl_controls.y *
-                      frame->ibl_controls.x;
+      diffuse_light =
+          environment_response * diffuse_gain * frame->ibl_controls.y;
+    else
+      incoming = vkr_sh_l2_occluded_radiance(
+          incoming, diffuse_light,
+          vkr_sh_l2_sky_visibility(baked_sky, environment_response));
     float horizon = saturate(1.0f + dot(reflection, geometric_normal));
     float specular_visibility =
         horizon * horizon *
         vkr_metal_packet_specular_ao(ao * baked_occlusion, no_v, roughness);
-    light.specular += prefiltered * energy.reflectance * specular_visibility *
-                      frame->ibl_controls.z * frame->ibl_controls.x;
+    light.specular += incoming * energy.reflectance * specular_visibility *
+                      frame->ibl_controls.z;
   } else if (environment_diffuse) {
     diffuse_light = frame->ambient_color.rgb;
   }

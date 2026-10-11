@@ -1623,6 +1623,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_diffuse_volume_compose(
       .rows = (volume->probe_count + VKR_DIFFUSE_VOLUME_ROW_PROBES - 1u) /
               VKR_DIFFUSE_VOLUME_ROW_PROBES,
       .active_layer_count = volume->active_layer_count,
+      .lamp_mask = volume->active_lamp_mask,
   };
   for (uint32_t i = 0u; i < ArrayCount(root->active_direct); ++i) {
     root->active_direct[i] = VKR_DIFFUSE_VOLUME_NO_BAND;

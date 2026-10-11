@@ -504,10 +504,13 @@ void vkr_metal_packet_punctual_layered(
 // Sparse diffuse volume lookup (DVOL v3), as packet_diffuse_volume_response
 // on the desktop pipeline: the eight probes around the receiver, weighted by
 // trilinear position, back-face and Chebyshev visibility. w is one where the
-// volume covers the receiver; RGB is pre-exposed E/pi.
+// volume covers the receiver; RGB is pre-exposed E/pi. `sky_luminance`
+// receives the luminance of its sun-key layers' part, the baked sky light
+// (ADR-054).
 static float4 vkr_metal_packet_diffuse_volume(
     constant VkrMetalPacketFrameRoot *frame, float3 world_position,
-    float3 normal, float3 to_viewer) {
+    float3 normal, float3 to_viewer, thread float &sky_luminance) {
+  sky_luminance = 0.0f;
   if (frame->diffuse_volume_params == nullptr)
     return float4(0.0f);
   constant VkrMetalPacketDiffuseVolume &volume = *frame->diffuse_volume_params;
@@ -529,9 +532,11 @@ static float4 vkr_metal_packet_diffuse_volume(
       vkr_diffuse_volume_brick_cell(value, entry, biased, origin, spacing);
   constexpr sampler moment_sampler(coord::normalized, address::clamp_to_edge,
                                    filter::linear);
+  const uint sky_row = volume.dimensions.w;
   float4 red = float4(0.0f);
   float4 green = float4(0.0f);
   float4 blue = float4(0.0f);
+  float4 sky = float4(0.0f);
   float total = 0.0f;
   for (uint corner = 0u; corner < 8u; ++corner) {
     uint probe = vkr_diffuse_volume_corner_probe(cell, corner);
@@ -559,13 +564,15 @@ static float4 vkr_metal_packet_diffuse_volume(
     red += weight * volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 0u, 0u));
     green += weight * volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 1u, 0u));
     blue += weight * volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 2u, 0u));
+    sky += weight *
+           volume.sh.read(vkr_diffuse_volume_sh_texel(probe, 0u, sky_row));
     total += weight;
   }
   if (total < VKR_DIFFUSE_VOLUME_MIN_WEIGHT)
     return float4(0.0f);
-  return float4(vkr_diffuse_volume_l1(red, green, blue, normal) *
-                    (volume.params.x * frame->pre_exposure / total),
-                1.0f);
+  const float scale = volume.params.x * frame->pre_exposure / total;
+  sky_luminance = max(dot(sky, float4(normal, 1.0f)), 0.0f) * scale;
+  return float4(vkr_diffuse_volume_l1(red, green, blue, normal) * scale, 1.0f);
 }
 
 /* The local/global probe reduction. `incoming_specular` deliberately excludes

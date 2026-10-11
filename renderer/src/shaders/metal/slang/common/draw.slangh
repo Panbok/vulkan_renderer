@@ -105,8 +105,8 @@ struct VkrMetalPacketLightmap {
     uint4 active_direct[2];
     uint direct_layer_count;
     uint baked_lamp_count;
-    uint reserved0;
-    uint reserved1;
+    uint active_lamp_mask;
+    uint reserved;
     // Two VkrMetalPacketBakedLamp rows, which only MSL reads.
     float4 baked_lamps[10];
 };

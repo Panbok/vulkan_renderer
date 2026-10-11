@@ -1064,6 +1064,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsrCompositeRoot {
   uint32_t clearcoat_texture;
   uint32_t sheen_texture;
   uint32_t anisotropy_texture;
+  /* DiffuseVolume's full-resolution image or the sentinel (ADR-054). */
+  uint32_t diffuse_volume_texture;
+  uint32_t reserved[3];
 } VkrVulkanSsrCompositeRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiDepthBaseRoot {
@@ -2077,13 +2080,13 @@ _Static_assert(
         offsetof(VkrVulkanSsrTemporalRoot, clearcoat_texture) == 492u &&
         offsetof(VkrVulkanSsrTemporalRoot, history_pre_exposure_scale) == 496u,
     "SSR temporal root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsrCompositeRoot) == 416u &&
-                   offsetof(VkrVulkanSsrCompositeRoot, clearcoat_texture) ==
-                       404u &&
-                   offsetof(VkrVulkanSsrCompositeRoot, sheen_texture) == 408u &&
-                   offsetof(VkrVulkanSsrCompositeRoot, anisotropy_texture) ==
-                       412u,
-               "SSR composite root ABI size drift");
+_Static_assert(
+    sizeof(VkrVulkanSsrCompositeRoot) == 432u &&
+        offsetof(VkrVulkanSsrCompositeRoot, clearcoat_texture) == 404u &&
+        offsetof(VkrVulkanSsrCompositeRoot, sheen_texture) == 408u &&
+        offsetof(VkrVulkanSsrCompositeRoot, anisotropy_texture) == 412u &&
+        offsetof(VkrVulkanSsrCompositeRoot, diffuse_volume_texture) == 416u,
+    "SSR composite root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsgiDepthBaseRoot) == 304u,
                "SSGI depth-base root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsgiDepthMipRoot) == 32u,

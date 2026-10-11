@@ -376,6 +376,10 @@ void vkr_scene_lightmap_binding(const VkrScene *scene,
     const float32_t weight = weights[lightmaps->slice_layers[slice]];
     if (weight > 0.0f &&
         out_binding->active_layer_count < VKR_LIGHTMAP_MAX_ACTIVE_LAYERS) {
+      if (lightmaps->layers[lightmaps->slice_layers[slice]].kind ==
+          VKR_LIGHT_LAYER_LAMP_GROUP) {
+        out_binding->active_lamp_mask |= 1u << out_binding->active_layer_count;
+      }
       out_binding->active_layers[out_binding->active_layer_count] = slice;
       out_binding->active_direct[out_binding->active_layer_count] =
           lamp_direct && lightmaps->slice_direct[slice] != UINT32_MAX

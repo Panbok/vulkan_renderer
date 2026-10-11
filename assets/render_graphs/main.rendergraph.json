@@ -6195,6 +6195,12 @@
           "access": "SAMPLED",
           "binding": 12,
           "when": "anisotropy_enabled"
+        },
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 13,
+          "when": "diffuse_volume_enabled"
         }
       ],
       "writes": [
@@ -6286,6 +6292,12 @@
           "access": "SAMPLED",
           "binding": 12,
           "when": "anisotropy_enabled"
+        },
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 13,
+          "when": "diffuse_volume_enabled"
         }
       ],
       "writes": [

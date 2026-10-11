@@ -3035,6 +3035,7 @@ vkr_internal bool8_t vkr_metal_packet_upload_lightmap(
       .layer_count = lightmap->layer_count,
       .inverse_page_size = 1.0f / (float32_t)lightmap->page_size,
       .active_layer_count = lightmap->active_layer_count,
+      .active_lamp_mask = lightmap->active_lamp_mask,
   };
   for (uint32_t i = 0u; i < lightmap->active_layer_count; ++i) {
     record->active_layers[i] = lightmap->active_layers[i];
@@ -3201,7 +3202,7 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
                      volume->spacing},
           .params = {volume->sh_scale, (float32_t)tile_rows, 0.0f, 0.0f},
           .dimensions = {volume->dimensions[0], volume->dimensions[1],
-                         volume->dimensions[2], 0u},
+                         volume->dimensions[2], rows},
       };
       upload->diffuse_volume_params_gpu = gpu + plan->diffuse_volume_offset;
     }

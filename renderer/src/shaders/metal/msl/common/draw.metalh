@@ -209,7 +209,9 @@ struct alignas(16) VkrMetalPacketLightmap {
   uint active_direct[8];
   uint direct_layer_count;
   uint baked_lamp_count;
-  uint reserved[2];
+  // Bit i marks active layer i a lamp group; the others are sun keys.
+  uint active_lamp_mask;
+  uint reserved;
   VkrMetalPacketBakedLamp baked_lamps[2];
 };
 

@@ -78,6 +78,10 @@ typedef struct VkrLightmapBinding {
   const VkrLightmapRect *direct_rects;
   uint32_t direct_layer_count;
   uint32_t active_direct[VKR_LIGHTMAP_MAX_ACTIVE_LAYERS];
+  /** Bit i marks active layer i a lamp group; the others are sun keys, the
+      sky light and sun bounce that scale a lightmapped surface's
+      environment reflection (ADR-054). */
+  uint32_t active_lamp_mask;
 } VkrLightmapBinding;
 
 /** An active lightmap layer without a lamp-direct plane. */
@@ -112,8 +116,10 @@ typedef struct VkrLightmapBinding {
  * lamp groups (bits of `active_lamp_mask`) with their direct bands
  * (`active_direct_bands`) into the second `rows` apart, because a
  * lightmapped surface already holds their light and only a surface without
- * a lightmap reads them (ADR-104). SH is
- * stored divided by `sh_scale`. `indirection` is
+ * a lightmap reads them (ADR-104). That is the desktop pipeline; the tiled
+ * pipeline writes the lamp groups into the single sum and the luminance of
+ * the sun-key layers' sum into the first texel of each probe in the second
+ * `rows` (ADR-054). SH is stored divided by `sh_scale`. `indirection` is
  * R32_UINT, dimensions[0] wide and dimensions[1] * dimensions[2] high, with
  * one entry per level-0 brick span of 3 * spacing from `origin`. */
 typedef struct VkrDiffuseVolumeBinding {

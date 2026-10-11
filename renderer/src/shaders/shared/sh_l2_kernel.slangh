@@ -82,6 +82,43 @@ float3 vkr_sh_l2_average(VkrShL2Packed coefficients)
                   coefficients.v[2].w + coefficients.v[5].z / 3.0f);
 }
 
+/**
+ * The share of a reflection environment a surface with baked light sees
+ * (ADR-054): the luminance ratio of its baked sky response, the sun-key
+ * layers of its lightmap or its diffuse volume light, to the response the
+ * environment's own radiance gives at the same normal, at most one. Both are
+ * D(n) = E(n) / pi in the same pre-exposed units. Baked sky light counts only
+ * the directions that reach the sky or sunlit surfaces, so a room or tunnel
+ * gets a small share and an open surface, whose baked sky light matches or
+ * exceeds the environment's, the whole.
+ */
+float vkr_sh_l2_sky_visibility(float3 baked_sky_response,
+                               float3 environment_response)
+{
+    // Rec. 709 luminance, local because tools/checks compiles this header
+    // without the exposure kernel.
+    const float3 luminance = float3(0.2126f, 0.7152f, 0.0722f);
+    float baked = max(dot(baked_sky_response, luminance), 0.0f);
+    float environment = dot(environment_response, luminance);
+    return environment > baked ? baked / environment : 1.0f;
+}
+
+/**
+ * The incoming radiance a surface with baked light reflects (ADR-054): the
+ * environment's prefiltered radiance in the `sky_visibility` share of
+ * directions (vkr_sh_l2_sky_visibility), and in the rest the surroundings at
+ * the surface's mean incoming radiance, its baked diffuse response. An open
+ * surface reflects the environment unchanged; an enclosed one reflects its
+ * lit surroundings, never the sky. Radiance and response are pre-exposed.
+ */
+float3 vkr_sh_l2_occluded_radiance(float3 environment_radiance,
+                                   float3 baked_response,
+                                   float sky_visibility)
+{
+    return baked_response +
+           (environment_radiance - baked_response) * sky_visibility;
+}
+
 /** The nine real L2 basis values for one direction, in the stored order. */
 struct VkrShL2Basis
 {

@@ -1289,6 +1289,8 @@ vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
         layers_valid =
             lightmap->active_direct[i] == VKR_LIGHTMAP_NO_DIRECT ||
             lightmap->active_direct[i] < lightmap->direct_layer_count;
+      layers_valid = layers_valid && (lightmap->active_lamp_mask >>
+                                      lightmap->active_layer_count) == 0u;
       if (!layers_valid || lightmap->page_size == 0u ||
           lightmap->layer_count == 0u ||
           (lightmap->rect_count && !lightmap->rects) ||
