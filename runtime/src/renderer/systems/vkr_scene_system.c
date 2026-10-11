@@ -621,6 +621,7 @@ static void scene_world_lower(VkrScene *scene, bool8_t had_atmosphere) {
     runtime->intensity = probe->intensity;
     runtime->diffuse_intensity = probe->diffuse_intensity;
     runtime->specular_intensity = probe->specular_intensity;
+    runtime->box_projection = probe->box_projection;
   }
 }
 
@@ -864,6 +865,7 @@ scene_reset_reflection_probe_runtime(VkrSceneReflectionProbe *probe) {
       .intensity = 1.0f,
       .diffuse_intensity = 1.0f,
       .specular_intensity = 1.0f,
+      .box_projection = true_v,
       .source_mip_count = 1u,
       .uses_scene_environment_source = false_v,
       .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-09
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -65,7 +65,8 @@ Probe capture also failed for any scene with saved edits:
    - The scene records which entries its probes stand for
      (`reflection_probe_entries`).
    - In document order, an entry a probe stands for takes the probe's
-     center, extents, blend distance, intensities and enabled state. It
+     center, extents, blend distance, intensities, box projection and
+     enabled state. It
      keeps its other members, such as its baked `asset`, or drops out when
      the probe was deleted.
    - An entry no probe stands for, such as one past the runtime's 16 or one

@@ -164,6 +164,7 @@ typedef struct SceneReflectionProbeImport {
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
+  bool8_t box_projection;
   float32_t sh_deringing;
   bool8_t has_cubemap;
   String8 cubemap_path;
@@ -2360,6 +2361,7 @@ scene_reflection_probe_import_defaults(void) {
       .intensity = 1.0f,
       .diffuse_intensity = 1.0f,
       .specular_intensity = 1.0f,
+      .box_projection = true_v,
       .sh_deringing = 0.0f,
       .has_cubemap = false_v,
       .cubemap_path = {0},
@@ -2431,6 +2433,8 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
                                       &import.diffuse_intensity);
     (void)scene_json_read_float_field(&probe_object, "specular_intensity",
                                       &import.specular_intensity);
+    (void)scene_json_read_bool_field(&probe_object, "box_projection",
+                                     &import.box_projection);
     if (scene_json_read_float_field(&probe_object, "sh_deringing",
                                     &import.sh_deringing) &&
         !(isfinite(import.sh_deringing) && import.sh_deringing >= 0.0f)) {
@@ -2674,6 +2678,7 @@ scene_loader_reset_scene_reflection_probes(VkrScene *scene,
         .intensity = 1.0f,
         .diffuse_intensity = 1.0f,
         .specular_intensity = 1.0f,
+        .box_projection = true_v,
         .source_mip_count = 1u,
         .uses_scene_environment_source = false_v,
         .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
@@ -2723,6 +2728,7 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
         .intensity = import->intensity,
         .diffuse_intensity = import->diffuse_intensity,
         .specular_intensity = import->specular_intensity,
+        .box_projection = import->box_projection,
         .sh_deringing = import->sh_deringing,
         .source_mip_count = 1u,
         .uses_scene_environment_source = false_v,
@@ -5363,6 +5369,7 @@ scene_loader_create_world_entities(VkrSceneLoaderAsyncPayload *payload) {
     probe.intensity = import->intensity;
     probe.diffuse_intensity = import->diffuse_intensity;
     probe.specular_intensity = import->specular_intensity;
+    probe.box_projection = import->box_projection;
     probe.sh_deringing = import->sh_deringing;
     probe.slot = i < scene->reflection_probe_count ? i : UINT32_MAX;
     probe.source = import->source;

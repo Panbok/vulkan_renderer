@@ -1251,6 +1251,9 @@ static const VkrPropertyDesc s_probe_properties[] = {
      .min = 0.0f,
      .max = FLT_MAX,
      .step = 0.01f},
+    PROPERTY_BOOL(SceneReflectionProbeSettings, box_projection,
+                  "box_projection", "Box projection",
+                  "Reflections hit the box walls; off for outdoor probes"),
     {.name = "sh_deringing",
      .label = "SH deringing",
      .tooltip = "L2 deringing exponent; applies on the next bake",
@@ -1298,6 +1301,7 @@ static void probe_defaults(void *value) {
   probe->intensity = 1.0f;
   probe->diffuse_intensity = 1.0f;
   probe->specular_intensity = 1.0f;
+  probe->box_projection = true_v;
   probe->slot = UINT32_MAX;
   probe->source = UINT32_MAX;
 }

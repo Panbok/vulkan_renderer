@@ -1655,7 +1655,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
           .intensity = probe->intensity,
           .diffuse_intensity = probe->diffuse_intensity,
           .specular_intensity = probe->specular_intensity,
-          .box_projection_enabled = true_v,
+          .box_projection_enabled = probe->box_projection,
       };
     }
   }

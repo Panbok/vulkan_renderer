@@ -832,6 +832,9 @@ typedef struct VkrSceneReflectionProbe {
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
+  /** Reflections look up the probe toward where they leave its box; false
+      looks up the plain reflection direction, as for an outdoor probe. */
+  bool8_t box_projection;
   /** Authored L2 deringing exponent (ADR-038). Zero is the identity
       window. Validated at scene load; never interpreted during lighting. */
   float32_t sh_deringing;
@@ -984,6 +987,7 @@ typedef struct SceneReflectionProbeSettings {
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
+  bool8_t box_projection;
   float32_t sh_deringing;
   char cubemap[256];
   uint32_t slot;

@@ -2221,6 +2221,8 @@ project_probe_entry(Arena *arena, const VkrBakeryJson *previous,
   }
   vkr_bakery_json_set(arena, entry, "enabled",
                       vkr_bakery_json_bool(arena, probe->enabled));
+  vkr_bakery_json_set(arena, entry, "box_projection",
+                      vkr_bakery_json_bool(arena, probe->box_projection));
   const struct {
     const char *name;
     float32_t value;

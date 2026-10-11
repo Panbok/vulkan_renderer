@@ -1179,9 +1179,14 @@ bool8_t vkr_project_validate_semantics(VkrProjectJob *job,
                                 probe_scales[i]);
       }
     }
-    const VkrBakeryJson *probe_enabled = vkr_bakery_json_get(probe, "enabled");
-    if (probe_enabled && probe_enabled->type != VKR_BAKERY_JSON_BOOL) {
-      return vkr_project_fail(job, "Probe enabled must be boolean");
+    static const char *const probe_switches[] = {"enabled", "box_projection"};
+    for (uint32_t i = 0u; i < ArrayCount(probe_switches); ++i) {
+      const VkrBakeryJson *value =
+          vkr_bakery_json_get(probe, probe_switches[i]);
+      if (value && value->type != VKR_BAKERY_JSON_BOOL) {
+        return vkr_project_fail(job, "Probe %s must be boolean",
+                                probe_switches[i]);
+      }
     }
   }
   return true_v;
