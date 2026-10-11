@@ -20,7 +20,10 @@
 #include "vkr_frame_input.h"
 #include "vkr_ibl_math.h"
 
-#define VKR_WORLD_RESOURCES_MAX_TEXTS 64
+/* 3D texts every loaded container shares. A slot costs only its record until
+   a text uses it, and draws are gathered from the active ones, so a signed
+   level (the Black Mesa test holds about 80) fits well inside. */
+#define VKR_WORLD_RESOURCES_MAX_TEXTS 256
 
 vkr_internal bool8_t vkr_world_resources_ensure_text_slot(
     VkrWorldResources *resources, uint32_t text_id,
