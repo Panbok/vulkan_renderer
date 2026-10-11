@@ -11,6 +11,8 @@
  */
 #include "vkr_harness_runtime.h"
 
+#include <stdio.h>
+
 /** stdout carries exactly one machine-readable line, on every exit path. */
 vkr_internal void vkr_harness_emit_result(const char *status,
                                           VkrHarnessExitCode exit_code,
@@ -210,6 +212,17 @@ vkr_internal bool8_t vkr_harness_work_volume_matches(
           MemCompare(&runs[0].values[first + offset],
                      &runs[run].values[first + offset],
                      sizeof(float64_t)) != 0) {
+        /* The reason code alone does not say which work differed. */
+        fprintf(stderr,
+                "harness: work volume differs in repetition %u, measured "
+                "frame %llu, %s: %.17g (available %u) against %.17g "
+                "(available %u) in repetition 0\n",
+                run, (unsigned long long)(offset / metric_count),
+                runs[0].metrics[offset % metric_count].name,
+                runs[run].values[first + offset],
+                (uint32_t)runs[run].availability[first + offset],
+                runs[0].values[first + offset],
+                (uint32_t)runs[0].availability[first + offset]);
         return false_v;
       }
     }
