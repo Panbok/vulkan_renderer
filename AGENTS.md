@@ -91,6 +91,8 @@ conditional references needed for the current step:
   into ground, and scatter foliage through the editor's agent channel.
 - `vkr-art` for material graphs, instances and the art pass through the
   editor's agent channel.
+- `vkr-cross-machine` for any work that spans two machines: depot servers,
+  discovery, mirroring, moving scenes, and the other machine's session.
 - `vkr-harness` for cases, profiles, captures, reports, and baselines; add
   `vkr-performance` for timing claims or `vkr-validation` for native diagnostics.
 - `unslop` for reports, explanations, and other output the user reads beyond
