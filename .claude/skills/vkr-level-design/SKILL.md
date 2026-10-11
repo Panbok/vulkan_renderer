@@ -46,10 +46,8 @@ sets the order of work and the checks that prove a level.
   earlier ones made, by name or `$k`. Room parts carry the room's name:
   cut a door into `north/Store/Wall South +Z` in the room's own batch.
 - Give names your prefix (`north/Store`) so name references stay unique.
-- Tag each unit's root group and every reusable prop with its area and kind,
-  as `#labs #chair` (`tags` on `entity.create` or `entity.set`; `tags_add`
-  and `tags_remove` change some). Run `tag.list` first and reuse its tags;
-  find tagged pieces with `scene.describe` `tags`.
+- Tag every object you make with how its final asset should look, from the
+  shared vocabulary (`tag.vocabulary`; see Tags below).
 - With `parent`, corners, points and planes are in the parent's space:
   subtract the parent's position from world coordinates first.
 - Give each brush a `surface` (concrete, metal, wood, tile, plaster, brick,
@@ -73,6 +71,30 @@ sets the order of work and the checks that prove a level.
   common fight in the Black Mesa level).
 - To open an existing wall, `brush.carve` a `clip` cutter with `target`
   naming the wall; without `target` it cuts every brush the cutter touches.
+
+## Tags
+
+Tags tell agents and artists where an object belongs and how its final
+material should look; the greybox `surface` and `mark` only stand in for
+it. Read `tag.vocabulary` once per session: categories space, object,
+material, finish, color, condition and behavior, each tag with its look.
+
+- Give every object one space tag, one object tag and one material tag, and
+  finish, color and condition tags when they matter, at most 16:
+  `#lab #desk #painted_metal #white #satin #clean`; a vehicle's red
+  lacquered body `#painted_metal #red #clearcoat`. Behavior tags mark what
+  moves or reacts: `#mover`, `#physics`, `#interactive`, `#climbable`.
+- Pass `tags` on the operation that makes the object (`brush.box`,
+  `brush.hull`, `entity.create`, `mover.create` and every other one that
+  makes an object), so no object exists untagged; `entity.set` `tags`,
+  `tags_add` and `tags_remove` change them later. A brush face or
+  connection takes no tags; its owner does.
+- Tag the space by what the room is, not your name prefix: `#warehouse`, not
+  `#wh`. An answer's `unknown_tags` lists tags outside the vocabulary; use a
+  vocabulary tag instead, or keep the new one only when no tag says it.
+- Check a region before you finish: `tag.list` with its `region` shows each
+  tag's `category` (null outside the vocabulary), and `scene.describe`
+  `tags` finds objects by tag, as `["#lab", "#chair"]`.
 
 ## Gameplay pieces
 

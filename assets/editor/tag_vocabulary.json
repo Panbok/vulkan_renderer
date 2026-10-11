@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "description": "Tags an object carries so agents and artists know where it belongs, what it is and how its final material should look (ADR-084). An object takes one space tag, one object tag, a material tag, and finish, colour and condition tags when they matter, at most 16 in all. Tags outside this list still apply; tag.list and write operations name them as unknown.",
+  "categories": [
+    {
+      "name": "space",
+      "description": "The area the object dresses; it sets the room's palette and wear.",
+      "tags": {
+        "#lab": "Research laboratory: clean painted metal, white and grey panels, glass, bright even light.",
+        "#office": "Administration office: carpet, laminate desks, fabric chairs, warm light.",
+        "#lobby": "Entrance hall: polished floor, signage, reception desk, brand colours.",
+        "#corridor": "Passage between spaces: wainscot, skirting, pipes overhead, signage at junctions.",
+        "#warehouse": "Storage hall: bare concrete, steel racks, painted floor lines, crates.",
+        "#workshop": "Maintenance and fabrication: oily concrete, tools, workbenches, hazard paint.",
+        "#control": "Control room: consoles, monitors, dim light, dark panels.",
+        "#cafe": "Canteen and break room: tile, laminate, warm light, food counters.",
+        "#medical": "Medical wing: white tile, clean surfaces, green and blue accents.",
+        "#transit": "Tram and freight lines: concrete tunnels, steel track, sodium light.",
+        "#station": "Platforms and terminals: concrete, safety lines, benches, timetables.",
+        "#maintenance": "Service ducts, shafts and plant rooms: bare metal, cables, grime.",
+        "#containment": "Test chambers and blast zones: heavy steel, hazard stripes, warning lights.",
+        "#outdoor": "Exterior structures exposed to weather.",
+        "#alpine": "Mountain exterior: rock, snow, conifers, weathered concrete and steel."
+      }
+    },
+    {
+      "name": "object",
+      "description": "What the object is; it picks the kind of asset an artist builds.",
+      "tags": {
+        "#wall": "Room wall or partition.",
+        "#floor": "Walkable floor slab.",
+        "#ceiling": "Ceiling slab or tiles.",
+        "#trim": "Skirting, wainscot, frames and edge strips.",
+        "#door": "Door leaf, frame or shutter.",
+        "#window": "Window pane or frame.",
+        "#stairs": "Stairs, steps and landings.",
+        "#railing": "Railings, balustrades and guard rails.",
+        "#catwalk": "Grated walkway or gantry deck.",
+        "#pipe": "Pipes and pipe racks.",
+        "#duct": "Air ducts and vents.",
+        "#cable": "Cables, trays and wiring.",
+        "#light_fixture": "Lamp housings and light panels.",
+        "#sign": "Signs, plates and lettering backs.",
+        "#desk": "Desks, benches and counters.",
+        "#chair": "Chairs, stools and seats.",
+        "#shelf": "Shelves and racks.",
+        "#crate": "Crates, boxes and cases.",
+        "#barrel": "Drums, barrels and canisters.",
+        "#console": "Control consoles and panels.",
+        "#monitor": "Screens and monitors.",
+        "#machine": "Machinery, generators and lab apparatus.",
+        "#vehicle": "Trams, cars, cabins and lifts.",
+        "#structure": "Columns, beams, piers and girders.",
+        "#bridge": "Bridge decks and spans.",
+        "#terrain_prop": "Rocks, boulders and ground dressing.",
+        "#foliage": "Trees, shrubs and grass."
+      }
+    },
+    {
+      "name": "material",
+      "description": "What the final surface is made of.",
+      "tags": {
+        "#concrete": "Cast concrete: grey, porous, formwork seams.",
+        "#painted_metal": "Steel under paint; take the colour tag for the paint.",
+        "#bare_metal": "Unpainted steel: grey, metallic, mill scale.",
+        "#stainless": "Stainless steel: bright, metallic, fine grain.",
+        "#aluminium": "Aluminium: light grey, metallic, soft reflections.",
+        "#rubber": "Rubber: dark, rough, matte.",
+        "#plastic": "Moulded plastic: smooth, dielectric.",
+        "#wood": "Wood: grain, warm tones.",
+        "#glass": "Glass: transparent or tinted, smooth.",
+        "#fabric": "Upholstery and cloth: soft, rough, no specular.",
+        "#leather": "Leather: soft sheen, creases.",
+        "#tile": "Ceramic tile: grout lines, glazed.",
+        "#plaster": "Painted plaster or drywall.",
+        "#brick": "Brick masonry.",
+        "#rock": "Natural stone.",
+        "#gravel": "Loose stones and scree.",
+        "#snow": "Snow and ice.",
+        "#water": "Water surfaces.",
+        "#emissive": "Light-emitting panel or screen."
+      }
+    },
+    {
+      "name": "finish",
+      "description": "How the surface reflects light.",
+      "tags": {
+        "#matte": "Rough, diffuse, no visible highlight.",
+        "#satin": "Soft, broad highlight.",
+        "#glossy": "Sharp highlight and clear reflections.",
+        "#clearcoat": "A clear lacquer layer over the base, as car paint or varnished wood.",
+        "#brushed": "Directional fine lines with stretched highlights (anisotropic).",
+        "#polished": "Mirror-like metal or stone.",
+        "#textured": "Embossed, knurled or diamond-plate relief.",
+        "#perforated": "Grating or punched sheet that shows through."
+      }
+    },
+    {
+      "name": "color",
+      "description": "The dominant colour of the final material.",
+      "tags": {
+        "#white": "White or off-white.",
+        "#grey": "Neutral grey.",
+        "#black": "Black or near black.",
+        "#blue": "Blue.",
+        "#red": "Red.",
+        "#orange": "Orange, the facility's accent colour.",
+        "#yellow": "Yellow.",
+        "#green": "Green.",
+        "#brown": "Brown or tan.",
+        "#hazard_stripes": "Black and yellow diagonal stripes."
+      }
+    },
+    {
+      "name": "condition",
+      "description": "Wear and dirt the final material shows.",
+      "tags": {
+        "#new": "Fresh, unmarked.",
+        "#clean": "Kept clean, light use.",
+        "#worn": "Edges rubbed, paint chipped where hands and feet go.",
+        "#scratched": "Fine scratches across the surface.",
+        "#dirty": "Grime in corners and on horizontal faces.",
+        "#rusty": "Rust streaks and blooms.",
+        "#damaged": "Dents, cracks or burns.",
+        "#wet": "Damp or puddled.",
+        "#dusty": "Dust on upward faces."
+      }
+    },
+    {
+      "name": "behavior",
+      "description": "What the object does in play.",
+      "tags": {
+        "#interactive": "The player uses it.",
+        "#physics": "A dynamic body the player can push.",
+        "#mover": "Moves or turns on its own.",
+        "#breakable": "Meant to break.",
+        "#climbable": "A ladder or a surface the player climbs."
+      }
+    }
+  ]
+}

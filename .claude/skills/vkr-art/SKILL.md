@@ -23,6 +23,13 @@ operation's schema. This skill sets the order of work and the checks.
    touch.
 3. Leave level layout alone: brushes keep their `surface` and `mark`. The art
    pass sets themes, art-owned materials and material documents.
+4. Read the objects' design tags (`tag.vocabulary` for their meaning,
+   `tag.list` with a `region`, `scene.describe` `tags`): material, finish,
+   color and condition tags state the look the final asset needs, as
+   `#painted_metal #blue #clearcoat #worn`, and the space tag its palette.
+   Make the material each combination asks for (a clearcoat layer for
+   `#clearcoat`, roughness from the finish, wear from the condition), and
+   report objects whose tags contradict their surface instead of guessing.
 
 ## Documents
 

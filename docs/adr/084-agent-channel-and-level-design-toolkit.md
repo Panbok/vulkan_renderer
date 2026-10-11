@@ -95,7 +95,7 @@ thread during the editor's build.
 | `ops.list`, `editor.status` | The table, with whether each operation settles; loaded containers with their journal `revision`, selection, simulation, view, pending changes and what still rebuilds |
 | `scene.describe`, `entity.get`, `query.bounds` | Entities with ID, name, parent, component types, [tags](#tags), local pose and world bounds; one entity's components as descriptor JSON |
 | `entity.create`, `entity.set`, `entity.move`, `entity.delete`, `entity.parent` | Structure, pose and tags; `entity.move` shifts by a world offset; delete with `recursive` deletes descendants first |
-| `tag.list` | Each tag a scene's entities carry, with its count |
+| `tag.list`, `tag.vocabulary` | Each tag a scene's entities carry, with its count and vocabulary category; the shared tag vocabulary |
 | `component.add`, `component.set`, `component.remove` | Component values by descriptor property name, partial for `set` |
 | `batch` | Several write operations as one journal group |
 | `changes.list`, `changes.accept`, `changes.reject` | Review of agent edits |
@@ -1328,10 +1328,12 @@ tags; its owner does.
 | Argument or result | Meaning |
 |---|---|
 | `entity.create` `tags` | The new entity's tags, as one string or an array of strings |
+| `tags`, `tags_add`, `tags_remove` on any operation that makes an object (`brush.box`, `brush.hull`, `mover.create`, `scatter.create` and the rest) | The tags of the object it makes, so none exists untagged; an operation that makes no object refuses them |
 | `entity.set` `tags`, `tags_add`, `tags_remove` | Replace the tags, then add and remove some; no tags remove the component. A batch edits the tags an earlier operation of it set |
 | `entity.get` `tags` | The entity's tags as an array, empty when it has none; `components.tags` holds the stored text |
 | `scene.describe` `tags` | Keep only entities carrying every tag named; each row of a tagged entity has `tags` |
-| `tag.list` | `{"container", "tags": [{"tag", "count"}]}`: each tag the entities carry, most used first, narrowed by `container`, `root`, `region` and `tags` as in `scene.describe` |
+| `tag.list` | `{"container", "tags": [{"tag", "count", "category"}]}`: each tag the entities carry, most used first, narrowed by `container`, `root`, `region` and `tags` as in `scene.describe`; `category` is the vocabulary's, null outside it |
+| `tag.vocabulary` | `{"description", "categories": [{"name", "description", "tags": [{"tag", "look"}]}]}`: the shared vocabulary |
 
 In Details, a Tags row under the name edits the selection's tags as text;
 Enter or leaving the field applies them as one undoable edit that adds,
@@ -1340,6 +1342,32 @@ and Escape reverts. Tags give an object no icon, kind or Details section,
 and Add component does not list them. An Outliner search that starts with
 `#` matches objects whose tags begin with each word, in any case, so
 `#lab #chair` finds a chair tagged `#labs`.
+
+#### Tag vocabulary
+
+Tags also tell agents and artists how the final asset should look. The
+vocabulary [`assets/editor/tag_vocabulary.json`](../../assets/editor/tag_vocabulary.json)
+lists the shared tags by category, each with the look it asks for:
+
+| Category | Answers | Examples |
+| --- | --- | --- |
+| space | the area the object dresses, which sets palette and wear | `#lab`, `#office`, `#warehouse`, `#transit`, `#alpine` |
+| object | what it is | `#chair`, `#desk`, `#railing`, `#pipe`, `#door`, `#foliage` |
+| material | what the final surface is made of | `#painted_metal`, `#concrete`, `#glass`, `#fabric`, `#tile` |
+| finish | how it reflects light | `#matte`, `#satin`, `#glossy`, `#clearcoat`, `#brushed` |
+| color | its dominant colour | `#blue`, `#orange`, `#hazard_stripes` |
+| condition | wear and dirt | `#clean`, `#worn`, `#dirty`, `#rusty` |
+| behavior | what it does in play | `#mover`, `#physics`, `#interactive`, `#climbable` |
+
+An object takes one space, one object and one material tag, and finish,
+color and condition tags when they matter. A brush's `surface` and `mark`
+stay its greybox look; its tags state the final art intent beside them, as
+`#painted_metal #blue #clearcoat` on a metal brush marked blue. The editor
+reads the file once per run. Tags outside it still apply: `tag.list` gives
+them a null category, and a write batch answers `unknown_tags` with those it
+wrote. The Black Mesa test level was tagged from names, surfaces, marks,
+movers and bodies by a script (2026-10-11): 7,515 objects, 76 vocabulary
+tags and none outside it.
 
 ## Consequences
 

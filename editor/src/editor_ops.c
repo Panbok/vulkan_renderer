@@ -124,6 +124,11 @@ typedef struct OpsTaskSlots {
 
 struct VkrEditorOps {
   VkrAllocator *allocator;
+  /* The tag vocabulary's text (assets/editor/tag_vocabulary.json, ADR-084),
+     read once per run on first use; NULL when it did not read. */
+  char *tag_vocabulary;
+  uint64_t tag_vocabulary_length;
+  bool8_t tag_vocabulary_read;
   /* Reused batch storage, grown up to VKR_SAMPLE_EDIT_BATCH_MAX as a batch
      needs; the runtime borrows it until it dispatches, and one batch is in
      flight at a time. A build addresses earlier items by index, since a
@@ -217,6 +222,9 @@ typedef struct OpsBatch {
   /* Select the first operation's entity once applied, as the editor's own
      tools do. */
   bool8_t select;
+  /* Tags the batch writes that the vocabulary does not hold, space
+     separated, for the answer's `unknown_tags`. */
+  char unknown_tags[256];
   /* World boxes the batch's terrain edits may change, for claims. */
   uint32_t touched_count;
   Vec3 touched_min[OPS_TOUCHED_MAX];
@@ -1437,6 +1445,93 @@ static bool8_t ops_tags_arg(OpsContext *ctx, const VkrBakeryJson *value,
   return true_v;
 }
 
+/* The tag vocabulary (ADR-084) parsed in the call's arena, or NULL when its
+   file does not read or parse. */
+static const VkrBakeryJson *ops_tag_vocabulary(OpsContext *ctx) {
+  VkrEditorOps *ops = ctx->ops;
+  if (!ops->tag_vocabulary_read) {
+    ops->tag_vocabulary_read = true_v;
+    VkrAllocator scratch = {.ctx = ops_arena(ctx)};
+    vkr_allocator_arena(&scratch);
+    FilePath path = vkr_asset_path_file(
+        &scratch, string8_lit("assets/editor/tag_vocabulary.json"));
+    FileMode mode = bitset8_create();
+    bitset8_set(&mode, FILE_MODE_READ);
+    bitset8_set(&mode, FILE_MODE_BINARY);
+    FileHandle file = {0};
+    String8 text = {0};
+    if (path.path.length && file_open(&path, mode, &file) == FILE_ERROR_NONE) {
+      if (file_read_string(&file, &scratch, &text) == FILE_ERROR_NONE &&
+          text.length) {
+        ops->tag_vocabulary = malloc(text.length);
+        if (ops->tag_vocabulary) {
+          MemCopy(ops->tag_vocabulary, text.str, text.length);
+          ops->tag_vocabulary_length = text.length;
+        }
+      }
+      file_close(&file);
+    }
+  }
+  if (!ops->tag_vocabulary) {
+    return NULL;
+  }
+  const VkrBakeryJson *root = vkr_bakery_json_parse(
+      ops_arena(ctx), (const uint8_t *)ops->tag_vocabulary,
+      ops->tag_vocabulary_length, 16u, NULL);
+  const VkrBakeryJson *categories =
+      root ? vkr_bakery_json_get(root, "categories") : NULL;
+  return categories && categories->type == VKR_BAKERY_JSON_ARRAY ? root : NULL;
+}
+
+/* The vocabulary category holding `tag`, or NULL. */
+static const VkrBakeryJson *ops_tag_category(const VkrBakeryJson *vocabulary,
+                                             String8 tag) {
+  const VkrBakeryJson *categories =
+      vocabulary ? vkr_bakery_json_get(vocabulary, "categories") : NULL;
+  for (const VkrBakeryJson *category = categories ? categories->first : NULL;
+       category; category = category->next) {
+    const VkrBakeryJson *tags = vkr_bakery_json_get(category, "tags");
+    for (const VkrBakeryJson *entry =
+             tags && tags->type == VKR_BAKERY_JSON_OBJECT ? tags->first : NULL;
+         entry; entry = entry->next) {
+      if (entry->key.length == tag.length &&
+          MemCompare(entry->key.str, tag.str, tag.length) == 0) {
+        return category;
+      }
+    }
+  }
+  return NULL;
+}
+
+/* Adds the tags of `tags` the vocabulary does not hold to the batch's
+   `unknown_tags`, once each. */
+static void ops_tags_note_unknown(OpsContext *ctx, OpsBatch *batch,
+                                  const SceneTags *tags) {
+  const VkrBakeryJson *vocabulary = ops_tag_vocabulary(ctx);
+  if (!vocabulary) {
+    return;
+  }
+  uint32_t cursor = 0u;
+  String8 tag = {0};
+  while (vkr_scene_tags_next(tags, &cursor, &tag)) {
+    if (ops_tag_category(vocabulary, tag)) {
+      continue;
+    }
+    char word[SCENE_TAG_LENGTH_MAX + 4u];
+    snprintf(word, sizeof(word), " %.*s ", (int)tag.length,
+             (const char *)tag.str);
+    char padded[sizeof(batch->unknown_tags) + 2u];
+    snprintf(padded, sizeof(padded), " %s ", batch->unknown_tags);
+    const size_t used = strlen(batch->unknown_tags);
+    if (strstr(padded, word) ||
+        used + tag.length + 2u > sizeof(batch->unknown_tags)) {
+      continue;
+    }
+    snprintf(batch->unknown_tags + used, sizeof(batch->unknown_tags) - used,
+             "%s%.*s", used ? " " : "", (int)tag.length, (const char *)tag.str);
+  }
+}
+
 static VkrBakeryJson *ops_tags_json(OpsContext *ctx, const SceneTags *tags) {
   VkrBakeryJson *array = vkr_bakery_json_array(ops_arena(ctx));
   uint32_t cursor = 0u;
@@ -1615,6 +1710,7 @@ static bool8_t ops_tags_args(OpsContext *ctx, const VkrBakeryJson *args,
     }
     tags = kept;
   }
+  ops_tags_note_unknown(ctx, batch, &tags);
   return ops_tags_write(ctx, batch, ref, &tags);
 }
 
@@ -5134,6 +5230,22 @@ static bool8_t ops_build_one(OpsContext *ctx, const OpsDef *def,
   if (!def->build(ctx, args, batch)) {
     return false_v;
   }
+  /* Any operation that makes an object takes `tags` for it (ADR-084);
+     entity.create and entity.set read them themselves. */
+  if (def->build != ops_build_create && def->build != ops_build_set &&
+      ops_tags_given(args)) {
+    const uint32_t made = batch->op_item[batch->op_count];
+    if (made == UINT32_MAX || batch->container < 0) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'tags' tag the object an operation makes; this one "
+                      "makes none, so tag its object with entity.set");
+    }
+    const OpsRef ref = {.item = (int32_t)made,
+                        .container = (uint16_t)batch->container};
+    if (!ops_tags_args(ctx, args, batch, &ref)) {
+      return false_v;
+    }
+  }
   batch->op_count++;
   return true_v;
 }
@@ -5467,6 +5579,10 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
     }
   }
   ops_set(ctx, call->result, "results", results);
+  if (batch->unknown_tags[0]) {
+    ops_set(ctx, call->result, "unknown_tags",
+            vkr_bakery_json_cstr(call->arena, batch->unknown_tags));
+  }
   if (batch->select && batch->op_count && ctx->frame->scene_edit) {
     VkrEntityId selected = batch->op_target[0];
     if (batch->op_item[0] != UINT32_MAX) {
@@ -6294,11 +6410,19 @@ static VkrEditorOpStatus ops_run_tag_list(OpsContext *ctx) {
   if (distinct) {
     qsort(counts, distinct, sizeof(*counts), ops_tag_count_compare);
   }
+  const VkrBakeryJson *vocabulary = ops_tag_vocabulary(ctx);
   VkrBakeryJson *list = vkr_bakery_json_array(arena);
   for (uint64_t i = 0; i < distinct; ++i) {
     VkrBakeryJson *entry = vkr_bakery_json_object(arena);
     ops_set(ctx, entry, "tag", ops_string(ctx, counts[i].tag));
     ops_set(ctx, entry, "count", vkr_bakery_json_int(arena, counts[i].count));
+    /* The vocabulary's category, or null for a tag it does not hold. */
+    const VkrBakeryJson *category = ops_tag_category(vocabulary, counts[i].tag);
+    String8 name = {0};
+    ops_set(ctx, entry, "category",
+            category && vkr_bakery_json_get_string(category, "name", &name)
+                ? ops_string(ctx, name)
+                : vkr_bakery_json_null(arena));
     vkr_bakery_json_append(list, entry);
   }
   char slot[16];
@@ -6307,6 +6431,54 @@ static VkrEditorOpStatus ops_run_tag_list(OpsContext *ctx) {
           vkr_bakery_json_cstr(arena, ops_container_name(selection.container,
                                                          slot, sizeof(slot))));
   ops_set(ctx, result, "tags", list);
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* tag.vocabulary: the tags agents and artists share, by category, with the
+   look each asks of the final asset (ADR-084). */
+static VkrEditorOpStatus ops_run_tag_vocabulary(OpsContext *ctx) {
+  const VkrBakeryJson *vocabulary = ops_tag_vocabulary(ctx);
+  if (!vocabulary) {
+    ops_fail(ctx, OPS_REJECTED,
+             "assets/editor/tag_vocabulary.json did not read as a vocabulary");
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *categories = vkr_bakery_json_array(arena);
+  const VkrBakeryJson *source = vkr_bakery_json_get(vocabulary, "categories");
+  for (const VkrBakeryJson *category = source->first; category;
+       category = category->next) {
+    String8 name = {0};
+    String8 description = {0};
+    (void)vkr_bakery_json_get_string(category, "name", &name);
+    (void)vkr_bakery_json_get_string(category, "description", &description);
+    VkrBakeryJson *row = vkr_bakery_json_object(arena);
+    ops_set(ctx, row, "name", ops_string(ctx, name));
+    ops_set(ctx, row, "description", ops_string(ctx, description));
+    VkrBakeryJson *tags = vkr_bakery_json_array(arena);
+    const VkrBakeryJson *members = vkr_bakery_json_get(category, "tags");
+    for (const VkrBakeryJson *entry =
+             members && members->type == VKR_BAKERY_JSON_OBJECT ? members->first
+                                                                : NULL;
+         entry; entry = entry->next) {
+      VkrBakeryJson *tag = vkr_bakery_json_object(arena);
+      ops_set(ctx, tag, "tag", ops_string(ctx, entry->key));
+      ops_set(ctx, tag, "look",
+              entry->type == VKR_BAKERY_JSON_STRING
+                  ? ops_string(ctx, entry->string)
+                  : vkr_bakery_json_null(arena));
+      vkr_bakery_json_append(tags, tag);
+    }
+    ops_set(ctx, row, "tags", tags);
+    vkr_bakery_json_append(categories, row);
+  }
+  String8 description = {0};
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  if (vkr_bakery_json_get_string(vocabulary, "description", &description)) {
+    ops_set(ctx, result, "description", ops_string(ctx, description));
+  }
+  ops_set(ctx, result, "categories", categories);
   ctx->call->result = result;
   return VKR_EDITOR_OP_DONE;
 }
@@ -11014,7 +11186,7 @@ static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
   "\"enum\":[\"solid\",\"visual\",\"clip\",\"trigger\"]},"                     \
   "\"surface\":" OPS_SURFACE_SCHEMA ",\"mark\":" OPS_MARK_SCHEMA               \
   ",\"grid\":{\"type\":\"number\",\"description\":\"Snap step in "             \
-  "meters; 0 turns snapping off\"}"
+  "meters; 0 turns snapping off\"},\"tags\":" OPS_TAGS_SCHEMA
 #define OPS_CAPSULE_SCHEMA                                                     \
   "\"radius\":{\"type\":\"number\"},\"height\":{\"type\":\"number\"},"         \
   "\"crouch_height\":{\"type\":\"number\",\"description\":\"0 cannot "         \
@@ -13651,11 +13823,21 @@ static const OpsDef s_ops[] = {
      "," OPS_SETTLE_OFF_SCHEMA "},\"required\":[\"entity\"]}",
      ops_run_get, NULL, OPS_QUICK},
     {"tag.list",
-     "Each tag the entities of one scene carry, with how many carry it, most "
-     "used first; root, region and tags narrow the entities as in "
-     "scene.describe.",
+     "Each tag the entities of one scene carry, with how many carry it and "
+     "its tag.vocabulary category (null outside the vocabulary), most used "
+     "first; root, region and tags narrow the entities as in scene.describe.",
      "{\"type\":\"object\",\"properties\":{" OPS_TAGS_REGION_SCHEMA "}}",
      ops_run_tag_list, NULL, OPS_QUICK},
+    {"tag.vocabulary",
+     "The tags agents and artists share (assets/editor/tag_vocabulary.json), "
+     "by category: space, object, material, finish, color, condition and "
+     "behavior, each tag with the look it asks of the final asset. An object "
+     "takes one space, one object and one material tag, and finish, color "
+     "and condition tags when they matter. tag.list names each tag's "
+     "category, null outside the vocabulary, and write operations answer "
+     "'unknown_tags' for the tags they wrote that it does not hold.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_tag_vocabulary, NULL,
+     OPS_QUICK},
     {"entity.create",
      "Create an entity with a name, pose (rotation in degrees XYZ), "
      "optionally one component, and tags.",
@@ -14817,6 +14999,7 @@ void vkr_editor_ops_destroy(VkrEditorOps *ops) {
     return;
   }
   ops_level_end(ops);
+  free(ops->tag_vocabulary);
   free(ops->items);
   free(ops);
 }
