@@ -164,7 +164,6 @@ void vkr_depot_disconnect(VkrDepotConnection *link) {
   if (!link) {
     return;
   }
-  vkr_depot_client_destroy(link->client);
   if (link->host && link->connected && !link->closed) {
     vkr_net_core_close(vkr_net_host_core(link->host), link->connection,
                        VKR_NET_CLOSE_APPLICATION, depot_connection_now(link));
@@ -172,7 +171,9 @@ void vkr_depot_disconnect(VkrDepotConnection *link) {
       (void)depot_connection_pump(link, 10);
     }
   }
+  /* The session calls the client's service on CLOSED: the client goes last. */
   vkr_net_session_destroy(link->session);
+  vkr_depot_client_destroy(link->client);
   vkr_net_host_destroy(link->host);
   free(link);
 }

@@ -24,7 +24,8 @@
  * started from. A branch that moved meanwhile refuses the push; `pull`
  * first. `serve` also answers LAN discovery (vkr_depot_discovery.h), and
  * `mirror` keeps the branches of the local server and a peer server equal,
- * so two machines each hold a full store. */
+ * so two machines each hold a full store. A running server applies `access`
+ * within a second; a key it refused waits there as a request. */
 
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
@@ -34,25 +35,14 @@
 #include "vkr_depot_client.h"
 #include "vkr_depot_discovery.h"
 #include "vkr_depot_server.h"
+#include "vkr_depot_service.h"
 #include "vkr_depot_sync.h"
 #include "vkr_depot_workspace.h"
 #include "vkr_depot_zstd.h"
-#include "vkr_net_host.h"
-#include "vkr_net_session.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-typedef struct DepotLink {
-  VkrNetHost *host;
-  VkrNetSession *session;
-  VkrDepotServer *server;
-  VkrNetConnectionId connection;
-  bool8_t connected;
-  bool8_t closed;
-  uint16_t close_code;
-} DepotLink;
 
 static VkrAllocator depot_allocator;
 static VkrDMemory depot_memory;
@@ -74,57 +64,8 @@ static bool8_t depot_parse_key(const char *hex, uint8_t out[32]) {
 }
 
 // =============================================================================
-// Link over a UDP host
+// Connections
 // =============================================================================
-
-static bool8_t depot_link_pump(void *context, int32_t timeout_ms) {
-  DepotLink *link = context;
-  if (!vkr_net_host_pump(link->host, timeout_ms)) {
-    return false_v;
-  }
-  VkrNetCore *core = vkr_net_host_core(link->host);
-  const uint64_t now = vkr_net_host_now(link->host);
-  VkrNetEvent event;
-  while (vkr_net_core_poll(core, &event)) {
-    if (vkr_net_session_dispatch(link->session, &event, now)) {
-      continue;
-    }
-    if (link->server) {
-      vkr_depot_server_on_event(link->server, &event);
-    }
-    if (event.type == VKR_NET_EVENT_CONNECTED &&
-        event.connection == link->connection) {
-      link->connected = true_v;
-    } else if (event.type == VKR_NET_EVENT_CLOSED &&
-               event.connection == link->connection) {
-      link->closed = true_v;
-      link->close_code = event.code;
-    }
-  }
-  if (link->server) {
-    vkr_depot_server_update(link->server, now);
-  } else {
-    vkr_net_core_flush(core);
-  }
-  return true_v;
-}
-
-static uint64_t depot_link_now(void *context) {
-  return vkr_net_host_now(((DepotLink *)context)->host);
-}
-
-static void depot_link_close(DepotLink *link) {
-  if (link->host && link->connected && !link->closed) {
-    vkr_net_core_close(vkr_net_host_core(link->host), link->connection,
-                       VKR_NET_CLOSE_APPLICATION, depot_link_now(link));
-    for (uint32_t i = 0u; i < 20u; ++i) {
-      (void)depot_link_pump(link, 10);
-    }
-  }
-  vkr_net_session_destroy(link->session);
-  vkr_net_host_destroy(link->host);
-  MemZero(link, sizeof(*link));
-}
 
 /* Connects to the working copy's server; NULL after printing why. */
 static VkrDepotConnection *depot_connect(const VkrDepotWorkspace *workspace) {
@@ -170,94 +111,61 @@ static int depot_init(const char *store_root) {
   return 0;
 }
 
-typedef struct ServeContext {
-  VkrDepotServer *server;
-} ServeContext;
-
 static void depot_serve_accept(void *context, const VkrNetAddress *address,
-                               const uint8_t peer_key[32],
-                               const uint8_t *credential,
-                               uint32_t credential_size,
-                               VkrNetAcceptResult *out_result) {
-  ServeContext *serve = context;
-  if (!serve->server) {
-    out_result->code = VKR_NET_CLOSE_SERVER_FULL;
-    return;
-  }
-  vkr_depot_server_accept(serve->server, address, peer_key, credential,
-                          credential_size, out_result);
+                               const uint8_t key[32], const char *name,
+                               bool8_t accepted) {
+  (void)context;
+  (void)name;
   char text[VKR_NET_ADDRESS_TEXT];
   vkr_net_address_format(address, text, sizeof(text));
-  printf("%s %s key ", out_result->code ? "refused" : "accepted", text);
-  depot_print_key(peer_key);
+  printf("%s %s key ", accepted ? "accepted" : "refused", text);
+  depot_print_key(key);
   printf("\n");
   fflush(stdout);
 }
 
+/* Serves on the service thread until the socket fails; a changed access
+   file applies within a second. */
 static int depot_serve(const char *store_root, const char *bind,
                        bool8_t open_access, const char *name,
                        uint16_t discovery_port) {
-  static ServeContext serve;
-  VkrNetHostConfig config = {
-      .socket = {.receive_buffer = 16u << 20, .send_buffer = 16u << 20}};
-  if (!vkr_depot_server_key(store_root, &config.core.static_keys) ||
-      !vkr_depot_address(bind ? bind : "[::]", &config.bind)) {
-    fprintf(stderr, "invalid store or --bind\n");
+  const VkrDepotServiceConfig config = {.store_root = store_root,
+                                        .bind = bind,
+                                        .port_attempts = 1u,
+                                        .name = name,
+                                        .discovery_port = discovery_port,
+                                        .codec = vkr_depot_zstd_codec(),
+                                        .open_access = open_access,
+                                        .on_accept = depot_serve_accept};
+  char error[256];
+  VkrDepotService *service =
+      vkr_depot_service_start(&depot_allocator, &config, error, sizeof(error));
+  if (!service) {
+    fprintf(stderr, "%s\n", error);
     return 1;
   }
-  config.core.accept_incoming = true_v;
-  config.core.accept = depot_serve_accept;
-  config.core.accept_context = &serve;
-  config.core.max_connections = 256u;
-  config.core.sent_packet_capacity = 16384u;
-  DepotLink link = {0};
-  link.host = vkr_net_host_create(&depot_allocator, &config);
-  link.session = link.host ? vkr_net_session_create(
-                                 &depot_allocator, vkr_net_host_core(link.host))
-                           : NULL;
-  const VkrDepotServerConfig server_config = {.store_root = store_root,
-                                              .codec = vkr_depot_zstd_codec(),
-                                              .open_access = open_access};
-  link.server = link.session
-                    ? vkr_depot_server_create(&depot_allocator,
-                                              vkr_net_host_core(link.host),
-                                              link.session, &server_config)
-                    : NULL;
-  if (!link.server) {
-    fprintf(stderr, "could not start the server\n");
-    depot_link_close(&link);
-    return 1;
-  }
-  serve.server = link.server;
-  VkrNetAddress local;
-  (void)vkr_net_host_local_address(link.host, &local);
+  VkrDepotServiceInfo info;
+  vkr_depot_service_info(service, &info);
   char text[VKR_NET_ADDRESS_TEXT];
-  vkr_net_address_format(&local, text, sizeof(text));
+  vkr_net_address_format(&info.address, text, sizeof(text));
   printf("serving %s on %s key ", store_root, text);
-  depot_print_key(config.core.static_keys.public_key);
+  depot_print_key(info.server_key);
   printf("%s\n", open_access ? " (open access)" : "");
-  /* Other machines find this server by its name, the store's folder
-     unless --name gives one. */
-  static VkrDepotResponder responder;
-  if (vkr_depot_responder_open(&responder, discovery_port, local.port,
-                               config.core.static_keys.public_key,
-                               name ? name : vkr_bakery_path_name(store_root),
-                               NULL)) {
-    printf("discoverable as %s on UDP %u\n", responder.name, discovery_port);
+  if (info.discoverable) {
+    printf("discoverable as %s on UDP %u\n", info.name, info.discovery_port);
   } else {
-    printf("not discoverable: UDP %u is taken\n", discovery_port);
+    printf("not discoverable: UDP %u is taken\n", info.discovery_port);
   }
   fflush(stdout);
   for (;;) {
-    if (!depot_link_pump(&link, 50)) {
+    vkr_platform_sleep(200u);
+    vkr_depot_service_info(service, &info);
+    if (info.failed) {
       fprintf(stderr, "the socket failed\n");
       break;
     }
-    vkr_depot_responder_update(&responder);
   }
-  vkr_depot_responder_close(&responder);
-  vkr_depot_server_destroy(link.server);
-  depot_link_close(&link);
+  vkr_depot_service_stop(service);
   return 1;
 }
 

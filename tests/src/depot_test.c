@@ -6,6 +6,7 @@
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
 #include "vkr_depot_server.h"
+#include "vkr_depot_service.h"
 #include "vkr_depot_sync.h"
 #include "vkr_depot_workspace.h"
 #include "vkr_depot_zstd.h"
@@ -1192,6 +1193,116 @@ static void test_depot_identity_migration(void) {
   printf("  test_depot_identity_migration PASSED\n");
 }
 
+/* Fails when the service does not move to a free port beside a taken one,
+   when an unknown machine's connect does not report DENIED or leaves no
+   request with its display name, when a role given through the service
+   does not let it in on its next try, or when a browser does not see the
+   service answer a unicast probe. Runs on loopback with a temporary
+   identity, so the user's key stays untouched. */
+static void test_depot_service(void) {
+  printf("  Running test_depot_service...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char second_root[VKR_DEPOT_PATH_CAPACITY];
+  char client_root[VKR_DEPOT_PATH_CAPACITY];
+  char identity[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("service", store_root, sizeof(store_root));
+  depot_test_dir("service_b", second_root, sizeof(second_root));
+  depot_test_dir("service_client", client_root, sizeof(client_root));
+  assert(vkr_bakery_path_join(identity, sizeof(identity), client_root,
+                              "identity.key"));
+  char saved_identity[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const char *identity_value = getenv("VKR_DEPOT_IDENTITY");
+  const bool8_t had_identity = identity_value && identity_value[0];
+  snprintf(saved_identity, sizeof(saved_identity), "%s",
+           had_identity ? identity_value : "");
+  depot_test_setenv("VKR_DEPOT_IDENTITY", identity);
+
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), GB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const uint16_t discovery_port = 7349u;
+  VkrDepotServiceConfig config = {.store_root = store_root,
+                                  .bind = "127.0.0.1:0",
+                                  .discovery_port = discovery_port,
+                                  .codec = vkr_depot_zstd_codec()};
+  char error[256];
+  VkrDepotService *first =
+      vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(first);
+  VkrDepotServiceInfo info;
+  vkr_depot_service_info(first, &info);
+  const uint16_t taken = info.address.port;
+  char bind[64];
+  snprintf(bind, sizeof(bind), "127.0.0.1:%u", taken);
+  config.store_root = second_root;
+  config.bind = bind;
+  config.port_attempts = 4u;
+  VkrDepotService *service =
+      vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(service);
+  vkr_depot_service_info(service, &info);
+  assert(info.address.port > taken && info.address.port <= taken + 3u);
+  assert(!info.discoverable);
+  vkr_depot_service_stop(service);
+
+  /* A browser sees the first service on a unicast probe. */
+  vkr_depot_service_info(first, &info);
+  if (info.discoverable) {
+    VkrDepotBrowser browser;
+    assert(vkr_depot_browser_open(&browser, discovery_port));
+    VkrNetAddress loopback;
+    assert(vkr_net_address_parse("127.0.0.1", 0u, &loopback));
+    assert(vkr_depot_browser_add_target(&browser, &loopback));
+    for (uint32_t i = 0u; i < 40u && browser.found_count == 0u; ++i) {
+      vkr_depot_browser_probe(&browser, false_v);
+      vkr_platform_sleep(50u);
+      (void)vkr_depot_browser_update(&browser);
+    }
+    assert(browser.found_count == 1u &&
+           browser.found[0].address.port == info.address.port &&
+           memcmp(browser.found[0].server_key, info.server_key, 32u) == 0);
+    vkr_depot_browser_close(&browser);
+    printf("    a browser found the service on UDP %u\n", discovery_port);
+  } else {
+    printf("    UDP %u is taken; the browser check is skipped\n",
+           discovery_port);
+  }
+
+  /* An unknown machine asks, is let in through the service and retries. */
+  char address[64];
+  snprintf(address, sizeof(address), "127.0.0.1:%u", info.address.port);
+  const VkrDepotConnectConfig connect = {.address = address,
+                                         .server_key = info.server_key,
+                                         .name = "dana@studio",
+                                         .timeout_ms = 5000u};
+  VkrDepotConnectStatus status = VKR_DEPOT_CONNECT_OK;
+  assert(
+      !vkr_depot_connect(&allocator, &connect, &status, error, sizeof(error)));
+  assert(status == VKR_DEPOT_CONNECT_DENIED);
+  VkrDepotAccessRequest requests[VKR_DEPOT_REQUESTS_MAX];
+  assert(vkr_depot_service_requests(first, requests, VKR_DEPOT_REQUESTS_MAX) ==
+         1u);
+  assert(strcmp(requests[0].name, "dana@studio") == 0);
+  assert(
+      vkr_depot_service_set_role(first, requests[0].key, VKR_DEPOT_ROLE_READ));
+  VkrDepotRef refs[4];
+  uint32_t ref_count = 0u;
+  assert(vkr_depot_branches(&allocator, &connect, refs, 4u, &ref_count, &status,
+                            error, sizeof(error)));
+  assert(status == VKR_DEPOT_CONNECT_OK && ref_count == 0u);
+  vkr_depot_service_info(first, &info);
+  assert(!info.failed);
+  vkr_depot_service_stop(first);
+
+  vkr_dmemory_allocator_destroy(&allocator);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
+  assert(vkr_bakery_remove_tree(store_root));
+  assert(vkr_bakery_remove_tree(second_root));
+  assert(vkr_bakery_remove_tree(client_root));
+  printf("  test_depot_service PASSED\n");
+}
+
 bool32_t run_depot_tests(void) {
   /* Unbuffered, so a stopped run shows the test it stopped in. */
   setvbuf(stdout, NULL, _IONBF, 0);
@@ -1207,6 +1318,7 @@ bool32_t run_depot_tests(void) {
   test_depot_conflicts();
   test_depot_cancel();
   test_depot_identity_migration();
+  test_depot_service();
   printf("--- Asset depot tests completed ---\n");
   return true;
 }

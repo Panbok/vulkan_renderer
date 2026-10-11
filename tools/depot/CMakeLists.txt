@@ -10,7 +10,8 @@ add_library(vkr_depot_lib STATIC
     vkr_depot_server.c
     vkr_depot_client.c
     vkr_depot_sync.c
-    vkr_depot_discovery.c)
+    vkr_depot_discovery.c
+    vkr_depot_service.c)
 vkr_configure_library(vkr_depot_lib)
 target_include_directories(vkr_depot_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(vkr_depot_lib PUBLIC vkr_net vkr_bakery_os)
