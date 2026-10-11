@@ -611,10 +611,12 @@ static void heightfield_test_streamed(void) {
                                  vec3_new(-824.0f, 10.0f, -764.0f),
                                  vkr_quat_identity(), vec3_one()));
   vkr_scene_update_transforms(&scene);
-  SceneTerrain small;
-  vkr_type_defaults(&vkr_scene_terrain_type, &small);
-  snprintf(small.heightfield, sizeof(small.heightfield), "%s", cover_path);
-  assert(vkr_scene_set_typed(&scene, cover, &vkr_scene_terrain_type, &small));
+  SceneTerrain covering;
+  vkr_type_defaults(&vkr_scene_terrain_type, &covering);
+  snprintf(covering.heightfield, sizeof(covering.heightfield), "%s",
+           cover_path);
+  assert(
+      vkr_scene_set_typed(&scene, cover, &vkr_scene_terrain_type, &covering));
   terrain.backdrop = true_v;
   assert(
       vkr_scene_set_typed(&scene, entity, &vkr_scene_terrain_type, &terrain));

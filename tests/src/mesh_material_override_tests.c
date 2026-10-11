@@ -377,14 +377,14 @@ static void test_caster_bounds_follow_box(void) {
 
   const VkrMeshInstanceHandle wall =
       override_test_instance(&ctx, vec3_new(0.0f, 0.0f, 0.0f));
-  const VkrMeshInstanceHandle far =
+  const VkrMeshInstanceHandle distant =
       override_test_instance(&ctx, vec3_new(20.0f, 0.0f, 0.0f));
   const VkrMeshInstanceHandle mover =
       override_test_instance(&ctx, vec3_new(10.0f, 0.0f, 0.0f));
   assert(vkr_mesh_manager_instance_set_shadow_mobility(
       &ctx.meshes, wall, VKR_SHADOW_CASTER_MOBILITY_STATIC));
   assert(vkr_mesh_manager_instance_set_shadow_mobility(
-      &ctx.meshes, far, VKR_SHADOW_CASTER_MOBILITY_STATIC));
+      &ctx.meshes, distant, VKR_SHADOW_CASTER_MOBILITY_STATIC));
   assert(vkr_mesh_manager_instance_set_shadow_mobility(
       &ctx.meshes, mover, VKR_SHADOW_CASTER_MOBILITY_DYNAMIC));
   VkrShadowCasterDepthBounds bounds = {0};
@@ -409,7 +409,7 @@ static void test_caster_bounds_follow_box(void) {
   assert(ctx.meshes.generations.caster_bounds > measured.caster_bounds);
 
   assert(vkr_mesh_manager_destroy_instance(&ctx.meshes, mover));
-  assert(vkr_mesh_manager_destroy_instance(&ctx.meshes, far));
+  assert(vkr_mesh_manager_destroy_instance(&ctx.meshes, distant));
   assert(vkr_mesh_manager_destroy_instance(&ctx.meshes, wall));
   override_test_shutdown(&ctx);
 }
