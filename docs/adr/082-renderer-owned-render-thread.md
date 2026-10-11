@@ -81,6 +81,10 @@ resource last settled. Frames name a resource only once it is confirmed:
   the loader confirms the publication; a busy or out-of-memory result releases
   the texture and finalizes the retained payload again, and texture admission
   uses the capacity the last frame observed less the bytes recorded since;
+- a synchronous material load whose texture that admission refuses keeps the
+  slot's default and queues the texture on the material's bounded stream, as
+  an asynchronous load queues every texture, so a material loaded during a
+  scene's bulk uploads still gets its textures once they drain;
 - the environment and reflection probes are used once their prefilter's
   publication and IBL bake are confirmed, and gizmo draws once their shapes
   are;

@@ -353,10 +353,6 @@ vkr_internal void vkr_material_parse_colorspace_field(
   }
 }
 
-vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
-    VkrResourceLoader *self, String8 path, VkrAllocator *temp_alloc,
-    VkrMaterial *out_material);
-
 vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
                                                   String8 name) {
   assert_log(self != NULL, "Self is NULL");
@@ -528,6 +524,40 @@ vkr_internal const char *vkr_material_slot_name(VkrTextureSlot slot) {
     return "custom7";
   default:
     return "unknown";
+  }
+}
+
+// Structure to hold pending texture paths for batch loading
+typedef struct VkrMaterialTexturePaths {
+  String8 paths[VKR_TEXTURE_SLOT_COUNT];
+  VkrMaterialTextureColorSpace colorspace[VKR_TEXTURE_SLOT_COUNT];
+} VkrMaterialTexturePaths;
+
+vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
+    VkrResourceLoader *self, String8 path, VkrAllocator *temp_alloc,
+    VkrMaterial *out_material, VkrMaterialTexturePaths *out_busy);
+
+/* Queues a texture the publication queue had no room for on the material's
+ * bounded stream, as an asynchronous load queues every texture. The stream
+ * binds it once uploads drain; the slot keeps its default until then. A
+ * synchronous load during a scene's bulk uploads would otherwise leave the
+ * material without that texture for good. */
+vkr_internal void vkr_material_loader_stream_busy_texture(
+    VkrMaterialSystem *system, VkrMaterialHandle material,
+    const char *material_name, VkrTextureSlot slot, String8 path) {
+  char request[VKR_MATERIAL_PATH_MAX];
+  const bool8_t fits = path.length < sizeof(request);
+  if (fits) {
+    MemCopy(request, path.str, (size_t)path.length);
+    request[path.length] = '\0';
+  }
+
+  if (!fits ||
+      !vkr_material_system_stream_texture(system, material, slot, request)) {
+    log_warn("Material '%s': uploads were busy and the texture stream queue "
+             "took no %s request; using default",
+             material_name ? material_name : "<unnamed>",
+             vkr_material_slot_name(slot));
   }
 }
 
@@ -986,8 +1016,9 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
   VkrMaterialSystem *system = (VkrMaterialSystem *)self->resource_system;
 
   VkrMaterial loaded_material = {0};
+  VkrMaterialTexturePaths busy = {0};
   *out_error = vkr_material_loader_load_from_mt(self, name, temp_alloc,
-                                                &loaded_material);
+                                                &loaded_material, &busy);
   if (*out_error != VKR_RENDERER_ERROR_NONE) {
     return false_v;
   }
@@ -1051,6 +1082,15 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
   if (!vkr_material_system_publish(system, handle, out_error)) {
     vkr_material_loader_discard_slot(system, slot, false_v);
     return false_v;
+  }
+
+  for (uint32_t texture_slot = 0; texture_slot < VKR_TEXTURE_SLOT_COUNT;
+       ++texture_slot) {
+    if (busy.paths[texture_slot].length > 0) {
+      vkr_material_loader_stream_busy_texture(system, handle, stable_name,
+                                              (VkrTextureSlot)texture_slot,
+                                              busy.paths[texture_slot]);
+    }
   }
 
   out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
@@ -1412,15 +1452,12 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   }
 }
 
-// Structure to hold pending texture paths for batch loading
-typedef struct VkrMaterialTexturePaths {
-  String8 paths[VKR_TEXTURE_SLOT_COUNT];
-  VkrMaterialTextureColorSpace colorspace[VKR_TEXTURE_SLOT_COUNT];
-} VkrMaterialTexturePaths;
-
+/* Loads every requested slot now. A slot the publication queue refuses as
+ * busy keeps its default and lands in `out_busy` for the material's stream. */
 vkr_internal void vkr_material_batch_load_textures(
     VkrMaterialSystem *material_system, VkrAllocator *temp_alloc,
-    const VkrMaterialTexturePaths *paths, VkrMaterial *out_material) {
+    const VkrMaterialTexturePaths *paths, VkrMaterial *out_material,
+    VkrMaterialTexturePaths *out_busy) {
   uint32_t count = 0;
   String8 batch_paths[VKR_TEXTURE_SLOT_COUNT];
   VkrTextureSlot batch_slots[VKR_TEXTURE_SLOT_COUNT];
@@ -1454,6 +1491,8 @@ vkr_internal void vkr_material_batch_load_textures(
                                            handles[i]);
       out_material->textures[slot].handle = handles[i];
       out_material->textures[slot].enabled = true;
+    } else if (errors[i] == VKR_RENDERER_ERROR_RESOURCE_BUSY) {
+      out_busy->paths[slot] = batch_paths[i];
     } else if (errors[i] != VKR_RENDERER_ERROR_NONE) {
       String8 err_str = vkr_renderer_get_error_string(errors[i]);
       log_warn("Failed to load texture slot %u: %.*s", slot,
@@ -1464,7 +1503,7 @@ vkr_internal void vkr_material_batch_load_textures(
 
 vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
     VkrResourceLoader *self, String8 path, VkrAllocator *temp_alloc,
-    VkrMaterial *out_material) {
+    VkrMaterial *out_material, VkrMaterialTexturePaths *out_busy) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(path.str != NULL, "Path is NULL");
   assert_log(temp_alloc != NULL, "Temp allocator is NULL");
@@ -1516,7 +1555,7 @@ vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
   }
 
   vkr_material_batch_load_textures(material_system, temp_alloc, &texture_paths,
-                                   out_material);
+                                   out_material, out_busy);
 
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -2796,6 +2835,8 @@ vkr_internal void vkr_material_batch_parse_or_acquire(
  * the arrays live in the batch scratch scope. */
 typedef struct VkrMaterialBatchTextures {
   VkrTextureHandle *handles;
+  VkrRendererError *errors;
+  String8 *paths;
   uint32_t *material_index;
   uint32_t *slot;
   uint32_t count;
@@ -2880,6 +2921,8 @@ vkr_internal bool8_t vkr_material_batch_load_pending_textures(
 
   *out_textures = (VkrMaterialBatchTextures){
       .handles = texture_handles,
+      .errors = texture_errors,
+      .paths = texture_paths,
       .material_index = texture_material_index,
       .slot = texture_slot,
       .count = total_textures,
@@ -2966,6 +3009,15 @@ vkr_internal bool8_t vkr_material_batch_create_material(
   if (!vkr_material_system_publish(mat_sys, material_handle, out_error)) {
     vkr_material_loader_discard_slot(mat_sys, slot, false_v);
     return false_v;
+  }
+
+  for (uint32_t t = 0; t < textures->count; t++) {
+    if (textures->material_index[t] == material_index &&
+        textures->errors[t] == VKR_RENDERER_ERROR_RESOURCE_BUSY) {
+      vkr_material_loader_stream_busy_texture(
+          mat_sys, material_handle, stable_name,
+          (VkrTextureSlot)textures->slot[t], textures->paths[t]);
+    }
   }
 
   *out_handle = material_handle;
