@@ -1366,8 +1366,10 @@ stay its greybox look; its tags state the final art intent beside them, as
 reads the file once per run. Tags outside it still apply: `tag.list` gives
 them a null category, and a write batch answers `unknown_tags` with those it
 wrote. The Black Mesa test level was tagged from names, surfaces, marks,
-movers and bodies by a script (2026-10-11): 7,515 objects, 76 vocabulary
-tags and none outside it.
+text colours, movers and bodies by a script (2026-10-11): every one of its
+7,079 drawn objects (brushes, blockout shells, text, scatters and terrains)
+carries a space, an object and a material tag, and no tag outside the
+vocabulary.
 
 ## Consequences
 
