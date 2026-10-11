@@ -87,8 +87,8 @@ static bool8_t depot_test_collect(void *context,
 }
 
 /* Fails when trees, blobs or commits do not round-trip, or when a tree with
-   case-colliding or invalid names, or an object with trailing or missing
-   bytes or inconsistent sizes, is accepted. */
+   case-colliding or invalid names (encoded or parsed), or an object with
+   trailing or missing bytes or inconsistent sizes, is accepted. */
 static void test_depot_objects(void) {
   printf("  Running test_depot_objects...\n");
   VkrDepotTreeEntry entries[3] = {
@@ -155,6 +155,23 @@ static void test_depot_objects(void) {
          parsed.parents[0].bytes[0] == 8u && parsed.time_us == 42u &&
          parsed.message_size == 5u && memcmp(parsed.message, "first", 5u) == 0);
   assert(!vkr_depot_commit_parse(bytes, size - 1u, &parsed));
+  free(bytes);
+
+  /* A tree whose names differ only in case, sorted by bytes so `A` and `a`
+     are not neighbours: a checkout would write two paths that are one file
+     on macOS and Windows. */
+  VkrDepotTreeEntry folded[3] = {
+      {.name = "A", .name_size = 1, .kind = VKR_DEPOT_ENTRY_FILE},
+      {.name = "B", .name_size = 1, .kind = VKR_DEPOT_ENTRY_FILE},
+      {.name = "c", .name_size = 1, .kind = VKR_DEPOT_ENTRY_FILE},
+  };
+  assert(vkr_depot_tree_encode(folded, 3u, &bytes, &size));
+  assert(vkr_depot_tree_parse(bytes, size, NULL, NULL));
+  uint8_t *third = memchr(bytes + VKR_DEPOT_HEADER_SIZE + 4u, 'c',
+                          size - VKR_DEPOT_HEADER_SIZE - 4u);
+  assert(third);
+  *third = 'a';
+  assert(!vkr_depot_tree_parse(bytes, size, NULL, NULL));
   free(bytes);
   printf("  test_depot_objects PASSED\n");
 }
@@ -629,7 +646,8 @@ static void test_depot_ignore(void) {
    fetch into an empty store does not reproduce every file, a second push
    resends unchanged objects, a stale compare-and-swap or a commit with
    missing objects moves the branch, a lock does not stop another key's
-   change, or an unknown key gets in. */
+   change or lock, also when the paths differ only in case, or an unknown
+   key gets in. */
 static void test_depot_transfer(void) {
   printf("  Running test_depot_transfer...\n");
   char store_root[VKR_DEPOT_PATH_CAPACITY];
@@ -728,7 +746,8 @@ static void test_depot_transfer(void) {
   assert(vkr_bakery_path_join(b, sizeof(b), bob_root, "textures/big.bin"));
   assert(depot_test_files_equal(a, b));
   uint8_t owner[32];
-  assert(vkr_depot_client_lock(client, "scene.json", false_v, false_v, owner) ==
+  /* Locked under another case: on macOS and Windows it is one file. */
+  assert(vkr_depot_client_lock(client, "Scene.JSON", false_v, false_v, owner) ==
          VKR_DEPOT_LOCK_OK);
   vkr_depot_client_destroy(client);
   depot_world_destroy(&world);
@@ -738,6 +757,8 @@ static void test_depot_transfer(void) {
   client = depot_world_client(&world, &alice.store);
   assert(client);
   assert(vkr_depot_client_lock(client, "scene.json", true_v, false_v, owner) ==
+         VKR_DEPOT_LOCK_HELD);
+  assert(vkr_depot_client_lock(client, "SCENE.json", false_v, false_v, owner) ==
          VKR_DEPOT_LOCK_HELD);
   assert(memcmp(owner, bob_keys.public_key, 32u) == 0);
   depot_test_write(alice_root, "scene.json", "{\"entities\":[1]}", 16u);

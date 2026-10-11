@@ -82,11 +82,17 @@ uint32_t vkr_depot_object_kind(const uint8_t *bytes, uint64_t size);
    NUL or control bytes, not "." or "..", no trailing space or dot. */
 bool8_t vkr_depot_name_valid(const char *name, uint32_t size);
 
+/* Orders names with ASCII letters folded to lower case, then by length;
+   zero for names macOS and Windows take for one file. */
+int vkr_depot_name_fold_compare(const char *a, uint32_t a_size, const char *b,
+                                uint32_t b_size);
+
 /* Encoders write into malloc storage the caller frees. */
 bool8_t vkr_depot_blob_encode(const VkrDepotChunkRef *chunks, uint32_t count,
                               uint8_t **out_bytes, uint64_t *out_size);
 /* Sorts `entries` by name and refuses duplicates, including names equal
-   when compared without case (macOS and Windows fold case). */
+   when compared without case (macOS and Windows fold case); the parser
+   refuses them as well. */
 bool8_t vkr_depot_tree_encode(VkrDepotTreeEntry *entries, uint32_t count,
                               uint8_t **out_bytes, uint64_t *out_size);
 bool8_t vkr_depot_commit_encode(const VkrDepotCommit *commit,

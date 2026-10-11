@@ -126,7 +126,8 @@ typedef struct VkrDepotLockReplyWire {
 
 typedef struct VkrDepotLocksRequestWire {
   uint64_t request;
-  /* Paths after this one, in byte order; empty from the start. */
+  /* Paths after this one, in order without ASCII case; empty from the
+     start. */
   char after[VKR_DEPOT_LOCK_PATH_MAX];
 } VkrDepotLocksRequestWire;
 

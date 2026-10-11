@@ -268,9 +268,16 @@ static uint32_t server_role(const VkrDepotServer *server, const uint8_t *key) {
   return server->open_access ? VKR_DEPOT_ROLE_WRITE : VKR_DEPOT_ROLE_NONE;
 }
 
+/* Paths compare without ASCII case: on macOS and Windows `Scene.json` and
+   `scene.json` are one file, so a lock on either holds both. */
+static int server_path_compare(const char *a, const char *b) {
+  return vkr_depot_name_fold_compare(a, (uint32_t)strlen(a), b,
+                                     (uint32_t)strlen(b));
+}
+
 static int server_lock_compare(const void *lhs, const void *rhs) {
-  return strcmp(((const ServerLock *)lhs)->path,
-                ((const ServerLock *)rhs)->path);
+  return server_path_compare(((const ServerLock *)lhs)->path,
+                             ((const ServerLock *)rhs)->path);
 }
 
 static bool8_t server_locks_save(const VkrDepotServer *server) {
@@ -1091,7 +1098,8 @@ static void server_on_locks(VkrDepotServer *server, ServerPeer *peer,
   reply->request = request->request;
   for (uint32_t i = 0u; i < server->lock_count; ++i) {
     const ServerLock *lock = &server->locks[i];
-    if (request->after[0] && strcmp(lock->path, request->after) <= 0) {
+    if (request->after[0] &&
+        server_path_compare(lock->path, request->after) <= 0) {
       continue;
     }
     if (reply->entry_count == VKR_DEPOT_LOCKS_PAGE) {

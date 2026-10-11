@@ -214,21 +214,47 @@ static int depot_entry_compare(const void *lhs, const void *rhs) {
   return depot_name_compare(a->name, a->name_size, b->name, b->name_size);
 }
 
-static bool8_t depot_names_fold_equal(const VkrDepotTreeEntry *a,
-                                      const VkrDepotTreeEntry *b) {
-  if (a->name_size != b->name_size) {
-    return false_v;
-  }
-  for (uint32_t i = 0u; i < a->name_size; ++i) {
-    char x = a->name[i];
-    char y = b->name[i];
-    x = (x >= 'A' && x <= 'Z') ? (char)(x - 'A' + 'a') : x;
-    y = (y >= 'A' && y <= 'Z') ? (char)(y - 'A' + 'a') : y;
+int vkr_depot_name_fold_compare(const char *a, uint32_t a_size, const char *b,
+                                uint32_t b_size) {
+  const uint32_t common = Min(a_size, b_size);
+  for (uint32_t i = 0u; i < common; ++i) {
+    uint8_t x = (uint8_t)a[i];
+    uint8_t y = (uint8_t)b[i];
+    x = (x >= 'A' && x <= 'Z') ? (uint8_t)(x - 'A' + 'a') : x;
+    y = (y >= 'A' && y <= 'Z') ? (uint8_t)(y - 'A' + 'a') : y;
     if (x != y) {
-      return false_v;
+      return x < y ? -1 : 1;
     }
   }
-  return true_v;
+  return a_size < b_size ? -1 : a_size > b_size ? 1 : 0;
+}
+
+static int depot_entry_fold_compare(const void *lhs, const void *rhs) {
+  const VkrDepotTreeEntry *a = lhs;
+  const VkrDepotTreeEntry *b = rhs;
+  return vkr_depot_name_fold_compare(a->name, a->name_size, b->name,
+                                     b->name_size);
+}
+
+/* Whether no two names are equal under ASCII case folding, the collisions
+   macOS and Windows both make. Sorts a copy, so it costs n log n. */
+static bool8_t depot_names_fold_unique(const VkrDepotTreeEntry *entries,
+                                       uint32_t count) {
+  if (count < 2u) {
+    return true_v;
+  }
+  VkrDepotTreeEntry *sorted = malloc((size_t)count * sizeof(*sorted));
+  if (!sorted) {
+    return false_v;
+  }
+  MemCopy(sorted, entries, (uint64_t)count * sizeof(*sorted));
+  qsort(sorted, count, sizeof(*sorted), depot_entry_fold_compare);
+  bool8_t unique = true_v;
+  for (uint32_t i = 1u; i < count && unique; ++i) {
+    unique = depot_entry_fold_compare(&sorted[i - 1u], &sorted[i]) != 0;
+  }
+  free(sorted);
+  return unique;
 }
 
 bool8_t vkr_depot_tree_encode(VkrDepotTreeEntry *entries, uint32_t count,
@@ -241,13 +267,10 @@ bool8_t vkr_depot_tree_encode(VkrDepotTreeEntry *entries, uint32_t count,
          entries[i].kind != VKR_DEPOT_ENTRY_TREE)) {
       return false_v;
     }
-    /* ASCII case folding catches the collisions both hosts make. */
-    for (uint32_t j = 0u; j < i; ++j) {
-      if (depot_names_fold_equal(&entries[i], &entries[j])) {
-        return false_v;
-      }
-    }
     size += 2u + entries[i].name_size + 1u + 8u + VKR_DEPOT_ID_SIZE;
+  }
+  if (!depot_names_fold_unique(entries, count)) {
+    return false_v;
   }
   uint8_t *bytes = malloc(size);
   if (!bytes) {
@@ -283,20 +306,31 @@ bool8_t vkr_depot_tree_parse(const uint8_t *bytes, uint64_t size,
   const uint32_t count = vkr_load_le_u32(bytes + VKR_DEPOT_HEADER_SIZE);
   const uint8_t *cursor = bytes + VKR_DEPOT_HEADER_SIZE + 4u;
   const uint8_t *end = bytes + size;
+  /* Every entry takes at least 43 bytes; a count past that is invalid. */
+  if ((uint64_t)count * (2u + 1u + 8u + VKR_DEPOT_ID_SIZE) >
+      size - VKR_DEPOT_HEADER_SIZE - 4u) {
+    return false_v;
+  }
+  VkrDepotTreeEntry *entries =
+      count ? malloc((size_t)count * sizeof(VkrDepotTreeEntry)) : NULL;
+  if (count && !entries) {
+    return false_v;
+  }
+  bool8_t ok = false_v;
   VkrDepotTreeEntry previous = {0};
   /* Two passes: validate everything, then visit. */
   for (uint32_t pass = 0u; pass < 2u; ++pass) {
     cursor = bytes + VKR_DEPOT_HEADER_SIZE + 4u;
     for (uint32_t i = 0u; i < count; ++i) {
       if ((uint64_t)(end - cursor) < 2u) {
-        return false_v;
+        goto cleanup;
       }
       VkrDepotTreeEntry entry = {0};
       entry.name_size = (uint16_t)(cursor[0] | (cursor[1] << 8));
       cursor += 2u;
       if ((uint64_t)(end - cursor) <
           (uint64_t)entry.name_size + 1u + 8u + VKR_DEPOT_ID_SIZE) {
-        return false_v;
+        goto cleanup;
       }
       entry.name = (const char *)cursor;
       cursor += entry.name_size;
@@ -310,22 +344,31 @@ bool8_t vkr_depot_tree_parse(const uint8_t *bytes, uint64_t size,
             (entry.kind != VKR_DEPOT_ENTRY_FILE &&
              entry.kind != VKR_DEPOT_ENTRY_TREE) ||
             (entry.kind == VKR_DEPOT_ENTRY_TREE && entry.size != 0u)) {
-          return false_v;
+          goto cleanup;
         }
         if (i > 0u && depot_name_compare(previous.name, previous.name_size,
                                          entry.name, entry.name_size) >= 0) {
-          return false_v;
+          goto cleanup;
         }
         previous = entry;
+        entries[i] = entry;
       } else if (visit && !visit(context, &entry)) {
-        return false_v;
+        goto cleanup;
       }
     }
     if (cursor != end) {
-      return false_v;
+      goto cleanup;
+    }
+    /* The encoder refuses names equal without case; so does the parser, or
+       a checkout would write two paths that are one file there. */
+    if (pass == 0u && !depot_names_fold_unique(entries, count)) {
+      goto cleanup;
     }
   }
-  return true_v;
+  ok = true_v;
+cleanup:
+  free(entries);
+  return ok;
 }
 
 // =============================================================================
