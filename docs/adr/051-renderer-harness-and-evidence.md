@@ -39,6 +39,16 @@ duration through their raster jitter phase.
 Waiting for that phase remains bootstrap work; authored frame counts and GPU
 completion rules do not change. The workload fingerprint includes this version,
 so results from the previous replay behavior are incompatible.
+Version 6 also forgets the local-shadow cache at that boundary. Stale local
+faces redraw a budget per frame, and the frames before warmup (pass-catalog
+settling, temporal alignment) vary with GPU timing, so repetitions began
+warmup with the backlog drained to different points: Debug
+`froxel_bistro_on_local` reported `determinism.work_volume_mismatch` on
+`draw.local_shadow.faces_full` (12 against 0 at measured frame 0) in about
+one run in three, and in none of 7 runs after the change (2026-10-11,
+Windows Vulkan). A short warmup now measures that redraw, the same in every
+repetition. A work-volume mismatch names the first differing metric, frame
+and values on stderr.
 
 Editor cases may set `renderer.editor_stop_frame` and `editor_resume_frame` to
 exercise retained Scene presentation. Their zero-based indices include authored
