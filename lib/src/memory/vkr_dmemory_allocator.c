@@ -38,7 +38,12 @@ vkr_internal INLINE void dmemory_free_aligned_cb(void *ctx, void *ptr,
     return;
   }
 
-  log_error("Failed to free aligned memory from dmemory allocator");
+  /* Which allocator, block and tag: enough to find the owner. */
+  log_error("Failed to free aligned memory from dmemory allocator %p (base "
+            "%p, %llu bytes): %p, %llu bytes, tag %u",
+            (void *)dmemory, dmemory->base_memory,
+            (unsigned long long)dmemory->total_size, ptr,
+            (unsigned long long)old_size, (uint32_t)tag);
 }
 
 vkr_internal INLINE void dmemory_free_cb(void *ctx, void *ptr,
@@ -54,7 +59,12 @@ vkr_internal INLINE void dmemory_free_cb(void *ctx, void *ptr,
     return;
   }
 
-  log_error("Failed to free memory from dmemory allocator");
+  /* Which allocator, block and tag: enough to find the owner. */
+  log_error("Failed to free memory from dmemory allocator %p (base %p, %llu "
+            "bytes): %p, %llu bytes, tag %u",
+            (void *)dmemory, dmemory->base_memory,
+            (unsigned long long)dmemory->total_size, ptr,
+            (unsigned long long)old_size, (uint32_t)tag);
 }
 
 vkr_internal INLINE void *dmemory_realloc_cb(void *ctx, void *ptr,
