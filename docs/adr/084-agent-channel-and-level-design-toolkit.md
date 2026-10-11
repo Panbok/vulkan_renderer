@@ -103,7 +103,7 @@ thread during the editor's build.
 | `undo`, `redo`, `cmd` | Cmd statements through the Cmd queue, returning the `[cmd]` lines they printed |
 | `query.raycast` | First physics surface along a ray |
 | `view.capture` | A PNG of the Scene or the whole window, optionally from another view, framed on an entity or box, with grid labels |
-| `session.host`, `session.join`, `session.leave`, `session.status` | The collaborative editing session ([ADR-106](106-collaborative-editing-session.md)) |
+| `session.host`, `session.join`, `session.publish`, `session.access`, `session.leave`, `session.status` | The collaborative editing session ([ADR-106](106-collaborative-editing-session.md)) |
 | `task.add`, `task.next`, `task.done`, `task.list`, `task.slots` | The task board agents divide work with; the session host's in a session ([ADR-106](106-collaborative-editing-session.md#agent-federation)) |
 
 An entity argument is `"<world>:<index>:<generation>"`, a unique exact name,

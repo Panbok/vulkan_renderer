@@ -15,13 +15,15 @@ one editor hosts a session over the transport of
 and every edit that changes a scene journal applies on every editor in the
 host's order, terrain strokes as the samples they made on the host. A
 Session window hosts and joins, and the Scene draws other editors' cameras
-with their names, selections and gizmo drags in progress. Agents of every
+with their names, selections, Scene pointers and gizmo drags in progress.
+A host may admit only the identity keys it allows. Agents of every
 editor share the host's claims, task board (with capabilities and slots)
 and change feed, and their batches wait for review on every editor. A
 scene in a depot working copy hosts from a depot commit that joiners check
-out, and editors publish files to each other through the depot. Edits that
-do not travel yet (listed under [Decision](#what-travels)), publishing a
-file without being asked and access control stay in the proposal. Every
+out, editors publish files to each other through the depot, and a long
+history gives joiners a newer depot base. Edits that do not travel yet
+(listed under [Decision](#what-travels)) and publishing a file without
+being asked stay in the proposal. Every
 check ran on one Windows host; macOS and cross-machine runs are
 unverified.
 
@@ -47,12 +49,13 @@ container's journal.
 - [editor_session.h](../../editor/src/editor_session.h) is the editor's
   `collab` service (ID 4, version 1). The host binds a UDP port (7330 by
   default) with a fresh key pair; a participant connects with the host's
-  public key and opens the service. Anyone with the address and key may
-  join.
+  public key and its own identity key and opens the service. Who may join
+  is under [Access](#access).
 - Channel 0 is reliable and ordered: HELLO (name and scene digest),
   WELCOME, EDIT from a participant, RESULT for a refusal, APPLIED in
   session order and PEER_LEFT. Channel 1 is sequenced: PRESENCE at 10 Hz
-  with the camera position, yaw and pitch and the selection's document id.
+  with the camera position, yaw and pitch, the selection's document id and
+  the Scene pointer's ray.
   The messages are hand-packed on the bit stream; the service's schema hash
   is a constant that names this layout.
 
@@ -148,8 +151,26 @@ The joining editor must hold the host's session base: the same scenes as
 the host had when it started hosting. HELLO carries a SHA-256 digest over
 every entity with a document id in the loaded containers (container, id,
 name, pose bits and parent id, sorted). On a match the host replays its
-history from the first edit. The history keeps 64 MiB; past that, edits
-every participant received leave and new joins are refused.
+history from the base the joiner holds; WELCOME names the base's session
+sequence, from which the joiner counts. The history keeps 64 MiB by
+default (`session.host` takes `history` in bytes). Past it, a host on a
+depot makes a newer base ([Depot](#depot)); a host without one drops what
+every participant received and refuses new joins.
+
+### Access
+
+A participant connects with its identity key, the one `vkr_depot` uses
+(`VKR_DEPOT_IDENTITY` or the user cache, made when missing), and sends its
+name in the transport's first message. A host is open by default: anyone
+with the address and session key joins. Restricted (`session.access` with
+`restricted`, or Restrict in the Session window), it accepts only the
+identity keys it allowed and refuses the rest in the handshake with access
+denied. The refused participant's error names its key to send the host,
+and the host lists the last four refused names and keys, each with an
+Allow button. Restricting while hosting allows the editors already in;
+denying a key closes that editor's connection. The allow list lives for
+the editor, across sessions. A passphrase was not added: it would travel
+beside the session key and protect nothing the key does not.
 
 ### Depot
 
@@ -178,6 +199,15 @@ working copy names the server and key.
   that publish at once: the second fails until the first arrives.
 - The working copy stays on the session branch afterwards; moving the
   project's branch to it is a depot step outside the editor.
+- **Newer bases.** When the history since the newest base passes the
+  budget, the host holds edits for the builds a save takes, saves, and
+  commits the saved scene on top of the newest session commit to
+  `<branch>.base`. BASE then names that commit with its session sequence
+  and digest; a joiner checks it out and replays only the edits after it.
+  Editors already in the session fetch nothing. Undo, redo and revert stop
+  at a newer base, since an editor that joins from it lacks what came
+  before. A failed save or commit leaves the session joinable until the
+  history drops, as without a depot.
 - Without a working copy, joining checks the scene digest alone.
 
 ### Agent federation
@@ -236,14 +266,21 @@ drags a gizmo, its PRESENCE (every 33 ms instead of 100 ms) carries the
 dragged entity and its world matrix, and other editors draw the entity's
 box where the drag holds it, joined to where it rests, until the drag
 records and travels as an edit. Slider scrubs and terrain strokes need no
-preview: each step travels as an edit.
+preview: each step travels as an edit. PRESENCE also carries the Scene
+pointer as a world ray with the distance to the terrain or brush face it
+meets; other editors draw it in the peer's colour, ending in a cross at
+the hit or after 50 m. The window's Your key copies this editor's
+identity key, and a host's window shows its access and the refused
+editors.
 
 ### Operations
 
-`session.host`, `session.join`, `session.leave` and `session.status` join
-the agent table ([editor_ops.c](../../editor/src/editor_ops.c)); the status
-reports the mode, address, key, sequence, pending edits, last error, this
-editor's digest and each peer's name, camera and selection. `task.add`,
+`session.host`, `session.join`, `session.access`, `session.leave` and
+`session.status` join the agent table
+([editor_ops.c](../../editor/src/editor_ops.c)); the status reports the
+mode, address, key, sequence, pending edits, last error, this editor's
+digest and identity key, its access list and refused editors, and each
+peer's name, camera, selection and pointer ray. `task.add`,
 `task.next`, `task.done` and `task.list` run the task board.
 
 ## Consequences
@@ -337,8 +374,22 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
   it, and the file arrives with the same bytes; both end at that commit
   with equal digests. Passes. `vkr_depot` passes `check_depot_e2e.py` and
   the depot suite on the library.
+- `check_agent_federation.py` also covers access and the pointer ray: the
+  host restricts joining before it hosts, refuses the guest (whose error
+  names its key) and lists `beta` with that key; `session.access` allows
+  it, and the guest's second join succeeds. An Alt-click in the guest's
+  Scene (a plain click's GPU pick stops a headless Debug Vulkan editor's
+  device, with or without a session) reaches the host as a unit ray from
+  the guest's camera, `(-1.5, 0, 17)`. Denying the key at the end closes
+  the guest with the access error. Passes at sequence 10.
+- `check_session_depot.py` hosts with a 4,096-byte history: after 40
+  objects the host commits newer base `c754907e…` at edit 36 on
+  `session-alpha-….base`; the guest joins from `main`, checks it out,
+  replays 5 edits and holds `PreHost`, `Bulk 0` and `AfterBase`; the
+  published file and digests match as before. Passes.
 - Not exercised: gizmo drags and their preview (no headless drag script),
-  batch reverts across editors, history trimming, macOS, two machines.
+  drawing of the pointer ray, batch reverts across editors, a failed newer
+  base, macOS, two machines.
 
 ## Revisit when
 

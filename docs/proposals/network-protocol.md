@@ -291,21 +291,16 @@ persistence are outside this proposal.
 host and join, host-ordered edit requests with mirrored journals, replay
 from the session base, shared undo, gizmo moves and their previews,
 seeded duplicates, terrain as results, the Session window, other
-editors' cameras, names and selections in the Scene, and joining and
-publishing files through the depot. The rest:
+editors' cameras, names, selections and pointer rays in the Scene, joining
+and publishing files through the depot, newer depot bases for long
+histories, and access by allowed identity keys. The rest:
 
 - **Partition edits.** Loading and pinning world partition cells travels,
   so every editor holds the same cells.
-- **Cursor ray.** `PRESENCE` adds each participant's cursor ray, which
-  other editors draw.
 - **Publishing on its own.** An import, a material graph or another file
   an editor writes during a session publishes without `session.publish`,
   and each platform cooks its own variant or takes it from the shared
   Bakery cache.
-- **Long histories.** A host whose history passed its 64 MiB budget makes
-  a new depot base for new joiners instead of refusing them.
-- **Access.** A session credential or an allow list of participant keys
-  instead of open joining for anyone who knows the key.
 - Play stays local to each participant in this proposal.
 
 ### Agent federation (use case 5)
@@ -364,7 +359,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | Owner | Path | Contents |
 |---|---|---|
 | `vkr_runtime` | `runtime/src/net/` | `world`, `stream` and `view` services, the remote content mount |
-| Editor | `editor/src/editor_session.c` | The `collab` service, Session window, Scene overlay and agent federation (ADR-106); next the cursor ray |
+| Editor | `editor/src/editor_session.c` | The `collab` service, Session window, Scene overlay, access and agent federation (ADR-106); next partition edits |
 | Renderer | Encoder and decoder hooks | Separate design and ADR in phase 7 |
 | `vkr_net` | `net/src/` | Threaded host; replication helpers on the bit stream |
 
@@ -379,7 +374,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
-| 4. Editor collaboration and agents | Remaining after ADR-106: publishing on its own, partition edits, the cursor ray, long histories, access | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
+| 4. Editor collaboration and agents | Remaining after ADR-106: publishing on its own, partition edits | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
 | 5. Game sessions | `world` service, opt-in components, input, prediction for the FPS module | 20 clients (bots) on a Bistro session with measured bytes per client and correction counts under 2% loss |
 | 6. Asset streaming | Remote content mount, then progressive mips and LOD ranges | Bistro streamed from a depot: time to first frame and to full detail; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |
