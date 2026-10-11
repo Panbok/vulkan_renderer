@@ -1171,6 +1171,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     root->hzb_enabled = hzb ? 1u : 0u;
     // Keep the comparison conservative across projected-sphere and depth-buffer
     // quantization; a smaller tolerance self-rejected static fixture geometry.
+    // Reversed depth has the same slope magnitude as the forward convention,
+    // so the tolerance keeps its distance meaning; the shader subtracts it.
     root->hzb_depth_epsilon = 1e-3f;
     prepared->dispatch = (VkrMetalPacketDispatch){
         .pipeline = renderer->gpu_draw_classify_pipeline,
@@ -2174,7 +2176,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   depth.resolveTexture = depth.texture;
   depth.texture = renderer->tiled_msaa_depth;
   depth.storeAction = MTLStoreActionMultisampleResolve;
-  depth.depthResolveFilter = MTLMultisampleDepthResolveFilterMin;
+  /* Reversed depth: the largest sample is the nearest surface's. */
+  depth.depthResolveFilter = MTLMultisampleDepthResolveFilterMax;
   descriptor.tileWidth = VKR_METAL_TILED_TILE_WIDTH;
   descriptor.tileHeight = VKR_METAL_TILED_TILE_HEIGHT;
   prepared->tiled.draws = draws;

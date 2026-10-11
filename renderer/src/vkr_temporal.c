@@ -438,18 +438,18 @@ Mat4 vkr_temporal_sky_reprojection(Mat4 current_view_projection,
       current_view_projection.m31 == 0.0f &&
       current_view_projection.m32 == 0.0f) {
     /* Orthographic projection leaves a direction's clip w at zero. Intersect
-       the previous eye ray with its far plane, matching far_world-eye in the
-       sky shader. History reuse proves equal projections, so the eye has the
-       same clip coordinates in both frames. For projected direction d and
-       eye e, q = d + e*(d.z-d.w)/(e.w-e.z) lies on q.z == q.w. */
+       the previous eye ray with its far plane, q.z == 0 under reversed camera
+       depth (ADR-109), where the resolve shader places sky pixels. History
+       reuse proves equal projections, so the eye has the same clip
+       coordinates in both frames. For projected direction d and eye e,
+       q = d - e*d.z/e.z lies on q.z == 0. */
     const Vec4 eye_clip =
         mat4_mul_vec4(current_view_projection,
                       vec4_new(current_view_position.x, current_view_position.y,
                                current_view_position.z, 1.0f));
-    const Vec4 far_eye = vec4_scale(eye_clip, 1.0f / (eye_clip.w - eye_clip.z));
+    const Vec4 far_eye = vec4_scale(eye_clip, 1.0f / eye_clip.z);
     Mat4 far_plane = mat4_identity();
-    far_plane.cols[2] = vec4_add(far_plane.cols[2], far_eye);
-    far_plane.cols[3] = vec4_sub(far_plane.cols[3], far_eye);
+    far_plane.cols[2] = vec4_sub(far_plane.cols[2], far_eye);
     reprojection = mat4_mul(far_plane, reprojection);
   }
   return reprojection;

@@ -290,38 +290,53 @@ vkr_internal bool8_t clip_contains_point(Mat4 view_projection, Vec3 point) {
              : false_v;
 }
 
+/* Shadow views use forward depth and cameras reversed depth (ADR-109); the
+   frustum must keep the same clip volume under both. */
 vkr_internal void test_frustum_never_rejects_visible_geometry(void) {
   const Mat4 view =
       mat4_look_at(vec3_zero(), vec3_new(0.0f, 0.0f, -1.0f), vec3_up());
-  const Mat4 projection =
-      mat4_perspective(vkr_to_radians(60.0f), 1.0f, 0.1f, 100.0f);
-  const Mat4 view_projection = mat4_mul(projection, view);
-  const VkrFrustum frustum = vkr_frustum_from_view_projection(view, projection);
-  uint32_t visible_count = 0u;
-  for (int32_t x = -60; x <= 60; x += 5) {
-    for (int32_t y = -60; y <= 60; y += 5) {
-      for (int32_t z = -60; z <= 60; z += 5) {
-        const Vec3 point = vec3_new((float32_t)x, (float32_t)y, (float32_t)z);
-        if (!clip_contains_point(view_projection, point))
-          continue;
-        visible_count++;
-        assert(vkr_frustum_test_sphere(&frustum, point, 0.0f));
+  const Mat4 projections[2] = {
+      mat4_perspective(vkr_to_radians(60.0f), 1.0f, 0.1f, 100.0f),
+      mat4_perspective_reversed(vkr_to_radians(60.0f), 1.0f, 0.1f, 100.0f),
+  };
+  for (uint32_t i = 0u; i < ArrayCount(projections); ++i) {
+    const Mat4 view_projection = mat4_mul(projections[i], view);
+    const VkrFrustum frustum =
+        vkr_frustum_from_view_projection(view, projections[i]);
+    uint32_t visible_count = 0u;
+    for (int32_t x = -60; x <= 60; x += 5) {
+      for (int32_t y = -60; y <= 60; y += 5) {
+        for (int32_t z = -60; z <= 60; z += 5) {
+          const Vec3 point = vec3_new((float32_t)x, (float32_t)y, (float32_t)z);
+          if (!clip_contains_point(view_projection, point))
+            continue;
+          visible_count++;
+          assert(vkr_frustum_test_sphere(&frustum, point, 0.0f));
+        }
       }
     }
+    assert(visible_count > 0u);
   }
-  assert(visible_count > 0u);
 }
 
 vkr_internal void test_orthographic_frustum_uses_vulkan_depth(void) {
   const Mat4 view = mat4_look_at(vec3_zero(), vec3_forward(), vec3_up());
-  const Mat4 projection =
-      mat4_ortho_zo_yinv(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
-  const VkrFrustum frustum = vkr_frustum_from_view_projection(view, projection);
-  assert(vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -0.11f), 0.0f));
-  assert(vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -99.9f), 0.0f));
-  assert(!vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, 1.0f), 0.0f));
-  assert(
-      !vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -101.0f), 0.0f));
+  const Mat4 projections[2] = {
+      mat4_ortho_zo_yinv(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f),
+      mat4_ortho_zo_yinv_reversed(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f),
+  };
+  for (uint32_t i = 0u; i < ArrayCount(projections); ++i) {
+    const VkrFrustum frustum =
+        vkr_frustum_from_view_projection(view, projections[i]);
+    assert(
+        vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -0.11f), 0.0f));
+    assert(
+        vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -99.9f), 0.0f));
+    assert(
+        !vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, 1.0f), 0.0f));
+    assert(!vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -101.0f),
+                                    0.0f));
+  }
 }
 
 vkr_internal void test_transparent_sort_and_emit(void) {

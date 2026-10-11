@@ -20,14 +20,14 @@ vkr_internal Mat4 vkr_camera_calculate_projection(const VkrCamera *camera) {
       return mat4_identity();
     }
     float32_t aspect = (float32_t)width / (float32_t)height;
-    return mat4_perspective(vkr_to_radians(camera->zoom), aspect,
-                            camera->near_clip, camera->far_clip);
+    return mat4_perspective_reversed(vkr_to_radians(camera->zoom), aspect,
+                                     camera->near_clip, camera->far_clip);
   }
 
   if (camera->type == VKR_CAMERA_TYPE_ORTHOGRAPHIC) {
-    return mat4_ortho_zo_yinv(camera->left_clip, camera->right_clip,
-                              camera->bottom_clip, camera->top_clip,
-                              camera->near_clip, camera->far_clip);
+    return mat4_ortho_zo_yinv_reversed(camera->left_clip, camera->right_clip,
+                                       camera->bottom_clip, camera->top_clip,
+                                       camera->near_clip, camera->far_clip);
   }
 
   return mat4_identity();

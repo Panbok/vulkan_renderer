@@ -1224,21 +1224,26 @@ vkr_metal_packet_create_post_pipelines(VkrMetalPacketRenderer *renderer,
 vkr_internal void
 vkr_metal_packet_create_render_states(VkrMetalPacketRenderer *renderer)
     API_AVAILABLE(macos(26.0)) {
+  /* Camera depth is reversed, near at 1 and far at 0, and tests Greater;
+     shadow maps keep near at 0 and test Less (ADR-109). */
   MTLDepthStencilDescriptor *depth = [MTLDepthStencilDescriptor new];
-  depth.depthCompareFunction = MTLCompareFunctionLess;
+  depth.depthCompareFunction = MTLCompareFunctionGreater;
   depth.depthWriteEnabled = YES;
   renderer->depth_write_state =
+      [renderer->device newDepthStencilStateWithDescriptor:depth];
+  depth.depthCompareFunction = MTLCompareFunctionLess;
+  renderer->shadow_depth_write_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
   depth.depthCompareFunction = MTLCompareFunctionAlways;
   renderer->depth_clear_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
-  depth.depthCompareFunction = MTLCompareFunctionLessEqual;
+  depth.depthCompareFunction = MTLCompareFunctionGreaterEqual;
   depth.depthWriteEnabled = NO;
   renderer->depth_read_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
   /* Tiled shading lays its own depth, the later of two coplanar surfaces
      winning; the sky passes where no surface was drawn. */
-  depth.depthCompareFunction = MTLCompareFunctionLessEqual;
+  depth.depthCompareFunction = MTLCompareFunctionGreaterEqual;
   depth.depthWriteEnabled = YES;
   renderer->tiled_shade_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
@@ -1323,6 +1328,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->tiled_picking_pipeline, "tiled picking pipeline"},
       {renderer->tiled_text_pipeline, "tiled world text pipeline"},
       {renderer->depth_write_state, "depth-write state"},
+      {renderer->shadow_depth_write_state, "shadow depth-write state"},
       {renderer->depth_clear_state, "depth-clear state"},
       {renderer->depth_read_state, "depth-read state"},
       {renderer->tiled_shade_state, "tiled shading depth state"},

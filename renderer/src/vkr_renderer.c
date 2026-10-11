@@ -1321,8 +1321,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   if (prepared->frame.subsurface_enabled) {
     const Mat4 projection = packet->globals.projection;
     prepared->frame.subsurface = (VkrSubsurfaceGpuParams){
-        .projection = {projection.m23 / projection.m22,
-                       projection.m23 / (projection.m22 + 1.0f),
+        .projection = {mat4_perspective_reversed_near(projection),
+                       mat4_perspective_reversed_far(projection),
                        0.5f * fabsf(projection.m00) * temporal_width,
                        0.5f * fabsf(projection.m11) * temporal_height},
         .dimensions = {temporal_width, temporal_height,

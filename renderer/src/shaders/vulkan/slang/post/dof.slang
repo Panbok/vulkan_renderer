@@ -62,11 +62,12 @@ vk_dof_coc(uint3 thread_id : SV_DispatchThreadID) {
     return;
   float2 uv = (float2(pixel) + 0.5f) / float2(root.params.dimensions.xy);
   float2 depth_uv = uv * root.params.depth_uv.xy + root.params.depth_uv.zw;
+  // Reversed camera depth (ADR-109): 1 is the near plane, 0 the far plane.
   float device_depth = vkr_vk_dof_nearest(root, depth_uv).x;
   float depth = root.params.lens.z * root.params.lens.w /
-                (root.params.lens.w -
+                (root.params.lens.z +
                  device_depth * (root.params.lens.w - root.params.lens.z));
-  float radius = vkr_dof_radius(root.params, depth, device_depth >= 1.0f);
+  float radius = vkr_dof_radius(root.params, depth, device_depth <= 0.0f);
   g_storage_2d[NonUniformResourceIndex(root.destination0)][pixel] =
       float4(radius, min(depth, 65504.0f), 0.0f, 0.0f);
 }[shader("compute")]

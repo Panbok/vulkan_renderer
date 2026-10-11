@@ -1049,8 +1049,8 @@ bool8_t vkr_scene_animation_build_preview(
       vec3_new(cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw));
   Vec3 eye = vec3_add(center, vec3_scale(direction, radius * distance));
   Mat4 view = mat4_look_at(eye, center, vec3_new(0, 1, 0));
-  Mat4 projection = mat4_perspective(0.7853981634f, 1.0f, radius * 0.01f,
-                                     radius * (distance + 20.0f));
+  Mat4 projection = mat4_perspective_reversed(
+      0.7853981634f, 1.0f, radius * 0.01f, radius * (distance + 20.0f));
   *preview =
       (VkrAnimationPreviewInput){.view_projection = mat4_mul(projection, view),
                                  .draws = draws,

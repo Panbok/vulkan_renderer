@@ -60,9 +60,10 @@ bool8_t vkr_editor_label_occluded(const VkrSampleUiFrame *frame,
   if (!isfinite(clip.w) || clip.w <= 1.0e-6f) {
     return false_v;
   }
+  /* Reversed camera depth: device depth 1 is the near plane. */
   const Vec4 near_point =
       mat4_mul_vec4(inverse_view_projection,
-                    (Vec4){clip.x / clip.w, clip.y / clip.w, 0.0f, 1.0f});
+                    (Vec4){clip.x / clip.w, clip.y / clip.w, 1.0f, 1.0f});
   if (!isfinite(near_point.w) || fabsf(near_point.w) < 1.0e-9f) {
     return false_v;
   }

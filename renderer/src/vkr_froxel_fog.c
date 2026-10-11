@@ -47,7 +47,7 @@ bool8_t vkr_froxel_fog_projection_valid(const VkrFroxelFogSettings *settings,
     return true_v;
   /* The volume extrapolates beyond the raster far plane; only its near
      boundary constrains the authored fog range. */
-  const float32_t near_distance = projection.m23 / projection.m22;
+  const float32_t near_distance = mat4_perspective_reversed_near(projection);
   const float32_t ratio = settings->max_distance / near_distance;
   return isfinite(near_distance) && near_distance > 0.0f && isfinite(ratio) &&
          ratio > 1.0f;
@@ -66,8 +66,9 @@ static void select_local_lights(const VkrFrameInput *input,
   Vec3 minimum = {INFINITY, INFINITY, INFINITY};
   Vec3 maximum = {-INFINITY, -INFINITY, -INFINITY};
   for (uint32_t corner = 0; corner < 4u; ++corner) {
+    /* Reversed camera depth: device depth 1 is the near plane. */
     const Vec4 ndc = {(corner & 1u) ? 1.0f : -1.0f,
-                      (corner & 2u) ? 1.0f : -1.0f, 0.0f, 1.0f};
+                      (corner & 2u) ? 1.0f : -1.0f, 1.0f, 1.0f};
     Vec4 a = mat4_mul_vec4(params->inverse_view_projection, ndc);
     Vec4 b = mat4_mul_vec4(params->inverse_view_projection,
                            (Vec4){ndc.x, ndc.y, 0.5f, 1.0f});
@@ -151,7 +152,7 @@ VkrFroxelFogGpuParams vkr_froxel_fog_prepare(const VkrFrameInput *input,
   if (!s->enabled || input->globals.render_mode != VKR_RENDER_MODE_DEFAULT)
     return (VkrFroxelFogGpuParams){0};
   const float32_t near_distance =
-      input->globals.projection.m23 / input->globals.projection.m22;
+      mat4_perspective_reversed_near(input->globals.projection);
   const float32_t log_range = logf(s->max_distance / near_distance);
   const Mat4 view_projection =
       mat4_mul(input->globals.projection, input->globals.view);

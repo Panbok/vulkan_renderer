@@ -16,8 +16,8 @@ vkr_internal bool32_t temporal_near(float32_t a, float32_t b) {
 vkr_internal VkrTemporalFrameInput temporal_input(uint32_t frame_index) {
   return (VkrTemporalFrameInput){
       .view = mat4_identity(),
-      .projection =
-          mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 1000.0f),
+      .projection = mat4_perspective_reversed(vkr_to_radians(60.0f),
+                                              16.0f / 9.0f, 0.1f, 1000.0f),
       .scene_generation = 1u,
       .frame_index = frame_index,
       .width = 1920u,
@@ -53,10 +53,12 @@ vkr_internal void test_temporal_jitter_and_commit(void) {
 vkr_internal void test_temporal_projection_pixel_shift(void) {
   printf("  Running test_temporal_projection_pixel_shift...\n");
   Mat4 projections[] = {
-      mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f),
-      mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f),
-      mat4_ortho_zo_yinv(-4.0f, 4.0f, -3.0f, 3.0f, 0.1f, 100.0f),
-      mat4_ortho_zo_yinv(-3.0f, 5.0f, -2.0f, 4.0f, 0.1f, 100.0f),
+      mat4_perspective_reversed(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f,
+                                100.0f),
+      mat4_perspective_reversed(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f,
+                                100.0f),
+      mat4_ortho_zo_yinv_reversed(-4.0f, 4.0f, -3.0f, 3.0f, 0.1f, 100.0f),
+      mat4_ortho_zo_yinv_reversed(-3.0f, 5.0f, -2.0f, 4.0f, 0.1f, 100.0f),
   };
   projections[1].m02 = 0.23f;
   projections[1].m12 = -0.17f;
@@ -340,13 +342,14 @@ vkr_internal void test_temporal_sky_reprojection(void) {
   const float32_t cosine = 2.0f / sqrtf(5.0f);
   for (uint32_t native_clip = 0u; native_clip < 2u; ++native_clip) {
     Mat4 projection =
-        mat4_perspective(vkr_to_radians(90.0f), 1.0f, 0.1f, 1000.0f);
+        mat4_perspective_reversed(vkr_to_radians(90.0f), 1.0f, 0.1f, 1000.0f);
     if (native_clip != 0u)
       projection.m11 = -projection.m11;
     const Mat4 current = mat4_mul(projection, current_view);
     Mat4 reprojection = vkr_temporal_sky_reprojection(
         current, mat4_mul(projection, previous_translation), current_eye);
-    const Vec4 off_center = {0.25f, -0.375f, 1.0f, 1.0f};
+    /* Sky pixels lie on the far plane, reversed depth 0. */
+    const Vec4 off_center = {0.25f, -0.375f, 0.0f, 1.0f};
     Vec4 previous_clip = mat4_mul_vec4(reprojection, off_center);
     /* An infinite environment cannot move under camera translation. */
     assert(fabsf(previous_clip.x / previous_clip.w - off_center.x) < 1e-5f);
@@ -360,7 +363,7 @@ vkr_internal void test_temporal_sky_reprojection(void) {
     reprojection = vkr_temporal_sky_reprojection(
         current, mat4_mul(projection, mat4_mul(yaw, previous_translation)),
         current_eye);
-    previous_clip = mat4_mul_vec4(reprojection, (Vec4){0.0f, 0.0f, 1.0f, 1.0f});
+    previous_clip = mat4_mul_vec4(reprojection, (Vec4){0.0f, 0.0f, 0.0f, 1.0f});
     /* The center ray rotates to (-sin(a), 0, -cos(a)); tan(a) = 1/2. */
     assert(fabsf(previous_clip.x / previous_clip.w + 0.5f) < 1e-5f);
     assert(fabsf(previous_clip.y / previous_clip.w) < 1e-5f);
@@ -373,7 +376,7 @@ vkr_internal void test_temporal_sky_reprojection(void) {
     reprojection = vkr_temporal_sky_reprojection(
         current, mat4_mul(projection, mat4_mul(pitch, previous_translation)),
         current_eye);
-    previous_clip = mat4_mul_vec4(reprojection, (Vec4){0.0f, 0.0f, 1.0f, 1.0f});
+    previous_clip = mat4_mul_vec4(reprojection, (Vec4){0.0f, 0.0f, 0.0f, 1.0f});
     assert(fabsf(previous_clip.x / previous_clip.w) < 1e-5f);
     assert(fabsf(previous_clip.y / previous_clip.w -
                  (native_clip != 0u ? 0.5f : -0.5f)) < 1e-5f);
@@ -399,14 +402,15 @@ vkr_internal void test_temporal_orthographic_sky_reprojection(void) {
   rotations[2].m12 = -sine;
   rotations[2].m21 = sine;
   rotations[2].m22 = cosine;
-  const Vec4 pixels[] = {{0.0f, 0.0f, 1.0f, 1.0f},
-                         {0.25f, -0.375f, 1.0f, 1.0f}};
+  const Vec4 pixels[] = {{0.0f, 0.0f, 0.0f, 1.0f},
+                         {0.25f, -0.375f, 0.0f, 1.0f}};
   for (uint32_t native_clip = 0u; native_clip < 2u; ++native_clip) {
     for (uint32_t shifted = 0u; shifted < 2u; ++shifted) {
-      Mat4 projection =
-          shifted != 0u
-              ? mat4_ortho_zo_yinv(-15.0f, 25.0f, -10.0f, 30.0f, 0.1f, 20.0f)
-              : mat4_ortho_zo_yinv(-20.0f, 20.0f, -20.0f, 20.0f, 0.1f, 20.0f);
+      Mat4 projection = shifted != 0u
+                            ? mat4_ortho_zo_yinv_reversed(-15.0f, 25.0f, -10.0f,
+                                                          30.0f, 0.1f, 20.0f)
+                            : mat4_ortho_zo_yinv_reversed(-20.0f, 20.0f, -20.0f,
+                                                          20.0f, 0.1f, 20.0f);
       if (native_clip != 0u) {
         projection.m11 = -projection.m11;
         projection.m13 = -projection.m13;
@@ -433,7 +437,7 @@ vkr_internal void test_temporal_orthographic_sky_reprojection(void) {
               mat4_mul_vec4(inverse_current, pixels[pixel]);
           const Vec4 previous_far = mat4_mul_vec4(
               inverse_previous,
-              vec4_new(previous_clip.x, previous_clip.y, 1.0f, 1.0f));
+              vec4_new(previous_clip.x, previous_clip.y, 0.0f, 1.0f));
           const Vec3 current_direction =
               vec3_normalize(vec3_sub(vec3_new(current_far.x / current_far.w,
                                                current_far.y / current_far.w,
@@ -811,8 +815,8 @@ vkr_internal void test_froxel_fog_history_survives_refits(void) {
   VkrFrameInput input = {
       .lighting = &lighting, .shadow = &shadow, .local_shadow = &local};
   input.globals.view = mat4_identity();
-  input.globals.projection =
-      mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 1000.0f);
+  input.globals.projection = mat4_perspective_reversed(
+      vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 1000.0f);
   input.globals.froxel_fog = vkr_froxel_fog_settings_defaults();
   input.globals.froxel_fog.enabled = true_v;
   input.globals.froxel_fog.max_distance = 100.0f;

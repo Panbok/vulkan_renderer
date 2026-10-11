@@ -827,7 +827,10 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> bloom_downsample_box2_pipeline;
   id<MTLComputePipelineState> bloom_upsample_pipeline;
   id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
+  /* Camera depth writes test Greater (reversed depth, ADR-109); shadow map
+     writes test Less. */
   id<MTLDepthStencilState> depth_write_state;
+  id<MTLDepthStencilState> shadow_depth_write_state;
   id<MTLDepthStencilState> depth_clear_state;
   id<MTLDepthStencilState> depth_read_state;
   id<MTL4ArgumentTable> argument_table;

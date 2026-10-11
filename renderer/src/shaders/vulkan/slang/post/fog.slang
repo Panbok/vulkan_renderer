@@ -47,10 +47,12 @@ void fog_apply_compute(uint3 thread_id : SV_DispatchThreadID)
         g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     VkrFogLighting lighting = packet_fog_lighting(root.frame);
     float3 fogged;
-    if (device_depth >= 1.0f)
+    // Reversed camera depth (ADR-109): 0 is the finite far plane, where only
+    // sky reached the pixel.
+    if (device_depth <= 0.0f)
     {
         // The sky-view lookup already carries the atmosphere to its top.
-        float3 far_world = vkr_vk_fog_world_position(root, pixel, 1.0f);
+        float3 far_world = vkr_vk_fog_world_position(root, pixel, 0.0f);
         fogged = vkr_fog_apply_sky(current.rgb, root.params, lighting,
                                    root.camera_position.xyz,
                                    far_world - root.camera_position.xyz);

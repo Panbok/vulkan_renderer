@@ -15,7 +15,10 @@
  * column vectors, so mat4_mul(a, b) applies b first. Angles are radians, and a
  * positive rotation turns counter-clockwise seen from the tip of its axis, as
  * vkr_quat_from_axis_angle does. Renderer projections use depth in [0, 1] with
- * clip-space Y inverted (mat4_perspective, mat4_ortho_zo_yinv).
+ * clip-space Y inverted. Camera projections reverse depth, near at 1 and far
+ * at 0 (mat4_perspective_reversed, mat4_ortho_zo_yinv_reversed); shadow
+ * projections keep near at 0 and far at 1 (mat4_perspective,
+ * mat4_ortho_zo_yinv). See ADR-109.
  */
 
 typedef VKR_SIMD_ALIGN union Mat4 {
@@ -114,7 +117,7 @@ static INLINE Mat4 mat4_identity(void) {
 }
 
 /* OpenGL depth convention: maps z = -near..-far to [-1, 1] with Y up. Renderer
- * cameras and shadows use mat4_ortho_zo_yinv. */
+ * cameras use mat4_ortho_zo_yinv_reversed and shadows mat4_ortho_zo_yinv. */
 static INLINE Mat4 mat4_ortho(float32_t left, float32_t right, float32_t bottom,
                               float32_t top, float32_t near_clip,
                               float32_t far_clip) {
@@ -126,7 +129,7 @@ static INLINE Mat4 mat4_ortho(float32_t left, float32_t right, float32_t bottom,
                   -2.0f / (far_clip - near_clip), 0.0f, tx, ty, tz, 1.0f);
 }
 
-/* Renderer convention: maps z = -near to depth 0 and z = -far to 1, and inverts
+/* Shadow convention: maps z = -near to depth 0 and z = -far to 1, and inverts
  * clip-space Y like mat4_perspective. */
 static INLINE Mat4 mat4_ortho_zo_yinv(float32_t left, float32_t right,
                                       float32_t bottom, float32_t top,
@@ -140,8 +143,24 @@ static INLINE Mat4 mat4_ortho_zo_yinv(float32_t left, float32_t right,
                   +((top + bottom) / tb), -(near_clip / fn), 1.0f);
 }
 
+/* Camera convention: maps z = -near to depth 1 and z = -far to 0, and inverts
+ * clip-space Y like mat4_ortho_zo_yinv. Cameras test depth with GREATER. */
+static INLINE Mat4 mat4_ortho_zo_yinv_reversed(float32_t left, float32_t right,
+                                               float32_t bottom, float32_t top,
+                                               float32_t near_clip,
+                                               float32_t far_clip) {
+  float32_t rl = (right - left);
+  float32_t tb = (top - bottom);
+  float32_t fn = (far_clip - near_clip);
+
+  return mat4_new(2.0f / rl, 0.0f, 0.0f, 0.0f, 0.0f, -2.0f / tb, 0.0f, 0.0f,
+                  0.0f, 0.0f, 1.0f / fn, 0.0f, -((right + left) / rl),
+                  +((top + bottom) / tb), far_clip / fn, 1.0f);
+}
+
 /* Vertical fov in radians. Maps z = -near to depth 0 and z = -far to 1, with
- * clip-space Y inverted. */
+ * clip-space Y inverted. Shadow convention; cameras use
+ * mat4_perspective_reversed. */
 static INLINE Mat4 mat4_perspective(float32_t fov, float32_t aspect,
                                     float32_t near_clip, float32_t far_clip) {
   // Right-handed perspective matrix for Vulkan (Z range [0,1])
@@ -153,6 +172,31 @@ static INLINE Mat4 mat4_perspective(float32_t fov, float32_t aspect,
                   0.0f, // Negated Y for Vulkan
                   0.0f, 0.0f, far_clip / (near_clip - far_clip), -1.0f, 0.0f,
                   0.0f, (far_clip * near_clip) / (near_clip - far_clip), 0.0f);
+}
+
+/* Camera convention: vertical fov in radians, maps z = -near to depth 1 and
+ * z = -far to 0, with clip-space Y inverted. Device depth near / distance
+ * keeps float32 depth precise at any distance, so cameras test depth with
+ * GREATER and clear it to 0. */
+static INLINE Mat4 mat4_perspective_reversed(float32_t fov, float32_t aspect,
+                                             float32_t near_clip,
+                                             float32_t far_clip) {
+  float32_t f = 1.0f / vkr_tan_f32(fov * 0.5f);
+  float32_t fn = far_clip - near_clip;
+
+  return mat4_new(f / aspect, 0.0f, 0.0f, 0.0f, 0.0f, -f, 0.0f, 0.0f, 0.0f,
+                  0.0f, near_clip / fn, -1.0f, 0.0f, 0.0f,
+                  (far_clip * near_clip) / fn, 0.0f);
+}
+
+/* Near plane distance of a mat4_perspective_reversed projection. */
+static INLINE float32_t mat4_perspective_reversed_near(Mat4 projection) {
+  return projection.m23 / (projection.m22 + 1.0f);
+}
+
+/* Far plane distance of a mat4_perspective_reversed projection. */
+static INLINE float32_t mat4_perspective_reversed_far(Mat4 projection) {
+  return projection.m23 / projection.m22;
 }
 
 /* World-to-view matrix looking from eye toward center down -Z. up need not be

@@ -133,9 +133,10 @@ vk_subsurface_gather(uint3 thread_id : SV_DispatchThreadID) {
   float4 profile_data =
       g_textures[root.profile_bank].Load(int3(uint2(64u, profile), 0));
   float largest = max(profile_data.x, max(profile_data.y, profile_data.z));
+  // Reversed camera depth (ADR-109): 1 is the near plane, 0 the far plane.
   float view_depth =
       root.params.projection.x * root.params.projection.y /
-      (root.params.projection.y -
+      (root.params.projection.x +
        depth * (root.params.projection.y - root.params.projection.x));
   float2 pixels_per_metre = root.params.projection.zw / view_depth;
   float largest_pixel_scale = max(pixels_per_metre.x, pixels_per_metre.y);

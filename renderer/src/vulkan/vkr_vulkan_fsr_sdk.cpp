@@ -206,7 +206,9 @@ vkr_vulkan_fsr_sdk_create(const VkrVulkanFsrSdkConfig *config,
   }
 
   FfxFsr3UpscalerContextDescription description = {};
+  /* Camera depth is reversed (ADR-109): near at 1, finite far at 0. */
   description.flags = FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE |
+                      FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED |
                       FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE |
                       FFX_FSR3UPSCALER_ENABLE_DEBUG_CHECKING;
   description.maxRenderSize = {config->max_render_extent.width,

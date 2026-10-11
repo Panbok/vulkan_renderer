@@ -113,13 +113,13 @@ struct VkrMetalTiledSkyOutput {
   float4 position [[position]];
 };
 
-// One triangle covering the target at the far plane, so the depth test keeps
-// the sky behind every surface.
+// One triangle covering the target at the far plane, reversed depth 0, so
+// the depth test keeps the sky behind every surface (ADR-109).
 vertex VkrMetalTiledSkyOutput vkr_metal_tiled_sky_vertex(uint vertex_id
                                                          [[vertex_id]]) {
   float2 corner = float2(float((vertex_id << 1u) & 2u), float(vertex_id & 2u));
   VkrMetalTiledSkyOutput output;
-  output.position = float4(corner * 2.0f - 1.0f, 1.0f, 1.0f);
+  output.position = float4(corner * 2.0f - 1.0f, 0.0f, 1.0f);
   return output;
 }
 
@@ -239,7 +239,8 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
       vkr_editor_data_view(frame->render_mode))
     discard_fragment();
   const float depth = root.depth.read(pixel);
-  const float surface = depth >= 1.0f ? 0.0f : saturate(destination.a);
+  // Reversed depth 0 is the far plane: only sky reached the pixel.
+  const float surface = depth <= 0.0f ? 0.0f : saturate(destination.a);
   if (surface <= 0.0f) {
     const VkrMetalTiledMedia sky = vkr_metal_tiled_sky_media(root, pixel);
     return float4(destination.rgb * sky.kept + sky.added, 1.0f);

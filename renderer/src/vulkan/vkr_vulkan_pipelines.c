@@ -2363,6 +2363,23 @@ bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer) {
          vkr_vk_create_deferred_pipelines(renderer);
 }
 
+/* Shadow maps keep near at depth 0 and test LESS; every camera depth
+   attachment holds reversed depth, near at 1, and tests GREATER (ADR-109). */
+vkr_internal bool8_t
+vkr_vk_packet_pipeline_shadow_depth(VkrVulkanPacketPipeline pipeline) {
+  switch (pipeline) {
+  case VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW:
+  case VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE:
+  case VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW:
+  case VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_OPAQUE:
+  case VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION:
+  case VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
+    return true_v;
+  default:
+    return false_v;
+  }
+}
+
 vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
     VkrVulkanRenderer *renderer, VkrVulkanPacketPipeline pipeline,
     VkrVulkanPacketShader vertex_shader, VkrVulkanPacketShader fragment_shader,
@@ -2482,12 +2499,17 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
       .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
       .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
   };
+  const bool8_t shadow_depth = vkr_vk_packet_pipeline_shadow_depth(pipeline);
+  const VkCompareOp depth_compare =
+      shadow_depth
+          ? (depth_write ? VK_COMPARE_OP_LESS : VK_COMPARE_OP_LESS_OR_EQUAL)
+          : (depth_write ? VK_COMPARE_OP_GREATER
+                         : VK_COMPARE_OP_GREATER_OR_EQUAL);
   const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
       .depthTestEnable = depth_test,
       .depthWriteEnable = depth_write,
-      .depthCompareOp =
-          depth_write ? VK_COMPARE_OP_LESS : VK_COMPARE_OP_LESS_OR_EQUAL,
+      .depthCompareOp = depth_compare,
   };
   const bool8_t temporal_targets =
       pipeline == VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND ||

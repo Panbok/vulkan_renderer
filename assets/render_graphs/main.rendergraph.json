@@ -3179,7 +3179,7 @@
           "load": "CLEAR",
           "store": "STORE",
           "clear": {
-            "depth": 1.0,
+            "depth": 0.0,
             "stencil": 0
           }
         }
@@ -12163,7 +12163,7 @@
           "load": "CLEAR",
           "store": "DONT_CARE",
           "clear": {
-            "depth": 1,
+            "depth": 0,
             "stencil": 0
           }
         }

@@ -282,8 +282,9 @@ void cloud_trace_compute(uint3 id : SV_DispatchThreadID)
         for (int x = 0; x < 4; ++x)
         {
             int2 pixel = clamp(origin + int2(x, y), int2(0), limit);
-            if (g_depth_textures[root.depth_texture].Load(int3(pixel, 0)) >=
-                1.0f)
+            // Reversed depth 0 is the far plane: the pixel shows sky.
+            if (g_depth_textures[root.depth_texture].Load(int3(pixel, 0)) <=
+                0.0f)
             {
                 sky_visible = true;
                 break;

@@ -177,8 +177,9 @@ void froxel_integrate_compute(uint3 thread_id : SV_DispatchThreadID)
         return;
     float2 uv = (float2(pixel) + 0.5f) / float2(root.extent.xy);
     float2 ndc = uv * 2.0f - 1.0f;
+    // Reversed camera depth (ADR-109): device depth 1 is the near plane.
     float3 near_world = vkr_froxel_homogeneous(
-        mul(params.inverse_view_projection, float4(ndc, 0.0f, 1.0f)));
+        mul(params.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
     float3 ray_world = vkr_froxel_homogeneous(
         mul(params.inverse_view_projection, float4(ndc, 0.5f, 1.0f)));
     float ray_scale = vkr_froxel_ray_length_scale(root.frame.view, near_world,
@@ -209,7 +210,8 @@ void froxel_apply_compute(uint3 thread_id : SV_DispatchThreadID)
     float4 current = g_storage_2d[root.target_texture][pixel];
     float device_depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     float3 world;
-    if (device_depth >= 1.0f)
+    // Reversed depth 0 is the far plane: only sky reached the pixel.
+    if (device_depth <= 0.0f)
     {
         float2 ndc = (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
         world = vkr_froxel_world_at_view_depth(

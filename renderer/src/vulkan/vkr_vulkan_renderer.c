@@ -996,13 +996,17 @@ vkr_internal void vkr_vk_set_shadow_depth_source(VkrVulkanFrameSlot *slot,
                                                  const VkrPreparedFrame *packet,
                                                  uint64_t signal_value) {
   if (slot->sdsm_requested) {
-    const float32_t a = packet->input.globals.projection.elements[10];
-    const float32_t b = packet->input.globals.projection.elements[14];
+    const Mat4 projection = packet->input.globals.projection;
+    const float32_t a = projection.elements[10];
+    const float32_t b = projection.elements[14];
     slot->shadow_depth_range = (VkrShadowDepthRangeSample){
-        .projection_convention = 0u,
+        .projection_convention = VKR_SHADOW_DEPTH_SOURCE_REVERSED_Z,
         .source_depth_linearize = {a, b, 0.0f, 0.0f},
-        .source_near = a != 0.0f ? b / a : 0.0f,
-        .source_far = (1.0f + a) != 0.0f ? b / (1.0f + a) : 0.0f,
+        .source_near = (1.0f + a) != 0.0f
+                           ? mat4_perspective_reversed_near(projection)
+                           : 0.0f,
+        .source_far =
+            a != 0.0f ? mat4_perspective_reversed_far(projection) : 0.0f,
         .source_frame_index = packet->input.frame.frame_index,
         .source_projection_generation =
             vkr_shadow_projection_generation(&packet->input.globals.projection),

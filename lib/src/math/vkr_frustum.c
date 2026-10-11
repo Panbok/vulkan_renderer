@@ -31,9 +31,10 @@ vkr_internal VkrPlane vkr_plane_from_vec4(Vec4 v) {
 }
 
 VkrFrustum vkr_frustum_from_view_projection(Mat4 view, Mat4 projection) {
-  // Renderer camera projections are canonical Vulkan [0,1] matrices for both
-  // perspective and orthographic cameras. Inferring the depth convention from
-  // m33 misclassified Vulkan orthographic projections as OpenGL matrices.
+  // Renderer camera projections are Vulkan [0,1] matrices with reversed depth
+  // (ADR-109) for both perspective and orthographic cameras. Inferring the
+  // depth convention from m33 misclassified Vulkan orthographic projections
+  // as OpenGL matrices.
   return vkr_frustum_from_matrix(mat4_mul(projection, view));
 }
 
@@ -58,7 +59,9 @@ VkrFrustum vkr_frustum_from_matrix(Mat4 view_projection) {
       vkr_plane_from_vec4(vec4_add(r3, r1));
   frustum.planes[VKR_FRUSTUM_PLANE_TOP] = vkr_plane_from_vec4(vec4_sub(r3, r1));
 
-  // Vulkan clip range: 0 <= z <= w
+  // Vulkan clip range: 0 <= z <= w. These are the near and far planes of a
+  // forward-depth (shadow) projection; reversed camera depth (ADR-109) swaps
+  // them. Culling tests the six planes as a set, so the labels never matter.
   frustum.planes[VKR_FRUSTUM_PLANE_NEAR] = vkr_plane_from_vec4(r2);
   frustum.planes[VKR_FRUSTUM_PLANE_FAR] = vkr_plane_from_vec4(vec4_sub(r3, r2));
 

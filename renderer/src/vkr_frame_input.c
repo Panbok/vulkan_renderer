@@ -1220,9 +1220,9 @@ vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
   if (lighting) {
     const Mat4 subsurface_projection = packet->globals.projection;
     const float32_t subsurface_near =
-        subsurface_projection.m23 / subsurface_projection.m22;
+        mat4_perspective_reversed_near(subsurface_projection);
     const float32_t subsurface_far =
-        subsurface_projection.m23 / (subsurface_projection.m22 + 1.0f);
+        mat4_perspective_reversed_far(subsurface_projection);
     if (lighting->subsurface.profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
         (lighting->subsurface.profile_count > 0u &&
          (lighting->subsurface.texture.id == 0u ||

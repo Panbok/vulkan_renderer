@@ -173,7 +173,8 @@ vkr_internal void vkr_shadow_consume_sdsm(VkrShadowSystem *system,
     vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_EMPTY);
     return;
   }
-  if (sample.submit_value == 0u || sample.projection_convention != 0u ||
+  if (sample.submit_value == 0u ||
+      sample.projection_convention != VKR_SHADOW_DEPTH_SOURCE_REVERSED_Z ||
       sample.source_projection_generation != projection_generation ||
       sample.source_scene_generation != system->sdsm_current_scene_generation ||
       lag > system->config.sdsm_max_source_lag_frames ||
@@ -194,17 +195,19 @@ vkr_internal void vkr_shadow_consume_sdsm(VkrShadowSystem *system,
     return;
   }
 
+  /* Distance is b / (device_z + a). Reversed depth puts the nearest occupied
+     surface at the largest device depth. */
   const float32_t a = sample.source_depth_linearize.x;
   const float32_t b = sample.source_depth_linearize.y;
-  const float32_t min_denominator = sample.min_device_z + a;
-  const float32_t max_denominator = sample.max_device_z + a;
-  if (!isfinite(a) || !isfinite(b) || min_denominator == 0.0f ||
-      max_denominator == 0.0f) {
+  const float32_t near_denominator = sample.max_device_z + a;
+  const float32_t far_denominator = sample.min_device_z + a;
+  if (!isfinite(a) || !isfinite(b) || near_denominator == 0.0f ||
+      far_denominator == 0.0f) {
     vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
     return;
   }
-  float32_t linear_near = b / min_denominator;
-  float32_t linear_far = b / max_denominator;
+  float32_t linear_near = b / near_denominator;
+  float32_t linear_far = b / far_denominator;
   if (!isfinite(linear_near) || !isfinite(linear_far) || linear_near <= 0.0f ||
       linear_far < linear_near) {
     vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
@@ -1191,9 +1194,10 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
   bool8_t has_z_per = vkr_shadow_has_any_per_cascade(
       system->config.cascade_z_extension_factor_per, cascade_count);
 
-  // Projection convention is fixed for this build (reverse-Z off, zero-to-one
-  // depth with an inverted Y). It is stamped anyway so that changing it later
-  // invalidates stored fits instead of silently mixing conventions.
+  // The cascade projection convention is fixed for this build: shadow maps
+  // keep zero-to-one depth with near at 0 and an inverted Y; only camera
+  // depth is reversed (ADR-109). It is stamped anyway so that changing it
+  // later invalidates stored fits instead of silently mixing conventions.
   const uint32_t projection_convention = 0u;
   VkrShadowFitHistory *history = &system->fit_history;
   const bool8_t history_compatible =

@@ -9,8 +9,8 @@ bool8_t vkr_dof_controls_valid(float32_t focus_distance, float32_t f_stop,
                                Mat4 projection) {
   const float64_t focal =
       0.5 * VKR_DOF_SENSOR_HEIGHT_METRES * fabs((float64_t)projection.m11);
-  const float32_t near_distance = projection.m23 / projection.m22;
-  const float32_t far_distance = projection.m23 / (projection.m22 + 1.0f);
+  const float32_t near_distance = mat4_perspective_reversed_near(projection);
+  const float32_t far_distance = mat4_perspective_reversed_far(projection);
   if (!isfinite(focus_distance) || !isfinite(f_stop) || f_stop <= 0.0f ||
       !isfinite(focal) || focal <= 0.0 || focus_distance <= focal ||
       projection.m32 != -1.0f || projection.m33 != 0.0f ||
@@ -35,8 +35,9 @@ VkrDofGpuParams vkr_dof_prepare(float32_t focus_distance, float32_t f_stop,
                   (2.0 * f_stop * VKR_DOF_SENSOR_HEIGHT_METRES *
                    (focus_distance - focal)));
   return (VkrDofGpuParams){
-      .lens = {radius_scale, focus_distance, projection.m23 / projection.m22,
-               projection.m23 / (projection.m22 + 1.0f)},
+      .lens = {radius_scale, focus_distance,
+               mat4_perspective_reversed_near(projection),
+               mat4_perspective_reversed_far(projection)},
       .depth_uv = {1.0f, 1.0f, jitter_pixels.x / depth_width,
                    jitter_pixels.y / depth_height},
       .dimensions = {output_width, output_height, Max(output_width / 2u, 1u),

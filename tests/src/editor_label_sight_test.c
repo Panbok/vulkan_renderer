@@ -47,7 +47,8 @@ static Mat4 sight_test_camera(Vec3 eye) {
   const Mat4 view =
       mat4_look_at(eye, vec3_add(eye, vec3_new(0.0f, 0.0f, -1.0f)),
                    vec3_new(0.0f, 1.0f, 0.0f));
-  return mat4_mul(mat4_perspective(1.5707963f, 1.0f, 0.1f, 1000.0f), view);
+  return mat4_mul(mat4_perspective_reversed(1.5707963f, 1.0f, 0.1f, 1000.0f),
+                  view);
 }
 
 static bool8_t sight_test_occluded(const VkrSampleUiFrame *frame, Vec3 point,
@@ -239,9 +240,10 @@ static void sight_test_cache(VkrScene *scene, VkrSampleUiFrame *frame,
   /* An orthographic view fades nothing with distance. */
   const Mat4 view = mat4_look_at(vec3_zero(), vec3_new(0.0f, 0.0f, -1.0f),
                                  vec3_new(0.0f, 1.0f, 0.0f));
-  frame->view_projection = mat4_mul(
-      mat4_ortho_zo_yinv(-100.0f, 100.0f, -100.0f, 100.0f, 0.1f, 1000.0f),
-      view);
+  frame->view_projection =
+      mat4_mul(mat4_ortho_zo_yinv_reversed(-100.0f, 100.0f, -100.0f, 100.0f,
+                                           0.1f, 1000.0f),
+               view);
   for (uint32_t f = 0; f < 20u; ++f) {
     (void)sight_test_frame(frame, scene, icons, UINT32_MAX, scratch);
     arena_clear(arena, ARENA_MEMORY_TAG_UNKNOWN);

@@ -456,6 +456,50 @@ static void test_mat4_projection_matrices(void) {
          "Perspective Vulkan far depth failed");
   assert(behind.w < 0.0f && "Perspective point behind camera has positive W");
 
+  // Camera projections reverse depth (ADR-109): near maps to 1 and far to 0,
+  // with the same X/Y mapping as the forward projections above.
+  Mat4 ortho_reversed =
+      mat4_ortho_zo_yinv_reversed(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+  Vec4 reversed_ortho_near =
+      mat4_mul_vec4(ortho_reversed, vec4_new(10.0f, 10.0f, -0.1f, 1.0f));
+  Vec4 reversed_ortho_far =
+      mat4_mul_vec4(ortho_reversed, vec4_new(0.0f, 0.0f, -100.0f, 1.0f));
+  assert(float_equals(reversed_ortho_near.z, 1.0f, 0.001f) &&
+         "Reversed ortho near depth failed");
+  assert(float_equals(reversed_ortho_far.z, 0.0f, 0.001f) &&
+         "Reversed ortho far depth failed");
+  assert(float_equals(reversed_ortho_near.x, 1.0f, 0.001f) &&
+         float_equals(reversed_ortho_near.y, -1.0f, 0.001f) &&
+         "Reversed ortho X/Y mapping failed");
+
+  Mat4 perspective_reversed = mat4_perspective_reversed(
+      vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
+  Vec4 reversed_near =
+      mat4_mul_vec4(perspective_reversed, vec4_new(0.0f, 0.0f, -0.1f, 1.0f));
+  Vec4 reversed_far =
+      mat4_mul_vec4(perspective_reversed, vec4_new(0.0f, 0.0f, -100.0f, 1.0f));
+  assert(reversed_near.w > 0.0f && "Reversed point in front has negative W");
+  assert(float_equals(reversed_near.z / reversed_near.w, 1.0f, 0.001f) &&
+         "Reversed perspective near depth failed");
+  assert(float_equals(reversed_far.z / reversed_far.w, 0.0f, 0.001f) &&
+         "Reversed perspective far depth failed");
+  assert(float_equals(mat4_perspective_reversed_near(perspective_reversed),
+                      0.1f, 1e-5f) &&
+         float_equals(mat4_perspective_reversed_far(perspective_reversed),
+                      100.0f, 0.01f) &&
+         "Reversed perspective near/far recovery failed");
+
+  // The reason for reversed depth: float32 device depth keeps two faces 4 mm
+  // apart distinct at a kilometre, where forward depth rounds them together.
+  Mat4 long_view = mat4_perspective_reversed(vkr_to_radians(60.0f),
+                                             16.0f / 9.0f, 0.1f, 20000.0f);
+  Vec4 face_front =
+      mat4_mul_vec4(long_view, vec4_new(0.0f, 0.0f, -1000.0f, 1.0f));
+  Vec4 face_back =
+      mat4_mul_vec4(long_view, vec4_new(0.0f, 0.0f, -1000.004f, 1.0f));
+  assert(face_front.z / face_front.w > face_back.z / face_back.w &&
+         "Reversed depth lost a 4 mm separation at 1 km");
+
   // Test look-at matrix
   Vec3 eye = vec3_new(0.0f, 0.0f, 5.0f);
   Vec3 center = vec3_new(0.0f, 0.0f, 0.0f);

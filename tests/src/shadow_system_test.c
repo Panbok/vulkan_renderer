@@ -955,7 +955,7 @@ vkr_internal void test_local_shadow_dynamic_squares(void) {
 
   /* A face the camera cannot see takes no dynamic square. */
   VkrLocalShadowCamera looking = camera;
-  looking.projection = mat4_perspective(1.0f, 1.0f, 0.1f, 100.0f);
+  looking.projection = mat4_perspective_reversed(1.0f, 1.0f, 0.1f, 100.0f);
   looking.view = mat4_look_at(vec3_zero(), vec3_new(0.0f, 0.0f, 10.0f),
                               vec3_new(0.0f, 1.0f, 0.0f));
   const VkrFrustum looking_frustum =
@@ -2441,17 +2441,19 @@ test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
   assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   camera.projection =
-      mat4_perspective(vkr_to_radians(camera.zoom),
-                       (float32_t)camera.cached_window_width /
-                           (float32_t)camera.cached_window_height,
-                       camera.near_clip, camera.far_clip);
+      mat4_perspective_reversed(vkr_to_radians(camera.zoom),
+                                (float32_t)camera.cached_window_width /
+                                    (float32_t)camera.cached_window_height,
+                                camera.near_clip, camera.far_clip);
+  /* Reversed camera depth: the nearest occupied surface (10 m) has the
+     largest device depth and the farthest (100 m) the smallest. */
   const float32_t a = camera.projection.elements[10];
   const float32_t b = camera.projection.elements[14];
   VkrShadowDepthRangeSample sample = {
-      .min_device_z = b / 10.0f - a,
-      .max_device_z = b / 100.0f - a,
+      .min_device_z = b / 100.0f - a,
+      .max_device_z = b / 10.0f - a,
       .occupied_count = 4096u,
-      .projection_convention = 0u,
+      .projection_convention = VKR_SHADOW_DEPTH_SOURCE_REVERSED_Z,
       .source_depth_linearize = {a, b, 0.0f, 0.0f},
       .source_near = camera.near_clip,
       .source_far = camera.far_clip,
@@ -2479,8 +2481,8 @@ test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
   assert(system.sdsm_status == VKR_SHADOW_SDSM_CACHED);
   assert(fabsf(system.cascade_splits[0] - 10.0f) < 0.01f);
 
-  sample.min_device_z = b / 50.0f - a;
-  sample.max_device_z = b / 60.0f - a;
+  sample.min_device_z = b / 60.0f - a;
+  sample.max_device_z = b / 50.0f - a;
   sample.source_frame_index = 10u;
   sample.submit_value = 10u;
   vkr_shadow_system_set_depth_range_sample(&system, &sample, 12u, 3u);
@@ -2555,14 +2557,15 @@ test_sdsm_cached_range_rejects_scene_and_projection_changes(void) {
     config.sdsm_temporal_blend = 0.0f;
     assert(vkr_shadow_system_init(&system, &config));
     VkrCamera camera = test_camera();
-    camera.projection = mat4_perspective(vkr_to_radians(camera.zoom), 1.0f,
-                                         camera.near_clip, camera.far_clip);
+    camera.projection = mat4_perspective_reversed(
+        vkr_to_radians(camera.zoom), 1.0f, camera.near_clip, camera.far_clip);
     const float32_t a = camera.projection.elements[10];
     const float32_t b = camera.projection.elements[14];
     const VkrShadowDepthRangeSample sample = {
-        .min_device_z = b / 10.0f - a,
-        .max_device_z = b / 100.0f - a,
+        .min_device_z = b / 100.0f - a,
+        .max_device_z = b / 10.0f - a,
         .occupied_count = 4096u,
+        .projection_convention = VKR_SHADOW_DEPTH_SOURCE_REVERSED_Z,
         .source_depth_linearize = {a, b, 0.0f, 0.0f},
         .source_near = camera.near_clip,
         .source_far = camera.far_clip,
@@ -2581,8 +2584,8 @@ test_sdsm_cached_range_rejects_scene_and_projection_changes(void) {
     /* A missing readback may reuse only a compatible cached sample. */
     if (change == 1u) {
       camera.projection =
-          mat4_perspective(vkr_to_radians(camera.zoom + 10.0f), 1.0f,
-                           camera.near_clip, camera.far_clip);
+          mat4_perspective_reversed(vkr_to_radians(camera.zoom + 10.0f), 1.0f,
+                                    camera.near_clip, camera.far_clip);
     }
     vkr_shadow_system_set_depth_range_sample(&system, NULL, 11u,
                                              change == 0u ? 4u : 3u);

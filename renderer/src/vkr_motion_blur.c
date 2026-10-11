@@ -7,8 +7,8 @@ bool8_t vkr_motion_blur_controls_valid(float32_t shutter_angle,
   if (!isfinite(shutter_angle) || shutter_angle < 0.0f ||
       shutter_angle > 360.0f)
     return false_v;
-  const float32_t near_distance = projection.m23 / projection.m22;
-  const float32_t far_distance = projection.m23 / (projection.m22 + 1.0f);
+  const float32_t near_distance = mat4_perspective_reversed_near(projection);
+  const float32_t far_distance = mat4_perspective_reversed_far(projection);
   return projection.m32 == -1.0f && projection.m33 == 0.0f &&
          isfinite(near_distance) && near_distance > 0.0f &&
          isfinite(far_distance) && far_distance > near_distance;
@@ -20,8 +20,9 @@ vkr_motion_blur_prepare(float32_t shutter_angle, Mat4 projection,
                         uint32_t output_height, uint32_t depth_width,
                         uint32_t depth_height) {
   return (VkrMotionBlurGpuParams){
-      .motion = {shutter_angle / 360.0f, projection.m23 / projection.m22,
-                 projection.m23 / (projection.m22 + 1.0f), 0.0f},
+      .motion = {shutter_angle / 360.0f,
+                 mat4_perspective_reversed_near(projection),
+                 mat4_perspective_reversed_far(projection), 0.0f},
       .depth_uv = {1.0f, 1.0f, jitter_pixels.x / depth_width,
                    jitter_pixels.y / depth_height},
       .dimensions = {output_width, output_height,

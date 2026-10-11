@@ -62,8 +62,9 @@ void vk_fsr31_prepare(uint3 thread_id : SV_DispatchThreadID)
     float depth = g_depth_textures[root.opaque_depth_texture].Load(int3(pixel, 0));
     // Transmission motion is written for the nearest peeled surface. Its
     // depth must accompany that motion rather than the opaque surface behind it.
+    // Reversed camera depth (ADR-109): the nearer surface has the larger depth.
     if (root.transmission_enabled != 0u && validity >= 2.0f)
-        depth = min(depth, g_depth_array_textures[root.transmission_depth_texture]
+        depth = max(depth, g_depth_array_textures[root.transmission_depth_texture]
                                .Load(int4(pixel, 0, 0)));
 
     float3 difference = abs(color - opaque);

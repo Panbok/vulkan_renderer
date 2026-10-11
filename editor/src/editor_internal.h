@@ -145,12 +145,13 @@ void vkr_editor_labels_project(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame);
 /* Whether collision of a loaded scene (the open one, the World, added
    ones) lies between the camera of `view_projection` and `point`: a ray
-   from the near plane under the point (depth 0, mat4_perspective and
-   mat4_ortho_zo_yinv) to it. A point on a surface stays visible, and so
-   does one behind the camera. `owner` and `entity` name an object whose
-   own collision and its parent's hide nothing, so a mover or button does
-   not hide its own icon; NULL and an invalid id name none. Geometry
-   without collision, sensors and scenes with physics off hide nothing. */
+   from the near plane under the point (depth 1 under reversed camera depth,
+   mat4_perspective_reversed and mat4_ortho_zo_yinv_reversed) to it. A point on
+   a surface stays visible, and so does one behind the camera. `owner` and
+   `entity` name an object whose own collision and its parent's hide nothing, so
+   a mover or button does not hide its own icon; NULL and an invalid id name
+   none. Geometry without collision, sensors and scenes with physics off hide
+   nothing. */
 bool8_t vkr_editor_label_occluded(const VkrSampleUiFrame *frame,
                                   Mat4 view_projection,
                                   Mat4 inverse_view_projection, Vec3 point,

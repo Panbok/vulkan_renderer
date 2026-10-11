@@ -265,7 +265,8 @@ kernel void vkr_metal_packet_cloud_trace(
   for (int y = 0; y < 4 && !sky_visible; ++y) {
     for (int x = 0; x < 4; ++x) {
       uint2 pixel = uint2(clamp(origin + int2(x, y), int2(0), limit));
-      if (root.depth.read(pixel).x >= 1.0f) {
+      // Reversed depth 0 is the far plane: the pixel shows sky.
+      if (root.depth.read(pixel).x <= 0.0f) {
         sky_visible = true;
         break;
       }

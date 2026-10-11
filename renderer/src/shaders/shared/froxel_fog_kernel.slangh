@@ -186,7 +186,8 @@ float3 vkr_froxel_homogeneous(float4 value)
     return value.xyz * reciprocal;
 }
 
-// Two finite points establish the ray even for an infinite raster far plane.
+// Two finite points establish the ray even for an infinite raster far plane:
+// reversed camera depth (ADR-109) puts the near plane at device depth 1.
 // Extrapolation keeps injection and sky sampling at the authored fog distance,
 // matching the CPU local-light selection bounds.
 float3 vkr_froxel_world_at_view_depth(VkrFroxelFogParams params,
@@ -194,7 +195,7 @@ float3 vkr_froxel_world_at_view_depth(VkrFroxelFogParams params,
                                       float positive_depth)
 {
     float3 near_world = vkr_froxel_homogeneous(
-        VKR_FROXEL_MUL(params.inverse_view_projection, float4(ndc, 0.0f, 1.0f)));
+        VKR_FROXEL_MUL(params.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
     float3 ray_world = vkr_froxel_homogeneous(
         VKR_FROXEL_MUL(params.inverse_view_projection, float4(ndc, 0.5f, 1.0f)));
     float near_depth = -VKR_FROXEL_MUL(current_view, float4(near_world, 1.0f)).z;

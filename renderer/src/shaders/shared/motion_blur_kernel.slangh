@@ -13,9 +13,11 @@ float2 vkr_motion_blur_velocity(VkrMotionBlurGpuParams params,
       motion_uv * float2(params.dimensions.xy) * (0.5f * params.motion.x);
   return velocity * min(1.0f, 16.0f / max(length(velocity), 1e-6f));
 }
+// Reversed camera depth (ADR-109): device depth 1 is the near plane
+// (motion.y metres) and 0 the far plane (motion.z metres).
 float vkr_motion_blur_depth(VkrMotionBlurGpuParams params, float device_depth) {
   return params.motion.y * params.motion.z /
-         (params.motion.z - device_depth * (params.motion.z - params.motion.y));
+         (params.motion.y + device_depth * (params.motion.z - params.motion.y));
 }
 float vkr_motion_blur_line_coverage(float2 offset, float2 velocity) {
   float radius = length(velocity);

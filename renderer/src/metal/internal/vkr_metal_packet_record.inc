@@ -286,7 +286,14 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
                 vertexStart:0u
                 vertexCount:3u];
   }
-  [encoder setDepthStencilState:renderer->depth_write_state];
+  const bool8_t shadow_depth =
+      pass->kind == VKR_RG_EXECUTOR_SHADOW ||
+      pass->kind == VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC ||
+      pass->kind == VKR_RG_EXECUTOR_LOCAL_SHADOW ||
+      pass->kind == VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC;
+  [encoder setDepthStencilState:shadow_depth
+                                    ? renderer->shadow_depth_write_state
+                                    : renderer->depth_write_state];
   if (!draw->commands)
     return;
   if (pass->kind == VKR_RG_EXECUTOR_SHADOW ||

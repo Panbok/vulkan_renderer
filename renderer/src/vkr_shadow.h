@@ -42,6 +42,11 @@ typedef struct VkrSdsmReduceValue {
   uint32_t occupied_count;
 } VkrSdsmReduceValue;
 
+/* VkrShadowDepthRangeSample.projection_convention of reversed camera depth
+ * (ADR-109): the source projection maps the near plane to device depth 1 and
+ * the far plane to 0, so the largest device depth is the nearest surface. */
+#define VKR_SHADOW_DEPTH_SOURCE_REVERSED_Z 1u
+
 typedef struct VkrShadowDepthRangeSample {
   float32_t min_device_z;
   float32_t max_device_z;

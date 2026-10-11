@@ -1845,17 +1845,15 @@ vkr_internal bool8_t vkr_vk_prepare_fsr31_dispatch(
   }
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 projection = packet->input.globals.projection;
-  const float32_t a = projection.elements[10];
-  const float32_t b = projection.elements[14];
-  prepared->camera_near = b / a;
-  prepared->camera_far = b / (1.0f + a);
+  prepared->camera_near = mat4_perspective_reversed_near(projection);
+  prepared->camera_far = mat4_perspective_reversed_far(projection);
   prepared->camera_fov_y_radians =
       2.0f * atanf(1.0f / fabsf(projection.elements[5]));
   if (!isfinite(prepared->camera_near) || !isfinite(prepared->camera_far) ||
       prepared->camera_near <= 0.0f ||
       prepared->camera_far <= prepared->camera_near ||
       projection.elements[11] != -1.0f || projection.elements[15] != 0.0f) {
-    log_error("FSR 3.1 requires a finite, non-reversed perspective camera");
+    log_error("FSR 3.1 requires a finite, reversed-depth perspective camera");
     return false_v;
   }
   prepared->jitter_x = packet->temporal.jitter_pixels.x;

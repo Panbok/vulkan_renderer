@@ -62,7 +62,7 @@ vkr_internal void test_gtao_gpu_params(void) {
   const VkrGtaoFrame frame =
       vkr_gtao_prepare(true_v, VKR_GTAO_DEFAULT_RADIUS, VKR_GTAO_DEFAULT_POWER);
   const Mat4 projection =
-      mat4_perspective(vkr_to_radians(60.0f), 1.0f, 0.1f, 100.0f);
+      mat4_perspective_reversed(vkr_to_radians(60.0f), 1.0f, 0.1f, 100.0f);
   const VkrGtaoGpuParams temporal = vkr_gtao_gpu_params(
       &config, &frame, mat4_identity(), projection, 1279u, 719u, 130u, true_v);
   const VkrGtaoGpuParams static_noise = vkr_gtao_gpu_params(

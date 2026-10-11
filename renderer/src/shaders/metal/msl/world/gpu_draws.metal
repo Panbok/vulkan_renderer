@@ -100,7 +100,8 @@ struct VkrMetalPacketDepthClearOutput {
 };
 
 // Clears one local shadow face's atlas square: a triangle covering the
-// viewport at far depth, drawn with an always-passing depth write.
+// viewport at the shadow map's far depth 1, drawn with an always-passing depth
+// write. Shadow maps keep near at 0; only camera depth is reversed (ADR-109).
 vertex VkrMetalPacketDepthClearOutput
 vkr_metal_packet_depth_clear_vertex(uint vertex_id [[vertex_id]]) {
   float2 corner = float2((vertex_id << 1u) & 2u, vertex_id & 2u);
@@ -156,9 +157,11 @@ static bool vkr_metal_packet_candidate_occluded(
       (instance.model * float4(candidate.local_bounding_sphere.xyz, 1.0)).xyz;
   float radius = max(candidate.local_bounding_sphere.w *
                      instance.normal_column1.w, 0.0);
+  // Reversed camera depth (ADR-109): near is 1, far 0, so the nearest corner
+  // has the largest depth and the HZB keeps each cell's smallest.
   float2 ndc_min = float2(1e30);
   float2 ndc_max = float2(-1e30);
-  float nearest_depth = 1.0;
+  float nearest_depth = 0.0;
   for (uint corner = 0u; corner < 8u; ++corner) {
     float3 sign_vector =
         float3((corner & 1u) ? 1.0 : -1.0, (corner & 2u) ? 1.0 : -1.0,
@@ -170,9 +173,9 @@ static bool vkr_metal_packet_candidate_occluded(
     float3 ndc = clip.xyz / clip.w;
     ndc_min = min(ndc_min, ndc.xy);
     ndc_max = max(ndc_max, ndc.xy);
-    nearest_depth = min(nearest_depth, ndc.z);
+    nearest_depth = max(nearest_depth, ndc.z);
   }
-  if (nearest_depth <= 0.0 || any(ndc_min > 1.0) || any(ndc_max < -1.0))
+  if (nearest_depth >= 1.0 || any(ndc_min > 1.0) || any(ndc_max < -1.0))
     return false;
   float2 uv_min = clamp(float2(ndc_min.x, -ndc_max.y) * 0.5 + 0.5, 0.0, 1.0);
   float2 uv_max = clamp(float2(ndc_max.x, -ndc_min.y) * 0.5 + 0.5, 0.0, 1.0);
@@ -189,8 +192,8 @@ static bool vkr_metal_packet_candidate_occluded(
   uint2 sample_max = min(base_max >> mip, mip_extent - 1u);
   for (uint y = sample_min.y; y <= sample_max.y; ++y) {
     for (uint x = sample_min.x; x <= sample_max.x; ++x) {
-      if (nearest_depth <=
-          root.hzb.read(uint2(x, y), mip).x + root.hzb_depth_epsilon)
+      if (nearest_depth >=
+          root.hzb.read(uint2(x, y), mip).x - root.hzb_depth_epsilon)
         return false;
     }
   }
@@ -496,14 +499,16 @@ static VkrTerrainSurface vkr_metal_packet_terrain_surface(
   return vkr_terrain_finish(sum);
 }
 
-// The view direction through a pixel's center toward the far plane.
+// The view direction through a pixel's center. Depth 1 is the near plane
+// under reversed camera depth; only the direction from the eye is used, and
+// the near plane stays finite for any far plane.
 static float3 vkr_metal_packet_sky_direction(
     constant VkrMetalPacketFrameRoot *frame, float4x4 inverse_view_projection,
     uint2 extent, float2 pixel_center) {
   float2 ndc = vkr_metal_packet_resolve_ndc(pixel_center, extent);
-  float4 far_world = inverse_view_projection * float4(ndc, 1.0, 1.0);
+  float4 plane_world = inverse_view_projection * float4(ndc, 1.0, 1.0);
   return -vkr_metal_packet_view_direction(frame,
-      far_world.xyz / max(abs(far_world.w), 1e-7) * sign(far_world.w));
+      plane_world.xyz / max(abs(plane_world.w), 1e-7) * sign(plane_world.w));
 }
 
 // The atmosphere's transmittance from the observer along `direction`.
@@ -622,25 +627,27 @@ kernel void vkr_metal_packet_hzb_build(constant VkrMetalPacketHzbBuildRoot &root
                                        [[thread_position_in_grid]]) {
   if (any(pixel >= root.destination_extent))
     return;
-  float maximum_depth = 0.0;
+  // Each cell keeps its farthest depth, the smallest under reversed camera
+  // depth (ADR-109).
+  float farthest_depth = 1.0;
   if (root.source_is_depth != 0u) {
-    maximum_depth = root.source.read(min(pixel, root.source_extent - 1u)).x;
+    farthest_depth = root.source.read(min(pixel, root.source_extent - 1u)).x;
   } else {
     uint2 source_begin = pixel * 2u;
     uint2 source_end = min(source_begin + 2u, root.source_extent);
     // Metal mip extents floor odd dimensions. The last destination texel owns
-    // the unpaired source edge so every depth sample contributes to the max.
+    // the unpaired source edge so every depth sample contributes to the min.
     if (pixel.x + 1u == root.destination_extent.x)
       source_end.x = root.source_extent.x;
     if (pixel.y + 1u == root.destination_extent.y)
       source_end.y = root.source_extent.y;
     for (uint y = source_begin.y; y < source_end.y; ++y) {
       for (uint x = source_begin.x; x < source_end.x; ++x) {
-        maximum_depth = max(maximum_depth, root.source.read(uint2(x, y)).x);
+        farthest_depth = min(farthest_depth, root.source.read(uint2(x, y)).x);
       }
     }
   }
-  root.destination.write(float4(maximum_depth), pixel);
+  root.destination.write(float4(farthest_depth), pixel);
 }
 
 static_assert(sizeof(VkrGpuDrawCompactionState) == 144,

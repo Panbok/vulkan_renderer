@@ -44,9 +44,11 @@ fragment float4 vkr_metal_packet_editor_grid_fragment(
     constant VkrMetalPacketEditorGridRoot *root [[buffer(1)]]) {
   const float2 uv = input.position.xy / float2(root->extent);
   const float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-  const float3 near_point = vkr_metal_editor_grid_unproject(root, ndc, 0.0);
+  /* Reversed camera depth: 1 is the near plane and 0 the far plane, so t
+     runs from near (0) to far (1) along the ray. */
+  const float3 near_point = vkr_metal_editor_grid_unproject(root, ndc, 1.0);
   const float3 ray =
-      vkr_metal_editor_grid_unproject(root, ndc, 1.0) - near_point;
+      vkr_metal_editor_grid_unproject(root, ndc, 0.0) - near_point;
   /* The plane's normal axis and its two in-plane coordinates. */
   const bool side = root->plane == 1u;
   const bool front = root->plane == 2u;
@@ -68,7 +70,7 @@ fragment float4 vkr_metal_packet_editor_grid_fragment(
     const uint2 texel =
         min(uint2(uv * float2(depth_extent)), depth_extent - 1u);
     const float device_depth = root->depth.read(texel).x;
-    if (device_depth < 1.0) {
+    if (device_depth > 0.0) {
       const float3 surface =
           vkr_metal_editor_grid_unproject(root, ndc, device_depth);
       const float s =

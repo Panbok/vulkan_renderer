@@ -55,8 +55,10 @@ float4 editor_grid_fragment(VkrVulkanEditorGridOutput input) : SV_Target0
     VkrVulkanEditorGridRoot* root = g_editor_grid_push.root;
     float2 uv = input.position.xy / float2(root.extent);
     float2 ndc = uv * 2.0f - 1.0f;
-    float3 near_point = vkr_vk_editor_grid_unproject(root, ndc, 0.0f);
-    float3 ray = vkr_vk_editor_grid_unproject(root, ndc, 1.0f) - near_point;
+    // Reversed camera depth (ADR-109): 1 is the near plane and 0 the far
+    // plane, so t runs from near (0) to far (1) along the ray.
+    float3 near_point = vkr_vk_editor_grid_unproject(root, ndc, 1.0f);
+    float3 ray = vkr_vk_editor_grid_unproject(root, ndc, 0.0f) - near_point;
     // The plane's normal axis and its two in-plane coordinates.
     bool side = root.plane == 1u;
     bool front = root.plane == 2u;
@@ -82,7 +84,7 @@ float4 editor_grid_fragment(VkrVulkanEditorGridOutput input) : SV_Target0
                            int2(0, 0),
                            int2(int(depth_width), int(depth_height)) - 1);
         float device_depth = depth.Load(int3(texel, 0));
-        if (device_depth < 1.0f)
+        if (device_depth > 0.0f)
         {
             float3 surface = vkr_vk_editor_grid_unproject(root, ndc, device_depth);
             float s = dot(surface - near_point, ray) / max(dot(ray, ray), 1e-12f);

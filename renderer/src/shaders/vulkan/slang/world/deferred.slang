@@ -730,9 +730,11 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
             .xyz;
     float radius = max(candidate.local_bounding_sphere.w *
                        instance.normal_column1.w, 0.0f);
+    // Reversed camera depth (ADR-109): near is 1, far 0, so the nearest corner
+    // has the largest depth and the HZB keeps each cell's smallest.
     float2 ndc_min = 1e30f;
     float2 ndc_max = -1e30f;
-    float nearest_depth = 1.0f;
+    float nearest_depth = 0.0f;
     [unroll] for (uint corner = 0u; corner < 8u; ++corner)
     {
         float3 sign_vector = float3((corner & 1u) != 0u ? 1.0f : -1.0f,
@@ -745,9 +747,9 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
         float3 ndc = clip.xyz / clip.w;
         ndc_min = min(ndc_min, ndc.xy);
         ndc_max = max(ndc_max, ndc.xy);
-        nearest_depth = min(nearest_depth, ndc.z);
+        nearest_depth = max(nearest_depth, ndc.z);
     }
-    if (nearest_depth <= 0.0f || any(ndc_min > 1.0f) || any(ndc_max < -1.0f))
+    if (nearest_depth >= 1.0f || any(ndc_min > 1.0f) || any(ndc_max < -1.0f))
         return false;
     // Positive-height Vulkan viewports and the HZB producer keep image Y.
     float2 uv_min = clamp(ndc_min * 0.5f + 0.5f, 0.0f, 1.0f);
@@ -774,7 +776,7 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
                 g_storage_2d[NonUniformResourceIndex(root.hzb_textures[mip])]
                             [uint2(x, y)]
                                 .x;
-            if (nearest_depth <= occluder_depth + root.hzb_depth_epsilon)
+            if (nearest_depth >= occluder_depth - root.hzb_depth_epsilon)
                 return false;
         }
     }
@@ -1017,7 +1019,9 @@ vk_visibility_fragment(VkrVkVisibilityOutput input,
                 .Load(int4(int2(input.position.xy),
                            int(root.previous_depth_layer), 0))
                 .r;
-        if (input.position.z <= previous_depth + 1e-5f)
+        // Keep only fragments behind the previous layer: smaller reversed
+        // depth (ADR-109).
+        if (input.position.z >= previous_depth - 1e-5f)
             discard;
     }
     VkrGpuVisibleDrawRow visible =
@@ -1825,14 +1829,17 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         vkr_vk_resolve_defaults(root, thread_id.xy, 0.0f);
         if (root.history_valid != 0u)
         {
+            // Sky pixels lie on the far plane, reversed depth 0 (ADR-109).
             float2 uv = (float2(thread_id.xy) + 0.5f) / float2(root.extent);
             float4 previous_clip = mul(root.sky_reprojection,
-                                        float4(uv * 2.0f - 1.0f, 1.0f, 1.0f));
+                                        float4(uv * 2.0f - 1.0f, 0.0f, 1.0f));
             if (previous_clip.w > 1e-6f)
             {
                 float2 previous_uv = previous_clip.xy / previous_clip.w * 0.5f + 0.5f;
                 g_storage_float2_2d[root.motion_texture][thread_id.xy] = previous_uv - uv;
-                g_storage_float2_2d[root.validity_texture][thread_id.xy] = float2(1.0f, 1.0f);
+                // The second channel is the previous device depth: the far
+                // plane's 0 for sky.
+                g_storage_float2_2d[root.validity_texture][thread_id.xy] = float2(1.0f, 0.0f);
             }
         }
         return;
@@ -2086,10 +2093,12 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot root, uint2 pixel)
     // already owns that flip, so inverting the view-projection alone lands in
     // world space. The resolve flips because it performs the viewport
     // transform by hand instead of inverting a matrix.
+    // Depth 1 is the near plane under reversed camera depth (ADR-109); only
+    // the direction from the eye is used, and the near plane stays finite.
     float2 ndc = (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
-    float3 far_world = vkr_vk_deferred_homogeneous(
+    float3 plane_world = vkr_vk_deferred_homogeneous(
         mul(root.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
-    float3 direction = -packet_view_direction(root.frame, far_world);
+    float3 direction = -packet_view_direction(root.frame, plane_world);
     // The sky-view lookup already integrates to the top of the atmosphere, so
     // sky pixels take no aerial perspective. Its sun and moon tables add; the
     // discs and their glows are analytic. Pass-root descriptor indices are
@@ -3420,7 +3429,9 @@ void vk_hzb_build(uint3 thread_id : SV_DispatchThreadID)
         source_end.x = root.source_extent.x;
     if (thread_id.y + 1u == root.destination_extent.y)
         source_end.y = root.source_extent.y;
-    float maximum = 0.0f;
+    // Each cell keeps its farthest depth, the smallest under reversed camera
+    // depth (ADR-109).
+    float farthest = 1.0f;
     for (uint y = source_begin.y; y < source_end.y; ++y)
     {
         for (uint x = source_begin.x; x < source_end.x; ++x)
@@ -3430,11 +3441,11 @@ void vk_hzb_build(uint3 thread_id : SV_DispatchThreadID)
                 root.source_is_depth != 0u
                     ? g_depth_textures[root.source_texture].Load(int3(p, 0))
                     : g_storage_2d[root.source_texture][p].x;
-            maximum = max(maximum, value);
+            farthest = min(farthest, value);
         }
     }
     g_storage_2d[root.destination_texture][thread_id.xy] =
-        float4(maximum, 0.0f, 0.0f, 0.0f);
+        float4(farthest, 0.0f, 0.0f, 0.0f);
 }
 float vkr_vk_ssr_positive_depth(VkrSsrParams params, uint2 pixel,
                                 uint2 extent, float device_depth)
@@ -4114,7 +4125,7 @@ void vk_picking_resolve(uint3 thread_id : SV_DispatchThreadID)
     }
     g_storage_uint_2d[root.output_texture][root.pixel] = identifier;
     // The editor lifts its grid onto the visible floor from this depth when
-    // the scene has no collision; 1 is the far plane.
+    // the scene has no collision; reversed depth 0 is the far plane.
     root.depth_output[0].depth =
         g_depth_textures[root.depth_texture].Load(int3(root.pixel, 0));
 }

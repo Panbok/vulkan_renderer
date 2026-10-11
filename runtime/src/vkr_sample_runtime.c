@@ -1134,8 +1134,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_build_view_ray(
   const float32_t ndc_x = position.x * 2.0f - 1.0f;
   const float32_t ndc_y = position.y * 2.0f - 1.0f;
 
-  Vec4 near_clip = vec4_new(ndc_x, ndc_y, 0.0f, 1.0f);
-  Vec4 far_clip = vec4_new(ndc_x, ndc_y, 1.0f, 1.0f);
+  /* Reversed camera depth: device depth 1 is the near plane, 0 the far. */
+  Vec4 near_clip = vec4_new(ndc_x, ndc_y, 1.0f, 1.0f);
+  Vec4 far_clip = vec4_new(ndc_x, ndc_y, 0.0f, 1.0f);
 
   Vec4 near_world = mat4_mul_vec4(inv_vp, near_clip);
   Vec4 far_world = mat4_mul_vec4(inv_vp, far_clip);
@@ -4426,8 +4427,8 @@ static bool8_t sample_grid_fit_update(VkrStandardSceneRuntime *application) {
     return true_v;
   }
   state->grid_fit_pending = false_v;
-  /* Depth 1 is the far plane: the pixel shows only sky. */
-  if (!result.has_depth || !(result.depth >= 0.0f && result.depth < 1.0f)) {
+  /* Reversed depth 0 is the far plane: the pixel shows only sky. */
+  if (!result.has_depth || !(result.depth > 0.0f && result.depth <= 1.0f)) {
     snprintf(state->grid_status, sizeof(state->grid_status),
              "No surface under the view centre");
     log_info("Grid fit: %s", state->grid_status);
