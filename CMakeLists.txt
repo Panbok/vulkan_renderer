@@ -159,6 +159,7 @@ function(vkr_set_main_stack_reserve target)
 endfunction()
 
 include(cmake/vkr_sanitizers.cmake)
+include(cmake/vkr_fuzzers.cmake)
 
 # Applications and authoring tools are optional consumers of the libraries.
 option(VKR_BUILD_EXAMPLES "Build public library client examples" OFF)
@@ -208,6 +209,9 @@ if(VKR_BUILD_EDITOR)
 endif()
 if(VKR_BUILD_TESTS)
     add_subdirectory(tests)
+endif()
+if(VKR_BUILD_FUZZERS)
+    add_subdirectory(tests/fuzz)
 endif()
 
 if(VKR_BUILD_EXAMPLES)
