@@ -514,13 +514,14 @@ VkrEditorContent *vkr_editor_content_create(VkrAllocator *allocator,
   content->renaming = CONTENT_NONE;
   content->menu_requested = false_v;
   content->labels.labels = vkr_allocator_alloc(
-      allocator, CONTENT_LABEL_MAX * sizeof(*content->labels.labels),
+      content->allocator, CONTENT_LABEL_MAX * sizeof(*content->labels.labels),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   content->labels.folders = vkr_allocator_alloc(
-      allocator, CONTENT_FOLDER_MAX * sizeof(*content->labels.folders),
+      content->allocator, CONTENT_FOLDER_MAX * sizeof(*content->labels.folders),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   content->presets.presets = vkr_allocator_alloc(
-      allocator, VKR_EDITOR_PRESET_MAX * sizeof(*content->presets.presets),
+      content->allocator,
+      VKR_EDITOR_PRESET_MAX * sizeof(*content->presets.presets),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!content->labels.labels || !content->labels.folders ||
       !content->presets.presets) {
