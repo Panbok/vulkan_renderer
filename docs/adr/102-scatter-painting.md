@@ -60,8 +60,8 @@ On 2026-10-09 the owner chose painted areas from three options:
      undo that brings areas back keeps their `order`.
    - The rule's signature hashes each area's values and world position, so
      painting, moving and erasing rebuild it.
-   - The per-rule bound (2,048 copies) and the scene bound (4,096) still
-     cap the total. The status reports copies that found no ground, or no
+   - The per-rule bound (2,048 copies) and the scene bound (12,288 since
+     2026-10-11, 4,096 before) still cap the total. The status reports copies that found no ground, or no
      room for their spacing.
 3. **Operation.** `scatter.paint` takes these arguments:
    - `scatter`: an existing entity with a `scatter`;

@@ -18,10 +18,10 @@ typedef struct s_VkrScenePopulation VkrScenePopulation;
 #define VKR_SCENE_POPULATION_RULE_MAX 64u
 /* Copies one rule places. */
 #define VKR_SCENE_POPULATION_RULE_INSTANCE_MAX 2048u
-/* Copies every rule of a scene places together: the residency bound that
-   keeps population within the mesh manager's instances on the 16 GB floor
-   (ADR-083). */
-#define VKR_SCENE_POPULATION_INSTANCE_MAX 4096u
+/* Copies every rule of a scene places together: three quarters of the mesh
+   manager's instances, leaving the rest to loaded models, and on the 16 GB
+   floor (ADR-083) about 2 MB of instance rows a frame. */
+#define VKR_SCENE_POPULATION_INSTANCE_MAX 12288u
 
 /* A `spline`, `spline_point`, `spline_mesh` or `scatter` component of
    `entity` appeared, changed or left. */
