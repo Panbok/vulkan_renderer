@@ -124,7 +124,9 @@ from the caller's thread.
   Every write checks the hash and renames a temporary. Object writes are
   not flushed (owner decision, 2026-10-11): a flush per object cost a seek
   each on the Windows store's hard disk, and a 1.46 GB scene cloned in
-  4 min 33 s; without it, 1 min 29 s. Every read checks the hash instead
+  4 min 33 s; without it, 1 min 29 s. On Windows the renames also skip
+  write-through (`file_rename_unflushed`), and the clone takes 1 min 8 s;
+  a working copy sharing the server's store checks the scene out in 16 s. Every read checks the hash instead
   and removes a file a crash left torn, so it counts as missing and is
   fetched again; branch moves stay flushed. Files split into 64 KiB–1 MiB
   chunks by FastCDC with a fixed gear table.
