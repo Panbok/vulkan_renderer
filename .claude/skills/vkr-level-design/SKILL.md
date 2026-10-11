@@ -1,6 +1,6 @@
 ---
 name: vkr-level-design
-description: Build, change or check VKR levels (brush blockouts, stairs and corridors, terrain, population, entity IO) through the editor's agent channel, alone or beside other agents, with plans run by script and proved by queries, floor maps, lint and capture sheets. Use for level-building work that goes through editor operations; use vkr-editor-cmd to start or drive the editor itself.
+description: Build, change or check VKR levels (brush blockouts, stairs and corridors, population, entity IO) through the editor's agent channel, alone or beside other agents, with plans run by script and proved by queries, floor maps, lint and capture sheets. Use for level-building work that goes through editor operations; use vkr-landscape for terrain and foliage, vkr-editor-cmd to start or drive the editor itself.
 ---
 
 # VKR level design through the agent channel
@@ -158,7 +158,11 @@ sets the order of work and the checks that prove a level.
   `size`, read along local +x, right = (cos yaw, 0, -sin yaw): centred text
   goes at its centre minus 0.5 right and 0.125 up, left-aligned text at the
   line's start minus 0.125 up. Check every new sign in a capture: a pilaster
-  or a crane cable in front of it cuts the words.
+  or a crane cable in front of it cuts the words. A scene draws at most
+  256 texts; past that, new signs stay blank.
+- Move a built prop by the entity its parts hang under. Moving one part
+  leaves the rest behind (a console moved without its monitor's brushes
+  left the monitor floating); `query.bounds` the whole group after a move.
 - `brush.cylinder` rises `height` from `center`, the centre of its base:
   a drum centred at floor + half its height floats by that half, and a
   dynamic one drops when Play starts.
@@ -186,34 +190,10 @@ sets the order of work and the checks that prove a level.
 
 ## Terrain and scenery
 
-- Generate a landscape as data by script, not brush by brush: heights as a
-  16-bit grayscale PNG for `terrain.stamp` `mode` set (`center` y the
-  stored minimum, `height_scale` the range) and layer weights as an RGBA PNG
-  for `mode` paint (red to alpha weigh layers 1 to 4, which are `layer0` to
-  `layer3`). Give `image` an absolute path; a relative one resolves against
-  the scene's asset root. One pixel per sample (a 2,048 m terrain at 2 m
-  takes 1,025 pixels) stamps exactly.
-- Mountains read as mountains after erosion: run a droplet erosion over a
-  ridged noise, then carve valleys and level constraints again, because
-  erosion fills valley floors with sediment. Paint by slope, height above
-  the valley floor, facing and settled sediment: grass low, rock where steep,
-  scree on talus and high ground, snow above a line lower on north faces.
-- Terrain UVs project straight down, so faces over about 65 degrees stretch
-  their texture: keep visible walls under it, and hide sheer cuts behind
-  concrete. A portal or window in a cliff is a concrete block set into the
-  slope with a `terrain.hole` on grid lines behind it; the block covers the
-  hole's edges and the cut below the opening.
-- The far edge of a terrain shows as a void: surround the playable terrain
-  with a coarse backdrop terrain (16 m spacing, the same generator), sunk
-  under the playable one inside it and equal to it along its border.
-  `view.camera` `far` sets how far captures see.
-- Scatter cooked glTF props: a cooked OBJ has no mesh nodes, so a scatter of
-  one places nothing. A scene holds 4,096 copies across its scatters; paint
-  areas with centres on the ground near where the view needs them most.
-- Light the mood with the hour: a low afternoon sun (World `time_of_day`
-  `hour`, tried live with `lighting.time`) shades valley floors and lights
-  the peaks; noon flattens a valley. The World's hour applies to every
-  scene of the project, so name the change to the designer.
+Use [vkr-landscape](../vkr-landscape/SKILL.md) for terrain generation,
+sculpting, paint, rooms set into ground (`terrain_cutout`), backdrops,
+foliage scatters and the sun's hour. Shape the terrain to finished
+structures, and put a cutout around a room before the ground reaches it.
 
 ## Lighting
 
@@ -226,7 +206,8 @@ sets the order of work and the checks that prove a level.
   one: rebake after geometry edits before judging how a space looks.
 - Bakes leave terrain out; every brush and mesh widens the diffuse volume's
   bounds, so a far outpost or a tall pier grows the volume and can pass its
-  brick budget (the bake then warns and drops the volume).
+  brick budget (the bake then warns and drops the volume); set the
+  `diffuse_settings` `bounds_min`/`bounds_max` around the playable spaces.
 - An indoor level overrides the World's sky before its bake: scene objects
   with `atmosphere`, `clouds` and `fog` disabled and a disabled
   `directional_light`; the World's fog washes out a deep level.
@@ -238,6 +219,11 @@ sets the order of work and the checks that prove a level.
   in and out, light through walls from unshadowed lamps, and a slow frame.
   Make a light `dynamic` only when it moves or switches, and give it
   `casts_shadow`.
+- A shadowed lamp whose range holds a mover or a physics body renders its
+  shadow faces every frame (`Shadow.Local.Dynamic` passes), and each face
+  adds a culling view over every draw candidate. Turn off `casts_shadow` on
+  such a lamp or keep moving pieces out of its range: in the Black Mesa
+  terminal, 11 such lamps cost about 0.45 ms of `Cull.Encode`.
 - Place a lamp 0.5 m below its `emissive` panel, outside every brush, its
   `range` within its room. A lamp just under a panel lights the panel's
   underside, a bright path the bake finds by chance: blotches.
@@ -260,7 +246,9 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    (coplanar faces that flicker; sweep them with `kinds` [`z_fight`,
    `mover_timing`]: `found` above the issues returned means `limit` cut the
    list, and floor issues come first): move or trim `entity` or `other` until
-   it is gone. Where two pieces meet on purpose, as a post on a rail or a
+   it is gone. A lint during a bake's reload answers no issues before the
+   brushes return: repeat it until its answer has no `settled` false and
+   `samples` above 0. Where two pieces meet on purpose, as a post on a rail or a
    rack upright on a shelf, make one 4 mm proud of the other on each axis
    they share, or end it flush at the other's face.
 5. One `view.capture` sheet (`views`, `max_width` 768) with labelled
@@ -309,7 +297,9 @@ Put the checks in the same `level_run.py` plan as the writes, each with
      return; a `use` door opens and closes on the use key; read the moving
      part's `query.bounds` to see where it stands. Read the player's offset
      from the vehicle while it rests before and after the ride; a change
-     beyond 5 cm means the player slid on its deck.
+     beyond 5 cm means the player slid on its deck. While it moves, run
+     toward its rear and its front: the player must cover the deck at run
+     speed both ways, not be shoved toward the rear.
    - For a drop, aim 0.6 m past the edge, or the capsule stays on it.
    - A walk that moves the Player Start puts it back afterwards; read its
      position first. Start the player clear of stairs and props.
