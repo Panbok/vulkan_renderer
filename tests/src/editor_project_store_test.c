@@ -301,6 +301,8 @@ static void project_test_runtime_settings(void) {
          loaded.position.z == 3);
   assert(loaded.pitch == 12 && loaded.field_of_view == 65 &&
          loaded.near_plane == 0.25f);
+  // The 500 m far plane forward depth saved never clips a recalled view.
+  assert(loaded.far_plane == VKR_SAMPLE_CAMERA_FAR_METRES);
   // A recall written without a grid height, as older files are, reads zero;
   // a lifted grid round-trips.
   assert(loaded.grid_height == 0.0f);

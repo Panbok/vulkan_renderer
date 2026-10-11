@@ -56,6 +56,9 @@
    origin along X or Z moves every container back by whole steps. */
 #define VKR_SAMPLE_REBASE_DISTANCE 4096.0f
 #define VKR_SAMPLE_REBASE_STEP 1024.0f
+/* Orthographic views frame their target this far ahead of the eye, as the
+   former 500 m default far plane did. */
+#define VKR_SAMPLE_ORTHO_FRAME_DISTANCE 250.0f
 
 static VkrSampleRuntimePreferences
 sample_preferences_snapshot(VkrStandardSceneRuntime *application);
@@ -1114,6 +1117,16 @@ vkr_standard_scene_runtime_get_viewport_hit_info(
   }
 
   return info;
+}
+
+/* Distance from an orthographic view's eye to the point it frames: the
+   middle of the depth range, but at most VKR_SAMPLE_ORTHO_FRAME_DISTANCE.
+   A far plane kilometres away (ADR-109) would otherwise lift the eye with
+   it, moving the atmosphere's observer and stretching the grid's depth
+   tolerance. */
+vkr_internal float32_t sample_orthographic_distance(const VkrCamera *camera) {
+  return Min(0.5f * (camera->near_clip + camera->far_clip),
+             VKR_SAMPLE_ORTHO_FRAME_DISTANCE);
 }
 
 /**
@@ -4944,10 +4957,9 @@ static void sample_grid_apply(VkrStandardSceneRuntime *application) {
   };
   if (camera && plane != VKR_EDITOR_GRID_PLANE_XZ) {
     /* An orthographic view is framed on the middle of its depth range. */
-    const Vec3 focus =
-        vec3_add(camera->position,
-                 vec3_scale(camera->forward,
-                            0.5f * (camera->near_clip + camera->far_clip)));
+    const Vec3 focus = vec3_add(
+        camera->position,
+        vec3_scale(camera->forward, sample_orthographic_distance(camera)));
     grid.height = plane == VKR_EDITOR_GRID_PLANE_ZY ? focus.x : focus.z;
   }
   if (grid.enabled && view->camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE) {
@@ -5056,10 +5068,9 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
         }
       } else {
         half_height = 0.5f * (camera->top_clip - camera->bottom_clip);
-        target =
-            vec3_add(camera->position,
-                     vec3_scale(camera->forward,
-                                0.5f * (camera->near_clip + camera->far_clip)));
+        target = vec3_add(
+            camera->position,
+            vec3_scale(camera->forward, sample_orthographic_distance(camera)));
       }
       static const Vec3 forwards[VKR_SAMPLE_CAMERA_VIEW_COUNT] = {
           {0, 0, -1}, {0, -1, 0}, {1, 0, 0}, {-1, 0, 0},
@@ -5068,7 +5079,7 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
           {0, 1, 0}, {0, 0, -1}, {0, 1, 0}, {0, 1, 0},
           {0, 0, 1}, {0, 1, 0},  {0, 1, 0}};
       const Vec3 forward = forwards[next.camera_view];
-      const float32_t distance = 0.5f * (camera->near_clip + camera->far_clip);
+      const float32_t distance = sample_orthographic_distance(camera);
       (void)vkr_camera_set_basis(
           camera, vec3_sub(target, vec3_scale(forward, distance)), forward,
           ups[next.camera_view]);
@@ -6150,7 +6161,7 @@ static void sample_frame_box(VkrCamera *camera, Vec3 lower, Vec3 upper) {
     camera->bottom_clip = -half_height;
     camera->top_clip = half_height;
     camera->projection_dirty = true_v;
-    distance = 0.5f * (camera->near_clip + camera->far_clip);
+    distance = sample_orthographic_distance(camera);
   }
   camera->position = vec3_sub(target, vec3_scale(camera->forward, distance));
   camera->view_dirty = true_v;
@@ -7483,6 +7494,13 @@ bool8_t vkr_sample_scene_recall_read_json(String8 json,
         sample_read_float(json, "near", &candidate.near_plane) &&
         sample_read_float(json, "far", &candidate.far_plane))) {
     return false_v;
+  }
+  /* Files written under forward depth saved its 500 m far plane. Reversed
+     depth (ADR-109) gives a shorter far plane no precision, so a recalled
+     view never sees less than the default. */
+  if (candidate.camera_valid) {
+    candidate.far_plane =
+        Max(candidate.far_plane, VKR_SAMPLE_CAMERA_FAR_METRES);
   }
   /* Optional: older files have no grid height. */
   if (!sample_read_float(json, "grid_height", &candidate.grid_height)) {

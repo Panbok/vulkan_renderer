@@ -7890,8 +7890,8 @@ static VkrEditorOpStatus ops_run_camera(OpsContext *ctx) {
   request->recall.selection_valid = false_v;
   if (request->recall.field_of_view <= 0.0f) {
     request->recall.field_of_view = 60.0f;
-    request->recall.near_plane = 0.1f;
-    request->recall.far_plane = 1000.0f;
+    request->recall.near_plane = VKR_SAMPLE_CAMERA_NEAR_METRES;
+    request->recall.far_plane = VKR_SAMPLE_CAMERA_FAR_METRES;
   }
   /* A large world's horizon needs a farther plane. */
   float64_t far_plane = 0.0;
@@ -8068,8 +8068,8 @@ static void ops_capture_view_apply(const VkrSampleUiFrame *frame,
     state_request->recall.selection_valid = false_v;
     if (state_request->recall.field_of_view <= 0.0f) {
       state_request->recall.field_of_view = 60.0f;
-      state_request->recall.near_plane = 0.1f;
-      state_request->recall.far_plane = 1000.0f;
+      state_request->recall.near_plane = VKR_SAMPLE_CAMERA_NEAR_METRES;
+      state_request->recall.far_plane = VKR_SAMPLE_CAMERA_FAR_METRES;
     }
   }
 }

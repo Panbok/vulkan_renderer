@@ -219,6 +219,12 @@ typedef struct VkrSampleRuntimePreferences {
   bool8_t pass_gpu_timings;
 } VkrSampleRuntimePreferences;
 
+/* Near and far planes of the free camera the app and the editor Scene fly.
+   Reversed depth (ADR-109) keeps float32 depth precise out to the far plane,
+   so it lies past the horizon of an 8 km world seen across its diagonal. */
+#define VKR_SAMPLE_CAMERA_NEAR_METRES 0.1f
+#define VKR_SAMPLE_CAMERA_FAR_METRES 20000.0f
+
 typedef struct VkrSampleSceneRecall {
   bool8_t camera_valid;
   Vec3 position;
