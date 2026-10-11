@@ -332,7 +332,123 @@ typedef struct WalkState {
   VkrDepotFileList *files;
   char relative[VKR_DEPOT_PATH_CAPACITY];
   bool8_t failed;
+  /* The patterns of `.vkrdepotignore`, pointing into `ignore_text`. */
+  char *ignore_text;
+  const char *ignore[VKR_DEPOT_IGNORE_MAX];
+  uint32_t ignore_count;
 } WalkState;
+
+/* Glob match of `text` against `pattern`: '*' within a name, '**' across
+   names, '?' one byte other than '/'. */
+static bool8_t ignore_glob(const char *pattern, const char *text) {
+  while (*pattern) {
+    if (pattern[0] == '*' && pattern[1] == '*') {
+      pattern += 2;
+      if (*pattern == '/') {
+        ++pattern;
+      }
+      for (const char *rest = text;; ++rest) {
+        if (ignore_glob(pattern, rest)) {
+          return true_v;
+        }
+        if (!*rest) {
+          return false_v;
+        }
+      }
+    }
+    if (*pattern == '*') {
+      ++pattern;
+      for (const char *rest = text;; ++rest) {
+        if (ignore_glob(pattern, rest)) {
+          return true_v;
+        }
+        if (!*rest || *rest == '/') {
+          return false_v;
+        }
+      }
+    }
+    if (!*text || (*pattern == '?' ? *text == '/' : *pattern != *text)) {
+      return false_v;
+    }
+    ++pattern;
+    ++text;
+  }
+  return *text == '\0';
+}
+
+bool8_t vkr_depot_ignore_match(const char *pattern, const char *path,
+                               bool8_t is_directory) {
+  char body[VKR_DEPOT_PATH_CAPACITY];
+  snprintf(body, sizeof(body), "%s", pattern);
+  size_t length = strlen(body);
+  const bool8_t folder = length > 0u && body[length - 1u] == '/';
+  if (folder) {
+    body[--length] = '\0';
+  }
+  if (!length || (folder && !is_directory)) {
+    return false_v;
+  }
+  if (!strchr(body, '/')) {
+    const char *slash = strrchr(path, '/');
+    return ignore_glob(body, slash ? slash + 1 : path);
+  }
+  return ignore_glob(body[0] == '/' ? body + 1 : body, path);
+}
+
+/* Reads `.vkrdepotignore`: a missing file ignores nothing. */
+static bool8_t walk_load_ignore(WalkState *state) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  if (!vkr_bakery_path_join(path, sizeof(path), state->workspace->root,
+                            VKR_DEPOT_IGNORE_FILE)) {
+    return false_v;
+  }
+  if (!vkr_bakery_is_file(path)) {
+    return true_v;
+  }
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (!vkr_bakery_read_file(path, 1u << 20, &bytes, &size)) {
+    return false_v;
+  }
+  char *text = malloc(size + 1u);
+  if (!text) {
+    free(bytes);
+    return false_v;
+  }
+  MemCopy(text, bytes, size);
+  text[size] = '\0';
+  free(bytes);
+  state->ignore_text = text;
+  for (char *line = text; line && *line;) {
+    char *next = strchr(line, '\n');
+    if (next) {
+      *next++ = '\0';
+    }
+    size_t length = strlen(line);
+    while (length && (line[length - 1u] == '\r' || line[length - 1u] == ' ' ||
+                      line[length - 1u] == '\t')) {
+      line[--length] = '\0';
+    }
+    while (*line == ' ' || *line == '\t') {
+      ++line;
+    }
+    if (*line && *line != '#' && state->ignore_count < VKR_DEPOT_IGNORE_MAX) {
+      state->ignore[state->ignore_count++] = line;
+    }
+    line = next;
+  }
+  return true_v;
+}
+
+static bool8_t walk_ignored(const WalkState *state, const char *relative,
+                            bool8_t is_directory) {
+  for (uint32_t i = 0u; i < state->ignore_count; ++i) {
+    if (vkr_depot_ignore_match(state->ignore[i], relative, is_directory)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
 
 /* Chunks a file's bytes into the store and stores its blob manifest. */
 static bool8_t workspace_store_file(const VkrDepotStore *store,
@@ -396,6 +512,9 @@ static bool8_t walk_visit(void *context, const char *name,
     }
   } else {
     snprintf(relative, sizeof(relative), "%s", name);
+  }
+  if (walk_ignored(state, relative, is_directory)) {
+    return true_v;
   }
   char absolute[VKR_DEPOT_PATH_CAPACITY];
   if (!vkr_bakery_path_join(absolute, sizeof(absolute), state->workspace->root,
@@ -511,11 +630,14 @@ bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
                                      VkrDepotFileList *out_files) {
   MemZero(out_files, sizeof(*out_files));
   WalkState state = {.workspace = workspace, .files = out_files};
-  if (!vkr_bakery_list_directory(workspace->root, walk_visit, &state) ||
+  if (!walk_load_ignore(&state) ||
+      !vkr_bakery_list_directory(workspace->root, walk_visit, &state) ||
       state.failed) {
+    free(state.ignore_text);
     vkr_depot_file_list_free(out_files);
     return false_v;
   }
+  free(state.ignore_text);
   vkr_depot_file_list_sort(out_files);
   if (!workspace_build_tree(&workspace->store, out_files, 0u, out_files->count,
                             0u, out_tree)) {

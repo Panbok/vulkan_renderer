@@ -11,9 +11,17 @@
  * the index, chunks them with FastCDC into the store and builds the trees;
  * unchanged subtrees keep their IDs. A checkout writes each file that
  * differs through a temporary and a rename and removes tracked files the
- * target lacks. */
+ * target lacks.
+ *
+ * `.vkrdepotignore` at the root lists paths a snapshot leaves out, one
+ * pattern per line ('#' starts a comment): '*' and '?' match within a name,
+ * '**' across folders, a trailing '/' matches a folder and all it holds,
+ * and a pattern without '/' matches a name at any depth. An ignored file
+ * is never tracked, so a checkout leaves it alone. */
 
 #define VKR_DEPOT_META_DIR ".vkrdepot"
+#define VKR_DEPOT_IGNORE_FILE ".vkrdepotignore"
+#define VKR_DEPOT_IGNORE_MAX 128u
 #define VKR_DEPOT_REMOTE_MAX 256u
 
 typedef struct VkrDepotIndexEntry {
@@ -76,6 +84,11 @@ void vkr_depot_workspace_close(VkrDepotWorkspace *workspace);
 bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
                                      VkrDepotId *out_tree,
                                      VkrDepotFileList *out_files);
+
+/* Whether `path` ('/' separators, relative to the root) matches the
+   ignore `pattern`; `is_directory` for a folder. */
+bool8_t vkr_depot_ignore_match(const char *pattern, const char *path,
+                               bool8_t is_directory);
 
 /* Every file of `tree`, whose objects must be in the store. */
 bool8_t vkr_depot_tree_files(const VkrDepotStore *store, const VkrDepotId *tree,

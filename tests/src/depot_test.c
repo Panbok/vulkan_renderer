@@ -491,6 +491,48 @@ static void depot_test_commit(VkrDepotWorkspace *workspace, const char *text,
   free(bytes);
 }
 
+/* Fails when an ignore pattern matches the wrong paths, or a snapshot keeps
+   a file `.vkrdepotignore` names or drops one it does not. */
+static void test_depot_ignore(void) {
+  printf("  Running test_depot_ignore...\n");
+  assert(vkr_depot_ignore_match("*.log", "a/b/run.log", false_v));
+  assert(!vkr_depot_ignore_match("*.log", "a/b/run.logs", false_v));
+  assert(vkr_depot_ignore_match(".vkreditor/jobs/", ".vkreditor/jobs", true_v));
+  assert(
+      !vkr_depot_ignore_match(".vkreditor/jobs/", ".vkreditor/jobs", false_v));
+  assert(
+      !vkr_depot_ignore_match(".vkreditor/jobs/", "x/.vkreditor/jobs", true_v));
+  assert(vkr_depot_ignore_match("cache/", "deep/cache", true_v));
+  assert(vkr_depot_ignore_match("**/build/*.tmp", "a/b/build/x.tmp", false_v));
+  assert(vkr_depot_ignore_match("**/build/*.tmp", "build/x.tmp", false_v));
+  assert(!vkr_depot_ignore_match("a/*.tmp", "a/b/x.tmp", false_v));
+  assert(vkr_depot_ignore_match("/workspace.json", "workspace.json", false_v));
+
+  char root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("ignore", root, sizeof(root));
+  const char *rules =
+      "# editor state\n.vkreditor/jobs/\n*.log\r\n\n  cache/ \n";
+  depot_test_write(root, ".vkrdepotignore", rules, (uint64_t)strlen(rules));
+  depot_test_write(root, "scene.json", "{}", 2u);
+  depot_test_write(root, ".vkreditor/jobs/1/result.json", "{}", 2u);
+  depot_test_write(root, ".vkreditor/projects/p/project.json", "{}", 2u);
+  depot_test_write(root, "logs/run.log", "x", 1u);
+  depot_test_write(root, "a/cache/blob.bin", "x", 1u);
+  VkrDepotWorkspace workspace;
+  assert(vkr_depot_workspace_create(&workspace, root, NULL,
+                                    vkr_depot_zstd_codec()));
+  VkrDepotId tree;
+  VkrDepotFileList files;
+  assert(vkr_depot_workspace_snapshot(&workspace, &tree, &files));
+  assert(files.count == 3u);
+  assert(vkr_depot_file_list_find(&files, ".vkrdepotignore"));
+  assert(vkr_depot_file_list_find(&files, "scene.json"));
+  assert(
+      vkr_depot_file_list_find(&files, ".vkreditor/projects/p/project.json"));
+  vkr_depot_file_list_free(&files);
+  vkr_depot_workspace_close(&workspace);
+}
+
 /* Fails when a push over a lossy path does not reach the server whole, a
    fetch into an empty store does not reproduce every file, a second push
    resends unchanged objects, a stale compare-and-swap or a commit with
@@ -650,6 +692,7 @@ bool32_t run_depot_tests(void) {
   test_depot_store();
   test_depot_chunking();
   test_depot_workspace();
+  test_depot_ignore();
   test_depot_transfer();
   printf("--- Asset depot tests completed ---\n");
   return true;
