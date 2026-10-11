@@ -23,7 +23,7 @@ vkr_internal const char *const vkr_project_cleanup_operations[] = {
 vkr_internal const char *const vkr_project_scene_optional[] = {
     "create_project", "delete_project",  "import_project_assets",
     "inspect_scene",  "collect_garbage", "finalize_project_assets",
-    "package_world"};
+    "package_world",  "share_project"};
 
 vkr_internal bool8_t vkr_project_listed(const char *value,
                                         const char *const *items,
@@ -388,6 +388,12 @@ vkr_internal bool8_t vkr_project_execute(VkrProjectJob *job) {
                         vkr_bakery_json_int(arena, (int64_t)freed));
     return vkr_project_atomic_json(job, job->result_path, result) &&
            vkr_project_write_status(job, "complete", "Cleaned", 1.0, NULL);
+  }
+  if (strcmp(operation, "share_project") == 0) {
+    /* Reads the source workspace only; writes go to the destination. */
+    VkrBakeryJson *result = vkr_project_share(job);
+    return result && vkr_project_atomic_json(job, job->result_path, result) &&
+           vkr_project_write_status(job, "complete", "Shared", 1.0, NULL);
   }
   if (strcmp(operation, "inspect_scene") == 0) {
     VkrBakeryJson *result = vkr_project_inspect_scene(job);

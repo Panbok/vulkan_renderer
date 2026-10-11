@@ -113,10 +113,12 @@ vkr_internal void vkr_bundle_set_free(VkrBundleSet *set) {
 // =============================================================================
 
 /* Host path below the first mount matching `identity` that holds a file,
-   or a directory when `directory` is set. */
+   or a directory when `directory` is set; `out_mount`, when given, names
+   that mount. */
 vkr_internal bool8_t vkr_bundle_resolve(const VkrBundle *bundle,
                                         const char *identity, char *out,
-                                        uint32_t capacity, bool8_t directory) {
+                                        uint32_t capacity, bool8_t directory,
+                                        uint32_t *out_mount) {
   for (uint32_t i = 0u; i < bundle->mount_count; ++i) {
     const VkrBundleMount *mount = &bundle->mounts[i];
     const uint64_t length = strlen(mount->prefix);
@@ -126,6 +128,9 @@ vkr_internal bool8_t vkr_bundle_resolve(const VkrBundle *bundle,
       continue;
     }
     if (directory ? vkr_bakery_is_directory(out) : vkr_bakery_is_file(out)) {
+      if (out_mount) {
+        *out_mount = i;
+      }
       return true_v;
     }
   }
@@ -134,7 +139,14 @@ vkr_internal bool8_t vkr_bundle_resolve(const VkrBundle *bundle,
 
 bool8_t vkr_bundle_source(const VkrBundle *bundle, const char *identity,
                           char *out, uint32_t capacity) {
-  return vkr_bundle_resolve(bundle, identity, out, capacity, false_v);
+  return vkr_bundle_resolve(bundle, identity, out, capacity, false_v, NULL);
+}
+
+bool8_t vkr_bundle_source_mount(const VkrBundle *bundle, const char *identity,
+                                char *out, uint32_t capacity,
+                                uint32_t *out_mount) {
+  return vkr_bundle_resolve(bundle, identity, out, capacity, false_v,
+                            out_mount);
 }
 
 vkr_internal bool8_t vkr_bundle_has_extension(const char *path,
@@ -219,9 +231,43 @@ vkr_internal bool8_t vkr_bundle_identity(const char *reference, uint64_t length,
   return written > 0u;
 }
 
+/* Source closure: a cooked `.vkt` identity becomes the image it was cooked
+ * from when that file exists, and an image without its file falls back to
+ * its cooked sibling. `identity` has room for four more bytes. */
+vkr_internal void vkr_bundle_prefer_source(const VkrBundle *bundle,
+                                           char *identity) {
+  char other[VKR_PACK_IDENTITY_MAX];
+  char path[VKR_BAKERY_PATH_CAPACITY];
+  const uint64_t length = strlen(identity);
+  if (vkr_bundle_has_extension(identity, ".vkt")) {
+    (void)snprintf(other, sizeof(other), "%.*s", (int)(length - 4u), identity);
+    if (vkr_bundle_is_image(other) &&
+        vkr_bundle_source(bundle, other, path, sizeof(path))) {
+      MemCopy(identity, other, length - 3u);
+    }
+    return;
+  }
+  if (vkr_bundle_is_image(identity) &&
+      !vkr_bundle_source(bundle, identity, path, sizeof(path))) {
+    (void)snprintf(other, sizeof(other), "%s.vkt", identity);
+    if (vkr_bundle_source(bundle, other, path, sizeof(path))) {
+      MemCopy(identity, other, length + 5u);
+    }
+  }
+}
+
+/* Records a required reference that named no file. */
+vkr_internal void vkr_bundle_note_missing(VkrBundle *bundle, const char *text,
+                                          uint64_t length) {
+  char reference[VKR_PACK_IDENTITY_MAX];
+  (void)snprintf(reference, sizeof(reference), "%.*s", (int)length, text);
+  (void)vkr_bundle_set_add(&bundle->missing_references, reference);
+}
+
 /* Adds an existing root-relative file. A material or font texture resolves
  * to its `.vkt` sibling when one exists, as the texture system reads it;
- * cubemap faces load their source images (`as_named`). */
+ * cubemap faces load their source images (`as_named`). A source closure
+ * keeps sources instead (vkr_bundle_prefer_source). */
 vkr_internal bool8_t vkr_bundle_add_file(VkrBundle *bundle,
                                          const char *reference, uint64_t length,
                                          bool8_t required, bool8_t as_named) {
@@ -231,7 +277,9 @@ vkr_internal bool8_t vkr_bundle_add_file(VkrBundle *bundle,
     return false_v;
   }
   char path[VKR_BAKERY_PATH_CAPACITY];
-  if (!as_named && vkr_bundle_is_image(identity)) {
+  if (bundle->sources) {
+    vkr_bundle_prefer_source(bundle, identity);
+  } else if (!as_named && vkr_bundle_is_image(identity)) {
     char cooked[VKR_PACK_IDENTITY_MAX];
     snprintf(cooked, sizeof(cooked), "%s.vkt", identity);
     if (vkr_bundle_source(bundle, cooked, path, sizeof(path))) {
@@ -242,11 +290,17 @@ vkr_internal bool8_t vkr_bundle_add_file(VkrBundle *bundle,
     if (required) {
       vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_IDX_MISSING_SOURCE, identity,
                             0u, 0u, "bundle input not found", NULL);
+      vkr_bundle_note_missing(bundle, identity, strlen(identity));
       ++bundle->missing;
     }
     return false_v;
   }
-  return vkr_bundle_set_add(&bundle->files, identity) >= 0;
+  const int32_t added = vkr_bundle_set_add(&bundle->files, identity);
+  if (added > 0 && bundle->sources &&
+      vkr_bundle_has_extension(identity, ".vkt")) {
+    (void)vkr_bundle_set_add(&bundle->cooked, identity);
+  }
+  return added >= 0;
 }
 
 bool8_t vkr_bundle_add(VkrBundle *bundle, const char *reference,
@@ -271,7 +325,7 @@ vkr_internal bool8_t vkr_bundle_reference(VkrBundle *bundle, const char *owner,
   if (!owner_relative && vkr_bundle_add(bundle, text, length, false_v)) {
     return true_v;
   }
-  char relative[VKR_PACK_IDENTITY_MAX];
+  char relative[VKR_PACK_IDENTITY_MAX] = {0};
   char directory[VKR_PACK_IDENTITY_MAX];
   vkr_bakery_path_parent(directory, sizeof(directory), owner);
   if (directory[0] &&
@@ -286,7 +340,35 @@ vkr_internal bool8_t vkr_bundle_reference(VkrBundle *bundle, const char *owner,
              (int)length, text);
     vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_IDX_MISSING_SOURCE, owner, 0u, 0u,
                           message, NULL);
+    /* The missing identity: an owner-relative reference joined to its
+       owner's folder, without its query. */
+    const char *named = owner_relative && relative[0] ? relative : text;
+    const uint64_t named_length = named == text ? length : strlen(relative);
+    char identity[VKR_PACK_IDENTITY_MAX];
+    if (vkr_bundle_identity(named, named_length, identity, sizeof(identity))) {
+      vkr_bundle_note_missing(bundle, identity, strlen(identity));
+    } else {
+      vkr_bundle_note_missing(bundle, text, length);
+    }
     ++bundle->missing;
+  }
+  return false_v;
+}
+
+/* Source closure: a JSON string that names an `assets/...` path whose last
+ * segment has an extension is a file the project needs. */
+vkr_internal bool8_t vkr_bundle_names_asset_file(const char *text,
+                                                 uint64_t length) {
+  if (length <= 7u || MemCompare(text, "assets/", 7u) != 0) {
+    return false_v;
+  }
+  for (uint64_t i = length; i > 7u; --i) {
+    if (text[i - 1u] == '/') {
+      return false_v;
+    }
+    if (text[i - 1u] == '.') {
+      return true_v;
+    }
   }
   return false_v;
 }
@@ -297,8 +379,11 @@ vkr_internal void vkr_bundle_walk_json(VkrBundle *bundle, const char *owner,
     return;
   }
   if (value->type == VKR_BAKERY_JSON_STRING) {
-    (void)vkr_bundle_reference(bundle, owner, (const char *)value->string.str,
-                               value->string.length, false_v);
+    const char *text = (const char *)value->string.str;
+    const bool8_t required = bundle->sources && vkr_bundle_names_asset_file(
+                                                    text, value->string.length);
+    (void)vkr_bundle_reference(bundle, owner, text, value->string.length,
+                               required);
     return;
   }
   if (value->type == VKR_BAKERY_JSON_OBJECT) {
@@ -338,8 +423,15 @@ vkr_internal void vkr_bundle_walk_pairs(VkrBundle *bundle, const char *owner,
       while (size && (value[size - 1u] == '\r' || value[size - 1u] == ' ')) {
         --size;
       }
+      /* A source closure requires every material texture line's file. */
+      static const char texture_key[] = "_texture";
+      const uint64_t key = (uint64_t)(equals - (data + line));
+      const bool8_t required =
+          bundle->sources && size && key >= sizeof(texture_key) - 1u &&
+          MemCompare(equals - (sizeof(texture_key) - 1u), texture_key,
+                     sizeof(texture_key) - 1u) == 0;
       (void)vkr_bundle_reference(bundle, owner, (const char *)value, size,
-                                 false_v);
+                                 required);
     }
     line = end + 1u;
   }
@@ -394,7 +486,10 @@ vkr_internal void vkr_bundle_expand(VkrBundle *bundle, const char *identity) {
     vkr_bundle_walk_mesh(bundle, identity, path);
     return;
   }
-  const bool8_t json = vkr_bundle_has_extension(identity, ".json");
+  const bool8_t json =
+      vkr_bundle_has_extension(identity, ".json") ||
+      (bundle->sources && (vkr_bundle_has_extension(identity, ".gltf") ||
+                           vkr_bundle_has_extension(identity, ".mtg")));
   const bool8_t pairs = vkr_bundle_has_extension(identity, ".mt") ||
                         vkr_bundle_has_extension(identity, ".fontcfg");
   if (!json && !pairs) {
@@ -424,9 +519,11 @@ vkr_internal bool8_t vkr_bundle_visit(void *context, const char *name,
                                       bool8_t is_directory);
 
 void vkr_bundle_close(VkrBundle *bundle) {
-  for (uint32_t i = 0u; i < bundle->files.count; ++i) {
+  for (; bundle->expanded < bundle->files.count; ++bundle->expanded) {
+    /* Expansion may grow the set and move its items. */
     char identity[VKR_PACK_IDENTITY_MAX];
-    snprintf(identity, sizeof(identity), "%s", bundle->files.items[i]);
+    snprintf(identity, sizeof(identity), "%s",
+             bundle->files.items[bundle->expanded]);
     vkr_bundle_expand(bundle, identity);
   }
 }
@@ -467,11 +564,15 @@ bool8_t vkr_bundle_hash(VkrBundle *bundle, VkrBundleItem **out_items,
   return true_v;
 }
 
-void vkr_bundle_free(VkrBundle *bundle) { vkr_bundle_set_free(&bundle->files); }
+void vkr_bundle_free(VkrBundle *bundle) {
+  vkr_bundle_set_free(&bundle->files);
+  vkr_bundle_set_free(&bundle->cooked);
+  vkr_bundle_set_free(&bundle->missing_references);
+}
 
 void vkr_bundle_add_directory(VkrBundle *bundle, const char *identity) {
   char path[VKR_BAKERY_PATH_CAPACITY];
-  if (!vkr_bundle_resolve(bundle, identity, path, sizeof(path), true_v)) {
+  if (!vkr_bundle_resolve(bundle, identity, path, sizeof(path), true_v, NULL)) {
     return;
   }
   VkrBundleDirectory directory = {.bundle = bundle, .identity = identity};

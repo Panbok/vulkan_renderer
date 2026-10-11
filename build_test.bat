@@ -37,6 +37,13 @@ if errorlevel 1 (
     popd
     exit /b 1
 )
+rem Project sharing: live files, asset closure, ignore file and refused
+rem destinations of share_project.
+python tools/checks/check_bakery_share.py --bakery "!BAKERY_EXE!"
+if errorlevel 1 (
+    popd
+    exit /b 1
+)
 
 rem Return to the original directory
 popd

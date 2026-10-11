@@ -33,6 +33,18 @@ typedef struct VkrBundle {
   uint32_t mount_count;
   VkrBundleSet files;
   uint32_t missing;
+  /* Files below this index were expanded by vkr_bundle_close. */
+  uint32_t expanded;
+  /* A source closure (`share_project`) instead of what the runtime reads: an
+     image keeps its source file, a cooked `.vkt` reference resolves to the
+     image beside it when that exists, `.gltf` and `.mtg` documents are
+     followed, and a JSON string naming an `assets/...` file or a material
+     texture line counts as required. */
+  bool8_t sources;
+  /* Source closure: cooked `.vkt` identities added for want of a source. */
+  VkrBundleSet cooked;
+  /* Required references that named no file, in discovery order. */
+  VkrBundleSet missing_references;
 } VkrBundle;
 
 typedef struct VkrBundleItem {
@@ -46,13 +58,19 @@ typedef struct VkrBundleItem {
  * holds one. */
 bool8_t vkr_bundle_source(const VkrBundle *bundle, const char *identity,
                           char *out, uint32_t capacity);
+/** As vkr_bundle_source, also naming the index of the mount that serves the
+ * file. */
+bool8_t vkr_bundle_source_mount(const VkrBundle *bundle, const char *identity,
+                                char *out, uint32_t capacity,
+                                uint32_t *out_mount);
 /** Adds an existing file named by a root-relative reference. A required
  * missing file is reported and counted in `missing`. */
 bool8_t vkr_bundle_add(VkrBundle *bundle, const char *reference,
                        uint64_t length, bool8_t required);
 /** Every file below a directory identity, in byte order of names. */
 void vkr_bundle_add_directory(VkrBundle *bundle, const char *identity);
-/** Expands the set until no document names a new file. */
+/** Expands the set until no document names a new file; a later call
+ * expands only the files added since. */
 void vkr_bundle_close(VkrBundle *bundle);
 /** Hashes every file of the set; `*out_items` is malloc storage the caller
  * frees. Reports the first unreadable file. */

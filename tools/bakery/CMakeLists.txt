@@ -86,6 +86,7 @@ if(VKR_BUILD_TOOLS)
         project/vkr_project_lower.c
         project/vkr_project_main.c
         project/vkr_project_scene.c
+        project/vkr_project_share.c
         project/vkr_project_util.c
         # World partition proxies rebuild brushes from cell documents.
         ${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_brush.c

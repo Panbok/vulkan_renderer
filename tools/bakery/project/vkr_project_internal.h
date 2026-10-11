@@ -508,6 +508,10 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job);
 VkrBakeryJson *vkr_project_inspect_scene(VkrProjectJob *job);
 VkrBakeryJson *vkr_project_delete_scene(VkrProjectJob *job);
 VkrBakeryJson *vkr_project_delete_project(VkrProjectJob *job);
+/** `share_project`: copies the project with only its live files and their
+ * asset closure into a new self-contained workspace at the request's
+ * `destination` (vkr_project_share.c). */
+VkrBakeryJson *vkr_project_share(VkrProjectJob *job);
 /** Removes workspace data no listed scene can reach; reports what it freed. */
 bool8_t vkr_project_collect_garbage(VkrProjectJob *job, uint32_t *out_removed,
                                     uint64_t *out_freed);
