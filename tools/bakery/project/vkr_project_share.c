@@ -25,7 +25,11 @@
  * root, then the workspace's `.vkreditor/assets/`, where terrain
  * heightfields live. Cooked `.vkt` textures are per platform, so a texture
  * travels as its source image; a `.vkt` without one is copied and reported.
- * A missing reference is a warning, not a failure.
+ * A build's textures travel with its recipes (VKR_PROJECT_RECIPES_FILE) and
+ * the images those pack, so the receiving host cooks them again
+ * (recook_textures); a build whose cooked textures have no recipes, from a
+ * cook before recipes existed, is reported in `needs_rebuild`. A missing
+ * reference is a warning, not a failure.
  *
  * The copy is assembled in a sibling staging folder and renamed into place,
  * so a failed or cancelled share leaves no destination. Files are cloned
@@ -68,6 +72,7 @@ typedef struct VkrShare {
   VkrShareGroup *groups;
   uint32_t group_count;
   uint32_t group_capacity;
+  VkrBakeryJson *needs_rebuild; /* [{scene, asset_id, name}] */
   bool8_t destination_exists;
 } VkrShare;
 
@@ -212,6 +217,84 @@ vkr_internal void vkr_share_add_records(VkrShare *share, const char *owner,
   }
 }
 
+/* The build revision folder (`builds/<rev>`) a record path names, or NULL. */
+vkr_internal const char *vkr_share_build_of(VkrProjectJob *job,
+                                            const char *path) {
+  const char *end =
+      path && strncmp(path, "builds/", 7u) == 0 ? strchr(path + 7, '/') : NULL;
+  return end ? vkr_project_printf(job, "%.*s", (int)(end - path), path) : NULL;
+}
+
+/* Per build revision the records name: its texture recipes and the source
+   images its image recipes pack. A build holding cooked textures no recipe
+   covers is listed in `needs_rebuild` with its mesh record, or its first
+   record, so the editor can offer a Rebuild before sharing. */
+vkr_internal void vkr_share_add_builds(VkrShare *share, const char *owner,
+                                       const char *scene_id,
+                                       const VkrBakeryJson *records) {
+  VkrProjectJob *job = share->job;
+  Arena *arena = job->arena;
+  VkrBakeryJson *builds = vkr_bakery_json_object(arena);
+  VkrProjectNodes chosen = {0};
+  for (const VkrBakeryJson *record = records ? records->first : NULL; record;
+       record = record->next) {
+    const VkrBakeryJson *artifacts = vkr_bakery_json_get(record, "artifacts");
+    const char *build = vkr_share_build_of(
+        job,
+        artifacts ? vkr_project_json_text(artifacts->first, "path") : NULL);
+    if (!build) {
+      continue;
+    }
+    const bool8_t mesh =
+        vkr_bakery_json_is_string(vkr_bakery_json_get(record, "kind"), "mesh");
+    const VkrBakeryJson *known = vkr_bakery_json_get(builds, build);
+    if (!known) {
+      vkr_bakery_json_set(arena, builds, build,
+                          vkr_bakery_json_int(arena, chosen.count));
+      (void)vkr_project_nodes_push(job, &chosen, (VkrBakeryJson *)record);
+    } else if (mesh) {
+      chosen.items[known->integer] = (VkrBakeryJson *)record;
+    }
+  }
+  for (const VkrBakeryJson *build = builds->first; build; build = build->next) {
+    const char *textures = vkr_project_printf(job, "%s/%s/textures", owner,
+                                              (const char *)build->key.str);
+    const char *host =
+        vkr_project_printf(job, "%s/%s", job->workspace, textures);
+    const bool8_t failed_before = job->failed;
+    const VkrBakeryJson *recipes = NULL;
+    if (!vkr_project_read_recipes(job, host, &recipes)) {
+      vkr_project_warn(job, "Skipped %s", job->error);
+      vkr_project_forgive(job, failed_before);
+    }
+    if (recipes) {
+      (void)vkr_share_add(share, textures, VKR_PROJECT_RECIPES_FILE, true_v);
+    }
+    for (const VkrBakeryJson *entry = recipes ? recipes->first : NULL; entry;
+         entry = entry->next) {
+      const char *source = vkr_project_json_text(entry, "source");
+      if (source && !strchr(source, '/')) {
+        (void)vkr_share_add(share, textures, source, true_v);
+      }
+    }
+    if (vkr_project_textures_unrecorded(job, host, recipes)) {
+      const VkrBakeryJson *record = chosen.items[build->integer];
+      VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+      vkr_bakery_json_set(arena, entry, "scene",
+                          scene_id ? vkr_bakery_json_cstr(arena, scene_id)
+                                   : vkr_bakery_json_null(arena));
+      vkr_bakery_json_set(
+          arena, entry, "asset_id",
+          vkr_bakery_json_clone(arena, vkr_bakery_json_get(record, "id")));
+      const VkrBakeryJson *name = vkr_bakery_json_get(record, "name");
+      vkr_bakery_json_set(arena, entry, "name",
+                          name ? vkr_bakery_json_clone(arena, name)
+                               : vkr_bakery_json_null(arena));
+      vkr_bakery_json_append(share->needs_rebuild, entry);
+    }
+  }
+}
+
 /* Owner-relative `builds/...` and `sources/...` strings of a scene or World
    document, which the bundle walker resolves against the root or the
    document's own folder only. */
@@ -301,6 +384,8 @@ vkr_internal bool8_t vkr_share_collect_project(VkrShare *share,
         vkr_share_read(share, identity, VKR_PROJECT_MAX_OVERLAY_BYTES));
   }
   vkr_share_add_records(share, owner, vkr_bakery_json_get(project, "assets"));
+  vkr_share_add_builds(share, owner, NULL,
+                       vkr_bakery_json_get(project, "assets"));
   VKR_PROJECT_TRY(vkr_share_add_scripts(share));
   vkr_bundle_close(&share->bundle);
   return true_v;
@@ -338,6 +423,8 @@ vkr_internal bool8_t vkr_share_collect_scene(VkrShare *share, const char *id,
         share, vkr_project_printf(job, "%s/%s", owner, inventory),
         VKR_PROJECT_MAX_INVENTORY_BYTES);
     vkr_share_add_records(share, owner, vkr_bakery_json_get(records, "assets"));
+    vkr_share_add_builds(share, owner, id,
+                         vkr_bakery_json_get(records, "assets"));
   }
   vkr_bundle_close(&share->bundle);
   return true_v;
@@ -486,18 +573,60 @@ vkr_internal VkrBakeryJson *vkr_share_list(VkrShare *share,
   return list;
 }
 
+/* Whether a recipe in its folder's VKR_PROJECT_RECIPES_FILE covers the
+   cooked texture `path`, so another host cooks it again; `folders` caches
+   each folder's recipes (or null). */
+vkr_internal bool8_t vkr_share_recipe_covers(VkrShare *share,
+                                             VkrBakeryJson *folders,
+                                             const char *path) {
+  VkrProjectJob *job = share->job;
+  Arena *arena = job->arena;
+  char folder[VKR_PROJECT_PATH];
+  vkr_bakery_path_parent(folder, sizeof(folder), path);
+  const VkrBakeryJson *recipes = vkr_bakery_json_get(folders, folder);
+  if (!recipes) {
+    const bool8_t failed_before = job->failed;
+    const VkrBakeryJson *read = NULL;
+    if (!vkr_project_read_recipes(job, folder, &read)) {
+      vkr_project_forgive(job, failed_before);
+    }
+    VkrBakeryJson *cached =
+        read ? vkr_bakery_json_clone(arena, read) : vkr_bakery_json_null(arena);
+    vkr_bakery_json_set(arena, folders, folder, cached);
+    recipes = cached;
+  }
+  return recipes->type == VKR_BAKERY_JSON_OBJECT &&
+         vkr_bakery_json_get(recipes, vkr_bakery_path_name(path)) != NULL;
+}
+
 vkr_internal VkrBakeryJson *vkr_share_result(VkrShare *share, uint64_t bytes) {
   VkrProjectJob *job = share->job;
   Arena *arena = job->arena;
   const VkrBundle *bundle = &share->bundle;
+  /* Cooked textures without a source image and without a recipe; those a
+     recipe covers are cooked again where the share arrives. */
+  VkrBakeryJson *unrecorded = vkr_bakery_json_array(arena);
+  VkrBakeryJson *folders = vkr_bakery_json_object(arena);
+  uint32_t unrecorded_count = 0u;
+  uint32_t recookable = 0u;
   uint64_t cooked_bytes = 0u;
   for (uint32_t i = 0u; i < bundle->cooked.count; ++i) {
     char path[VKR_PROJECT_PATH];
     VkrBakeryStat info = {0};
-    if (vkr_bundle_source(bundle, bundle->cooked.items[i], path,
-                          sizeof(path)) &&
-        vkr_bakery_stat(path, &info)) {
+    if (!vkr_bundle_source(bundle, bundle->cooked.items[i], path,
+                           sizeof(path))) {
+      continue;
+    }
+    if (vkr_share_recipe_covers(share, folders, path)) {
+      recookable += 1u;
+      continue;
+    }
+    if (vkr_bakery_stat(path, &info)) {
       cooked_bytes += info.size;
+    }
+    if (unrecorded_count++ < VKR_SHARE_LIST_LIMIT) {
+      vkr_bakery_json_append(
+          unrecorded, vkr_bakery_json_cstr(arena, bundle->cooked.items[i]));
     }
   }
   if (bundle->missing_references.count) {
@@ -505,13 +634,18 @@ vkr_internal VkrBakeryJson *vkr_share_result(VkrShare *share, uint64_t bytes) {
                      bundle->missing_references.count,
                      bundle->missing_references.items[0]);
   }
-  if (bundle->cooked.count) {
+  if (unrecorded_count) {
     vkr_project_warn(job,
-                     "%u cooked textures (.vkt, %.1f MiB) have no source "
-                     "image and were copied; .vkrdepotignore leaves them out "
-                     "of a depot snapshot, so another machine rebuilds their "
-                     "assets",
-                     bundle->cooked.count, (float64_t)cooked_bytes / 1048576.0);
+                     "%u cooked textures (.vkt, %.1f MiB) have neither a "
+                     "source image nor a recipe and were copied; "
+                     ".vkrdepotignore leaves them out of a depot snapshot",
+                     unrecorded_count, (float64_t)cooked_bytes / 1048576.0);
+  }
+  if (share->needs_rebuild->count) {
+    vkr_project_warn(job,
+                     "%u builds predate texture recipes; rebuild them so "
+                     "another host can cook their textures",
+                     share->needs_rebuild->count);
   }
   const char *workspace_root =
       vkr_project_printf(job, "%s/.vkreditor", share->destination);
@@ -559,11 +693,13 @@ vkr_internal VkrBakeryJson *vkr_share_result(VkrShare *share, uint64_t bytes) {
   vkr_bakery_json_set(arena, result, "missing",
                       vkr_share_list(share, &bundle->missing_references));
   vkr_bakery_json_set(arena, result, "cooked_without_source_count",
-                      vkr_bakery_json_int(arena, bundle->cooked.count));
+                      vkr_bakery_json_int(arena, unrecorded_count));
   vkr_bakery_json_set(arena, result, "cooked_without_source_bytes",
                       vkr_bakery_json_int(arena, (int64_t)cooked_bytes));
-  vkr_bakery_json_set(arena, result, "cooked_without_source",
-                      vkr_share_list(share, &bundle->cooked));
+  vkr_bakery_json_set(arena, result, "cooked_without_source", unrecorded);
+  vkr_bakery_json_set(arena, result, "recookable_textures",
+                      vkr_bakery_json_int(arena, recookable));
+  vkr_bakery_json_set(arena, result, "needs_rebuild", share->needs_rebuild);
   vkr_bakery_json_set(arena, result, "warnings", job->warnings);
   return result;
 }
@@ -581,6 +717,7 @@ VkrBakeryJson *vkr_project_share(VkrProjectJob *job) {
   }
   MemZero(share, sizeof(*share));
   share->job = job;
+  share->needs_rebuild = vkr_bakery_json_array(job->arena);
   if (strcmp(vkr_bakery_path_name(job->workspace), ".vkreditor") != 0) {
     vkr_project_fail(job, "share_project requires a workspace_root named "
                           ".vkreditor");

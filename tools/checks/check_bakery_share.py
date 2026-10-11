@@ -13,7 +13,8 @@ files and their closure at the workspace paths the editor reads, that stale
 overlays, inventories and builds, cooked siblings, locks, job folders and
 Scripts build output stay behind, that the overlay copy wins over the content
 root, that no file is a hard link of its source, that the result reports
-files, bytes, missing references and cooked textures, that `.vkrdepotignore`
+files, bytes, missing references, cooked textures and the build that needs a
+rebuild for want of texture recipes, that `.vkrdepotignore`
 is written, and that a destination inside the source workspace or a non-empty
 one is refused and left as it was.
 """
@@ -249,6 +250,10 @@ def main():
         assert result['missing_count'] == 1, result
         assert result['cooked_without_source'] == [f'{pa[len(".vkreditor/"):]}/builds/{live_build}'
                                                    '/textures/packed.vkt'], result
+        # The live build holds a cooked texture no recipe covers, as a cook
+        # before texture recipes left it: the editor offers its Rebuild.
+        assert result['needs_rebuild'] == [{'scene': scene_a, 'asset_id': record['id'],
+                                            'name': 'triangle'}], result['needs_rebuild']
         assert [scene['id'] for scene in result['scenes']] == [scene_a, scene_b], result
         assert sum(scene['files'] for scene in result['scenes']) + result['project']['files'] == \
             result['files'], result

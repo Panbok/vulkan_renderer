@@ -1353,6 +1353,69 @@ vkr_internal bool8_t vkr_project_texture_line(VkrProjectJob *job,
   return true_v;
 }
 
+/* Adds the recipe of a packed source image to `recipes`, grouped by the
+   folder the image and its texture share: the source file's name, class,
+   tier and speed (VKR_PROJECT_RECIPES_FILE). */
+vkr_internal void
+vkr_project_note_image_recipe(VkrProjectJob *job, VkrBakeryJson *recipes,
+                              const VkrProjectTextureLine *texture) {
+  Arena *arena = job->arena;
+  char directory[VKR_PROJECT_PATH];
+  vkr_bakery_path_parent(directory, sizeof(directory), texture->destination);
+  VkrBakeryJson *folder = vkr_bakery_json_get(recipes, directory);
+  if (!folder) {
+    folder = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, recipes, directory, folder);
+  }
+  const bool8_t fast = job->texture_encoding == VKR_VKT_ENCODING_ASTC_FAST ||
+                       job->texture_encoding == VKR_VKT_ENCODING_BC_FAST;
+  VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(
+      arena, entry, "source",
+      vkr_bakery_json_cstr(arena, vkr_bakery_path_name(texture->source)));
+  vkr_bakery_json_set(arena, entry, "class",
+                      vkr_bakery_json_cstr(arena, texture->texture_class));
+  vkr_bakery_json_set(
+      arena, entry, "tier",
+      vkr_bakery_json_cstr(arena, job->texture_preview ? "preview" : "final"));
+  vkr_bakery_json_set(arena, entry, "speed",
+                      vkr_bakery_json_cstr(arena, fast ? "fast" : "final"));
+  vkr_bakery_json_set(arena, folder, vkr_bakery_path_name(texture->destination),
+                      entry);
+}
+
+/* Merges each folder's noted recipes into its VKR_PROJECT_RECIPES_FILE. */
+vkr_internal bool8_t vkr_project_write_image_recipes(VkrProjectJob *job,
+                                                     VkrBakeryJson *recipes) {
+  Arena *arena = job->arena;
+  for (const VkrBakeryJson *folder = recipes->first; folder;
+       folder = folder->next) {
+    const char *path = vkr_project_printf(
+        job, "%s/%s", (const char *)folder->key.str, VKR_PROJECT_RECIPES_FILE);
+    VkrBakeryJson *document = NULL;
+    if (vkr_bakery_is_file(path)) {
+      document = vkr_project_load_json(job, path, VKR_PROJECT_MAX_JSON_BYTES);
+      VKR_PROJECT_TRY(document);
+    } else {
+      document = vkr_bakery_json_object(arena);
+      vkr_bakery_json_set(arena, document, "version",
+                          vkr_bakery_json_int(arena, 1));
+    }
+    VkrBakeryJson *textures = vkr_bakery_json_get(document, "textures");
+    if (!textures || textures->type != VKR_BAKERY_JSON_OBJECT) {
+      textures = vkr_bakery_json_object(arena);
+      vkr_bakery_json_set(arena, document, "textures", textures);
+    }
+    for (const VkrBakeryJson *entry = folder->first; entry;
+         entry = entry->next) {
+      vkr_bakery_json_set(arena, textures, (const char *)entry->key.str,
+                          vkr_bakery_json_clone(arena, entry));
+    }
+    VKR_PROJECT_TRY(vkr_project_atomic_json(job, path, document));
+  }
+  return true_v;
+}
+
 bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
                                          const VkrProjectStrings *materials) {
   /* Every texture a material still names by source image becomes one
@@ -1366,6 +1429,7 @@ bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
   bool8_t ok = true_v;
   uint32_t pending = 0u;
   VkrBakeryJson *planned = vkr_bakery_json_object(job->arena);
+  VkrBakeryJson *recipes = vkr_bakery_json_object(job->arena);
   for (uint32_t m = 0u; ok && m < materials->count; ++m) {
     const char *text = NULL;
     VkrProjectStrings lines;
@@ -1398,6 +1462,9 @@ bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
       }
       ok = vkr_project_texture_line(job, materials->items[m], key, value,
                                     &texture);
+      if (ok) {
+        vkr_project_note_image_recipe(job, recipes, &texture);
+      }
       if (!ok || vkr_bakery_is_file(texture.destination) ||
           vkr_bakery_json_get(planned, texture.destination)) {
         continue;
@@ -1442,7 +1509,7 @@ bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
     }
   }
   vkr_bakery_graph_shutdown(&graph);
-  return ok;
+  return ok && vkr_project_write_image_recipes(job, recipes);
 }
 
 /* Records in the index the digests the cook reported for files of

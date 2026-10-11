@@ -544,13 +544,13 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_cutout_file_source(
 }
 
 /* Bakes the cutout variant of a base color texture: the image file of
-   `source_texture`, or `converted` pixels, which name the variant by their
-   hash. A converted source without pixels returns VKR_VKT_PACK_STALE unless
-   the variant is current. */
+   `source_texture`, or `converted` pixels, whose conversion inputs
+   (`converted_key`) name the variant. A converted source without pixels
+   returns VKR_VKT_PACK_STALE unless the variant is current. */
 vkr_internal VkrVktPackResult vkr_mesh_loader_gltf_bake_cutout_variant(
     const VkrMeshLoaderGltfParseInfo *info, String8 source_texture,
-    const VkrVktSource *converted, float32_t alpha_cutoff,
-    float32_t alpha_factor, String8 *out_texture) {
+    const VkrVktSource *converted, uint64_t converted_key,
+    float32_t alpha_cutoff, float32_t alpha_factor, String8 *out_texture) {
   if (!info || !info->load_allocator || !info->scratch_allocator ||
       !out_texture ||
       (!converted && (!source_texture.str || source_texture.length == 0u))) {
@@ -572,7 +572,7 @@ vkr_internal VkrVktPackResult vkr_mesh_loader_gltf_bake_cutout_variant(
   uint64_t source_hash = 0u;
   if (converted) {
     source = *converted;
-    source_hash = converted->hash;
+    source_hash = converted_key;
   } else if (!vkr_mesh_loader_gltf_cutout_file_source(info, source_path,
                                                       &source, &source_hash)) {
     goto cleanup;
@@ -752,16 +752,16 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_pair_mappings_are_compatible(
 }
 
 /* Bakes the paired normal/roughness variant. Roughness comes from the image
-   file of `roughness_texture`, or from `converted_roughness` pixels, which
-   name the variant by their hash; a converted source without pixels returns
-   VKR_VKT_PACK_STALE unless the variant is current. */
+   file of `roughness_texture`, or from `converted_roughness` pixels, whose
+   conversion inputs (`converted_key`) name the variant; a converted source
+   without pixels returns VKR_VKT_PACK_STALE unless the variant is current. */
 vkr_internal VkrVktPackResult
 vkr_mesh_loader_gltf_bake_normal_roughness_variant(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
     const cgltf_texture_view *normal_view,
     const cgltf_texture_view *roughness_view, String8 normal_texture,
     String8 roughness_texture, const VkrVktSource *converted_roughness,
-    float32_t normal_scale, float32_t roughness_factor,
+    uint64_t converted_key, float32_t normal_scale, float32_t roughness_factor,
     String8 *out_normal_texture, String8 *out_roughness_texture) {
   if (!info || !info->load_allocator || !info->scratch_allocator || !material ||
       !out_normal_texture || !out_roughness_texture) {
@@ -831,7 +831,7 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
        vkr_mesh_loader_gltf_hash_pair_source(info, roughness_source,
                                              roughness_cstr, &roughness_hash));
   if (converted_roughness) {
-    roughness_hash = converted_roughness->hash;
+    roughness_hash = converted_key;
   }
   vkr_allocator_end_scope(&hash_scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
   if (!hashes_ok) {
@@ -1022,6 +1022,10 @@ typedef struct VkrMeshLoaderGltfConvertedSpecGloss {
   int32_t height;
   uint64_t base_hash;
   uint64_t metal_rough_hash;
+  /* Managed cooks: the first eight bytes of the memo key, which covers every
+     input of the conversion. Packed textures are named by it, not by their
+     pixels, so a cook on any host names them alike. */
+  uint64_t input_key;
   uint8_t *base_pixels;
   uint8_t *metal_rough_pixels;
   Vec4 base_color_factor;
@@ -1494,7 +1498,7 @@ vkr_internal String8 vkr_mesh_loader_gltf_spec_gloss_memo_path(
     const VkrMeshLoaderGltfParseInfo *info, String8 output_dir,
     const cgltf_pbr_specular_glossiness *source,
     const VkrMeshLoaderGltfEncodedImage *diffuse,
-    const VkrMeshLoaderGltfEncodedImage *spec_gloss) {
+    const VkrMeshLoaderGltfEncodedImage *spec_gloss, uint64_t *out_key) {
   const uint32_t versions[2] = {VKR_GLTF_SPEC_GLOSS_MEMO_VERSION,
                                 VKR_GLTF_SPEC_GLOSS_CACHE_VERSION};
   const float32_t factors[8] = {
@@ -1513,6 +1517,10 @@ vkr_internal String8 vkr_mesh_loader_gltf_spec_gloss_memo_path(
       &hash, &source->specular_glossiness_texture, spec_gloss);
   uint8_t digest[VKR_SHA256_DIGEST_SIZE];
   vkr_sha256_final(&hash, digest);
+  *out_key = 0u;
+  for (uint32_t i = 0u; i < 8u; ++i) {
+    *out_key = (*out_key << 8u) | digest[i];
+  }
   char hex[VKR_SHA256_HEX_SIZE];
   vkr_sha256_hex(digest, hex);
   return string8_create_formatted(info->load_allocator, "%.*s/memo/%s.sgm",
@@ -1833,11 +1841,14 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
   /* Only the shared directory outlives one cook, so only it keeps a memo. */
   const bool8_t managed = info->generated_root.length > 0u;
   String8 memo_path = {0};
+  uint64_t input_key = 0u;
   if (managed) {
     memo_path = vkr_mesh_loader_gltf_spec_gloss_memo_path(
-        info, output_dir, source, &diffuse_source, &spec_gloss_source);
+        info, output_dir, source, &diffuse_source, &spec_gloss_source,
+        &input_key);
     if (use_memo && vkr_mesh_loader_gltf_spec_gloss_memo_read(
                         info, memo_path, factor_converted, out_converted)) {
+      out_converted->input_key = input_key;
       return true_v;
     }
   }
@@ -1917,6 +1928,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
                       VKR_FNV1A64_OFFSET_BASIS, metal_rough_pixels, byte_count),
         .base_pixels = base_uniform ? NULL : base_pixels,
         .metal_rough_pixels = metal_rough_uniform ? NULL : metal_rough_pixels,
+        .input_key = input_key,
         .base_color_factor = base_factor,
         .metallic_factor = metallic_factor,
         .roughness_factor = roughness_factor,
@@ -2071,8 +2083,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_pixels(
 }
 
 /* Packs one converted image of a managed cook as a plain texture named by
-   its content hash and the process settings. The base colour of an opaque
-   material packs without alpha, under its own name. */
+   the conversion's inputs and the process settings. The base colour of an
+   opaque material packs without alpha, under its own name. */
 vkr_internal VkrVktPackResult vkr_mesh_loader_gltf_pack_converted(
     const VkrMeshLoaderGltfParseInfo *info, uint64_t source_hash,
     const VkrMeshLoaderGltfConvertedSpecGloss *converted, bool8_t base,
@@ -2084,9 +2096,7 @@ vkr_internal VkrVktPackResult vkr_mesh_loader_gltf_pack_converted(
       (int32_t)output_dir.length, output_dir.str,
       base ? (opaque ? "basecolor_opaque" : "basecolor") : "metalrough",
       converted->width, converted->height,
-      (unsigned long long)(base ? converted->base_hash
-                                : converted->metal_rough_hash),
-      vkr_vkt_variant_suffix());
+      (unsigned long long)converted->input_key, vkr_vkt_variant_suffix());
   if (!output.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return VKR_VKT_PACK_FAILED;
@@ -2811,7 +2821,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
             vkr_mesh_loader_gltf_converted_source(&converted, true_v);
         cutout = vkr_mesh_loader_gltf_bake_cutout_variant(
             info, textures.base_color_texture, pack_base ? &source : NULL,
-            alpha_cutoff, base_color.w, &textures.base_color_texture);
+            converted.input_key, alpha_cutoff, base_color.w,
+            &textures.base_color_texture);
       }
       if (cutout != VKR_VKT_PACK_SUCCESS) {
         return false_v;
@@ -2840,8 +2851,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
           info, material, &material->normal_texture,
           metallic_roughness_texture_view, textures.normal_texture,
           textures.metallic_roughness_texture,
-          pack_metal_rough ? &source : NULL, normal_scale, roughness,
-          &cooked_normal_texture, &cooked_metallic_roughness_texture);
+          pack_metal_rough ? &source : NULL, converted.input_key, normal_scale,
+          roughness, &cooked_normal_texture,
+          &cooked_metallic_roughness_texture);
     }
     if (pair_result == VKR_VKT_PACK_FAILED ||
         pair_result == VKR_VKT_PACK_STALE) {

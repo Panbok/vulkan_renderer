@@ -85,6 +85,7 @@ if(VKR_BUILD_TOOLS)
         project/vkr_project_import.c
         project/vkr_project_lower.c
         project/vkr_project_main.c
+        project/vkr_project_recook.c
         project/vkr_project_scene.c
         project/vkr_project_share.c
         project/vkr_project_util.c

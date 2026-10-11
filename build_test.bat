@@ -44,6 +44,12 @@ if errorlevel 1 (
     popd
     exit /b 1
 )
+rem Host-neutral build texture names, their recipes and recook_textures.
+python tools/checks/check_bakery_recook.py --bakery "!BAKERY_EXE!"
+if errorlevel 1 (
+    popd
+    exit /b 1
+)
 
 rem Return to the original directory
 popd

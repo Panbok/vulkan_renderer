@@ -11,8 +11,7 @@ x86-64, under host-neutral final names. `uastc` is rejected. A `deferred`
 import names no texture until `finalize_textures` adds final ones to the same
 asset, and a finalize given a `ready_log` records every material it rebuilt,
 with the published definition, before it exits. `texture_encode_speed: fast`
-encodes with the host's faster encoder under `-astc-fast` or `-bc-fast`
-names.
+encodes with the host's faster encoder under host-neutral `-fast` names.
 """
 import argparse
 import base64
@@ -191,11 +190,12 @@ def main():
                        root / 'no-uastc.json', bakery=args.bakery, environment=environment)
         assert bad.execute() == 1, 'uastc is no longer an encoding'
 
-        # Fast encode speed: the host's faster encoder, under its own names and
-        # settings identity, never replacing the final outputs.
+        # Fast encode speed: the host's faster encoder, under its own
+        # host-neutral names and settings identity, never replacing the final
+        # outputs.
         fast = create(None, None, 'fast')
         record, _, references = scene_state(fast)
-        suffix = '-bc-fast.vkt' if bc_host else '-astc-fast.vkt'
+        suffix = '-fast.vkt'
         packed = [reference for reference in references if '-color-' in reference]
         assert packed and all(reference.endswith(suffix) for reference in packed), packed
         fast_bakes = list(generated.glob('*.bc-fast.vkt' if bc_host else '*.astc-fast.vkt'))

@@ -131,6 +131,10 @@ typedef struct VkrMeshLoaderState {
   /* Placements named since the last vkr_mesh_loader_publish_bundle; content
      names keep each physical path unique among them. */
   Array_VkrMeshLoaderBundleWrite bundle_writes;
+  /* Textures the cook generated, by their recipe names, and their
+     `textures/recipes.json` entries, in the order materials name them. */
+  Array_String8 texture_recipe_names;
+  Array_String8 texture_recipes;
 
   VkrRendererError *out_error;
 } VkrMeshLoaderState;
@@ -406,6 +410,8 @@ vkr_internal bool8_t vkr_mesh_loader_state_create(
       .merged_submeshes = {.allocator = load_allocator},
       .source_dependencies = {.allocator = load_allocator},
       .bundle_writes = {.allocator = load_allocator},
+      .texture_recipe_names = {.allocator = load_allocator},
+      .texture_recipes = {.allocator = load_allocator},
       .merged_buffer = {0},
       .current_bucket = 0,
       .source_path = {0},
@@ -1895,6 +1901,210 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_copy(VkrMeshLoaderState *state,
   return ok;
 }
 
+/* Texture class of a material texture line: its `tc=` query, else the
+   class its key implies, as the project texture packer infers it. */
+vkr_internal const char *vkr_mesh_loader_texture_class(String8 key,
+                                                       String8 query) {
+  static const struct {
+    const char *query;
+    const char *texture_class;
+  } classes[] = {{"tc=color_srgb", "color-srgb"},
+                 {"tc=color_linear", "color-linear"},
+                 {"tc=normal_rg", "normal-rg"},
+                 {"tc=data_mask", "data-mask"}};
+  for (uint32_t i = 0u; i < ArrayCount(classes); ++i) {
+    const uint64_t length = string_length(classes[i].query);
+    for (uint64_t at = 0u; at + length <= query.length; ++at) {
+      if ((at == 0u || query.str[at - 1u] == '?' ||
+           query.str[at - 1u] == '&') &&
+          MemCompare(query.str + at, classes[i].query, length) == 0 &&
+          (at + length == query.length || query.str[at + length] == '&')) {
+        return classes[i].texture_class;
+      }
+    }
+  }
+  const String8 normal = string8_lit("normal");
+  for (uint64_t at = 0u; at + normal.length <= key.length; ++at) {
+    if (MemCompare(key.str + at, normal.str, normal.length) == 0) {
+      return "normal-rg";
+    }
+  }
+  static const char *const colour_keys[] = {
+      "base_color_texture", "emissive_texture", "diffuse_texture"};
+  for (uint32_t i = 0u; i < ArrayCount(colour_keys); ++i) {
+    if (key.length == string_length(colour_keys[i]) &&
+        MemCompare(key.str, colour_keys[i], key.length) == 0) {
+      return "color-srgb";
+    }
+  }
+  return "data-mask";
+}
+
+/* Offset of a generated texture's path below its generated root: the
+   managed shared root, or `textures/generated/` of the bundle (as
+   vkr_mesh_loader_gltf_output_path places them); `path.length` for any
+   other file. */
+vkr_internal uint64_t vkr_mesh_loader_generated_offset(
+    const VkrMeshLoaderState *state, String8 path) {
+  const String8 root = state->generated_root;
+  if (root.length && path.length > root.length + 1u &&
+      MemCompare(path.str, root.str, root.length) == 0 &&
+      (path.str[root.length] == '/' || path.str[root.length] == '\\')) {
+    return root.length + 1u;
+  }
+  const String8 generated = string8_lit("textures/generated/");
+  uint64_t start = path.length;
+  for (uint64_t at = 0u; at + generated.length <= path.length; ++at) {
+    if (MemCompare(path.str + at, generated.str, generated.length) == 0) {
+      start = at + generated.length;
+    }
+  }
+  return start;
+}
+
+/* A texture the cook generated (vkr_mesh_loader_generated_offset) is named
+   by its recipe, which its path spells: the policy version, the source
+   content hashes or conversion inputs, and the bake parameters. The
+   encoding family is left out and the tier and speed kept, so a cook on any
+   host names the texture alike: `<16 hex of the recipe's SHA-256>-<class>`
+   with `-fast` and `-preview` as they apply. Its `textures/recipes.json`
+   entry records the recipe so the texture can be cooked again on another
+   host (recook_textures). False, with nothing named, for any other file. */
+vkr_internal bool8_t vkr_mesh_loader_recipe_name(VkrMeshLoaderState *state,
+                                                 String8 path, String8 key,
+                                                 String8 query,
+                                                 String8 *out_name) {
+  const String8 extension = string8_lit(".vkt");
+  const uint64_t start = vkr_mesh_loader_generated_offset(state, path);
+  if (start >= path.length || path.length < start + extension.length ||
+      MemCompare(path.str + path.length - extension.length, extension.str,
+                 extension.length) != 0) {
+    return false_v;
+  }
+  String8 recipe =
+      string8_substring(&path, start, path.length - extension.length);
+  const char *variant = vkr_vkt_variant_suffix();
+  const uint64_t variant_length = string_length(variant);
+  if (recipe.length > variant_length &&
+      MemCompare(recipe.str + recipe.length - variant_length, variant,
+                 variant_length) == 0) {
+    recipe = string8_substring(&recipe, 0u, recipe.length - variant_length);
+  }
+  /* The recipe names one file on every host, whatever its separators. */
+  recipe = string8_duplicate(state->load_allocator, &recipe);
+  if (!recipe.str) {
+    return false_v;
+  }
+  for (uint64_t i = 0u; i < recipe.length; ++i) {
+    if (recipe.str[i] == '\\') {
+      recipe.str[i] = '/';
+    }
+  }
+  const VkrVktEncoding encoding = vkr_vkt_encoding();
+  const bool8_t fast = encoding == VKR_VKT_ENCODING_ASTC_FAST ||
+                       encoding == VKR_VKT_ENCODING_BC_FAST;
+  const bool8_t preview = vkr_vkt_preview_tier() != 0;
+  const char *texture_class = vkr_mesh_loader_texture_class(key, query);
+  const String8 identity = string8_create_formatted(
+      state->load_allocator, "%.*s|%s|%s|%s", (int32_t)recipe.length,
+      recipe.str, texture_class, preview ? "preview" : "final",
+      fast ? "fast" : "final");
+  if (!identity.str) {
+    return false_v;
+  }
+  VkrSha256 hash;
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  vkr_sha256_init(&hash);
+  vkr_sha256_update(&hash, identity.str, identity.length);
+  vkr_sha256_final(&hash, digest);
+  char hex[17];
+  for (uint32_t i = 0u; i < 8u; ++i) {
+    (void)snprintf(hex + i * 2u, 3u, "%02x", digest[i]);
+  }
+  *out_name = string8_create_formatted(state->load_allocator, "%s-%s%s%s.vkt",
+                                       hex, texture_class, fast ? "-fast" : "",
+                                       preview ? "-preview" : "");
+  if (!out_name->str) {
+    return false_v;
+  }
+  for (uint64_t i = 0u; i < state->texture_recipe_names.length; ++i) {
+    if (string8_equals(&state->texture_recipe_names.data[i], out_name)) {
+      return true_v;
+    }
+  }
+  /* Recipe paths hold only generated ASCII names and digits. */
+  const String8 entry = string8_create_formatted(
+      state->load_allocator,
+      "\"%.*s\":{\"recipe\":\"%.*s\",\"class\":\"%s\",\"tier\":\"%s\","
+      "\"speed\":\"%s\"}",
+      (int32_t)out_name->length, out_name->str, (int32_t)recipe.length,
+      recipe.str, texture_class, preview ? "preview" : "final",
+      fast ? "fast" : "final");
+  return entry.str &&
+         array_push_String8(&state->texture_recipe_names, *out_name) &&
+         array_push_String8(&state->texture_recipes, entry);
+}
+
+/* Places a generated texture at its recipe name, `./textures/<name>`. */
+vkr_internal bool8_t vkr_mesh_loader_bundle_recipe_texture(
+    VkrMeshLoaderState *state, String8 source, String8 name,
+    String8 *out_physical, String8 *out_reference) {
+  VkrMeshLoaderBundleHash hash = {0};
+  if (!vkr_mesh_loader_bundle_hash(state, source, &hash)) {
+    return false_v;
+  }
+  *out_reference = string8_create_formatted(
+      state->load_allocator, "./textures/%.*s", (int32_t)name.length, name.str);
+  *out_physical =
+      file_path_join(state->load_allocator, state->bundle_root, *out_reference);
+  if (!out_reference->str || !out_physical->str ||
+      !vkr_mesh_loader_queue_bundle_write(state, source, *out_physical,
+                                          (String8){0})) {
+    return false_v;
+  }
+  vkr_mesh_loader_remember_hash(state, *out_physical, &hash);
+  return true_v;
+}
+
+/* Queues `textures/recipes.json` when the cook generated textures. */
+vkr_internal bool8_t vkr_mesh_loader_bundle_recipes(VkrMeshLoaderState *state) {
+  if (!state->texture_recipes.length) {
+    return true_v;
+  }
+  uint64_t length = 0u;
+  for (uint64_t i = 0u; i < state->texture_recipes.length; ++i) {
+    length += state->texture_recipes.data[i].length + 2u;
+  }
+  static const char head[] = "{\"version\":1,\"textures\":{\n";
+  static const char tail[] = "}}\n";
+  uint8_t *bytes = vkr_allocator_alloc(state->load_allocator,
+                                       sizeof(head) + length + sizeof(tail),
+                                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!bytes) {
+    return false_v;
+  }
+  uint64_t written = 0u;
+  MemCopy(bytes, head, sizeof(head) - 1u);
+  written += sizeof(head) - 1u;
+  for (uint64_t i = 0u; i < state->texture_recipes.length; ++i) {
+    const String8 entry = state->texture_recipes.data[i];
+    MemCopy(bytes + written, entry.str, entry.length);
+    written += entry.length;
+    if (i + 1u < state->texture_recipes.length) {
+      bytes[written++] = ',';
+    }
+    bytes[written++] = '\n';
+  }
+  MemCopy(bytes + written, tail, sizeof(tail) - 1u);
+  written += sizeof(tail) - 1u;
+  const String8 physical =
+      file_path_join(state->load_allocator, state->bundle_root,
+                     string8_lit("textures/recipes.json"));
+  return physical.str && vkr_mesh_loader_queue_bundle_write(
+                             state, (String8){0}, physical,
+                             (String8){.str = bytes, .length = written});
+}
+
 vkr_internal bool8_t vkr_mesh_loader_bundle_material(VkrMeshLoaderState *state,
                                                      String8 physical) {
   String8 content = {0};
@@ -1921,10 +2131,17 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_material(VkrMeshLoaderState *state,
       }
       String8 path = string8_substring(&value, 0, query);
       String8 suffix = string8_substring(&value, query, value.length);
+      String8 key = string8_substring(&line, 0, equals);
       String8 copied = {0};
       String8 reference = {0};
-      if (!vkr_mesh_loader_bundle_copy(state, path, "textures", &copied,
-                                       &reference)) {
+      String8 recipe_name = {0};
+      const bool8_t placed =
+          vkr_mesh_loader_recipe_name(state, path, key, suffix, &recipe_name)
+              ? vkr_mesh_loader_bundle_recipe_texture(state, path, recipe_name,
+                                                      &copied, &reference)
+              : vkr_mesh_loader_bundle_copy(state, path, "textures", &copied,
+                                            &reference);
+      if (!placed) {
         return false_v;
       }
       String8 relative = string8_substring(&reference, 2, reference.length);
@@ -2119,6 +2336,10 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
         *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
         return false_v;
       }
+    }
+    if (!vkr_mesh_loader_bundle_recipes(&state)) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
     }
     /* The dependency pass below copies these textures and materials. */
     if (!vkr_mesh_loader_publish_bundle(&state)) {

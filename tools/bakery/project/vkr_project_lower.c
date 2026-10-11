@@ -15,17 +15,22 @@ vkr_internal int vkr_project_compare_keys(const void *lhs, const void *rhs) {
   return strcmp(*(const char *const *)lhs, *(const char *const *)rhs);
 }
 
-/* Python dict equality of two string-to-value objects. */
-vkr_internal bool8_t vkr_project_same_mapping(const VkrBakeryJson *lhs,
+/* Equality of a recorded and a current closure: the same paths, and the
+   same digest for each path but a cooked texture's. A `.vkt` holds the
+   encoding of the host that cooked it, so another host's copy differs by
+   design; a closure an older job recorded names its digest, which no longer
+   decides anything. */
+vkr_internal bool8_t vkr_project_same_closure(const VkrBakeryJson *lhs,
                                               const VkrBakeryJson *rhs) {
   if (!lhs || !rhs || lhs->type != VKR_BAKERY_JSON_OBJECT ||
       rhs->type != VKR_BAKERY_JSON_OBJECT || lhs->count != rhs->count) {
     return false_v;
   }
   for (const VkrBakeryJson *field = lhs->first; field; field = field->next) {
-    const VkrBakeryJson *other =
-        vkr_bakery_json_get(rhs, (const char *)field->key.str);
-    if (!other || !vkr_bakery_json_equal(field, other)) {
+    const char *path = (const char *)field->key.str;
+    const VkrBakeryJson *other = vkr_bakery_json_get(rhs, path);
+    if (!other || (!vkr_project_is_cooked_texture(path) &&
+                   !vkr_bakery_json_equal(field, other))) {
       return false_v;
     }
   }
@@ -33,7 +38,8 @@ vkr_internal bool8_t vkr_project_same_mapping(const VkrBakeryJson *lhs,
 }
 
 /* Digest map {owner-relative path: sha256} of a resolved path set, in
-   reference order. */
+   reference order. A cooked texture maps to VKR_PROJECT_PLATFORM_DIGEST:
+   its bytes depend on the host that cooked it, so they are not pinned. */
 vkr_internal VkrBakeryJson *vkr_project_closure(VkrProjectJob *job,
                                                 const VkrBakeryJson *paths,
                                                 const char *owner) {
@@ -42,19 +48,21 @@ vkr_internal VkrBakeryJson *vkr_project_closure(VkrProjectJob *job,
   /* A new revision's files are not in the index yet; hash them together. */
   VkrProjectStrings files = {0};
   for (const VkrBakeryJson *entry = paths->first; entry; entry = entry->next) {
-    if (!vkr_project_strings_push(job, &files, (const char *)entry->key.str)) {
+    if (!vkr_project_is_cooked_texture((const char *)entry->key.str) &&
+        !vkr_project_strings_push(job, &files, (const char *)entry->key.str)) {
       return NULL;
     }
   }
   vkr_bakery_index_prefetch(vkr_project_index(job),
                             (const char *const *)files.items, files.count);
   for (const VkrBakeryJson *entry = paths->first; entry; entry = entry->next) {
+    const char *path = (const char *)entry->key.str;
     const char *reference = NULL;
-    char hash[VKR_BAKERY_SHA256_HEX];
+    char hash[VKR_BAKERY_SHA256_HEX] = VKR_PROJECT_PLATFORM_DIGEST;
     /* "reference\nhash" sorts by reference; references hold no newline. */
-    if (!vkr_project_managed_reference(job, (const char *)entry->key.str, owner,
-                                       &reference) ||
-        !vkr_project_digest(job, (const char *)entry->key.str, hash) ||
+    if (!vkr_project_managed_reference(job, path, owner, &reference) ||
+        (!vkr_project_is_cooked_texture(path) &&
+         !vkr_project_digest(job, path, hash)) ||
         !vkr_project_strings_push(
             job, &keys, vkr_project_printf(job, "%s\n%s", reference, hash))) {
       return NULL;
@@ -332,7 +340,10 @@ vkr_internal bool8_t vkr_project_check_inventory(
       if (!vkr_project_truthy(expected) && index == 0u) {
         expected = vkr_bakery_json_get(record, "fingerprint");
       }
-      if (vkr_project_truthy(expected)) {
+      /* A cooked texture's fingerprint names the cooking host's bytes; any
+         host may cook it again (vkr_project_same_closure). */
+      if (vkr_project_truthy(expected) &&
+          !vkr_project_is_cooked_texture(path)) {
         char hash[VKR_BAKERY_SHA256_HEX];
         VKR_PROJECT_TRY(vkr_project_digest(job, path, hash));
         if (!vkr_bakery_json_is_string(
@@ -366,7 +377,7 @@ vkr_internal bool8_t vkr_project_check_inventory(
         vkr_project_closure(job, record_paths, inventory->owner);
     VKR_PROJECT_TRY(current);
     if (closure && closure->type != VKR_BAKERY_JSON_NULL &&
-        !vkr_project_same_mapping(closure, current)) {
+        !vkr_project_same_closure(closure, current)) {
       return vkr_project_fail(
           job, "Asset dependency closure changed: %s; rebuild or reimport it",
           vkr_project_record_label(record, (const char *)id->string.str));

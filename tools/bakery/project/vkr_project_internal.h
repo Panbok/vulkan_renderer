@@ -132,6 +132,15 @@ typedef struct VkrProjectJob {
    names packed textures; a revision without it is scanned. */
 #define VKR_PROJECT_PACKED_MARKER ".textures-packed"
 
+/* A closure's value for a cooked texture (`.vkt`), whose bytes depend on
+   the host that cooked it; see vkr_project_is_cooked_texture. */
+#define VKR_PROJECT_PLATFORM_DIGEST "platform"
+
+/* `<build>/textures/recipes.json` (and the same file beside any packed
+   source image): the recipe of every cooked texture there, by name, so
+   recook_textures can cook it again on another host. */
+#define VKR_PROJECT_RECIPES_FILE "recipes.json"
+
 // =============================================================================
 // Failure, cancellation and progress
 // =============================================================================
@@ -195,9 +204,8 @@ const char *vkr_project_texture_encoding_name(const VkrProjectJob *job);
 void vkr_project_record_ready_remaining(VkrProjectJob *job,
                                         VkrBakeryJson *const *records,
                                         uint32_t count, const char *root);
-/** Name suffix of job-packed textures at the job's tier and encoding: "" or
- * "-preview" for the final encodings, whose names are host-neutral, and
- * "-astc-fast", "-astc-fast-preview", "-bc-fast" or "-bc-fast-preview". */
+/** Host-neutral name suffix of job-packed textures at the job's tier and
+ * encoding speed: "", "-preview", "-fast" or "-fast-preview". */
 const char *vkr_project_texture_suffix(const VkrProjectJob *job);
 /** Records of `records` (an asset array) still at the preview or deferred
  * tier. */
@@ -250,6 +258,10 @@ bool8_t vkr_project_gltf_uri_path(VkrProjectJob *job, const char *uri,
 bool8_t vkr_project_model_tokens(VkrProjectJob *job, const char *line,
                                  VkrProjectStrings *out_tokens);
 void vkr_project_suffix_lower(const char *path, char *out, uint32_t capacity);
+/** A cooked texture (`.vkt`, any case), whose bytes are per host: a closure
+ * records VKR_PROJECT_PLATFORM_DIGEST for it and no fingerprint check reads
+ * it. */
+bool8_t vkr_project_is_cooked_texture(const char *path);
 void vkr_project_stem(const char *path, char *out, uint32_t capacity);
 
 // =============================================================================
@@ -508,6 +520,21 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job);
 VkrBakeryJson *vkr_project_inspect_scene(VkrProjectJob *job);
 VkrBakeryJson *vkr_project_delete_scene(VkrProjectJob *job);
 VkrBakeryJson *vkr_project_delete_project(VkrProjectJob *job);
+/** Reads the recipes (name -> recipe) of a build's `textures` folder;
+ * `*out_recipes` stays NULL when the folder has no VKR_PROJECT_RECIPES_FILE.
+ * False on an unreadable or invalid file. */
+bool8_t vkr_project_read_recipes(VkrProjectJob *job, const char *textures,
+                                 const VkrBakeryJson **out_recipes);
+/** Whether `textures` holds a cooked texture no recipe covers: a build an
+ * earlier cook made, which another host can only rebuild. */
+bool8_t vkr_project_textures_unrecorded(VkrProjectJob *job,
+                                        const char *textures,
+                                        const VkrBakeryJson *recipes);
+/** `recook_textures`: cooks on this host every texture the recipes of the
+ * scene's (or, without a scene, the project's) builds name that is missing
+ * or of another GPU family, under its existing name (vkr_project_recook.c).
+ */
+VkrBakeryJson *vkr_project_recook_textures(VkrProjectJob *job);
 /** `share_project`: copies the project with only its live files and their
  * asset closure into a new self-contained workspace at the request's
  * `destination` (vkr_project_share.c). */

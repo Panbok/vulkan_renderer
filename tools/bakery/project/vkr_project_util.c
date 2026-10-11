@@ -448,10 +448,12 @@ const char *vkr_project_texture_encoding_name(const VkrProjectJob *job) {
 }
 
 const char *vkr_project_texture_suffix(const VkrProjectJob *job) {
-  /* Final encodings share host-neutral names; the fast ones keep theirs. */
+  /* Every name is host-neutral: a fast encoding on any host is `-fast`, so a
+     project another host receives cooks its textures again under the names
+     its materials hold (recook_textures). */
   static const char *const suffixes[8] = {
-      "", "-preview", "-astc-fast", "-astc-fast-preview",
-      "", "-preview", "-bc-fast",   "-bc-fast-preview"};
+      "", "-preview", "-fast", "-fast-preview",
+      "", "-preview", "-fast", "-fast-preview"};
   return suffixes[job->texture_encoding * 2u +
                   (job->texture_preview ? 1u : 0u)];
 }
@@ -773,6 +775,12 @@ void vkr_project_suffix_lower(const char *path, char *out, uint32_t capacity) {
     out[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
   }
   out[i] = 0;
+}
+
+bool8_t vkr_project_is_cooked_texture(const char *path) {
+  char suffix[16];
+  vkr_project_suffix_lower(path, suffix, sizeof(suffix));
+  return strcmp(suffix, ".vkt") == 0;
 }
 
 void vkr_project_stem(const char *path, char *out, uint32_t capacity) {

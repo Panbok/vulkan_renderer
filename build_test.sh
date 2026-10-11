@@ -46,6 +46,9 @@ python3 "${SCRIPT_DIR}/tools/checks/check_bakery_package.py" \
 # destinations of share_project.
 python3 "${SCRIPT_DIR}/tools/checks/check_bakery_share.py" \
   --bakery "${BUILD_DIR}/tools/bakery/vkr_bakery"
+# Host-neutral build texture names, their recipes and recook_textures.
+python3 "${SCRIPT_DIR}/tools/checks/check_bakery_recook.py" \
+  --bakery "${BUILD_DIR}/tools/bakery/vkr_bakery"
 # Preview-tier imports and their finalization to the final tier (ADR-077).
 python3 "${SCRIPT_DIR}/tools/checks/check_editor_texture_tiers.py" \
   --bakery "${BUILD_DIR}/tools/bakery/vkr_bakery"

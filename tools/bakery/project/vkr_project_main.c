@@ -23,7 +23,7 @@ vkr_internal const char *const vkr_project_cleanup_operations[] = {
 vkr_internal const char *const vkr_project_scene_optional[] = {
     "create_project", "delete_project",  "import_project_assets",
     "inspect_scene",  "collect_garbage", "finalize_project_assets",
-    "package_world",  "share_project"};
+    "package_world",  "share_project",   "recook_textures"};
 
 vkr_internal bool8_t vkr_project_listed(const char *value,
                                         const char *const *items,
@@ -388,6 +388,13 @@ vkr_internal bool8_t vkr_project_execute(VkrProjectJob *job) {
                         vkr_bakery_json_int(arena, (int64_t)freed));
     return vkr_project_atomic_json(job, job->result_path, result) &&
            vkr_project_write_status(job, "complete", "Cleaned", 1.0, NULL);
+  }
+  if (strcmp(operation, "recook_textures") == 0) {
+    /* Writes cooked textures into published builds by rename only. */
+    VkrBakeryJson *result = vkr_project_recook_textures(job);
+    return result && vkr_project_atomic_json(job, job->result_path, result) &&
+           vkr_project_write_status(job, "complete", "Textures ready", 1.0,
+                                    NULL);
   }
   if (strcmp(operation, "share_project") == 0) {
     /* Reads the source workspace only; writes go to the destination. */
