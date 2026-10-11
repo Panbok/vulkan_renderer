@@ -99,7 +99,7 @@ and a TCP fallback.
 |---|---|---|
 | Crypto library | A pinned libsodium release, vendored: X25519, Ed25519, BLAKE2b, ChaCha20-Poly1305 and AES-256-GCM | Built by `vkr_sodium` ([vendor/libsodium.md](../../vendor/libsodium.md)). The transport refuses to start without the AES-GCM hardware path, which every CPU of ADR-083 has. Monocypher (no AES hardware path) and AEGIS-128L (32 B tag in libsodium) were rejected. |
 | Transport | The custom transport of [ADR-105](../adr/105-network-transport-and-asset-depot.md), not a QUIC library | The project owns loss recovery, congestion control and the handshake, so the security review and the simulated-link tests are required gates. |
-| Depot versioning | Own commits, trees, refs and locks | Git LFS is excluded because its batch API is JSON over HTTPS. `vkr_depot` is the command (ADR-105); editor integration remains. |
+| Depot versioning | Own commits, trees, refs and locks | Git LFS is excluded because its batch API is JSON over HTTPS. `vkr_depot` is the command (ADR-105); the collaborative session commits, publishes and checks out through it (ADR-106). |
 | Server platforms | Windows and macOS only; Linux later | Every server, including the phase 8 scale test, runs on Windows or macOS. Windows servers use Registered I/O in phase 8. A macOS server sends and receives one datagram per system call. A Linux server build is future work. |
 
 ## Gaps of phases 0 to 3
@@ -290,23 +290,20 @@ persistence are outside this proposal.
 [ADR-106](../adr/106-collaborative-editing-session.md) implements the core:
 host and join, host-ordered edit requests with mirrored journals, replay
 from the session base, shared undo, gizmo moves and their previews,
-seeded duplicates, terrain as results, the Session window and other
-editors' cameras, names and selections in the Scene. The rest:
+seeded duplicates, terrain as results, the Session window, other
+editors' cameras, names and selections in the Scene, and joining and
+publishing files through the depot. The rest:
 
-- **Joining from a depot commit.** A participant pulls the project from the
-  depot, or confirms its working copy matches the host's commit, and the
-  host sends a snapshot of what changed since the commit, so a host with
-  unsaved edits or a long history can take new participants.
 - **Partition edits.** Loading and pinning world partition cells travels,
   so every editor holds the same cells.
 - **Cursor ray.** `PRESENCE` adds each participant's cursor ray, which
   other editors draw.
-- **Published assets.** A file created during the session, such as an
-  import or a material graph (a new terrain is staged on every editor
-  already), is pushed to the depot. The host broadcasts
-  `ASSET_PUBLISHED` with the identity and hash, and participants fetch it
-  when they need it. Each platform cooks its own variant or takes it from
-  the shared Bakery cache.
+- **Publishing on its own.** An import, a material graph or another file
+  an editor writes during a session publishes without `session.publish`,
+  and each platform cooks its own variant or takes it from the shared
+  Bakery cache.
+- **Long histories.** A host whose history passed its 64 MiB budget makes
+  a new depot base for new joiners instead of refusing them.
 - **Access.** A session credential or an allow list of participant keys
   instead of open joining for anyone who knows the key.
 - Play stays local to each participant in this proposal.
@@ -382,7 +379,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
-| 4. Editor collaboration and agents | Remaining after ADR-106: depot joining, partition edits, the cursor ray, published assets | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
+| 4. Editor collaboration and agents | Remaining after ADR-106: publishing on its own, partition edits, the cursor ray, long histories, access | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
 | 5. Game sessions | `world` service, opt-in components, input, prediction for the FPS module | 20 clients (bots) on a Bistro session with measured bytes per client and correction counts under 2% loss |
 | 6. Asset streaming | Remote content mount, then progressive mips and LOD ranges | Bistro streamed from a depot: time to first frame and to full detail; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |

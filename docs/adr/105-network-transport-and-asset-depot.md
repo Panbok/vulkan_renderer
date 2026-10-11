@@ -137,6 +137,12 @@ from the caller's thread.
 - **Client** ([vkr_depot_client.h](../../tools/depot/vkr_depot_client.h))
   fetches a commit's missing objects with pipelined GETs and uploads the
   objects a commit adds over its base with HAVE and PUT.
+- **Sync** ([vkr_depot_sync.h](../../tools/depot/vkr_depot_sync.h)): the
+  user's identity key, a client connection over its own UDP host, commit
+  and push to a branch from an expected commit, and fetch and checkout that
+  keeps local changes and refuses conflicts. The command and the editor's
+  collaborative session
+  ([ADR-106](106-collaborative-editing-session.md#depot)) both use it.
 - **Command** ([vkr_depot_main.c](../../tools/depot/vkr_depot_main.c)):
   `keygen`, `init`, `serve`, `access`, `clone`, `status`, `commit` (snapshot,
   upload, move the branch), `pull` (keeps local changes, refuses

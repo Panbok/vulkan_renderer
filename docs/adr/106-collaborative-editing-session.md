@@ -17,13 +17,18 @@ host's order, terrain strokes as the samples they made on the host. A
 Session window hosts and joins, and the Scene draws other editors' cameras
 with their names, selections and gizmo drags in progress. Agents of every
 editor share the host's claims, task board (with capabilities and slots)
-and change feed, and their batches wait for review on every editor. Edits
-that do not travel yet (listed under [Decision](#what-travels)), joining
-from a depot commit and published files other than new terrains stay in
-the proposal. Every check ran on one Windows host; macOS and cross-machine
-runs are unverified.
+and change feed, and their batches wait for review on every editor. A
+scene in a depot working copy hosts from a depot commit that joiners check
+out, and editors publish files to each other through the depot. Edits that
+do not travel yet (listed under [Decision](#what-travels)), publishing a
+file without being asked and access control stay in the proposal. Every
+check ran on one Windows host; macOS and cross-machine runs are
+unverified.
 
 ## Context
+
+Owner decisions of 2026-10-10: files made during a session reach the other
+editors through a depot server, and an editor joins from a depot commit.
 
 The editor's journal ([vkr_scene_edit.h](../../runtime/src/renderer/systems/vkr_scene_edit.h))
 records each edit with values in the editor's local `VkrEntityId`s, which
@@ -145,6 +150,35 @@ every entity with a document id in the loaded containers (container, id,
 name, pose bits and parent id, sorted). On a match the host replays its
 history from the first edit. The history keeps 64 MiB; past that, edits
 every participant received leave and new joins are refused.
+
+### Depot
+
+When a depot working copy
+([ADR-105](105-network-transport-and-asset-depot.md)) holds the open scene,
+the session works on a depot branch of its own, `session-<host>-<time>`,
+through [vkr_depot_sync.h](../../tools/depot/vkr_depot_sync.h). Every depot
+step runs on a worker thread with its own allocator and connection; the
+working copy names the server and key.
+
+- **Base.** Hosting first saves the scene's edits (a SAVE request), then
+  commits the working copy on its current commit and creates the branch.
+  Only then does the host take its digest and greet joiners; until then it
+  applies no edit and undoes gizmo drags.
+- **Joining.** Every host sends BASE when a participant's service opens:
+  no depot, or the branch, the base commit and the newest commit. A
+  participant whose working copy holds another commit checks the base out
+  (keeping its local changes unless the commit changed the same files),
+  reloads the scene (RELOAD) and only then sends HELLO with its digest. So
+  a host with unsaved edits, or a joiner with an older file, joins; edits
+  the host made after the base replay as before. A newer commit follows as
+  a fetch once the participant is in.
+- **Files.** `session.publish` or the window's Publish files commits the
+  working copy on the newest session commit; PUBLISHED, through the host,
+  makes every other editor fetch and check it out in order. Two editors
+  that publish at once: the second fails until the first arrives.
+- The working copy stays on the session branch afterwards; moving the
+  project's branch to it is a depot step outside the editor.
+- Without a working copy, joining checks the scene digest alone.
 
 ### Agent federation
 
@@ -290,6 +324,19 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
   collision layers (refused without room to read into) and scene
   settings.
 - A second capture shows the guest's name above its camera.
+- `python tools/checks/check_session_depot.py --editor
+  build_debug/editor/vkr_editor.exe --mcp build_debug/tools/vkr_mcp.exe
+  --depot build_debug/tools/depot/vkr_depot.exe`
+  ([check_session_depot.py](../../tools/checks/check_session_depot.py))
+  serves a depot, commits the Bistro scene and its overlay to `main`,
+  clones it twice and opens an editor on each. The host creates `PreHost`,
+  leaves it unsaved and hosts: it saves and commits base `56965bf9…` on
+  `session-alpha-…`. The guest joins from `main`, checks the base out,
+  reloads, is welcomed with no edit to replay and reads `PreHost`. The host
+  writes `scenes/notes.txt` and publishes `902699c6…`; the guest fetches
+  it, and the file arrives with the same bytes; both end at that commit
+  with equal digests. Passes. `vkr_depot` passes `check_depot_e2e.py` and
+  the depot suite on the library.
 - Not exercised: gizmo drags and their preview (no headless drag script),
   batch reverts across editors, history trimming, macOS, two machines.
 
