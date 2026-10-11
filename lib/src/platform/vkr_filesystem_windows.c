@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <io.h>
+#include <string.h>
 #include <wchar.h>
 
 #define VKR_WINDOWS_PATH_WCHARS 32768u
@@ -81,6 +82,12 @@ FILE *file_fopen(const char *utf8_path, const char *mode) {
   }
   FilePath path = {
       .path = {.str = (uint8_t *)utf8_path, .length = strlen(utf8_path)}};
+  FilePath overlay;
+  char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  if (mode[0] == 'r' && !strchr(mode, '+') &&
+      fs_vfs_overlay(&path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
+    path = overlay;
+  }
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   wchar_t native_mode[16];
   if (!file_windows_native_path(&path, native) ||
@@ -115,6 +122,11 @@ bool8_t file_exists(const FilePath *path) {
   if (path && path->path.str && fs_vfs_stats(path, NULL)) {
     return true_v;
   }
+  FilePath overlay;
+  char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
+    return true_v;
+  }
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   return file_windows_native_path(path, native) &&
          GetFileAttributesW(native) != INVALID_FILE_ATTRIBUTES;
@@ -127,6 +139,12 @@ FileError file_stats(const FilePath *path, FileStats *out_stats) {
   }
   if (fs_vfs_stats(path, out_stats)) {
     return FILE_ERROR_NONE;
+  }
+  FilePath overlay;
+  char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer)) &&
+      !file_windows_native_path(&overlay, native)) {
+    return FILE_ERROR_INVALID_PATH;
   }
   WIN32_FILE_ATTRIBUTE_DATA data;
   if (!GetFileAttributesExW(native, GetFileExInfoStandard, &data)) {
@@ -339,8 +357,17 @@ FileError file_open(const FilePath *path, FileMode mode,
     disposition = OPEN_EXISTING;
   }
 
+  /* A read of an asset the workspace overlay holds opens its copy; the
+     handle keeps the caller's path. */
+  const FilePath *native_path = path;
+  FilePath overlay;
+  char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  if (!has_write && !has_append && !has_create && !has_truncate &&
+      fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
+    native_path = &overlay;
+  }
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
-  if (!file_windows_native_path(path, native)) {
+  if (!file_windows_native_path(native_path, native)) {
     return FILE_ERROR_INVALID_PATH;
   }
   HANDLE hFile =
@@ -362,6 +389,11 @@ FileError file_map_readonly(const FilePath *path, FileMapping *out_mapping) {
     return FILE_ERROR_INVALID_PATH;
   }
   *out_mapping = (FileMapping){0};
+  FilePath overlay;
+  char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
+    path = &overlay;
+  }
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   if (!file_windows_native_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;

@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <string.h>
 #include <sys/clonefile.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -20,6 +21,15 @@ FILE *file_fopen(const char *utf8_path, const char *mode) {
   FILE *archived = fs_vfs_fopen(utf8_path, mode, &served);
   if (served) {
     return archived;
+  }
+  if (mode[0] == 'r' && !strchr(mode, '+')) {
+    const FilePath path = {
+        .path = {.str = (uint8_t *)utf8_path, .length = strlen(utf8_path)}};
+    FilePath overlay;
+    char buffer[FS_VFS_OVERLAY_PATH_MAX];
+    if (fs_vfs_overlay(&path, &overlay, buffer, sizeof(buffer))) {
+      return fopen(buffer, mode);
+    }
   }
   return fopen(utf8_path, mode);
 }
@@ -35,6 +45,11 @@ bool8_t file_exists(const FilePath *path) {
   if (fs_vfs_stats(path, NULL)) {
     return true_v;
   }
+  FilePath overlay;
+  char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
+    return true_v;
+  }
   struct stat buffer;
   return stat((char *)path->path.str, &buffer) == 0;
 }
@@ -45,6 +60,11 @@ FileError file_stats(const FilePath *path, FileStats *out_stats) {
   }
   if (fs_vfs_stats(path, out_stats)) {
     return FILE_ERROR_NONE;
+  }
+  FilePath overlay;
+  char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
+    path = &overlay;
   }
   struct stat buffer;
   if (stat((char *)path->path.str, &buffer) == 0) {
@@ -206,7 +226,16 @@ FileError file_open(const FilePath *path, FileMode mode,
   if (has_append)
     flags |= O_APPEND;
 
-  int fd = open((char *)path->path.str, flags, access_mode);
+  /* A read of an asset the workspace overlay holds opens its copy; the
+     handle keeps the caller's path. */
+  const FilePath *native = path;
+  FilePath overlay;
+  char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  if (!has_write && !has_append && !has_create && !has_truncate &&
+      fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
+    native = &overlay;
+  }
+  int fd = open((char *)native->path.str, flags, access_mode);
   if (fd == -1) {
     if (errno == ENOENT || errno == ENOTDIR) {
       return FILE_ERROR_NOT_FOUND;
@@ -231,6 +260,11 @@ FileError file_map_readonly(const FilePath *path, FileMapping *out_mapping) {
     return FILE_ERROR_INVALID_PATH;
   }
   *out_mapping = (FileMapping){0};
+  FilePath overlay;
+  char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
+  if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
+    path = &overlay;
+  }
   const int fd = open((const char *)path->path.str, O_RDONLY);
   if (fd < 0) {
     return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_OPEN_FAILED;

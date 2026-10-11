@@ -260,7 +260,13 @@ from it.
   `$VKR_CONTENT` or a `bundle.json` beside the executable mounts a bundle, and
   `$VKR_CONTENT_PACKS` overlays archives on the repository root.
   `$VKR_VFS_RECORD` appends every content read to a file. With a bundle
-  mounted, the render graph also comes from content.
+  mounted, the render graph also comes from content. The editor also sets
+  its open workspace as an overlay (`vkr_vfs_set_overlay_root`): a read-only
+  open, map, existence check or stat of an `assets/` identity below the root
+  uses `<workspace>/assets/...` when that file exists, after the archives
+  and before the root, so a depot working copy carries a project's own
+  meshes, materials and textures. Writes still go to the root, and a
+  workspace that is the root overlays nothing.
 - **Bundles.** `vkr_bakery bundle <recipe> --out <dir> [--app <executable>]
   [--shaders <catalog>]` ([bundle](../../tools/bakery/vkr_bakery_bundle.c))
   writes `content/<name>.vkpak`, copies the runtime and shader catalog beside

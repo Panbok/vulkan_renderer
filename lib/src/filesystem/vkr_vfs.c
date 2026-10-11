@@ -27,7 +27,16 @@ typedef struct VkrVfsPack {
   uint64_t chunk_count;
 } VkrVfsPack;
 
-/* Written only while mounting at startup; read-only afterwards. */
+/* One published overlay directory (vkr_vfs_set_overlay_root). Replaced ones
+   stay linked, and readable, until vkr_vfs_unmount_all(). */
+typedef struct VkrVfsOverlay {
+  struct VkrVfsOverlay *previous;
+  uint64_t length;
+  char root[];
+} VkrVfsOverlay;
+
+/* Written only while mounting at startup; read-only afterwards, except
+   `overlay`, which is published atomically. */
 typedef struct VkrVfsState {
   char root[VKR_VFS_PATH_MAX];
   uint64_t root_length;
@@ -41,6 +50,10 @@ typedef struct VkrVfsState {
   uint64_t bundle_description_size;
   /* One fwrite per line; stdio locks the stream for concurrent loaders. */
   FILE *record;
+  /* The current VkrVfsOverlay as uintptr_t, zero when none is set. */
+  VkrAtomicUint64 overlay;
+  /* Every overlay ever published, newest first, freed at unmount. */
+  VkrVfsOverlay *overlays;
 } VkrVfsState;
 
 vkr_global VkrVfsState vkr_vfs = {0};
@@ -521,6 +534,12 @@ void vkr_vfs_unmount_all(void) {
     fclose(vkr_vfs.record);
     vkr_vfs.record = NULL;
   }
+  vkr_atomic_uint64_store(&vkr_vfs.overlay, 0u, VKR_MEMORY_ORDER_RELEASE);
+  while (vkr_vfs.overlays) {
+    VkrVfsOverlay *previous = vkr_vfs.overlays->previous;
+    free(vkr_vfs.overlays);
+    vkr_vfs.overlays = previous;
+  }
 }
 
 /* Reads a whole bundle description into malloc storage the caller frees. */
@@ -695,6 +714,89 @@ bool8_t vkr_vfs_mount_startup(void) {
     start = c + 1;
   }
   return true_v;
+}
+
+// =============================================================================
+// Workspace overlay
+// =============================================================================
+
+#define VKR_VFS_OVERLAY_PREFIX "assets/"
+#define VKR_VFS_OVERLAY_PREFIX_LENGTH 7u
+
+bool8_t vkr_vfs_set_overlay_root(const char *directory) {
+  vkr_vfs_default_root();
+  uint64_t length = directory ? strlen(directory) : 0u;
+  while (length > 1u && vkr_vfs_is_separator((uint8_t)directory[length - 1u])) {
+    --length;
+  }
+  if (length + 2u > VKR_VFS_PATH_MAX) {
+    return false_v;
+  }
+
+  /* The root's own `assets/` would only redirect to itself. */
+  bool8_t is_root = length + 1u == vkr_vfs.root_length;
+  for (uint64_t i = 0u; is_root && i < length; ++i) {
+    is_root =
+        vkr_vfs_same_byte((uint8_t)directory[i], (uint8_t)vkr_vfs.root[i]);
+  }
+  if (!length || is_root) {
+    vkr_atomic_uint64_store(&vkr_vfs.overlay, 0u, VKR_MEMORY_ORDER_RELEASE);
+    return true_v;
+  }
+
+  VkrVfsOverlay *overlay = malloc(sizeof(VkrVfsOverlay) + length + 2u);
+  if (!overlay) {
+    return false_v;
+  }
+  MemCopy(overlay->root, directory, length);
+  overlay->root[length] = '/';
+  overlay->root[length + 1u] = 0;
+  overlay->length = length + 1u;
+  overlay->previous = vkr_vfs.overlays;
+  vkr_vfs.overlays = overlay;
+  vkr_atomic_uint64_store(&vkr_vfs.overlay, (uint64_t)(uintptr_t)overlay,
+                          VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+/* True when `path` lies below the content root with an `assets/` identity,
+   which `identity` then holds. */
+vkr_internal bool8_t vkr_vfs_overlay_identity(String8 path, char *identity,
+                                              uint32_t *out_length) {
+  return vkr_vfs_identity(path, identity, out_length) &&
+         *out_length > VKR_VFS_OVERLAY_PREFIX_LENGTH &&
+         MemCompare(identity, VKR_VFS_OVERLAY_PREFIX,
+                    VKR_VFS_OVERLAY_PREFIX_LENGTH) == 0;
+}
+
+bool8_t fs_vfs_overlay(const FilePath *path, FilePath *out_path, char *buffer,
+                       uint64_t capacity) {
+  const VkrVfsOverlay *overlay =
+      (const VkrVfsOverlay *)(uintptr_t)vkr_atomic_uint64_load(
+          &vkr_vfs.overlay, VKR_MEMORY_ORDER_ACQUIRE);
+  if (!overlay || !path || !path->path.str) {
+    return false_v;
+  }
+  char identity[VKR_PACK_IDENTITY_MAX];
+  uint32_t length = 0u;
+  if (!vkr_vfs_overlay_identity(path->path, identity, &length) ||
+      overlay->length + length + 1u > capacity) {
+    return false_v;
+  }
+  MemCopy(buffer, overlay->root, overlay->length);
+  MemCopy(buffer + overlay->length, identity, length + 1u);
+  *out_path = (FilePath){
+      .path = {.str = (uint8_t *)buffer, .length = overlay->length + length},
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+
+  /* An overlay that spells the root another way (`root/.`) names the same
+     identity again; following it would never end. */
+  char again[VKR_PACK_IDENTITY_MAX];
+  uint32_t again_length = 0u;
+  if (vkr_vfs_overlay_identity(out_path->path, again, &again_length)) {
+    return false_v;
+  }
+  return file_exists(out_path);
 }
 
 // =============================================================================

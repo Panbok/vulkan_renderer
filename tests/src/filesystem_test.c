@@ -1062,6 +1062,143 @@ vkr_internal void test_vfs_pack_compressed(void) {
   printf("  test_vfs_pack_compressed PASSED\n");
 }
 
+vkr_internal void fs_test_write_text(const char *path, const char *text) {
+  FILE *file = fopen(path, "wb");
+  assert(file && fwrite(text, 1u, strlen(text), file) == strlen(text));
+  fclose(file);
+}
+
+/* Reads `path` through file_open and returns whether it holds `expected`. */
+vkr_internal bool8_t fs_test_reads(const FilePath *path,
+                                   VkrAllocator *allocator,
+                                   const char *expected) {
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle handle = {0};
+  if (file_open(path, mode, &handle) != FILE_ERROR_NONE) {
+    return false_v;
+  }
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  const bool8_t read =
+      file_read_all(&handle, allocator, &bytes, &size) == FILE_ERROR_NONE;
+  file_close(&handle);
+  return read && size == strlen(expected) &&
+         MemCompare(bytes, expected, size) == 0;
+}
+
+/* A depot working copy used as the editor's workspace serves its own
+ * `assets/` copies before the content root's, for reads only. */
+vkr_internal void test_vfs_workspace_overlay(void) {
+  printf("  Running test_vfs_workspace_overlay...\n");
+  char root_dir[1024];
+  snprintf(root_dir, sizeof(root_dir), "%sassets/zz_vfs_overlay_test",
+           PROJECT_SOURCE_DIR);
+  char overlay[1024];
+  snprintf(overlay, sizeof(overlay), "%s%s/overlay", PROJECT_SOURCE_DIR,
+           FS_TEST_RELATIVE_DIR);
+  char overlay_assets[1024];
+  snprintf(overlay_assets, sizeof(overlay_assets), "%s/assets", overlay);
+  char overlay_dir[1024];
+  snprintf(overlay_dir, sizeof(overlay_dir), "%s/zz_vfs_overlay_test",
+           overlay_assets);
+  assert(fs_test_make_dir(root_dir) && fs_test_make_dir(overlay) &&
+         fs_test_make_dir(overlay_assets) && fs_test_make_dir(overlay_dir));
+
+  /* `both` exists in the root and the overlay, `root` only in the root,
+     `ws` only in the overlay. */
+  char root_both[1024];
+  char root_only[1024];
+  char overlay_both[1024];
+  char overlay_only[1024];
+  snprintf(root_both, sizeof(root_both), "%s/both.txt", root_dir);
+  snprintf(root_only, sizeof(root_only), "%s/root.txt", root_dir);
+  snprintf(overlay_both, sizeof(overlay_both), "%s/both.txt", overlay_dir);
+  snprintf(overlay_only, sizeof(overlay_only), "%s/ws.txt", overlay_dir);
+  fs_test_write_text(root_both, "root");
+  fs_test_write_text(root_only, "root only");
+  fs_test_write_text(overlay_both, "workspace");
+  fs_test_write_text(overlay_only, "workspace only");
+
+  Arena *arena = arena_create(KB(64), KB(64));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  FilePath both = file_path_create("assets/zz_vfs_overlay_test/both.txt",
+                                   &allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath only_root = file_path_create("assets/zz_vfs_overlay_test/root.txt",
+                                        &allocator, FILE_PATH_TYPE_RELATIVE);
+  FilePath only_ws = file_path_create("assets/zz_vfs_overlay_test/ws.txt",
+                                      &allocator, FILE_PATH_TYPE_RELATIVE);
+
+  /* Without an overlay the root serves. */
+  assert(fs_test_reads(&both, &allocator, "root"));
+  assert(!file_exists(&only_ws));
+
+  assert(vkr_vfs_set_overlay_root(overlay));
+  assert(fs_test_reads(&both, &allocator, "workspace"));
+  assert(fs_test_reads(&only_root, &allocator, "root only"));
+  assert(fs_test_reads(&only_ws, &allocator, "workspace only"));
+  assert(file_exists(&only_ws));
+  FileStats stats = {0};
+  assert(file_stats(&both, &stats) == FILE_ERROR_NONE &&
+         stats.size == strlen("workspace"));
+  FILE *stream = file_fopen((const char *)both.path.str, "rb");
+  char streamed[32] = {0};
+  assert(stream && fread(streamed, 1u, sizeof(streamed), stream) == 9u &&
+         MemCompare(streamed, "workspace", 9u) == 0);
+  fclose(stream);
+  FileMapping mapping = {0};
+  assert(file_map_readonly(&both, &mapping) == FILE_ERROR_NONE &&
+         mapping.size == 9u && MemCompare(mapping.data, "workspace", 9u) == 0);
+  file_unmap(&mapping);
+
+  /* Writes still go to the root. */
+  FileMode write = bitset8_create();
+  bitset8_set(&write, FILE_MODE_WRITE);
+  bitset8_set(&write, FILE_MODE_TRUNCATE);
+  FileHandle handle = {0};
+  uint64_t written = 0u;
+  assert(file_open(&both, write, &handle) == FILE_ERROR_NONE &&
+         file_write(&handle, 7u, (const uint8_t *)"written", &written) ==
+             FILE_ERROR_NONE);
+  file_close(&handle);
+  /* Plain stdio: the root's own path would read through the overlay. */
+  char direct[32] = {0};
+  FILE *root_file = fopen(root_both, "rb");
+  assert(root_file && fread(direct, 1u, sizeof(direct), root_file) == 7u &&
+         MemCompare(direct, "written", 7u) == 0);
+  fclose(root_file);
+  FilePath overlay_path = {
+      .path = {.str = (uint8_t *)overlay_both, .length = strlen(overlay_both)},
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(fs_test_reads(&overlay_path, &allocator, "workspace"));
+
+  /* The root itself, also spelled `root/.`, overlays nothing and must not
+     redirect a path to itself. */
+  assert(vkr_vfs_set_overlay_root(vkr_content_root()));
+  assert(fs_test_reads(&both, &allocator, "written"));
+  char root_dot[1024];
+  snprintf(root_dot, sizeof(root_dot), "%s.", vkr_content_root());
+  assert(vkr_vfs_set_overlay_root(root_dot));
+  assert(fs_test_reads(&both, &allocator, "written"));
+  assert(!file_exists(&only_ws));
+
+  assert(vkr_vfs_set_overlay_root(NULL));
+  assert(!file_exists(&only_ws));
+  vkr_vfs_unmount_all();
+
+  arena_destroy(arena);
+  fs_test_remove_file(root_both);
+  fs_test_remove_file(root_only);
+  fs_test_remove_file(overlay_both);
+  fs_test_remove_file(overlay_only);
+  fs_test_remove_dir(root_dir);
+  fs_test_remove_dir(overlay_dir);
+  fs_test_remove_dir(overlay_assets);
+  fs_test_remove_dir(overlay);
+  printf("  test_vfs_workspace_overlay PASSED\n");
+}
+
 bool32_t run_filesystem_tests(void) {
   printf("--- Starting Filesystem Tests ---\n");
   g_fs_test_counter = 0;
@@ -1083,6 +1220,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_allocation_failures();
   test_vfs_pack_mount();
   test_vfs_pack_compressed();
+  test_vfs_workspace_overlay();
 
   printf("--- Filesystem Tests Completed ---\n");
   return true;

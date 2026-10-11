@@ -141,6 +141,19 @@ const char *vkr_content_root(void);
 bool8_t vkr_content_root_is_repository(void);
 /** Replaces the content root; `directory` must be absolute and exist. */
 bool8_t vkr_vfs_set_content_root(const char *directory);
+/**
+ * Sets the directory whose `assets/` tree serves reads before the content
+ * root's: a read-only open, map, existence check or stat of a path below the
+ * root whose identity starts with `assets/` uses `<directory>/<identity>`
+ * when that file exists. Mounted archives still win, and writes still go to
+ * the root. The editor sets its open workspace, so a depot working copy
+ * carries a project's own meshes, materials and textures.
+ *
+ * NULL, an empty string, or the content root itself clears it. Call from one
+ * thread; loaders may run meanwhile. Earlier directories stay readable until
+ * vkr_vfs_unmount_all(). Returns false when `directory` is too long.
+ */
+bool8_t vkr_vfs_set_overlay_root(const char *directory);
 /** Maps and validates one archive and appends it to the mount order. */
 bool8_t vkr_vfs_mount_pack(const char *path);
 /**
