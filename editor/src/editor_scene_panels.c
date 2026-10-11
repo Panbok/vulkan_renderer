@@ -731,6 +731,8 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_ARROW_RIGHT;
   if (type == &vkr_scene_terrain_type)
     return VKR_UI_ICON_WAVES;
+  if (type == &vkr_scene_terrain_cutout_type)
+    return VKR_UI_ICON_BOUNDING_BOX;
   if (type == &vkr_scene_spline_type || type == &vkr_scene_spline_mesh_type ||
       type == &vkr_scene_spline_point_type)
     return VKR_UI_ICON_PENCIL_LINE;
@@ -807,6 +809,8 @@ static const EditorObjectKind s_object_kinds[] = {
      "Level"},
     {"mover", "Mover", VKR_UI_ICON_ARROW_UP, &vkr_scene_mover_type, false_v,
      "Level"},
+    {"terrain_cutout", "Terrain Cutout", VKR_UI_ICON_BOUNDING_BOX,
+     &vkr_scene_terrain_cutout_type, false_v, "Level"},
     {"atmosphere", "Sky Atmosphere", VKR_UI_ICON_PLANET,
      &vkr_scene_atmosphere_type, false_v, "Environment"},
     {"clouds", "Volumetric Clouds", VKR_UI_ICON_CLOUD, &vkr_scene_clouds_type,
@@ -1283,8 +1287,10 @@ bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
   /* A shape is centred on its origin, so it rests half its height above the
      snap point; a text's center rises an em above it. */
   const bool8_t text = object->type == &vkr_scene_text_type;
-  /* A look volume starts room-sized, standing on the snap point. */
-  const bool8_t look = object->type == &vkr_scene_look_volume_type;
+  /* A look volume or terrain cutout starts room-sized, standing on the
+     snap point. */
+  const bool8_t look = object->type == &vkr_scene_look_volume_type ||
+                       object->type == &vkr_scene_terrain_cutout_type;
   const Vec3 look_size = vec3_new(8.0f, 4.0f, 8.0f);
   const float32_t base =
       look ? look_size.y * 0.5f

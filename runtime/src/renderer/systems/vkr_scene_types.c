@@ -2683,6 +2683,40 @@ const VkrTypeDesc vkr_scene_scatter_area_type = {
     .defaults = scatter_area_defaults,
 };
 
+static const VkrPropertyDesc s_terrain_cutout_properties[] = {
+    {.name = "enabled",
+     .label = "Enabled",
+     .tooltip = "Cut the terrain inside the box",
+     .offset = TYPE_OFFSET(SceneTerrainCutout, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "margin",
+     .label = "Height margin",
+     .unit = "m",
+     .tooltip = "Ground this far above or below the box is cut too, so a "
+                "steep slope leaves no sliver across the room",
+     .offset = TYPE_OFFSET(SceneTerrainCutout, margin),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 64.0f,
+     .step = 0.25f},
+};
+
+static void terrain_cutout_defaults(void *value) {
+  *(SceneTerrainCutout *)value =
+      (SceneTerrainCutout){.enabled = true_v, .margin = 2.0f};
+}
+
+const VkrTypeDesc vkr_scene_terrain_cutout_type = {
+    .name = "terrain_cutout",
+    .label = "Terrain cutout",
+    .category = "Level",
+    .properties = s_terrain_cutout_properties,
+    .property_count = ArrayCount(s_terrain_cutout_properties),
+    .size = sizeof(SceneTerrainCutout),
+    .align = _Alignof(SceneTerrainCutout),
+    .defaults = terrain_cutout_defaults,
+};
+
 // =============================================================================
 // Entity IO (ADR-084)
 // =============================================================================
@@ -3985,6 +4019,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_material_override_type,
     &vkr_scene_surface_theme_type,
     &vkr_scene_scatter_area_type,
+    &vkr_scene_terrain_cutout_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -4062,6 +4097,7 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_spline_mesh_type ||
          type == &vkr_scene_scatter_type ||
          type == &vkr_scene_scatter_area_type ||
+         type == &vkr_scene_terrain_cutout_type ||
          type == &vkr_scene_world_partition_type ||
          type == &vkr_scene_always_loaded_type ||
          type == &vkr_scene_free_placement_type ||

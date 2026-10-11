@@ -1250,9 +1250,9 @@ static const VkrTypeDesc *handles_type(const VkrScene *scene,
                                               scene->comp_rectangle_light)) {
     return &vkr_scene_rectangle_light_type;
   }
-  static const VkrTypeDesc *const boxes[] = {&vkr_scene_look_volume_type,
-                                             &vkr_scene_decal_type,
-                                             &vkr_scene_reflection_probe_type};
+  static const VkrTypeDesc *const boxes[] = {
+      &vkr_scene_look_volume_type, &vkr_scene_decal_type,
+      &vkr_scene_reflection_probe_type, &vkr_scene_terrain_cutout_type};
   for (uint32_t i = 0; i < ArrayCount(boxes); ++i) {
     if (vkr_scene_get_typed(scene, entity, boxes[i])) {
       return boxes[i];

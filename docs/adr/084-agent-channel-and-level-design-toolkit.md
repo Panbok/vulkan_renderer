@@ -1147,6 +1147,19 @@ writes each changed terrain's file. Each update rebuilds the marked tiles:
   layer 0 at the height it kept. `vkr_scene_terrain_ground`, scatter
   placement and `terrain.sample` find no ground over a hole; the editor brush
   still meets it, so Fill can close it.
+- A **`terrain_cutout`** component makes holes without changing the samples:
+  its entity's world transform places a box, [-0.5, 0.5] on each axis as a
+  look volume's, and every fine sample whose ground lies strictly inside the
+  box across and within its height range widened by `margin` metres draws
+  and collides as a hole. A room set into a hillside puts one around itself
+  so the ground passing through it neither shows nor blocks; ground above or
+  below the box stays. The terrain gathers the scene's cutouts when its
+  world revision changes, compares their poses and values each update, and
+  rebuilds only the tiles and body under a box that appeared, moved, changed
+  or left, without marking the samples unsaved. Overview tiles ignore
+  cutouts as they do holes, and `vkr_scene_terrain_ground` honours them
+  (`terrain.sample` reads the samples). The Create menu's Level group adds a
+  Terrain Cutout with box handles.
 
 A terrain material
 ([vkr_material_loader_replace_terrain](../../runtime/src/renderer/resources/loaders/material_loader.h))
@@ -1244,11 +1257,16 @@ spline's points, and for a scatter every terrain's revision) and rebuilds
 the rule when the hash changes. The same mesh and count only move; anything
 else recreates the copies. A scatter waits while any terrain's collision is
 rebuilding. Copies pick as their rule's entity, through the render bridge.
-A scene holds at most 64 rules and 4,096 copies; a rule asking for more
-gets the remainder and a status saying so. A copy costs 184 bytes of CPU
-memory and, per frame, a 144-byte instance row and a 48-byte candidate per
-submesh, so the bound stays under 1 MB of each on the 16 GB floor
-([ADR-083](083-supported-hardware-matrix.md)).
+A scene holds at most 64 rules and 12,288 copies, three quarters of the mesh
+manager's 16,384 instances; a rule asking for more gets the remainder and a
+status saying so. A copy costs 184 bytes of CPU memory and, per frame, a
+144-byte instance row and a 48-byte candidate per submesh, so the bound
+stays near 2 MB of rows on the 16 GB floor
+([ADR-083](083-supported-hardware-matrix.md)). It was 4,096 until
+2026-10-11, when an Alpine valley of 2 km needed denser forest: at 4,096
+copies its stands read as single trees. Every candidate costs GPU culling
+each frame, so a one-submesh prop (one material, an atlas) costs half of a
+two-material one.
 
 | Operation | Purpose |
 |---|---|

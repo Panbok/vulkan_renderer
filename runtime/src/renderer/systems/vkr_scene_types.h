@@ -48,6 +48,7 @@ extern const VkrTypeDesc vkr_scene_surface_theme_type;
 extern const VkrTypeDesc vkr_scene_brush_type;
 extern const VkrTypeDesc vkr_scene_brush_face_type;
 extern const VkrTypeDesc vkr_scene_terrain_type;
+extern const VkrTypeDesc vkr_scene_terrain_cutout_type;
 /* Population (ADR-084). */
 extern const VkrTypeDesc vkr_scene_spline_type;
 extern const VkrTypeDesc vkr_scene_spline_point_type;

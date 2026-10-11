@@ -431,6 +431,18 @@ typedef struct SceneScatter {
    area painted later never moves earlier copies: a copy closer than
    `spacing` metres to an earlier copy of the scatter is left out. A
    scatter with areas places copies only in them, not in its box. */
+/* A `terrain_cutout` component: the entity's world transform places a box,
+   [-0.5, 0.5] on each axis, as a look volume's. Terrain samples whose
+   ground lies inside it, its height range widened by `margin` metres, draw
+   and collide as holes, so a room set into a hillside is not filled by
+   the ground; the stored samples do not change. Holes are per sample, so
+   the opening reaches up to one sample spacing past the box: the room's
+   walls hide its edge. */
+typedef struct SceneTerrainCutout {
+  bool8_t enabled;
+  float32_t margin;
+} SceneTerrainCutout;
+
 typedef struct SceneScatterArea {
   float32_t radius;
   float32_t density;

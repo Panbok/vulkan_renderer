@@ -160,11 +160,35 @@ typedef struct TerrainRecord {
   char status[160];
 } TerrainRecord;
 
+/* Terrain cutouts a scene holds at most; more are left out. */
+#define TERRAIN_CUTOUT_MAX 64u
+
+/* A `terrain_cutout` box as the terrain last applied it: its pose, the
+   world to box transform, its height margin in box units and the world
+   bounds its cut reaches. */
+typedef struct TerrainCutout {
+  VkrEntityId entity;
+  Mat4 world;
+  float32_t margin;
+  Mat4 to_box;
+  float32_t margin_box;
+  Vec3 min;
+  Vec3 max;
+} TerrainCutout;
+
 struct s_VkrSceneTerrains {
   TerrainRecord records[VKR_SCENE_TERRAIN_MAX];
   uint32_t record_count;
   /* Terrains removed so far; with each record's marks it is the revision. */
   uint64_t removed;
+  /* The scene's cutout entities, gathered again when its world revision
+     changes, and the boxes the tiles and bodies were last built with. */
+  VkrEntityId cutout_entities[TERRAIN_CUTOUT_MAX];
+  uint32_t cutout_entity_count;
+  uint64_t cutout_world_revision;
+  bool8_t cutouts_gathered;
+  TerrainCutout cutouts[TERRAIN_CUTOUT_MAX];
+  uint32_t cutout_count;
 };
 
 // =============================================================================
@@ -353,8 +377,10 @@ static void terrain_mark_all(TerrainRecord *record) {
   record->settle = 0u;
 }
 
-/* Marks the tiles whose vertices or normals `rect` reaches. */
-static void terrain_mark(TerrainRecord *record, VkrHeightfieldRect rect) {
+/* Marks the tiles whose vertices or normals `rect` reaches; `edited` when
+   the samples themselves changed, so they need saving. */
+static void terrain_mark_rect(TerrainRecord *record, VkrHeightfieldRect rect,
+                              bool8_t edited) {
   record->marks++;
   /* Overview triangles reach one overview stride past a changed sample. */
   const int64_t reach = record->streamed ? VKR_HEIGHTFIELD_OVERVIEW_STRIDE : 2;
@@ -387,8 +413,166 @@ static void terrain_mark(TerrainRecord *record, VkrHeightfieldRect rect) {
   record->mesh_dirty = true_v;
   record->collision_dirty = true_v;
   record->collision_rejected = false_v;
-  record->unsaved = true_v;
+  record->unsaved = record->unsaved || edited;
   record->settle = 0u;
+}
+
+static void terrain_mark(TerrainRecord *record, VkrHeightfieldRect rect) {
+  terrain_mark_rect(record, rect, true_v);
+}
+
+// =============================================================================
+// Cutouts
+// =============================================================================
+
+static TerrainCutout terrain_cutout_make(VkrEntityId entity, Mat4 world,
+                                         float32_t margin) {
+  TerrainCutout cut = {.entity = entity, .world = world, .margin = margin};
+  cut.to_box = mat4_inverse(world);
+  /* The margin is in metres; the box's y axis may be scaled. */
+  const float32_t height =
+      vec3_length(vec3_new(world.cols[1].x, world.cols[1].y, world.cols[1].z));
+  cut.margin_box = height > 1.0e-6f ? margin / height : 0.0f;
+  cut.min = vec3_new(INFINITY, INFINITY, INFINITY);
+  cut.max = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  const float32_t y = 0.5f + cut.margin_box;
+  for (uint32_t corner = 0; corner < 8u; ++corner) {
+    const Vec3 p = mat4_mul_vec3(world, vec3_new(corner & 1u ? 0.5f : -0.5f,
+                                                 corner & 2u ? y : -y,
+                                                 corner & 4u ? 0.5f : -0.5f));
+    cut.min =
+        vec3_new(Min(cut.min.x, p.x), Min(cut.min.y, p.y), Min(cut.min.z, p.z));
+    cut.max =
+        vec3_new(Max(cut.max.x, p.x), Max(cut.max.y, p.y), Max(cut.max.z, p.z));
+  }
+  return cut;
+}
+
+/* Whether ground at world point `at` lies inside a cutout: strictly inside
+   its box across, within its height range widened by its margin. */
+static bool8_t terrain_cutout_at(const VkrSceneTerrains *state, Vec3 at) {
+  for (uint32_t i = 0; i < state->cutout_count; ++i) {
+    const TerrainCutout *cut = &state->cutouts[i];
+    if (at.x < cut->min.x || at.x > cut->max.x || at.z < cut->min.z ||
+        at.z > cut->max.z || at.y < cut->min.y || at.y > cut->max.y) {
+      continue;
+    }
+    const Vec3 q = mat4_mul_vec3(cut->to_box, at);
+    if (fabsf(q.x) < 0.5f && fabsf(q.z) < 0.5f &&
+        fabsf(q.y) < 0.5f + cut->margin_box) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Opens the samples of `rect` whose ground a cutout holds in `heights`
+   (metres, `stride` a row, the terrain's origin at `origin`), as a body's
+   rows. */
+static void terrain_cutout_rows(const VkrSceneTerrains *state,
+                                const VkrHeightfield *field, Vec3 origin,
+                                VkrHeightfieldRect rect, float32_t *heights,
+                                uint32_t stride) {
+  if (!state->cutout_count) {
+    return;
+  }
+  const float32_t half = vkr_heightfield_half_size(field);
+  for (uint32_t z = rect.z0; z <= rect.z1; ++z) {
+    for (uint32_t x = rect.x0; x <= rect.x1; ++x) {
+      float32_t *height =
+          &heights[(size_t)(z - rect.z0) * stride + (x - rect.x0)];
+      if (*height != VKR_PHYSICS_HEIGHT_HOLE &&
+          terrain_cutout_at(
+              state,
+              vec3_new(origin.x + (float32_t)x * field->spacing - half,
+                       origin.y + *height,
+                       origin.z + (float32_t)z * field->spacing - half))) {
+        *height = VKR_PHYSICS_HEIGHT_HOLE;
+      }
+    }
+  }
+}
+
+/* Marks the samples of every loaded terrain that `cut`'s bounds reach. */
+static void terrain_cutout_mark(VkrScene *scene, VkrSceneTerrains *state,
+                                const TerrainCutout *cut) {
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    TerrainRecord *record = &state->records[i];
+    const SceneTransform *transform = vkr_entity_get_component(
+        scene->world, record->entity, scene->comp_transform);
+    if (!record->loaded || !transform) {
+      continue;
+    }
+    const Vec3 origin = mat4_position(transform->world);
+    const float32_t cx = 0.5f * (cut->min.x + cut->max.x) - origin.x;
+    const float32_t cz = 0.5f * (cut->min.z + cut->max.z) - origin.z;
+    const float32_t radius =
+        0.5f * vec2_length(
+                   vec2_new(cut->max.x - cut->min.x, cut->max.z - cut->min.z)) +
+        record->field.spacing;
+    VkrHeightfieldRect rect;
+    if (vkr_heightfield_rect_around(&record->field, cx, cz, radius, &rect)) {
+      terrain_mark_rect(record, rect, false_v);
+    }
+  }
+}
+
+/* Takes up the scene's cutouts: gathers their entities when its world
+   revision changes, and when a box appears, goes, moves or changes marks
+   the ground it left and the ground it holds. */
+static void terrain_cutouts_sync(VkrScene *scene, VkrSceneTerrains *state) {
+  if (!state->cutouts_gathered ||
+      state->cutout_world_revision != scene->world_revision) {
+    state->cutout_entity_count =
+        Min(TERRAIN_CUTOUT_MAX,
+            vkr_scene_find_typed(scene, &vkr_scene_terrain_cutout_type,
+                                 state->cutout_entities, TERRAIN_CUTOUT_MAX));
+    state->cutout_world_revision = scene->world_revision;
+    state->cutouts_gathered = true_v;
+  }
+  TerrainCutout next[TERRAIN_CUTOUT_MAX];
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < state->cutout_entity_count; ++i) {
+    const VkrEntityId entity = state->cutout_entities[i];
+    const SceneTerrainCutout *value =
+        vkr_scene_entity_alive(scene, entity)
+            ? vkr_scene_get_typed(scene, entity, &vkr_scene_terrain_cutout_type)
+            : NULL;
+    const SceneTransform *transform =
+        value ? vkr_entity_get_component(scene->world, entity,
+                                         scene->comp_transform)
+              : NULL;
+    if (!transform || !value->enabled ||
+        !vkr_scene_entity_visible(scene, entity)) {
+      continue;
+    }
+    const TerrainCutout *old =
+        count < state->cutout_count ? &state->cutouts[count] : NULL;
+    next[count++] =
+        old && old->entity.u64 == entity.u64 && old->margin == value->margin &&
+                MemCompare(&old->world, &transform->world, sizeof(Mat4)) == 0
+            ? *old
+            : terrain_cutout_make(entity, transform->world, value->margin);
+  }
+  bool8_t same = count == state->cutout_count;
+  for (uint32_t i = 0; same && i < count; ++i) {
+    same =
+        next[i].entity.u64 == state->cutouts[i].entity.u64 &&
+        next[i].margin == state->cutouts[i].margin &&
+        MemCompare(&next[i].world, &state->cutouts[i].world, sizeof(Mat4)) == 0;
+  }
+  if (same) {
+    return;
+  }
+  /* The ground each old box left and each new box holds builds again. */
+  for (uint32_t i = 0; i < state->cutout_count; ++i) {
+    terrain_cutout_mark(scene, state, &state->cutouts[i]);
+  }
+  MemCopy(state->cutouts, next, sizeof(next[0]) * count);
+  state->cutout_count = count;
+  for (uint32_t i = 0; i < count; ++i) {
+    terrain_cutout_mark(scene, state, &state->cutouts[i]);
+  }
 }
 
 bool8_t vkr_scene_terrain_resolve(const VkrScene *scene, const char *relative,
@@ -669,7 +853,8 @@ bool8_t vkr_scene_terrain_ground(VkrScene *scene, Vec3 top, float32_t bottom,
     if (!vkr_heightfield_rect_around(field, x, z, 2.0f * d, &rect) ||
         !vkr_heightfield_load_rect(field, rect) ||
         !vkr_heightfield_sample(field, x, z, &height) ||
-        vkr_heightfield_open(field, x, z)) {
+        vkr_heightfield_open(field, x, z) ||
+        terrain_cutout_at(state, vec3_new(top.x, origin.y + height, top.z))) {
       continue;
     }
     const float32_t y = origin.y + height;
@@ -1418,6 +1603,14 @@ static TerrainTileWork *terrain_batch_add(VkrScene *scene,
   }
   TerrainTileWork *work = &batch->works[batch->count++];
   const TerrainGrid live = terrain_grid(&record->field, overview);
+  /* Fine samples a cutout holds draw as holes; overview cells are wider
+     than any cut, as they are than a hole. */
+  const VkrSceneTerrains *state = scene->terrains;
+  const SceneTransform *transform = vkr_entity_get_component(
+      scene->world, record->entity, scene->comp_transform);
+  const bool8_t cuts =
+      !overview && state && state->cutout_count && transform != NULL;
+  const Vec3 origin = transform ? mat4_position(transform->world) : vec3_zero();
   /* The tile's samples and the neighbour each normal reads past its edge. */
   const uint32_t x0 = tx * VKR_HEIGHTFIELD_TILE_CELLS;
   const uint32_t z0 = tz * VKR_HEIGHTFIELD_TILE_CELLS;
@@ -1430,6 +1623,15 @@ static TerrainTileWork *terrain_batch_add(VkrScene *scene,
       const uint32_t at = (z - sz0) * TERRAIN_SNAPSHOT_SIDE + (x - sx0);
       work->heights[at] = terrain_grid_height(&live, x, z);
       work->weights[at] = terrain_grid_weights(&live, x, z);
+      if (cuts && work->weights[at] != VKR_HEIGHTFIELD_HOLE_WEIGHTS &&
+          terrain_cutout_at(
+              state,
+              vec3_new(origin.x + (float32_t)x * live.spacing - live.half_size,
+                       origin.y + work->heights[at],
+                       origin.z + (float32_t)z * live.spacing -
+                           live.half_size))) {
+        work->weights[at] = VKR_HEIGHTFIELD_HOLE_WEIGHTS;
+      }
     }
   }
   work->grid = live;
@@ -1825,9 +2027,10 @@ static void terrain_build_collision(VkrScene *scene, TerrainRecord *record,
       heights[(size_t)z * padded + x] = VKR_PHYSICS_HEIGHT_HOLE;
     }
   }
-  vkr_heightfield_read_metres(
-      field, (VkrHeightfieldRect){0u, 0u, samples - 1u, samples - 1u}, heights,
-      padded, VKR_PHYSICS_HEIGHT_HOLE);
+  const VkrHeightfieldRect all = {0u, 0u, samples - 1u, samples - 1u};
+  vkr_heightfield_read_metres(field, all, heights, padded,
+                              VKR_PHYSICS_HEIGHT_HOLE);
+  terrain_cutout_rows(scene->terrains, field, position, all, heights, padded);
   const bool8_t now = !record->collision_built;
   const bool8_t ok = terrain_body_set(scene, record, heights, padded, position,
                                       vec2_new(0.0f, 0.0f), now);
@@ -1873,6 +2076,7 @@ static void terrain_build_window_collision(VkrScene *scene,
   }
   vkr_heightfield_read_metres(field, rect, heights, padded,
                               VKR_PHYSICS_HEIGHT_HOLE);
+  terrain_cutout_rows(scene->terrains, field, position, rect, heights, padded);
   const Vec2 corner = vec2_new((float32_t)rect.x0 * field->spacing,
                                (float32_t)rect.z0 * field->spacing);
   const bool8_t ok =
@@ -2140,7 +2344,12 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
 
 void vkr_scene_terrain_update(VkrScene *scene) {
   VkrSceneTerrains *state = scene ? scene->terrains : NULL;
-  if (!state || !scene->assets) {
+  if (!state) {
+    return;
+  }
+  /* Ground queries read the cutouts without render assets too. */
+  terrain_cutouts_sync(scene, state);
+  if (!scene->assets) {
     return;
   }
   for (uint32_t i = 0; i < state->record_count; ++i) {

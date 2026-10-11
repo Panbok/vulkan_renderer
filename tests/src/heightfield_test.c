@@ -558,6 +558,43 @@ static void heightfield_test_streamed(void) {
   assert(heightfield_test_near(ground.y, 70.0f, 0.01f) && normal.y > 0.999f);
   assert(!vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 60.0f, -764.0f),
                                    -500.0f, &ground, &normal));
+
+  /* A cutout box around that ground opens it; moved off it or disabled,
+     the ground comes back, and the samples never change. */
+  const VkrEntityId cutout = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, cutout,
+                                 vec3_new(-824.0f, 70.0f, -764.0f),
+                                 vkr_quat_identity(), vec3_new(4, 2, 4)));
+  vkr_scene_update_transforms(&scene);
+  SceneTerrainCutout cut;
+  vkr_type_defaults(&vkr_scene_terrain_cutout_type, &cut);
+  cut.margin = 0.0f;
+  assert(vkr_scene_set_typed(&scene, cutout, &vkr_scene_terrain_cutout_type,
+                             &cut));
+  vkr_scene_terrain_update(&scene);
+  assert(!vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 500.0f, -764.0f),
+                                   -500.0f, &ground, &normal));
+  /* Ground below the box's height range stays, unless the margin reaches. */
+  assert(vkr_scene_set_transform(&scene, cutout,
+                                 vec3_new(-824.0f, 73.5f, -764.0f),
+                                 vkr_quat_identity(), vec3_new(4, 2, 4)));
+  vkr_scene_update_transforms(&scene);
+  vkr_scene_terrain_update(&scene);
+  assert(vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 500.0f, -764.0f),
+                                  -500.0f, &ground, &normal));
+  cut.margin = 3.0f;
+  assert(vkr_scene_set_typed(&scene, cutout, &vkr_scene_terrain_cutout_type,
+                             &cut));
+  vkr_scene_terrain_update(&scene);
+  assert(!vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 500.0f, -764.0f),
+                                   -500.0f, &ground, &normal));
+  cut.enabled = false_v;
+  assert(vkr_scene_set_typed(&scene, cutout, &vkr_scene_terrain_cutout_type,
+                             &cut));
+  vkr_scene_terrain_update(&scene);
+  assert(vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 500.0f, -764.0f),
+                                  -500.0f, &ground, &normal));
+  assert(heightfield_test_near(ground.y, 70.0f, 0.01f));
   vkr_scene_shutdown(&scene, NULL);
 
   FilePath file = {
