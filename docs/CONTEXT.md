@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-11
+updated: 2026-10-12
 authority: context
 ---
 # Project vocabulary
@@ -254,4 +254,7 @@ Object model terms ([ADR-076](adr/076-project-object-model.md)):
 | Session base | The scenes the host held when it started hosting; a joining editor must hold the same, checked by a digest, before the history replays. | [ADR-106](adr/106-collaborative-editing-session.md) |
 | Chunk / blob / tree / commit | Depot objects: a FastCDC piece of a file / a file's chunk list / a directory listing / a snapshot with parents, author and message, each named by the SHA-256 of its bytes. | [vkr_depot_object.h](../tools/depot/vkr_depot_object.h) |
 | Working copy | A directory synced with a depot branch, with `.vkrdepot/` holding its state, index and local store. | [vkr_depot_workspace.h](../tools/depot/vkr_depot_workspace.h) |
+| Shared workspace | An editor workspace holding one project that is a depot working copy: the sharing editor serves its store; every other copy gets and submits through that editor. | [ADR-110](adr/110-project-sharing-in-the-editor.md) |
+| Access request | A key a depot server refused, remembered with the `user@computer` name it sent until the server's owner gives it a role. | [vkr_depot_server.h](../tools/depot/vkr_depot_server.h) |
+| Texture recipe | What a build texture is made from (source content, class, tier, speed); it names the texture on every platform and lets another host cook it again. | [ADR-077](adr/077-asset-build-system.md) |
 

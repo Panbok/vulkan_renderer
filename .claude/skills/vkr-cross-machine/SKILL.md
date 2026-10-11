@@ -1,6 +1,6 @@
 ---
 name: vkr-cross-machine
-description: Move VKR projects, scenes and assets between machines with the vkr_depot server (serve, discover, clone, commit, pull, mirror), coordinate with the agent session on the other machine, and diagnose LAN, firewall and endpoint-security failures. Use for any work that spans two machines, such as the Windows desktop and the Mac M1; single-machine depot code changes use the ADR alone.
+description: Move VKR projects, scenes and assets between machines with the editor's project sharing (Share, Get, Submit, Get latest, depot.* operations) or the vkr_depot command (serve, discover, clone, commit, pull, mirror), coordinate with the agent session on the other machine, and diagnose LAN, firewall and endpoint-security failures. Use for any work that spans two machines, such as the Windows desktop and the Mac M1; single-machine depot code changes use the ADRs alone.
 ---
 
 # VKR across machines
@@ -8,8 +8,33 @@ description: Move VKR projects, scenes and assets between machines with the vkr_
 [ADR-105](../../../docs/adr/105-network-transport-and-asset-depot.md#asset-depot)
 defines the depot, discovery and mirror;
 [ADR-106](../../../docs/adr/106-collaborative-editing-session.md#depot) defines
-editor sessions on a depot. `vkr_depot` with no arguments prints the current
+editor sessions on a depot, and
+[ADR-110](../../../docs/adr/110-project-sharing-in-the-editor.md) project
+sharing in the editor. `vkr_depot` with no arguments prints the current
 commands. This skill sets how two machines and their agent sessions use them.
+
+## Prefer the editor
+
+Share and get projects through the editor; use the command only for a
+standing server, a mirror or a check the editor cannot run.
+
+- **Share:** open the project, File > Project sharing > Share on network.
+  The editor copies the project and its assets into `~/VKR Projects/<name>`,
+  rebuilds imported models cooked before texture recipes, commits and serves
+  it while the editor runs. Agents run `op depot.share {"destination":...}`
+  and read `op depot.status` (role, server port and key, requests).
+- **Get:** the project hub lists projects found on the network; Get copies
+  one, waits for the other editor's Allow, cooks textures for this computer
+  and opens it. Agents run `op depot.clone {"address","key","name"}`; the
+  launcher answers agents without a scene.
+- **Approve:** the sharing editor shows `N asking` and a card with Allow,
+  View only and Deny; agents run `op depot.allow {"key","role"}`. No key is
+  copied and no server restarts.
+- **Sync:** the top bar button shows changes and new commits;
+  `op depot.submit {"message"}` and `op depot.pull {"conflicts":"fail"|"theirs"|"mine"}`.
+- A computer whose endpoint security drops inbound traffic (the company
+  Mac) cannot share; it gets and submits through the other machine's editor
+  or `vkr_depot serve`.
 
 ## Coordinate the two sessions
 
@@ -33,8 +58,12 @@ commands. This skill sets how two machines and their agent sessions use them.
 
 - `keygen` prints the machine's identity key. `init STORE` prints the server
   key. Each store grants the other machine's identity with
-  `access STORE KEY write`. The server reads the access list only when it
-  starts, so restart a running server after `access`.
+  `access STORE KEY write`; a running server picks the change up within a
+  second. A refused key is listed as a request with its `user@computer`
+  name.
+- Binaries from 2026-10-12 on mask packet numbers (header protection), so
+  they cannot talk to older ones. Update the server, the mirror and every
+  editor on both machines together.
 - Keep the Mac store small: the Mac disk runs near full. Bulk history
   belongs on the Windows D: store.
 - Run the server from a stable copy of the binary, not from `build_*`. On
@@ -48,13 +77,15 @@ commands. This skill sets how two machines and their agent sessions use them.
 - To keep a server or `mirror --watch` running past one agent session, run
   it as a launchd agent (`~/Library/LaunchAgents/com.vkr.depot.*.plist`,
   `launchctl bootstrap gui/$(id -u) <plist>`). Set `VKR_DEPOT_IDENTITY`
-  in the plist: the default identity key lives in the user cache folder
-  (`~/Library/Caches/vkr_bakery/vkr/depot/identity.key`), so never delete
-  that cache. A launchd job gets no LAN access until the owner allows it
-  under Privacy & Security > Local Network. A plain binary may not get a
-  prompt; run a job that reaches the LAN from an app bundle whose
-  `Info.plist` has `NSLocalNetworkUsageDescription`. A job that only
-  serves, and is reached over loopback, needs none.
+  in the plist, or rely on the default
+  (`~/Library/Application Support/VKR/depot/identity.key`; the first run
+  copies an older key from `~/Library/Caches/vkr_bakery/vkr/depot/`). A
+  launchd job gets no LAN access until the owner allows it under Privacy &
+  Security > Local Network. `vkr_depot` and `vkr_editor` now carry an
+  embedded `Info.plist` with `NSLocalNetworkUsageDescription`; whether that
+  alone brings the prompt for a launchd job is unverified, so keep the app
+  bundle wrapper where it already works. A job that only serves, and is
+  reached over loopback, needs none.
 
 ## Network: test before you blame the code
 
@@ -120,9 +151,14 @@ that prints `same` proves the two branches are equal.
   `.vkreditor/workspace.json` gets a new one when the editor opens it.
 - Cooked textures (`.vkt`) are per platform: the Mac cooks ASTC, which the
   Windows GPU cannot sample, and Windows cooks BC. `.vkrdepotignore` names
-  `*.vkt`, so commit only the `.png` sources. After a pull, cook each new
-  texture folder on the receiving machine with `vkr_bakery cook <folder>`,
-  in the folder that holds the `.png`.
+  `*.vkt`. The editor's Get and Get latest cook texture sources under
+  `assets/` and run Bakery's `recook_textures` for every scene, which cooks
+  imported models' textures from their recipes under the same names. After
+  a pull with the command, run the same: `vkr_bakery project --request <json>`
+  with `{"version":1,"read_only":false,"operation":"recook_textures",
+  "workspace_root":".../.vkreditor","project_path":...,"scene_id":...,
+  "scene_path":...}`. A model cooked before recipes existed needs one
+  `rebuild_asset` where it is shared (the editor's Share does it).
 - `project.json` holds only shared project data: scenes, assets, the
   default font and the animation graph. Layouts, panels, graphics and
   camera recall live per machine in `.vkreditor/local/projects/<id>.json`
@@ -132,20 +168,11 @@ that prints `same` proves the two branches are equal.
   sections until its next shared save, so the first commit after that save
   shows `project.json` as changed.
 
-Stage a scene with [scripts/stage_scene.py](scripts/stage_scene.py). It
-copies the live set with its untracked asset closure, plus the project's
-`world.scene.json`, `world.editor.json` and `game.json`, and exits 1 when a
-referenced asset is missing. Without the World, the receiving editor makes a
-default one and the scene renders under another sun, sky and grading; delete
-such a generated `world.scene.json` from a clone before pulling the real
-one, or the pull refuses it. Run it from the repository root:
-
-```sh
-python3 -I .codex/skills/vkr-cross-machine/scripts/stage_scene.py \
-    ~/vkr-depot/work --project <id> --scene <id> --dry-run
-```
-
-Read the list, run it without `--dry-run`, then `commit WORK -m "<message>"`.
+Make a working copy of a project with Bakery's `share_project` (the
+editor's Share runs it): it copies the live files and their asset closure,
+the World and `game.json`, writes `.vkrdepotignore`, and refuses a
+non-empty destination. Without the World, the receiving editor makes a
+default one and the scene renders under another sun, sky and grading.
 
 ## Prove a transfer
 

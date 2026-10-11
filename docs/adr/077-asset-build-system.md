@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-05
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -137,10 +137,10 @@ from it.
   than that are not stored (`--max-extent`, part of the settings identity).
   `deferred` builds no texture: the
   cooker keeps material factors, resolves and copies no image, and a scene
-  opens at once. The preview tier and the fast encodings take their own
-  names (`-preview`, `-astc-fast`, `-bc-fast`, ...) and keys, so one never
-  replaces another; the final tier's names carry no encoding, since each host
-  has one final encoding and settings identities keep hosts apart. A
+  opens at once. The preview tier and the fast speed take their own
+  names (`-preview`, `-fast`) and keys, so one never replaces another; no
+  name carries an encoding, since each host has one encoding per speed and
+  settings identities keep hosts apart. A
   mesh record imported at the preview or deferred tier carries
   `"texture_tier"`, and every scene result reports those records as
   `preview_assets`. `finalize_textures` rebuilds them at the final tier as one
@@ -265,8 +265,42 @@ from it.
   open, map, existence check or stat of an `assets/` identity below the root
   uses `<workspace>/assets/...` when that file exists, after the archives
   and before the root, so a depot working copy carries a project's own
-  meshes, materials and textures. Writes still go to the root, and a
-  workspace that is the root overlays nothing.
+  meshes, materials and textures. Writes go to the root, except the
+  editor's material, graph and theme writes, which go to the workspace's
+  own `assets/` (`vkr_vfs_overlay_write_path`), so a shared project
+  carries them; the material index lists both trees. A workspace that is
+  the root overlays nothing.
+- **Platform-neutral build textures** (owner decision, 2026-10-12). Cooked
+  textures differ per GPU family (ASTC on Apple silicon, BC on x86-64), so
+  a project another host shares arrives without them. The mesh cooker
+  names each build texture by what it is made from:
+  `textures/<16 hex of sha256(recipe|class|tier|speed)>-<class>[-fast][-preview].vkt`,
+  where the recipe is the generated texture's path below its generated
+  folder (policy version, source content hashes, bake parameters), and a
+  spec-gloss conversion is named by its inputs, not its pixels. A texture
+  packed straight from an image is `<sha256(source)>-<class>`. Each build
+  keeps `textures/recipes.json`, mapping every name to its source image or
+  recipe, class, tier and speed
+  ([vkr_mesh_cook_source.c](../../tools/assets/vkr_mesh_cook_source.c)).
+  Closures record `"platform"` instead of a digest for `.vkt` members, and
+  comparisons ignore them. `recook_textures`
+  ([vkr_project_recook.c](../../tools/bakery/project/vkr_project_recook.c))
+  cooks every texture a build's recipes name that is missing or holds the
+  other GPU family, under the same name, through a staging mesh cook from
+  the source snapshot; it makes no revision and writes no inventory. A
+  build cooked before recipes existed is reported in `needs_rebuild` and
+  takes one `rebuild_asset` where it is shared.
+- **Sharing a project.** `share_project`
+  ([vkr_project_share.c](../../tools/bakery/project/vkr_project_share.c))
+  copies one project's live files (documents, each scene's current overlay,
+  inventory and builds, import manifests and source snapshots, script
+  sources) and the transitive closure of the assets they name, resolved
+  through the workspace overlay, then the content root, then
+  `.vkreditor/` for terrain, into an empty destination by clone or copy,
+  never by hard link. It writes `.vkrdepotignore`, assembles in a hidden
+  sibling folder and renames it into place, and reports `needs_rebuild`,
+  missing references and textures with no source. The editor's Share uses
+  it ([ADR-110](110-project-sharing-in-the-editor.md)).
 - **Bundles.** `vkr_bakery bundle <recipe> --out <dir> [--app <executable>]
   [--shaders <catalog>]` ([bundle](../../tools/bakery/vkr_bakery_bundle.c))
   writes `content/<name>.vkpak`, copies the runtime and shader catalog beside
@@ -706,6 +740,18 @@ measured. On Windows: extent-duplication clones (Windows 10 Pro cannot create
 ReFS or Dev Drive volumes; the NTFS path falls back as tested) and imports
 with Defender exclusions or on a Dev Drive. The BC encoders are not built for ARM, and Metal
 has not loaded a BC texture.
+
+M1, Release, 2026-10-12, the Testbed project (Bistro and Level Design
+Test) shared into `/tmp` by `share_project`: 1,151 files, 5.93 GB by clone
+in 5.7 s, nothing missing; Bistro's build was reported in `needs_rebuild`
+(509 textures without recipes). `rebuild_asset` took 23.2 s (peak 3.99 GB)
+and wrote 514 textures with 514 recipes. With those textures and both caches
+deleted, `recook_textures` restored all 514 byte for byte in 22.8 s (peak
+4.28 GB, one mesh cook) without changing the materials, mesh, `scene.json`
+or inventory, and the scene then prepared. `check_bakery_share.py` and
+`check_bakery_recook.py` pass. A BC host has not re-cooked an ASTC host's
+build; the check recomputes each name from its recipe and finds no
+encoding in it.
 
 ## Alternatives considered
 

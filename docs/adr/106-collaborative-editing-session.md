@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-10
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -160,7 +160,7 @@ every participant received and refuses new joins.
 ### Access
 
 A participant connects with its identity key, the one `vkr_depot` uses
-(`VKR_DEPOT_IDENTITY` or the user cache, made when missing), and sends its
+(`VKR_DEPOT_IDENTITY` or the user data folder, made when missing), and sends its
 name in the transport's first message. A host is open by default: anyone
 with the address and session key joins. Restricted (`session.access` with
 `restricted`, or Restrict in the Session window), it accepts only the

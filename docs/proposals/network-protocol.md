@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-11
+updated: 2026-10-12
 authority: proposal
 ---
 # Network protocol
@@ -106,15 +106,13 @@ and a TCP fallback.
 
 | Gap | Work | Evidence needed |
 |---|---|---|
-| macOS | Run the transport tests and `vkr_net_bench` on Apple silicon; `vkr_depot`, `--suite depot` and `check_depot_e2e.py` already run on a Mac M1 (ADR-105) | `--suite net` and `vkr_net_bench` on a Mac |
 | Cross-machine numbers | `vkr_net_bench` and a depot push and pull between a Mac and a Windows machine on 1 GbE; the depot already moves a 1.46 GB scene both ways over Wi-Fi (ADR-105), which measures neither | Raw UDP and transport RTT and throughput per direction; depot MB/s and cores per side against the 110 MB/s target |
-| Background mode | A simulator bottleneck shared by two links | A background connection yields to an interactive one; two bulk connections converge to equal shares |
-| Threaded host | A net thread with bounded rings to application threads, woken by `vkr_net_host_wake` | Editor frame time unchanged while a depot transfer runs |
+| Threaded host | The host thread exists and runs the depot server inside the sharing editor (ADR-105, ADR-110); the collaborative session still pumps on the UI thread | Editor frame time unchanged while a depot transfer runs |
 | Windows server I/O | Registered I/O per worker in phase 8 | Datagrams per second per core against the one-call baseline |
 | Sparse working copy | Files fetched when opened, through the remote content mount of asset streaming | A Bistro scene opens from a sparse working copy |
 | Shared Bakery cache | Action keys to output hashes in a depot; a cook downloads instead of re-encoding | A second machine's cook of Bistro hits the cache |
-| Security | Fuzzers for the frame parser, handshake, wire decoder and depot objects under ASan and UBSan; an independent review | No fuzzer findings; review closed before use outside a trusted network |
-| Privacy | Header protection of packet numbers; NAT traversal with a rendezvous and relay | Decided by the owner before internet deployment |
+| Security | An independent review; the fuzzers run under ASan and UBSan (ADR-105) | Review closed before use outside a trusted network |
+| Privacy | NAT traversal with a rendezvous and relay; packet numbers are already masked (ADR-105) | Decided by the owner before internet deployment |
 
 ## Components on the wire
 
