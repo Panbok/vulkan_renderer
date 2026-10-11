@@ -64,7 +64,11 @@ def main():
     run(["access", str(store), bob, "write"])
 
     peer_address = f"127.0.0.1:{args.port + 1}"
-    servers = [subprocess.Popen([exe, "serve", str(store), "--bind", address],
+    # A discovery port of its own: a depot server on this machine may hold
+    # the default one.
+    discovery_port = str(args.port + 2)
+    servers = [subprocess.Popen([exe, "serve", str(store), "--bind", address,
+                                 "--discovery-port", discovery_port],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True)]
     time.sleep(1.0)
@@ -122,7 +126,8 @@ def main():
             ok=False)
 
         # Discovery: the first server answers a probe sent to loopback.
-        found = run(["discover", "--to", "127.0.0.1", "--timeout", "2000"])
+        found = run(["discover", "--to", "127.0.0.1", "--timeout", "2000",
+                     "--discovery-port", discovery_port])
         if server_key not in found or " store " not in found:
             sys.exit("discovery did not find the first server")
 
@@ -132,7 +137,8 @@ def main():
         run(["access", str(peer_store), alice, "write"])
         run(["access", str(peer_store), bob, "write"])
         servers.append(subprocess.Popen(
-            [exe, "serve", str(peer_store), "--bind", peer_address],
+            [exe, "serve", str(peer_store), "--bind", peer_address,
+             "--discovery-port", str(args.port + 3)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
         time.sleep(1.0)
         mirrored = run(["mirror", str(store), peer_address, peer_key,

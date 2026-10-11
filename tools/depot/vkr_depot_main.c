@@ -4,7 +4,8 @@
  *   vkr_depot keygen [--identity FILE]
  *   vkr_depot init STORE
  *   vkr_depot serve STORE [--bind ADDR] [--open] [--name NAME]
- *   vkr_depot discover [--to ADDR] [--timeout MS]
+ *                   [--discovery-port PORT]
+ *   vkr_depot discover [--to ADDR] [--timeout MS] [--discovery-port PORT]
  *   vkr_depot mirror STORE PEER-ADDR PEER-KEY [--local ADDR] [--branch NAME]
  *                    [--watch SECONDS]
  *   vkr_depot access STORE KEY none|read|write|admin
@@ -193,7 +194,8 @@ static void depot_serve_accept(void *context, const VkrNetAddress *address,
 }
 
 static int depot_serve(const char *store_root, const char *bind,
-                       bool8_t open_access, const char *name) {
+                       bool8_t open_access, const char *name,
+                       uint16_t discovery_port) {
   static ServeContext serve;
   VkrNetHostConfig config = {
       .socket = {.receive_buffer = 16u << 20, .send_buffer = 16u << 20}};
@@ -236,13 +238,13 @@ static int depot_serve(const char *store_root, const char *bind,
   /* Other machines find this server by its name, the store's folder
      unless --name gives one. */
   static VkrDepotResponder responder;
-  if (vkr_depot_responder_open(
-          &responder, local.port, config.core.static_keys.public_key,
-          name ? name : vkr_bakery_path_name(store_root))) {
-    printf("discoverable as %s on UDP %u\n", responder.name,
-           VKR_DEPOT_DISCOVERY_PORT);
+  if (vkr_depot_responder_open(&responder, discovery_port, local.port,
+                               config.core.static_keys.public_key,
+                               name ? name
+                                    : vkr_bakery_path_name(store_root))) {
+    printf("discoverable as %s on UDP %u\n", responder.name, discovery_port);
   } else {
-    printf("not discoverable: UDP %u is taken\n", VKR_DEPOT_DISCOVERY_PORT);
+    printf("not discoverable: UDP %u is taken\n", discovery_port);
   }
   fflush(stdout);
   for (;;) {
@@ -258,15 +260,17 @@ static int depot_serve(const char *store_root, const char *bind,
   return 1;
 }
 
-static int depot_discover(const char *to, uint32_t timeout_ms) {
+static int depot_discover(const char *to, uint32_t timeout_ms,
+                          uint16_t discovery_port) {
   VkrNetAddress target;
   if (to && !vkr_depot_address(to, &target)) {
     fprintf(stderr, "invalid --to address %s\n", to);
     return 1;
   }
   VkrDepotDiscovered found[32];
-  const uint32_t count = vkr_depot_discover(to ? &target : NULL, timeout_ms,
-                                            found, ArrayCount(found));
+  const uint32_t count =
+      vkr_depot_discover(to ? &target : NULL, discovery_port, timeout_ms, found,
+                         ArrayCount(found));
   for (uint32_t i = 0u; i < count; ++i) {
     char text[VKR_NET_ADDRESS_TEXT];
     vkr_net_address_format(&found[i].address, text, sizeof(text));
@@ -619,7 +623,9 @@ static void depot_usage(void) {
       "  vkr_depot keygen\n"
       "  vkr_depot init STORE\n"
       "  vkr_depot serve STORE [--bind ADDR] [--open] [--name NAME]\n"
-      "  vkr_depot discover [--to ADDR] [--timeout MS]\n"
+      "                  [--discovery-port PORT]\n"
+      "  vkr_depot discover [--to ADDR] [--timeout MS] [--discovery-port "
+      "PORT]\n"
       "  vkr_depot mirror STORE PEER-ADDR PEER-KEY [--local ADDR]\n"
       "                   [--branch NAME] [--watch SECONDS]\n"
       "  vkr_depot access STORE KEY none|read|write|admin\n"
@@ -646,6 +652,7 @@ static int depot_main(int argc, char **argv) {
   const char *to = NULL;
   const char *local = NULL;
   uint32_t timeout_ms = 1500u;
+  uint32_t discovery_port = VKR_DEPOT_DISCOVERY_PORT;
   uint32_t watch_seconds = 0u;
   const char *message = NULL;
   const char *dir = NULL;
@@ -674,6 +681,13 @@ static int depot_main(int argc, char **argv) {
       ++i;
     } else if (value && strcmp(arg, "--local") == 0) {
       local = value;
+      ++i;
+    } else if (value && strcmp(arg, "--discovery-port") == 0) {
+      discovery_port = (uint32_t)strtoul(value, NULL, 10);
+      if (discovery_port == 0u || discovery_port > 65535u) {
+        depot_usage();
+        return 1;
+      }
       ++i;
     } else if (value && strcmp(arg, "--timeout") == 0) {
       timeout_ms = (uint32_t)strtoul(value, NULL, 10);
@@ -708,10 +722,11 @@ static int depot_main(int argc, char **argv) {
     return depot_init(positional[0]);
   }
   if (strcmp(command, "serve") == 0 && positional[0]) {
-    return depot_serve(positional[0], bind, open_access, name);
+    return depot_serve(positional[0], bind, open_access, name,
+                       (uint16_t)discovery_port);
   }
   if (strcmp(command, "discover") == 0) {
-    return depot_discover(to, timeout_ms);
+    return depot_discover(to, timeout_ms, (uint16_t)discovery_port);
   }
   if (strcmp(command, "mirror") == 0 && positional_count == 3u) {
     return depot_mirror_command(positional[0], positional[1], positional[2],

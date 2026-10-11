@@ -148,7 +148,7 @@ static void discovery_host_name(char *out, uint32_t capacity) {
 }
 
 bool8_t vkr_depot_responder_open(VkrDepotResponder *responder,
-                                 uint16_t service_port,
+                                 uint16_t discovery_port, uint16_t service_port,
                                  const uint8_t server_key[32],
                                  const char *name) {
   MemZero(responder, sizeof(*responder));
@@ -158,7 +158,7 @@ bool8_t vkr_depot_responder_open(VkrDepotResponder *responder,
   snprintf(responder->name, sizeof(responder->name), "%s", name ? name : "");
   discovery_host_name(responder->host, sizeof(responder->host));
   const VkrNetAddress bind =
-      vkr_net_address_any(VKR_NET_ADDRESS_IPV4, VKR_DEPOT_DISCOVERY_PORT);
+      vkr_net_address_any(VKR_NET_ADDRESS_IPV4, discovery_port);
   return vkr_udp_socket_open(&bind, NULL, &responder->socket);
 }
 
@@ -209,7 +209,8 @@ static void discovery_send_probes(VkrUdpSocket socket, const uint8_t *probe,
   }
 }
 
-uint32_t vkr_depot_discover(const VkrNetAddress *target, uint32_t timeout_ms,
+uint32_t vkr_depot_discover(const VkrNetAddress *target,
+                            uint16_t discovery_port, uint32_t timeout_ms,
                             VkrDepotDiscovered *out, uint32_t capacity) {
   VkrUdpSocket socket = {.handle = VKR_UDP_SOCKET_INVALID};
   const VkrNetAddress bind = vkr_net_address_any(VKR_NET_ADDRESS_IPV4, 0u);
@@ -222,13 +223,13 @@ uint32_t vkr_depot_discover(const VkrNetAddress *target, uint32_t timeout_ms,
   uint32_t target_count = 0u;
   if (target) {
     targets[target_count] = *target;
-    targets[target_count++].port = VKR_DEPOT_DISCOVERY_PORT;
+    targets[target_count++].port = discovery_port;
   } else {
     (void)vkr_udp_socket_enable_broadcast(socket);
-    target_count = vkr_net_ipv4_broadcast_addresses(
-        VKR_DEPOT_DISCOVERY_PORT, targets, ArrayCount(targets) - 1u);
+    target_count = vkr_net_ipv4_broadcast_addresses(discovery_port, targets,
+                                                    ArrayCount(targets) - 1u);
     VkrNetAddress limited = {.family = VKR_NET_ADDRESS_IPV4,
-                             .port = VKR_DEPOT_DISCOVERY_PORT};
+                             .port = discovery_port};
     MemSet(limited.bytes, 0xff, 4u);
     targets[target_count++] = limited;
   }

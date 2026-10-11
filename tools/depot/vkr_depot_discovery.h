@@ -3,7 +3,8 @@
 #include "platform/vkr_udp_socket.h"
 
 /* LAN discovery of depot servers (ADR-105). A server answers probes on
- * UDP port VKR_DEPOT_DISCOVERY_PORT; a client broadcasts a probe to every
+ * UDP port VKR_DEPOT_DISCOVERY_PORT unless it names another, as a second
+ * server on one machine must; a client broadcasts a probe to every
  * IPv4 subnet it is on, or sends it to an address it names, and collects
  * the answers. Both are binary datagrams, little-endian:
  *
@@ -27,8 +28,8 @@ typedef struct VkrDepotDiscovered {
   char host[VKR_DEPOT_DISCOVERY_TEXT];
 } VkrDepotDiscovered;
 
-/* A server's side: a socket on VKR_DEPOT_DISCOVERY_PORT that answers with
-   the server's port, key, name and host. */
+/* A server's side: a socket on a discovery port that answers with the
+   server's port, key, name and host. */
 typedef struct VkrDepotResponder {
   VkrUdpSocket socket;
   uint16_t service_port;
@@ -37,9 +38,10 @@ typedef struct VkrDepotResponder {
   char host[VKR_DEPOT_DISCOVERY_TEXT];
 } VkrDepotResponder;
 
-/* False when the port is taken, as by another server on this machine. */
+/* Answers on `discovery_port`; false when the port is taken, as by
+   another server on this machine. */
 bool8_t vkr_depot_responder_open(VkrDepotResponder *responder,
-                                 uint16_t service_port,
+                                 uint16_t discovery_port, uint16_t service_port,
                                  const uint8_t server_key[32],
                                  const char *name);
 void vkr_depot_responder_close(VkrDepotResponder *responder);
@@ -47,10 +49,11 @@ void vkr_depot_responder_close(VkrDepotResponder *responder);
 /* Answers every probe waiting on the socket; never blocks. */
 void vkr_depot_responder_update(VkrDepotResponder *responder);
 
-/* Probes the IPv4 subnets this machine is on, or only `target` when it is
-   not NULL, and collects distinct answers for `timeout_ms`. Returns how
-   many it stored, at most `capacity`. */
-uint32_t vkr_depot_discover(const VkrNetAddress *target, uint32_t timeout_ms,
+/* Probes `discovery_port` on the IPv4 subnets this machine is on, or only
+   on `target` when it is not NULL, and collects distinct answers for
+   `timeout_ms`. Returns how many it stored, at most `capacity`. */
+uint32_t vkr_depot_discover(const VkrNetAddress *target,
+                            uint16_t discovery_port, uint32_t timeout_ms,
                             VkrDepotDiscovered *out, uint32_t capacity);
 
 /* The wire form, for tests: a probe or an answer into `out` (at least 192
