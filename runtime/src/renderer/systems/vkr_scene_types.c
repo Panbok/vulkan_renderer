@@ -2387,6 +2387,13 @@ static const VkrPropertyDesc s_terrain_properties[] = {
      .min = 128.0f,
      .max = 4096.0f,
      .step = 64.0f},
+    {.name = "backdrop",
+     .label = "Backdrop",
+     .tooltip = "Draws and collides only outside other terrains' "
+                "footprints, so ground under another terrain never shows in "
+                "the rooms and tunnels below it",
+     .offset = TYPE_OFFSET(SceneTerrain, backdrop),
+     .kind = VKR_PROPERTY_BOOL},
 };
 
 static void terrain_defaults(void *value) {

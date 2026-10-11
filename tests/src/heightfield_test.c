@@ -595,6 +595,43 @@ static void heightfield_test_streamed(void) {
   assert(vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 500.0f, -764.0f),
                                   -500.0f, &ground, &normal));
   assert(heightfield_test_near(ground.y, 70.0f, 0.01f));
+
+  /* A smaller terrain over that ground, its own ground 120 m lower: as a
+     backdrop the big terrain yields there, so the query falls through to
+     the small one; outside its footprint and once no longer a backdrop,
+     the big terrain's ground stands again. */
+  char cover_path[1024];
+  snprintf(cover_path, sizeof(cover_path),
+           PROJECT_SOURCE_DIR "tests/tmp/heightfield_cover_%u.vkrhf",
+           vkr_platform_get_process_id());
+  assert(
+      vkr_scene_terrain_stage(cover_path, 64u, 1.0f, -100.0f, 100.0f, -60.0f));
+  const VkrEntityId cover = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, cover,
+                                 vec3_new(-824.0f, 10.0f, -764.0f),
+                                 vkr_quat_identity(), vec3_one()));
+  vkr_scene_update_transforms(&scene);
+  SceneTerrain small;
+  vkr_type_defaults(&vkr_scene_terrain_type, &small);
+  snprintf(small.heightfield, sizeof(small.heightfield), "%s", cover_path);
+  assert(vkr_scene_set_typed(&scene, cover, &vkr_scene_terrain_type, &small));
+  terrain.backdrop = true_v;
+  assert(
+      vkr_scene_set_typed(&scene, entity, &vkr_scene_terrain_type, &terrain));
+  vkr_scene_terrain_update(&scene);
+  assert(vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 500.0f, -764.0f),
+                                  -500.0f, &ground, &normal));
+  assert(heightfield_test_near(ground.y, -50.0f, 0.01f));
+  assert(vkr_scene_terrain_ground(&scene, vec3_new(0.0f, 500.0f, 0.0f), -500.0f,
+                                  &ground, &normal));
+  assert(heightfield_test_near(ground.y, 15.0f, 0.01f));
+  terrain.backdrop = false_v;
+  assert(
+      vkr_scene_set_typed(&scene, entity, &vkr_scene_terrain_type, &terrain));
+  vkr_scene_terrain_update(&scene);
+  assert(vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 500.0f, -764.0f),
+                                  -500.0f, &ground, &normal));
+  assert(heightfield_test_near(ground.y, 70.0f, 0.01f));
   vkr_scene_shutdown(&scene, NULL);
 
   FilePath file = {

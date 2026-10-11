@@ -118,8 +118,11 @@ with a coarse backdrop terrain (16 m spacing from the same generator). Inside
 the playable footprint it must lie at least 8 m under the playable surface
 one backdrop sample in, and equal it along the border; a backdrop only a
 metre under z-fights at distance, where depth precision is coarse. The
-generator writes both that way. `view.camera` `far` sets how far captures
-see.
+generator writes both that way. Set the backdrop terrain's `backdrop`
+flag: it then draws and collides only outside the playable terrain's
+footprint, so the sunk surround never crosses rooms and tunnels dug under
+the playable ground (it cut through a buried transit tunnel 50 m down
+before). `view.camera` `far` sets how far captures see.
 
 ## Rivers and lakes
 

@@ -351,6 +351,11 @@ typedef struct SceneTerrain {
   /* Metres around a streaming source a streamed terrain draws full
      detail; farther ground draws its overview. */
   float32_t stream_radius;
+  /* A backdrop yields to other terrains: its fine samples more than one of
+     its cells inside another terrain's footprint draw and collide as
+     holes, so ground it keeps under that terrain never shows in the rooms
+     and tunnels below it. */
+  bool8_t backdrop;
 } SceneTerrain;
 
 /* World partition (ADR-086). A scene with a `world_partition` component

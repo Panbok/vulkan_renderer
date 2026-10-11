@@ -1160,6 +1160,16 @@ writes each changed terrain's file. Each update rebuilds the marked tiles:
   cutouts as they do holes, and `vkr_scene_terrain_ground` honours them
   (`terrain.sample` reads the samples). The Create menu's Level group adds a
   Terrain Cutout with box handles.
+- A terrain's **`backdrop`** flag makes it yield to every other terrain: its
+  fine samples more than one of its own cells inside another terrain's
+  footprint draw and collide as holes, and `vkr_scene_terrain_ground` skips
+  them, so a coarse surround sunk under the playable terrain never shows in
+  the rooms and tunnels dug under that terrain. The ring of cells along the
+  footprint's border stays, so the backdrop still meets its edge. The
+  terrain takes up the other terrains' footprints each update and rebuilds
+  every backdrop when one appears, goes or moves (2026-10-11; a 16 km
+  backdrop crossed the transit tunnel and hub of the Black Mesa level
+  50 m under the playable ground).
 
 A terrain material
 ([vkr_material_loader_replace_terrain](../../runtime/src/renderer/resources/loaders/material_loader.h))
