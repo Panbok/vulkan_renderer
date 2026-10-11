@@ -1308,6 +1308,10 @@ vkr_internal void vkr_harness_child_update(void *state,
       vkr_scene_physics_set_paused(scene, false_v);
     }
     vkr_renderer_invalidate_temporal_history(&application->renderer);
+    /* Stale local-shadow faces redraw a budget per frame, so how far that
+       backlog drained depends on the frames before this one; repetitions
+       start it over here. */
+    vkr_standard_scene_runtime_invalidate_local_shadows(application);
     child->phase_started = true_v;
     child->phase_first_frame_index = next_frame;
     child->submission_timing_cursor =

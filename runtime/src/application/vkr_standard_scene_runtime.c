@@ -78,6 +78,7 @@ typedef struct VkrStandardSceneRuntimeDrawContext {
 typedef struct VkrStandardSceneRuntimeShadowInput {
   VkrShadowConfig config;
   bool8_t invalidate_fit;
+  bool8_t invalidate_local;
   /* False without an active camera or while the Scene is stopped. */
   bool8_t update;
   VkrCamera camera;
@@ -698,6 +699,11 @@ void vkr_standard_scene_runtime_invalidate_shadow_fit(
   runtime->shadow_fit_invalidate_requested = true_v;
 }
 
+void vkr_standard_scene_runtime_invalidate_local_shadows(
+    VkrStandardSceneRuntime *runtime) {
+  runtime->local_shadow_invalidate_requested = true_v;
+}
+
 bool8_t vkr_standard_scene_runtime_editor_viewport_mapping(
     VkrStandardSceneRuntime *application, uint32_t window_width,
     uint32_t window_height, VkrViewportMapping *out_mapping) {
@@ -1055,6 +1061,9 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     application->shadow_system.config = input->config;
     if (input->invalidate_fit || moments_changed) {
       vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
+    }
+    if (input->invalidate_local) {
+      vkr_shadow_system_invalidate_local_cache(&application->shadow_system);
     }
   }
   if (input->update) {
@@ -2435,6 +2444,9 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   frame->shadow.invalidate_fit =
       application->shadow_fit_invalidate_requested || target_changed;
   application->shadow_fit_invalidate_requested = false_v;
+  frame->shadow.invalidate_local =
+      application->local_shadow_invalidate_requested;
+  application->local_shadow_invalidate_requested = false_v;
 
   VkrStandardSceneRuntimeDrawContext *draw = &frame->draw;
   *draw = (VkrStandardSceneRuntimeDrawContext){

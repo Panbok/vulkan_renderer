@@ -793,6 +793,13 @@ vkr_internal Vec3 vkr_shadow_cascade_direction(Vec3 fitted, Vec3 light,
   return within ? fitted : light;
 }
 
+void vkr_shadow_system_invalidate_local_cache(VkrShadowSystem *system) {
+  if (system) {
+    system->local_cache.valid = false_v;
+    system->pending_local_history = (VkrLocalShadowPendingHistory){0};
+  }
+}
+
 void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
   if (system) {
     system->fit_history.valid = false_v;

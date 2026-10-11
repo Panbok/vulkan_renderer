@@ -233,6 +233,7 @@ typedef struct VkrStandardSceneRuntime {
      the shadow system, which the render thread may be using. */
   VkrShadowConfig shadow_config;
   bool8_t shadow_fit_invalidate_requested;
+  bool8_t local_shadow_invalidate_requested;
   VkrGizmoSystem gizmo_system;
   VkrLightingSystem lighting_system;
   /* This frame's decals, collected with its world payload (ADR-092). */
@@ -326,6 +327,10 @@ bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
 /** Discards shadow fit history before the next frame; see
  * vkr_shadow_system_invalidate_fit_history. */
 void vkr_standard_scene_runtime_invalidate_shadow_fit(
+    VkrStandardSceneRuntime *runtime);
+/** Forgets the local-shadow cache before the next frame; see
+ * vkr_shadow_system_invalidate_local_cache. */
+void vkr_standard_scene_runtime_invalidate_local_shadows(
     VkrStandardSceneRuntime *runtime);
 bool8_t vkr_standard_scene_runtime_editor_viewport_mapping(
     VkrStandardSceneRuntime *runtime, uint32_t window_width,

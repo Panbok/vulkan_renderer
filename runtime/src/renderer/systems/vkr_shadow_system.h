@@ -668,6 +668,16 @@ typedef struct VkrShadowSystem {
  */
 void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system);
 
+/**
+ * @brief Forgets every local-shadow light, so each face draws again in
+ * priority order within the face budget, as on a first resolve.
+ *
+ * How far a backlog of stale faces has drained depends on how many frames ran
+ * since it formed; a measurement that must repeat the same work starts from
+ * here instead.
+ */
+void vkr_shadow_system_invalidate_local_cache(VkrShadowSystem *system);
+
 void vkr_shadow_system_set_depth_range_sample(
     VkrShadowSystem *system, const VkrShadowDepthRangeSample *sample,
     uint64_t current_frame_index, uint64_t current_scene_generation);
