@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -158,7 +158,11 @@ record names the chain, so diffuse IBL, the sky ambient of sky-lit and froxel
 fog, reflection-probe blending and global prefiltered specular follow cloud
 cover. Global specular samples the clear prefilter, reads the chain
 bilinearly at the two levels whose texel size matches the prefilter's
-roughness level and composites the same way. The pass reads and writes no
+roughness level and composites the same way. A bilinear tap past a face's
+edge reads the texel of the neighbouring face that holds the same direction
+(`vkr_cloud_sky_light_footprint`), so the read is continuous across cube
+seams, as hardware cube filtering is; at a corner the diagonal tap takes one
+of the two faces beside it. The pass reads and writes no
 graph resource, enters the graph's first ready wave and ends with the barrier
 the revision bake uses for its SH writes. Without a published source it
 dispatches nothing, the clear slot stays global and the sky record names no
@@ -172,7 +176,10 @@ shadow takes ambient light from the cloud layer as the camera sees it, not
 only from the clear sky, and sky reflections show the layer. The SH and the
 chain are global: they follow the camera's sky, not cloud shadow at each
 surface. The chain's 16-texel faces blur clouds in mirror-like reflections,
-where the clear prefilter stays sharp. Reflection probes and baked diffuse
+where the clear prefilter stays sharp. Each level is box-filtered within its
+face, so its coarse levels hold per-face averages; only the seam-crossing
+read blends neighbouring faces, and at the one-texel level a rough
+reflection takes a smooth blend of the six face averages. Reflection probes and baked diffuse
 volumes, which bake offline, see a clear sky. A cloudless sky projects the
 16-texel mip instead of the bake's 32-texel mip, which changes the SH
 slightly. Deferred lighting pays for the chain lookup in global specular.
@@ -239,6 +246,14 @@ processes with and without the chain lookup measured
 `Lighting.Deferred.Fullscreen` at 1.473 and 1.428 ms p50 and
 `Clouds.SkyLight` at 0.089 and 0.091 ms. Debug synchronization validation of
 that case reported no error.
+
+Until 2026-10-11 each tap clamped to its own face, so a reflection held a
+face's border texel up to the seam and then jumped to the neighbouring
+face's: a flat roughness-0.2 lake under clouds on the tiled pipeline
+reflected the cube's edges as straight lines where cloud detail and
+brightness changed. The seam-crossing read is source-reviewed and compiles
+for both backends; native evidence of its continuity on either backend is
+not recorded.
 
 The CPU suite checks the shadow-map centre against the sun ray's entry point
 into the base, the wind wrap, the render-mode rule and the authoring domain,

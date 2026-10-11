@@ -1089,7 +1089,8 @@ The cloud-lit sky light adds march, projection and chain kernels on each
 backend that share one root (64 bytes on Vulkan, 80 on Metal, whose source is
 a cube texture reference). The shared kernel owns the composite formula
 `vkr_cloud_sky_light_radiance`, the chain layout, the direction-to-face
-inverse of the cube convention and the prefilter-to-chain level mapping.
+inverse of the cube convention, the bilinear footprint whose taps cross face
+seams and the prefilter-to-chain level mapping.
 Both backends project through one loop that also serves the revision bake
 (`vk_sh_project`, `vkr_metal_sh_project`). The sky record gains the clear SH
 slot, the chain's face size and its address: Vulkan grows to 496 bytes with

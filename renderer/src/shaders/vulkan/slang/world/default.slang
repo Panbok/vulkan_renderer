@@ -1392,27 +1392,22 @@ struct VkrVulkanEnvironmentResult
 };
 
 // One level of this frame's cloud chain at a face coordinate, bilinear
-// within the face.
+// across face seams.
 float4 packet_cloud_sky_light_level(VkrVulkanSky *sky,
                                     VkrCloudSkyLightDirection at, uint level)
 {
     uint face_size = sky.cloud_sky_light_face_size;
-    int extent = int(max(face_size >> level, 1u));
-    float2 position = at.uv * float(extent) - 0.5f;
-    int2 base = int2(floor(position));
-    float2 blend = position - float2(base);
-    int2 limit = int2(extent - 1);
-    uint2 low = uint2(clamp(base, int2(0), limit));
-    uint2 high = uint2(clamp(base + 1, int2(0), limit));
-    // The face's rows, located once for all four taps.
-    float4 *face = sky.cloud_sky_light +
-                   vkr_cloud_sky_light_level_offset(face_size, level) +
-                   at.face * uint(extent * extent);
-    float4 *row_low = face + low.y * uint(extent);
-    float4 *row_high = face + high.y * uint(extent);
-    float4 row0 = lerp(row_low[low.x], row_low[high.x], blend.x);
-    float4 row1 = lerp(row_high[low.x], row_high[high.x], blend.x);
-    return lerp(row0, row1, blend.y);
+    VkrCloudSkyLightFootprint footprint =
+        vkr_cloud_sky_light_footprint(at, max(face_size >> level, 1u));
+    float4 *chain = sky.cloud_sky_light +
+                    vkr_cloud_sky_light_level_offset(face_size, level);
+    float4 first_row = lerp(chain[footprint.first_row_first_column],
+                            chain[footprint.first_row_second_column],
+                            footprint.blend.x);
+    float4 second_row = lerp(chain[footprint.second_row_first_column],
+                             chain[footprint.second_row_second_column],
+                             footprint.blend.x);
+    return lerp(first_row, second_row, footprint.blend.y);
 }
 
 // The global prefiltered sky along `reflection` at `lod`, seen through this

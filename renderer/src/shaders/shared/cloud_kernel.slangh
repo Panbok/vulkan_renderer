@@ -599,13 +599,20 @@ uint vkr_cloud_sky_light_level_offset(uint face_size, uint level)
     return offset;
 }
 
+// Texel `texel` of `face` within a level whose faces are `extent` texels
+// a side.
+uint vkr_cloud_sky_light_face_texel(uint extent, uint face, uint2 texel)
+{
+    return (face * extent + texel.y) * extent + texel.x;
+}
+
 // Texel `texel` of `face` at `level`.
 uint vkr_cloud_sky_light_index(uint face_size, uint level, uint face,
                                uint2 texel)
 {
     uint extent = max(face_size >> level, 1u);
     return vkr_cloud_sky_light_level_offset(face_size, level) +
-           (face * extent + texel.y) * extent + texel.x;
+           vkr_cloud_sky_light_face_texel(extent, face, texel);
 }
 
 struct VkrCloudSkyLightDirection
@@ -647,6 +654,55 @@ VkrCloudSkyLightDirection vkr_cloud_sky_light_direction(float3 direction)
     }
     result.uv = clamp(st * 0.5f + 0.5f, 0.0f, 1.0f);
     return result;
+}
+
+// Texel `texel` of `face` within a level, where `texel` may lie one texel
+// past the face's edge: there it is the texel of the neighbouring face that
+// holds the same direction. At a corner the diagonal tap lands on one of the
+// two faces beside it.
+uint vkr_cloud_sky_light_seamless_texel(uint extent, uint face, int2 texel)
+{
+    int size = int(extent);
+    if (any(texel < int2(0, 0)) || any(texel >= int2(size, size)))
+    {
+        float2 uv = (float2(texel) + 0.5f) / float(extent);
+        VkrCloudSkyLightDirection across = vkr_cloud_sky_light_direction(
+            vkr_atmosphere_cube_direction(face, uv));
+        face = across.face;
+        texel = min(int2(across.uv * float(extent)), int2(size - 1, size - 1));
+    }
+    return vkr_cloud_sky_light_face_texel(extent, face, uint2(texel));
+}
+
+// The four texels a bilinear read of a level takes at a face coordinate,
+// as texels within the level, and the blend toward the second column and
+// row. Taps past a face's edge read the neighbouring face, so the read stays
+// continuous across cube seams instead of holding each face's border texel.
+struct VkrCloudSkyLightFootprint
+{
+    uint first_row_first_column;
+    uint first_row_second_column;
+    uint second_row_first_column;
+    uint second_row_second_column;
+    float2 blend;
+};
+
+VkrCloudSkyLightFootprint
+vkr_cloud_sky_light_footprint(VkrCloudSkyLightDirection at, uint extent)
+{
+    float2 position = at.uv * float(extent) - 0.5f;
+    int2 first = int2(floor(position));
+    VkrCloudSkyLightFootprint footprint;
+    footprint.blend = position - float2(first);
+    footprint.first_row_first_column =
+        vkr_cloud_sky_light_seamless_texel(extent, at.face, first);
+    footprint.first_row_second_column = vkr_cloud_sky_light_seamless_texel(
+        extent, at.face, first + int2(1, 0));
+    footprint.second_row_first_column = vkr_cloud_sky_light_seamless_texel(
+        extent, at.face, first + int2(0, 1));
+    footprint.second_row_second_column = vkr_cloud_sky_light_seamless_texel(
+        extent, at.face, first + int2(1, 1));
+    return footprint;
 }
 
 // The chain level whose texels match the prefilter's at `prefilter_lod`; both
