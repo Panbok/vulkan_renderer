@@ -6,6 +6,7 @@
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/systems/vkr_scene_frame.h"
 #include "renderer/systems/vkr_texture_system.h"
 #include "vkr_frame_input.h"
 
@@ -366,10 +367,58 @@ static void test_override_invalidates_by_mobility(void) {
   override_test_shutdown(&ctx);
 }
 
+/* The caster bounds generation follows the box around every caster that
+   the frame measures: a dynamic caster moving inside it, as a mover or a
+   body does every frame, leaves retained cascades their fit; one moving
+   past it changes the generation. */
+static void test_caster_bounds_follow_box(void) {
+  OverrideTestContext ctx;
+  override_test_init(&ctx);
+
+  const VkrMeshInstanceHandle wall =
+      override_test_instance(&ctx, vec3_new(0.0f, 0.0f, 0.0f));
+  const VkrMeshInstanceHandle far =
+      override_test_instance(&ctx, vec3_new(20.0f, 0.0f, 0.0f));
+  const VkrMeshInstanceHandle mover =
+      override_test_instance(&ctx, vec3_new(10.0f, 0.0f, 0.0f));
+  assert(vkr_mesh_manager_instance_set_shadow_mobility(
+      &ctx.meshes, wall, VKR_SHADOW_CASTER_MOBILITY_STATIC));
+  assert(vkr_mesh_manager_instance_set_shadow_mobility(
+      &ctx.meshes, far, VKR_SHADOW_CASTER_MOBILITY_STATIC));
+  assert(vkr_mesh_manager_instance_set_shadow_mobility(
+      &ctx.meshes, mover, VKR_SHADOW_CASTER_MOBILITY_DYNAMIC));
+  VkrShadowCasterDepthBounds bounds = {0};
+  vkr_scene_measure_caster_bounds(&ctx.meshes, &bounds);
+  assert(bounds.valid);
+  const VkrMeshManagerGenerations measured = ctx.meshes.generations;
+
+  const VkrMeshInstance *moving =
+      vkr_mesh_manager_get_instance(&ctx.meshes, mover);
+  const uint32_t render_id = moving->render_id;
+  vkr_mesh_manager_instance_sync_render_state(
+      &ctx.meshes, mover, mat4_translate(vec3_new(12.0f, 0.0f, 0.0f)),
+      render_id, true_v);
+  vkr_scene_measure_caster_bounds(&ctx.meshes, &bounds);
+  assert(ctx.meshes.generations.dynamic_content > measured.dynamic_content);
+  assert(ctx.meshes.generations.caster_bounds == measured.caster_bounds);
+
+  vkr_mesh_manager_instance_sync_render_state(
+      &ctx.meshes, mover, mat4_translate(vec3_new(60.0f, 0.0f, 0.0f)),
+      render_id, true_v);
+  vkr_scene_measure_caster_bounds(&ctx.meshes, &bounds);
+  assert(ctx.meshes.generations.caster_bounds > measured.caster_bounds);
+
+  assert(vkr_mesh_manager_destroy_instance(&ctx.meshes, mover));
+  assert(vkr_mesh_manager_destroy_instance(&ctx.meshes, far));
+  assert(vkr_mesh_manager_destroy_instance(&ctx.meshes, wall));
+  override_test_shutdown(&ctx);
+}
+
 bool32_t run_mesh_material_override_tests(void) {
   printf("--- Starting Mesh Material Override Tests ---\n");
   test_override_is_per_instance();
   test_override_invalidates_by_mobility();
+  test_caster_bounds_follow_box();
   printf("--- Mesh Material Override Tests Completed ---\n");
   return true_v;
 }

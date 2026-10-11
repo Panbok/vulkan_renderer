@@ -44,7 +44,14 @@ fit containing the current cascade supplies that projection. Other physical
 images render into their own depth storage using the same descriptor when next
 acquired; selecting its CPU metadata never borrows another image's depth.
 Dynamic overlap, generation drift,
-invalid contents or incomplete publication forces rendering. Scene-authored
+invalid contents or incomplete publication forces rendering. The caster
+bounds generation (`VkrWorldPassPayload.caster_bounds_generation`) follows
+the box around every visible caster that `vkr_scene_measure_caster_bounds`
+measures each frame, since the scene-bounds Z fit is derived from that box
+alone: casters moving inside it, as movers and physics bodies do every frame
+in Play, leave static layers valid, and only a box that grows or shrinks
+moves the generation (2026-10-11; before, any caster's move did, and every
+static layer redrew each frame while anything moved). Scene-authored
 meshes and editor shapes are static casters, because their transforms and
 geometry change only through mesh-manager calls that bump the static
 generation, adding and removing a drawn mesh included; an edit therefore

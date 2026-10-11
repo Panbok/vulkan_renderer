@@ -229,6 +229,16 @@ void vkr_scene_measure_caster_bounds(VkrMeshManager *meshes,
       .max = max,
       .valid = valid,
   };
+  /* Fits derived from the box hold while it stays: casters moving inside
+     it, as movers and bodies do every frame, leave retained cascades. */
+  if (valid != meshes->measured_caster_valid ||
+      MemCompare(&min, &meshes->measured_caster_min, sizeof(Vec3)) != 0 ||
+      MemCompare(&max, &meshes->measured_caster_max, sizeof(Vec3)) != 0) {
+    meshes->measured_caster_min = min;
+    meshes->measured_caster_max = max;
+    meshes->measured_caster_valid = valid;
+    meshes->generations.caster_bounds++;
+  }
 }
 
 /* Totals from the visibility pass. The transmission and transparent counts

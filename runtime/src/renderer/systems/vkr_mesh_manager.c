@@ -20,8 +20,7 @@
    because load-completion sites appear earlier in the file. */
 vkr_internal void
 vkr_mesh_manager_note_content_change(VkrMeshManager *manager,
-                                     VkrShadowCasterMobility mobility,
-                                     bool8_t bounds_changed);
+                                     VkrShadowCasterMobility mobility);
 vkr_internal void
 vkr_mesh_manager_note_topology_change(VkrMeshManager *manager);
 vkr_internal void vkr_mesh_manager_note_topology_change_within(
@@ -2115,8 +2114,6 @@ bool8_t vkr_mesh_manager_replace(VkrMeshManager *manager, uint32_t index,
 
   const bool8_t drawn =
       mesh->visible && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED;
-  const Vec3 old_center = mesh->bounds_world_center;
-  const float32_t old_radius = mesh->bounds_world_radius;
   Vec3 old_min = vec3_zero();
   Vec3 old_max = vec3_zero();
   const bool8_t old_bounded = vkr_mesh_world_box(mesh, &old_min, &old_max);
@@ -2150,10 +2147,6 @@ bool8_t vkr_mesh_manager_replace(VkrMeshManager *manager, uint32_t index,
     manager->generations.static_content++;
   } else {
     manager->generations.dynamic_content++;
-  }
-  if (MemCompare(&old_center, &mesh->bounds_world_center, sizeof(Vec3)) != 0 ||
-      old_radius != mesh->bounds_world_radius) {
-    manager->generations.caster_bounds++;
   }
   if (is_static) {
     Vec3 new_min = vec3_zero();
@@ -2224,22 +2217,18 @@ void vkr_mesh_manager_update_model(VkrMeshManager *manager, uint32_t index) {
  * the caster's mobility contract, because a reused shadow layer only cares
  * about the class of caster it captured.
  *
- * Bounds changes additionally move `caster_bounds`, which invalidates the
- * light-space depth fit derived from those bounds.
+ * A caster moving changes the fit only when it changes the box around every
+ * caster, which vkr_scene_measure_caster_bounds tracks in `caster_bounds`.
  */
 vkr_internal void
 vkr_mesh_manager_note_content_change(VkrMeshManager *manager,
-                                     VkrShadowCasterMobility mobility,
-                                     bool8_t bounds_changed) {
+                                     VkrShadowCasterMobility mobility) {
   if (mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC) {
     manager->generations.static_content++;
     vkr_mesh_manager_record_static_change(manager, false_v, vec3_zero(),
                                           vec3_zero());
   } else {
     manager->generations.dynamic_content++;
-  }
-  if (bounds_changed) {
-    manager->generations.caster_bounds++;
   }
 }
 
@@ -2290,7 +2279,6 @@ vkr_internal void vkr_mesh_manager_note_topology_change_within(
   manager->generations.topology++;
   manager->generations.static_content++;
   manager->generations.dynamic_content++;
-  manager->generations.caster_bounds++;
   vkr_mesh_manager_record_static_change(manager, bounded, min, max);
 }
 
@@ -2323,8 +2311,7 @@ bool8_t vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
 
   vkr_mesh_update_world_bounds(mesh);
   if (mesh->visible)
-    vkr_mesh_manager_note_content_change(manager, mesh->shadow_mobility,
-                                         true_v);
+    vkr_mesh_manager_note_content_change(manager, mesh->shadow_mobility);
 
   // Reset instance cache for all submeshes
   for (uint32_t submesh_index = 0; submesh_index < mesh->submeshes.length;
@@ -3661,8 +3648,8 @@ uint32_t vkr_mesh_manager_set_lightmap_slots(VkrMeshManager *manager,
   /* Dynamic draws repack every frame; retained static ones need a new
      static generation to carry the slot. */
   if (static_changed) {
-    vkr_mesh_manager_note_content_change(
-        manager, VKR_SHADOW_CASTER_MOBILITY_STATIC, false_v);
+    vkr_mesh_manager_note_content_change(manager,
+                                         VKR_SHADOW_CASTER_MOBILITY_STATIC);
   }
   return set;
 }
@@ -3777,8 +3764,7 @@ void vkr_mesh_manager_instance_sync_render_state(VkrMeshManager *manager,
   VkrMeshAsset *asset = vkr_mesh_manager_get_live_asset(manager, inst->asset);
   vkr_mesh_manager_update_instance_bounds(inst, asset, model);
   if (visible && !visibility_changed)
-    vkr_mesh_manager_note_content_change(manager, inst->shadow_mobility,
-                                         true_v);
+    vkr_mesh_manager_note_content_change(manager, inst->shadow_mobility);
 }
 
 uint32_t vkr_mesh_manager_instance_count(const VkrMeshManager *manager) {
@@ -3824,7 +3810,6 @@ void vkr_mesh_manager_instance_set_skinning(VkrMeshManager *manager,
     vkr_mesh_manager_update_instance_bounds(instance, asset, model);
   }
   if (changed) {
-    vkr_mesh_manager_note_content_change(manager, instance->shadow_mobility,
-                                         true_v);
+    vkr_mesh_manager_note_content_change(manager, instance->shadow_mobility);
   }
 }

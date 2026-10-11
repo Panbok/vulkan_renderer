@@ -132,7 +132,9 @@ typedef struct VkrMeshManagerGenerations {
   uint64_t static_content;
   /** Any change to a caster classified DYNAMIC. */
   uint64_t dynamic_content;
-  /** World-space caster bounds changed; invalidates the light-space Z fit. */
+  /** The box around every visible caster changed, as
+      vkr_scene_measure_caster_bounds measured it; the light-space Z fit is
+      derived from that box, so a caster moving inside it leaves this. */
   uint64_t caster_bounds;
 } VkrMeshManagerGenerations;
 
@@ -150,6 +152,11 @@ typedef struct VkrMeshManager {
   VkrMeshLoaderContext *loader_context; // For batch loading
   VkrMeshManagerConfig config;
   VkrMeshManagerGenerations generations;
+  /* The caster box vkr_scene_measure_caster_bounds last measured, which
+     `generations.caster_bounds` follows. */
+  Vec3 measured_caster_min;
+  Vec3 measured_caster_max;
+  bool8_t measured_caster_valid;
   /* The latest static changes, a ring from `static_change_first`; it lists
      every change of the generations after `static_change_floor`
      (VkrWorldPassPayload.static_changes). */
