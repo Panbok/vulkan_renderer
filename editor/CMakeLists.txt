@@ -53,6 +53,13 @@ vkr_configure_application_target(vkr_editor)
 # The agent channel parses requests with Bakery's JSON tree and writes
 # captures as PNG (docs/proposals/level-design-toolkit.md).
 target_link_libraries(vkr_editor PRIVATE vkr_bakery_json vkr_image_write)
+# A collaborative session commits and fetches through the asset depot
+# (ADR-106), with libktx's zstd through the depot codec adapter.
+target_link_libraries(vkr_editor PRIVATE vkr_depot_lib)
+target_sources(vkr_editor PRIVATE
+    "${CMAKE_SOURCE_DIR}/tools/depot/vkr_depot_zstd.c")
+target_include_directories(vkr_editor PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/ktx-software/external/basisu/zstd")
 
 # Every cooker, table, shader compile, project job, scene bake and material
 # preview runs through vkr_bakery; the harness and preview tool remain

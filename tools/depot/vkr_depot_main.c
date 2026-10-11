@@ -27,6 +27,7 @@
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
 #include "vkr_depot_server.h"
+#include "vkr_depot_sync.h"
 #include "vkr_depot_workspace.h"
 #include "vkr_depot_zstd.h"
 #include "vkr_net_host.h"
@@ -35,9 +36,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define DEPOT_DEFAULT_PORT 7320u
-#define DEPOT_TIMEOUT_MS 30000u
 
 typedef struct DepotLink {
   VkrNetHost *host;
@@ -66,66 +64,6 @@ static bool8_t depot_parse_key(const char *hex, uint8_t out[32]) {
   }
   memcpy(out, key.bytes, 32u);
   return true_v;
-}
-
-static bool8_t depot_address(const char *text, VkrNetAddress *out) {
-  if (vkr_net_address_parse(text, DEPOT_DEFAULT_PORT, out)) {
-    return true_v;
-  }
-  char host[256];
-  const char *colon = strrchr(text, ':');
-  uint32_t port = DEPOT_DEFAULT_PORT;
-  size_t length = strlen(text);
-  if (colon) {
-    port = (uint32_t)strtoul(colon + 1, NULL, 10);
-    length = (size_t)(colon - text);
-  }
-  if (length == 0u || length >= sizeof(host) || port == 0u || port > 65535u) {
-    return false_v;
-  }
-  memcpy(host, text, length);
-  host[length] = '\0';
-  return vkr_net_address_resolve(host, (uint16_t)port, true_v, out);
-}
-
-/* The user's identity key: `$VKR_DEPOT_IDENTITY`, else
-   `<user cache>/vkr/depot/identity.key`. */
-static bool8_t depot_identity_path(char *out, uint32_t capacity) {
-  const char *override = getenv("VKR_DEPOT_IDENTITY");
-  if (override && override[0]) {
-    return snprintf(out, capacity, "%s", override) < (int)capacity;
-  }
-  char cache[VKR_DEPOT_PATH_CAPACITY];
-  return vkr_bakery_user_cache_directory(cache, sizeof(cache)) &&
-         snprintf(out, capacity, "%s/vkr/depot/identity.key", cache) <
-             (int)capacity;
-}
-
-static bool8_t depot_identity(VkrNetKeyPair *out, bool8_t create) {
-  char path[VKR_DEPOT_PATH_CAPACITY];
-  if (!depot_identity_path(path, sizeof(path))) {
-    return false_v;
-  }
-  uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  if (vkr_bakery_is_file(path) &&
-      vkr_bakery_read_file(path, 64u, &bytes, &size) &&
-      size == VKR_NET_KEY_SIZE) {
-    vkr_net_keypair_from_secret(bytes, out);
-    vkr_net_random(bytes, size);
-    free(bytes);
-    return true_v;
-  }
-  free(bytes);
-  if (!create) {
-    fprintf(stderr, "no identity key; run `vkr_depot keygen`\n");
-    return false_v;
-  }
-  char directory[VKR_DEPOT_PATH_CAPACITY];
-  vkr_bakery_path_parent(directory, sizeof(directory), path);
-  vkr_net_keypair_generate(out);
-  return vkr_bakery_make_directories(directory) &&
-         vkr_bakery_write_file_atomic(path, out->secret_key, VKR_NET_KEY_SIZE);
 }
 
 // =============================================================================
@@ -181,62 +119,17 @@ static void depot_link_close(DepotLink *link) {
   MemZero(link, sizeof(*link));
 }
 
-/* Connects to a depot server and opens a client on `store`. */
-static VkrDepotClient *depot_connect(DepotLink *link, const char *address,
-                                     const uint8_t server_key[32],
-                                     const VkrDepotStore *store) {
-  MemZero(link, sizeof(*link));
-  VkrNetAddress server;
-  VkrNetHostConfig config = {
-      .socket = {.receive_buffer = 8u << 20, .send_buffer = 8u << 20}};
-  if (!depot_address(address, &server) ||
-      !depot_identity(&config.core.static_keys, true_v)) {
-    fprintf(stderr, "invalid address %s\n", address);
-    return NULL;
+/* Connects to the working copy's server; NULL after printing why. */
+static VkrDepotConnection *depot_connect(const char *address,
+                                         const uint8_t server_key[32],
+                                         const VkrDepotStore *store) {
+  char error[256];
+  VkrDepotConnection *connection = vkr_depot_connect(
+      &depot_allocator, address, server_key, store, error, sizeof(error));
+  if (!connection) {
+    fprintf(stderr, "%s\n", error);
   }
-  config.bind = vkr_net_address_any((VkrNetAddressFamily)server.family, 0u);
-  config.core.sent_packet_capacity = 16384u;
-  config.core.background = true_v;
-  link->host = vkr_net_host_create(&depot_allocator, &config);
-  link->session = link->host
-                      ? vkr_net_session_create(&depot_allocator,
-                                               vkr_net_host_core(link->host))
-                      : NULL;
-  if (!link->session ||
-      !vkr_net_core_connect(vkr_net_host_core(link->host), &server, server_key,
-                            NULL, 0u, depot_link_now(link),
-                            &link->connection)) {
-    fprintf(stderr, "could not start the connection\n");
-    depot_link_close(link);
-    return NULL;
-  }
-  const uint64_t limit = depot_link_now(link) + DEPOT_TIMEOUT_MS * 1000ull;
-  while (!link->connected && !link->closed && depot_link_now(link) < limit) {
-    if (!depot_link_pump(link, 20)) {
-      break;
-    }
-  }
-  if (!link->connected) {
-    fprintf(stderr, "could not connect to %s (code %u)\n", address,
-            link->close_code);
-    depot_link_close(link);
-    return NULL;
-  }
-  const VkrDepotLink client_link = {
-      .core = vkr_net_host_core(link->host),
-      .session = link->session,
-      .connection = link->connection,
-      .context = link,
-      .pump = depot_link_pump,
-      .now = depot_link_now,
-  };
-  VkrDepotClient *client =
-      vkr_depot_client_create(&client_link, store, DEPOT_TIMEOUT_MS);
-  if (!client) {
-    fprintf(stderr, "the server refused the depot service\n");
-    depot_link_close(link);
-  }
-  return client;
+  return connection;
 }
 
 // =============================================================================
@@ -245,7 +138,7 @@ static VkrDepotClient *depot_connect(DepotLink *link, const char *address,
 
 static int depot_keygen(void) {
   VkrNetKeyPair keys;
-  if (!depot_identity(&keys, true_v)) {
+  if (!vkr_depot_identity(&keys, true_v)) {
     fprintf(stderr, "could not create the identity key\n");
     return 1;
   }
@@ -299,7 +192,7 @@ static int depot_serve(const char *store_root, const char *bind,
   VkrNetHostConfig config = {
       .socket = {.receive_buffer = 16u << 20, .send_buffer = 16u << 20}};
   if (!vkr_depot_server_key(store_root, &config.core.static_keys) ||
-      !depot_address(bind ? bind : "[::]", &config.bind)) {
+      !vkr_depot_address(bind ? bind : "[::]", &config.bind)) {
     fprintf(stderr, "invalid store or --bind\n");
     return 1;
   }
@@ -367,41 +260,6 @@ static int depot_access(const char *store_root, const char *key_hex,
   return 0;
 }
 
-static bool8_t depot_find_ref(VkrDepotClient *client, const char *branch,
-                              VkrDepotId *out_commit, bool8_t *out_exists) {
-  VkrDepotRef refs[VKR_DEPOT_REFS_MAX];
-  uint32_t count = 0u;
-  if (!vkr_depot_client_refs(client, refs, VKR_DEPOT_REFS_MAX, &count)) {
-    return false_v;
-  }
-  *out_exists = false_v;
-  for (uint32_t i = 0u; i < count; ++i) {
-    if (strcmp(refs[i].name, branch) == 0) {
-      *out_commit = refs[i].commit;
-      *out_exists = true_v;
-    }
-  }
-  return true_v;
-}
-
-/* Checks the commit's tree out over the working directory. */
-static bool8_t depot_checkout(VkrDepotWorkspace *workspace,
-                              const VkrDepotId *commit,
-                              const VkrDepotFileList *keep) {
-  uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  VkrDepotCommit parsed;
-  const bool8_t ok =
-      vkr_depot_store_get(&workspace->store, commit, &bytes, &size) &&
-      vkr_depot_commit_parse(bytes, size, &parsed) &&
-      vkr_depot_workspace_checkout(workspace, &parsed.tree, keep);
-  free(bytes);
-  if (ok) {
-    workspace->base = *commit;
-  }
-  return ok;
-}
-
 static int depot_clone(const char *address, const char *key_hex,
                        const char *directory, const char *branch,
                        const char *store_root) {
@@ -420,37 +278,32 @@ static int depot_clone(const char *address, const char *key_hex,
   snprintf(workspace.remote, sizeof(workspace.remote), "%s", address);
   memcpy(workspace.server_key, server_key, 32u);
   snprintf(workspace.branch, sizeof(workspace.branch), "%s", branch);
-  DepotLink link;
-  VkrDepotClient *client =
-      depot_connect(&link, address, server_key, &workspace.store);
+  VkrDepotConnection *connection =
+      depot_connect(address, server_key, &workspace.store);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
   int result = 1;
   if (client) {
     VkrDepotId commit;
     bool8_t exists = false_v;
-    VkrDepotTransferStats stats = {0};
-    if (!depot_find_ref(client, branch, &commit, &exists)) {
+    uint32_t kept = 0u;
+    char error[256];
+    if (!vkr_depot_find_ref(client, branch, &commit, &exists)) {
       fprintf(stderr, "refs failed: %s\n", vkr_depot_client_error(client));
     } else if (!exists) {
       printf("branch %s is empty; the first commit creates it\n", branch);
       result = vkr_depot_workspace_save(&workspace) ? 0 : 1;
-    } else if (!vkr_depot_client_fetch(client, &commit, &stats)) {
-      fprintf(stderr, "fetch failed: %s\n", vkr_depot_client_error(client));
-    } else if (!depot_checkout(&workspace, &commit, NULL) ||
-               !vkr_depot_workspace_save(&workspace)) {
-      fprintf(stderr, "checkout failed\n");
+    } else if (!vkr_depot_fetch_checkout(&workspace, client, &commit, &kept,
+                                         error, sizeof(error))) {
+      fprintf(stderr, "%s\n", error);
     } else {
       char hex[VKR_DEPOT_ID_HEX];
       vkr_depot_id_hex(&commit, hex);
-      printf("cloned %s at %.12s: %u files, %llu objects, %.1f MB "
-             "transferred\n",
-             branch, hex, workspace.index.count,
-             (unsigned long long)stats.objects,
-             (double)stats.stored_bytes / 1e6);
+      printf("cloned %s at %.12s: %u files\n", branch, hex,
+             workspace.index.count);
       result = 0;
     }
-    vkr_depot_client_destroy(client);
-    depot_link_close(&link);
   }
+  vkr_depot_disconnect(connection);
   vkr_depot_workspace_close(&workspace);
   return result;
 }
@@ -492,103 +345,34 @@ static int depot_status(const char *directory) {
   return result;
 }
 
-typedef struct ChangeCollector {
-  VkrDepotFileList *list;
-} ChangeCollector;
-
-static bool8_t depot_collect_change(void *context, const char *path,
-                                    VkrDepotChange change) {
-  (void)change;
-  ChangeCollector *collector = context;
-  const VkrDepotId zero = {0};
-  return vkr_depot_file_list_add(collector->list, path, 0u, 0, &zero);
-}
-
 static int depot_commit(const char *directory, const char *message) {
   VkrDepotWorkspace workspace;
-  VkrNetKeyPair identity;
   if (!vkr_depot_workspace_open(&workspace, directory,
-                                vkr_depot_zstd_codec()) ||
-      !depot_identity(&identity, true_v)) {
+                                vkr_depot_zstd_codec())) {
     fprintf(stderr, "no working copy at %s\n", directory);
     return 1;
   }
+  VkrDepotConnection *connection =
+      depot_connect(workspace.remote, workspace.server_key, &workspace.store);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
   int result = 1;
-  VkrDepotId tree;
-  VkrDepotFileList files = {0};
-  uint8_t *commit_bytes = NULL;
-  uint64_t commit_size = 0u;
-  DepotLink link = {0};
-  VkrDepotClient *client = NULL;
-  if (!vkr_depot_workspace_snapshot(&workspace, &tree, &files)) {
-    fprintf(stderr, "snapshot failed\n");
-    goto cleanup;
-  }
-  VkrDepotCommit commit = {.tree = tree,
-                           .time_us =
-                               (uint64_t)vkr_bakery_unix_seconds() * 1000000u,
-                           .message = message,
-                           .message_size = (uint32_t)strlen(message)};
-  memcpy(commit.author, identity.public_key, 32u);
-  if (!vkr_depot_id_zero(&workspace.base)) {
-    commit.parents[0] = workspace.base;
-    commit.parent_count = 1u;
-  }
-  VkrDepotId commit_id;
-  if (!vkr_depot_commit_encode(&commit, &commit_bytes, &commit_size)) {
-    fprintf(stderr, "commit message too long\n");
-    goto cleanup;
-  }
-  vkr_depot_id_of(commit_bytes, commit_size, &commit_id);
-  if (!vkr_depot_store_put(&workspace.store, &commit_id, commit_bytes,
-                           commit_size)) {
-    fprintf(stderr, "could not store the commit\n");
-    goto cleanup;
-  }
-  client = depot_connect(&link, workspace.remote, workspace.server_key,
-                         &workspace.store);
-  if (!client) {
-    goto cleanup;
-  }
-  VkrDepotTransferStats stats = {0};
-  if (!vkr_depot_client_upload(client, &commit_id, &workspace.base, &stats)) {
-    fprintf(stderr, "upload failed: %s\n", vkr_depot_client_error(client));
-    goto cleanup;
-  }
-  VkrDepotId current;
-  const VkrDepotRefStatus status = vkr_depot_client_update_ref(
-      client, workspace.branch, &workspace.base, &commit_id, &current);
-  char hex[VKR_DEPOT_ID_HEX];
-  if (status == VKR_DEPOT_REF_OK) {
-    vkr_depot_id_hex(&commit_id, hex);
-    vkr_depot_file_list_free(&workspace.index);
-    workspace.index = files;
-    MemZero(&files, sizeof(files));
-    workspace.base = commit_id;
-    if (!vkr_depot_workspace_save(&workspace)) {
-      fprintf(stderr, "pushed, but the working copy state did not save\n");
-      goto cleanup;
-    }
-    printf("pushed %s at %.12s: %llu objects, %.1f MB\n", workspace.branch, hex,
-           (unsigned long long)stats.objects, (double)stats.stored_bytes / 1e6);
-    result = 0;
-  } else if (status == VKR_DEPOT_REF_CONFLICT) {
-    vkr_depot_id_hex(&current, hex);
-    fprintf(stderr, "%s moved to %.12s; run `vkr_depot pull` first\n",
-            workspace.branch, hex);
-  } else if (status == VKR_DEPOT_REF_LOCKED) {
-    fprintf(stderr, "the commit changes a file another user locked; see "
-                    "`vkr_depot locks`\n");
-  } else {
-    fprintf(stderr, "the server refused the commit (status %u)\n", status);
-  }
-cleanup:
   if (client) {
-    vkr_depot_client_destroy(client);
-    depot_link_close(&link);
+    const VkrDepotId base = workspace.base;
+    char branch[VKR_DEPOT_BRANCH_NAME];
+    snprintf(branch, sizeof(branch), "%s", workspace.branch);
+    VkrDepotId commit;
+    char error[256];
+    if (vkr_depot_commit_push(&workspace, client, branch, &base, &base, message,
+                              &commit, error, sizeof(error))) {
+      char hex[VKR_DEPOT_ID_HEX];
+      vkr_depot_id_hex(&commit, hex);
+      printf("pushed %s at %.12s\n", branch, hex);
+      result = 0;
+    } else {
+      fprintf(stderr, "%s\n", error);
+    }
   }
-  free(commit_bytes);
-  vkr_depot_file_list_free(&files);
+  vkr_depot_disconnect(connection);
   vkr_depot_workspace_close(&workspace);
   return result;
 }
@@ -600,93 +384,34 @@ static int depot_pull(const char *directory) {
     fprintf(stderr, "no working copy at %s\n", directory);
     return 1;
   }
+  VkrDepotConnection *connection =
+      depot_connect(workspace.remote, workspace.server_key, &workspace.store);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
   int result = 1;
-  DepotLink link = {0};
-  VkrDepotFileList local = {0};
-  VkrDepotFileList changes = {0};
-  VkrDepotFileList remote_base = {0};
-  VkrDepotFileList remote_new = {0};
-  VkrDepotClient *client = depot_connect(
-      &link, workspace.remote, workspace.server_key, &workspace.store);
-  if (!client) {
-    goto cleanup;
-  }
   VkrDepotId commit;
   bool8_t exists = false_v;
-  if (!depot_find_ref(client, workspace.branch, &commit, &exists) || !exists) {
+  if (client &&
+      (!vkr_depot_find_ref(client, workspace.branch, &commit, &exists) ||
+       !exists)) {
     fprintf(stderr, "branch %s not found\n", workspace.branch);
-    goto cleanup;
-  }
-  if (vkr_depot_id_equal(&commit, &workspace.base)) {
+  } else if (client && vkr_depot_id_equal(&commit, &workspace.base)) {
     printf("up to date\n");
     result = 0;
-    goto cleanup;
-  }
-  VkrDepotTransferStats stats = {0};
-  if (!vkr_depot_client_fetch(client, &commit, &stats)) {
-    fprintf(stderr, "fetch failed: %s\n", vkr_depot_client_error(client));
-    goto cleanup;
-  }
-  /* Local changes stay, unless the remote changed the same paths. */
-  VkrDepotId tree;
-  if (!vkr_depot_workspace_snapshot(&workspace, &tree, &local)) {
-    fprintf(stderr, "snapshot failed\n");
-    goto cleanup;
-  }
-  ChangeCollector collector = {.list = &changes};
-  (void)vkr_depot_file_list_diff(&workspace.index, &local, depot_collect_change,
-                                 &collector);
-  vkr_depot_file_list_sort(&changes);
-  uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  VkrDepotCommit parsed;
-  if (!vkr_depot_store_get(&workspace.store, &commit, &bytes, &size) ||
-      !vkr_depot_commit_parse(bytes, size, &parsed) ||
-      !vkr_depot_tree_files(&workspace.store, &parsed.tree, &remote_new)) {
-    free(bytes);
-    fprintf(stderr, "the fetched commit is unreadable\n");
-    goto cleanup;
-  }
-  free(bytes);
-  uint32_t conflicts = 0u;
-  for (uint32_t i = 0u; i < changes.count; ++i) {
-    const char *path = changes.entries[i].path;
-    const VkrDepotIndexEntry *base =
-        vkr_depot_file_list_find(&workspace.index, path);
-    const VkrDepotIndexEntry *theirs =
-        vkr_depot_file_list_find(&remote_new, path);
-    const bool8_t remote_changed =
-        (base == NULL) != (theirs == NULL) ||
-        (base && theirs && !vkr_depot_id_equal(&base->blob, &theirs->blob));
-    if (remote_changed) {
-      fprintf(stderr, "conflict: %s changed here and on the server\n", path);
-      conflicts += 1u;
+  } else if (client) {
+    uint32_t kept = 0u;
+    char error[256];
+    if (vkr_depot_fetch_checkout(&workspace, client, &commit, &kept, error,
+                                 sizeof(error))) {
+      char hex[VKR_DEPOT_ID_HEX];
+      vkr_depot_id_hex(&commit, hex);
+      printf("pulled %s at %.12s; %u local changes kept\n", workspace.branch,
+             hex, kept);
+      result = 0;
+    } else {
+      fprintf(stderr, "%s\n", error);
     }
   }
-  if (conflicts > 0u) {
-    fprintf(stderr, "%u conflicts; nothing changed\n", conflicts);
-    goto cleanup;
-  }
-  if (!depot_checkout(&workspace, &commit, &changes) ||
-      !vkr_depot_workspace_save(&workspace)) {
-    fprintf(stderr, "checkout failed\n");
-    goto cleanup;
-  }
-  char hex[VKR_DEPOT_ID_HEX];
-  vkr_depot_id_hex(&commit, hex);
-  printf("pulled %s at %.12s: %llu objects, %.1f MB; %u local changes kept\n",
-         workspace.branch, hex, (unsigned long long)stats.objects,
-         (double)stats.stored_bytes / 1e6, changes.count);
-  result = 0;
-cleanup:
-  if (client) {
-    vkr_depot_client_destroy(client);
-    depot_link_close(&link);
-  }
-  vkr_depot_file_list_free(&local);
-  vkr_depot_file_list_free(&changes);
-  vkr_depot_file_list_free(&remote_base);
-  vkr_depot_file_list_free(&remote_new);
+  vkr_depot_disconnect(connection);
   vkr_depot_workspace_close(&workspace);
   return result;
 }
@@ -698,9 +423,9 @@ static int depot_refs(const char *directory) {
     fprintf(stderr, "no working copy at %s\n", directory);
     return 1;
   }
-  DepotLink link;
-  VkrDepotClient *client = depot_connect(
-      &link, workspace.remote, workspace.server_key, &workspace.store);
+  VkrDepotConnection *connection =
+      depot_connect(workspace.remote, workspace.server_key, &workspace.store);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
   int result = 1;
   if (client) {
     VkrDepotRef refs[VKR_DEPOT_REFS_MAX];
@@ -713,9 +438,8 @@ static int depot_refs(const char *directory) {
       }
       result = 0;
     }
-    vkr_depot_client_destroy(client);
-    depot_link_close(&link);
   }
+  vkr_depot_disconnect(connection);
   vkr_depot_workspace_close(&workspace);
   return result;
 }
@@ -770,9 +494,9 @@ static int depot_locks_command(const char *directory, const char *path,
     fprintf(stderr, "no working copy at %s\n", directory);
     return 1;
   }
-  DepotLink link;
-  VkrDepotClient *client = depot_connect(
-      &link, workspace.remote, workspace.server_key, &workspace.store);
+  VkrDepotConnection *connection =
+      depot_connect(workspace.remote, workspace.server_key, &workspace.store);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
   int result = 1;
   if (client) {
     if (lock) {
@@ -787,9 +511,8 @@ static int depot_locks_command(const char *directory, const char *path,
     } else {
       result = vkr_depot_client_locks(client, depot_print_lock, NULL) ? 0 : 1;
     }
-    vkr_depot_client_destroy(client);
-    depot_link_close(&link);
   }
+  vkr_depot_disconnect(connection);
   vkr_depot_workspace_close(&workspace);
   return result;
 }

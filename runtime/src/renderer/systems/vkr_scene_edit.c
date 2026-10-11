@@ -2453,9 +2453,9 @@ static bool8_t write_collision_layers(VkrJsonWriter *w,
     return false_v;
   }
   for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
-    if (!vkr_json_writer_string(w,
-                                string8_create((uint8_t *)settings->names[i],
-                                               strlen(settings->names[i])))) {
+    if (!vkr_json_writer_string(
+            w, string8_create_from_cstr((const uint8_t *)settings->names[i],
+                                        strlen(settings->names[i])))) {
       return false_v;
     }
   }
@@ -2479,7 +2479,8 @@ static bool8_t write_collision_layers(VkrJsonWriter *w,
     if (!vkr_json_writer_begin_object(w) ||
         !vkr_json_writer_name(w, string8_lit("name")) ||
         !vkr_json_writer_string(
-            w, string8_create((uint8_t *)preset->name, strlen(preset->name))) ||
+            w, string8_create_from_cstr((const uint8_t *)preset->name,
+                                        strlen(preset->name))) ||
         !vkr_json_writer_name(w, string8_lit("membership")) ||
         !vkr_json_writer_i64(w, preset->membership) ||
         !vkr_json_writer_name(w, string8_lit("mask")) ||
@@ -2522,7 +2523,8 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
   if ((v->fields & VKR_SCENE_EDIT_NAME) &&
       !(vkr_json_writer_name(w, string8_lit("name")) &&
         vkr_json_writer_string(
-            w, string8_create((uint8_t *)v->name, strlen(v->name)))))
+            w, string8_create_from_cstr((const uint8_t *)v->name,
+                                        strlen(v->name)))))
     return false_v;
   if ((v->fields & VKR_SCENE_EDIT_TRANSFORM) &&
       !(json_floats(w, "position", &v->position.x, 3) &&
@@ -2547,8 +2549,9 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !json_floats(w, "point_source_radius", &p->source_radius, 1) ||
         !WRITE_INT("point_mobility", p->mobility) ||
         !vkr_json_writer_name(w, string8_lit("point_group")) ||
-        !vkr_json_writer_string(w, string8_create((uint8_t *)p->light_group,
-                                                  strlen(p->light_group))))
+        !vkr_json_writer_string(
+            w, string8_create_from_cstr((const uint8_t *)p->light_group,
+                                        strlen(p->light_group))))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) {
@@ -2573,8 +2576,9 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !WRITE_BOOL("rectangle_enabled", p->enabled) ||
         !WRITE_INT("rectangle_mobility", p->mobility) ||
         !vkr_json_writer_name(w, string8_lit("rectangle_group")) ||
-        !vkr_json_writer_string(w, string8_create((uint8_t *)p->light_group,
-                                                  strlen(p->light_group))))
+        !vkr_json_writer_string(
+            w, string8_create_from_cstr((const uint8_t *)p->light_group,
+                                        strlen(p->light_group))))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_PHYSICS) {

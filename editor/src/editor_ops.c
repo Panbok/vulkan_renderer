@@ -13273,6 +13273,14 @@ static VkrBakeryJson *ops_session_status(OpsContext *ctx) {
   ops_set(ctx, result, "address", vkr_bakery_json_cstr(arena, status.address));
   ops_set(ctx, result, "key", vkr_bakery_json_cstr(arena, status.key));
   ops_set(ctx, result, "error", vkr_bakery_json_cstr(arena, status.error));
+  if (status.depot_branch[0]) {
+    VkrBakeryJson *depot = vkr_bakery_json_object(arena);
+    ops_set(ctx, depot, "branch",
+            vkr_bakery_json_cstr(arena, status.depot_branch));
+    ops_set(ctx, depot, "head", vkr_bakery_json_cstr(arena, status.depot_head));
+    ops_set(ctx, depot, "busy", vkr_bakery_json_bool(arena, status.depot_busy));
+    ops_set(ctx, result, "depot", depot);
+  }
   /* What a joining editor's scenes must match, from this editor's scenes:
      equal digests mean equal names, poses and parents. */
   uint8_t digest[32];
@@ -13353,6 +13361,22 @@ static VkrEditorOpStatus ops_run_session_join(OpsContext *ctx) {
   if (!vkr_editor_session_join(ctx->editor->session, ctx->frame, address, key,
                                name, error, sizeof(error))) {
     ops_fail(ctx, OPS_INVALID, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = ops_session_status(ctx);
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_session_publish(OpsContext *ctx) {
+  char message[128] = {0};
+  char error[192] = {0};
+  if (!ops_arg_string(ctx, ctx->call->args, "message", message,
+                      sizeof(message))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_session_publish_files(ctx->editor->session, message, error,
+                                        sizeof(error))) {
+    ops_fail(ctx, OPS_BUSY, "%s", error);
     return VKR_EDITOR_OP_DONE;
   }
   ctx->call->result = ops_session_status(ctx);
@@ -14412,6 +14436,14 @@ static const OpsDef s_ops[] = {
      "\"string\"},\"key\":{\"type\":\"string\"},\"name\":{\"type\":"
      "\"string\"}},\"required\":[\"address\",\"key\"]}",
      ops_run_session_join, NULL},
+    {"session.publish",
+     "Commit this editor's new and changed project files on top of the "
+     "session's depot branch with a 'message'; every other editor fetches "
+     "and checks them out. Needs a session whose scene lies in a depot "
+     "working copy; session.status shows the depot head.",
+     "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_session_publish, NULL},
     {"session.leave", "Leave or stop the collaborative session.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_session_leave, NULL},
     {"task.add",

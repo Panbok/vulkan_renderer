@@ -67,6 +67,11 @@ typedef struct VkrEditorSessionStatus {
   char error[192];
   VkrEditorSessionPeer peers[VKR_EDITOR_SESSION_PEERS_MAX];
   uint32_t peer_count;
+  /* The session's depot branch and the commit this editor holds, empty
+     without a depot; `depot_busy` while a commit, fetch or checkout runs. */
+  char depot_branch[64];
+  char depot_head[65];
+  bool8_t depot_busy;
 } VkrEditorSessionStatus;
 
 typedef struct VkrEditorSession VkrEditorSession;
@@ -89,6 +94,14 @@ bool8_t vkr_editor_session_join(VkrEditorSession *session,
                                 uint32_t capacity);
 
 void vkr_editor_session_leave(VkrEditorSession *session);
+
+/* Commits this editor's working copy (new and changed project files) on top
+   of the session's depot branch, and every other editor fetches and checks
+   it out. False with a message without a depot session or while another
+   depot step runs. */
+bool8_t vkr_editor_session_publish_files(VkrEditorSession *session,
+                                         const char *message, char *error,
+                                         uint32_t capacity);
 
 /* The tool this editor's presence names; call each build before the
    update. */

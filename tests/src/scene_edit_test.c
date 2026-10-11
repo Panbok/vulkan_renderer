@@ -141,6 +141,41 @@ static void edit_test_document_ids(VkrAllocator *allocator, String8 path) {
   vkr_scene_edit_reset(&state, allocator, 0);
 }
 
+/* A light without a group saves its empty group instead of failing the
+   save, as Bistro's lights do when a collaborative session's host saves
+   (ADR-106). */
+static void edit_test_empty_text(VkrAllocator *allocator, String8 path) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 29, 8, NULL));
+  VkrEntityId lamp = edit_test_entity(&scene, 3, "lamp");
+  assert(vkr_scene_set_point_light(
+      &scene, lamp,
+      &(ScenePointLight){.color = vec3_one(),
+                         .intensity = 2.0f,
+                         .constant = 1.0f,
+                         .range = 4.0f,
+                         .inner_cone_angle = 0.35f,
+                         .outer_cone_angle = 0.6f,
+                         .enabled = true_v,
+                         .mobility = VKR_LIGHT_MOBILITY_DYNAMIC}));
+  vkr_scene_update(&scene, 0.0);
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, allocator, 1);
+  VkrSceneEditValues values;
+  assert(vkr_scene_edit_read(&scene, lamp, &values));
+  values.fields = VKR_SCENE_EDIT_POINT_LIGHT;
+  values.point_light.intensity = 3.0f;
+  assert(vkr_scene_edit_apply(&state, &scene, lamp, &values));
+  assert(vkr_scene_edit_save(&state, &scene, path));
+  vkr_scene_get_point_light(&scene, lamp)->intensity = 2.0f;
+  vkr_scene_edit_reset(&state, allocator, 1);
+  assert(vkr_scene_edit_load(&state, &scene, path));
+  assert(vkr_scene_get_point_light(&scene, lamp)->intensity == 3.0f &&
+         vkr_scene_get_point_light(&scene, lamp)->light_group[0] == '\0');
+  vkr_scene_edit_reset(&state, allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 /* The scene's texture limit is an undoable scene setting that survives a
    sidecar save and load, and the peek reads it before the scene loads. A file
    without the key, the earlier form, keeps full resolution; a limit that is
@@ -873,6 +908,7 @@ static void edit_test_structure(void) {
 
   edit_test_document_ids(&allocator, file_path);
   edit_test_texture_limit(&allocator, file_path, path);
+  edit_test_empty_text(&allocator, file_path);
 
   FilePath saved_path = {.path = file_path, .type = FILE_PATH_TYPE_ABSOLUTE};
   assert(file_remove(&saved_path) == FILE_ERROR_NONE);

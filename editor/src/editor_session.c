@@ -3,12 +3,19 @@
 #include "editor_internal.h"
 
 #include "core/logger.h"
+#include "core/vkr_atomic.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
+#include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "net/vkr_net_scene_edit.h"
 #include "renderer/systems/vkr_scene_terrain.h"
+#include "vkr_bakery_os.h"
 #include "vkr_bitstream.h"
+#include "vkr_depot_sync.h"
+#include "vkr_depot_zstd.h"
 #include "vkr_net_crypto.h"
 #include "vkr_net_host.h"
 #include "vkr_net_session.h"
@@ -24,8 +31,10 @@
  *
  * Channel 0, reliable and ordered, carries the session: HELLO and WELCOME,
  * EDIT from a participant, RESULT for a refused one, APPLIED in session
- * order, PEER_LEFT, and for agents ASK, ANSWER, SHARED (the host's claims
- * and tasks) and REVIEWED (a batch accepted on some editor). EDIT and
+ * order, PEER_LEFT, for agents ASK, ANSWER, SHARED (the host's claims and
+ * tasks) and REVIEWED (a batch accepted on some editor), and for the depot
+ * BASE (the session's branch and base commit, before HELLO) and PUBLISHED
+ * (a commit of files to fetch). EDIT and
  * APPLIED also name the new terrains a batch creates, which every editor
  * stages before applying it. Channel 1,
  * sequenced, carries PRESENCE. Every message starts with its 4-bit type. EDIT
@@ -82,6 +91,8 @@ typedef enum SessionMessage {
   SESSION_MSG_ANSWER,
   SESSION_MSG_SHARED,
   SESSION_MSG_REVIEWED,
+  SESSION_MSG_BASE,
+  SESSION_MSG_PUBLISHED,
 } SessionMessage;
 
 typedef enum SessionEditKind {
@@ -121,6 +132,50 @@ typedef struct SessionStage {
   float32_t height_max;
   float32_t height;
 } SessionStage;
+
+/* Where a session stands with its depot (ADR-106). Without a working copy
+ * around the scene, joining checks only the scene digest (OFF). */
+typedef enum SessionDepotPhase {
+  SESSION_DEPOT_OFF = 0,
+  /* Host: saving the scene, then committing it as the session's base. */
+  SESSION_DEPOT_SAVING,
+  SESSION_DEPOT_BASING,
+  /* Participant: waiting for BASE, checking the base out, reloading. */
+  SESSION_DEPOT_WAITING,
+  SESSION_DEPOT_CHECKING_OUT,
+  SESSION_DEPOT_RELOADING,
+  SESSION_DEPOT_READY,
+} SessionDepotPhase;
+
+typedef enum SessionDepotJobKind {
+  SESSION_DEPOT_COMMIT = 1,
+  SESSION_DEPOT_CHECKOUT,
+} SessionDepotJobKind;
+
+/* One depot step on a worker thread, which owns every field but `done`
+   until it sets `done`. */
+typedef struct SessionDepotJob {
+  VkrThread thread;
+  bool8_t running;
+  VkrAtomicBool done;
+  uint8_t kind;
+  bool8_t publish;
+  /* Commit: on the working copy's base instead of `parent`. */
+  bool8_t from_base;
+  char directory[1024];
+  char branch[VKR_DEPOT_BRANCH_NAME];
+  char message[128];
+  VkrDepotId parent;
+  VkrDepotId expected;
+  /* The commit to check out, or the commit made. */
+  VkrDepotId commit;
+  bool8_t ok;
+  char error[256];
+} SessionDepotJob;
+
+#define SESSION_FETCH_MAX 16u
+/* Builds the host waits for its scene to save before hosting fails. */
+#define SESSION_SAVE_FRAMES 600u
 
 /* An edit waiting to apply here. The host's queue holds this editor's and
  * the participants' edits in arrival order; a participant's holds the host's
@@ -192,6 +247,9 @@ typedef struct SessionGroup {
 typedef struct SessionLink {
   bool8_t live;
   bool8_t welcomed;
+  /* The service opened and BASE went out. */
+  bool8_t opened;
+  bool8_t based;
   VkrNetConnectionId connection;
   uint8_t id;
   /* Log entries sent to it. */
@@ -305,6 +363,24 @@ struct VkrEditorSession {
   VkrEditorSessionPeer peers[VKR_EDITOR_SESSION_PEERS_MAX];
   uint32_t peer_count;
   uint64_t presence_at;
+
+  /* Depot: the phase, the session branch, the commit this editor holds,
+     the working copy's directory, the depot step running and the commits
+     other editors published, to fetch in order. */
+  uint8_t depot_phase;
+  char depot_branch[VKR_DEPOT_BRANCH_NAME];
+  /* The commit the session started from, which joiners check out before
+     the history replays, and the newest published one. */
+  VkrDepotId depot_base;
+  VkrDepotId depot_head;
+  char depot_directory[1024];
+  SessionDepotJob job;
+  VkrDepotId fetches[SESSION_FETCH_MAX];
+  uint32_t fetch_count;
+  uint32_t save_frames;
+  bool8_t save_requested;
+  bool8_t reload_requested;
+  uint64_t reload_generation;
 
   /* The Session window's fields; they survive a reset. */
   char form_name[VKR_EDITOR_SESSION_NAME_MAX];
@@ -1353,6 +1429,15 @@ static void session_host_presence(VkrEditorSession *session, SessionLink *link,
 
 static void session_review_accepted(VkrEditorSession *session, uint64_t seq,
                                     const SessionLink *from);
+static void session_depot_base_message(VkrEditorSession *session,
+                                       VkrBitReader *reader);
+static void session_depot_published(VkrEditorSession *session,
+                                    VkrBitReader *reader,
+                                    const SessionLink *from);
+static void session_host_send_base(VkrEditorSession *session,
+                                   SessionLink *link);
+static void session_send_hello(VkrEditorSession *session);
+static bool8_t session_depot_ready(const VkrEditorSession *session);
 
 static void session_host_message(VkrEditorSession *session, SessionLink *link,
                                  uint8_t channel, VkrBitReader *reader) {
@@ -1365,6 +1450,15 @@ static void session_host_message(VkrEditorSession *session, SessionLink *link,
   }
   if (type == SESSION_MSG_HELLO) {
     session_host_hello(session, link, reader);
+    return;
+  }
+  if (type == SESSION_MSG_PUBLISHED) {
+    if (!link->welcomed) {
+      vkr_net_core_close(vkr_net_host_core(session->host), link->connection,
+                         VKR_NET_CLOSE_SCHEMA_VIOLATION, session->now);
+      return;
+    }
+    session_depot_published(session, reader, link);
     return;
   }
   if (type == SESSION_MSG_REVIEWED) {
@@ -1661,6 +1755,12 @@ static void session_participant_message(VkrEditorSession *session,
     session_peer_remove(session, id);
     return;
   }
+  case SESSION_MSG_BASE:
+    session_depot_base_message(session, reader);
+    return;
+  case SESSION_MSG_PUBLISHED:
+    session_depot_published(session, reader, NULL);
+    return;
   case SESSION_MSG_REVIEWED: {
     const uint64_t seq = vkr_bit_read_varuint(reader);
     if (!vkr_bit_reader_at_end(reader)) {
@@ -1733,10 +1833,18 @@ static void session_service_opened(void *context, VkrNetConnectionId connection,
                                    uint16_t version) {
   (void)version;
   VkrEditorSession *session = context;
-  if (session->mode != VKR_EDITOR_SESSION_PARTICIPANT ||
-      connection != session->connection) {
-    return;
+  /* The host tells each participant its depot base first; a participant
+     greets once it holds that base (session_depot_base_message). */
+  if (session->mode == VKR_EDITOR_SESSION_HOST) {
+    SessionLink *link = session_link(session, connection);
+    if (link) {
+      link->opened = true_v;
+      session_host_send_base(session, link);
+    }
   }
+}
+
+static void session_send_hello(VkrEditorSession *session) {
   uint8_t bytes[128];
   VkrBitWriter writer;
   vkr_bit_writer_init(&writer, bytes, sizeof(bytes));
@@ -1744,8 +1852,8 @@ static void session_service_opened(void *context, VkrNetConnectionId connection,
   session_write_text(&writer, session->name);
   vkr_bit_write_bytes(&writer, session->digest, 32u);
   const uint32_t size = vkr_bit_writer_finish(&writer);
-  if (!size ||
-      !session_send(session, connection, SESSION_EDIT_CHANNEL, bytes, size)) {
+  if (!size || !session_send(session, session->connection, SESSION_EDIT_CHANNEL,
+                             bytes, size)) {
     session_fail(session, "Could not greet the session host.");
   }
 }
@@ -2090,7 +2198,7 @@ static void session_gizmo(VkrEditorSession *session,
   const bool8_t travels =
       scene && gizmo->count &&
       (gizmo->fields & ~(uint32_t)VKR_SCENE_EDIT_TRANSFORM) == 0u &&
-      session_ready(session) &&
+      session_ready(session) && session_depot_ready(session) &&
       (session->mode == VKR_EDITOR_SESSION_HOST ||
        session->speculative_count < SESSION_SPECULATIVE_MAX);
   if (!travels) {
@@ -2511,8 +2619,8 @@ static bool8_t session_place(VkrEditorSession *session,
 static void session_inject(VkrEditorSession *session,
                            const VkrSampleUiFrame *frame) {
   if (session->inflight.active || session->leave_pending ||
-      !frame->scene_edit || !frame->edit_batch ||
-      frame->scene_edit->action != VKR_SCENE_EDIT_NONE ||
+      !session_depot_ready(session) || !frame->scene_edit ||
+      !frame->edit_batch || frame->scene_edit->action != VKR_SCENE_EDIT_NONE ||
       frame->edit_batch->token || frame->gizmo_edit_pending ||
       frame->simulation_running || frame->scene_loading ||
       frame->additive_loading || frame->world_loading) {
@@ -2819,6 +2927,420 @@ static void session_presence(VkrEditorSession *session,
 }
 
 // =============================================================================
+// Depot (ADR-106)
+// =============================================================================
+
+static bool8_t session_depot_ready(const VkrEditorSession *session) {
+  return session->depot_phase == SESSION_DEPOT_OFF ||
+         session->depot_phase == SESSION_DEPOT_READY;
+}
+
+static void *session_depot_worker(void *argument) {
+  SessionDepotJob *job = argument;
+  VkrDMemory memory;
+  VkrAllocator allocator = {0};
+  const bool8_t memory_ok = vkr_dmemory_create(MB(4), MB(256), &memory);
+  job->ok = false_v;
+  if (memory_ok) {
+    allocator.ctx = &memory;
+    vkr_dmemory_allocator_create(&allocator);
+  }
+  VkrDepotWorkspace workspace;
+  if (!memory_ok) {
+    snprintf(job->error, sizeof(job->error), "out of memory");
+  } else if (!vkr_depot_workspace_open(&workspace, job->directory,
+                                       vkr_depot_zstd_codec())) {
+    snprintf(job->error, sizeof(job->error), "no depot working copy at %s",
+             job->directory);
+  } else {
+    VkrDepotConnection *connection =
+        vkr_depot_connect(&allocator, workspace.remote, workspace.server_key,
+                          &workspace.store, job->error, sizeof(job->error));
+    VkrDepotClient *client = vkr_depot_connection_client(connection);
+    if (client && job->kind == SESSION_DEPOT_COMMIT) {
+      const VkrDepotId parent = job->from_base ? workspace.base : job->parent;
+      job->ok = vkr_depot_commit_push(
+          &workspace, client, job->branch, &parent, &job->expected,
+          job->message, &job->commit, job->error, sizeof(job->error));
+    } else if (client) {
+      uint32_t kept = 0u;
+      job->ok = vkr_depot_fetch_checkout(&workspace, client, &job->commit,
+                                         &kept, job->error, sizeof(job->error));
+    }
+    vkr_depot_disconnect(connection);
+    vkr_depot_workspace_close(&workspace);
+  }
+  if (memory_ok) {
+    vkr_dmemory_allocator_destroy(&allocator);
+  }
+  vkr_atomic_bool_store(&job->done, true_v, VKR_MEMORY_ORDER_RELEASE);
+  return NULL;
+}
+
+/* Starts the step the job fields describe. */
+static bool8_t session_depot_start(VkrEditorSession *session, uint8_t kind) {
+  SessionDepotJob *job = &session->job;
+  job->kind = kind;
+  job->ok = false_v;
+  job->error[0] = '\0';
+  snprintf(job->directory, sizeof(job->directory), "%s",
+           session->depot_directory);
+  vkr_atomic_bool_store(&job->done, false_v, VKR_MEMORY_ORDER_RELAXED);
+  if (!vkr_thread_create(session->allocator, &job->thread, session_depot_worker,
+                         job)) {
+    return false_v;
+  }
+  job->running = true_v;
+  return true_v;
+}
+
+/* Joins a finished step; false while one runs or none ran. */
+static bool8_t session_depot_finished(VkrEditorSession *session) {
+  SessionDepotJob *job = &session->job;
+  if (!job->running ||
+      !vkr_atomic_bool_load(&job->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+    return false_v;
+  }
+  (void)vkr_thread_join(job->thread);
+  (void)vkr_thread_destroy(session->allocator, &job->thread);
+  job->running = false_v;
+  return true_v;
+}
+
+/* The directory of the open scene when a depot working copy holds it. */
+static bool8_t session_depot_find(const VkrSampleUiFrame *frame, char *out,
+                                  uint32_t capacity) {
+  char directory[1024];
+  snprintf(directory, sizeof(directory), "%.*s", (int)frame->scene_path.length,
+           (const char *)frame->scene_path.str);
+  char *slash = strrchr(directory, '/');
+  char *backslash = strrchr(directory, '\\');
+  if (backslash && (!slash || backslash > slash)) {
+    slash = backslash;
+  }
+  if (slash) {
+    *slash = '\0';
+  } else {
+    snprintf(directory, sizeof(directory), ".");
+  }
+  VkrDepotWorkspace workspace;
+  if (!directory[0] || !vkr_depot_workspace_open(&workspace, directory,
+                                                 vkr_depot_zstd_codec())) {
+    return false_v;
+  }
+  vkr_depot_workspace_close(&workspace);
+  snprintf(out, capacity, "%s", directory);
+  return true_v;
+}
+
+static bool8_t session_journals_saved(const VkrSampleUiFrame *frame) {
+  const VkrSceneEditState *journals[2u + VKR_SCENE_ADDITIVE_MAX] = {
+      frame->scene ? frame->edits : NULL,
+      frame->world ? frame->world_edits : NULL};
+  for (uint32_t i = 0u; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    journals[2u + i] = frame->additive[i] ? frame->additive_edits[i] : NULL;
+  }
+  for (uint32_t i = 0u; i < ArrayCount(journals); ++i) {
+    if (journals[i] && journals[i]->revision != journals[i]->saved_revision) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* BASE: whether the session has a depot, then its branch, base commit and
+   newest commit. */
+static void session_host_send_base(VkrEditorSession *session,
+                                   SessionLink *link) {
+  if (!link->opened || link->based || !session_depot_ready(session)) {
+    return;
+  }
+  uint8_t bytes[160];
+  VkrBitWriter writer;
+  vkr_bit_writer_init(&writer, bytes, sizeof(bytes));
+  vkr_bit_write(&writer, SESSION_MSG_BASE, 4u);
+  const bool8_t depot = session->depot_phase == SESSION_DEPOT_READY;
+  vkr_bit_write(&writer, depot, 1u);
+  if (depot) {
+    session_write_text(&writer, session->depot_branch);
+    vkr_bit_write_bytes(&writer, session->depot_base.bytes, 32u);
+    vkr_bit_write_bytes(&writer, session->depot_head.bytes, 32u);
+  }
+  session_host_send_small(session, link->connection, bytes,
+                          vkr_bit_writer_finish(&writer));
+  link->based = true_v;
+}
+
+static void session_depot_base_message(VkrEditorSession *session,
+                                       VkrBitReader *reader) {
+  const bool8_t depot = (bool8_t)vkr_bit_read(reader, 1u);
+  if (session->depot_phase != SESSION_DEPOT_WAITING) {
+    session_fail(session, "The host sent its base twice.");
+    return;
+  }
+  if (!depot) {
+    session->depot_phase = SESSION_DEPOT_OFF;
+    session_send_hello(session);
+    return;
+  }
+  const uint8_t *base = NULL;
+  const uint8_t *head = NULL;
+  if (!session_read_text(reader, session->depot_branch,
+                         sizeof(session->depot_branch)) ||
+      !(base = vkr_bit_read_bytes(reader, 32u)) ||
+      !(head = vkr_bit_read_bytes(reader, 32u)) ||
+      !vkr_bit_reader_at_end(reader)) {
+    session_fail(session, "The host sent a malformed base.");
+    return;
+  }
+  /* The base holds the scene the history replays onto; files published
+     since follow as a fetch once this editor is in. */
+  MemCopy(session->depot_base.bytes, base, 32u);
+  MemCopy(session->depot_head.bytes, base, 32u);
+  VkrDepotId newest;
+  MemCopy(newest.bytes, head, 32u);
+  if (!vkr_depot_id_equal(&newest, &session->depot_base)) {
+    session->fetches[session->fetch_count++] = newest;
+  }
+  VkrDepotWorkspace workspace;
+  if (!session->depot_directory[0] ||
+      !vkr_depot_workspace_open(&workspace, session->depot_directory,
+                                vkr_depot_zstd_codec())) {
+    log_warn("This scene is in no depot working copy; joining by the scene "
+             "alone");
+    session->depot_phase = SESSION_DEPOT_OFF;
+    session_send_hello(session);
+    return;
+  }
+  const bool8_t current =
+      vkr_depot_id_equal(&workspace.base, &session->depot_head);
+  vkr_depot_workspace_close(&workspace);
+  if (current) {
+    session->depot_phase = SESSION_DEPOT_READY;
+    session_send_hello(session);
+    return;
+  }
+  session->job.commit = session->depot_head;
+  if (session->job.running ||
+      !session_depot_start(session, SESSION_DEPOT_CHECKOUT)) {
+    session_fail(session, "The depot checkout could not start.");
+    return;
+  }
+  session->depot_phase = SESSION_DEPOT_CHECKING_OUT;
+  log_info("Checking out the session's base from the depot");
+}
+
+static uint32_t session_put_published(uint8_t *out, uint32_t capacity,
+                                      const VkrDepotId *commit,
+                                      uint8_t author) {
+  VkrBitWriter writer;
+  vkr_bit_writer_init(&writer, out, capacity);
+  vkr_bit_write(&writer, SESSION_MSG_PUBLISHED, 4u);
+  vkr_bit_write_bytes(&writer, commit->bytes, 32u);
+  vkr_bit_write(&writer, author, 8u);
+  return vkr_bit_writer_finish(&writer);
+}
+
+/* PUBLISHED: a commit to fetch; the host passes it on to the others. */
+static void session_depot_published(VkrEditorSession *session,
+                                    VkrBitReader *reader,
+                                    const SessionLink *from) {
+  const uint8_t *bytes = vkr_bit_read_bytes(reader, 32u);
+  const uint8_t author = (uint8_t)vkr_bit_read(reader, 8u);
+  if (!bytes || !vkr_bit_reader_at_end(reader)) {
+    session_fail(session, "A malformed publish arrived.");
+    return;
+  }
+  VkrDepotId commit;
+  MemCopy(commit.bytes, bytes, 32u);
+  if (session->fetch_count < SESSION_FETCH_MAX) {
+    session->fetches[session->fetch_count++] = commit;
+  } else {
+    log_warn("Too many depot commits wait; pull the session branch later");
+  }
+  if (session->mode != VKR_EDITOR_SESSION_HOST) {
+    return;
+  }
+  uint8_t message[48];
+  const uint32_t size = session_put_published(message, sizeof(message), &commit,
+                                              from ? from->id : author);
+  for (uint32_t i = 0u; size && i < VKR_EDITOR_SESSION_PEERS_MAX; ++i) {
+    const SessionLink *link = &session->links[i];
+    if (link->live && link->welcomed && link != from) {
+      session_host_send_small(session, link->connection, message, size);
+    }
+  }
+}
+
+static void session_depot_announce(VkrEditorSession *session) {
+  uint8_t message[48];
+  const uint32_t size = session_put_published(
+      message, sizeof(message), &session->depot_head, session->self_id);
+  if (!size) {
+    return;
+  }
+  if (session->mode == VKR_EDITOR_SESSION_PARTICIPANT) {
+    (void)session_send(session, session->connection, SESSION_EDIT_CHANNEL,
+                       message, size);
+    return;
+  }
+  for (uint32_t i = 0u; i < VKR_EDITOR_SESSION_PEERS_MAX; ++i) {
+    const SessionLink *link = &session->links[i];
+    if (link->live && link->welcomed) {
+      session_host_send_small(session, link->connection, message, size);
+    }
+  }
+}
+
+/* The depot's share of a build: the host saves and commits its base, a
+   participant checks the base out and reloads, and everyone publishes and
+   fetches session commits. */
+static void session_depot_update(VkrEditorSession *session,
+                                 const VkrSampleUiFrame *frame) {
+  SessionDepotJob *job = &session->job;
+  const bool8_t finished = session_depot_finished(session);
+  char hex[VKR_DEPOT_ID_HEX];
+  switch (session->depot_phase) {
+  case SESSION_DEPOT_SAVING:
+    if (session_journals_saved(frame)) {
+      job->from_base = true_v;
+      job->publish = false_v;
+      MemZero(&job->expected, sizeof(job->expected));
+      snprintf(job->branch, sizeof(job->branch), "%s", session->depot_branch);
+      snprintf(job->message, sizeof(job->message), "Session base by %s",
+               session->name);
+      if (!session_depot_start(session, SESSION_DEPOT_COMMIT)) {
+        session_fail(session, "The depot commit could not start.");
+        return;
+      }
+      session->depot_phase = SESSION_DEPOT_BASING;
+    } else if (!session->save_requested && frame->scene_edit &&
+               frame->scene_edit->action == VKR_SCENE_EDIT_NONE) {
+      /* The base holds the scene as saved, so the host saves first. */
+      frame->scene_edit->action = VKR_SCENE_EDIT_SAVE;
+      session->save_requested = true_v;
+    } else if (++session->save_frames > SESSION_SAVE_FRAMES) {
+      session_fail(session, "The scene did not save; hosting stopped.");
+    }
+    return;
+  case SESSION_DEPOT_BASING:
+    if (!finished) {
+      return;
+    }
+    if (!job->ok) {
+      session_fail(session, "The session base could not be committed: %s",
+                   job->error);
+      return;
+    }
+    session->depot_base = job->commit;
+    session->depot_head = job->commit;
+    session->depot_phase = SESSION_DEPOT_READY;
+    /* Saved now; the scene is what the base holds. */
+    vkr_editor_session_digest(frame, session->digest);
+    vkr_depot_id_hex(&session->depot_head, hex);
+    log_info("The session's base is %.12s on depot branch %s", hex,
+             session->depot_branch);
+    for (uint32_t i = 0u; i < VKR_EDITOR_SESSION_PEERS_MAX; ++i) {
+      if (session->links[i].live) {
+        session_host_send_base(session, &session->links[i]);
+      }
+    }
+    return;
+  case SESSION_DEPOT_CHECKING_OUT:
+    if (!finished) {
+      return;
+    }
+    if (!job->ok) {
+      session_fail(session, "The session's base could not be checked out: %s",
+                   job->error);
+      return;
+    }
+    session->depot_phase = SESSION_DEPOT_RELOADING;
+    session->reload_requested = true_v;
+    session->reload_generation = frame->scene_generation;
+    return;
+  case SESSION_DEPOT_RELOADING:
+    if (session->reload_requested && frame->scene_edit &&
+        frame->scene_edit->action == VKR_SCENE_EDIT_NONE) {
+      frame->scene_edit->action = VKR_SCENE_EDIT_RELOAD;
+      session->reload_requested = false_v;
+    } else if (!session->reload_requested &&
+               frame->scene_generation != session->reload_generation &&
+               frame->scene && !frame->scene_loading && !frame->world_loading &&
+               !frame->additive_loading) {
+      vkr_editor_session_digest(frame, session->digest);
+      session->depot_phase = SESSION_DEPOT_READY;
+      session_send_hello(session);
+    }
+    return;
+  case SESSION_DEPOT_READY:
+    break;
+  default:
+    return;
+  }
+  if (finished && job->kind == SESSION_DEPOT_COMMIT) {
+    if (!job->ok) {
+      log_warn("Publishing to the depot failed: %s", job->error);
+      snprintf(session->error, sizeof(session->error), "Publish: %s",
+               job->error);
+    } else {
+      session->depot_head = job->commit;
+      vkr_depot_id_hex(&session->depot_head, hex);
+      log_info("Published %.12s to depot branch %s", hex,
+               session->depot_branch);
+      session_depot_announce(session);
+    }
+  } else if (finished) {
+    if (!job->ok) {
+      log_warn("Fetching from the depot failed: %s", job->error);
+      snprintf(session->error, sizeof(session->error), "Fetch: %s", job->error);
+    } else {
+      session->depot_head = job->commit;
+      vkr_depot_id_hex(&session->depot_head, hex);
+      log_info("Fetched %.12s from depot branch %s", hex,
+               session->depot_branch);
+    }
+  }
+  if (!job->running && session->fetch_count) {
+    job->commit = session->fetches[0];
+    session->fetch_count -= 1u;
+    memmove(session->fetches, session->fetches + 1,
+            session->fetch_count * sizeof(session->fetches[0]));
+    if (!session_depot_start(session, SESSION_DEPOT_CHECKOUT)) {
+      log_warn("A depot fetch could not start");
+    }
+  }
+}
+
+bool8_t vkr_editor_session_publish_files(VkrEditorSession *session,
+                                         const char *message, char *error,
+                                         uint32_t capacity) {
+  if (!session || session->depot_phase != SESSION_DEPOT_READY ||
+      (session->mode == VKR_EDITOR_SESSION_PARTICIPANT && !session->welcomed)) {
+    snprintf(error, capacity,
+             "Publishing needs a joined session on a depot working copy.");
+    return false_v;
+  }
+  SessionDepotJob *job = &session->job;
+  if (job->running) {
+    snprintf(error, capacity, "Another depot step is running; try again.");
+    return false_v;
+  }
+  job->from_base = false_v;
+  job->publish = true_v;
+  job->parent = session->depot_head;
+  job->expected = session->depot_head;
+  snprintf(job->branch, sizeof(job->branch), "%s", session->depot_branch);
+  snprintf(job->message, sizeof(job->message), "%s",
+           message && message[0] ? message : "Session files");
+  if (!session_depot_start(session, SESSION_DEPOT_COMMIT)) {
+    snprintf(error, capacity, "The depot commit could not start.");
+    return false_v;
+  }
+  return true_v;
+}
+
+// =============================================================================
 // Lifetime
 // =============================================================================
 
@@ -2834,6 +3356,12 @@ VkrEditorSession *vkr_editor_session_create(VkrAllocator *allocator) {
 }
 
 static void session_reset(VkrEditorSession *session) {
+  /* A depot step owns the job until it ends. */
+  if (session->job.running) {
+    (void)vkr_thread_join(session->job.thread);
+    (void)vkr_thread_destroy(session->allocator, &session->job.thread);
+    session->job.running = false_v;
+  }
   if (session->host && session->mode == VKR_EDITOR_SESSION_PARTICIPANT &&
       session->connection != VKR_NET_CONNECTION_NONE) {
     vkr_net_core_close(vkr_net_host_core(session->host), session->connection,
@@ -2965,6 +3493,24 @@ bool8_t vkr_editor_session_host(VkrEditorSession *session,
                  sizeof(config.core.static_keys.secret_key));
   log_info("Hosting a collaborative session on %s, key %s", session->address,
            session->key);
+  /* A scene in a depot working copy hosts from a commit of it, on a branch
+     of the session's own. */
+  if (session_depot_find(frame, session->depot_directory,
+                         sizeof(session->depot_directory))) {
+    /* Branch names take letters, digits, '.', '_' and '-'. */
+    snprintf(session->depot_branch, sizeof(session->depot_branch),
+             "session-%s-%llu", session->name,
+             (unsigned long long)vkr_bakery_unix_seconds());
+    for (char *c = session->depot_branch; *c; ++c) {
+      const bool8_t kept =
+          (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+          (*c >= '0' && *c <= '9') || *c == '.' || *c == '_' || *c == '-';
+      *c = kept ? *c : '_';
+    }
+    session->depot_phase = SESSION_DEPOT_SAVING;
+    log_info("Saving and committing the scene to depot branch %s",
+             session->depot_branch);
+  }
   return true_v;
 }
 
@@ -3007,6 +3553,9 @@ bool8_t vkr_editor_session_join(VkrEditorSession *session,
                  sizeof(config.core.static_keys.secret_key));
   snprintf(session->address, sizeof(session->address), "%s", address);
   session_hex(server_key, 32u, session->key);
+  (void)session_depot_find(frame, session->depot_directory,
+                           sizeof(session->depot_directory));
+  session->depot_phase = SESSION_DEPOT_WAITING;
   log_info("Joining the collaborative session at %s", address);
   return true_v;
 }
@@ -3015,6 +3564,13 @@ void vkr_editor_session_update(VkrEditorSession *session,
                                const VkrSampleUiFrame *frame) {
   if (!session || session->mode == VKR_EDITOR_SESSION_NONE) {
     return;
+  }
+  /* A participant's reload of the session's base replaces the scene. */
+  if (frame->scene_generation != session->scene_generation &&
+      session->mode == VKR_EDITOR_SESSION_PARTICIPANT &&
+      (session->depot_phase == SESSION_DEPOT_CHECKING_OUT ||
+       session->depot_phase == SESSION_DEPOT_RELOADING)) {
+    session->scene_generation = frame->scene_generation;
   }
   if (frame->scene_generation != session->scene_generation) {
     snprintf(session->error, sizeof(session->error),
@@ -3032,6 +3588,9 @@ void vkr_editor_session_update(VkrEditorSession *session,
   }
   if (!session->leave_pending) {
     session_intercept(session, frame);
+    session_depot_update(session, frame);
+  }
+  if (!session->leave_pending) {
     session_inject(session, frame);
     session_presence(session, frame);
   }
@@ -3063,6 +3622,12 @@ void vkr_editor_session_status(const VkrEditorSession *session,
   snprintf(out_status->key, sizeof(out_status->key), "%s", session->key);
   snprintf(out_status->error, sizeof(out_status->error), "%s", session->error);
   out_status->peer_count = session->peer_count;
+  if (session->depot_phase != SESSION_DEPOT_OFF) {
+    snprintf(out_status->depot_branch, sizeof(out_status->depot_branch), "%s",
+             session->depot_branch);
+    vkr_depot_id_hex(&session->depot_head, out_status->depot_head);
+  }
+  out_status->depot_busy = session->job.running;
   MemCopy(out_status->peers, session->peers,
           session->peer_count * sizeof(session->peers[0]));
 }
@@ -3618,6 +4183,23 @@ void vkr_editor_session_window_build(VkrEditorUi *editor,
                                               (uint32_t)strlen(session->key));
     }
     y += 34;
+    if (session->depot_phase != SESSION_DEPOT_OFF) {
+      char head[VKR_DEPOT_ID_HEX];
+      vkr_depot_id_hex(&session->depot_head, head);
+      snprintf(text, sizeof(text), "Depot %s at %.12s%s", session->depot_branch,
+               head, session->job.running ? "  (working...)" : "");
+      session_label(ui, "depot", text, 12, y, width - 160,
+                    theme->text_secondary);
+      char publish_error[192];
+      if (session->depot_phase == SESSION_DEPOT_READY &&
+          session_button(editor, ui, "publish", "Publish files", width - 136, y,
+                         124, false_v) &&
+          !vkr_editor_session_publish_files(session, NULL, publish_error,
+                                            sizeof(publish_error))) {
+        snprintf(session->error, sizeof(session->error), "%s", publish_error);
+      }
+      y += 34;
+    }
     session_window_peers(editor, frame, session, &y, width);
     y += 6;
     if (session_button(editor, ui, "leave",
