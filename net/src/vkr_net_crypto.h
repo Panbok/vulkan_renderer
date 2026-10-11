@@ -38,11 +38,18 @@ typedef struct VkrNetNoise {
   uint8_t re[VKR_NET_KEY_SIZE];
 } VkrNetNoise;
 
-/* One direction's packet protection: the expanded AES-256-GCM key and the
-   IV that each packet number is XORed into. */
+/* Header protection (RFC 9001 5.4) samples this many ciphertext bytes and
+   masks with this many bytes: the flags byte and up to four packet-number
+   bytes. */
+#define VKR_NET_HP_SAMPLE_SIZE 16u
+#define VKR_NET_HP_MASK_SIZE 5u
+
+/* One direction's packet protection: the expanded AES-256-GCM key, the IV
+   that each packet number is XORed into and the header-protection key. */
 typedef struct VkrNetPacketKey {
   _Alignas(16) uint8_t state[512];
   uint8_t iv[12];
+  uint8_t hp[VKR_NET_KEY_SIZE];
 } VkrNetPacketKey;
 
 /* Starts libsodium. False when it fails or the CPU has no AES-GCM hardware
@@ -104,7 +111,9 @@ void vkr_net_noise_split(const VkrNetNoise *noise,
 /* Overwrites the handshake state, including its secret keys. */
 void vkr_net_noise_wipe(VkrNetNoise *noise);
 
-/* Expands one direction's key; the IV is a keyed BLAKE2b of the key. */
+/* Expands one direction's key; the IV and the header-protection key are
+   keyed BLAKE2b hashes of the key with distinct labels, as QUIC derives
+   its key, IV and header-protection key from one secret. */
 void vkr_net_packet_key_init(VkrNetPacketKey *key,
                              const uint8_t secret[VKR_NET_KEY_SIZE]);
 
@@ -123,6 +132,18 @@ bool8_t vkr_net_packet_open(const VkrNetPacketKey *key, uint64_t packet_number,
                             const uint8_t *header, uint32_t header_size,
                             uint8_t *payload, uint32_t payload_size,
                             const uint8_t tag[VKR_NET_TAG_SIZE]);
+
+/* The header-protection mask of a packet whose ciphertext starts with
+   `sample`: ChaCha20 under the header-protection key with the sample's
+   first four bytes (little endian) as the block counter and the other
+   twelve as the nonce, encrypting five zero bytes (RFC 9001 5.4.4). The
+   AEAD is AES-256-GCM, whose header protection (5.4.3) needs one raw AES
+   block that libsodium does not expose; the ChaCha20 mask needs only a
+   pseudorandom function of the sample under an independent key, which
+   ChaCha20 is. */
+void vkr_net_header_mask(const VkrNetPacketKey *key,
+                         const uint8_t sample[VKR_NET_HP_SAMPLE_SIZE],
+                         uint8_t mask[VKR_NET_HP_MASK_SIZE]);
 
 /* A retry cookie for `address_bytes` issued at `now_seconds`. */
 void vkr_net_cookie_make(const uint8_t secret[VKR_NET_KEY_SIZE],

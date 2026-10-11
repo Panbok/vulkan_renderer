@@ -489,7 +489,9 @@ static void test_net_noise_vector(void) {
 }
 
 /* Fails when packet protection accepts a modified header, payload, packet
-   number or key, or when a retry cookie outlives its lifetime or address. */
+   number or key, when the header-protection mask does not follow the
+   RFC 9001 ChaCha20 construction or ignores the key or the sample, or when
+   a retry cookie outlives its lifetime or address. */
 static void test_net_packet_protection(void) {
   printf("  Running test_net_packet_protection...\n");
   uint8_t secret[32];
@@ -533,6 +535,34 @@ static void test_net_packet_protection(void) {
   assert(!vkr_net_packet_open(&key, 7u, header, sizeof(header), copy,
                               sizeof(copy), tag));
 
+  /* Header protection: the mask depends on the sample and the direction's
+     key, and the RFC 9001 5.4.4 construction (ChaCha20 with the sample as
+     counter and nonce) reproduces it. */
+  uint8_t sample[VKR_NET_HP_SAMPLE_SIZE];
+  for (uint32_t i = 0u; i < sizeof(sample); ++i) {
+    sample[i] = (uint8_t)(0x30u + i);
+  }
+  uint8_t mask[VKR_NET_HP_MASK_SIZE];
+  uint8_t again[VKR_NET_HP_MASK_SIZE];
+  vkr_net_header_mask(&key, sample, mask);
+  vkr_net_header_mask(&key, sample, again);
+  assert(memcmp(mask, again, sizeof(mask)) == 0);
+  const uint8_t zeros[VKR_NET_HP_MASK_SIZE] = {0};
+  uint8_t expected[VKR_NET_HP_MASK_SIZE];
+  const uint32_t counter = (uint32_t)sample[0] | ((uint32_t)sample[1] << 8) |
+                           ((uint32_t)sample[2] << 16) |
+                           ((uint32_t)sample[3] << 24);
+  crypto_stream_chacha20_ietf_xor_ic(expected, zeros, sizeof(expected),
+                                     sample + 4, counter, key.hp);
+  assert(memcmp(mask, expected, sizeof(mask)) == 0);
+  vkr_net_header_mask(&other, sample, again);
+  assert(memcmp(mask, again, sizeof(mask)) != 0);
+  sample[15] ^= 1u;
+  vkr_net_header_mask(&key, sample, again);
+  assert(memcmp(mask, again, sizeof(mask)) != 0);
+  /* The header-protection key is neither the IV nor the AEAD key's input. */
+  assert(memcmp(key.hp, key.iv, sizeof(key.iv)) != 0);
+
   uint8_t cookie[VKR_NET_COOKIE_SIZE];
   const uint8_t subject[] = {1, 2, 3, 4};
   const uint8_t elsewhere[] = {1, 2, 3, 5};
@@ -546,6 +576,75 @@ static void test_net_packet_protection(void) {
   assert(!vkr_net_cookie_check(secret, subject, sizeof(subject), 99u, 30u,
                                cookie));
   printf("  test_net_packet_protection PASSED\n");
+}
+
+/* Fails when a short packet shows its packet number on the wire (the low
+   bytes of consecutive packets count up by one), when the connection ID is
+   masked, or when the receiver accepts a packet whose masked packet-number
+   or length bits were flipped in flight. */
+static void test_net_header_protection(void) {
+  printf("  Running test_net_header_protection...\n");
+  NetTestWorld world;
+  net_world_init(&world, 3u, NULL, NULL);
+  net_world_link(&world, &(VkrNetSimLink){.latency_us = 10000u});
+  net_world_connect(&world);
+  const VkrNetChannelConfig channel = {.delivery = VKR_NET_UNRELIABLE};
+  net_open_both(&world, 1u, &channel);
+  net_world_run(&world, NET_TEST_SECOND);
+
+  /* Eight packets straight from the client, past the simulator. */
+  enum { PACKETS = 8 };
+  static uint8_t wire[PACKETS][VKR_NET_DATAGRAM_INITIAL];
+  uint32_t sizes[PACKETS];
+  for (uint32_t i = 0u; i < PACKETS; ++i) {
+    uint8_t data[32];
+    net_test_fill(data, sizeof(data), i);
+    const VkrNetSendOptions options = {.flags = VKR_NET_SEND_IMMEDIATE};
+    assert(vkr_net_core_send(world.client.core, world.client.connection, 1u,
+                             data, sizeof(data), &options,
+                             world.now) == VKR_NET_SEND_OK);
+    VkrNetAddress to;
+    sizes[i] = vkr_net_core_transmit(world.client.core, world.now, wire[i],
+                                     sizeof(wire[i]), &to);
+    assert(sizes[i] >= 25u);
+  }
+  uint32_t counting = 0u;
+  for (uint32_t i = 0u; i < PACKETS; ++i) {
+    assert((wire[i][0] & 0xfcu) == 0x40u);
+    assert(memcmp(wire[i] + 1, &world.server.connection, 4u) == 0);
+    if (i > 0u && (uint8_t)(wire[i][5] - wire[i - 1u][5]) == 1u) {
+      counting += 1u;
+    }
+  }
+  assert(counting < 4u);
+
+  /* A flipped packet-number bit, then a flipped length bit, then the
+     intact packet: only the last one authenticates. */
+  VkrNetPathStats before;
+  VkrNetPathStats after;
+  uint8_t copy[VKR_NET_DATAGRAM_INITIAL];
+  const uint32_t flips[2][2] = {{5u, 0x01u}, {0u, 0x01u}};
+  for (uint32_t i = 0u; i < ArrayCount(flips); ++i) {
+    assert(
+        vkr_net_core_path(world.server.core, world.server.connection, &before));
+    memcpy(copy, wire[i], sizes[i]);
+    copy[flips[i][0]] ^= (uint8_t)flips[i][1];
+    vkr_net_core_receive(world.server.core, &world.client.address, copy,
+                         sizes[i], world.now);
+    assert(
+        vkr_net_core_path(world.server.core, world.server.connection, &after));
+    assert(after.packets_received == before.packets_received);
+    memcpy(copy, wire[i], sizes[i]);
+    vkr_net_core_receive(world.server.core, &world.client.address, copy,
+                         sizes[i], world.now);
+    assert(
+        vkr_net_core_path(world.server.core, world.server.connection, &after));
+    assert(after.packets_received == before.packets_received + 1u);
+  }
+  net_world_run(&world, NET_TEST_SECOND);
+  assert(!world.client.closed && !world.server.closed);
+  net_world_destroy(&world);
+  printf("  test_net_header_protection PASSED\n");
 }
 
 /* Fails when an address round trip through text changes it. */
@@ -1906,6 +2005,7 @@ bool32_t run_net_tests(void) {
   test_net_handshake();
   test_net_handshake_refused();
   test_net_handshake_wrong_key();
+  test_net_header_protection();
   test_net_retry();
   test_net_amplification();
   test_net_reliable_ordered();

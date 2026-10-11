@@ -162,6 +162,24 @@ static int bench_crypto(const BenchOptions *options) {
   printf("result test=aes256gcm_1mib mb_s=%.0f\n",
          (float64_t)bytes / elapsed / 1e6);
 
+  /* Header protection: one ChaCha20 mask per packet, on both sides. */
+  VkrNetPacketKey packet_key;
+  vkr_net_packet_key_init(&packet_key, key);
+  uint64_t masks = 0u;
+  uint8_t mask[VKR_NET_HP_MASK_SIZE] = {0};
+  start = bench_now();
+  while (bench_now() - start < budget) {
+    for (uint32_t i = 0u; i < 1024u; ++i) {
+      buffer[i] ^= mask[0];
+      vkr_net_header_mask(&packet_key, buffer + i, mask);
+    }
+    masks += 1024u;
+  }
+  elapsed = bench_now() - start;
+  printf("result test=header_mask packets_s=%.0f ns_per_packet=%.1f\n",
+         (float64_t)masks / elapsed, elapsed * 1e9 / (float64_t)masks);
+  vkr_net_packet_key_wipe(&packet_key);
+
   bytes = 0u;
   start = bench_now();
   while (bench_now() - start < budget) {

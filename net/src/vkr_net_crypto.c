@@ -10,6 +10,11 @@ _Static_assert(sizeof(((VkrNetPacketKey *)0)->state) ==
                "VkrNetPacketKey state must hold libsodium's AES-GCM state");
 _Static_assert(crypto_aead_aes256gcm_KEYBYTES == VKR_NET_KEY_SIZE,
                "AES-256-GCM key size");
+_Static_assert(crypto_stream_chacha20_ietf_KEYBYTES == VKR_NET_KEY_SIZE &&
+                   crypto_stream_chacha20_ietf_NONCEBYTES + 4u ==
+                       VKR_NET_HP_SAMPLE_SIZE,
+               "ChaCha20 header protection takes a 32-byte key and a 16-byte "
+               "sample");
 _Static_assert(crypto_aead_aes256gcm_ABYTES == VKR_NET_TAG_SIZE,
                "AES-256-GCM tag size");
 _Static_assert(crypto_aead_aes256gcm_NPUBBYTES == 12u, "AES-GCM nonce size");
@@ -377,11 +382,14 @@ void vkr_net_noise_wipe(VkrNetNoise *noise) {
 
 void vkr_net_packet_key_init(VkrNetPacketKey *key,
                              const uint8_t secret[VKR_NET_KEY_SIZE]) {
-  static const uint8_t label[] = "vkr net packet iv";
+  static const uint8_t iv_label[] = "vkr net packet iv";
+  static const uint8_t hp_label[] = "vkr net packet hp";
   crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)key->state,
                                  secret);
-  crypto_generichash_blake2b(key->iv, sizeof(key->iv), label,
-                             sizeof(label) - 1u, secret, VKR_NET_KEY_SIZE);
+  crypto_generichash_blake2b(key->iv, sizeof(key->iv), iv_label,
+                             sizeof(iv_label) - 1u, secret, VKR_NET_KEY_SIZE);
+  crypto_generichash_blake2b(key->hp, sizeof(key->hp), hp_label,
+                             sizeof(hp_label) - 1u, secret, VKR_NET_KEY_SIZE);
 }
 
 void vkr_net_packet_key_wipe(VkrNetPacketKey *key) {
@@ -406,6 +414,15 @@ void vkr_net_packet_seal(const VkrNetPacketKey *key, uint64_t packet_number,
   crypto_aead_aes256gcm_encrypt_detached_afternm(
       payload, tag, &tag_size, payload, payload_size, header, header_size, NULL,
       nonce, (const crypto_aead_aes256gcm_state *)key->state);
+}
+
+void vkr_net_header_mask(const VkrNetPacketKey *key,
+                         const uint8_t sample[VKR_NET_HP_SAMPLE_SIZE],
+                         uint8_t mask[VKR_NET_HP_MASK_SIZE]) {
+  static const uint8_t zeros[VKR_NET_HP_MASK_SIZE] = {0};
+  crypto_stream_chacha20_ietf_xor_ic(mask, zeros, VKR_NET_HP_MASK_SIZE,
+                                     sample + 4, vkr_load_le_u32(sample),
+                                     key->hp);
 }
 
 bool8_t vkr_net_packet_open(const VkrNetPacketKey *key, uint64_t packet_number,

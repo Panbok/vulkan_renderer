@@ -153,14 +153,22 @@ static void fuzz_core_advance(FuzzCore *fuzz, VkrNetCore *core,
   vkr_net_core_update(core, fuzz->pair.now);
 }
 
-/* A 1-RTT packet around `payload`, sealed with `key`. */
+/* A 1-RTT packet around `payload`, sealed with `key` and header-protected
+   as net_build_packet does: PADDING frames lengthen a payload too short
+   for the header-protection sample. */
 static uint32_t fuzz_core_seal(const VkrNetPacketKey *key, uint32_t cid,
                                uint64_t pn, uint8_t control,
                                const uint8_t *payload, uint32_t payload_size,
                                uint8_t *out, uint32_t capacity) {
   const uint32_t pn_length = (control & 0x03u) + 1u;
   const uint32_t header_size = 5u + pn_length;
-  if ((uint64_t)header_size + payload_size + VKR_NET_TAG_SIZE > capacity) {
+  const uint32_t padding =
+      header_size + payload_size + VKR_NET_TAG_SIZE < NET_SHORT_PACKET_MIN
+          ? NET_SHORT_PACKET_MIN -
+                (header_size + payload_size + VKR_NET_TAG_SIZE)
+          : 0u;
+  if ((uint64_t)header_size + payload_size + padding + VKR_NET_TAG_SIZE >
+      capacity) {
     return 0u;
   }
   out[0] = (uint8_t)(NET_FLAG_FIXED | (pn_length - 1u));
@@ -175,9 +183,17 @@ static uint32_t fuzz_core_seal(const VkrNetPacketKey *key, uint32_t cid,
   if (payload_size > 0u) {
     MemCopy(out + header_size, payload, payload_size);
   }
-  vkr_net_packet_seal(key, pn, out, header_size, out + header_size,
-                      payload_size, out + header_size + payload_size);
-  return header_size + payload_size + VKR_NET_TAG_SIZE;
+  MemZero(out + header_size + payload_size, padding);
+  const uint32_t sealed_size = payload_size + padding;
+  vkr_net_packet_seal(key, pn, out, header_size, out + header_size, sealed_size,
+                      out + header_size + sealed_size);
+  uint8_t mask[VKR_NET_HP_MASK_SIZE];
+  vkr_net_header_mask(key, out + NET_HP_SAMPLE_OFFSET, mask);
+  out[0] ^= mask[0] & NET_SHORT_PN_MASK;
+  for (uint32_t i = 0u; i < pn_length; ++i) {
+    out[NET_SHORT_PN_OFFSET + i] ^= mask[1u + i];
+  }
+  return header_size + sealed_size + VKR_NET_TAG_SIZE;
 }
 
 // =============================================================================

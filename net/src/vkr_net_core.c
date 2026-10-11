@@ -25,6 +25,14 @@
 #define NET_CID_SIZE 4u
 #define NET_SHORT_HEADER_MIN (1u + NET_CID_SIZE + 1u)
 #define NET_SHORT_HEADER_MAX (1u + NET_CID_SIZE + 4u)
+/* Header protection (RFC 9001 5.4) masks the packet-number length bits of
+   the flags byte and the packet-number bytes; the connection ID stays
+   clear. Its sample starts four bytes after the packet number's first
+   byte, as if the number were four bytes long, so every short packet
+   holds at least that offset and the sample. */
+#define NET_SHORT_PN_OFFSET (1u + NET_CID_SIZE)
+#define NET_HP_SAMPLE_OFFSET (NET_SHORT_PN_OFFSET + 4u)
+#define NET_SHORT_PACKET_MIN (NET_HP_SAMPLE_OFFSET + VKR_NET_HP_SAMPLE_SIZE)
 /* flags, version, destination and source connection IDs. */
 #define NET_LONG_HEADER_SIZE (1u + 4u + NET_CID_SIZE + NET_CID_SIZE)
 
@@ -2136,10 +2144,27 @@ static uint32_t net_build_packet(VkrNetCore *core, NetConnection *conn,
     return 0u;
   }
 
+  /* PADDING frames lengthen a short payload until the packet holds the
+     header-protection sample. */
+  const uint32_t unpadded = header_size +
+                            (uint32_t)(builder.cursor - builder.start) +
+                            VKR_NET_TAG_SIZE;
+  if (unpadded < NET_SHORT_PACKET_MIN) {
+    const uint32_t padding = NET_SHORT_PACKET_MIN - unpadded;
+    MemZero(builder.cursor, padding);
+    builder.cursor += padding;
+  }
+
   const uint32_t payload_size = (uint32_t)(builder.cursor - builder.start);
   const uint32_t packet_size = header_size + payload_size + VKR_NET_TAG_SIZE;
   vkr_net_packet_seal(&conn->tx, pn, header, header_size, builder.start,
                       payload_size, builder.cursor);
+  uint8_t mask[VKR_NET_HP_MASK_SIZE];
+  vkr_net_header_mask(&conn->tx, buffer + NET_HP_SAMPLE_OFFSET, mask);
+  header[0] ^= mask[0] & NET_SHORT_PN_MASK;
+  for (uint32_t i = 0u; i < pn_length; ++i) {
+    header[NET_SHORT_PN_OFFSET + i] ^= mask[1u + i];
+  }
 
   NetSentPacket *sent = &conn->sent[pn & conn->sent_mask];
   *sent = (NetSentPacket){
@@ -3118,8 +3143,7 @@ static void net_process_frames(VkrNetCore *core, NetConnection *conn,
 
 static void net_receive_short(VkrNetCore *core, const VkrNetAddress *from,
                               uint8_t *bytes, uint32_t size, uint64_t now) {
-  if (size < NET_SHORT_HEADER_MIN + VKR_NET_TAG_SIZE + 1u ||
-      (bytes[0] & NET_SHORT_RESERVED_MASK)) {
+  if (size < NET_SHORT_PACKET_MIN || (bytes[0] & NET_SHORT_RESERVED_MASK)) {
     return;
   }
   const uint32_t dcid = vkr_load_le_u32(bytes + 1);
@@ -3127,14 +3151,21 @@ static void net_receive_short(VkrNetCore *core, const VkrNetAddress *from,
   if (!conn || !conn->has_keys || conn->state == NET_STATE_DRAINING) {
     return;
   }
+  /* Removes header protection in place. A forged or damaged header
+     unmasks to a wrong packet number or length, which the AEAD refuses:
+     the unmasked header is its associated data. */
+  uint8_t mask[VKR_NET_HP_MASK_SIZE];
+  vkr_net_header_mask(&conn->rx, bytes + NET_HP_SAMPLE_OFFSET, mask);
+  bytes[0] ^= mask[0] & NET_SHORT_PN_MASK;
   const uint32_t pn_length = (bytes[0] & NET_SHORT_PN_MASK) + 1u;
-  const uint32_t header_size = 5u + pn_length;
+  const uint32_t header_size = NET_SHORT_PN_OFFSET + pn_length;
   if (size < header_size + VKR_NET_TAG_SIZE + 1u) {
     return;
   }
   uint64_t truncated = 0u;
   for (uint32_t i = 0u; i < pn_length; ++i) {
-    truncated |= (uint64_t)bytes[5u + i] << (8u * i);
+    bytes[NET_SHORT_PN_OFFSET + i] ^= mask[1u + i];
+    truncated |= (uint64_t)bytes[NET_SHORT_PN_OFFSET + i] << (8u * i);
   }
   const uint64_t largest = conn->rx_any ? conn->rx_largest : UINT64_MAX;
   const uint64_t pn =
