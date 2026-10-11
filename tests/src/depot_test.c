@@ -1194,6 +1194,7 @@ static void test_depot_identity_migration(void) {
 }
 
 /* Fails when the service does not move to a free port beside a taken one,
+   including a port another socket holds only for IPv4,
    when an unknown machine's connect does not report DENIED or leaves no
    request with its display name, when a role given through the service
    does not let it in on its next try, or when a browser does not see the
@@ -1245,6 +1246,21 @@ static void test_depot_service(void) {
   assert(info.address.port > taken && info.address.port <= taken + 3u);
   assert(!info.discoverable);
   vkr_depot_service_stop(service);
+
+  /* A dual-stack bind skips a port another socket holds for IPv4: IPv4
+     peers would reach that socket instead. */
+  VkrUdpSocket holder = {.handle = VKR_UDP_SOCKET_INVALID};
+  const VkrNetAddress ipv4_any = vkr_net_address_any(VKR_NET_ADDRESS_IPV4, 0u);
+  VkrNetAddress held;
+  assert(vkr_udp_socket_open(&ipv4_any, NULL, &holder));
+  assert(vkr_udp_socket_local_address(holder, &held));
+  snprintf(bind, sizeof(bind), "[::]:%u", held.port);
+  service = vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(service);
+  vkr_depot_service_info(service, &info);
+  assert(info.address.port > held.port && info.address.port <= held.port + 3u);
+  vkr_depot_service_stop(service);
+  vkr_udp_socket_close(&holder);
 
   /* A browser sees the first service on a unicast probe. */
   vkr_depot_service_info(first, &info);

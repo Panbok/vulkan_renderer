@@ -85,6 +85,28 @@ static bool8_t service_grant_owner(const char *store_root) {
                               VKR_DEPOT_ROLE_ADMIN);
 }
 
+/* Whether no other socket holds `bind`'s port in the other address family.
+   macOS lets a dual-stack socket bind [::]:p while another socket holds
+   0.0.0.0:p; IPv4 peers, loopback included, then reach that other socket.
+   So a wildcard IPv6 port counts as free only when 0.0.0.0 on it binds
+   too. */
+static bool8_t service_port_free(const VkrNetAddress *bind) {
+  const VkrNetAddress any =
+      vkr_net_address_any((VkrNetAddressFamily)bind->family, bind->port);
+  if (bind->family != VKR_NET_ADDRESS_IPV6 || bind->port == 0u ||
+      !vkr_net_address_equal(bind, &any)) {
+    return true_v;
+  }
+  const VkrNetAddress probe =
+      vkr_net_address_any(VKR_NET_ADDRESS_IPV4, bind->port);
+  VkrUdpSocket socket = {.handle = VKR_UDP_SOCKET_INVALID};
+  if (!vkr_udp_socket_open(&probe, NULL, &socket)) {
+    return false_v;
+  }
+  vkr_udp_socket_close(&socket);
+  return true_v;
+}
+
 /* Binds the host on the configured port or, when it is taken, one of the
    next ones. */
 static bool8_t service_bind(VkrDepotService *service,
@@ -104,7 +126,9 @@ static bool8_t service_bind(VkrDepotService *service,
                         65536u - first);
   for (uint32_t i = 0u; i < attempts && !service->host; ++i) {
     host_config->bind.port = (uint16_t)(first + i);
-    service->host = vkr_net_host_create(service->allocator, host_config);
+    if (service_port_free(&host_config->bind)) {
+      service->host = vkr_net_host_create(service->allocator, host_config);
+    }
   }
   if (!service->host) {
     snprintf(error, capacity, "could not bind %s (UDP %u to %u taken?)", bind,
