@@ -1993,6 +1993,81 @@ static void test_net_session_services(void) {
   printf("  test_net_session_services PASSED\n");
 }
 
+/* Fails when a session binds state to a connection it never saw CONNECTED
+   for, or saw CLOSED: a SERVICE_OPEN for such an ID must not open the
+   service, and a local open on it must fail, while the same message after
+   CONNECTED opens it. */
+static void test_net_session_dead_connection(void) {
+  printf("  Running test_net_session_dead_connection...\n");
+  NetTestWorld world;
+  net_world_init(&world, 19u, NULL, NULL);
+  net_world_link(&world, &(VkrNetSimLink){.latency_us = 5000u});
+  world.client.session =
+      vkr_net_session_create(&world.allocator, world.client.core);
+  assert(world.client.session);
+  const VkrNetServiceVersion versions[] = {{1u, 0x1111u}};
+  NetTestServiceLog client_log = {0};
+  NetTestServiceLog server_log = {0};
+  VkrNetService service = net_test_service(10u, &client_log, versions, 1u);
+  assert(vkr_net_session_register(world.client.session, &service));
+  net_world_connect(&world);
+
+  /* The client's SERVICE_OPEN, taken raw from the server's core. */
+  world.server.hold = true_v;
+  assert(vkr_net_session_open(world.client.session, world.client.connection,
+                              10u, world.now));
+  net_world_run(&world, NET_TEST_SECOND / 10u);
+  static uint8_t open_bytes[1024];
+  VkrNetEvent open = {0};
+  VkrNetEvent event;
+  while (vkr_net_core_poll(world.server.core, &event)) {
+    if (event.type == VKR_NET_EVENT_MESSAGE && event.channel == 0u) {
+      assert(event.size <= sizeof(open_bytes));
+      memcpy(open_bytes, event.data, event.size);
+      open = event;
+      open.data = open_bytes;
+    }
+  }
+  assert(open.type == VKR_NET_EVENT_MESSAGE);
+
+  VkrNetSession *session =
+      vkr_net_session_create(&world.allocator, world.server.core);
+  assert(session);
+  service = net_test_service(10u, &server_log, versions, 1u);
+  assert(vkr_net_session_register(session, &service));
+  const VkrNetConnectionId connection = world.server.connection;
+
+  /* Never CONNECTED. */
+  assert(vkr_net_session_dispatch(session, &open, world.now));
+  assert(server_log.opened == 0u &&
+         !vkr_net_session_is_open(session, connection, 10u));
+  assert(!vkr_net_session_open(session, connection, 10u, world.now));
+
+  /* CONNECTED, then CLOSED. */
+  const VkrNetEvent connected = {.type = VKR_NET_EVENT_CONNECTED,
+                                 .connection = connection};
+  const VkrNetEvent closed = {.type = VKR_NET_EVENT_CLOSED,
+                              .connection = connection,
+                              .code = VKR_NET_CLOSE_TIMEOUT};
+  (void)vkr_net_session_dispatch(session, &connected, world.now);
+  (void)vkr_net_session_dispatch(session, &closed, world.now);
+  assert(vkr_net_session_dispatch(session, &open, world.now));
+  assert(server_log.opened == 0u &&
+         !vkr_net_session_is_open(session, connection, 10u));
+  assert(!vkr_net_session_open(session, connection, 10u, world.now));
+
+  /* The same message on a live connection opens the service. */
+  (void)vkr_net_session_dispatch(session, &connected, world.now);
+  assert(vkr_net_session_dispatch(session, &open, world.now));
+  assert(server_log.opened == 1u &&
+         vkr_net_session_is_open(session, connection, 10u));
+
+  vkr_net_session_destroy(session);
+  vkr_net_session_destroy(world.client.session);
+  net_world_destroy(&world);
+  printf("  test_net_session_dead_connection PASSED\n");
+}
+
 bool32_t run_net_tests(void) {
   /* Unbuffered, so a stopped run shows the test it stopped in. */
   setvbuf(stdout, NULL, _IONBF, 0);
@@ -2027,6 +2102,7 @@ bool32_t run_net_tests(void) {
   test_net_host_loopback();
   test_net_host_thread();
   test_net_session_services();
+  test_net_session_dead_connection();
   printf("--- Network transport tests completed ---\n");
   return true;
 }

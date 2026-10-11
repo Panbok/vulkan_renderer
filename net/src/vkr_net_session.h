@@ -13,7 +13,10 @@
  *
  * The application polls the core and passes every event to
  * vkr_net_session_dispatch, which consumes channel-0 messages and the
- * events of service channels. A service sends only once it is open. */
+ * events of service channels. A service sends only once it is open. The
+ * session keeps state only for a connection it saw CONNECTED for and not
+ * yet CLOSED; opens and SERVICE_OPEN messages for any other are refused
+ * or dropped. */
 
 #define VKR_NET_SERVICE_VERSION_MAX 4u
 #define VKR_NET_SERVICE_CHANNEL_MAX 16u
@@ -68,8 +71,8 @@ void vkr_net_session_destroy(VkrNetSession *session);
 bool8_t vkr_net_session_register(VkrNetSession *session,
                                  const VkrNetService *service);
 
-/* Opens a registered service on a connection; `opened` or `closed`
-   follows. */
+/* Opens a registered service on a connection the session saw CONNECTED
+   for; `opened` or `closed` follows. */
 bool8_t vkr_net_session_open(VkrNetSession *session,
                              VkrNetConnectionId connection, uint16_t service_id,
                              uint64_t now_us);

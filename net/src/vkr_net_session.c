@@ -416,7 +416,9 @@ bool8_t vkr_net_session_open(VkrNetSession *session,
   uint32_t registered = 0u;
   const VkrNetService *service =
       session ? session_service(session, service_id, &registered) : NULL;
-  SessionConnection *state = service ? session_get(session, connection) : NULL;
+  /* Only a connection the session saw CONNECTED for, and not yet CLOSED,
+     has state; none is created for any other. */
+  SessionConnection *state = service ? session_find(session, connection) : NULL;
   if (!state || session_binding(state, service_id)) {
     return false_v;
   }
@@ -592,10 +594,10 @@ static void session_on_open(VkrNetSession *session,
                   VKR_NET_CLOSE_SCHEMA_MISMATCH, now);
     return;
   }
-  SessionConnection *state = session_get(session, connection);
+  /* A message for a connection the session never saw CONNECTED for, or
+     saw CLOSED, must not bind fresh state to that ID. */
+  SessionConnection *state = session_find(session, connection);
   if (!state) {
-    session_reply(session, connection, &session_refuse_message, service_id,
-                  VKR_NET_CLOSE_INTERNAL, now);
     return;
   }
   uint8_t ids[VKR_NET_SERVICE_CHANNEL_MAX];
@@ -714,7 +716,11 @@ bool8_t vkr_net_session_dispatch(VkrNetSession *session,
     return false_v;
   }
   if (event->type == VKR_NET_EVENT_CONNECTED) {
-    (void)session_get(session, event->connection);
+    /* Without state the session could serve nothing on the connection. */
+    if (!session_get(session, event->connection)) {
+      vkr_net_core_close(session->core, event->connection,
+                         VKR_NET_CLOSE_INTERNAL, now_us);
+    }
     return false_v;
   }
   if (event->type != VKR_NET_EVENT_MESSAGE &&
