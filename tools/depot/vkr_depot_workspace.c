@@ -745,13 +745,34 @@ bool8_t vkr_depot_write_blob(const VkrDepotStore *store, const VkrDepotId *blob,
   ok = vkr_depot_blob_parse(manifest, manifest_size, NULL, blob_write_chunk,
                             &state);
   free(manifest);
-  ok = ok && file_flush_durable(file);
+  /* No flush (owner decision): a crash may tear the file, so a checkout
+     marks it for the next snapshot to hash. */
   ok = (fclose(file) == 0) && ok;
   if (!ok || !vkr_bakery_rename(temp, path, true_v)) {
     (void)vkr_bakery_remove_file(temp);
     return false_v;
   }
   return true_v;
+}
+
+uint32_t vkr_depot_workspace_settle(VkrDepotWorkspace *workspace,
+                                    const VkrDepotFileList *files) {
+  uint32_t settled = 0u;
+  for (uint32_t i = 0u; i < workspace->index.count; ++i) {
+    VkrDepotIndexEntry *entry = &workspace->index.entries[i];
+    if (entry->mtime_ns != -1) {
+      continue;
+    }
+    const VkrDepotIndexEntry *hashed =
+        vkr_depot_file_list_find(files, entry->path);
+    if (hashed && hashed->mtime_ns != -1 &&
+        vkr_depot_id_equal(&hashed->blob, &entry->blob)) {
+      entry->size = hashed->size;
+      entry->mtime_ns = hashed->mtime_ns;
+      settled += 1u;
+    }
+  }
+  return settled;
 }
 
 bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
@@ -781,13 +802,20 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
         vkr_depot_file_list_find(&workspace->index, entry->path);
     VkrBakeryStat stat = {0};
     const bool8_t present = vkr_bakery_stat(absolute, &stat) && stat.exists;
-    if (!(known && present && vkr_depot_id_equal(&known->blob, &entry->blob) &&
-          known->size == stat.size && known->mtime_ns == stat.mtime_ns)) {
-      ok = vkr_depot_write_blob(&workspace->store, &entry->blob, absolute) &&
-           vkr_bakery_stat(absolute, &stat);
+    /* A file that already holds the blob stays, including one an earlier
+       checkout wrote that no snapshot has hashed yet (-1). */
+    if (known && present && vkr_depot_id_equal(&known->blob, &entry->blob) &&
+        known->size == stat.size &&
+        (known->mtime_ns == stat.mtime_ns || known->mtime_ns == -1)) {
+      ok = vkr_depot_file_list_add(&index, entry->path, known->size,
+                                   known->mtime_ns, &entry->blob);
+      continue;
     }
-    ok = ok && vkr_depot_file_list_add(&index, entry->path, stat.size,
-                                       stat.mtime_ns, &entry->blob);
+    /* Written without a flush: -1 makes the next snapshot hash it, so a file
+       a crash tore shows as a change instead of passing as current. */
+    ok = vkr_depot_write_blob(&workspace->store, &entry->blob, absolute) &&
+         vkr_depot_file_list_add(&index, entry->path, entry->size, -1,
+                                 &entry->blob);
   }
   /* Tracked files the target lacks leave, unless they are local changes. */
   for (uint32_t i = 0u; i < workspace->index.count && ok; ++i) {

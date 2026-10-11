@@ -14,6 +14,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/stat.h>
+#endif
+
 /* The asset depot (docs/proposals/network-protocol.md, "Depot"): object
  * formats, the store, content-defined chunking, working copies and the
  * client and server over the simulated network. Each test names the failure
@@ -325,6 +330,33 @@ static void test_depot_workspace(void) {
     assert(vkr_bakery_path_join(b, sizeof(b), copy_root, paths[i]));
     assert(depot_test_files_equal(a, b));
   }
+
+#if !defined(_WIN32)
+  /* Checkout does not flush, so a crash can leave a file with its recorded
+     size and time but other bytes; the next snapshot must still hash it. */
+  char torn[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(torn, sizeof(torn), copy_root, "scene.json"));
+  VkrBakeryStat written = {0};
+  assert(vkr_bakery_stat(torn, &written));
+  depot_test_write(copy_root, "scene.json", "[]", 2u);
+  const struct timespec times[2] = {{.tv_sec = written.mtime_ns / 1000000000,
+                                     .tv_nsec = written.mtime_ns % 1000000000},
+                                    {.tv_sec = written.mtime_ns / 1000000000,
+                                     .tv_nsec = written.mtime_ns % 1000000000}};
+  assert(utimensat(AT_FDCWD, torn, times, 0) == 0);
+  VkrBakeryStat tampered = {0};
+  assert(vkr_bakery_stat(torn, &tampered) && tampered.size == written.size &&
+         tampered.mtime_ns == written.mtime_ns);
+  VkrDepotId copy_tree;
+  VkrDepotFileList copy_files;
+  assert(vkr_depot_workspace_snapshot(&copy, &copy_tree, &copy_files));
+  ChangeCounts torn_counts = {0};
+  assert(vkr_depot_file_list_diff(&copy.index, &copy_files,
+                                  depot_test_count_change, &torn_counts));
+  assert(torn_counts.modified == 1u && torn_counts.added == 0u &&
+         torn_counts.deleted == 0u);
+  vkr_depot_file_list_free(&copy_files);
+#endif
 
   /* Edits show in the diff against the index. */
   depot_test_write(root, "scene.json", "{\"x\":1}", 7u);

@@ -428,6 +428,11 @@ static int depot_status(const char *directory) {
     char hex[VKR_DEPOT_ID_HEX];
     vkr_depot_id_hex(&workspace.base, hex);
     printf("%u changes on %s at %.12s\n", printer.count, workspace.branch, hex);
+    /* Files a checkout wrote are hashed once; keep what this one verified. */
+    if (vkr_depot_workspace_settle(&workspace, &files) &&
+        !vkr_depot_workspace_save(&workspace)) {
+      fprintf(stderr, "could not save the working copy's index\n");
+    }
     vkr_depot_file_list_free(&files);
     result = 0;
   }

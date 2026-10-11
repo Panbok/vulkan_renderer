@@ -132,6 +132,12 @@ from the caller's thread.
   ([vkr_depot_workspace.h](../../tools/depot/vkr_depot_workspace.h)):
   `.vkrdepot/` holds the state (remote, server key, branch, base commit,
   index). A snapshot hashes only files whose size or time changed.
+  Checkout writes each file through a temporary and a rename without
+  flushing it (owner decision, 2026-10-11): its index entry carries time -1,
+  so the next snapshot hashes it once, and a file a crash tore with its size
+  and time intact shows as a change instead of passing as current. A later
+  checkout leaves such a file alone when its size and blob match, and
+  `status` saves the times it verified.
 - **Service** ([vkr_depot_protocol.h](../../tools/depot/vkr_depot_protocol.h)):
   schema `vkr.depot` version 1 on a reliable ordered control channel; stored
   representations as raw messages on a reliable unordered priority-7

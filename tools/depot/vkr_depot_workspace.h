@@ -100,10 +100,18 @@ bool8_t vkr_depot_file_list_diff(const VkrDepotFileList *from,
                                  VkrDepotChangeVisitor visit, void *context);
 
 /* Writes `tree` into the working directory and makes it the index. Files the
-   caller marks in `keep` (local changes) stay untouched. */
+   caller marks in `keep` (local changes) stay untouched. Written files are not
+   flushed; their index entries carry -1, so the next snapshot hashes them. */
 bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
                                      const VkrDepotId *tree,
                                      const VkrDepotFileList *keep);
+
+/* Records, for each index entry still marked -1 whose file `files` (a
+   snapshot) found holding the same blob, the size and time it hashed, so
+   later snapshots skip it. Returns how many entries changed; the caller
+   saves the working copy. */
+uint32_t vkr_depot_workspace_settle(VkrDepotWorkspace *workspace,
+                                    const VkrDepotFileList *files);
 
 /* Writes one file of the store to `path` through a temporary. */
 bool8_t vkr_depot_write_blob(const VkrDepotStore *store, const VkrDepotId *blob,
