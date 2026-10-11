@@ -18,6 +18,8 @@ base colour the project texture packer packs. The check asserts that:
   nothing to do;
 - scene preparation accepts cooked textures whose bytes differ from the
   cooking host's (closures record `platform` for `.vkt`);
+- a build without recipes is reported for a rebuild, and the rebuild
+  records recipes and retires the old revision's texture records;
 - a share of the project reports no rebuild and no texture without a
   recipe, and the shared copy, stripped of its `.vkt` files as a depot clone
   is, gets them back from `recook_textures`.
@@ -226,6 +228,30 @@ def main():
         assert all(value == 'platform' for closure in closures for path, value in closure.items()
                    if path.endswith('.vkt')), closures
         (build / 'textures' / names[1]).write_bytes(textures[names[1]])
+
+        # A build without recipes, as a cook before them left it, needs a
+        # rebuild; the rebuild records recipes and retires the texture
+        # records of the old revision.
+        again_path = Path(again['scene_path'])
+        old_build = build_textures(again_path)[0]
+        (old_build / 'textures' / 'recipes.json').unlink()
+        stale = run(dict(recook, scene_id=again['scene_id'], scene_path=again['scene_path']),
+                    'recook-stale')
+        mesh_id = next(asset['id'] for asset in jobs.read_managed_scene(again_path)['assets']
+                       if asset['kind'] == 'mesh')
+        assert [entry['asset_id'] for entry in stale['needs_rebuild']] == [mesh_id], stale
+        run({'operation': 'rebuild_asset', 'scene_id': again['scene_id'],
+             'scene_path': again['scene_path'], 'asset_id': mesh_id}, 'rebuild')
+        new_build, _, rebuilt_textures, _ = build_textures(again_path)
+        assert new_build != old_build and set(rebuilt_textures) == set(textures)
+        texture_paths = [asset['artifacts'][0]['path']
+                         for asset in jobs.read_managed_scene(again_path)['assets']
+                         if asset['kind'] == 'texture']
+        assert texture_paths and all(path.startswith(f'builds/{new_build.name}/')
+                                     for path in texture_paths), texture_paths
+        migrated = run(dict(recook, scene_id=again['scene_id'], scene_path=again['scene_path']),
+                       'recook-migrated')
+        assert migrated['needs_rebuild'] == [] and migrated['recooked'] == 0, migrated
 
         # A share needs no rebuild; its copy without .vkt files cooks them.
         document = json.loads(manifest.read_text())

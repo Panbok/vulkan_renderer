@@ -1718,6 +1718,116 @@ vkr_internal bool8_t vkr_project_uses_asset(const VkrBakeryJson *value,
   return false_v;
 }
 
+/* Adds every string `value` holds to `names`. */
+vkr_internal void vkr_project_collect_strings(VkrProjectJob *job,
+                                              const VkrBakeryJson *value,
+                                              VkrProjectSet *names) {
+  if (!value) {
+    return;
+  }
+  if (value->type == VKR_BAKERY_JSON_STRING) {
+    (void)vkr_project_set_add(
+        names,
+        vkr_project_printf(job, "%.*s", (int)value->string.length,
+                           (const char *)value->string.str),
+        NULL);
+    return;
+  }
+  for (const VkrBakeryJson *child = value->first; child; child = child->next) {
+    vkr_project_collect_strings(job, child, names);
+  }
+}
+
+/* After a mesh rebuild, drops the texture records of the mesh's import that
+   its new revision no longer holds, as when the rebuild names textures by
+   recipe instead of by bytes (vkr_mesh_cook_source.c). Their old revision
+   stops being live and workspace cleanup collects it. A record the scene,
+   its edit overlay or another record names stays, as delete_asset keeps
+   it. */
+vkr_internal bool8_t vkr_project_retire_textures(VkrProjectJob *job,
+                                                 const VkrBakeryJson *scene,
+                                                 const char *scene_root,
+                                                 const VkrBakeryJson *mesh) {
+  Arena *arena = job->arena;
+  const char *import_id = vkr_project_json_text(mesh, "import_id");
+  const char *revision = vkr_project_json_text(mesh, "import_revision");
+  if (!vkr_bakery_json_is_string(vkr_bakery_json_get(mesh, "kind"), "mesh") ||
+      !import_id || !revision) {
+    return true_v;
+  }
+  const char *prefix = vkr_project_printf(job, "builds/%s/", revision);
+  VkrProjectSet stale = {0};
+  VkrProjectSet names = {0};
+  bool8_t ok = true_v;
+  for (const VkrBakeryJson *item = job->assets->first; item;
+       item = item->next) {
+    const VkrBakeryJson *artifacts = vkr_bakery_json_get(item, "artifacts");
+    const char *path =
+        artifacts ? vkr_project_json_text(artifacts->first, "path") : NULL;
+    const char *id = vkr_project_json_text(item, "id");
+    if (id && path && strncmp(path, prefix, strlen(prefix)) != 0 &&
+        vkr_bakery_json_is_string(vkr_bakery_json_get(item, "kind"),
+                                  "texture") &&
+        vkr_bakery_json_is_string(vkr_bakery_json_get(item, "import_id"),
+                                  import_id)) {
+      ok = ok && vkr_project_set_add(&stale, id, NULL);
+    }
+  }
+  if (!stale.count || !ok) {
+    vkr_project_set_free(&stale);
+    return ok ? true_v : vkr_project_fail(job, "Out of memory");
+  }
+  for (const VkrBakeryJson *field = scene->first; field; field = field->next) {
+    if (!(field->key.length == 6u &&
+          MemCompare(field->key.str, "assets", 6u) == 0)) {
+      vkr_project_collect_strings(job, field, &names);
+    }
+  }
+  for (const VkrBakeryJson *item = job->assets->first; item;
+       item = item->next) {
+    const char *id = vkr_project_json_text(item, "id");
+    if (!id || !vkr_project_set_has(&stale, id)) {
+      vkr_project_collect_strings(job, item, &names);
+    }
+  }
+  const char *overlay_path = vkr_project_json_text(scene, "edit_overlay");
+  if (overlay_path && overlay_path[0]) {
+    char overlay[VKR_PROJECT_PATH];
+    const VkrBakeryJson *document = NULL;
+    ok =
+        vkr_project_contained(job, scene_root, overlay_path, true_v, overlay) &&
+        (document = vkr_project_load_json(
+             job, overlay, VKR_PROJECT_MAX_OVERLAY_BYTES)) != NULL;
+    vkr_project_collect_strings(job, document, &names);
+  }
+  VkrBakeryJson *kept = vkr_bakery_json_array(arena);
+  uint32_t retired = 0u;
+  for (VkrBakeryJson *item = ok ? job->assets->first : NULL; item;) {
+    VkrBakeryJson *next = item->next;
+    const char *id = vkr_project_json_text(item, "id");
+    if (id && vkr_project_set_has(&stale, id) &&
+        !vkr_project_set_has(&names, id)) {
+      retired += 1u;
+    } else {
+      vkr_bakery_json_append(kept, item);
+    }
+    item = next;
+  }
+  if (ok) {
+    job->assets->first = kept->first;
+    job->assets->last = kept->last;
+    job->assets->count = kept->count;
+  }
+  if (retired) {
+    printf("Rebuild: retired %u texture records of the previous revision\n",
+           retired);
+    fflush(stdout);
+  }
+  vkr_project_set_free(&stale);
+  vkr_project_set_free(&names);
+  return ok;
+}
+
 vkr_internal bool8_t vkr_project_valid_asset_name(const char *name,
                                                   const char *stripped) {
   if (!stripped[0] || strlen(stripped) > 512u) {
@@ -2242,7 +2352,9 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
     }
     for (uint32_t i = 0u; i < finalized.count; ++i) {
       if (!vkr_project_rebuild_asset(job, "rebuild_asset", finalized.items[i],
-                                     scene_root)) {
+                                     scene_root) ||
+          !vkr_project_retire_textures(job, scene, scene_root,
+                                       finalized.items[i])) {
         return NULL;
       }
     }
@@ -2272,7 +2384,8 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
       return vkr_project_rename_asset(job, scene, record, path, scene_root,
                                       fingerprint);
     }
-    if (!vkr_project_rebuild_asset(job, operation, record, scene_root)) {
+    if (!vkr_project_rebuild_asset(job, operation, record, scene_root) ||
+        !vkr_project_retire_textures(job, scene, scene_root, record)) {
       return NULL;
     }
   }
