@@ -460,6 +460,15 @@ struct VkrVkSdsmRoot
     uint2 reserved;
 };
 
+// The opaque depth at the picked pixel, read back with the object id. A
+// struct, not a `float *`: with a `float *` (or `uint *`) here, the AMD
+// driver (RX 6700 XT, 26.6.3) gave the shader the address's low word in both
+// halves and the store lost the device on every pick.
+struct VkrVkPickingDepth
+{
+    float depth;
+};
+
 struct VkrVkPickingRoot
 {
     VkrGpuVisibleDrawRow *opaque_visible;
@@ -473,8 +482,8 @@ struct VkrVkPickingRoot
     uint transmission_layer;
     uint use_transmission;
     uint depth_texture;
-    // One float: the opaque depth at `pixel`, read back with the object id.
-    float *depth_output;
+    // The editor lifts its grid onto the visible floor from this depth.
+    VkrVkPickingDepth *depth_output;
 };
 
 struct VkrVkTransmissionRoot
@@ -4106,7 +4115,7 @@ void vk_picking_resolve(uint3 thread_id : SV_DispatchThreadID)
     g_storage_uint_2d[root.output_texture][root.pixel] = identifier;
     // The editor lifts its grid onto the visible floor from this depth when
     // the scene has no collision; 1 is the far plane.
-    root.depth_output[0] =
+    root.depth_output[0].depth =
         g_depth_textures[root.depth_texture].Load(int3(root.pixel, 0));
 }
 

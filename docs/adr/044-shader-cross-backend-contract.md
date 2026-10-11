@@ -646,7 +646,11 @@ Picking also returns the opaque device depth at the picked pixel, which the
 editor's grid fit unprojects. On Vulkan the picking resolve root grows to 80
 bytes (`depth_texture`, `depth_output` at 64) and writes the readback buffer at
 offset 8 through its device address; Windows Vulkan fits Bistro's grid from
-that depth. On Metal the tiled pipeline replays the opaque draws into the
+that depth. On 2026-10-11 every pick lost the device on an AMD Radeon RX 6700
+XT (driver 26.6.3): the shader saw the `float *` address with its low word in
+both halves, while the root's words held it correctly. `depth_output` now
+points at a one-float struct; Release and Debug (validation clean) pick Bistro
+meshes there with depths near 0.97. On Metal the tiled pipeline replays the opaque draws into the
 picking target, and the readback copies the picked pixel's resolved depth
 (ADR-087, decision 9); `grid.fit` on Bistro read 16.8432 m from it.
 
