@@ -42,7 +42,8 @@ def normalize(path: str) -> str:
 
 def references(root: pathlib.Path, location: pathlib.Path) -> set:
     """`assets/...` paths a file names; a material's relative texture paths
-    are resolved against its folder, and a PNG brings its cooked `.vkt`."""
+    are resolved against its folder. Cooked `.vkt` files are left out: they
+    are per platform, and `.vkrdepotignore` drops them."""
     data = (root / location).read_bytes()
     found = {normalize(m.decode()) for m in ASSET_PATH.findall(data)}
     if location.suffix == ".mt":
@@ -55,10 +56,7 @@ def references(root: pathlib.Path, location: pathlib.Path) -> set:
                 found.add(normalize(relative))
             else:
                 found.add(normalize((location.parent / relative).as_posix()))
-    for path in list(found):
-        if path.endswith(".png"):
-            found.add(path + ".vkt")
-    return found
+    return {path for path in found if not path.endswith(".vkt")}
 
 
 def asset_location(root: pathlib.Path, path: str):

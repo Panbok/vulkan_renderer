@@ -106,6 +106,11 @@ that prints `same` proves the two branches are equal.
   under `assets/` are often untracked or ignored by git, so the other
   machine lacks them. Until the editor also looks for `assets/...` in the
   workspace, copy those folders into the receiving repository after a pull.
+- Cooked textures (`.vkt`) are per platform: the Mac cooks ASTC, which the
+  Windows GPU cannot sample, and Windows cooks BC. `.vkrdepotignore` names
+  `*.vkt`, so commit only the `.png` sources. After a pull, cook each new
+  texture folder on the receiving machine with
+  `vkr_bakery cook assets/textures/<folder>`.
 - `project.json` stores editor layouts and camera state. Each editor session
   rewrites it, so expect a conflict on it whenever both machines open the
   project. Pull before you open the project, and commit soon after you save.
