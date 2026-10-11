@@ -45,6 +45,16 @@ commands. This skill sets how two machines and their agent sessions use them.
   uses UDP 7320; discovery uses UDP 7319.
 - After you pull `main` with new depot code, rebuild, copy and restart the
   server, and post the restart.
+- To keep a server or `mirror --watch` running past one agent session, run
+  it as a launchd agent (`~/Library/LaunchAgents/com.vkr.depot.*.plist`,
+  `launchctl bootstrap gui/$(id -u) <plist>`). Set `VKR_DEPOT_IDENTITY`
+  in the plist: the default identity key lives in the user cache folder
+  (`~/Library/Caches/vkr_bakery/vkr/depot/identity.key`), so never delete
+  that cache. A launchd job gets no LAN access until the owner allows it
+  under Privacy & Security > Local Network. A plain binary may not get a
+  prompt; run a job that reaches the LAN from an app bundle whose
+  `Info.plist` has `NSLocalNetworkUsageDescription`. A job that only
+  serves, and is reached over loopback, needs none.
 
 ## Network: test before you blame the code
 
@@ -93,27 +103,34 @@ that prints `same` proves the two branches are equal.
   Keep a separate working copy with workspace-relative paths whose
   `.vkrdepotignore` leaves out each machine's editor state:
   `.vkreditor/jobs/`, `logs/`, `cache/`, `build/`, `editor/`,
-  `.vkreditor/workspace.json` and `.runtime/`. A working copy next to its
+  `.vkreditor/workspace.json`, `.vkreditor/local/` and `.runtime/`. A
+  working copy next to its
   server shares the server's store with `clone ... --store <server store>`.
 - A project scene lives at
   `.vkreditor/projects/<project>/scenes/<scene>/`. Its folder keeps every
   old edit overlay and every old build, because the editor deletes neither.
   Only the files named by `scene.json` and its inventory are live.
-- The editor reads `.vkreditor/...` from `--workspace` and `assets/...`
-  from the content root, which is the repository in a development build.
-  Terrain heightfields named `assets/terrain/<id>.vkrhf` live in
-  `.vkreditor/assets/terrain/`. Generated meshes, materials and textures
-  under `assets/` are often untracked or ignored by git, so the other
-  machine lacks them. Until the editor also looks for `assets/...` in the
-  workspace, copy those folders into the receiving repository after a pull.
+- Open a working copy with `vkr_editor --workspace <working copy>`. The
+  editor reads `.vkreditor/...` from the workspace, and `assets/...` from
+  `<workspace>/assets/...` when that file exists, else from the repository
+  (ADR-077 overlay). So commit the generated meshes, materials and textures
+  a scene needs under `assets/`; git often ignores them, and the other
+  machine lacks them. Terrain heightfields named `assets/terrain/<id>.vkrhf`
+  live in `.vkreditor/assets/terrain/`. A clone without
+  `.vkreditor/workspace.json` gets a new one when the editor opens it.
 - Cooked textures (`.vkt`) are per platform: the Mac cooks ASTC, which the
   Windows GPU cannot sample, and Windows cooks BC. `.vkrdepotignore` names
   `*.vkt`, so commit only the `.png` sources. After a pull, cook each new
-  texture folder on the receiving machine with
-  `vkr_bakery cook assets/textures/<folder>`.
-- `project.json` stores editor layouts and camera state. Each editor session
-  rewrites it, so expect a conflict on it whenever both machines open the
-  project. Pull before you open the project, and commit soon after you save.
+  texture folder on the receiving machine with `vkr_bakery cook <folder>`,
+  in the folder that holds the `.png`.
+- `project.json` holds only shared project data: scenes, assets, the
+  default font and the animation graph. Layouts, panels, graphics and
+  camera recall live per machine in `.vkreditor/local/projects/<id>.json`
+  (ADR-069). A shipped game's start view is `game.startup_camera` in
+  `game.json`, set with Build Settings > Use startup scene view or
+  `build.camera`. A project last saved before this split carries the old
+  sections until its next shared save, so the first commit after that save
+  shows `project.json` as changed.
 
 Stage a scene with [scripts/stage_scene.py](scripts/stage_scene.py). It
 copies the live set with its untracked asset closure and exits 1 when a
