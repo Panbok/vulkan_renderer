@@ -38,9 +38,9 @@ bool8_t vkr_bakery_read_file(const char *path, uint64_t max_bytes,
 /** Writes a sibling temporary, flushes it, then replaces `path`. */
 bool8_t vkr_bakery_write_file_atomic(const char *path, const void *data,
                                      uint64_t length);
-/** Writes a sibling temporary and replaces `path` without flushing it: a
-    crash may leave `path` empty or torn, so a caller checks what it reads.
-    On a hard disk this saves a seek per file. */
+/** Writes a sibling temporary and replaces `path` without flushing the
+    file or the rename: a crash may leave `path` empty, torn or missing, so
+    a caller checks what it reads. On a hard disk this saves seeks per file. */
 bool8_t vkr_bakery_replace_file(const char *path, const void *data,
                                 uint64_t length);
 bool8_t vkr_bakery_append_file(const char *path, const void *data,

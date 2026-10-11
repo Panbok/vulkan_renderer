@@ -577,6 +577,15 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
                       bool8_t overwrite);
 
 /**
+ * As file_rename, but the rename need not reach the disk before it returns:
+ * on Windows it skips MOVEFILE_WRITE_THROUGH, a forced metadata write per
+ * file that costs a seek on a hard disk. A crash may lose the rename, so a
+ * caller checks what it reads (the depot store).
+ */
+FileError file_rename_unflushed(const FilePath *source,
+                                const FilePath *destination, bool8_t overwrite);
+
+/**
  * Creates `destination` as a copy-on-write clone of `source`, sharing its
  * blocks until either file changes (APFS). The clone is owner-writable. An
  * existing destination fails with FILE_ERROR_ALREADY_EXISTS; a filesystem or

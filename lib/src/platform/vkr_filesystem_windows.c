@@ -549,15 +549,16 @@ FileError file_remove(const FilePath *path) {
                              : fs_windows_error(GetLastError());
 }
 
-FileError file_rename(const FilePath *source, const FilePath *destination,
-                      bool8_t overwrite) {
+static FileError fs_windows_rename(const FilePath *source,
+                                   const FilePath *destination,
+                                   bool8_t overwrite, bool8_t write_through) {
   wchar_t from[VKR_WINDOWS_PATH_WCHARS];
   wchar_t to[VKR_WINDOWS_PATH_WCHARS];
   if (!file_windows_native_path(source, from) ||
       !file_windows_native_path(destination, to)) {
     return FILE_ERROR_INVALID_PATH;
   }
-  DWORD flags = MOVEFILE_WRITE_THROUGH;
+  DWORD flags = write_through ? MOVEFILE_WRITE_THROUGH : 0u;
   if (overwrite) {
     flags |= MOVEFILE_REPLACE_EXISTING;
   }
@@ -577,6 +578,17 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
     }
     Sleep(10u);
   }
+}
+
+FileError file_rename(const FilePath *source, const FilePath *destination,
+                      bool8_t overwrite) {
+  return fs_windows_rename(source, destination, overwrite, true_v);
+}
+
+FileError file_rename_unflushed(const FilePath *source,
+                                const FilePath *destination,
+                                bool8_t overwrite) {
+  return fs_windows_rename(source, destination, overwrite, false_v);
 }
 
 /* ReFS (including Dev Drive) shares clusters between files through extent

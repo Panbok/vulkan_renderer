@@ -416,6 +416,13 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
   return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_IO_ERROR;
 }
 
+/* rename(2) does not flush either way. */
+FileError file_rename_unflushed(const FilePath *source,
+                                const FilePath *destination,
+                                bool8_t overwrite) {
+  return file_rename(source, destination, overwrite);
+}
+
 FileError file_clone(const FilePath *source, const FilePath *destination) {
   if (!source || !source->path.str || !destination || !destination->path.str) {
     return FILE_ERROR_INVALID_PATH;

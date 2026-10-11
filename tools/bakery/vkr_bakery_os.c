@@ -339,7 +339,15 @@ static bool8_t bakery_write_replacing(const char *path, const void *data,
                 fwrite(data, 1u, (size_t)length, file) == (size_t)length) &&
                (!flush || vkr_bakery_flush_file(file));
   ok = fclose(file) == 0 && ok;
-  ok = ok && vkr_bakery_rename(temporary, path, true_v);
+  if (ok && flush) {
+    ok = vkr_bakery_rename(temporary, path, true_v);
+  } else if (ok) {
+    const FilePath from = {
+        .path = {.str = (uint8_t *)temporary, .length = strlen(temporary)}};
+    const FilePath to = {
+        .path = {.str = (uint8_t *)path, .length = strlen(path)}};
+    ok = file_rename_unflushed(&from, &to, true_v) == FILE_ERROR_NONE;
+  }
   if (!ok) {
     (void)vkr_bakery_remove_file(temporary);
   }
