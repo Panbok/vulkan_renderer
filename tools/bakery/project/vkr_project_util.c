@@ -1636,7 +1636,7 @@ bool8_t vkr_project_older_than(const char *path, int64_t seconds, int64_t now) {
   if (!vkr_bakery_stat(path, &info) || !info.exists) {
     return false_v;
   }
-  return now - info.mtime_ns / 1000000000LL > seconds;
+  return now - info.mtime_ns / 1000000000LL >= seconds;
 #else
   struct stat info;
   if (lstat(path, &info) != 0) {
@@ -1649,7 +1649,7 @@ bool8_t vkr_project_older_than(const char *path, int64_t seconds, int64_t now) {
   const float64_t mtime =
       (float64_t)info.st_mtim.tv_sec + (float64_t)info.st_mtim.tv_nsec * 1e-9;
 #endif
-  return (float64_t)now - mtime > (float64_t)seconds;
+  return (float64_t)now - mtime >= (float64_t)seconds;
 #endif
 }
 

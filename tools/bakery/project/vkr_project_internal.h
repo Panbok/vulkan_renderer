@@ -539,9 +539,13 @@ VkrBakeryJson *vkr_project_recook_textures(VkrProjectJob *job);
  * asset closure into a new self-contained workspace at the request's
  * `destination` (vkr_project_share.c). */
 VkrBakeryJson *vkr_project_share(VkrProjectJob *job);
-/** Removes workspace data no listed scene can reach; reports what it freed. */
-bool8_t vkr_project_collect_garbage(VkrProjectJob *job, uint32_t *out_removed,
-                                    uint64_t *out_freed);
+/** Removes workspace data no listed scene can reach; reports what it freed.
+ * Unreferenced revisions and cache entries go once VKR_PROJECT_UNREFERENCED_
+ * GRACE_SECONDS old, unlisted scenes and projects once VKR_PROJECT_ORPHAN_
+ * GRACE_SECONDS old, as a job may be about to publish them; a non-negative
+ * `grace_seconds` shortens both, for a workspace no other job writes. */
+bool8_t vkr_project_collect_garbage(VkrProjectJob *job, int64_t grace_seconds,
+                                    uint32_t *out_removed, uint64_t *out_freed);
 
 // =============================================================================
 // Bakes (vkr_project_bake.c)

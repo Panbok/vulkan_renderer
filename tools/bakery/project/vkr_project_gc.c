@@ -15,6 +15,10 @@
 typedef struct VkrProjectCleanup {
   VkrProjectJob *job;
   int64_t now;
+  /* Ages after which an unreferenced revision or cache entry, and an
+     unlisted scene or project, may go (vkr_project_collect_garbage). */
+  int64_t unreferenced_grace;
+  int64_t orphan_grace;
   uint32_t removed;
   uint64_t freed;
 } VkrProjectCleanup;
@@ -101,8 +105,8 @@ vkr_internal bool8_t vkr_project_scene_references(VkrProjectCleanup *cleanup,
       char revision[VKR_PROJECT_PATH];
       if (vkr_project_child_path(builds, names.items[i], revision) &&
           !vkr_project_set_has(&revisions, names.items[i]) &&
-          vkr_project_older_than(
-              revision, VKR_PROJECT_UNREFERENCED_GRACE_SECONDS, cleanup->now)) {
+          vkr_project_older_than(revision, cleanup->unreferenced_grace,
+                                 cleanup->now)) {
         vkr_project_drop(cleanup, revision);
       }
     }
@@ -123,8 +127,7 @@ vkr_internal bool8_t vkr_project_scene_references(VkrProjectCleanup *cleanup,
           vkr_project_printf(job, "inventory/%s", names.items[i]);
       if (vkr_project_child_path(inventories, names.items[i], inventory) &&
           (!current || strcmp(reference, current) != 0) &&
-          vkr_project_older_than(inventory,
-                                 VKR_PROJECT_UNREFERENCED_GRACE_SECONDS,
+          vkr_project_older_than(inventory, cleanup->unreferenced_grace,
                                  cleanup->now)) {
         vkr_project_drop(cleanup, inventory);
       }
@@ -149,8 +152,8 @@ vkr_internal bool8_t vkr_project_scene_references(VkrProjectCleanup *cleanup,
       if (vkr_project_child_path(edits, names.items[i], revision) &&
           vkr_bakery_is_file(revision) &&
           (!overlay_current || strcmp(reference, overlay_current) != 0) &&
-          vkr_project_older_than(
-              revision, VKR_PROJECT_UNREFERENCED_GRACE_SECONDS, cleanup->now)) {
+          vkr_project_older_than(revision, cleanup->unreferenced_grace,
+                                 cleanup->now)) {
         vkr_project_drop(cleanup, revision);
       }
     }
@@ -170,8 +173,7 @@ vkr_internal bool8_t vkr_project_clean_project(VkrProjectCleanup *cleanup,
   (void)snprintf(manifest, sizeof(manifest), "%s/project.json", project);
   if (!vkr_bakery_is_file(manifest)) {
     if (strcmp(project, job->project_root) != 0 &&
-        vkr_project_older_than(project, VKR_PROJECT_ORPHAN_GRACE_SECONDS,
-                               cleanup->now)) {
+        vkr_project_older_than(project, cleanup->orphan_grace, cleanup->now)) {
       vkr_project_drop(cleanup, project);
     }
     return true_v;
@@ -201,7 +203,7 @@ vkr_internal bool8_t vkr_project_clean_project(VkrProjectCleanup *cleanup,
     for (uint32_t i = 0u; i < names.count; ++i) {
       char child[VKR_PROJECT_PATH];
       if (vkr_project_child_path(staging, names.items[i], child) &&
-          vkr_project_older_than(child, VKR_PROJECT_UNREFERENCED_GRACE_SECONDS,
+          vkr_project_older_than(child, cleanup->unreferenced_grace,
                                  cleanup->now)) {
         vkr_project_drop(cleanup, child);
       }
@@ -226,7 +228,7 @@ vkr_internal bool8_t vkr_project_clean_project(VkrProjectCleanup *cleanup,
       const bool8_t listed =
           vkr_project_record_by_id(scenes, names.items[i]) != NULL;
       if (!listed && strcmp(scene_root, job->final_path) != 0 &&
-          vkr_project_older_than(scene_root, VKR_PROJECT_ORPHAN_GRACE_SECONDS,
+          vkr_project_older_than(scene_root, cleanup->orphan_grace,
                                  cleanup->now)) {
         vkr_project_drop(cleanup, scene_root);
         continue;
@@ -262,7 +264,7 @@ vkr_project_clean_texture_cache(VkrProjectCleanup *cleanup,
     }
     (void)snprintf(manifest, sizeof(manifest), "%s/manifest.json", entry);
     if (!vkr_bakery_is_file(manifest)) {
-      if (vkr_project_older_than(entry, VKR_PROJECT_UNREFERENCED_GRACE_SECONDS,
+      if (vkr_project_older_than(entry, cleanup->unreferenced_grace,
                                  cleanup->now)) {
         vkr_project_drop(cleanup, entry);
       }
@@ -322,7 +324,7 @@ vkr_internal bool8_t vkr_project_clean_generated(VkrProjectCleanup *cleanup,
     /* A file younger than the grace period stays whether or not a scene
        names it, so its digest decides nothing yet; a job that just wrote
        gigabytes of derived textures does not hash them again here. */
-    if (!vkr_project_older_than(path, VKR_PROJECT_UNREFERENCED_GRACE_SECONDS,
+    if (!vkr_project_older_than(path, cleanup->unreferenced_grace,
                                 cleanup->now)) {
       continue;
     }
@@ -358,9 +360,22 @@ vkr_internal bool8_t vkr_project_clean_generated(VkrProjectCleanup *cleanup,
   return vkr_project_atomic_json(job, index_path, kept);
 }
 
-bool8_t vkr_project_collect_garbage(VkrProjectJob *job, uint32_t *out_removed,
+bool8_t vkr_project_collect_garbage(VkrProjectJob *job, int64_t grace_seconds,
+                                    uint32_t *out_removed,
                                     uint64_t *out_freed) {
-  VkrProjectCleanup cleanup = {.job = job, .now = (int64_t)time(NULL)};
+  VkrProjectCleanup cleanup = {
+      .job = job,
+      .now = (int64_t)time(NULL),
+      .unreferenced_grace =
+          grace_seconds >= 0
+              ? Min(grace_seconds,
+                    (int64_t)VKR_PROJECT_UNREFERENCED_GRACE_SECONDS)
+              : VKR_PROJECT_UNREFERENCED_GRACE_SECONDS,
+      .orphan_grace =
+          grace_seconds >= 0
+              ? Min(grace_seconds, (int64_t)VKR_PROJECT_ORPHAN_GRACE_SECONDS)
+              : VKR_PROJECT_ORPHAN_GRACE_SECONDS,
+  };
   VkrProjectSet digests = {0};
   bool8_t readable = true_v;
   char projects[VKR_PROJECT_PATH];

@@ -237,7 +237,7 @@ vkr_internal void vkr_project_cleanup_after_success(VkrProjectJob *job) {
   }
   /* The result is already durable, so a cleanup failure or cancellation only
      leaves garbage. */
-  if (!vkr_project_collect_garbage(job, NULL, NULL)) {
+  if (!vkr_project_collect_garbage(job, -1, NULL, NULL)) {
     printf("Warning: workspace cleanup stopped: %s\n", job->error);
     fflush(stdout);
     job->failed = false_v;
@@ -371,9 +371,18 @@ vkr_internal bool8_t vkr_project_execute(VkrProjectJob *job) {
     if (job->read_only) {
       return vkr_project_fail(job, "Cannot clean a read-only workspace");
     }
+    /* `grace_seconds` (0 for a new shared workspace, where no other job
+       publishes) shortens the ages after which unreferenced data goes. */
+    int64_t grace = -1;
+    const VkrBakeryJson *requested =
+        vkr_bakery_json_get(job->request, "grace_seconds");
+    if (requested && (!vkr_project_integer(requested, &grace) || grace < 0)) {
+      return vkr_project_fail(job, "grace_seconds must be a non-negative "
+                                   "integer");
+    }
     uint32_t removed = 0u;
     uint64_t freed = 0u;
-    if (!vkr_project_collect_garbage(job, &removed, &freed)) {
+    if (!vkr_project_collect_garbage(job, grace, &removed, &freed)) {
       return false_v;
     }
     Arena *arena = job->arena;

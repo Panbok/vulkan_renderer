@@ -19,7 +19,8 @@ base colour the project texture packer packs. The check asserts that:
 - scene preparation accepts cooked textures whose bytes differ from the
   cooking host's (closures record `platform` for `.vkt`);
 - a build without recipes is reported for a rebuild, and the rebuild
-  records recipes and retires the old revision's texture records;
+  records recipes and retires the old revision's texture records, whose
+  folder a cleanup with `grace_seconds: 0` then removes;
 - a share of the project reports no rebuild and no texture without a
   recipe, and the shared copy, stripped of its `.vkt` files as a depot clone
   is, gets them back from `recook_textures`.
@@ -252,6 +253,22 @@ def main():
         migrated = run(dict(recook, scene_id=again['scene_id'], scene_path=again['scene_path']),
                        'recook-migrated')
         assert migrated['needs_rebuild'] == [] and migrated['recooked'] == 0, migrated
+        # The replaced revision is unreferenced: workspace cleanup keeps it for
+        # its grace period, and a cleanup with no grace, as a new shared
+        # workspace asks for, removes it and nothing live.
+        document = json.loads(manifest.read_text())
+        document['scenes'] = [{'id': result['scene_id'], 'name': name,
+                               'path': f'scenes/{result["scene_id"]}/scene.json'}
+                              for name, result in (('final', final), ('again', again))]
+        manifest.write_text(json.dumps(document))
+        kept = run({'operation': 'collect_garbage'}, 'collect-kept')
+        assert old_build.is_dir() and kept['removed'] == 0, kept
+        collected = run({'operation': 'collect_garbage', 'grace_seconds': 0}, 'collect-now')
+        assert not old_build.exists() and collected['freed_bytes'] > 0, collected
+        assert new_build.is_dir() and build.is_dir()
+        assert run(dict(recook, scene_id=again['scene_id'], scene_path=again['scene_path']),
+                   'recook-collected')['current'] == len(textures)
+        run({'operation': 'collect_garbage', 'grace_seconds': -1}, 'collect-refused', code=1)
 
         # A share needs no rebuild; its copy without .vkt files cooks them.
         document = json.loads(manifest.read_text())
