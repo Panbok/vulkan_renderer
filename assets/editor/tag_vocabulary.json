@@ -53,7 +53,13 @@
         "#structure": "Columns, beams, piers and girders.",
         "#bridge": "Bridge decks and spans.",
         "#terrain_prop": "Rocks, boulders and ground dressing.",
-        "#foliage": "Trees, shrubs and grass."
+        "#foliage": "Trees, shrubs and grass.",
+        "#fixture": "Built-in fittings and appliances: sinks, toilets, mirrors, fridges, extinguishers, phones.",
+        "#bed": "Beds, bunks and cots.",
+        "#track": "Rails, sleepers and track beds.",
+        "#water_body": "Lakes, rivers, pools and falling water.",
+        "#terrain": "Heightfield ground: layered grass, rock, scree and snow.",
+        "#prop": "Loose set dressing no closer kind names."
       }
     },
     {
@@ -78,7 +84,9 @@
         "#gravel": "Loose stones and scree.",
         "#snow": "Snow and ice.",
         "#water": "Water surfaces.",
-        "#emissive": "Light-emitting panel or screen."
+        "#emissive": "Light-emitting panel or screen.",
+        "#plant": "Leaves and stems: green, soft, translucent edges.",
+        "#grass": "Grass and meadow."
       }
     },
     {
