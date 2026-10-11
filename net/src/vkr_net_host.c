@@ -6,9 +6,6 @@
 #define NET_HOST_BATCH 32u
 /* Datagrams one pump receives before it runs timers and sends. */
 #define NET_HOST_RECEIVE_BUDGET 1024u
-/* Below this, a pump spins instead of sleeping: platform waits are in
-   milliseconds and pacing releases come sooner. */
-#define NET_HOST_SPIN_US 1000u
 
 struct VkrNetHost {
   VkrAllocator *allocator;
@@ -184,8 +181,14 @@ bool8_t vkr_net_host_pump(VkrNetHost *host, int32_t timeout_ms) {
   } else if (timeout_ms < 0) {
     wait_us = 1000000;
   }
-  if (wait_us >= (int64_t)NET_HOST_SPIN_US) {
-    const int32_t wait_ms = (int32_t)Min(wait_us / 1000, (int64_t)INT32_MAX);
+  /* Platform waits are in whole milliseconds, so a deadline closer than
+     that waits one (a datagram still ends the wait at once) instead of
+     returning to a caller that pumps again: on loopback the loss and pacing
+     timers sit under a millisecond, and the spin cost a clone 3 s of CPU
+     (2026-10-11, Windows) without making it faster. */
+  if (wait_us > 0) {
+    const int32_t wait_ms =
+        (int32_t)Min((wait_us + 999) / 1000, (int64_t)INT32_MAX);
     if (vkr_udp_socket_wait(host->socket, wait_ms) < 0) {
       return false_v;
     }
