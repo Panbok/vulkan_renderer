@@ -1778,9 +1778,9 @@ test_composed_cascades_share_static_layers_across_images(void) {
   prime_retained_history(&system, &camera, 0u, &payload);
   update_for_reuse(&system, &camera);
   /* A small caster at the far cascade's center leaves the near ones. */
-  const uint32_t far = config.cascade_count - 1u;
-  VkrWorldDrawCandidate dynamic =
-      dynamic_candidate_at_history(&system.cascade_history[0][far], true_v);
+  const uint32_t farthest = config.cascade_count - 1u;
+  VkrWorldDrawCandidate dynamic = dynamic_candidate_at_history(
+      &system.cascade_history[0][farthest], true_v);
   payload.gpu_candidates = &dynamic;
   payload.gpu_shadow_candidate_count = 1u;
   VkrRetainedShadowToken drawn = {
@@ -1798,7 +1798,7 @@ test_composed_cascades_share_static_layers_across_images(void) {
      layers first; the rest keep their retained layers. */
   VkrShadowFrameData frame = resolve_composed(&system, 0u, drawn, &payload);
   const uint32_t reached = frame.copy_mask;
-  const uint32_t far_bit = UINT32_C(1) << far;
+  const uint32_t far_bit = UINT32_C(1) << farthest;
   assert((reached & far_bit) != 0u && (reached & 1u) == 0u);
   assert(frame.cascade_render_mask == 0u);
   assert(frame.static_render_mask == reached);
@@ -1807,10 +1807,10 @@ test_composed_cascades_share_static_layers_across_images(void) {
     assert(frame.reused[cascade] ==
            ((reached & (UINT32_C(1) << cascade)) != 0u ? 0u : 1u));
   vkr_shadow_system_commit_frame(&system, 18u);
-  assert(system.static_history[far].last_submit_value == 18u);
+  assert(system.static_history[farthest].last_submit_value == 18u);
   assert(system.static_history[0].last_submit_value == 0u);
-  assert(system.cascade_history[0][far].composite &&
-         !system.cascade_history[0][far].static_only_contents);
+  assert(system.cascade_history[0][farthest].composite &&
+         !system.cascade_history[0][farthest].static_only_contents);
   assert(!system.cascade_history[0][0].composite);
 
   /* Images 1 and 2 hold nothing yet. The reached static layers are not
@@ -1853,8 +1853,8 @@ test_composed_cascades_share_static_layers_across_images(void) {
   assert(frame.cascade_render_mask == 0u && frame.static_render_mask == 0u);
   assert(frame.copy_mask == reached && frame.dynamic_render_mask == 0u);
   vkr_shadow_system_commit_frame(&system, 22u);
-  assert(system.cascade_history[0][far].composite &&
-         system.cascade_history[0][far].static_only_contents);
+  assert(system.cascade_history[0][farthest].composite &&
+         system.cascade_history[0][farthest].static_only_contents);
   frame = resolve_composed(&system, 0u, drawn, &payload);
   assert(frame.copy_mask == 0u && frame.cascade_render_mask == 0u);
   for (uint32_t cascade = 0u; cascade < config.cascade_count; ++cascade)
