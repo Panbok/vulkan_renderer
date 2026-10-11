@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-10
+updated: 2026-10-11
 authority: architecture
 ---
 
@@ -853,8 +853,10 @@ also carries CPU skin influences; the published geometry remains static. See
 [ADR-044](adr/044-shader-cross-backend-contract.md) and
 [ADR-030](adr/030-offline-mesh-optimization-and-cooking.md).
 
-Native depth-writing passes use strict less-than tests; blend/text depth reads
-accept equality. Both cull with conservative affine sphere scale and retain odd
+Camera depth is reversed (near 1, far 0, cleared to 0) and its depth-writing
+passes use strict greater-than tests; blend/text depth reads accept equality.
+Shadow maps keep forward depth and less-than tests
+([ADR-109](adr/109-reversed-camera-depth.md)). Both cull with conservative affine sphere scale and retain odd
 source edges during HZB reduction. Transmission compaction uses native subgroup
 identity instead of assuming a workgroup invocation mapping.
 Eight indirect buckets include reflection parity; direct blend preparation
@@ -1153,7 +1155,8 @@ native Vulkan fog output is not recorded.
 Fog's 5,000 working radiance cap applies to fog accumulation, not final scene
 composition. Empty media preserve finite scene HDR and nearly transparent media
 attenuate it without a subsystem clamp. Froxel positions extrapolate a ray from
-finite device-depth 0/0.5 points to the authored positive view depth, even beyond
+finite device-depth 1/0.5 points (the near plane under reversed depth,
+[ADR-109](adr/109-reversed-camera-depth.md)) to the authored positive view depth, even beyond
 the raster far plane. The independent production-Slang arithmetic regression
 covers these changes; earlier native observations below predate the fixes.
 

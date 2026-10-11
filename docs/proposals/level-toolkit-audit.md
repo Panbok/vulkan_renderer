@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-06
+updated: 2026-10-11
 authority: proposal
 ---
 # Level toolkit audit
@@ -52,7 +52,7 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 | # | Finding | Evidence | Closes it |
 |---|---|---|---|
 | A4 | A partitioned project scene keeps its cells beside its runtime document path, outside the project store's revisioned overlays | `sample_partition_open` derives `<scene>.cells` from the scene path | The project storage item of the [world partition](world-partition.md) proposal |
-| A7 | The editor camera's far plane is 500 m and depth is not reversed, so the overview, distant hills and proxies are clipped unless the far plane is raised by hand | Captures in the 8 km run showed the terrain cut at the far plane until `view.camera` set `far` | The long views item of the world partition proposal |
+| A7 | The editor camera's far plane was 500 m with forward depth, so the overview, distant hills and proxies were clipped unless the far plane was raised by hand. Reversed depth and a 20 km default far plane ([ADR-109](../adr/109-reversed-camera-depth.md)) address it; no 8 km run has confirmed it | Captures in the 8 km run showed the terrain cut at the far plane until `view.camera` set `far` | A capture of the 8 km run at the default camera settings; the long views item of the world partition proposal |
 | A8 | Origin rebase moves positions under scripts that keep world positions | No script notification exists | An origin event in the script SDK |
 
 ### P3

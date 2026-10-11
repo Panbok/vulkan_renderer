@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-08
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -204,8 +204,9 @@ frame.
   when the proxies directory changes.
 - A scatter over a streamed terrain lands on its samples where no physics
   body reaches, so its copies do not depend on where the camera was.
-- The editor camera's far plane is 500 m by default and depth is not reversed,
-  so the overview and proxies show only with a far plane raised by hand.
+- The editor camera's far plane is 20 km by default under reversed depth
+  ([ADR-109](109-reversed-camera-depth.md)); worlds beyond it still need a
+  far plane raised by hand.
 
 ## Evidence
 

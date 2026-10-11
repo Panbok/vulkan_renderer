@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-07
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -23,6 +23,9 @@ Offer graph-declared occupied-depth SDSM reduction as an explicit opt-in.
 Reduce rendered camera depth into occupied range/count data,
 copy it through bounded readback, and publish only after its submit completes.
 Attach source frame, world/projection and extent metadata to each sample.
+Samples also carry the camera depth convention: under reversed depth
+([ADR-109](109-reversed-camera-depth.md)) the largest occupied device depth
+is the nearest surface, and a sample of another convention is stale.
 
 The CPU shadow system validates incoming feedback and smooths accepted ranges.
 Without a new valid sample, it reuses compatible cached bounds until the source-lag

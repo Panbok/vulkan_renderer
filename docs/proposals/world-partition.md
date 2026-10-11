@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-04
+updated: 2026-10-11
 authority: proposal
 ---
 # World partition
@@ -41,7 +41,7 @@ where imported content streams as well as authored content.
 | More containers | Partition the root World and added scenes | Headless runs stream all three container kinds |
 | Script state | Keep a behaviour's state across its cell unloading and loading again during a session | A gameplay script in a streamed cell resumes its state after its cell returns |
 | Richer proxies | Proxies for cooked meshes and shapes, with baked base colour instead of the brushes' full materials | Proxy memory per cell is bounded and reported |
-| Long views | Reversed depth and a far plane that follows the proxy radius | The overview and proxies show at the default camera settings without depth artifacts |
+| Long views | A far plane that follows the proxy radius past the 20 km default; reversed depth shipped in [ADR-109](../adr/109-reversed-camera-depth.md) | The overview and proxies of an 8 km streamed world show at the default camera settings without depth artifacts |
 | Project storage | Keep a project scene's cells in the project store beside its revisioned overlays | A managed project saves, reopens and packages its cells |
 
 ## Risks

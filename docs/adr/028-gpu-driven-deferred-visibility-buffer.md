@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-10
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -37,12 +37,15 @@ images exist only when their capture channels are requested. Four native
 resolve variants compile out unrequested writes; temporal, normal,
 albedo/specular and scene-color outputs remain present. Capture-enabled
 variants retain initialized background and invalid-surface values.
-Depth-writing visibility, shadow and picking passes use strict less-than depth
-tests; depth-read-only blend and text accept equal depth. Culling sphere scale
+Depth-writing visibility and picking passes use strict greater-than tests on
+reversed camera depth and shadow passes strict less-than tests on forward
+depth ([ADR-109](109-reversed-camera-depth.md)); depth-read-only blend and
+text accept equal depth. Culling sphere scale
 uses the conservative bound `sqrt(||A^T A||_infinity)`, prepared once per
 native instance into `normal_column1.w`. The bound preserves sheared affine
-transforms; CPU blend/caster bounds use the same helper. HZB reductions include
-an unpaired source row or column in the last destination texel's maximum. The
+transforms; CPU blend/caster bounds use the same helper. HZB reductions keep each cell's farthest depth, the minimum under reversed
+depth, and include an unpaired source row or column in the last destination
+texel. The
 desktop graph also builds HZB history, handles visibility-based picking, and
 schedules ADR-018's four transmission peels. Compacted transmission shading
 retains a fullscreen diagnostic launch shape, not a second world renderer.

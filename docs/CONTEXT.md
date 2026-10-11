@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-10
+updated: 2026-10-11
 authority: context
 ---
 # Project vocabulary
@@ -59,6 +59,7 @@ below are starting points for checking a definition, not alternate API specs.
 | Visibility buffer | Rasterized primitive/draw identity used to recover geometry and materials in later resolve work. | [ADR-028](adr/028-gpu-driven-deferred-visibility-buffer.md) |
 | G-buffer / material resolve | Resolved surface attributes consumed by deferred lighting; resolve reconstructs attributes from visibility and geometry. | [ADR-028](adr/028-gpu-driven-deferred-visibility-buffer.md) |
 | HZB | Hierarchical depth representation used by visibility rejection. History validity is explicit. | [ADR-028](adr/028-gpu-driven-deferred-visibility-buffer.md) |
+| Reversed depth | Camera depth convention: device depth 1 at the near plane and 0 at the far plane, cleared to 0 and tested with greater-than. Shadow maps keep forward depth (near 0). | [ADR-109](adr/109-reversed-camera-depth.md) |
 | Local shadow face | One perspective depth square of the shared local-shadow atlas for an opted-in punctual light: one per spot, six per point, resident while the light exists and drawn as complete lights within the face budget per frame. | [ADR-019](adr/019-bounded-forward-spatial-lighting.md) |
 | CSM | Cascaded shadow mapping: directional shadow coverage split across depth intervals. | [vkr_frame_input.h](../renderer/src/vkr_frame_input.h) |
 | SDSM | Sample Distribution Shadow Maps: optional cascade-range fitting from completed occupied-depth feedback. | [ADR-033](adr/033-occupied-depth-sdsm-feedback.md) |

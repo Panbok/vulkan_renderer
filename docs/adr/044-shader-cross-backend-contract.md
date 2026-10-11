@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-10
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -292,6 +292,24 @@ atmosphere, aerial perspective and volumetric cloud domains.
   star field natively, with clean Debug Vulkan validation.
 - **Missing gates.** Night captures on the tiled pipeline.
 
+## Reversed camera depth evidence state
+
+[ADR-109](109-reversed-camera-depth.md) reverses camera depth in GPU
+culling and the HZB, the editor grid and clouds (shared), the tiled
+forward, atmosphere and picking passes (tiled), and fog, froxel fog, depth
+of field, motion blur, surface diffusion, transmission peeling, TAA's sky
+history and FSR 3.1 (desktop). Shadow kernels are unchanged.
+
+- **Metal (tiled).** Bistro snapshots before and after match within
+  isolated silhouette pixels, with identical sky masks, linear depth and
+  work counts; the HZB rejects the same draws over a 300-frame orbit; the
+  editor grid and `grid.fit` match (ADR-109 Evidence).
+- **Vulkan (desktop).** The changed modules compile and pass `spirv-val`.
+  No native run exists. Missing gate: a Windows Release
+  `bistro_snapshot` against a before run of the same build, plus a focused
+  Debug validation run with fog, depth of field, motion blur, transmission
+  and FSR 3.1 on.
+
 ## Editor inspection views
 
 `VkrRenderMode` retains Lit (`DEFAULT`, 0) and Unlit (3), and adds Detail lighting
@@ -385,8 +403,9 @@ records, native entry points and source ABI layout, and adds no native evidence.
 
 Match coordinate conventions, units, field order/types, basis signs, bounds,
 edge behavior and dispatch coverage explicitly. World/view space is right-handed
-with forward `-Z`; depth is `[0,1]` and projection/viewport Y lowering is backend
-aware. Rounded dispatches retain guards required for valid edges. Material
+with forward `-Z`; depth is `[0,1]`, reversed for cameras (near 1, far 0) and
+forward for shadow maps ([ADR-109](109-reversed-camera-depth.md)), and
+projection/viewport Y lowering is backend aware. Rounded dispatches retain guards required for valid edges. Material
 normal decode reconstructs positive tangent Z; output transfer follows ADR-043.
 
 The frame input's source instance is 96 bytes, including a CPU skinning index. Native publication/upload
@@ -650,7 +669,8 @@ that depth. On 2026-10-11 every pick lost the device on an AMD Radeon RX 6700
 XT (driver 26.6.3): the shader saw the `float *` address with its low word in
 both halves, while the root's words held it correctly. `depth_output` now
 points at a one-float struct; Release and Debug (validation clean) pick Bistro
-meshes there with depths near 0.97. On Metal the tiled pipeline replays the opaque draws into the
+meshes there with depths near 0.97 (forward depth, before
+[ADR-109](109-reversed-camera-depth.md) reversed it; sky now reads 0). On Metal the tiled pipeline replays the opaque draws into the
 picking target, and the readback copies the picked pixel's resolved depth
 (ADR-087, decision 9); `grid.fit` on Bistro read 16.8432 m from it.
 
