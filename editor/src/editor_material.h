@@ -93,15 +93,18 @@ void vkr_editor_material_refresh(VkrEditorMaterials *materials,
                                  const VkrSampleUiFrame *frame,
                                  const char *path);
 
-/* Material files and graphs under the content root's assets, with the
-   graph each material names (empty for a plain definition or a graph);
-   scanned once with reads in
+/* Material files and graphs under the content root's assets and the open
+   workspace's own, with the graph each material names (empty for a plain
+   definition or a graph); scanned once with reads in
    `scratch` (a scoped allocator), then kept current by the writes above. */
 uint32_t vkr_editor_material_index(VkrEditorMaterials *materials,
                                    VkrAllocator *scratch,
                                    const char **out_paths,
                                    const char **out_graphs,
                                    uint32_t capacity);
+/* Drops the index so the next use scans again, after the workspace changed
+   or a pull brought other files. */
+void vkr_editor_material_index_reset(VkrEditorMaterials *materials);
 
 /* The Material panel (Art workbench): the open document's graph on a node
    canvas, how it lowers, and an inspector for the selected node, the graph's

@@ -769,6 +769,35 @@ vkr_internal bool8_t vkr_vfs_overlay_identity(String8 path, char *identity,
                     VKR_VFS_OVERLAY_PREFIX_LENGTH) == 0;
 }
 
+const char *vkr_vfs_overlay_root(void) {
+  const VkrVfsOverlay *overlay =
+      (const VkrVfsOverlay *)(uintptr_t)vkr_atomic_uint64_load(
+          &vkr_vfs.overlay, VKR_MEMORY_ORDER_ACQUIRE);
+  return overlay ? overlay->root : NULL;
+}
+
+bool8_t vkr_vfs_overlay_write_path(const FilePath *path, FilePath *out_path,
+                                   char *buffer, uint64_t capacity) {
+  const VkrVfsOverlay *overlay =
+      (const VkrVfsOverlay *)(uintptr_t)vkr_atomic_uint64_load(
+          &vkr_vfs.overlay, VKR_MEMORY_ORDER_ACQUIRE);
+  if (!overlay || !path || !path->path.str) {
+    return false_v;
+  }
+  char identity[VKR_PACK_IDENTITY_MAX];
+  uint32_t length = 0u;
+  if (!vkr_vfs_overlay_identity(path->path, identity, &length) ||
+      overlay->length + length + 1u > capacity) {
+    return false_v;
+  }
+  MemCopy(buffer, overlay->root, overlay->length);
+  MemCopy(buffer + overlay->length, identity, length + 1u);
+  *out_path = (FilePath){
+      .path = {.str = (uint8_t *)buffer, .length = overlay->length + length},
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  return true_v;
+}
+
 bool8_t fs_vfs_overlay(const FilePath *path, FilePath *out_path, char *buffer,
                        uint64_t capacity) {
   const VkrVfsOverlay *overlay =

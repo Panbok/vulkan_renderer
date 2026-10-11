@@ -8,6 +8,7 @@
 #include "core/logger.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_asset_path.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_platform.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
@@ -199,7 +200,8 @@ VkrEditorMaterialKind vkr_editor_material_kind(VkrAllocator *scratch,
 }
 
 /* Writes `text` to `path` through a temporary file and a rename, or
-   removes the file. */
+   removes the file. An open workspace with its own `assets/` (a shared
+   project) receives the file, so the project carries it. */
 static bool8_t material_store(VkrAllocator *scratch, const char *path,
                               String8 text, bool8_t remove, char *error,
                               uint32_t capacity) {
@@ -207,6 +209,13 @@ static bool8_t material_store(VkrAllocator *scratch, const char *path,
   if (!target.path.length) {
     snprintf(error, capacity, "'%s' is not a content path", path);
     return false_v;
+  }
+  char workspace_path[1100];
+  FilePath workspace_target = {0};
+  if (vkr_vfs_overlay_write_path(&target, &workspace_target, workspace_path,
+                                 sizeof(workspace_path)) &&
+      (!remove || file_exists(&workspace_target))) {
+    target = workspace_target;
   }
   if (remove) {
     const FileError removed = file_remove(&target);
@@ -360,7 +369,22 @@ static void material_index_build(VkrEditorMaterials *materials,
     snprintf(scan.relative, sizeof(scan.relative), "assets");
     vkr_editor_directory_list(scan.absolute, material_scan_entry, &scan);
   }
+  /* A shared project's workspace keeps its own materials. */
+  const char *workspace = vkr_vfs_overlay_root();
+  if (workspace &&
+      snprintf(scan.absolute, sizeof(scan.absolute), "%sassets", workspace) <
+          (int)sizeof(scan.absolute)) {
+    snprintf(scan.relative, sizeof(scan.relative), "assets");
+    vkr_editor_directory_list(scan.absolute, material_scan_entry, &scan);
+  }
   vkr_allocator_end_scope(&scope, MATERIAL_TAG);
+}
+
+void vkr_editor_material_index_reset(VkrEditorMaterials *materials) {
+  if (materials) {
+    materials->index_ready = false_v;
+    materials->index_count = 0u;
+  }
 }
 
 uint32_t vkr_editor_material_index(VkrEditorMaterials *materials,

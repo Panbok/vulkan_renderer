@@ -2,6 +2,7 @@
 
 #include "containers/str.h"
 #include "defines.h"
+#include "filesystem/filesystem.h"
 
 /* Read-only content mounts (ADR-077). Relative asset paths resolve against one
  * content root: the repository by default, an installed program's `content/`
@@ -145,15 +146,29 @@ bool8_t vkr_vfs_set_content_root(const char *directory);
  * Sets the directory whose `assets/` tree serves reads before the content
  * root's: a read-only open, map, existence check or stat of a path below the
  * root whose identity starts with `assets/` uses `<directory>/<identity>`
- * when that file exists. Mounted archives still win, and writes still go to
- * the root. The editor sets its open workspace, so a depot working copy
- * carries a project's own meshes, materials and textures.
+ * when that file exists. Mounted archives still win, and writes go to
+ * the root unless the writer asks vkr_vfs_overlay_write_path. The editor sets
+ * its open workspace, so a depot working copy carries a project's own meshes,
+ * materials and textures.
  *
  * NULL, an empty string, or the content root itself clears it. Call from one
  * thread; loaders may run meanwhile. Earlier directories stay readable until
  * vkr_vfs_unmount_all(). Returns false when `directory` is too long.
  */
 bool8_t vkr_vfs_set_overlay_root(const char *directory);
+/**
+ * The overlay directory with a trailing separator, or NULL when none is set.
+ * The string stays valid until vkr_vfs_unmount_all().
+ */
+const char *vkr_vfs_overlay_root(void);
+/**
+ * Where a write of `path` lands so the open workspace carries it: with an
+ * overlay set and an `assets/` identity below the content root,
+ * `<overlay>/<identity>` in `buffer`, whether or not that file exists yet.
+ * False when the write goes to `path` itself.
+ */
+bool8_t vkr_vfs_overlay_write_path(const FilePath *path, FilePath *out_path,
+                                   char *buffer, uint64_t capacity);
 /** Maps and validates one archive and appends it to the mount order. */
 bool8_t vkr_vfs_mount_pack(const char *path);
 /**
