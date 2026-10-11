@@ -201,6 +201,19 @@ static void test_depot_store(void) {
   assert(vkr_depot_store_get_stored(&store, &id, &stored, &stored_size));
   assert(stored[0] == 0u);
   free(stored);
+
+  /* A file a crash left torn fails its read and is removed, so the object
+     counts as missing and is fetched again. */
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  vkr_depot_store_path(&store, &id, path, sizeof(path));
+  assert(vkr_bakery_write_file_atomic(path, noise, 4096u));
+  assert(vkr_depot_store_has(&store, &id));
+  assert(!vkr_depot_store_get(&store, &id, &bytes, &size));
+  assert(!vkr_depot_store_has(&store, &id));
+  assert(vkr_depot_store_put(&store, &id, noise, sizeof(noise)));
+  assert(vkr_depot_store_get(&store, &id, &bytes, &size));
+  assert(size == sizeof(noise) && memcmp(bytes, noise, size) == 0);
+  free(bytes);
   assert(vkr_bakery_remove_tree(root) && vkr_bakery_remove_tree(other_root));
   printf("  test_depot_store PASSED\n");
 }

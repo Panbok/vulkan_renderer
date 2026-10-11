@@ -320,8 +320,8 @@ vkr_internal bool8_t vkr_bakery_flush_file(FILE *file) {
 #endif
 }
 
-bool8_t vkr_bakery_write_file_atomic(const char *path, const void *data,
-                                     uint64_t length) {
+static bool8_t bakery_write_replacing(const char *path, const void *data,
+                                      uint64_t length, bool8_t flush) {
   char directory[VKR_BAKERY_PATH_CAPACITY];
   char temporary[VKR_BAKERY_PATH_CAPACITY];
   vkr_bakery_path_parent(directory, sizeof(directory), path);
@@ -337,13 +337,23 @@ bool8_t vkr_bakery_write_file_atomic(const char *path, const void *data,
   }
   bool8_t ok = (length == 0u ||
                 fwrite(data, 1u, (size_t)length, file) == (size_t)length) &&
-               vkr_bakery_flush_file(file);
+               (!flush || vkr_bakery_flush_file(file));
   ok = fclose(file) == 0 && ok;
   ok = ok && vkr_bakery_rename(temporary, path, true_v);
   if (!ok) {
     (void)vkr_bakery_remove_file(temporary);
   }
   return ok;
+}
+
+bool8_t vkr_bakery_write_file_atomic(const char *path, const void *data,
+                                     uint64_t length) {
+  return bakery_write_replacing(path, data, length, true_v);
+}
+
+bool8_t vkr_bakery_replace_file(const char *path, const void *data,
+                                uint64_t length) {
+  return bakery_write_replacing(path, data, length, false_v);
 }
 
 bool8_t vkr_bakery_append_file(const char *path, const void *data,

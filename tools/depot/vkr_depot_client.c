@@ -232,12 +232,12 @@ static bool8_t client_process(VkrDepotClient *client, const VkrDepotId *id,
   if (kind == VKR_DEPOT_KIND_CHUNK) {
     return true_v;
   }
-  /* Present already: its children may still be missing. */
+  /* Present already: its children may still be missing. A read that fails
+     its hash check removed a torn file, so the object is fetched again. */
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   if (!vkr_depot_store_get(client->store, id, &bytes, &size)) {
-    client_fail(client, "local store read failed%s", "");
-    return false_v;
+    return want_push(&client->want, id, kind);
   }
   const bool8_t ok = client_children(client, kind, bytes, size);
   free(bytes);

@@ -50,7 +50,7 @@ static bool8_t store_write(const VkrDepotStore *store, const VkrDepotId *id,
   }
   vkr_bakery_path_parent(directory, sizeof(directory), path);
   return vkr_bakery_make_directories(directory) &&
-         vkr_bakery_write_file_atomic(path, stored, size);
+         vkr_bakery_replace_file(path, stored, size);
 }
 
 bool8_t vkr_depot_store_put(const VkrDepotStore *store, const VkrDepotId *id,
@@ -156,25 +156,59 @@ bool8_t vkr_depot_store_put_stored(const VkrDepotStore *store,
   return store_write(store, id, stored, size);
 }
 
+/* Reads `id`'s stored form and its decoded bytes, which must hash to `id`.
+   A file that does not, as an unflushed write cut short by a crash leaves
+   it, is removed so the object counts as missing. */
+static bool8_t store_read_checked(const VkrDepotStore *store,
+                                  const VkrDepotId *id, uint8_t **out_stored,
+                                  uint64_t *out_stored_size,
+                                  uint8_t **out_bytes, uint64_t *out_size) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  vkr_depot_store_path(store, id, path, sizeof(path));
+  uint8_t *stored = NULL;
+  uint64_t stored_size = 0u;
+  if (!vkr_bakery_read_file(path, VKR_DEPOT_STORED_MAX, &stored,
+                            &stored_size)) {
+    return false_v;
+  }
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  VkrDepotId actual = {0};
+  const bool8_t decoded =
+      vkr_depot_stored_decode(store->codec, stored, stored_size, &bytes, &size);
+  if (decoded) {
+    vkr_depot_id_of(bytes, size, &actual);
+  }
+  if (!decoded || !vkr_depot_id_equal(&actual, id)) {
+    free(stored);
+    free(bytes);
+    (void)vkr_bakery_remove_file(path);
+    return false_v;
+  }
+  if (out_stored) {
+    *out_stored = stored;
+    *out_stored_size = stored_size;
+  } else {
+    free(stored);
+  }
+  if (out_bytes) {
+    *out_bytes = bytes;
+    *out_size = size;
+  } else {
+    free(bytes);
+  }
+  return true_v;
+}
+
 bool8_t vkr_depot_store_get_stored(const VkrDepotStore *store,
                                    const VkrDepotId *id, uint8_t **out_bytes,
                                    uint64_t *out_size) {
-  char path[VKR_DEPOT_PATH_CAPACITY];
-  vkr_depot_store_path(store, id, path, sizeof(path));
-  return vkr_bakery_read_file(path, VKR_DEPOT_STORED_MAX, out_bytes, out_size);
+  return store_read_checked(store, id, out_bytes, out_size, NULL, NULL);
 }
 
 bool8_t vkr_depot_store_get(const VkrDepotStore *store, const VkrDepotId *id,
                             uint8_t **out_bytes, uint64_t *out_size) {
-  uint8_t *stored = NULL;
-  uint64_t size = 0u;
-  if (!vkr_depot_store_get_stored(store, id, &stored, &size)) {
-    return false_v;
-  }
-  const bool8_t ok =
-      vkr_depot_stored_decode(store->codec, stored, size, out_bytes, out_size);
-  free(stored);
-  return ok;
+  return store_read_checked(store, id, NULL, NULL, out_bytes, out_size);
 }
 
 // =============================================================================

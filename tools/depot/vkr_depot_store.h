@@ -7,8 +7,11 @@
  * the representation (0 raw, 1 zstd) and the decoded size as u32, then the
  * payload; that representation is also what travels between stores. Every
  * write checks the SHA-256 of the decoded bytes against the ID, writes a
- * sibling temporary and renames it, so a store never holds a wrong or
- * partial object and concurrent writers of one ID agree. */
+ * sibling temporary and renames it, so concurrent writers of one ID agree.
+ * Writes are not flushed (owner decision, 2026-10-11): a flush per object
+ * cost a seek each on a hard disk, minutes for one scene. Every read checks
+ * the hash instead and removes an object a crash left torn, so it is
+ * missing and fetched again rather than served wrong. */
 
 #define VKR_DEPOT_PATH_CAPACITY 4096u
 #define VKR_DEPOT_STORED_HEADER 5u
@@ -56,11 +59,13 @@ bool8_t vkr_depot_store_put_stored(const VkrDepotStore *store,
                                    const VkrDepotId *id, const uint8_t *stored,
                                    uint64_t size);
 
-/* Decoded bytes in malloc storage the caller frees. */
+/* Decoded bytes in malloc storage the caller frees; false, with the file
+   removed, for an object whose bytes no longer hash to `id`. */
 bool8_t vkr_depot_store_get(const VkrDepotStore *store, const VkrDepotId *id,
                             uint8_t **out_bytes, uint64_t *out_size);
 
-/* The stored representation in malloc storage, as sent to a peer. */
+/* The stored representation in malloc storage, as sent to a peer, checked
+   as vkr_depot_store_get checks it. */
 bool8_t vkr_depot_store_get_stored(const VkrDepotStore *store,
                                    const VkrDepotId *id, uint8_t **out_bytes,
                                    uint64_t *out_size);
