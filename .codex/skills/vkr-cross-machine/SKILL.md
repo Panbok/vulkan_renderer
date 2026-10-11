@@ -86,10 +86,15 @@ that prints `same` proves the two branches are equal.
 
 ## What a working copy holds
 
-- `vkr_depot` snapshots every file under the working copy root and has no
-  ignore rules. Never make the repository, a build folder or a whole
-  `.vkreditor` folder a working copy. Keep a separate working copy with
-  workspace-relative paths.
+- `vkr_depot` snapshots every file under the working copy root except what
+  `.vkrdepotignore` at the root names (one pattern per line; `*` within a
+  name, `**` across folders, a trailing `/` for a folder, no `/` for a name
+  at any depth). Never make the repository or a build folder a working copy.
+  Keep a separate working copy with workspace-relative paths whose
+  `.vkrdepotignore` leaves out each machine's editor state:
+  `.vkreditor/jobs/`, `logs/`, `cache/`, `build/`, `editor/`,
+  `.vkreditor/workspace.json` and `.runtime/`. A working copy next to its
+  server shares the server's store with `clone ... --store <server store>`.
 - A project scene lives at
   `.vkreditor/projects/<project>/scenes/<scene>/`. Its folder keeps every
   old edit overlay and every old build, because the editor deletes neither.
