@@ -169,6 +169,10 @@ struct VkrEditorContent {
      follow and are replaced when their key changes. */
   uint32_t asset_count;
   uint64_t objects_key;
+  /* The containers and structure revisions `objects_key` was hashed from:
+     every field the key covers moves a structure revision, so while this
+     holds the objects need no visit. */
+  uint64_t objects_gate;
   /* Shown folder tiles, then items: asset indices, or tree indices with
      CONTENT_FOLDER_BIT. */
   uint32_t *filtered;
@@ -1816,6 +1820,7 @@ void vkr_editor_content_refresh(VkrEditorContent *content) {
   content->asset_count = content->count;
   /* Loaded containers' objects follow on the next sync. */
   content->objects_key = 0u;
+  content->objects_gate = 0u;
   content->label_asset[0] = '\0';
   content->filter_dirty = true_v;
 }
@@ -1975,6 +1980,32 @@ void vkr_editor_content_sync_objects(
       input_button_just_pressed(frame->input, BUTTON_RIGHT);
   content->rename_enter = input_key_just_pressed(frame->input, KEY_ENTER);
   content->rename_escape = input_key_just_pressed(frame->input, KEY_ESCAPE);
+  /* Names, parts and imported nodes, all the listing reads, change only
+     with a container's structure revision: while no container, folder or
+     revision changed, the listing stands without visiting every object. */
+  const VkrScene *scenes[2 + VKR_SCENE_ADDITIVE_MAX] = {frame->world,
+                                                        frame->scene};
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    scenes[2 + i] = frame->additive[i];
+  }
+  uint64_t gate = UINT64_C(14695981039346656037);
+  for (uint32_t c = 0; c < ArrayCount(scenes); ++c) {
+    const char *id = c ? scene_ids[c - 1u] : "";
+    gate = content_hash(gate, &scenes[c], sizeof(scenes[c]));
+    if (scenes[c]) {
+      gate = content_hash(gate, &scenes[c]->structure_revision,
+                          sizeof(scenes[c]->structure_revision));
+    }
+    if (id) {
+      gate = content_hash(gate, id, strlen(id) + 1u);
+    }
+  }
+  if (gate == content->objects_gate) {
+    content_mark_cooking_objects(content, frame, false_v);
+    content_reveal_created(content, frame);
+    return;
+  }
+  content->objects_gate = gate;
   uint64_t key = UINT64_C(14695981039346656037);
   content_visit_objects(content, frame, scene_ids, content_object_hash, &key);
   if (key == content->objects_key) {
