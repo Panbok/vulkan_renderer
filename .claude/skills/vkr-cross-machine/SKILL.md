@@ -133,8 +133,12 @@ that prints `same` proves the two branches are equal.
   shows `project.json` as changed.
 
 Stage a scene with [scripts/stage_scene.py](scripts/stage_scene.py). It
-copies the live set with its untracked asset closure and exits 1 when a
-referenced asset is missing. Run it from the repository root:
+copies the live set with its untracked asset closure, plus the project's
+`world.scene.json`, `world.editor.json` and `game.json`, and exits 1 when a
+referenced asset is missing. Without the World, the receiving editor makes a
+default one and the scene renders under another sun, sky and grading; delete
+such a generated `world.scene.json` from a clone before pulling the real
+one, or the pull refuses it. Run it from the repository root:
 
 ```sh
 python3 -I .codex/skills/vkr-cross-machine/scripts/stage_scene.py \

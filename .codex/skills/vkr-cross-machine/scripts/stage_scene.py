@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Stage one editor project scene's live files into a depot working copy.
 
-Copies the project file, the scene file, its live edit overlay and inventory,
-the builds that inventory names, and every repository asset the overlay
-reaches through meshes and materials that git does not track, at
-workspace-relative paths. Older overlays and builds in the scene folder are
+Copies the project file and the project's World and game documents
+(`world.scene.json`, `world.editor.json`, `game.json`, whichever exist), the
+scene file, its live edit overlay and inventory, the builds that inventory
+names, and every repository asset the overlays reach through meshes and
+materials that git does not track, at workspace-relative paths. Without the
+World, the receiving editor makes a default one and the scene renders under
+another sun, sky and grading. Older overlays and builds in the scene folder are
 left out. On macOS each copy is an APFS clone (`cp -c`); elsewhere a plain
 copy.
 
@@ -107,6 +110,11 @@ def main() -> int:
 
     scene = json.loads(scene_file.read_text())
     files = [project / "project.json", scene_dir / "scene.json"]
+    # Project documents every scene of the project renders under.
+    documents = [project / name for name in
+                 ("world.scene.json", "world.editor.json", "game.json")
+                 if (root / project / name).is_file()]
+    files.extend(documents)
     overlay = scene.get("edit_overlay")
     if overlay:
         files.append(scene_dir / overlay)
@@ -119,6 +127,8 @@ def main() -> int:
 
     seen = set()
     pending = list(references(root, scene_dir / overlay)) if overlay else []
+    for document in documents:
+        pending.extend(references(root, document))
     missing = []
     while pending:
         path = pending.pop()
