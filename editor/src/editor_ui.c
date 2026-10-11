@@ -6,6 +6,7 @@
 #include "editor_physics.h"
 #include "editor_projects.h"
 #include "editor_scene_panels.h"
+#include "editor_depot.h"
 #include "editor_session.h"
 #include "editor_terrain.h"
 
@@ -208,6 +209,10 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                                              .size_pt = {460.0f, 420.0f},
                                              .z_order = 7u,
                                              .visible = false_v},
+              [VKR_EDITOR_WINDOW_DEPOT] = {.position_pt = {360.0f, 90.0f},
+                                           .size_pt = {440.0f, 480.0f},
+                                           .z_order = 7u,
+                                           .visible = false_v},
               [VKR_EDITOR_WINDOW_CHANGES] = {.position_pt = {300.0f, 90.0f},
                                              .size_pt = {560.0f, 380.0f},
                                              .z_order = 7u,
@@ -560,6 +565,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
     }
   }
   vkr_editor_build_status_build(editor->build, editor, frame);
+  vkr_editor_depot_overlay_build(editor->depot, editor, frame);
   vkr_editor_toasts_build(editor, frame);
   vkr_editor_cmd_suggestions_build(editor, frame);
   if (frame->scene_keyboard_focus) {
@@ -649,6 +655,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                   distance);
   }
   vkr_editor_session_update(editor->session, frame);
+  vkr_editor_depot_update(editor->depot, editor, frame);
   return dock_capture;
 }
 

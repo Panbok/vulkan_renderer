@@ -78,6 +78,8 @@ typedef enum EditorCommand {
   /* The Lights window (ADR-100). */
   CMD_LIGHTS,
   CMD_SESSION,
+  /* The Project sharing window (editor_depot.h). */
+  CMD_DEPOT,
   /* Scene transform tools. */
   CMD_TOOL_SELECT,
   CMD_TOOL_MOVE,

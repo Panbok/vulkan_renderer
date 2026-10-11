@@ -35,3 +35,5 @@ unset(_vkr_depot_zstd_dir)
 add_executable(vkr_depot vkr_depot_main.c)
 vkr_require_declared_c_functions(vkr_depot)
 target_link_libraries(vkr_depot PRIVATE vkr_depot_lib vkr_depot_zstd)
+vkr_embed_info_plist(vkr_depot com.vkr.depot "VKR Depot"
+    "VKR Depot shares projects with other computers on your network.")

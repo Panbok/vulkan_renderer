@@ -57,6 +57,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_LIGHTS,
   /* The collaborative editing session (ADR-106). */
   VKR_EDITOR_WINDOW_SESSION,
+  /* Project sharing through the depot (editor_depot.h). */
+  VKR_EDITOR_WINDOW_DEPOT,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -584,6 +586,8 @@ typedef struct VkrEditorUi {
   /* The collaborative editing session, idle until hosted or joined
      (editor_session.h). */
   struct VkrEditorSession *session;
+  /* Project sharing through the depot (editor_depot.h). */
+  struct VkrEditorDepot *depot;
   /* The Level checks window's last report (editor_level.h). */
   struct VkrEditorLevelReport *level_report;
   /* Brush clipping on the selected brush's grid (editor_brush_grid.h). */

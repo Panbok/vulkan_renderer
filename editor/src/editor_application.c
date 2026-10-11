@@ -10,6 +10,7 @@
 #include "editor_material.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
+#include "editor_depot.h"
 #include "editor_session.h"
 
 #include "core/logger.h"
@@ -103,9 +104,11 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   editor->ui.agent = vkr_editor_agent_create(
       &ui->retained_allocator, editor->agent_socket, !editor->agent_disabled);
   editor->ui.session = vkr_editor_session_create(&ui->retained_allocator);
+  editor->ui.depot = vkr_editor_depot_create(&ui->retained_allocator);
   if (!editor->ui.bakery || !editor->ui.build || !editor->ui.scene_panels ||
       !editor->ui.physics_settings || !editor->ui.scripts || !editor->ui.code ||
-      !editor->ui.materials || !editor->ui.agent || !editor->ui.session)
+      !editor->ui.materials || !editor->ui.agent || !editor->ui.session ||
+      !editor->ui.depot)
     goto cleanup;
   /* Startup Cmd scripts: the environment first, then --exec. */
   editor->ui.cmd_quit_when_done = editor->headless;
@@ -165,6 +168,8 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   }
   return true_v;
 cleanup:
+  vkr_editor_depot_destroy(editor->ui.depot);
+  editor->ui.depot = NULL;
   vkr_editor_session_destroy(editor->ui.session);
   editor->ui.session = NULL;
   vkr_editor_agent_destroy(editor->ui.agent);
@@ -296,6 +301,11 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
      over it and hold the pointer only where they are. */
   if (!vkr_editor_projects_modal(editor->ui.projects)) {
     capture = vkr_editor_ui_build(&editor->ui, frame);
+  } else {
+    /* The launcher gets shared projects and answers agents, whose depot
+       operations need no scene. */
+    vkr_editor_agent_update(editor->ui.agent, &editor->ui, frame);
+    vkr_editor_depot_update(editor->ui.depot, &editor->ui, frame);
   }
   vkr_editor_projects_scene_action(editor->ui.projects, &editor->ui, frame);
   vkr_editor_projects_build(editor->ui.projects, &editor->ui, frame);
@@ -328,6 +338,8 @@ static bool8_t editor_application_shutdown(void *state,
    */
   vkr_editor_content_destroy(editor->ui.content);
   editor->ui.content = NULL;
+  vkr_editor_depot_destroy(editor->ui.depot);
+  editor->ui.depot = NULL;
   vkr_editor_session_destroy(editor->ui.session);
   editor->ui.session = NULL;
   vkr_editor_agent_destroy(editor->ui.agent);

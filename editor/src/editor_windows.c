@@ -1,4 +1,5 @@
 #include "editor_brush_grid.h"
+#include "editor_depot.h"
 #include "editor_environment.h"
 #include "editor_internal.h"
 #include "editor_level.h"
@@ -153,6 +154,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_BAKE_SETTINGS] = {"Bake settings", VKR_UI_ICON_BAKERY, false_v},
     [CMD_LIGHTS] = {"Lights", VKR_UI_ICON_POINT_LIGHT, false_v},
     [CMD_SESSION] = {"Collaborative session", VKR_UI_ICON_CLOUD, false_v},
+    [CMD_DEPOT] = {"Project sharing", VKR_UI_ICON_GIT_BRANCH, false_v},
     [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, false_v},
     [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, false_v},
     [CMD_SIM_PAUSE] = {"Pause simulation", VKR_UI_ICON_PAUSE, false_v},
@@ -635,6 +637,8 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor->windows[VKR_EDITOR_WINDOW_LIGHTS].visible;
   case CMD_SESSION:
     return editor->windows[VKR_EDITOR_WINDOW_SESSION].visible;
+  case CMD_DEPOT:
+    return editor->windows[VKR_EDITOR_WINDOW_DEPOT].visible;
   case CMD_PHYSICS:
     return editor->windows[VKR_EDITOR_WINDOW_PHYSICS].visible;
   case CMD_GRAPHICS:
@@ -777,6 +781,9 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_SESSION:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_SESSION);
+    break;
+  case CMD_DEPOT:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_DEPOT);
     break;
   case CMD_GRAPHICS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_GRAPHICS);
@@ -952,10 +959,8 @@ typedef struct EditorMenuEntry {
 } EditorMenuEntry;
 
 static const EditorMenuEntry s_file_menu[] = {
-    {CMD_LOAD},
-    {CMD_RELOAD},
-    {CMD_UNLOAD},
-    {CMD_SAVE, true_v},
+    {CMD_LOAD},         {CMD_RELOAD},        {CMD_UNLOAD},
+    {CMD_SAVE, true_v}, {CMD_DEPOT, true_v},
 };
 static const EditorMenuEntry s_edit_menu[] = {
     {CMD_UNDO},
@@ -987,6 +992,7 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_BAKE_SETTINGS},
     {CMD_LIGHTS},
     {CMD_SESSION},
+    {CMD_DEPOT},
     {CMD_GRAPHICS},
     {CMD_LABELS, true_v},
     {CMD_LABELS_DIRECTIONAL, false_v, true_v},
@@ -1427,6 +1433,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
       {.unit = VKR_UI_TRACK_AUTO}, /* transport */
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+      {.unit = VKR_UI_TRACK_AUTO}, /* sharing */
       {.unit = VKR_UI_TRACK_AUTO}, /* Projects */
       {.unit = VKR_UI_TRACK_AUTO}, /* Scenes */
       {.unit = VKR_UI_TRACK_AUTO}, /* status */
@@ -1515,8 +1522,10 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   editor_top_icon_button(editor, ui, frame, 12u, CMD_REDO);
 
   editor_transport_build(editor, frame, 14u);
-  if (projects)
-    vkr_editor_projects_navigation(editor->projects, editor, frame, 16u);
+  if (projects) {
+    vkr_editor_depot_chip_build(editor->depot, editor, frame, 16u);
+    vkr_editor_projects_navigation(editor->projects, editor, frame, 17u);
+  }
 
   if ((float32_t)ui->target_width / ui->content_scale >= 980.0f) {
     const bool8_t running = frame->simulation_running;
@@ -1524,7 +1533,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
     VkrUiWidgetConfig status =
         vkr_editor_text_config(theme->font_caption, theme->text_secondary);
     status.placement = (VkrUiPlacement){
-        .column = 18u,
+        .column = 19u,
         .row = 0u,
         .column_span = 1u,
         .row_span = 1u,
@@ -1557,8 +1566,8 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
     vkr_ui_label(ui, string8_lit("status"), content, &status);
   }
 
-  vkr_editor_cmd_bar_build(editor, frame, 19u);
-  editor_caption_buttons_build(frame, 20u);
+  vkr_editor_cmd_bar_build(editor, frame, 20u);
+  editor_caption_buttons_build(frame, 21u);
   (void)vkr_ui_panel_end(ui);
   (void)vkr_ui_input_layer_set(ui, 0u);
 }
@@ -1980,6 +1989,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     title_text = string8_lit("Collaborative session");
     title_icon = VKR_UI_ICON_CLOUD;
     break;
+  case VKR_EDITOR_WINDOW_DEPOT:
+    title_text = string8_lit("Project sharing");
+    title_icon = VKR_UI_ICON_GIT_BRANCH;
+    break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");
     title_icon = VKR_UI_ICON_ADD;
@@ -2267,6 +2280,13 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     if (editor_window_body_begin(ui, window, string8_lit("session.body"),
                                  &bounds)) {
       vkr_editor_session_window_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
+  } else if (kind == VKR_EDITOR_WINDOW_DEPOT) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("depot.body"),
+                                 &bounds)) {
+      vkr_editor_depot_window_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
   } else if (kind == VKR_EDITOR_WINDOW_LEVEL) {

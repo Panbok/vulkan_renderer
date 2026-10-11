@@ -2,9 +2,11 @@
 
 #include "editor_build.h"
 #include "editor_content.h"
+#include "editor_depot.h"
 #include "editor_install.h"
 #include "editor_internal.h"
 #include "editor_lighting.h"
+#include "editor_material.h"
 #include "editor_project_store.h"
 #include "editor_scene_panels.h"
 #include <ctype.h>
@@ -237,6 +239,8 @@ typedef struct ProjectSettingsSave {
 
 struct VkrEditorProjects {
   VkrAllocator *allocator;
+  /* Height of the hub's network part last frame (editor_depot.h). */
+  float32_t network_height;
   Arena *project_arena;
   VkrAllocator project_allocator;
   VkrEditorProject *project;
@@ -3572,40 +3576,29 @@ static void project_job_complete(VkrEditorProjects *projects,
   (void)vkr_ui_keyboard_layer_set(frame->ui, 0);
 }
 
-static void project_choose_workspace(VkrEditorProjects *projects,
-                                     VkrEditorUi *editor,
-                                     const VkrSampleUiFrame *frame) {
-  if (!projects->discard_edits && project_any_dirty(frame)) {
-    projects->resume_view = PROJECT_VIEW_CHOOSER;
-    projects->view = PROJECT_VIEW_CONFIRM;
-    return;
-  }
-  if (!project_save_settings(projects, editor, frame->dock)) {
-    return;
-  }
-  char selected[1024] = {0};
-  project_browse(projects, frame, "Choose a Projects workspace", NULL, 0,
-                 true_v, selected, sizeof(selected));
-  if (!selected[0]) {
-    projects->discard_edits = false_v;
-    return;
-  }
+/* Closes the open project and makes `selected` the workspace. False when
+   it stays on the current one; the caller saved settings and handled
+   unsaved edits. */
+static bool8_t project_switch_workspace(VkrEditorProjects *projects,
+                                        VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        const char *selected) {
   VkrEditorProjectError error = {0};
   VkrEditorWorkspace workspace = {0};
   if (!vkr_editor_workspace_open(selected, project_workspace_clone(selected),
                                  &workspace, &error)) {
     project_error(projects, &error);
-    return;
+    return false_v;
   }
   if (strcmp(workspace.root, projects->workspace.root) == 0) {
     projects->discard_edits = false_v;
-    return;
+    return false_v;
   }
   if (!vkr_editor_content_stop_previews(editor->content)) {
     snprintf(
         projects->message, sizeof(projects->message),
         "Unable to stop the asset preview worker. Retry switching workspaces.");
-    return;
+    return false_v;
   }
   *frame->scene_request = (VkrSampleSceneRequest){
       .unload = true_v, .discard_edits = projects->discard_edits};
@@ -3626,6 +3619,7 @@ static void project_choose_workspace(VkrEditorProjects *projects,
   vkr_editor_workspace_lease_release(&projects->lease);
   projects->workspace = workspace;
   project_overlay_workspace(selected);
+  vkr_editor_material_index_reset(editor->materials);
   projects->read_only = false_v;
   projects->message[0] = '\0';
   if (workspace.initialized && !vkr_editor_workspace_lease_acquire(
@@ -3639,6 +3633,55 @@ static void project_choose_workspace(VkrEditorProjects *projects,
     project_error(projects, &error);
   }
   project_refresh(projects);
+  return true_v;
+}
+
+bool8_t vkr_editor_projects_open_workspace(VkrEditorProjects *projects,
+                                           VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame,
+                                           const char *directory,
+                                           const char *project_id) {
+  if (!projects || !directory || !directory[0]) {
+    return false_v;
+  }
+  if (project_any_dirty(frame)) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Save or discard the open edits before switching workspaces.");
+    return false_v;
+  }
+  if (!project_save_settings(projects, editor, frame->dock)) {
+    return false_v;
+  }
+  if (!project_switch_workspace(projects, editor, frame, directory) &&
+      strcmp(projects->workspace_directory, directory) != 0) {
+    return false_v;
+  }
+  if (project_id && project_id[0]) {
+    snprintf(projects->initial_project, sizeof(projects->initial_project), "%s",
+             project_id);
+  }
+  return true_v;
+}
+
+static void project_choose_workspace(VkrEditorProjects *projects,
+                                     VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame) {
+  if (!projects->discard_edits && project_any_dirty(frame)) {
+    projects->resume_view = PROJECT_VIEW_CHOOSER;
+    projects->view = PROJECT_VIEW_CONFIRM;
+    return;
+  }
+  if (!project_save_settings(projects, editor, frame->dock)) {
+    return;
+  }
+  char selected[1024] = {0};
+  project_browse(projects, frame, "Choose a Projects workspace", NULL, 0,
+                 true_v, selected, sizeof(selected));
+  if (!selected[0]) {
+    projects->discard_edits = false_v;
+    return;
+  }
+  (void)project_switch_workspace(projects, editor, frame, selected);
 }
 
 VkrEditorProjects *vkr_editor_projects_create(VkrAllocator *allocator, int argc,
@@ -4660,6 +4703,10 @@ static void project_build_chooser(VkrEditorProjects *projects,
     if (project_button(ui, "workspace.choose", "Choose workspace",
                        width * 0.5f - 90, 200, 180, false_v))
       project_choose_workspace(projects, editor, frame);
+    /* Or get a project another computer shares: it brings its own
+       workspace. */
+    projects->network_height = vkr_editor_depot_hub_build(
+        editor->depot, editor, frame, 12, 256, width - 24);
     return;
   }
   /* Hub toolbar: search on the left, workspace actions on the right, and
@@ -4814,6 +4861,10 @@ static void project_build_chooser(VkrEditorProjects *projects,
     (void)vkr_ui_pop_id(ui);
     y += 60;
   }
+  projects->network_height =
+      vkr_editor_depot_hub_build(editor->depot, editor, frame, 12, y + 16,
+                                 width - 24) +
+      16.0f;
 }
 
 static void project_build_light_form(VkrUiSystem *ui, ProjectLightDraft *light,
@@ -6256,7 +6307,7 @@ static Vec2 project_dialog_size(const VkrEditorProjects *projects,
            72.0f;
     break;
   default:
-    body = projects->card_count * 70.0f + 160.0f;
+    body = projects->card_count * 70.0f + 160.0f + projects->network_height;
     break;
   }
   return (Vec2){Min(width, Max(280.0f, total_width - 40.0f)),
@@ -6424,7 +6475,8 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
                        projects->view == PROJECT_VIEW_DELETE ||
                        projects->view == PROJECT_VIEW_DELETE_PROJECT
                    ? height - 160
-                   : Max(height - 175, projects->card_count * 70.0f + 160)};
+                   : Max(height - 175, projects->card_count * 70.0f + 160 +
+                                           projects->network_height)};
   VkrUiPanelConfig scroll = vkr_ui_panel_config_default();
   scroll.placement.column = 0;
   scroll.placement.row = 0;

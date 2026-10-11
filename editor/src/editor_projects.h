@@ -202,6 +202,15 @@ vkr_editor_projects_project(const VkrEditorProjects *projects);
 const char *
 vkr_editor_projects_workspace_root(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_read_only(const VkrEditorProjects *projects);
+/* Closes the open project, makes `directory` the workspace and opens
+   project `project_id` there once its cards are read (empty: the project
+   hub). False with the reason in the hub's message while edits are unsaved
+   or when the folder does not open as a workspace. */
+bool8_t vkr_editor_projects_open_workspace(VkrEditorProjects *projects,
+                                           VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame,
+                                           const char *directory,
+                                           const char *project_id);
 /* The Scene viewport of project scene `scene_id`: the live view while that
    scene is open, else the view this machine last recalled for it. False
    when neither has a camera. */

@@ -7,6 +7,7 @@
 #include "editor_lighting.h"
 #include "editor_material.h"
 #include "editor_projects.h"
+#include "editor_depot.h"
 #include "editor_session.h"
 #include "editor_workbench.h"
 
@@ -248,6 +249,8 @@ typedef bool8_t (*OpsBuild)(OpsContext *ctx, const VkrBakeryJson *args,
 /* A read of collision or built geometry: it waits for the scene to settle
    unless `settle` is false. */
 #define OPS_SETTLES 2u
+/* Needs no scene: project sharing works from the project hub too. */
+#define OPS_NO_SCENE 4u
 
 typedef struct OpsDef {
   const char *name;
@@ -13681,6 +13684,120 @@ static VkrEditorOpStatus ops_run_session_status(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+// =============================================================================
+// Project sharing (editor_depot.h)
+// =============================================================================
+
+static VkrEditorOpStatus ops_run_depot_status(OpsContext *ctx) {
+  ctx->call->result = vkr_editor_depot_status_json(ctx->editor->depot,
+                                                   ops_arena(ctx));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* Runs a depot action that takes up to three string arguments and answers
+   with the status. */
+typedef enum OpsDepotAction {
+  OPS_DEPOT_SHARE = 0,
+  OPS_DEPOT_SUBMIT,
+  OPS_DEPOT_PULL,
+  OPS_DEPOT_CLONE,
+  OPS_DEPOT_ALLOW,
+  OPS_DEPOT_FIND,
+  OPS_DEPOT_CANCEL,
+} OpsDepotAction;
+
+static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
+                                          OpsDepotAction action) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char first[1024] = {0};
+  char second[256] = {0};
+  char third[256] = {0};
+  char fourth[1024] = {0};
+  static const char *const keys[][4] = {
+      [OPS_DEPOT_SHARE] = {"destination", "", "", ""},
+      [OPS_DEPOT_SUBMIT] = {"message", "", "", ""},
+      [OPS_DEPOT_PULL] = {"conflicts", "", "", ""},
+      [OPS_DEPOT_CLONE] = {"address", "key", "name", "destination"},
+      [OPS_DEPOT_ALLOW] = {"key", "role", "", ""},
+      [OPS_DEPOT_FIND] = {"address", "", "", ""},
+      [OPS_DEPOT_CANCEL] = {"", "", "", ""},
+  };
+  if ((keys[action][0][0] &&
+       !ops_arg_string(ctx, args, keys[action][0], first, sizeof(first))) ||
+      (keys[action][1][0] &&
+       !ops_arg_string(ctx, args, keys[action][1], second, sizeof(second))) ||
+      (keys[action][2][0] &&
+       !ops_arg_string(ctx, args, keys[action][2], third, sizeof(third))) ||
+      (keys[action][3][0] &&
+       !ops_arg_string(ctx, args, keys[action][3], fourth, sizeof(fourth)))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrEditorDepot *depot = ctx->editor->depot;
+  char error[256] = {0};
+  bool8_t ok = true_v;
+  switch (action) {
+  case OPS_DEPOT_SHARE:
+    ok = vkr_editor_depot_share(depot, ctx->editor, ctx->frame, first, error,
+                                sizeof(error));
+    break;
+  case OPS_DEPOT_SUBMIT:
+    ok = vkr_editor_depot_submit(depot, first, error, sizeof(error));
+    break;
+  case OPS_DEPOT_PULL:
+    ok = vkr_editor_depot_get_latest(depot, first[0] ? first : "fail", error,
+                                     sizeof(error));
+    break;
+  case OPS_DEPOT_CLONE:
+    ok = vkr_editor_depot_clone(depot, first, second, third, fourth, error,
+                                sizeof(error));
+    break;
+  case OPS_DEPOT_ALLOW:
+    ok = vkr_editor_depot_allow(depot, first, second[0] ? second : "write",
+                                error, sizeof(error));
+    break;
+  case OPS_DEPOT_FIND:
+    ok = vkr_editor_depot_find(depot, first, error, sizeof(error));
+    break;
+  case OPS_DEPOT_CANCEL:
+    vkr_editor_depot_cancel(depot);
+    break;
+  }
+  if (!ok) {
+    ops_fail(ctx, OPS_BUSY, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = vkr_editor_depot_status_json(depot, ops_arena(ctx));
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_depot_share(OpsContext *ctx) {
+  return ops_depot_action(ctx, OPS_DEPOT_SHARE);
+}
+
+static VkrEditorOpStatus ops_run_depot_submit(OpsContext *ctx) {
+  return ops_depot_action(ctx, OPS_DEPOT_SUBMIT);
+}
+
+static VkrEditorOpStatus ops_run_depot_pull(OpsContext *ctx) {
+  return ops_depot_action(ctx, OPS_DEPOT_PULL);
+}
+
+static VkrEditorOpStatus ops_run_depot_clone(OpsContext *ctx) {
+  return ops_depot_action(ctx, OPS_DEPOT_CLONE);
+}
+
+static VkrEditorOpStatus ops_run_depot_allow(OpsContext *ctx) {
+  return ops_depot_action(ctx, OPS_DEPOT_ALLOW);
+}
+
+static VkrEditorOpStatus ops_run_depot_find(OpsContext *ctx) {
+  return ops_depot_action(ctx, OPS_DEPOT_FIND);
+}
+
+static VkrEditorOpStatus ops_run_depot_cancel(OpsContext *ctx) {
+  return ops_depot_action(ctx, OPS_DEPOT_CANCEL);
+}
+
 static VkrEditorOpStatus ops_run_session_host(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
   char bind[64] = {0};
@@ -14934,6 +15051,57 @@ static const OpsDef s_ops[] = {
      "pointer ray, this editor's identity key and who may join.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_session_status, NULL,
      OPS_QUICK},
+    {"depot.status",
+     "Project sharing: whether this editor shares the open project or holds "
+     "a copy of one, the server, its access requests and list, local changes, "
+     "whether others submitted newer changes, the running step with its "
+     "progress, the last error and the servers found on the network.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_status, NULL,
+     OPS_NO_SCENE},
+    {"depot.share",
+     "Copies the open project and every file it uses into its own workspace "
+     "('destination', default ~/VKR Projects/<name>), serves it on the "
+     "network while this editor runs, and opens it there.",
+     "{\"type\":\"object\",\"properties\":{\"destination\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_depot_share, NULL, OPS_NO_SCENE},
+    {"depot.submit",
+     "Submits every local change of the shared project with 'message', "
+     "first taking newer changes from others.",
+     "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_depot_submit, NULL, OPS_NO_SCENE},
+    {"depot.pull",
+     "Gets the newest changes of the shared project, cooks the textures they "
+     "bring and reloads the scene. 'conflicts' (fail, theirs, mine) settles "
+     "files changed both here and there.",
+     "{\"type\":\"object\",\"properties\":{\"conflicts\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_depot_pull, NULL, OPS_NO_SCENE},
+    {"depot.clone",
+     "Gets the project another editor shares at 'address' with server 'key' "
+     "into 'destination' (default ~/VKR Projects/<name>) and opens it.",
+     "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
+     "\"string\"},\"key\":{\"type\":\"string\"},\"name\":{\"type\":"
+     "\"string\"},\"destination\":{\"type\":\"string\"}},\"required\":"
+     "[\"address\",\"key\"]}",
+     ops_run_depot_clone, NULL, OPS_NO_SCENE},
+    {"depot.allow",
+     "Gives the identity 'key' a 'role' (write, read or none) on the project "
+     "this editor shares.",
+     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":"
+     "\"string\"},\"role\":{\"type\":\"string\"}},\"required\":"
+     "[\"key\"]}",
+     ops_run_depot_allow, NULL, OPS_NO_SCENE},
+    {"depot.find",
+     "Probes 'address' (a computer name or address) for a shared project, "
+     "besides the broadcast; depot.status lists what answers.",
+     "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
+     "\"string\"}},\"required\":[\"address\"]}",
+     ops_run_depot_find, NULL, OPS_NO_SCENE},
+    {"depot.cancel", "Stops the running sharing step.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_cancel, NULL,
+     OPS_NO_SCENE},
 };
 
 static const OpsDef *ops_find(String8 name) {
@@ -15022,8 +15190,8 @@ VkrEditorOpStatus vkr_editor_ops_run(VkrEditorOps *ops, VkrEditorUi *editor,
     return ops_done(&ctx);
   }
   if (!call->stage && !frame->scene && !frame->world &&
-      def->run != ops_run_list && def->run != ops_run_cmd &&
-      def->run != ops_run_status) {
+      !(def->flags & OPS_NO_SCENE) && def->run != ops_run_list &&
+      def->run != ops_run_cmd && def->run != ops_run_status) {
     ops_fail(&ctx, OPS_BUSY, "No scene is loaded");
     return ops_done(&ctx);
   }

@@ -46,6 +46,7 @@ add_executable(vkr_editor
     src/editor_code.c
     src/editor_graph.c
     src/editor_material.c
+    src/editor_depot.c
 )
 target_include_directories(vkr_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_SOURCE_DIR}/vendor")
@@ -60,6 +61,9 @@ target_sources(vkr_editor PRIVATE
     "${CMAKE_SOURCE_DIR}/tools/depot/vkr_depot_zstd.c")
 target_include_directories(vkr_editor PRIVATE
     "${CMAKE_SOURCE_DIR}/vendor/ktx-software/external/basisu/zstd")
+# The editor shares and fetches projects on the local network (ADR-105).
+vkr_embed_info_plist(vkr_editor com.vkr.editor "VKR Editor"
+    "VKR Editor finds and shares projects with other computers on your network.")
 
 # Every cooker, table, shader compile, project job, scene bake and material
 # preview runs through vkr_bakery; the harness and preview tool remain
