@@ -3219,11 +3219,18 @@ bool8_t vkr_vk_prepare_froxel_integrate(VkrVulkanRenderer *renderer,
   if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &scattering) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 1u, &integrated))
     return false_v;
+  /* Later passes sample what this one writes: they take the image's sampled
+     slot, which the storage slot's table does not share. */
+  const VkrRgImageUse *output = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  const VkrVulkanGraphImageInstance *output_image =
+      output ? vkr_vk_deferred_image(renderer, output->image) : NULL;
+  if (!output_image || !output_image->has_sampled_slot)
+    return false_v;
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   if (!slot->froxel_fog_params)
     return false_v;
-  slot->froxel_integrated_texture = integrated;
+  slot->froxel_integrated_texture = output_image->sampled_slot.index;
   uint64_t frame = 0u;
   if (!vkr_vk_prepare_froxel_frame_root(renderer, pass, &frame))
     return false_v;
