@@ -3,7 +3,10 @@
  *
  *   vkr_depot keygen [--identity FILE]
  *   vkr_depot init STORE
- *   vkr_depot serve STORE [--bind ADDR] [--open]
+ *   vkr_depot serve STORE [--bind ADDR] [--open] [--name NAME]
+ *   vkr_depot discover [--to ADDR] [--timeout MS]
+ *   vkr_depot mirror STORE PEER-ADDR PEER-KEY [--local ADDR] [--branch NAME]
+ *                    [--watch SECONDS]
  *   vkr_depot access STORE KEY none|read|write|admin
  *   vkr_depot clone ADDR SERVER-KEY DIR [--branch NAME] [--store DIR]
  *   vkr_depot status [DIR]
@@ -18,7 +21,9 @@
  * A working copy pushes with `commit`: it snapshots the directory, uploads
  * the objects the server lacks and moves the branch from the commit it
  * started from. A branch that moved meanwhile refuses the push; `pull`
- * first. */
+ * first. `serve` also answers LAN discovery (vkr_depot_discovery.h), and
+ * `mirror` keeps the branches of the local server and a peer server equal,
+ * so two machines each hold a full store. */
 
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
@@ -26,6 +31,7 @@
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
+#include "vkr_depot_discovery.h"
 #include "vkr_depot_server.h"
 #include "vkr_depot_sync.h"
 #include "vkr_depot_workspace.h"
@@ -187,7 +193,7 @@ static void depot_serve_accept(void *context, const VkrNetAddress *address,
 }
 
 static int depot_serve(const char *store_root, const char *bind,
-                       bool8_t open_access) {
+                       bool8_t open_access, const char *name) {
   static ServeContext serve;
   VkrNetHostConfig config = {
       .socket = {.receive_buffer = 16u << 20, .send_buffer = 16u << 20}};
@@ -227,16 +233,96 @@ static int depot_serve(const char *store_root, const char *bind,
   printf("serving %s on %s key ", store_root, text);
   depot_print_key(config.core.static_keys.public_key);
   printf("%s\n", open_access ? " (open access)" : "");
+  /* Other machines find this server by its name, the store's folder
+     unless --name gives one. */
+  static VkrDepotResponder responder;
+  if (vkr_depot_responder_open(
+          &responder, local.port, config.core.static_keys.public_key,
+          name ? name : vkr_bakery_path_name(store_root))) {
+    printf("discoverable as %s on UDP %u\n", responder.name,
+           VKR_DEPOT_DISCOVERY_PORT);
+  } else {
+    printf("not discoverable: UDP %u is taken\n", VKR_DEPOT_DISCOVERY_PORT);
+  }
   fflush(stdout);
   for (;;) {
     if (!depot_link_pump(&link, 50)) {
       fprintf(stderr, "the socket failed\n");
       break;
     }
+    vkr_depot_responder_update(&responder);
   }
+  vkr_depot_responder_close(&responder);
   vkr_depot_server_destroy(link.server);
   depot_link_close(&link);
   return 1;
+}
+
+static int depot_discover(const char *to, uint32_t timeout_ms) {
+  VkrNetAddress target;
+  if (to && !vkr_depot_address(to, &target)) {
+    fprintf(stderr, "invalid --to address %s\n", to);
+    return 1;
+  }
+  VkrDepotDiscovered found[32];
+  const uint32_t count = vkr_depot_discover(to ? &target : NULL, timeout_ms,
+                                            found, ArrayCount(found));
+  for (uint32_t i = 0u; i < count; ++i) {
+    char text[VKR_NET_ADDRESS_TEXT];
+    vkr_net_address_format(&found[i].address, text, sizeof(text));
+    printf("%s ", text);
+    depot_print_key(found[i].server_key);
+    printf(" %s %s\n", found[i].name[0] ? found[i].name : "-",
+           found[i].host[0] ? found[i].host : "-");
+  }
+  if (!count) {
+    fprintf(stderr, "no depot server answered within %u ms\n", timeout_ms);
+  }
+  return count ? 0 : 1;
+}
+
+static void depot_mirror_print(void *context, const char *branch,
+                               VkrDepotMirrorAction action,
+                               const VkrDepotId *commit, const char *detail) {
+  static const char *const actions[] = {"same", "to-peer", "from-peer",
+                                        "diverged", "failed"};
+  uint32_t *failures = context;
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(commit, hex);
+  printf("%s %s %.12s%s%s\n", actions[action], branch, hex,
+         detail[0] ? ": " : "", detail);
+  fflush(stdout);
+  *failures += action >= VKR_DEPOT_MIRROR_DIVERGED;
+}
+
+static int depot_mirror_command(const char *store_root, const char *peer,
+                                const char *peer_key_hex, const char *local,
+                                const char *branch, uint32_t watch_seconds) {
+  uint8_t peer_key[32];
+  VkrNetKeyPair local_keys;
+  VkrDepotStore store;
+  if (!depot_parse_key(peer_key_hex, peer_key) ||
+      !vkr_depot_store_open(&store, store_root, vkr_depot_zstd_codec()) ||
+      !vkr_depot_server_key(store_root, &local_keys)) {
+    fprintf(stderr, "mirror needs STORE PEER-ADDR PEER-KEY\n");
+    return 1;
+  }
+  vkr_net_random(local_keys.secret_key, sizeof(local_keys.secret_key));
+  for (;;) {
+    char error[256];
+    uint32_t failures = 0u;
+    if (!vkr_depot_mirror(&depot_allocator, &store, local,
+                          local_keys.public_key, peer, peer_key, branch,
+                          depot_mirror_print, &failures, error,
+                          sizeof(error))) {
+      fprintf(stderr, "%s\n", error);
+      failures += 1u;
+    }
+    if (!watch_seconds) {
+      return failures ? 1 : 0;
+    }
+    vkr_platform_sleep((uint64_t)watch_seconds * 1000u);
+  }
 }
 
 static int depot_access(const char *store_root, const char *key_hex,
@@ -523,7 +609,10 @@ static void depot_usage(void) {
       "usage:\n"
       "  vkr_depot keygen\n"
       "  vkr_depot init STORE\n"
-      "  vkr_depot serve STORE [--bind ADDR] [--open]\n"
+      "  vkr_depot serve STORE [--bind ADDR] [--open] [--name NAME]\n"
+      "  vkr_depot discover [--to ADDR] [--timeout MS]\n"
+      "  vkr_depot mirror STORE PEER-ADDR PEER-KEY [--local ADDR]\n"
+      "                   [--branch NAME] [--watch SECONDS]\n"
       "  vkr_depot access STORE KEY none|read|write|admin\n"
       "  vkr_depot clone ADDR SERVER-KEY DIR [--branch NAME] [--store DIR]\n"
       "  vkr_depot status|pull|refs|locks [DIR]\n"
@@ -542,7 +631,13 @@ static int depot_main(int argc, char **argv) {
   uint32_t positional_count = 0u;
   const char *bind = NULL;
   const char *branch = "main";
+  bool8_t branch_given = false_v;
   const char *store = NULL;
+  const char *name = NULL;
+  const char *to = NULL;
+  const char *local = NULL;
+  uint32_t timeout_ms = 1500u;
+  uint32_t watch_seconds = 0u;
   const char *message = NULL;
   const char *dir = NULL;
   uint32_t count = 20u;
@@ -560,6 +655,22 @@ static int depot_main(int argc, char **argv) {
       ++i;
     } else if (value && strcmp(arg, "--branch") == 0) {
       branch = value;
+      branch_given = true_v;
+      ++i;
+    } else if (value && strcmp(arg, "--name") == 0) {
+      name = value;
+      ++i;
+    } else if (value && strcmp(arg, "--to") == 0) {
+      to = value;
+      ++i;
+    } else if (value && strcmp(arg, "--local") == 0) {
+      local = value;
+      ++i;
+    } else if (value && strcmp(arg, "--timeout") == 0) {
+      timeout_ms = (uint32_t)strtoul(value, NULL, 10);
+      ++i;
+    } else if (value && strcmp(arg, "--watch") == 0) {
+      watch_seconds = (uint32_t)strtoul(value, NULL, 10);
       ++i;
     } else if (value && strcmp(arg, "--store") == 0) {
       store = value;
@@ -588,7 +699,15 @@ static int depot_main(int argc, char **argv) {
     return depot_init(positional[0]);
   }
   if (strcmp(command, "serve") == 0 && positional[0]) {
-    return depot_serve(positional[0], bind, open_access);
+    return depot_serve(positional[0], bind, open_access, name);
+  }
+  if (strcmp(command, "discover") == 0) {
+    return depot_discover(to, timeout_ms);
+  }
+  if (strcmp(command, "mirror") == 0 && positional_count == 3u) {
+    return depot_mirror_command(positional[0], positional[1], positional[2],
+                                local ? local : "127.0.0.1",
+                                branch_given ? branch : NULL, watch_seconds);
   }
   if (strcmp(command, "access") == 0 && positional_count == 3u) {
     return depot_access(positional[0], positional[1], positional[2]);

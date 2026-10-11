@@ -137,3 +137,12 @@ int32_t vkr_udp_socket_wait(VkrUdpSocket socket, int32_t timeout_ms);
 
 /* Describes the last failed socket call of this thread. */
 void vkr_udp_socket_error_text(char *out, uint64_t capacity);
+
+/* Lets an IPv4 `socket` send to broadcast addresses. */
+bool8_t vkr_udp_socket_enable_broadcast(VkrUdpSocket socket);
+
+/* The directed broadcast address, with `port`, of each IPv4 interface that
+   is up, can broadcast and is not loopback; at most `capacity`. Returns how
+   many it stored. */
+uint32_t vkr_net_ipv4_broadcast_addresses(uint16_t port, VkrNetAddress *out,
+                                          uint32_t capacity);

@@ -49,6 +49,37 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
                               VkrDepotId *out_commit, char *error,
                               uint32_t capacity);
 
+typedef enum VkrDepotMirrorAction {
+  VKR_DEPOT_MIRROR_SAME = 0,
+  /* The peer moved to this server's commit. */
+  VKR_DEPOT_MIRROR_TO_PEER,
+  /* This server moved to the peer's commit. */
+  VKR_DEPOT_MIRROR_FROM_PEER,
+  /* Each side has commits the other lacks: a working copy of one server
+     takes the other's change over by hand and commits, and the next mirror
+     fast-forwards the other. */
+  VKR_DEPOT_MIRROR_DIVERGED,
+  VKR_DEPOT_MIRROR_FAILED,
+} VkrDepotMirrorAction;
+
+typedef void (*VkrDepotMirrorVisit)(void *context, const char *branch,
+                                    VkrDepotMirrorAction action,
+                                    const VkrDepotId *commit,
+                                    const char *detail);
+
+/* Makes the branches of two depot servers equal: the local server at
+   `local_address`, which serves `store`, and the peer at `peer_address`.
+   A branch on one side only is created on the other; a branch that one side
+   moved past the other's commit fast-forwards there. Objects go through
+   `store`, which the local server shares, and each branch moves only by
+   the server's compare-and-swap. `branch` NULL mirrors every branch. Calls
+   `visit` per branch; false with a message when a server is unreachable. */
+bool8_t vkr_depot_mirror(VkrAllocator *allocator, const VkrDepotStore *store,
+                         const char *local_address, const uint8_t local_key[32],
+                         const char *peer_address, const uint8_t peer_key[32],
+                         const char *branch, VkrDepotMirrorVisit visit,
+                         void *context, char *error, uint32_t capacity);
+
 /* Fetches `commit` and checks it out over the working directory. Files
    changed here since the base stay as they are unless the commit changed
    them too, which fails without changing anything. On success the commit is

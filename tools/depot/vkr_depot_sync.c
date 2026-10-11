@@ -223,6 +223,233 @@ bool8_t vkr_depot_find_ref(VkrDepotClient *client, const char *branch,
   return true_v;
 }
 
+// =============================================================================
+// Mirror
+// =============================================================================
+
+/* Commits a branch's history may walk before the mirror calls it diverged. */
+#define DEPOT_MIRROR_WALK_MAX 4096u
+
+/* Whether `ancestor` is `start` or one of its ancestors. A commit missing
+   from the store comes from `client`'s server, whose history holds it. */
+static bool8_t depot_mirror_descends(const VkrDepotStore *store,
+                                     VkrDepotClient *client,
+                                     const VkrDepotId *start,
+                                     const VkrDepotId *ancestor,
+                                     bool8_t *out_descends) {
+  VkrDepotId *pending = malloc(DEPOT_MIRROR_WALK_MAX * sizeof(*pending));
+  VkrDepotId *seen = malloc(DEPOT_MIRROR_WALK_MAX * sizeof(*seen));
+  uint32_t pending_count = 0u;
+  uint32_t seen_count = 0u;
+  bool8_t ok = pending && seen;
+  *out_descends = false_v;
+  if (ok) {
+    pending[pending_count++] = *start;
+  }
+  while (ok && pending_count && !*out_descends) {
+    const VkrDepotId id = pending[--pending_count];
+    bool8_t known = false_v;
+    for (uint32_t i = 0u; i < seen_count && !known; ++i) {
+      known = vkr_depot_id_equal(&seen[i], &id);
+    }
+    if (known) {
+      continue;
+    }
+    if (seen_count == DEPOT_MIRROR_WALK_MAX) {
+      break;
+    }
+    seen[seen_count++] = id;
+    if (vkr_depot_id_equal(&id, ancestor)) {
+      *out_descends = true_v;
+      break;
+    }
+    VkrDepotTransferStats stats = {0};
+    if (!vkr_depot_store_has(store, &id) &&
+        !vkr_depot_client_fetch(client, &id, &stats)) {
+      ok = false_v;
+      break;
+    }
+    uint8_t *bytes = NULL;
+    uint64_t size = 0u;
+    VkrDepotCommit commit;
+    if (!vkr_depot_store_get(store, &id, &bytes, &size) ||
+        !vkr_depot_commit_parse(bytes, size, &commit)) {
+      free(bytes);
+      ok = false_v;
+      break;
+    }
+    for (uint32_t i = 0u;
+         i < commit.parent_count && pending_count < DEPOT_MIRROR_WALK_MAX;
+         ++i) {
+      pending[pending_count++] = commit.parents[i];
+    }
+    free(bytes);
+  }
+  free(pending);
+  free(seen);
+  return ok;
+}
+
+/* Moves `branch` on `client`'s server from `expected` (zero creates it) to
+   `commit`; the detail names where it is on a conflict. */
+static bool8_t depot_mirror_move(VkrDepotClient *client, const char *branch,
+                                 const VkrDepotId *expected,
+                                 const VkrDepotId *commit, char *detail,
+                                 uint32_t capacity) {
+  VkrDepotId current;
+  const VkrDepotRefStatus status =
+      vkr_depot_client_update_ref(client, branch, expected, commit, &current);
+  if (status == VKR_DEPOT_REF_OK) {
+    return true_v;
+  }
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&current, hex);
+  if (status == VKR_DEPOT_REF_CONFLICT) {
+    snprintf(detail, capacity, "the branch moved meanwhile, to %.12s", hex);
+  } else {
+    snprintf(detail, capacity, "the server refused the move (status %d)",
+             (int)status);
+  }
+  return false_v;
+}
+
+static void depot_mirror_branch(const VkrDepotStore *store,
+                                VkrDepotClient *local, VkrDepotClient *peer,
+                                const char *branch, const VkrDepotRef *mine,
+                                const VkrDepotRef *theirs,
+                                VkrDepotMirrorVisit visit, void *context) {
+  static const VkrDepotId none = {0};
+  char detail[160] = {0};
+  VkrDepotTransferStats stats = {0};
+  if (mine && theirs && vkr_depot_id_equal(&mine->commit, &theirs->commit)) {
+    visit(context, branch, VKR_DEPOT_MIRROR_SAME, &mine->commit, "");
+    return;
+  }
+  bool8_t to_peer = mine && !theirs;
+  bool8_t from_peer = theirs && !mine;
+  if (mine && theirs) {
+    bool8_t descends = false_v;
+    if (!depot_mirror_descends(store, local, &mine->commit, &theirs->commit,
+                               &descends)) {
+      visit(context, branch, VKR_DEPOT_MIRROR_FAILED, &mine->commit,
+            vkr_depot_client_error(local));
+      return;
+    }
+    to_peer = descends;
+    if (!to_peer) {
+      if (!vkr_depot_client_fetch(peer, &theirs->commit, &stats) ||
+          !depot_mirror_descends(store, peer, &theirs->commit, &mine->commit,
+                                 &descends)) {
+        visit(context, branch, VKR_DEPOT_MIRROR_FAILED, &theirs->commit,
+              vkr_depot_client_error(peer));
+        return;
+      }
+      from_peer = descends;
+    }
+    if (!to_peer && !from_peer) {
+      visit(context, branch, VKR_DEPOT_MIRROR_DIVERGED, &theirs->commit,
+            "both servers moved it; mirror only fast-forwards, so carry one "
+            "side's change over in a working copy of the other and commit");
+      return;
+    }
+  }
+  if (to_peer) {
+    const VkrDepotId *base = theirs ? &theirs->commit : &none;
+    if (!vkr_depot_client_upload(peer, &mine->commit, base, &stats)) {
+      visit(context, branch, VKR_DEPOT_MIRROR_FAILED, &mine->commit,
+            vkr_depot_client_error(peer));
+    } else if (!depot_mirror_move(peer, branch, base, &mine->commit, detail,
+                                  sizeof(detail))) {
+      visit(context, branch, VKR_DEPOT_MIRROR_FAILED, &mine->commit, detail);
+    } else {
+      visit(context, branch, VKR_DEPOT_MIRROR_TO_PEER, &mine->commit, "");
+    }
+    return;
+  }
+  const VkrDepotId *base = mine ? &mine->commit : &none;
+  if (!vkr_depot_client_fetch(peer, &theirs->commit, &stats)) {
+    visit(context, branch, VKR_DEPOT_MIRROR_FAILED, &theirs->commit,
+          vkr_depot_client_error(peer));
+  } else if (!vkr_depot_client_upload(local, &theirs->commit, base, &stats)) {
+    visit(context, branch, VKR_DEPOT_MIRROR_FAILED, &theirs->commit,
+          vkr_depot_client_error(local));
+  } else if (!depot_mirror_move(local, branch, base, &theirs->commit, detail,
+                                sizeof(detail))) {
+    visit(context, branch, VKR_DEPOT_MIRROR_FAILED, &theirs->commit, detail);
+  } else {
+    visit(context, branch, VKR_DEPOT_MIRROR_FROM_PEER, &theirs->commit, "");
+  }
+}
+
+static const VkrDepotRef *
+depot_mirror_find(const VkrDepotRef *refs, uint32_t count, const char *branch) {
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (strcmp(refs[i].name, branch) == 0) {
+      return &refs[i];
+    }
+  }
+  return NULL;
+}
+
+bool8_t vkr_depot_mirror(VkrAllocator *allocator, const VkrDepotStore *store,
+                         const char *local_address, const uint8_t local_key[32],
+                         const char *peer_address, const uint8_t peer_key[32],
+                         const char *branch, VkrDepotMirrorVisit visit,
+                         void *context, char *error, uint32_t capacity) {
+  VkrDepotRef *local_refs = malloc(VKR_DEPOT_REFS_MAX * sizeof(*local_refs));
+  VkrDepotRef *peer_refs = malloc(VKR_DEPOT_REFS_MAX * sizeof(*peer_refs));
+  uint32_t local_count = 0u;
+  uint32_t peer_count = 0u;
+  VkrDepotConnection *local = NULL;
+  VkrDepotConnection *peer = NULL;
+  bool8_t ok = false_v;
+  if (!local_refs || !peer_refs) {
+    snprintf(error, capacity, "out of memory");
+    goto cleanup;
+  }
+  local = vkr_depot_connect(allocator, local_address, local_key, store, error,
+                            capacity);
+  peer = local ? vkr_depot_connect(allocator, peer_address, peer_key, store,
+                                   error, capacity)
+               : NULL;
+  if (!peer) {
+    goto cleanup;
+  }
+  VkrDepotClient *local_client = vkr_depot_connection_client(local);
+  VkrDepotClient *peer_client = vkr_depot_connection_client(peer);
+  if (!vkr_depot_client_refs(local_client, local_refs, VKR_DEPOT_REFS_MAX,
+                             &local_count) ||
+      !vkr_depot_client_refs(peer_client, peer_refs, VKR_DEPOT_REFS_MAX,
+                             &peer_count)) {
+    snprintf(error, capacity, "listing branches failed: %s",
+             vkr_depot_client_error(local_count ? peer_client : local_client));
+    goto cleanup;
+  }
+  /* Every branch of either side once, this side's first. */
+  for (uint32_t side = 0u; side < 2u; ++side) {
+    const VkrDepotRef *refs = side == 0u ? local_refs : peer_refs;
+    const uint32_t count = side == 0u ? local_count : peer_count;
+    for (uint32_t i = 0u; i < count; ++i) {
+      const char *name = refs[i].name;
+      if ((branch && strcmp(name, branch) != 0) ||
+          (side == 1u && depot_mirror_find(local_refs, local_count, name))) {
+        continue;
+      }
+      depot_mirror_branch(store, local_client, peer_client, name,
+                          depot_mirror_find(local_refs, local_count, name),
+                          depot_mirror_find(peer_refs, peer_count, name), visit,
+                          context);
+    }
+  }
+  ok = true_v;
+cleanup:
+  vkr_depot_disconnect(peer);
+  vkr_depot_disconnect(local);
+  free(local_refs);
+  free(peer_refs);
+  return ok;
+}
+
 bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
                               VkrDepotClient *client, const char *branch,
                               const VkrDepotId *parent,

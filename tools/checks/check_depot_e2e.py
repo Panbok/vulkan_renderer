@@ -3,8 +3,10 @@
 
 Runs a server and three users through init, access, clone, commit, a second
 clone, an edit, a pull that keeps a local change, a refused stale push,
-locks and a refused key. Every step checks the files or the command's
-result; any mismatch exits nonzero.
+locks and a refused key. A second server then finds the first by
+discovery, takes its branch through `mirror`, gives an edit made on it back
+the same way, and reports a branch both servers moved as diverged. Every
+step checks the files or the command's result; any mismatch exits nonzero.
 
 Example:
   python3 tools/checks/check_depot_e2e.py build_release/tools/depot/vkr_depot
@@ -61,9 +63,10 @@ def main():
     run(["access", str(store), alice, "write"])
     run(["access", str(store), bob, "write"])
 
-    server = subprocess.Popen([exe, "serve", str(store), "--bind", address],
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True)
+    peer_address = f"127.0.0.1:{args.port + 1}"
+    servers = [subprocess.Popen([exe, "serve", str(store), "--bind", address],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)]
     time.sleep(1.0)
     try:
         work_a = root / "alice"
@@ -117,13 +120,59 @@ def main():
         run(["keygen"], "carol")
         run(["clone", address, server_key, str(root / "carol")], "carol",
             ok=False)
+
+        # Discovery: the first server answers a probe sent to loopback.
+        found = run(["discover", "--to", "127.0.0.1", "--timeout", "2000"])
+        if server_key not in found or " store " not in found:
+            sys.exit("discovery did not find the first server")
+
+        # A second server mirrors the first; an edit on it comes back.
+        peer_store = root / "peer"
+        peer_key = run(["init", str(peer_store)]).split("server key ")[1].split()[0]
+        run(["access", str(peer_store), alice, "write"])
+        run(["access", str(peer_store), bob, "write"])
+        servers.append(subprocess.Popen(
+            [exe, "serve", str(peer_store), "--bind", peer_address],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
+        time.sleep(1.0)
+        mirrored = run(["mirror", str(store), peer_address, peer_key,
+                        "--local", address])
+        if not mirrored.startswith("to-peer main"):
+            sys.exit("the first mirror did not carry main to the peer")
+        work_c = root / "bob-peer"
+        run(["clone", peer_address, peer_key, str(work_c)], "bob")
+        if digest(work_c) != digest(work_a):
+            sys.exit("the peer's clone differs from the first server's")
+        (work_c / "peer.txt").write_bytes(b"made on the peer\n")
+        run(["commit", str(work_c), "-m", "peer edit"], "bob")
+        mirrored = run(["mirror", str(store), peer_address, peer_key,
+                        "--local", address])
+        if not mirrored.startswith("from-peer main"):
+            sys.exit("the second mirror did not bring the peer's commit back")
+        run(["pull", str(work_a)])
+        if digest(work_a) != digest(work_c):
+            sys.exit("the mirrored commit differs from the peer's")
+        if not run(["mirror", str(store), peer_address, peer_key, "--local",
+                    address]).startswith("same main"):
+            sys.exit("a mirror with nothing new changed a branch")
+
+        # Both servers move main: the mirror refuses and changes nothing.
+        (work_a / "a.txt").write_bytes(b"first server\n")
+        run(["commit", str(work_a), "-m", "first side"])
+        (work_c / "c.txt").write_bytes(b"second server\n")
+        run(["commit", str(work_c), "-m", "second side"], "bob")
+        mirrored = run(["mirror", str(store), peer_address, peer_key,
+                        "--local", address], ok=False)
+        if not mirrored.startswith("diverged main"):
+            sys.exit("diverged branches were not reported")
         print("depot end-to-end check passed")
     finally:
-        server.terminate()
-        try:
-            server.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            server.kill()
+        for process in servers:
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
         if not args.keep:
             shutil.rmtree(root, ignore_errors=True)
 

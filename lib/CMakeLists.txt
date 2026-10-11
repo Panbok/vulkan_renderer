@@ -8,7 +8,8 @@ target_compile_definitions(vkr_foundation PUBLIC
 if(APPLE)
     target_link_libraries(vkr_foundation PRIVATE "-framework CoreGraphics")
 elseif(WIN32)
-    # Local sockets (vkr_local_socket_windows.c) use Winsock and file DACLs.
+    # Local sockets (vkr_local_socket_windows.c) use Winsock and file DACLs;
+    # UDP broadcast lists interfaces through the IP helper.
     target_link_libraries(vkr_foundation PRIVATE user32 winmm psapi ws2_32
-        advapi32)
+        advapi32 iphlpapi)
 endif()

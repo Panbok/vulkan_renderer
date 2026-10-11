@@ -8,11 +8,14 @@
 #include <ws2tcpip.h>
 #include <mswsock.h>
 #include <windows.h>
+#include <iphlpapi.h>
 // clang-format on
 #else
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -605,4 +608,96 @@ void vkr_udp_socket_error_text(char *out, uint64_t capacity) {
 #else
   snprintf(out, capacity, "%s (errno %d)", strerror(error), error);
 #endif
+}
+
+bool8_t vkr_udp_socket_enable_broadcast(VkrUdpSocket socket) {
+  return socket.handle != VKR_UDP_SOCKET_INVALID &&
+         socket.family == VKR_NET_ADDRESS_IPV4 &&
+         udp_set_option(udp_native(socket), SOL_SOCKET, SO_BROADCAST, 1);
+}
+
+/* Stores `address | ~mask` (both in network byte order) unless it is
+   already listed. */
+static void udp_add_broadcast(uint32_t address, uint32_t mask, uint16_t port,
+                              VkrNetAddress *out, uint32_t capacity,
+                              uint32_t *count) {
+  const uint32_t broadcast = address | ~mask;
+  VkrNetAddress entry = {.family = VKR_NET_ADDRESS_IPV4, .port = port};
+  MemCopy(entry.bytes, &broadcast, 4u);
+  for (uint32_t i = 0u; i < *count; ++i) {
+    if (vkr_net_address_equal(&out[i], &entry)) {
+      return;
+    }
+  }
+  if (*count < capacity) {
+    out[(*count)++] = entry;
+  }
+}
+
+uint32_t vkr_net_ipv4_broadcast_addresses(uint16_t port, VkrNetAddress *out,
+                                          uint32_t capacity) {
+  uint32_t count = 0u;
+  if (!out || !capacity || !udp_ready()) {
+    return 0u;
+  }
+#if defined(_WIN32)
+  ULONG size = 16u * 1024u;
+  IP_ADAPTER_ADDRESSES *adapters = NULL;
+  ULONG result = ERROR_BUFFER_OVERFLOW;
+  for (uint32_t attempt = 0u; attempt < 3u && result == ERROR_BUFFER_OVERFLOW;
+       ++attempt) {
+    free(adapters);
+    adapters = malloc(size);
+    if (!adapters) {
+      return 0u;
+    }
+    result =
+        GetAdaptersAddresses(AF_INET,
+                             GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+                                 GAA_FLAG_SKIP_DNS_SERVER,
+                             NULL, adapters, &size);
+  }
+  for (IP_ADAPTER_ADDRESSES *adapter = result == NO_ERROR ? adapters : NULL;
+       adapter; adapter = adapter->Next) {
+    if (adapter->OperStatus != IfOperStatusUp ||
+        adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK) {
+      continue;
+    }
+    for (IP_ADAPTER_UNICAST_ADDRESS *unicast = adapter->FirstUnicastAddress;
+         unicast; unicast = unicast->Next) {
+      const struct sockaddr_in *ipv4 =
+          (const struct sockaddr_in *)unicast->Address.lpSockaddr;
+      const uint8_t prefix = unicast->OnLinkPrefixLength;
+      if (ipv4->sin_family != AF_INET || prefix == 0u || prefix >= 31u) {
+        continue;
+      }
+      const uint32_t mask = htonl(0xffffffffu << (32u - prefix));
+      udp_add_broadcast(ipv4->sin_addr.s_addr, mask, port, out, capacity,
+                        &count);
+    }
+  }
+  free(adapters);
+#else
+  struct ifaddrs *interfaces = NULL;
+  if (getifaddrs(&interfaces) != 0) {
+    return 0u;
+  }
+  for (struct ifaddrs *entry = interfaces; entry; entry = entry->ifa_next) {
+    if (!entry->ifa_addr || !entry->ifa_netmask ||
+        entry->ifa_addr->sa_family != AF_INET ||
+        (entry->ifa_flags & IFF_UP) == 0u ||
+        (entry->ifa_flags & IFF_LOOPBACK) != 0u ||
+        (entry->ifa_flags & IFF_BROADCAST) == 0u) {
+      continue;
+    }
+    const struct sockaddr_in *ipv4 =
+        (const struct sockaddr_in *)entry->ifa_addr;
+    const struct sockaddr_in *mask =
+        (const struct sockaddr_in *)entry->ifa_netmask;
+    udp_add_broadcast(ipv4->sin_addr.s_addr, mask->sin_addr.s_addr, port, out,
+                      capacity, &count);
+  }
+  freeifaddrs(interfaces);
+#endif
+  return count;
 }
