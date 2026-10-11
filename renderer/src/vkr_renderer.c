@@ -967,8 +967,9 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
    * addition to the frontend graph. A resize can retain the old graph while
    * texture publication admits more 64 MiB image blocks; each block adds a
    * fixed GPU-memory-core record. Reserve that cold-boundary overlap without
-   * increasing the initial physical commit. */
-  if (!vkr_dmemory_create(MB(2), MB(96), &renderer->render_graph_dmemory)) {
+   * increasing the initial physical commit. Vulkan's publication records
+   * grow with VKR_GEOMETRY_CAPACITY; 32,768 geometries take about 12 MiB. */
+  if (!vkr_dmemory_create(MB(2), MB(128), &renderer->render_graph_dmemory)) {
     log_error("Failed to create render graph allocator!");
     goto initialize_failure;
   }
