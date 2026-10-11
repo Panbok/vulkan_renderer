@@ -3141,20 +3141,31 @@ static void *session_depot_worker(void *argument) {
     snprintf(job->error, sizeof(job->error), "no depot working copy at %s",
              job->directory);
   } else {
+    /* A commit snapshots before it connects: hashing a large scene outlasts
+       the idle timeout of an open connection. */
+    const VkrDepotId parent = job->from_base ? workspace.base : job->parent;
+    VkrDepotPendingCommit pending = {0};
+    const bool8_t snapshot =
+        job->kind != SESSION_DEPOT_COMMIT ||
+        vkr_depot_commit_snapshot(&workspace, &parent, job->message, &pending,
+                                  job->error, sizeof(job->error));
     VkrDepotConnection *connection =
-        vkr_depot_connect(&allocator, workspace.remote, workspace.server_key,
-                          &workspace.store, job->error, sizeof(job->error));
+        snapshot ? vkr_depot_connect(&allocator, workspace.remote,
+                                     workspace.server_key, &workspace.store,
+                                     job->error, sizeof(job->error))
+                 : NULL;
     VkrDepotClient *client = vkr_depot_connection_client(connection);
     if (client && job->kind == SESSION_DEPOT_COMMIT) {
-      const VkrDepotId parent = job->from_base ? workspace.base : job->parent;
-      job->ok = vkr_depot_commit_push(
-          &workspace, client, job->branch, &parent, &job->expected,
-          job->message, &job->commit, job->error, sizeof(job->error));
+      job->ok = vkr_depot_commit_push(&workspace, client, job->branch, &parent,
+                                      &job->expected, &pending, job->error,
+                                      sizeof(job->error));
+      job->commit = pending.commit;
     } else if (client) {
       uint32_t kept = 0u;
       job->ok = vkr_depot_fetch_checkout(&workspace, client, &job->commit,
                                          &kept, job->error, sizeof(job->error));
     }
+    vkr_depot_pending_commit_free(&pending);
     vkr_depot_disconnect(connection);
     vkr_depot_workspace_close(&workspace);
   }

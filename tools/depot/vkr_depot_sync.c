@@ -450,22 +450,21 @@ cleanup:
   return ok;
 }
 
-bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
-                              VkrDepotClient *client, const char *branch,
-                              const VkrDepotId *parent,
-                              const VkrDepotId *expected, const char *message,
-                              VkrDepotId *out_commit, char *error,
-                              uint32_t capacity) {
+void vkr_depot_pending_commit_free(VkrDepotPendingCommit *pending) {
+  vkr_depot_file_list_free(&pending->files);
+}
+
+bool8_t vkr_depot_commit_snapshot(VkrDepotWorkspace *workspace,
+                                  const VkrDepotId *parent, const char *message,
+                                  VkrDepotPendingCommit *out_pending,
+                                  char *error, uint32_t capacity) {
   VkrNetKeyPair identity;
   VkrDepotId tree;
   VkrDepotFileList files = {0};
   uint8_t *commit_bytes = NULL;
   uint64_t commit_size = 0u;
   bool8_t ok = false_v;
-  if (!vkr_depot_branch_valid(branch)) {
-    snprintf(error, capacity, "invalid branch name %s", branch);
-    return false_v;
-  }
+  MemZero(out_pending, sizeof(*out_pending));
   if (!vkr_depot_identity(&identity, true_v)) {
     snprintf(error, capacity, "no depot identity key");
     return false_v;
@@ -489,50 +488,66 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
     snprintf(error, capacity, "the commit message is too long");
     goto cleanup;
   }
-  vkr_depot_id_of(commit_bytes, commit_size, out_commit);
-  if (!vkr_depot_store_put(&workspace->store, out_commit, commit_bytes,
-                           commit_size)) {
+  vkr_depot_id_of(commit_bytes, commit_size, &out_pending->commit);
+  if (!vkr_depot_store_put(&workspace->store, &out_pending->commit,
+                           commit_bytes, commit_size)) {
     snprintf(error, capacity, "the commit could not be stored");
     goto cleanup;
   }
-  VkrDepotTransferStats stats = {0};
-  if (!vkr_depot_client_upload(client, out_commit, parent, &stats)) {
-    snprintf(error, capacity, "upload failed: %s",
-             vkr_depot_client_error(client));
-    goto cleanup;
-  }
-  VkrDepotId current;
-  const VkrDepotRefStatus status = vkr_depot_client_update_ref(
-      client, branch, expected, out_commit, &current);
-  if (status == VKR_DEPOT_REF_CONFLICT) {
-    char hex[VKR_DEPOT_ID_HEX];
-    vkr_depot_id_hex(&current, hex);
-    snprintf(error, capacity, "%s moved to %.12s; pull first", branch, hex);
-    goto cleanup;
-  }
-  if (status == VKR_DEPOT_REF_LOCKED) {
-    snprintf(error, capacity, "the commit changes a file another user locked");
-    goto cleanup;
-  }
-  if (status != VKR_DEPOT_REF_OK) {
-    snprintf(error, capacity, "the server refused the commit (status %u)",
-             status);
-    goto cleanup;
-  }
-  vkr_depot_file_list_free(&workspace->index);
-  workspace->index = files;
+  out_pending->files = files;
   MemZero(&files, sizeof(files));
-  workspace->base = *out_commit;
-  snprintf(workspace->branch, sizeof(workspace->branch), "%s", branch);
-  ok = vkr_depot_workspace_save(workspace);
-  if (!ok) {
-    snprintf(error, capacity,
-             "pushed, but the working copy state did not save");
-  }
+  ok = true_v;
 cleanup:
   free(commit_bytes);
   vkr_depot_file_list_free(&files);
   return ok;
+}
+
+bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
+                              VkrDepotClient *client, const char *branch,
+                              const VkrDepotId *parent,
+                              const VkrDepotId *expected,
+                              VkrDepotPendingCommit *pending, char *error,
+                              uint32_t capacity) {
+  if (!vkr_depot_branch_valid(branch)) {
+    snprintf(error, capacity, "invalid branch name %s", branch);
+    return false_v;
+  }
+  VkrDepotTransferStats stats = {0};
+  if (!vkr_depot_client_upload(client, &pending->commit, parent, &stats)) {
+    snprintf(error, capacity, "upload failed: %s",
+             vkr_depot_client_error(client));
+    return false_v;
+  }
+  VkrDepotId current;
+  const VkrDepotRefStatus status = vkr_depot_client_update_ref(
+      client, branch, expected, &pending->commit, &current);
+  if (status == VKR_DEPOT_REF_CONFLICT) {
+    char hex[VKR_DEPOT_ID_HEX];
+    vkr_depot_id_hex(&current, hex);
+    snprintf(error, capacity, "%s moved to %.12s; pull first", branch, hex);
+    return false_v;
+  }
+  if (status == VKR_DEPOT_REF_LOCKED) {
+    snprintf(error, capacity, "the commit changes a file another user locked");
+    return false_v;
+  }
+  if (status != VKR_DEPOT_REF_OK) {
+    snprintf(error, capacity, "the server refused the commit (status %u)",
+             status);
+    return false_v;
+  }
+  vkr_depot_file_list_free(&workspace->index);
+  workspace->index = pending->files;
+  MemZero(&pending->files, sizeof(pending->files));
+  workspace->base = pending->commit;
+  snprintf(workspace->branch, sizeof(workspace->branch), "%s", branch);
+  if (!vkr_depot_workspace_save(workspace)) {
+    snprintf(error, capacity,
+             "pushed, but the working copy state did not save");
+    return false_v;
+  }
+  return true_v;
 }
 
 typedef struct DepotChangeCollector {

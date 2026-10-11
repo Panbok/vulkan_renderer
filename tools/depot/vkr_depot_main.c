@@ -438,26 +438,35 @@ static int depot_commit(const char *directory, const char *message) {
     fprintf(stderr, "no working copy at %s\n", directory);
     return 1;
   }
+  /* The snapshot comes first: hashing large files outlasts the idle
+     timeout of a connection opened before it. */
+  const VkrDepotId base = workspace.base;
+  VkrDepotPendingCommit pending;
+  char error[256];
+  if (!vkr_depot_commit_snapshot(&workspace, &base, message, &pending, error,
+                                 sizeof(error))) {
+    fprintf(stderr, "%s\n", error);
+    vkr_depot_workspace_close(&workspace);
+    return 1;
+  }
   VkrDepotConnection *connection =
       depot_connect(workspace.remote, workspace.server_key, &workspace.store);
   VkrDepotClient *client = vkr_depot_connection_client(connection);
   int result = 1;
   if (client) {
-    const VkrDepotId base = workspace.base;
     char branch[VKR_DEPOT_BRANCH_NAME];
     snprintf(branch, sizeof(branch), "%s", workspace.branch);
-    VkrDepotId commit;
-    char error[256];
-    if (vkr_depot_commit_push(&workspace, client, branch, &base, &base, message,
-                              &commit, error, sizeof(error))) {
+    if (vkr_depot_commit_push(&workspace, client, branch, &base, &base,
+                              &pending, error, sizeof(error))) {
       char hex[VKR_DEPOT_ID_HEX];
-      vkr_depot_id_hex(&commit, hex);
+      vkr_depot_id_hex(&pending.commit, hex);
       printf("pushed %s at %.12s\n", branch, hex);
       result = 0;
     } else {
       fprintf(stderr, "%s\n", error);
     }
   }
+  vkr_depot_pending_commit_free(&pending);
   vkr_depot_disconnect(connection);
   vkr_depot_workspace_close(&workspace);
   return result;

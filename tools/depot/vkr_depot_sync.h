@@ -37,16 +37,31 @@ void vkr_depot_disconnect(VkrDepotConnection *connection);
 bool8_t vkr_depot_find_ref(VkrDepotClient *client, const char *branch,
                            VkrDepotId *out_commit, bool8_t *out_exists);
 
-/* Commits the working directory with `parent` (none when zero) as its
-   parent, uploads what the server lacks and moves `branch` from `expected`
-   (zero: the branch must not exist) to the commit. On success the commit is
-   the working copy's base and `branch` its branch, saved. A branch that
+/* A commit made in the working copy's store and not pushed yet, with the
+   snapshot's files, which become the index once it is pushed. */
+typedef struct VkrDepotPendingCommit {
+  VkrDepotId commit;
+  VkrDepotFileList files;
+} VkrDepotPendingCommit;
+
+/* Snapshots the working directory and makes a commit with `parent` (none
+   when zero). Needs no connection: a snapshot of a large file outlasts the
+   transport's idle timeout, so connect after it. */
+bool8_t vkr_depot_commit_snapshot(VkrDepotWorkspace *workspace,
+                                  const VkrDepotId *parent, const char *message,
+                                  VkrDepotPendingCommit *out_pending,
+                                  char *error, uint32_t capacity);
+void vkr_depot_pending_commit_free(VkrDepotPendingCommit *pending);
+
+/* Uploads what the server lacks of `pending` and moves `branch` from
+   `expected` (zero: the branch must not exist) to it. On success the commit
+   is the working copy's base and `branch` its branch, saved. A branch that
    moved meanwhile fails with a message naming where it is. */
 bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
                               VkrDepotClient *client, const char *branch,
                               const VkrDepotId *parent,
-                              const VkrDepotId *expected, const char *message,
-                              VkrDepotId *out_commit, char *error,
+                              const VkrDepotId *expected,
+                              VkrDepotPendingCommit *pending, char *error,
                               uint32_t capacity);
 
 typedef enum VkrDepotMirrorAction {
