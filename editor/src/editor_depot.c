@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* Servers remembered across runs and probed one by one, since some
    endpoint security passes answers to such probes but drops answers to a
@@ -31,6 +32,8 @@
 #define DEPOT_KNOWN_MAX 16u
 /* Shared workspaces on this computer the project hub lists. */
 #define DEPOT_PROJECTS_MAX 32u
+/* Names of the computers this editor gave access, by identity key. */
+#define DEPOT_PEOPLE_MAX 64u
 /* Changed paths, conflicts and history rows the window lists. */
 #define DEPOT_LIST_MAX 64u
 #define DEPOT_HISTORY_MAX 12u
@@ -125,6 +128,11 @@ typedef struct DepotKnown {
   uint8_t key[32];
 } DepotKnown;
 
+typedef struct DepotPerson {
+  uint8_t key[32];
+  char name[VKR_DEPOT_DISPLAY_NAME];
+} DepotPerson;
+
 typedef struct DepotProject {
   char path[DEPOT_PATH];
   char name[96];
@@ -138,6 +146,8 @@ struct VkrEditorDepot {
   uint32_t known_count;
   DepotProject projects[DEPOT_PROJECTS_MAX];
   uint32_t project_count;
+  DepotPerson people[DEPOT_PEOPLE_MAX];
+  uint32_t people_count;
 
   /* The open workspace folder and what the depot makes of it. */
   char workspace[DEPOT_PATH];
@@ -280,6 +290,31 @@ static void depot_default_destination(const char *name, char *out,
   }
 }
 
+/* Unix microseconds now, as commits record their time. */
+static uint64_t depot_unix_us(void) {
+  return (uint64_t)time(NULL) * 1000000ull;
+}
+
+/* "just now", "5 min ago", "3 h ago" or "2 days ago". */
+static void depot_format_age(uint64_t now_us, uint64_t then_us, char *out,
+                             uint32_t capacity) {
+  const uint64_t seconds =
+      now_us > then_us ? (now_us - then_us) / 1000000ull : 0u;
+  if (seconds < 60u) {
+    snprintf(out, capacity, "just now");
+  } else if (seconds < 3600u) {
+    snprintf(out, capacity, "%llu min ago",
+             (unsigned long long)(seconds / 60u));
+  } else if (seconds < 86400u) {
+    snprintf(out, capacity, "%llu h ago",
+             (unsigned long long)(seconds / 3600u));
+  } else {
+    snprintf(out, capacity, "%llu day%s ago",
+             (unsigned long long)(seconds / 86400u),
+             seconds / 86400u == 1u ? "" : "s");
+  }
+}
+
 static void depot_format_size(uint64_t bytes, char *out, uint32_t capacity) {
   if (bytes >= 1000000000ull) {
     snprintf(out, capacity, "%.2f GB", (float64_t)bytes / 1e9);
@@ -338,6 +373,17 @@ static void depot_registry_load(VkrEditorDepot *depot) {
       (void)depot_json_text(entry, "name", known->name, sizeof(known->name));
       (void)depot_json_text(entry, "host", known->host, sizeof(known->host));
       depot->known_count++;
+    }
+  }
+  const VkrBakeryJson *people = vkr_bakery_json_get(root, "people");
+  for (const VkrBakeryJson *entry = people ? people->first : NULL;
+       entry && depot->people_count < DEPOT_PEOPLE_MAX; entry = entry->next) {
+    DepotPerson *person = &depot->people[depot->people_count];
+    char key[80] = {0};
+    if (depot_json_text(entry, "key", key, sizeof(key)) &&
+        depot_key_parse(key, person->key) &&
+        depot_json_text(entry, "name", person->name, sizeof(person->name))) {
+      depot->people_count++;
     }
   }
   const VkrBakeryJson *projects = vkr_bakery_json_get(root, "projects");
@@ -400,6 +446,17 @@ static void depot_registry_save(const VkrEditorDepot *depot) {
     vkr_bakery_json_append(projects, entry);
   }
   vkr_bakery_json_set(arena, root, "projects", projects);
+  VkrBakeryJson *people = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < depot->people_count; ++i) {
+    char key[VKR_DEPOT_ID_HEX];
+    depot_key_hex(depot->people[i].key, key);
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, entry, "key", vkr_bakery_json_cstr(arena, key));
+    vkr_bakery_json_set(arena, entry, "name",
+                        vkr_bakery_json_cstr(arena, depot->people[i].name));
+    vkr_bakery_json_append(people, entry);
+  }
+  vkr_bakery_json_set(arena, root, "people", people);
   String8 text = {0};
   char directory[DEPOT_PATH];
   vkr_bakery_path_parent(directory, sizeof(directory), path);
@@ -458,6 +515,54 @@ static void depot_remember_project(VkrEditorDepot *depot, const char *path,
   snprintf(project->project_id, sizeof(project->project_id), "%s",
            project_id ? project_id : "");
   depot_registry_save(depot);
+}
+
+/* Remembers the name a key asked with, for the access list. */
+static void depot_remember_person(VkrEditorDepot *depot, const uint8_t key[32],
+                                  const char *name) {
+  if (!name || !name[0]) {
+    return;
+  }
+  uint32_t at = depot->people_count;
+  for (uint32_t i = 0u; i < depot->people_count; ++i) {
+    if (MemCompare(depot->people[i].key, key, 32u) == 0) {
+      at = i;
+      break;
+    }
+  }
+  if (at == depot->people_count) {
+    if (at == DEPOT_PEOPLE_MAX) {
+      return;
+    }
+    depot->people_count++;
+  }
+  MemCopy(depot->people[at].key, key, 32u);
+  snprintf(depot->people[at].name, sizeof(depot->people[at].name), "%s", name);
+  depot_registry_save(depot);
+}
+
+/* `user@computer`, as a client sends it, shown as `user on computer`; a key
+   without a name shows its first digits. */
+static void depot_person_text(const VkrEditorDepot *depot,
+                              const uint8_t key[32], const char *name,
+                              char *out, uint32_t capacity) {
+  for (uint32_t i = 0u; (!name || !name[0]) && i < depot->people_count; ++i) {
+    if (MemCompare(depot->people[i].key, key, 32u) == 0) {
+      name = depot->people[i].name;
+    }
+  }
+  if (!name || !name[0]) {
+    char hex[VKR_DEPOT_ID_HEX];
+    depot_key_hex(key, hex);
+    snprintf(out, capacity, "Computer %.8s", hex);
+    return;
+  }
+  const char *at = strchr(name, '@');
+  if (at) {
+    snprintf(out, capacity, "%.*s on %s", (int)(at - name), name, at + 1);
+  } else {
+    snprintf(out, capacity, "%s", name);
+  }
 }
 
 // =============================================================================
@@ -1648,6 +1753,15 @@ bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
   snprintf(job->address, sizeof(job->address), "%s", address);
   snprintf(depot->dialog_name, sizeof(depot->dialog_name), "%s",
            name && name[0] ? name : "Project");
+  /* The computer's name, when discovery heard this server. */
+  for (uint32_t i = 0u; depot->browser_open && i < depot->browser.found_count;
+       ++i) {
+    if (MemCompare(depot->browser.found[i].server_key, job->server_key, 32u) ==
+        0) {
+      snprintf(depot->dialog_host, sizeof(depot->dialog_host), "%s",
+               depot->browser.found[i].host);
+    }
+  }
   if (destination && destination[0]) {
     snprintf(job->directory, sizeof(job->directory), "%s", destination);
   } else {
@@ -1668,6 +1782,12 @@ bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
     snprintf(error, capacity, "The step could not start");
     return false_v;
   }
+  /* The hub shows the step on the server's row, however it started. */
+  depot->dialog_open = true_v;
+  MemCopy(depot->dialog_key, job->server_key, 32u);
+  snprintf(depot->dialog_address, sizeof(depot->dialog_address), "%s", address);
+  snprintf(depot->dialog_destination, sizeof(depot->dialog_destination), "%s",
+           job->directory);
   depot->error[0] = '\0';
   return true_v;
 }
@@ -1688,6 +1808,12 @@ bool8_t vkr_editor_depot_allow(VkrEditorDepot *depot, const char *key_hex,
                                  ? VKR_DEPOT_ROLE_WRITE
                              : strcmp(role, "read") == 0 ? VKR_DEPOT_ROLE_READ
                                                          : VKR_DEPOT_ROLE_NONE;
+  for (uint32_t i = 0u;
+       value != VKR_DEPOT_ROLE_NONE && i < depot->request_count; ++i) {
+    if (MemCompare(depot->requests[i].key, key, 32u) == 0) {
+      depot_remember_person(depot, key, depot->requests[i].name);
+    }
+  }
   if (!vkr_depot_service_set_role(depot->service, key, value)) {
     snprintf(error, capacity, "The access list could not be written");
     return false_v;
@@ -1765,6 +1891,23 @@ static void depot_caption(VkrUiSystem *ui, const char *id, const char *text,
   c.style.font_size_pt = vkr_ui_theme()->font_caption;
   c.style.text_color = vkr_ui_theme()->text_secondary;
   vkr_ui_label(ui, depot_string(id), depot_string(text), &c);
+}
+
+/* Wrapped caption text; returns the height it takes. */
+static float32_t depot_paragraph(VkrUiSystem *ui, const char *id,
+                                 const char *text, float32_t x, float32_t y,
+                                 float32_t width) {
+  const float32_t chars_per_line = Max(16.0f, width / 6.4f);
+  const float32_t lines =
+      (float32_t)((uint32_t)((float32_t)strlen(text) / chars_per_line) + 1u);
+  const float32_t height = lines * 17.0f + 4.0f;
+  VkrUiWidgetConfig c = depot_widget(x, y, width, height);
+  c.style.font_size_pt = vkr_ui_theme()->font_caption;
+  c.style.text_color = vkr_ui_theme()->text_secondary;
+  c.text.layout.word_wrap = true_v;
+  c.text.layout.max_width = width - 8;
+  vkr_ui_label(ui, depot_string(id), depot_string(text), &c);
+  return height;
 }
 
 static void depot_heading(VkrEditorUi *editor, VkrUiSystem *ui, const char *id,
@@ -2003,18 +2146,14 @@ static void depot_window_not_shared(VkrEditorDepot *depot, VkrEditorUi *editor,
   depot_heading(editor, ui, "share.title", "Share this project",
                 VKR_UI_ICON_CLOUD, 12, *y, width - 24);
   *y += 30;
-  depot_caption(ui, "share.text1",
-                "Other computers on your network can then get it, and you", 12,
-                *y, width - 24);
-  *y += 18;
-  depot_caption(ui, "share.text2",
-                "exchange changes from here. It is served while this editor",
-                12, *y, width - 24);
-  *y += 18;
-  depot_caption(ui, "share.text3",
-                "is open. The project and every asset it uses move to:", 12, *y,
-                width - 24);
-  *y += 26;
+  *y += depot_paragraph(
+      ui, "share.text",
+      "Other computers on your network can then get it, and you exchange "
+      "changes from here. It is served while this editor is open. The "
+      "project and every asset it uses move to this folder, where you keep "
+      "working:",
+      12, *y, width - 24);
+  *y += 6;
   if (!depot->share_destination[0]) {
     depot_default_destination(depot->project_name, depot->share_destination,
                               sizeof(depot->share_destination));
@@ -2029,7 +2168,12 @@ static void depot_window_not_shared(VkrEditorDepot *depot, VkrEditorUi *editor,
                               error, sizeof(error))) {
     snprintf(depot->error, sizeof(depot->error), "%s", error);
   }
-  *y += 38;
+  *y += 36;
+  *y += depot_paragraph(ui, "share.firewall",
+                        "The first time, your computer may ask whether VKR "
+                        "Editor may use the network. Choose Allow.",
+                        12, *y, width - 24);
+  *y += 8;
 }
 
 static void depot_window_server(VkrEditorDepot *depot, VkrEditorUi *editor,
@@ -2039,19 +2183,24 @@ static void depot_window_server(VkrEditorDepot *depot, VkrEditorUi *editor,
   char text[DEPOT_TEXT];
   if (depot->role == DEPOT_ROLE_SHARER) {
     if (depot->service) {
-      snprintf(text, sizeof(text), "Shared from this computer on port %u",
-               (uint32_t)depot->service_info.address.port);
-      depot_heading(editor, ui, "server.state", text, VKR_UI_ICON_CLOUD, 12, *y,
-                    width - 24);
+      depot_heading(editor, ui, "server.state", depot->project_name,
+                    VKR_UI_ICON_CLOUD, 12, *y, width - 24);
       *y += 26;
-      snprintf(text, sizeof(text), "%u computer%s connected%s",
-               depot->service_info.peers,
-               depot->service_info.peers == 1u ? "" : "s",
-               depot->service_info.discoverable
-                   ? ""
-                   : "  \xc2\xb7  others must add it by address");
+      char host[VKR_DEPOT_DISCOVERY_TEXT];
+      vkr_depot_host_name(host, sizeof(host));
+      snprintf(text, sizeof(text),
+               "Shared from this computer (%s)  \xc2\xb7  %u connected", host,
+               depot->service_info.peers);
       depot_caption(ui, "server.peers", text, 12, *y, width - 24);
-      *y += 24;
+      *y += 22;
+      if (!depot->service_info.discoverable) {
+        snprintf(text, sizeof(text),
+                 "Not listed on the network: another server uses its port. "
+                 "Others enter %s to find it.",
+                 host);
+        *y += depot_paragraph(ui, "server.hidden", text, 12, *y, width - 24);
+      }
+      *y += 4;
     } else {
       depot_heading(editor, ui, "server.state", "Not shared right now",
                     VKR_UI_ICON_WARNING_FILL, 12, *y, width - 24);
@@ -2076,24 +2225,24 @@ static void depot_window_server(VkrEditorDepot *depot, VkrEditorUi *editor,
       break;
     }
   }
-  snprintf(text, sizeof(text), "Shared by %s", server);
-  depot_heading(editor, ui, "server.state", text, VKR_UI_ICON_CLOUD, 12, *y,
-                width - 24);
+  depot_heading(editor, ui, "server.state", depot->project_name,
+                VKR_UI_ICON_CLOUD, 12, *y, width - 24);
   *y += 26;
   const char *state =
       depot->waiting_kind != DEPOT_JOB_NONE
-          ? "Waiting for that computer to allow this one"
-      : !depot->status_known ? "Checking..."
-      : depot->connected     ? "Connected"
+          ? "waiting for that computer to allow this one"
+      : !depot->status_known ? "checking..."
+      : depot->connected     ? "connected"
       : depot->connect == VKR_DEPOT_CONNECT_UNREACHABLE
-          ? "Not answering: that editor may be closed, or a firewall blocks it"
-          : "Not connected";
+          ? "not answering: its editor may be closed, or a firewall blocks it"
+          : "not connected";
+  snprintf(text, sizeof(text), "Shared by %s  \xc2\xb7  %s", server, state);
   VkrUiWidgetConfig c = depot_widget(12, *y, width - 24, 18);
   c.style.font_size_pt = theme->font_caption;
   c.style.text_color = depot->waiting_kind != DEPOT_JOB_NONE
                            ? theme->warning
                            : theme->text_secondary;
-  vkr_ui_label(ui, string8_lit("server.connection"), depot_string(state), &c);
+  vkr_ui_label(ui, string8_lit("server.connection"), depot_string(text), &c);
   *y += 24;
 }
 
@@ -2104,9 +2253,10 @@ static void depot_window_requests(VkrEditorDepot *depot, VkrEditorUi *editor,
   for (uint32_t i = 0u; i < depot->request_count; ++i) {
     const VkrDepotAccessRequest *request = &depot->requests[i];
     (void)vkr_ui_push_id_u64(ui, i);
+    char who[VKR_DEPOT_DISPLAY_NAME + 16];
+    depot_person_text(depot, request->key, request->name, who, sizeof(who));
     char text[160];
-    snprintf(text, sizeof(text), "%s asks to work on this project",
-             request->name[0] ? request->name : "A computer");
+    snprintf(text, sizeof(text), "%s asks to work on this project", who);
     depot_label(ui, "request", text, 12, *y, width - 24, theme->warning);
     *y += 26;
     char key[VKR_DEPOT_ID_HEX];
@@ -2156,7 +2306,9 @@ static void depot_window_access(VkrEditorDepot *depot, VkrEditorUi *editor,
     char key[VKR_DEPOT_ID_HEX];
     depot_key_hex(entry->key, key);
     char text[160];
-    snprintf(text, sizeof(text), "%.12s...  %s", key,
+    char who[VKR_DEPOT_DISPLAY_NAME + 16];
+    depot_person_text(depot, entry->key, NULL, who, sizeof(who));
+    snprintf(text, sizeof(text), "%s  \xc2\xb7  %s", who,
              depot_role_name(entry->role));
     depot_label(ui, "entry", text, 24, *y, width - 150, vkr_ui_theme()->text);
     char error[DEPOT_TEXT] = {0};
@@ -2279,13 +2431,17 @@ static void depot_window_history(VkrEditorDepot *depot, VkrUiSystem *ui,
   }
   depot_caption(ui, "history.title", "History", 12, *y, width - 24);
   *y += 22;
+  const uint64_t now_us = depot_unix_us();
   for (uint32_t i = 0u; i < depot->history_count; ++i) {
     (void)vkr_ui_push_id_u64(ui, i);
-    char text[160];
-    snprintf(text, sizeof(text), "%.8s  %s", depot->history[i].id,
-             depot->history[i].message);
-    depot_label(ui, "row", text, 24, *y, width - 36,
-                vkr_ui_theme()->text_secondary);
+    depot_label(ui, "row", depot->history[i].message, 24, *y, width - 140,
+                vkr_ui_theme()->text);
+    char when[32];
+    depot_format_age(now_us, depot->history[i].time_us, when, sizeof(when));
+    VkrUiWidgetConfig age = depot_widget(width - 112, *y, 100, 22);
+    age.style.font_size_pt = vkr_ui_theme()->font_caption;
+    age.style.text_color = vkr_ui_theme()->text_secondary;
+    vkr_ui_label(ui, string8_lit("age"), depot_string(when), &age);
     (void)vkr_ui_pop_id(ui);
     *y += 22;
   }
@@ -2388,32 +2544,34 @@ static void depot_overlay_request(VkrEditorDepot *depot, VkrEditorUi *editor,
                     target_width - width - 12.0f},
   };
   card.style = vkr_editor_glass_style();
-  card.style.min_size_pt = card.style.max_size_pt = (Vec2){width, 86.0f};
+  card.style.min_size_pt = card.style.max_size_pt = (Vec2){width, 104.0f};
   if (!vkr_ui_panel_begin(ui, string8_lit("depot.request"), &card)) {
     return;
   }
   const VkrDepotAccessRequest *request = &depot->requests[0];
-  char text[200];
-  snprintf(text, sizeof(text), "%s asks to work on %s",
-           request->name[0] ? request->name : "A computer",
-           depot->project_name);
+  char who[VKR_DEPOT_DISPLAY_NAME + 16];
+  depot_person_text(depot, request->key, request->name, who, sizeof(who));
   VkrUiWidgetConfig c = depot_widget(12, 10, width - 24, 22);
   c.icon = VKR_UI_ICON_BELL;
   c.icon_size_pt = 13.0f;
   c.icon_color = theme->warning;
-  vkr_ui_label(ui, string8_lit("text"), depot_string(text), &c);
+  c.text.font = editor->heading_font;
+  vkr_ui_label(ui, string8_lit("who"), depot_string(who), &c);
+  char text[200];
+  snprintf(text, sizeof(text), "asks to work on %s", depot->project_name);
+  depot_caption(ui, "text", text, 34, 34, width - 46);
   char key[VKR_DEPOT_ID_HEX];
   depot_key_hex(request->key, key);
   char error[DEPOT_TEXT] = {0};
-  if (depot_button(editor, ui, "allow", "Allow", 12, 46, 100, true_v,
+  if (depot_button(editor, ui, "allow", "Allow", 12, 64, 100, true_v,
                    false_v)) {
     (void)vkr_editor_depot_allow(depot, key, "write", error, sizeof(error));
   }
-  if (depot_button(editor, ui, "read", "View only", 120, 46, 100, false_v,
+  if (depot_button(editor, ui, "read", "View only", 120, 64, 100, false_v,
                    false_v)) {
     (void)vkr_editor_depot_allow(depot, key, "read", error, sizeof(error));
   }
-  if (depot_button(editor, ui, "deny", "Deny", 228, 46, 80, false_v, false_v)) {
+  if (depot_button(editor, ui, "deny", "Deny", 228, 64, 80, false_v, false_v)) {
     (void)vkr_editor_depot_allow(depot, key, "none", error, sizeof(error));
   }
   if (error[0]) {
@@ -2438,6 +2596,29 @@ static bool8_t depot_found_is_self(const VkrEditorDepot *depot,
                                    const VkrDepotDiscovered *found) {
   return depot->service && MemCompare(found->server_key,
                                       depot->service_info.server_key, 32u) == 0;
+}
+
+/* A raised rounded panel behind one row of the hub, as project cards
+   are drawn. */
+static void depot_card(VkrUiSystem *ui, const char *id, float32_t x,
+                       float32_t y, float32_t width, float32_t height) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig card = depot_widget(x, y, width, height);
+  card.style.background_color = theme->raised;
+  card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  card.style.border_color = theme->border;
+  card.style.corner_radius_pt = (Vec4){8, 8, 8, 8};
+  vkr_ui_label(ui, depot_string(id), (String8){0}, &card);
+}
+
+static void depot_row_title(VkrUiSystem *ui, const char *text, VkrUiIcon icon,
+                            float32_t x, float32_t y, float32_t width) {
+  VkrUiWidgetConfig c = depot_widget(x, y, width, 22);
+  c.style.font_size_pt = vkr_ui_theme()->font_emphasis;
+  c.icon = icon;
+  c.icon_size_pt = 15.0f;
+  c.icon_color = vkr_ui_theme()->accent_hover;
+  vkr_ui_label(ui, string8_lit("title"), depot_string(text), &c);
 }
 
 /* The expanded row of the server the user chose to get. */
@@ -2495,8 +2676,10 @@ static float32_t depot_hub_dialog(VkrEditorDepot *depot, VkrEditorUi *editor,
       depot->dialog_open = false_v;
     }
     y += 30;
-    depot_progress_bar(ui, "get.bar", x + 12, y, width - 24, fraction);
-    y += 16;
+    if (!waiting) {
+      depot_progress_bar(ui, "get.bar", x + 12, y, width - 24, fraction);
+      y += 16;
+    }
   }
   if (depot->error[0]) {
     depot_label(ui, "get.error", depot->error, x + 12, y, width - 24,
@@ -2536,10 +2719,11 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
         continue;
       }
       (void)vkr_ui_push_id_u64(ui, 1000u + i);
-      depot_label(ui, "name", project->name, x + 12, y, width - 150,
-                  theme->text);
-      depot_caption(ui, "path", project->path, x + 12, y + 20, width - 150);
-      if (depot_button(editor, ui, "open", "Open", x + width - 112, y + 6, 100,
+      depot_card(ui, "card", x, y, width, 52);
+      depot_row_title(ui, project->name, VKR_UI_ICON_PROJECT, x + 12, y + 6,
+                      width - 150);
+      depot_caption(ui, "path", project->path, x + 36, y + 28, width - 170);
+      if (depot_button(editor, ui, "open", "Open", x + width - 112, y + 13, 100,
                        false_v, depot_busy(depot))) {
         snprintf(depot->open_directory, sizeof(depot->open_directory), "%s",
                  project->path);
@@ -2547,7 +2731,7 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
                  project->project_id);
       }
       (void)vkr_ui_pop_id(ui);
-      y += 46;
+      y += 60;
     }
     y += 8;
   }
@@ -2567,14 +2751,17 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
     (void)vkr_ui_push_id_u64(ui, 2000u + i);
     char address[VKR_NET_ADDRESS_TEXT];
     vkr_net_address_format(&found->address, address, sizeof(address));
-    depot_label(ui, "name", found->name, x + 12, y, width - 150, theme->text);
-    snprintf(text, sizeof(text), "%s  \xc2\xb7  %s", found->host, address);
-    depot_caption(ui, "host", text, x + 12, y + 20, width - 150);
+    depot_card(ui, "card", x, y, width, 52);
+    depot_row_title(ui, found->name, VKR_UI_ICON_CLOUD, x + 12, y + 6,
+                    width - 150);
+    snprintf(text, sizeof(text), "Shared by %s  \xc2\xb7  %s", found->host,
+             address);
+    depot_caption(ui, "host", text, x + 36, y + 28, width - 170);
     const bool8_t chosen =
         depot->dialog_open &&
         MemCompare(depot->dialog_key, found->server_key, 32u) == 0;
     if (!chosen && depot_button(editor, ui, "get", "Get", x + width - 112,
-                                y + 6, 100, true_v, depot_busy(depot))) {
+                                y + 13, 100, true_v, depot_busy(depot))) {
       depot->dialog_open = true_v;
       depot->error[0] = '\0';
       snprintf(depot->dialog_name, sizeof(depot->dialog_name), "%s",
@@ -2587,11 +2774,29 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
       depot_default_destination(found->name, depot->dialog_destination,
                                 sizeof(depot->dialog_destination));
     }
-    y += 46;
+    y += 60;
     if (chosen) {
-      y += depot_hub_dialog(depot, editor, ui, x, y, width);
+      y += depot_hub_dialog(depot, editor, ui, x + 24, y, width - 24) + 8;
     }
     (void)vkr_ui_pop_id(ui);
+  }
+  /* A Get started by address, whose server discovery has not heard. */
+  bool8_t dialog_listed = false_v;
+  for (uint32_t i = 0u; depot->browser_open && i < depot->browser.found_count;
+       ++i) {
+    dialog_listed =
+        dialog_listed || MemCompare(depot->browser.found[i].server_key,
+                                    depot->dialog_key, 32u) == 0;
+  }
+  if (depot->dialog_open && !dialog_listed) {
+    ++shown;
+    depot_card(ui, "dialog.card", x, y, width, 52);
+    depot_row_title(ui, depot->dialog_name, VKR_UI_ICON_CLOUD, x + 12, y + 6,
+                    width - 150);
+    snprintf(text, sizeof(text), "Shared at %s", depot->dialog_address);
+    depot_caption(ui, "dialog.host", text, x + 36, y + 28, width - 170);
+    y += 60;
+    y += depot_hub_dialog(depot, editor, ui, x + 24, y, width - 24) + 8;
   }
   if (!shown) {
     depot_caption(ui, "hub.empty",
@@ -2606,11 +2811,12 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
                 "address:",
                 x + 12, y + 6, width - 24);
   y += 28;
+  const float32_t field_width = Min(width - 140.0f, 360.0f);
   depot_field(ui, "hub.find", depot->find_address, sizeof(depot->find_address),
-              x + 12, y, width - 140);
+              x + 12, y, field_width);
   char error[DEPOT_TEXT] = {0};
-  if (depot_button(editor, ui, "hub.find.go", "Find", x + width - 112, y, 100,
-                   false_v, !depot->find_address[0])) {
+  if (depot_button(editor, ui, "hub.find.go", "Find", x + 20 + field_width, y,
+                   100, false_v, !depot->find_address[0])) {
     if (vkr_editor_depot_find(depot, depot->find_address, error,
                               sizeof(error))) {
       depot->error[0] = '\0';
