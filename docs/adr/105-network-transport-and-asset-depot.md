@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-10
+updated: 2026-10-11
 authority: adr
 ---
 
@@ -12,9 +12,11 @@ Accepted (partial). Phases 0 to 3 of the
 [network protocol proposal](../proposals/network-protocol.md) are
 implemented: the encrypted UDP transport, the binary data format, services
 over sessions, and the asset depot with its server, command, LAN discovery
-and server-to-server mirroring. Every check ran on Windows (Ryzen 5 2600,
-clang); the Mac session ran the loopback depot check on macOS once, and
-cross-machine measurements are unverified.
+and server-to-server mirroring. The checks ran on Windows (Ryzen 5 2600,
+clang), and the depot checks also on a Mac M1. On 2026-10-11 the depot moved
+a 1.46 GB project scene between the two machines in both directions
+([Evidence](#mac-m1-and-windows)). The proposal's cross-machine throughput
+and CPU targets are not measured.
 [ADR-106](106-collaborative-editing-session.md) builds editor collaboration
 on it. The proposal keeps the rest of editor collaboration, agent
 federation, game sessions, asset and view streaming,
@@ -190,6 +192,11 @@ from the caller's thread.
   review gates.
 - On Windows and macOS each datagram costs one system call; on this host the
   transport moves about as many packets as raw UDP does.
+- A machine whose endpoint security drops unsolicited inbound datagrams
+  cannot serve peers or answer discovery; it still reaches other servers
+  as a client. Such a machine starts every transfer itself, with `mirror`
+  against the other server, and finds that server with `discover --to`,
+  since the answer to a broadcast probe is unsolicited too.
 
 ## Alternatives considered
 
@@ -230,9 +237,38 @@ Windows 10, Ryzen 5 2600, clang, 2026-10-10.
 These are loopback and simulated results on one host, not the proposal's
 cross-machine targets.
 
+### Mac M1 and Windows
+
+2026-10-11. The Windows machine above (wired) and a company-managed Mac M1
+(macOS arm64, Wi-Fi, SentinelOne and Netskope active) on one IPv4 subnet.
+Each serves a full store; the Windows store is on a hard disk.
+
+- On the Mac, Release `check_depot_e2e.py` passes (3.2 s), and Debug
+  `--suite depot`, `--suite filesystem` and `--suite editor_project_store`
+  pass.
+- The Mac drops every unsolicited inbound datagram, even for a program its
+  application firewall allows, so Windows can neither discover nor reach
+  the Mac's server. The Mac runs `mirror` against the Windows server, now
+  as a login agent with `--watch 30`.
+- Mac to Windows: commit `cf90b305` (42 files, 1,462.6 MB, 397 MB in the
+  store after zstd) and four later commits, the last `9ba592c4` (39 files,
+  1,462.4 MB), which the watching agent pushed on its own. Windows to Mac:
+  `e268ab8a`, `from-peer main` in 0.5 s; the Mac pulled it and both files'
+  SHA-256 hashes matched. Each repeated `mirror` printed `same`.
+- Windows opened the cloned scene in the Release Vulkan editor with
+  `--workspace D:\vkr-depot\work`: 54,143 entities, rendered, no error lines.
+- A Release clone of `c3df7d0c` on the Windows hard disk over loopback took
+  1 min 8 s with its own store and 16.5 s sharing the server's store
+  (`clone --store`), which is the checkout alone.
+
+The first mirror, 1.4 MB/s, ran before object writes stopped flushing
+(`c13eb11c`); the Mac then measured 27 to 110 MB/s on loopback. Over Wi-Fi
+through the endpoint agents, no transfer measures the 1 GbE target.
+
 ## Gaps
 
-- macOS build and execution, and every Mac–Windows measurement.
+- `--suite net` and `vkr_net_bench` on macOS, and Mac–Windows throughput
+  and CPU per side on 1 GbE.
 - A shared-bottleneck simulator test for background mode and fairness.
 - The threaded host, Registered I/O, header protection and NAT traversal.
 - The depot's sparse working copy and remote content mount (proposal

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-10
+updated: 2026-10-11
 authority: proposal
 ---
 # Network protocol
@@ -106,8 +106,8 @@ and a TCP fallback.
 
 | Gap | Work | Evidence needed |
 |---|---|---|
-| macOS | Build and run `vkr_net`, `vkr_depot` and the tests on Apple silicon | `--suite net`, `--suite depot` and `check_depot_e2e.py` on a Mac |
-| Cross-machine numbers | `vkr_net_bench` and a depot push and pull between a Mac and a Windows machine on 1 GbE | Raw UDP and transport RTT and throughput per direction; depot MB/s and cores per side against the 110 MB/s target |
+| macOS | Run the transport tests and `vkr_net_bench` on Apple silicon; `vkr_depot`, `--suite depot` and `check_depot_e2e.py` already run on a Mac M1 (ADR-105) | `--suite net` and `vkr_net_bench` on a Mac |
+| Cross-machine numbers | `vkr_net_bench` and a depot push and pull between a Mac and a Windows machine on 1 GbE; the depot already moves a 1.46 GB scene both ways over Wi-Fi (ADR-105), which measures neither | Raw UDP and transport RTT and throughput per direction; depot MB/s and cores per side against the 110 MB/s target |
 | Background mode | A simulator bottleneck shared by two links | A background connection yields to an interactive one; two bulk connections converge to equal shares |
 | Threaded host | A net thread with bounded rings to application threads, woken by `vkr_net_host_wake` | Editor frame time unchanged while a depot transfer runs |
 | Windows server I/O | Registered I/O per worker in phase 8 | Datagrams per second per core against the one-call baseline |
