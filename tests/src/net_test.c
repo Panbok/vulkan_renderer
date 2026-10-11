@@ -1,6 +1,7 @@
 #include "net_test.h"
 
 #include "container_test_allocator.h"
+#include "core/vkr_threads.h"
 #include "vkr_net_core.h"
 #include "vkr_net_crypto.h"
 #include "vkr_net_host.h"
@@ -10,6 +11,7 @@
 
 #include <sodium.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The transport tests (docs/proposals/network-protocol.md, "Verification").
@@ -1289,6 +1291,189 @@ static void test_net_host_loopback(void) {
   printf("  test_net_host_loopback PASSED\n");
 }
 
+/* State one host thread's step reads and writes under the host lock. */
+typedef struct NetTestThreadSide {
+  VkrNetHost *host;
+  VkrNetHostThread *thread;
+  VkrNetConnectionId connection;
+  bool8_t server;
+  bool8_t connected;
+  bool8_t out_of_order;
+  uint32_t received;
+  uint64_t received_us;
+} NetTestThreadSide;
+
+static const VkrNetChannelConfig net_test_thread_channel = {
+    .delivery = VKR_NET_RELIABLE_ORDERED};
+
+/* The server echoes every message; the client checks the echoes' order. */
+static void net_test_thread_step(void *context, uint64_t now_us) {
+  NetTestThreadSide *side = context;
+  VkrNetCore *core = vkr_net_host_core(side->host);
+  VkrNetEvent event;
+  while (vkr_net_core_poll(core, &event)) {
+    if (event.type == VKR_NET_EVENT_CONNECTED) {
+      side->connection = event.connection;
+      if (side->server) {
+        assert(vkr_net_core_open_channel(core, event.connection, 1u,
+                                         &net_test_thread_channel));
+      }
+      side->connected = true_v;
+    } else if (event.type == VKR_NET_EVENT_MESSAGE) {
+      uint32_t index = UINT32_MAX;
+      assert(event.size == sizeof(index));
+      memcpy(&index, event.data, sizeof(index));
+      if (side->server) {
+        const VkrNetSendOptions options = {.flags = VKR_NET_SEND_IMMEDIATE};
+        assert(vkr_net_core_send(core, event.connection, 1u, event.data,
+                                 event.size, &options,
+                                 now_us) == VKR_NET_SEND_OK);
+      }
+      side->out_of_order |= index != side->received;
+      side->received += 1u;
+      side->received_us = now_us;
+    }
+  }
+}
+
+/* Waits up to `seconds` until the client has `count` echoes. */
+static bool8_t net_test_thread_await(NetTestThreadSide *client, uint32_t count,
+                                     float64_t seconds) {
+  const uint64_t limit =
+      vkr_net_host_now(client->host) + (uint64_t)(seconds * 1e6);
+  for (;;) {
+    vkr_net_host_thread_lock(client->thread);
+    const bool8_t done = client->received >= count;
+    vkr_net_host_thread_unlock(client->thread);
+    if (done) {
+      return true_v;
+    }
+    if (vkr_net_host_now(client->host) > limit) {
+      return false_v;
+    }
+    vkr_thread_sleep(1u);
+  }
+}
+
+static void net_test_thread_send(NetTestThreadSide *client, uint32_t index) {
+  VkrNetCore *core = vkr_net_host_core(client->host);
+  assert(vkr_net_core_send(core, client->connection, 1u, &index, sizeof(index),
+                           NULL,
+                           vkr_net_host_now(client->host)) == VKR_NET_SEND_OK);
+  vkr_net_core_flush(core);
+}
+
+static int net_test_compare_u64(const void *a, const void *b) {
+  const uint64_t x = *(const uint64_t *)a;
+  const uint64_t y = *(const uint64_t *)b;
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* Fails when a message the application thread sends through the lock does
+   not arrive or arrives out of order, when the unlock does not wake a host
+   thread that waits with nothing due (a send would then wait out the
+   thread's 100 ms cap: median round trip near 50 ms), or when stop does not
+   join the thread and return every byte. Each host has its own allocator,
+   since two host threads allocate at once. */
+static void test_net_host_thread(void) {
+  printf("  Running test_net_host_thread...\n");
+  ContainerTestAllocator server_state = {0};
+  ContainerTestAllocator client_state = {0};
+  VkrAllocator server_allocator = container_test_allocator(&server_state);
+  VkrAllocator client_allocator = container_test_allocator(&client_state);
+  VkrNetHostConfig server_config = {
+      .bind = vkr_net_address_loopback(VKR_NET_ADDRESS_IPV4, 0u)};
+  server_config.core.accept_incoming = true_v;
+  vkr_net_keypair_generate(&server_config.core.static_keys);
+  VkrNetHostConfig client_config = {
+      .bind = vkr_net_address_loopback(VKR_NET_ADDRESS_IPV4, 0u)};
+  vkr_net_keypair_generate(&client_config.core.static_keys);
+  NetTestThreadSide server = {.server = true_v};
+  NetTestThreadSide client = {0};
+  server.host = vkr_net_host_create(&server_allocator, &server_config);
+  client.host = vkr_net_host_create(&client_allocator, &client_config);
+  assert(server.host && client.host);
+  VkrNetAddress server_address;
+  assert(vkr_net_host_local_address(server.host, &server_address));
+  server.thread = vkr_net_host_thread_start(&server_allocator, server.host,
+                                            net_test_thread_step, &server);
+  client.thread = vkr_net_host_thread_start(&client_allocator, client.host,
+                                            net_test_thread_step, &client);
+  assert(server.thread && client.thread);
+
+  vkr_net_host_thread_lock(client.thread);
+  VkrNetCore *client_core = vkr_net_host_core(client.host);
+  VkrNetConnectionId connection = VKR_NET_CONNECTION_NONE;
+  assert(vkr_net_core_connect(client_core, &server_address,
+                              server_config.core.static_keys.public_key, NULL,
+                              0u, vkr_net_host_now(client.host), &connection));
+  vkr_net_host_thread_unlock(client.thread);
+  const uint64_t connect_limit = vkr_net_host_now(client.host) + 5000000u;
+  bool8_t connected = false_v;
+  while (!connected && vkr_net_host_now(client.host) < connect_limit) {
+    vkr_net_host_thread_lock(client.thread);
+    connected = client.connected;
+    if (connected) {
+      assert(client.connection == connection);
+      assert(vkr_net_core_open_channel(client_core, connection, 1u,
+                                       &net_test_thread_channel));
+    }
+    vkr_net_host_thread_unlock(client.thread);
+    vkr_thread_sleep(1u);
+  }
+  assert(connected);
+
+  /* Round trips one at a time, then a burst under one lock. */
+  const uint32_t round_trips = 100u;
+  for (uint32_t i = 0u; i < round_trips; ++i) {
+    vkr_net_host_thread_lock(client.thread);
+    net_test_thread_send(&client, i);
+    vkr_net_host_thread_unlock(client.thread);
+    assert(net_test_thread_await(&client, i + 1u, 5.0));
+  }
+  const uint32_t burst = 500u;
+  vkr_net_host_thread_lock(client.thread);
+  for (uint32_t i = 0u; i < burst; ++i) {
+    net_test_thread_send(&client, round_trips + i);
+  }
+  vkr_net_host_thread_unlock(client.thread);
+  assert(net_test_thread_await(&client, round_trips + burst, 10.0));
+
+  /* Probes into an idle connection, where the client thread waits on its
+     100 ms cap. */
+  uint64_t probes[9];
+  for (uint32_t i = 0u; i < ArrayCount(probes); ++i) {
+    vkr_thread_sleep(30u);
+    vkr_net_host_thread_lock(client.thread);
+    const uint32_t index = client.received;
+    const uint64_t sent_us = vkr_net_host_now(client.host);
+    net_test_thread_send(&client, index);
+    vkr_net_host_thread_unlock(client.thread);
+    assert(net_test_thread_await(&client, index + 1u, 5.0));
+    vkr_net_host_thread_lock(client.thread);
+    probes[i] = client.received_us - sent_us;
+    vkr_net_host_thread_unlock(client.thread);
+  }
+  qsort(probes, ArrayCount(probes), sizeof(probes[0]), net_test_compare_u64);
+  const uint64_t median_us = probes[ArrayCount(probes) / 2u];
+  printf("    idle round trip median %llu us, max %llu us\n",
+         (unsigned long long)median_us,
+         (unsigned long long)probes[ArrayCount(probes) - 1u]);
+  assert(median_us < 20000u);
+
+  vkr_net_host_thread_lock(client.thread);
+  assert(!client.out_of_order && !vkr_net_host_thread_failed(client.thread));
+  vkr_net_host_thread_unlock(client.thread);
+  vkr_net_host_thread_stop(client.thread);
+  vkr_net_host_thread_stop(server.thread);
+  assert(!server.out_of_order);
+  assert(server.received == client.received);
+  vkr_net_host_destroy(client.host);
+  vkr_net_host_destroy(server.host);
+  assert(server_state.live_bytes == 0u && client_state.live_bytes == 0u);
+  printf("  test_net_host_thread PASSED\n");
+}
+
 // =============================================================================
 // Session and services
 // =============================================================================
@@ -1519,6 +1704,7 @@ bool32_t run_net_tests(void) {
   test_net_garbage();
   test_net_udp_loopback();
   test_net_host_loopback();
+  test_net_host_thread();
   test_net_session_services();
   printf("--- Network transport tests completed ---\n");
   return true;

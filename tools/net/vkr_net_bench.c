@@ -4,11 +4,15 @@
  *   vkr_net_bench crypto [--seconds S]
  *   vkr_net_bench raw-server --bind ADDR
  *   vkr_net_bench raw-client --connect ADDR [--seconds S] [--size B]
- *   vkr_net_bench server --bind ADDR [--secret HEX]
+ *   vkr_net_bench server --bind ADDR [--secret HEX] [--threaded]
  *   vkr_net_bench client --connect ADDR --key HEX [--mode bulk|rtt]
  *                        [--seconds S] [--size B] [--background]
+ *                        [--threaded]
  *   vkr_net_bench sim [--latency-ms X] [--loss P] [--bandwidth-mb B]
  *                     [--megabytes N] [--mtu N]
+ *
+ * --threaded pumps the host on its own thread (vkr_net_host_thread_start)
+ * while the main thread sends through the host lock.
  *
  * Every result is one `result` line of key=value pairs on stdout. */
 
@@ -50,6 +54,7 @@ typedef struct BenchOptions {
   float64_t seconds;
   uint32_t size;
   bool8_t background;
+  bool8_t threaded;
   float64_t latency_ms;
   float64_t loss;
   float64_t bandwidth_mb;
@@ -75,8 +80,7 @@ static bool8_t bench_hex(const char *hex, uint8_t *out, uint32_t size) {
     } else {
       return false_v;
     }
-    out[i / 2u] = (uint8_t)((i % 2u) ? (out[i / 2u] | digit)
-                                       : (digit << 4));
+    out[i / 2u] = (uint8_t)((i % 2u) ? (out[i / 2u] | digit) : (digit << 4));
   }
   return true_v;
 }
@@ -402,6 +406,61 @@ static bool8_t bench_keys(const BenchOptions *options, VkrNetKeyPair *keys) {
   return true_v;
 }
 
+/* Transport state the event handlers share; with --threaded the host
+   thread runs them under its lock. */
+typedef struct BenchPeer {
+  VkrNetHost *host;
+  VkrNetHostThread *thread;
+  VkrNetConnectionId connection;
+  bool8_t connected;
+  bool8_t closed;
+  uint64_t bulk_bytes;
+  uint64_t *samples;
+  uint32_t sample_count;
+  /* Client bulk mode: the message the sender keeps the queue full of. */
+  bool8_t bulk_ready;
+  const uint8_t *payload;
+  uint32_t payload_size;
+  uint64_t queued_total;
+} BenchPeer;
+
+static void bench_lock(BenchPeer *peer) {
+  if (peer->thread) {
+    vkr_net_host_thread_lock(peer->thread);
+  }
+}
+
+static void bench_unlock(BenchPeer *peer) {
+  if (peer->thread) {
+    vkr_net_host_thread_unlock(peer->thread);
+  }
+}
+
+static void bench_server_step(void *context, uint64_t now_us) {
+  BenchPeer *peer = context;
+  VkrNetCore *core = vkr_net_host_core(peer->host);
+  VkrNetEvent event;
+  while (vkr_net_core_poll(core, &event)) {
+    if (event.type == VKR_NET_EVENT_CONNECTED) {
+      (void)vkr_net_core_open_channel(core, event.connection,
+                                      BENCH_BULK_CHANNEL, &bench_bulk_channel);
+      (void)vkr_net_core_open_channel(core, event.connection, BENCH_RTT_CHANNEL,
+                                      &bench_rtt_channel);
+    } else if (event.type == VKR_NET_EVENT_MESSAGE) {
+      if (event.channel == BENCH_RTT_CHANNEL) {
+        const VkrNetSendOptions echo = {.flags = VKR_NET_SEND_IMMEDIATE};
+        (void)vkr_net_core_send(core, event.connection, BENCH_RTT_CHANNEL,
+                                event.data, event.size, &echo, now_us);
+      } else {
+        peer->bulk_bytes += event.size;
+      }
+    } else if (event.type == VKR_NET_EVENT_CLOSED) {
+      printf("closed code=%u\n", event.code);
+      fflush(stdout);
+    }
+  }
+}
+
 static int bench_server(VkrAllocator *allocator, const BenchOptions *options) {
   VkrNetHostConfig config = {
       .socket = {.receive_buffer = 8u << 20, .send_buffer = 8u << 20}};
@@ -414,59 +473,120 @@ static int bench_server(VkrAllocator *allocator, const BenchOptions *options) {
   config.core.accept = bench_accept;
   config.core.max_connections = 64u;
   config.core.max_datagram = options->mtu ? options->mtu : 0u;
-  VkrNetHost *host = vkr_net_host_create(allocator, &config);
-  if (!host) {
+  BenchPeer peer = {.host = vkr_net_host_create(allocator, &config)};
+  if (!peer.host) {
     fprintf(stderr, "server start failed\n");
     return 1;
   }
   VkrNetAddress local;
-  (void)vkr_net_host_local_address(host, &local);
+  (void)vkr_net_host_local_address(peer.host, &local);
   char text[VKR_NET_ADDRESS_TEXT];
   vkr_net_address_format(&local, text, sizeof(text));
   printf("server on %s key ", text);
   bench_print_hex(config.core.static_keys.public_key, VKR_NET_KEY_SIZE);
-  printf("\n");
+  printf("%s\n", options->threaded ? " threaded" : "");
   fflush(stdout);
+  if (options->threaded) {
+    peer.thread = vkr_net_host_thread_start(allocator, peer.host,
+                                            bench_server_step, &peer);
+    if (!peer.thread) {
+      fprintf(stderr, "host thread start failed\n");
+      vkr_net_host_destroy(peer.host);
+      return 1;
+    }
+  }
 
-  VkrNetCore *core = vkr_net_host_core(host);
-  uint64_t bulk_bytes = 0u;
   float64_t report = bench_now();
   for (;;) {
-    if (!vkr_net_host_pump(host, 100)) {
+    if (peer.thread) {
+      /* vkr_platform_sleep spins its last two milliseconds; a long sleep
+         keeps an idle server's CPU time the host thread's. */
+      vkr_platform_sleep(1000u);
+    } else if (!vkr_net_host_pump(peer.host, 100)) {
+      fprintf(stderr, "socket failed\n");
+      break;
+    } else {
+      bench_server_step(&peer, vkr_net_host_now(peer.host));
+    }
+    bench_lock(&peer);
+    const bool8_t failed =
+        peer.thread && vkr_net_host_thread_failed(peer.thread);
+    const uint64_t bulk_bytes = peer.bulk_bytes;
+    const float64_t elapsed = bench_now() - report;
+    if (elapsed >= 1.0) {
+      peer.bulk_bytes = 0u;
+      report = bench_now();
+    }
+    bench_unlock(&peer);
+    if (failed) {
       fprintf(stderr, "socket failed\n");
       break;
     }
-    VkrNetEvent event;
-    while (vkr_net_core_poll(core, &event)) {
-      if (event.type == VKR_NET_EVENT_CONNECTED) {
-        (void)vkr_net_core_open_channel(
-            core, event.connection, BENCH_BULK_CHANNEL, &bench_bulk_channel);
-        (void)vkr_net_core_open_channel(core, event.connection,
-                                        BENCH_RTT_CHANNEL, &bench_rtt_channel);
-      } else if (event.type == VKR_NET_EVENT_MESSAGE) {
-        if (event.channel == BENCH_RTT_CHANNEL) {
-          const VkrNetSendOptions echo = {.flags = VKR_NET_SEND_IMMEDIATE};
-          (void)vkr_net_core_send(core, event.connection, BENCH_RTT_CHANNEL,
-                                  event.data, event.size, &echo,
-                                  vkr_net_host_now(host));
-        } else {
-          bulk_bytes += event.size;
-        }
-      } else if (event.type == VKR_NET_EVENT_CLOSED) {
-        printf("closed code=%u\n", event.code);
-        fflush(stdout);
-      }
-    }
-    if (bench_now() - report >= 1.0 && bulk_bytes > 0u) {
-      printf("received mb_s=%.1f\n",
-             (float64_t)bulk_bytes / (bench_now() - report) / 1e6);
+    if (elapsed >= 1.0 && bulk_bytes > 0u) {
+      printf("received mb_s=%.1f\n", (float64_t)bulk_bytes / elapsed / 1e6);
       fflush(stdout);
-      bulk_bytes = 0u;
-      report = bench_now();
     }
   }
-  vkr_net_host_destroy(host);
+  vkr_net_host_thread_stop(peer.thread);
+  vkr_net_host_destroy(peer.host);
   return 0;
+}
+
+/* Keeps the bulk channel's send queue full. */
+static void bench_client_fill(BenchPeer *peer, uint64_t now_us) {
+  VkrNetCore *core = vkr_net_host_core(peer->host);
+  while (vkr_net_core_send(core, peer->connection, BENCH_BULK_CHANNEL,
+                           peer->payload, peer->payload_size, NULL,
+                           now_us) == VKR_NET_SEND_OK) {
+    peer->queued_total += peer->payload_size;
+  }
+  vkr_net_core_flush(core);
+}
+
+static void bench_client_step(void *context, uint64_t now_us) {
+  BenchPeer *peer = context;
+  VkrNetCore *core = vkr_net_host_core(peer->host);
+  if (peer->thread && peer->bulk_ready) {
+    /* With a host thread the step sends, as a service would; the main
+       thread only sleeps. */
+    bench_client_fill(peer, now_us);
+  }
+  VkrNetEvent event;
+  while (vkr_net_core_poll(core, &event)) {
+    if (event.type == VKR_NET_EVENT_CONNECTED) {
+      peer->connected = true_v;
+    } else if (event.type == VKR_NET_EVENT_MESSAGE &&
+               event.channel == BENCH_RTT_CHANNEL && event.size >= 8u &&
+               peer->sample_count < BENCH_RTT_SAMPLES) {
+      uint64_t sent = 0u;
+      memcpy(&sent, event.data, sizeof(sent));
+      peer->samples[peer->sample_count++] = now_us - sent;
+    } else if (event.type == VKR_NET_EVENT_CLOSED) {
+      if (!peer->connected) {
+        fprintf(stderr, "handshake failed code=%u\n", event.code);
+      }
+      peer->closed = true_v;
+    }
+  }
+}
+
+/* Lets the transport run: one pump and its events, or with a host thread a
+   sleep while the thread pumps. vkr_platform_sleep spins its last two
+   milliseconds, so a bulk run sleeps long to keep the process CPU time the
+   host thread's. */
+static bool8_t bench_client_run(BenchPeer *peer, int32_t timeout_ms) {
+  if (peer->thread) {
+    vkr_platform_sleep(peer->bulk_ready ? 100u : 1u);
+    bench_lock(peer);
+    const bool8_t failed = vkr_net_host_thread_failed(peer->thread);
+    bench_unlock(peer);
+    return !failed;
+  }
+  if (!vkr_net_host_pump(peer->host, timeout_ms)) {
+    return false_v;
+  }
+  bench_client_step(peer, vkr_net_host_now(peer->host));
+  return true_v;
 }
 
 static int bench_client(VkrAllocator *allocator, const BenchOptions *options) {
@@ -484,129 +604,135 @@ static int bench_client(VkrAllocator *allocator, const BenchOptions *options) {
   config.core.max_datagram = options->mtu ? options->mtu : 0u;
   config.core.sent_packet_capacity = 16384u;
   vkr_net_keypair_generate(&config.core.static_keys);
-  VkrNetHost *host = vkr_net_host_create(allocator, &config);
-  if (!host) {
+  static uint64_t samples[BENCH_RTT_SAMPLES];
+  const uint32_t size = options->size ? Min(options->size, 1u << 20) : 1u << 20;
+  BenchPeer peer = {.host = vkr_net_host_create(allocator, &config),
+                    .samples = samples,
+                    .payload_size = size};
+  if (!peer.host) {
     fprintf(stderr, "client start failed\n");
     return 1;
   }
-  VkrNetCore *core = vkr_net_host_core(host);
-  VkrNetConnectionId connection = VKR_NET_CONNECTION_NONE;
-  const float64_t connect_start = bench_now();
-  if (!vkr_net_core_connect(core, &server, server_key, NULL, 0u,
-                            vkr_net_host_now(host), &connection)) {
-    fprintf(stderr, "connect failed\n");
-    vkr_net_host_destroy(host);
+  uint8_t *payload = malloc(size);
+  if (!payload) {
+    vkr_net_host_destroy(peer.host);
     return 1;
+  }
+  memset(payload, 0xa5, size);
+  peer.payload = payload;
+  int result = 1;
+  if (options->threaded) {
+    peer.thread = vkr_net_host_thread_start(allocator, peer.host,
+                                            bench_client_step, &peer);
+    if (!peer.thread) {
+      fprintf(stderr, "host thread start failed\n");
+      goto cleanup;
+    }
+  }
+  VkrNetCore *core = vkr_net_host_core(peer.host);
+  const float64_t connect_start = bench_now();
+  bench_lock(&peer);
+  const bool8_t started =
+      vkr_net_core_connect(core, &server, server_key, NULL, 0u,
+                           vkr_net_host_now(peer.host), &peer.connection);
+  bench_unlock(&peer);
+  if (!started) {
+    fprintf(stderr, "connect failed\n");
+    goto cleanup;
   }
   bool8_t connected = false_v;
   bool8_t closed = false_v;
   while (!connected && !closed) {
-    if (!vkr_net_host_pump(host, 50)) {
+    if (!bench_client_run(&peer, 50)) {
       break;
     }
-    VkrNetEvent event;
-    while (vkr_net_core_poll(core, &event)) {
-      connected |= event.type == VKR_NET_EVENT_CONNECTED;
-      if (event.type == VKR_NET_EVENT_CLOSED) {
-        closed = true_v;
-        fprintf(stderr, "handshake failed code=%u\n", event.code);
-      }
-    }
+    bench_lock(&peer);
+    connected = peer.connected;
+    closed = peer.closed;
+    bench_unlock(&peer);
   }
   if (!connected) {
-    vkr_net_host_destroy(host);
-    return 1;
+    goto cleanup;
   }
   printf("result test=handshake ms=%.2f\n",
          (bench_now() - connect_start) * 1000.0);
-  (void)vkr_net_core_open_channel(core, connection, BENCH_BULK_CHANNEL,
+  bench_lock(&peer);
+  (void)vkr_net_core_open_channel(core, peer.connection, BENCH_BULK_CHANNEL,
                                   &bench_bulk_channel);
-  (void)vkr_net_core_open_channel(core, connection, BENCH_RTT_CHANNEL,
+  (void)vkr_net_core_open_channel(core, peer.connection, BENCH_RTT_CHANNEL,
                                   &bench_rtt_channel);
+  const bool8_t rtt = options->mode && strcmp(options->mode, "rtt") == 0;
+  peer.bulk_ready = !rtt;
+  bench_unlock(&peer);
 
   const float64_t seconds = options->seconds > 0.0 ? options->seconds : 10.0;
-  const bool8_t rtt = options->mode && strcmp(options->mode, "rtt") == 0;
-  static uint64_t samples[BENCH_RTT_SAMPLES];
-  uint32_t sample_count = 0u;
-  const uint32_t size = options->size ? Min(options->size, 1u << 20) : 1u << 20;
-  uint8_t *payload = malloc(size);
-  if (!payload) {
-    vkr_net_host_destroy(host);
-    return 1;
-  }
-  memset(payload, 0xa5, size);
-  uint64_t queued_total = 0u;
   float64_t next_ping = 0.0;
   const float64_t start = bench_now();
   while (bench_now() - start < seconds && !closed) {
+    bench_lock(&peer);
     if (rtt) {
       if (bench_now() >= next_ping) {
         uint8_t ping[64] = {0};
-        const uint64_t sent = vkr_net_host_now(host);
+        const uint64_t sent = vkr_net_host_now(peer.host);
         memcpy(ping, &sent, sizeof(sent));
         const VkrNetSendOptions now_flag = {.flags = VKR_NET_SEND_IMMEDIATE};
-        (void)vkr_net_core_send(core, connection, BENCH_RTT_CHANNEL, ping,
-                                sizeof(ping), &now_flag,
-                                vkr_net_host_now(host));
+        (void)vkr_net_core_send(core, peer.connection, BENCH_RTT_CHANNEL, ping,
+                                sizeof(ping), &now_flag, sent);
         next_ping = bench_now() + 0.01;
       }
-    } else {
-      while (vkr_net_core_send(core, connection, BENCH_BULK_CHANNEL, payload,
-                               size, NULL,
-                               vkr_net_host_now(host)) == VKR_NET_SEND_OK) {
-        queued_total += size;
-      }
-      vkr_net_core_flush(core);
+    } else if (!peer.thread) {
+      bench_client_fill(&peer, vkr_net_host_now(peer.host));
     }
-    if (!vkr_net_host_pump(host, rtt ? 5 : 1)) {
+    closed = peer.closed;
+    bench_unlock(&peer);
+    if (!bench_client_run(&peer, rtt ? 5 : 1)) {
       break;
-    }
-    VkrNetEvent event;
-    while (vkr_net_core_poll(core, &event)) {
-      if (event.type == VKR_NET_EVENT_MESSAGE &&
-          event.channel == BENCH_RTT_CHANNEL && event.size >= 8u &&
-          sample_count < BENCH_RTT_SAMPLES) {
-        uint64_t sent = 0u;
-        memcpy(&sent, event.data, sizeof(sent));
-        samples[sample_count++] = vkr_net_host_now(host) - sent;
-      } else if (event.type == VKR_NET_EVENT_CLOSED) {
-        closed = true_v;
-      }
     }
   }
   const float64_t elapsed = bench_now() - start;
+  bench_lock(&peer);
   VkrNetPathStats stats = {0};
-  (void)vkr_net_core_path(core, connection, &stats);
-  const VkrNetHostStats host_stats = vkr_net_host_stats(host);
+  (void)vkr_net_core_path(core, peer.connection, &stats);
+  const VkrNetHostStats host_stats = vkr_net_host_stats(peer.host);
+  peer.bulk_ready = false_v;
+  const uint64_t acked =
+      peer.queued_total -
+      vkr_net_core_queued_bytes(core, peer.connection, BENCH_BULK_CHANNEL);
+  const uint32_t sample_count = peer.sample_count;
+  vkr_net_core_close(core, peer.connection, VKR_NET_CLOSE_APPLICATION,
+                     vkr_net_host_now(peer.host));
+  bench_unlock(&peer);
   if (rtt) {
     if (sample_count > 0u) {
       qsort(samples, sample_count, sizeof(uint64_t), bench_compare_u64);
       printf("result test=transport_rtt samples=%u min_us=%llu p50_us=%llu "
-             "p99_us=%llu\n",
+             "p99_us=%llu%s\n",
              sample_count, (unsigned long long)samples[0],
              (unsigned long long)samples[sample_count / 2u],
-             (unsigned long long)samples[sample_count * 99u / 100u]);
+             (unsigned long long)samples[sample_count * 99u / 100u],
+             peer.thread ? " threaded=1" : "");
     }
   } else {
-    const uint64_t acked =
-        queued_total -
-        vkr_net_core_queued_bytes(core, connection, BENCH_BULK_CHANNEL);
     printf("result test=transport_bulk seconds=%.2f mb_s=%.1f srtt_ms=%.2f "
-           "bandwidth_mb_s=%.1f mtu=%u lost=%llu sent=%llu send_dropped=%llu\n",
+           "bandwidth_mb_s=%.1f mtu=%u lost=%llu sent=%llu send_dropped=%llu"
+           "%s\n",
            elapsed, (float64_t)acked / elapsed / 1e6,
            (float64_t)stats.srtt_us / 1000.0, (float64_t)stats.bandwidth / 1e6,
            stats.max_datagram, (unsigned long long)stats.packets_lost,
            (unsigned long long)stats.packets_sent,
-           (unsigned long long)host_stats.send_dropped);
+           (unsigned long long)host_stats.send_dropped,
+           peer.thread ? " threaded=1" : "");
   }
-  vkr_net_core_close(core, connection, VKR_NET_CLOSE_APPLICATION,
-                     vkr_net_host_now(host));
   for (uint32_t i = 0u; i < 20u; ++i) {
-    (void)vkr_net_host_pump(host, 10);
+    (void)bench_client_run(&peer, 10);
   }
+  result = 0;
+
+cleanup:
+  vkr_net_host_thread_stop(peer.thread);
   free(payload);
-  vkr_net_host_destroy(host);
-  return 0;
+  vkr_net_host_destroy(peer.host);
+  return result;
 }
 
 // =============================================================================
@@ -718,7 +844,7 @@ static void bench_usage(void) {
       "usage: vkr_net_bench crypto|raw-server|raw-client|server|client|sim "
       "[options]\n"
       "  --bind ADDR --connect ADDR --key HEX --secret HEX --mode bulk|rtt\n"
-      "  --seconds S --size B --background --mtu N\n"
+      "  --seconds S --size B --background --threaded --mtu N\n"
       "  --latency-ms X --loss P --bandwidth-mb B --megabytes N\n");
 }
 
@@ -733,6 +859,10 @@ VKR_MAIN(argc, argv) {
     const char *value = i + 1 < argc ? argv[i + 1] : NULL;
     if (strcmp(arg, "--background") == 0) {
       options.background = true_v;
+      continue;
+    }
+    if (strcmp(arg, "--threaded") == 0) {
+      options.threaded = true_v;
       continue;
     }
     if (!value) {

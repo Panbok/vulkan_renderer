@@ -8,6 +8,10 @@
  * asked, waits for a datagram or the core's next deadline. Times come from
  * the platform's monotonic clock in microseconds.
  *
+ * Instead, a host thread (vkr_net_host_thread_start) can pump it. The
+ * thread holds a lock while it touches the core and releases it while it
+ * waits on the socket; any other thread takes the lock first.
+ *
  * vkr_platform_init must run before create. */
 
 typedef struct VkrNetHostConfig {
@@ -48,4 +52,37 @@ bool8_t vkr_net_host_pump(VkrNetHost *host, int32_t timeout_ms);
 /* Wakes a pump waiting on another thread. */
 void vkr_net_host_wake(VkrNetHost *host);
 
+/* With a host thread running, read the statistics with its lock held. */
 VkrNetHostStats vkr_net_host_stats(const VkrNetHost *host);
+
+/* Called by the host thread after every pump, with the lock held, at
+   `now_us` of the host's clock. It polls core events and runs the service
+   the thread drives; it must not take the lock itself. */
+typedef void (*VkrNetHostStep)(void *context, uint64_t now_us);
+
+typedef struct VkrNetHostThread VkrNetHostThread;
+
+/* Pumps `host` on a new thread. After every pump the thread calls `step`
+   (may be NULL) with the host lock held; `step` polls core events and runs
+   the service. The thread waits without the lock until the core's next
+   deadline, a datagram, a wake or 100 ms, so the step runs at least ten
+   times a second. The caller keeps owning `host` and destroys it after
+   stopping the thread. NULL on failure. */
+VkrNetHostThread *vkr_net_host_thread_start(VkrAllocator *allocator,
+                                            VkrNetHost *host,
+                                            VkrNetHostStep step, void *context);
+
+/* Any other thread takes the lock before touching the host's core, session
+   or the service the step drives. */
+void vkr_net_host_thread_lock(VkrNetHostThread *thread);
+
+/* Releases the lock and wakes the thread so queued sends leave at once. */
+void vkr_net_host_thread_unlock(VkrNetHostThread *thread);
+
+/* True once the socket failed; the thread then stops pumping and calls
+   the step no more. Call with the lock held. */
+bool8_t vkr_net_host_thread_failed(const VkrNetHostThread *thread);
+
+/* Stops and joins the thread; returns with no lock held. Call it without
+   the lock. */
+void vkr_net_host_thread_stop(VkrNetHostThread *thread);

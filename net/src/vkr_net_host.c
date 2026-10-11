@@ -1,11 +1,21 @@
 #include "vkr_net_host.h"
 
+#include "core/vkr_atomic.h"
+#include "core/vkr_threads.h"
 #include "platform/vkr_platform.h"
 
 /* Datagrams moved per system-call batch. */
 #define NET_HOST_BATCH 32u
 /* Datagrams one pump receives before it runs timers and sends. */
 #define NET_HOST_RECEIVE_BUDGET 1024u
+/* The longest wait of a pump with no deadline and no limit. */
+#define NET_HOST_IDLE_WAIT_US 1000000
+/* The longest wait of the host thread, so its step runs at least this
+   often while nothing arrives. */
+#define NET_HOST_THREAD_WAIT_US 100000
+/* Yields the host thread offers an application thread that waits for the
+   lock before it takes the lock back. */
+#define NET_HOST_THREAD_YIELDS 64u
 
 struct VkrNetHost {
   VkrAllocator *allocator;
@@ -163,6 +173,20 @@ static bool8_t net_host_process(VkrNetHost *host) {
   return net_host_send(host);
 }
 
+/* Microseconds until the core's next deadline, at most `limit_us`. A
+   negative limit waits for the deadline, or a second without one. */
+static int64_t net_host_wait_time(const VkrNetHost *host, int64_t limit_us) {
+  const uint64_t now = vkr_net_host_now(host);
+  const uint64_t deadline = vkr_net_core_next_deadline(host->core);
+  int64_t wait_us = limit_us < 0 ? INT64_MAX : limit_us;
+  if (deadline != UINT64_MAX) {
+    wait_us = deadline > now ? Min(wait_us, (int64_t)(deadline - now)) : 0;
+  } else if (limit_us < 0) {
+    wait_us = NET_HOST_IDLE_WAIT_US;
+  }
+  return wait_us;
+}
+
 bool8_t vkr_net_host_pump(VkrNetHost *host, int32_t timeout_ms) {
   if (!host) {
     return false_v;
@@ -173,25 +197,14 @@ bool8_t vkr_net_host_pump(VkrNetHost *host, int32_t timeout_ms) {
   if (timeout_ms == 0) {
     return true_v;
   }
-  const uint64_t now = vkr_net_host_now(host);
-  const uint64_t deadline = vkr_net_core_next_deadline(host->core);
-  int64_t wait_us = timeout_ms < 0 ? INT64_MAX : (int64_t)timeout_ms * 1000;
-  if (deadline != UINT64_MAX) {
-    wait_us = deadline > now ? Min(wait_us, (int64_t)(deadline - now)) : 0;
-  } else if (timeout_ms < 0) {
-    wait_us = 1000000;
-  }
-  /* Platform waits are in whole milliseconds, so a deadline closer than
-     that waits one (a datagram still ends the wait at once) instead of
-     returning to a caller that pumps again: on loopback the loss and pacing
-     timers sit under a millisecond, and the spin cost a clone 3 s of CPU
-     (2026-10-11, Windows) without making it faster. */
-  if (wait_us > 0) {
-    const int32_t wait_ms =
-        (int32_t)Min((wait_us + 999) / 1000, (int64_t)INT32_MAX);
-    if (vkr_udp_socket_wait(host->socket, wait_ms) < 0) {
-      return false_v;
-    }
+  /* A deadline closer than a millisecond waits only that long where the
+     socket can (POSIX; Windows rounds it up to one, see
+     vkr_udp_socket_wait_us), so sub-millisecond pacing and loss timers on
+     loopback neither spin the pump nor sleep a whole millisecond. */
+  const int64_t wait_us = net_host_wait_time(
+      host, timeout_ms < 0 ? -1 : (int64_t)timeout_ms * 1000);
+  if (wait_us > 0 && vkr_udp_socket_wait_us(host->socket, wait_us) < 0) {
+    return false_v;
   }
   return net_host_process(host);
 }
@@ -217,4 +230,161 @@ void vkr_net_host_wake(VkrNetHost *host) {
 
 VkrNetHostStats vkr_net_host_stats(const VkrNetHost *host) {
   return host ? host->stats : (VkrNetHostStats){0};
+}
+
+// =============================================================================
+// Host thread
+// =============================================================================
+
+struct VkrNetHostThread {
+  VkrAllocator *allocator;
+  VkrNetHost *host;
+  VkrNetHostStep step;
+  void *context;
+  VkrMutex mutex;
+  VkrThread thread;
+  /* Application threads inside vkr_net_host_thread_lock. */
+  VkrAtomicUint32 contenders;
+  /* The fields below are guarded by `mutex`. */
+  bool8_t stopping;
+  /* The thread waits, or is about to, on the socket. */
+  bool8_t waiting;
+  /* A wake datagram is on its way for this wait. */
+  bool8_t woken;
+  bool8_t failed;
+};
+
+/* The lock is free; let an application thread that waits for it take it
+   before the host thread does. A mutex need not be fair, and a busy host
+   thread that relocks at once would starve the application. */
+static void net_host_thread_yield(VkrNetHostThread *thread) {
+  for (uint32_t i = 0u; i < NET_HOST_THREAD_YIELDS; ++i) {
+    if (vkr_atomic_uint32_load(&thread->contenders, VKR_MEMORY_ORDER_ACQUIRE) ==
+        0u) {
+      return;
+    }
+    vkr_thread_yield();
+  }
+}
+
+static void *net_host_thread_main(void *argument) {
+  VkrNetHostThread *thread = argument;
+  VkrNetHost *host = thread->host;
+  vkr_mutex_lock(thread->mutex);
+  while (!thread->stopping) {
+    if (!net_host_process(host)) {
+      thread->failed = true_v;
+      break;
+    }
+    if (thread->step) {
+      thread->step(thread->context, vkr_net_host_now(host));
+      /* What the step queued leaves now, not after the wait. */
+      if (!net_host_send(host)) {
+        thread->failed = true_v;
+        break;
+      }
+    }
+    const int64_t wait_us = net_host_wait_time(host, NET_HOST_THREAD_WAIT_US);
+    thread->waiting = true_v;
+    thread->woken = false_v;
+    vkr_mutex_unlock(thread->mutex);
+
+    /* The socket handle never changes while the thread runs, so the wait
+       needs no lock. A datagram, the deadline or a wake ends it. */
+    int32_t result = 0;
+    if (wait_us > 0) {
+      result = vkr_udp_socket_wait_us(host->socket, wait_us);
+    }
+    net_host_thread_yield(thread);
+
+    vkr_mutex_lock(thread->mutex);
+    thread->waiting = false_v;
+    if (result < 0) {
+      thread->failed = true_v;
+      break;
+    }
+  }
+  thread->waiting = false_v;
+  vkr_mutex_unlock(thread->mutex);
+  return NULL;
+}
+
+VkrNetHostThread *vkr_net_host_thread_start(VkrAllocator *allocator,
+                                            VkrNetHost *host,
+                                            VkrNetHostStep step,
+                                            void *context) {
+  if (!allocator || !host) {
+    return NULL;
+  }
+  VkrNetHostThread *thread = vkr_allocator_alloc(
+      allocator, sizeof(VkrNetHostThread), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  if (!thread) {
+    return NULL;
+  }
+  MemZero(thread, sizeof(*thread));
+  thread->allocator = allocator;
+  thread->host = host;
+  thread->step = step;
+  thread->context = context;
+  vkr_atomic_uint32_store(&thread->contenders, 0u, VKR_MEMORY_ORDER_RELAXED);
+  if (!vkr_mutex_create(allocator, &thread->mutex)) {
+    goto cleanup;
+  }
+  if (!vkr_thread_create(allocator, &thread->thread, net_host_thread_main,
+                         thread)) {
+    goto cleanup;
+  }
+  return thread;
+
+cleanup:
+  if (thread->mutex) {
+    vkr_mutex_destroy(allocator, &thread->mutex);
+  }
+  vkr_allocator_free(allocator, thread, sizeof(VkrNetHostThread),
+                     VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  return NULL;
+}
+
+void vkr_net_host_thread_lock(VkrNetHostThread *thread) {
+  if (!thread) {
+    return;
+  }
+  vkr_atomic_uint32_fetch_add(&thread->contenders, 1u,
+                              VKR_MEMORY_ORDER_ACQ_REL);
+  vkr_mutex_lock(thread->mutex);
+  vkr_atomic_uint32_fetch_sub(&thread->contenders, 1u,
+                              VKR_MEMORY_ORDER_ACQ_REL);
+}
+
+void vkr_net_host_thread_unlock(VkrNetHostThread *thread) {
+  if (!thread) {
+    return;
+  }
+  /* One wake per wait: later unlocks find the datagram already sent. */
+  const bool8_t wake = thread->waiting && !thread->woken;
+  if (wake) {
+    thread->woken = true_v;
+  }
+  vkr_mutex_unlock(thread->mutex);
+  if (wake) {
+    vkr_net_host_wake(thread->host);
+  }
+}
+
+bool8_t vkr_net_host_thread_failed(const VkrNetHostThread *thread) {
+  return thread ? thread->failed : true_v;
+}
+
+void vkr_net_host_thread_stop(VkrNetHostThread *thread) {
+  if (!thread) {
+    return;
+  }
+  vkr_net_host_thread_lock(thread);
+  thread->stopping = true_v;
+  vkr_net_host_thread_unlock(thread);
+  vkr_thread_join(thread->thread);
+  vkr_thread_destroy(thread->allocator, &thread->thread);
+  vkr_mutex_destroy(thread->allocator, &thread->mutex);
+  vkr_allocator_free(thread->allocator, thread, sizeof(VkrNetHostThread),
+                     VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
 }

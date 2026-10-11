@@ -135,6 +135,11 @@ VkrUdpStatus vkr_udp_socket_send(VkrUdpSocket socket,
    on failure. */
 int32_t vkr_udp_socket_wait(VkrUdpSocket socket, int32_t timeout_ms);
 
+/* vkr_udp_socket_wait in microseconds. POSIX hosts honour a wait shorter
+   than a millisecond, within the kernel's timer slack; Windows rounds it up
+   to one millisecond. */
+int32_t vkr_udp_socket_wait_us(VkrUdpSocket socket, int64_t timeout_us);
+
 /* Describes the last failed socket call of this thread. */
 void vkr_udp_socket_error_text(char *out, uint64_t capacity);
 

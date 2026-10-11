@@ -19,6 +19,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -567,15 +568,49 @@ VkrUdpStatus vkr_udp_socket_send(VkrUdpSocket socket,
 }
 
 int32_t vkr_udp_socket_wait(VkrUdpSocket socket, int32_t timeout_ms) {
+  return vkr_udp_socket_wait_us(
+      socket, timeout_ms < 0 ? -1 : (int64_t)timeout_ms * 1000);
+}
+
+int32_t vkr_udp_socket_wait_us(VkrUdpSocket socket, int64_t timeout_us) {
 #if defined(_WIN32)
+  /* WSAPoll counts whole milliseconds and Windows has no finer socket wait
+     short of overlapped I/O with a waitable timer, so a shorter wait rounds
+     up to one millisecond; a datagram still ends it at once. */
+  int32_t timeout_ms = -1;
+  if (timeout_us >= 0) {
+    timeout_ms = (int32_t)Min((timeout_us + 999) / 1000, (int64_t)INT32_MAX);
+  }
   WSAPOLLFD entry = {.fd = udp_native(socket), .events = POLLRDNORM};
-  const int result = WSAPoll(&entry, 1u, timeout_ms < 0 ? -1 : timeout_ms);
+  const int result = WSAPoll(&entry, 1u, timeout_ms);
   if (result == SOCKET_ERROR) {
     return udp_error_interrupted(udp_last_error()) ? 0 : -1;
   }
 #else
-  struct pollfd entry = {.fd = udp_native(socket), .events = POLLIN};
-  const int result = poll(&entry, 1u, timeout_ms < 0 ? -1 : timeout_ms);
+  const UdpNative native = udp_native(socket);
+  int result = 0;
+  if (timeout_us >= 0 && native >= 0 && native < FD_SETSIZE) {
+    /* select takes microseconds where poll takes milliseconds. The kernel
+       still coalesces timers: on a Mac M1 a 100 us wait lasts about 130 us
+       and a 500 us wait about 630 us (2026-10-11). */
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(native, &readable);
+    struct timeval timeout = {
+        .tv_sec = (time_t)(timeout_us / 1000000),
+        .tv_usec = (suseconds_t)(timeout_us % 1000000),
+    };
+    result = select(native + 1, &readable, NULL, NULL, &timeout);
+  } else {
+    /* An unlimited wait, or a descriptor past select's fixed set, which
+       waits whole milliseconds. */
+    int32_t timeout_ms = -1;
+    if (timeout_us >= 0) {
+      timeout_ms = (int32_t)Min((timeout_us + 999) / 1000, (int64_t)INT32_MAX);
+    }
+    struct pollfd entry = {.fd = native, .events = POLLIN};
+    result = poll(&entry, 1u, timeout_ms);
+  }
   if (result < 0) {
     return udp_error_interrupted(udp_last_error()) ? 0 : -1;
   }
