@@ -11,9 +11,10 @@ authority: adr
 Accepted (partial). Phases 0 to 3 of the
 [network protocol proposal](../proposals/network-protocol.md) are
 implemented: the encrypted UDP transport, the binary data format, services
-over sessions, and the asset depot with its server and command. Every check
-ran on Windows (Ryzen 5 2600, clang); macOS execution and every
-cross-machine measurement are unverified.
+over sessions, and the asset depot with its server, command, LAN discovery
+and server-to-server mirroring. Every check ran on Windows (Ryzen 5 2600,
+clang); the Mac session ran the loopback depot check on macOS once, and
+cross-machine measurements are unverified.
 [ADR-106](106-collaborative-editing-session.md) builds editor collaboration
 on it. The proposal keeps the rest of editor collaboration, agent
 federation, game sessions, asset and view streaming,
@@ -143,10 +144,25 @@ from the caller's thread.
   keeps local changes and refuses conflicts. The command and the editor's
   collaborative session
   ([ADR-106](106-collaborative-editing-session.md#depot)) both use it.
+- **Mirror** (`vkr_depot_mirror`): two machines each serve a full store and
+  keep their branches equal (owner decision, 2026-10-11). One process
+  connects as a client to the local server and to the peer and moves
+  objects through the local server's store, which tolerates concurrent
+  writers. A branch on one side only is created on the other; a branch one
+  side moved past the other's commit fast-forwards there by the server's
+  compare-and-swap. A branch both sides moved is reported as diverged and
+  left alone, since the depot has no merge.
+- **Discovery** ([vkr_depot_discovery.h](../../tools/depot/vkr_depot_discovery.h)):
+  `serve` answers binary probes on UDP 7319 with its service port, server
+  key, name and host. `discover` broadcasts a probe to every IPv4 subnet
+  the machine is on, or sends it to `--to`, and lists the answers. An
+  answer is unauthenticated; the transport then proves the key, so the key
+  is checked once against the one `serve` prints.
 - **Command** ([vkr_depot_main.c](../../tools/depot/vkr_depot_main.c)):
-  `keygen`, `init`, `serve`, `access`, `clone`, `status`, `commit` (snapshot,
-  upload, move the branch), `pull` (keeps local changes, refuses
-  conflicts), `refs`, `log`, `lock`, `unlock`, `locks`.
+  `keygen`, `init`, `serve`, `discover`, `mirror` (once or `--watch`),
+  `access`, `clone`, `status`, `commit` (snapshot, upload, move the
+  branch), `pull` (keeps local changes, refuses conflicts), `refs`, `log`,
+  `lock`, `unlock`, `locks`.
 
 ## Consequences
 
@@ -178,7 +194,12 @@ Windows 10, Ryzen 5 2600, clang, 2026-10-10.
   ([check_depot_e2e.py](../../tools/checks/check_depot_e2e.py)) drives
   init, serve, clone, commit, a second clone, an edit, a pull with a kept
   local change, a refused stale push, locks and a refused key; it passes.
-  A 10-byte edit inside a 3.5 MB file uploaded 7 objects (0.3 MB).
+  A 10-byte edit inside a 3.5 MB file uploaded 7 objects (0.3 MB). A
+  second server then finds the first by `discover --to 127.0.0.1`, and
+  `mirror` reports `to-peer main`, then, after a commit on the second
+  server, `from-peer main`, whose files the first server's working copy
+  pulls byte for byte, then `same main`, and `diverged main` once both
+  servers move it; it passes on Windows Debug.
 - `build_release`, `vkr_net_bench`:
   - `crypto`: AES-256-GCM 2,189 MB/s on 1,200-byte packets and
     2,531 MB/s on 1 MiB; SHA-256 1,382 MB/s; ChaCha20-Poly1305 652 MB/s.
