@@ -135,7 +135,7 @@ bool8_t vkr_depot_discovery_read_answer(const uint8_t *bytes, uint32_t size,
 // Server side
 // =============================================================================
 
-static void discovery_host_name(char *out, uint32_t capacity) {
+void vkr_depot_host_name(char *out, uint32_t capacity) {
 #if defined(_WIN32)
   const char *name = getenv(DISCOVERY_HOST_VARIABLE);
   snprintf(out, capacity, "%s", name && name[0] ? name : "windows");
@@ -149,14 +149,18 @@ static void discovery_host_name(char *out, uint32_t capacity) {
 
 bool8_t vkr_depot_responder_open(VkrDepotResponder *responder,
                                  uint16_t discovery_port, uint16_t service_port,
-                                 const uint8_t server_key[32],
-                                 const char *name) {
+                                 const uint8_t server_key[32], const char *name,
+                                 const char *host) {
   MemZero(responder, sizeof(*responder));
   responder->socket.handle = VKR_UDP_SOCKET_INVALID;
   responder->service_port = service_port;
   MemCopy(responder->server_key, server_key, 32u);
   snprintf(responder->name, sizeof(responder->name), "%s", name ? name : "");
-  discovery_host_name(responder->host, sizeof(responder->host));
+  if (host) {
+    snprintf(responder->host, sizeof(responder->host), "%s", host);
+  } else {
+    vkr_depot_host_name(responder->host, sizeof(responder->host));
+  }
   const VkrNetAddress bind =
       vkr_net_address_any(VKR_NET_ADDRESS_IPV4, discovery_port);
   return vkr_udp_socket_open(&bind, NULL, &responder->socket);
@@ -197,6 +201,41 @@ void vkr_depot_responder_update(VkrDepotResponder *responder) {
 // Client side
 // =============================================================================
 
+bool8_t vkr_depot_browser_open(VkrDepotBrowser *browser,
+                               uint16_t discovery_port) {
+  MemZero(browser, sizeof(*browser));
+  browser->socket.handle = VKR_UDP_SOCKET_INVALID;
+  browser->discovery_port =
+      discovery_port ? discovery_port : (uint16_t)VKR_DEPOT_DISCOVERY_PORT;
+  vkr_net_random(&browser->nonce, sizeof(browser->nonce));
+  const VkrNetAddress bind = vkr_net_address_any(VKR_NET_ADDRESS_IPV4, 0u);
+  if (!vkr_udp_socket_open(&bind, NULL, &browser->socket)) {
+    return false_v;
+  }
+  (void)vkr_udp_socket_enable_broadcast(browser->socket);
+  return true_v;
+}
+
+void vkr_depot_browser_close(VkrDepotBrowser *browser) {
+  vkr_udp_socket_close(&browser->socket);
+}
+
+bool8_t vkr_depot_browser_add_target(VkrDepotBrowser *browser,
+                                     const VkrNetAddress *address) {
+  VkrNetAddress target = *address;
+  target.port = browser->discovery_port;
+  for (uint32_t i = 0u; i < browser->target_count; ++i) {
+    if (vkr_net_address_equal(&browser->targets[i], &target)) {
+      return true_v;
+    }
+  }
+  if (browser->target_count == VKR_DEPOT_BROWSE_TARGETS) {
+    return false_v;
+  }
+  browser->targets[browser->target_count++] = target;
+  return true_v;
+}
+
 static void discovery_send_probes(VkrUdpSocket socket, const uint8_t *probe,
                                   const VkrNetAddress *targets,
                                   uint32_t target_count) {
@@ -209,36 +248,78 @@ static void discovery_send_probes(VkrUdpSocket socket, const uint8_t *probe,
   }
 }
 
+void vkr_depot_browser_probe(VkrDepotBrowser *browser, bool8_t broadcast) {
+  if (browser->socket.handle == VKR_UDP_SOCKET_INVALID) {
+    return;
+  }
+  uint8_t probe[DISCOVERY_PROBE_SIZE];
+  (void)vkr_depot_discovery_probe(browser->nonce, probe);
+  discovery_send_probes(browser->socket, probe, browser->targets,
+                        browser->target_count);
+  if (!broadcast) {
+    return;
+  }
+  /* Every subnet this machine is on and the limited broadcast address. */
+  VkrNetAddress targets[17];
+  uint32_t count = vkr_net_ipv4_broadcast_addresses(
+      browser->discovery_port, targets, ArrayCount(targets) - 1u);
+  VkrNetAddress limited = {.family = VKR_NET_ADDRESS_IPV4,
+                           .port = browser->discovery_port};
+  MemSet(limited.bytes, 0xff, 4u);
+  targets[count++] = limited;
+  discovery_send_probes(browser->socket, probe, targets, count);
+}
+
+uint32_t vkr_depot_browser_update(VkrDepotBrowser *browser) {
+  if (browser->socket.handle == VKR_UDP_SOCKET_INVALID) {
+    return 0u;
+  }
+  uint32_t added = 0u;
+  for (;;) {
+    uint8_t bytes[DISCOVERY_DATAGRAM_MAX];
+    VkrUdpDatagram datagram = {.data = bytes, .capacity = sizeof(bytes)};
+    uint32_t received = 0u;
+    if (vkr_udp_socket_receive(browser->socket, &datagram, 1u, &received,
+                               NULL) != VKR_UDP_OK ||
+        received == 0u) {
+      break;
+    }
+    VkrDepotDiscovered found;
+    if (!vkr_depot_discovery_read_answer(bytes, datagram.size, browser->nonce,
+                                         &found)) {
+      continue;
+    }
+    const uint16_t port = found.address.port;
+    found.address = datagram.address;
+    found.address.port = port;
+    found.last_seen = vkr_platform_get_absolute_time();
+    VkrDepotDiscovered *known = NULL;
+    for (uint32_t i = 0u; i < browser->found_count && !known; ++i) {
+      VkrDepotDiscovered *entry = &browser->found[i];
+      if (vkr_net_address_equal(&entry->address, &found.address) &&
+          MemCompare(entry->server_key, found.server_key, 32u) == 0) {
+        known = entry;
+      }
+    }
+    if (known) {
+      *known = found;
+    } else if (browser->found_count < VKR_DEPOT_BROWSE_MAX) {
+      browser->found[browser->found_count++] = found;
+      added += 1u;
+    }
+  }
+  return added;
+}
+
 uint32_t vkr_depot_discover(const VkrNetAddress *target,
                             uint16_t discovery_port, uint32_t timeout_ms,
                             VkrDepotDiscovered *out, uint32_t capacity) {
-  VkrUdpSocket socket = {.handle = VKR_UDP_SOCKET_INVALID};
-  const VkrNetAddress bind = vkr_net_address_any(VKR_NET_ADDRESS_IPV4, 0u);
-  if (!vkr_udp_socket_open(&bind, NULL, &socket)) {
+  VkrDepotBrowser browser;
+  if (!vkr_depot_browser_open(&browser, discovery_port) ||
+      (target && !vkr_depot_browser_add_target(&browser, target))) {
+    vkr_depot_browser_close(&browser);
     return 0u;
   }
-  /* Every subnet this machine is on and the limited broadcast address, or
-     only the address the caller named. */
-  VkrNetAddress targets[17];
-  uint32_t target_count = 0u;
-  if (target) {
-    targets[target_count] = *target;
-    targets[target_count++].port = discovery_port;
-  } else {
-    (void)vkr_udp_socket_enable_broadcast(socket);
-    target_count = vkr_net_ipv4_broadcast_addresses(discovery_port, targets,
-                                                    ArrayCount(targets) - 1u);
-    VkrNetAddress limited = {.family = VKR_NET_ADDRESS_IPV4,
-                             .port = discovery_port};
-    MemSet(limited.bytes, 0xff, 4u);
-    targets[target_count++] = limited;
-  }
-  uint64_t nonce = 0u;
-  vkr_net_random(&nonce, sizeof(nonce));
-  uint8_t probe[DISCOVERY_PROBE_SIZE];
-  (void)vkr_depot_discovery_probe(nonce, probe);
-
-  uint32_t count = 0u;
   const float64_t start = vkr_platform_get_absolute_time();
   float64_t resend_at = start;
   for (;;) {
@@ -248,43 +329,18 @@ uint32_t vkr_depot_discover(const VkrNetAddress *target,
       break;
     }
     if (now >= resend_at) {
-      discovery_send_probes(socket, probe, targets, target_count);
+      vkr_depot_browser_probe(&browser, target == NULL);
       resend_at = now + DISCOVERY_RESEND_MS / 1000.0;
     }
     const int32_t wait = (int32_t)Min((float64_t)DISCOVERY_RESEND_MS,
                                       (float64_t)timeout_ms - elapsed_ms) +
                          1;
-    if (vkr_udp_socket_wait(socket, wait) <= 0) {
-      continue;
-    }
-    for (;;) {
-      uint8_t bytes[DISCOVERY_DATAGRAM_MAX];
-      VkrUdpDatagram datagram = {.data = bytes, .capacity = sizeof(bytes)};
-      uint32_t received = 0u;
-      if (vkr_udp_socket_receive(socket, &datagram, 1u, &received, NULL) !=
-              VKR_UDP_OK ||
-          received == 0u) {
-        break;
-      }
-      VkrDepotDiscovered found;
-      if (!vkr_depot_discovery_read_answer(bytes, datagram.size, nonce,
-                                           &found)) {
-        continue;
-      }
-      const uint16_t port = found.address.port;
-      found.address = datagram.address;
-      found.address.port = port;
-      bool8_t known = false_v;
-      for (uint32_t i = 0u; i < count; ++i) {
-        known = known ||
-                (vkr_net_address_equal(&out[i].address, &found.address) &&
-                 MemCompare(out[i].server_key, found.server_key, 32u) == 0);
-      }
-      if (!known && count < capacity) {
-        out[count++] = found;
-      }
+    if (vkr_udp_socket_wait(browser.socket, wait) > 0) {
+      (void)vkr_depot_browser_update(&browser);
     }
   }
-  vkr_udp_socket_close(&socket);
+  vkr_depot_browser_close(&browser);
+  const uint32_t count = Min(browser.found_count, capacity);
+  MemCopy(out, browser.found, (uint64_t)count * sizeof(*out));
   return count;
 }

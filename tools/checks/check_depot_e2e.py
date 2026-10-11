@@ -3,9 +3,10 @@
 
 Runs a server and three users through init, access, clone, commit, a second
 clone, an edit, a pull that keeps a local change, a refused stale push,
-locks and a refused key. A second server then finds the first by
-discovery, takes its branch through `mirror`, gives an edit made on it back
-the same way, and reports a branch both servers moved as diverged. Every
+locks, and a refused key that `access` then lets in while the server
+runs. A second server then finds the first by discovery, takes its branch
+through `mirror`, gives an edit made on it back the same way, and reports
+a branch both servers moved as diverged. Every
 step checks the files or the command's result; any mismatch exits nonzero.
 
 Example:
@@ -121,9 +122,18 @@ def main():
         run(["log", str(work_a)])
         run(["refs", str(work_a)])
 
-        run(["keygen"], "carol")
-        run(["clone", address, server_key, str(root / "carol")], "carol",
-            ok=False)
+        # An unknown key is refused and asks for access; `access` gives it a
+        # role while the server runs, and the same clone then completes.
+        carol = run(["keygen"], "carol").split("identity ")[1].split()[0]
+        refused = run(["clone", address, server_key, str(root / "carol")],
+                      "carol", ok=False)
+        if "does not know this machine's key" not in refused:
+            sys.exit("the refused clone did not report a pending request")
+        run(["access", str(store), carol, "read"])
+        time.sleep(2.0)
+        run(["clone", address, server_key, str(root / "carol")], "carol")
+        if digest(root / "carol") != digest(work_a):
+            sys.exit("the clone after a runtime access grant differs")
 
         # Discovery: the first server answers a probe sent to loopback.
         found = run(["discover", "--to", "127.0.0.1", "--timeout", "2000",

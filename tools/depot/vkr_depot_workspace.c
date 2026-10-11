@@ -332,6 +332,12 @@ typedef struct WalkState {
   VkrDepotFileList *files;
   char relative[VKR_DEPOT_PATH_CAPACITY];
   bool8_t failed;
+  /* Entries of `files` whose size or time differ from the index: hashed
+     after the walk, so progress knows their count and bytes. */
+  uint32_t *pending;
+  uint32_t pending_count;
+  uint32_t pending_capacity;
+  uint64_t pending_bytes;
   /* The patterns of `.vkrdepotignore`, pointing into `ignore_text`. */
   char *ignore_text;
   const char *ignore[VKR_DEPOT_IGNORE_MAX];
@@ -550,20 +556,55 @@ static bool8_t walk_visit(void *context, const char *name,
                                    stat.mtime_ns, &known->blob) ||
            (state->failed = true_v, false_v);
   }
-  uint8_t *data = NULL;
-  uint64_t size = 0u;
-  if (!vkr_bakery_read_file(absolute, WORKSPACE_FILE_MAX, &data, &size)) {
+  if (state->pending_count == state->pending_capacity) {
+    const uint32_t capacity =
+        state->pending_capacity ? state->pending_capacity * 2u : 64u;
+    uint32_t *pending =
+        realloc(state->pending, (size_t)capacity * sizeof(uint32_t));
+    if (!pending) {
+      state->failed = true_v;
+      return false_v;
+    }
+    state->pending = pending;
+    state->pending_capacity = capacity;
+  }
+  const VkrDepotId unhashed = {0};
+  if (!vkr_depot_file_list_add(state->files, relative, stat.size, stat.mtime_ns,
+                               &unhashed)) {
     state->failed = true_v;
     return false_v;
   }
-  VkrDepotId blob;
-  const bool8_t stored =
-      workspace_store_file(&state->workspace->store, data, size, &blob);
-  free(data);
-  if (!stored || !vkr_depot_file_list_add(state->files, relative, size,
-                                          stat.mtime_ns, &blob)) {
-    state->failed = true_v;
-    return false_v;
+  state->pending[state->pending_count++] = state->files->count - 1u;
+  state->pending_bytes += stat.size;
+  return true_v;
+}
+
+/* Hashes the files the walk found changed into the store. */
+static bool8_t walk_hash_pending(WalkState *state) {
+  VkrDepotWorkspace *workspace = state->workspace;
+  vkr_depot_progress_phase(workspace->progress, VKR_DEPOT_PHASE_SNAPSHOT,
+                           state->pending_count, state->pending_bytes);
+  for (uint32_t i = 0u; i < state->pending_count; ++i) {
+    if (vkr_depot_progress_canceled(workspace->progress)) {
+      return false_v;
+    }
+    VkrDepotIndexEntry *entry = &state->files->entries[state->pending[i]];
+    char absolute[VKR_DEPOT_PATH_CAPACITY];
+    uint8_t *data = NULL;
+    uint64_t size = 0u;
+    if (!vkr_bakery_path_join(absolute, sizeof(absolute), workspace->root,
+                              entry->path) ||
+        !vkr_bakery_read_file(absolute, WORKSPACE_FILE_MAX, &data, &size)) {
+      return false_v;
+    }
+    const bool8_t stored =
+        workspace_store_file(&workspace->store, data, size, &entry->blob);
+    free(data);
+    if (!stored) {
+      return false_v;
+    }
+    entry->size = size;
+    vkr_depot_progress_add(workspace->progress, 1u, size);
   }
   return true_v;
 }
@@ -630,14 +671,16 @@ bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
                                      VkrDepotFileList *out_files) {
   MemZero(out_files, sizeof(*out_files));
   WalkState state = {.workspace = workspace, .files = out_files};
-  if (!walk_load_ignore(&state) ||
-      !vkr_bakery_list_directory(workspace->root, walk_visit, &state) ||
-      state.failed) {
-    free(state.ignore_text);
+  const bool8_t walked =
+      walk_load_ignore(&state) &&
+      vkr_bakery_list_directory(workspace->root, walk_visit, &state) &&
+      !state.failed && walk_hash_pending(&state);
+  free(state.ignore_text);
+  free(state.pending);
+  if (!walked) {
     vkr_depot_file_list_free(out_files);
     return false_v;
   }
-  free(state.ignore_text);
   vkr_depot_file_list_sort(out_files);
   if (!workspace_build_tree(&workspace->store, out_files, 0u, out_files->count,
                             0u, out_tree)) {
@@ -783,7 +826,10 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
     return false_v;
   }
   VkrDepotFileList index = {0};
-  bool8_t ok = true_v;
+  uint32_t *writes = malloc((size_t)Max(target.count, 1u) * sizeof(uint32_t));
+  uint32_t write_count = 0u;
+  uint64_t write_bytes = 0u;
+  bool8_t ok = writes != NULL;
   for (uint32_t i = 0u; i < target.count && ok; ++i) {
     VkrDepotIndexEntry *entry = &target.entries[i];
     char absolute[VKR_DEPOT_PATH_CAPACITY];
@@ -811,12 +857,29 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
                                    known->mtime_ns, &entry->blob);
       continue;
     }
-    /* Written without a flush: -1 makes the next snapshot hash it, so a file
-       a crash tore shows as a change instead of passing as current. */
-    ok = vkr_depot_write_blob(&workspace->store, &entry->blob, absolute) &&
+    writes[write_count++] = i;
+    write_bytes += entry->size;
+  }
+
+  /* Written without a flush: -1 makes the next snapshot hash it, so a file a
+     crash tore shows as a change instead of passing as current. */
+  vkr_depot_progress_phase(workspace->progress, VKR_DEPOT_PHASE_CHECKOUT,
+                           write_count, write_bytes);
+  for (uint32_t i = 0u; i < write_count && ok; ++i) {
+    if (vkr_depot_progress_canceled(workspace->progress)) {
+      ok = false_v;
+      break;
+    }
+    const VkrDepotIndexEntry *entry = &target.entries[writes[i]];
+    char absolute[VKR_DEPOT_PATH_CAPACITY];
+    ok = vkr_bakery_path_join(absolute, sizeof(absolute), workspace->root,
+                              entry->path) &&
+         vkr_depot_write_blob(&workspace->store, &entry->blob, absolute) &&
          vkr_depot_file_list_add(&index, entry->path, entry->size, -1,
                                  &entry->blob);
+    vkr_depot_progress_add(workspace->progress, 1u, entry->size);
   }
+
   /* Tracked files the target lacks leave, unless they are local changes. */
   for (uint32_t i = 0u; i < workspace->index.count && ok; ++i) {
     const char *path = workspace->index.entries[i].path;
@@ -829,6 +892,7 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
                               path) &&
          vkr_bakery_remove_file(absolute);
   }
+  free(writes);
   vkr_depot_file_list_free(&target);
   if (!ok) {
     vkr_depot_file_list_free(&index);

@@ -276,7 +276,8 @@ VkrNetService vkr_depot_service_template(void) {
 bool8_t vkr_depot_send(VkrNetSession *session, VkrNetConnectionId connection,
                        VkrDepotMessageId id, const void *message,
                        uint64_t now_us) {
-  static uint8_t bytes[DEPOT_ENCODE_MAX];
+  /* On the stack: a server thread and client threads send at once. */
+  uint8_t bytes[DEPOT_ENCODE_MAX];
   uint32_t size = 0u;
   const VkrWireMessage *descriptor = vkr_depot_message(id);
   if (!descriptor || vkr_wire_encode(descriptor, message, bytes, sizeof(bytes),
@@ -303,4 +304,15 @@ bool8_t vkr_depot_branch_valid(const char *name) {
     }
   }
   return true_v;
+}
+
+uint32_t vkr_depot_display_name_clean(const uint8_t *bytes, uint32_t size,
+                                      char out[VKR_DEPOT_DISPLAY_NAME]) {
+  const uint32_t length = Min(size, VKR_DEPOT_DISPLAY_NAME - 1u);
+  for (uint32_t i = 0u; i < length; ++i) {
+    const uint8_t c = bytes[i];
+    out[i] = c >= 0x20u && c < 0x7fu ? (char)c : '?';
+  }
+  out[length] = '\0';
+  return length;
 }

@@ -92,6 +92,10 @@ void vkr_bakery_temp_path(char *out, uint32_t capacity, const char *directory,
 
 bool8_t vkr_bakery_executable_path(char *out, uint32_t capacity);
 bool8_t vkr_bakery_user_cache_directory(char *out, uint32_t capacity);
+/** The per-user VKR data folder the editor keeps its settings in, which
+    cache cleanup leaves alone: `%LOCALAPPDATA%/VKR` on Windows,
+    `~/Library/Application Support/VKR` elsewhere. Not created. */
+bool8_t vkr_bakery_user_data_directory(char *out, uint32_t capacity);
 uint64_t vkr_bakery_physical_memory_bytes(void);
 uint32_t vkr_bakery_logical_cores(void);
 

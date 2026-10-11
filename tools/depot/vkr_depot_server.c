@@ -13,6 +13,8 @@
 /* Object bytes that arrived before their PUT. */
 #define SERVER_ORPHAN_MAX 1024u
 #define SERVER_ACCESS_MAX 4096u
+/* How often the server looks for a changed access file. */
+#define SERVER_ACCESS_POLL_US 1000000u
 
 typedef struct ServerSendItem {
   uint64_t request;
@@ -62,6 +64,18 @@ typedef struct ServerAccess {
   uint8_t role;
 } ServerAccess;
 
+typedef struct ServerRequest {
+  bool8_t live;
+  /* Set to NONE by the owner: further tries stay out of the list. */
+  bool8_t denied;
+  VkrDepotAccessRequest request;
+} ServerRequest;
+
+typedef struct RefNames {
+  char names[VKR_DEPOT_REFS_MAX][VKR_DEPOT_BRANCH_NAME];
+  uint32_t count;
+} RefNames;
+
 struct VkrDepotServer {
   VkrAllocator *allocator;
   VkrNetCore *core;
@@ -74,6 +88,14 @@ struct VkrDepotServer {
   uint32_t lock_capacity;
   ServerAccess access[SERVER_ACCESS_MAX];
   uint32_t access_count;
+  /* The access file as last read: whether it existed, its time and size. */
+  bool8_t access_exists;
+  int64_t access_mtime_ns;
+  uint64_t access_size;
+  uint64_t access_checked_us;
+  ServerRequest requests[VKR_DEPOT_REQUESTS_MAX];
+  VkrDepotServerStats stats;
+  RefNames ref_names;
   VkrDepotMessage message;
   VkrDepotMessage reply;
 };
@@ -157,22 +179,41 @@ bool8_t vkr_depot_server_key(const char *store_root, VkrNetKeyPair *out_keys) {
                                       VKR_NET_KEY_SIZE);
 }
 
+/* The access file's existence, time and size, as the poll compares them. */
+static void server_access_stat(const VkrDepotServer *server,
+                               bool8_t *out_exists, int64_t *out_mtime_ns,
+                               uint64_t *out_size) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  VkrBakeryStat stat = {0};
+  *out_exists = server_file(server->store.root, "access", path, sizeof(path)) &&
+                vkr_bakery_stat(path, &stat) && stat.exists;
+  *out_mtime_ns = *out_exists ? stat.mtime_ns : 0;
+  *out_size = *out_exists ? stat.size : 0u;
+}
+
+/* Reads the access file; a file that fails to read leaves the list as it
+   was, so a passing failure locks nobody out. */
 static bool8_t server_access_load(VkrDepotServer *server) {
   char path[VKR_DEPOT_PATH_CAPACITY];
-  server->access_count = 0u;
   if (!server_file(server->store.root, "access", path, sizeof(path))) {
     return false_v;
   }
-  if (!vkr_bakery_is_file(path)) {
-    return true_v;
-  }
+  bool8_t exists = false_v;
+  int64_t mtime_ns = 0;
+  uint64_t file_size = 0u;
+  server_access_stat(server, &exists, &mtime_ns, &file_size);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
-  if (!vkr_bakery_read_file(path, SERVER_ACCESS_MAX * 33u, &bytes, &size) ||
-      size % 33u != 0u) {
+  if (exists &&
+      (!vkr_bakery_read_file(path, SERVER_ACCESS_MAX * 33u, &bytes, &size) ||
+       size % 33u != 0u)) {
     free(bytes);
     return false_v;
   }
+  server->access_exists = exists;
+  server->access_mtime_ns = mtime_ns;
+  server->access_size = file_size;
+  server->access_count = 0u;
   for (uint64_t offset = 0u; offset < size; offset += 33u) {
     ServerAccess *entry = &server->access[server->access_count++];
     memcpy(entry->key, bytes + offset, 32u);
@@ -589,31 +630,176 @@ void vkr_depot_server_on_event(VkrDepotServer *server,
   }
 }
 
+static ServerRequest *server_request_find(VkrDepotServer *server,
+                                          const uint8_t key[32]) {
+  for (uint32_t i = 0u; i < VKR_DEPOT_REQUESTS_MAX; ++i) {
+    ServerRequest *slot = &server->requests[i];
+    if (slot->live && MemCompare(slot->request.key, key, 32u) == 0) {
+      return slot;
+    }
+  }
+  return NULL;
+}
+
+/* The request slot of `key`; a new key takes a free slot or the oldest. */
+static ServerRequest *server_request_slot(VkrDepotServer *server,
+                                          const uint8_t key[32]) {
+  ServerRequest *slot = server_request_find(server, key);
+  if (slot) {
+    return slot;
+  }
+  for (uint32_t i = 0u; !slot && i < VKR_DEPOT_REQUESTS_MAX; ++i) {
+    if (!server->requests[i].live) {
+      slot = &server->requests[i];
+    }
+  }
+  if (!slot) {
+    slot = &server->requests[0];
+    for (uint32_t i = 1u; i < VKR_DEPOT_REQUESTS_MAX; ++i) {
+      if (server->requests[i].request.time_us < slot->request.time_us) {
+        slot = &server->requests[i];
+      }
+    }
+  }
+  MemZero(slot, sizeof(*slot));
+  slot->live = true_v;
+  MemCopy(slot->request.key, key, 32u);
+  return slot;
+}
+
+/* Records a refused key's try. */
+static void server_request_note(VkrDepotServer *server, const uint8_t key[32],
+                                const char *name,
+                                const VkrNetAddress *address) {
+  ServerRequest *slot = server_request_slot(server, key);
+  snprintf(slot->request.name, sizeof(slot->request.name), "%s", name);
+  slot->request.address = *address;
+  slot->request.time_us = server_unix_us();
+  slot->request.tries += 1u;
+}
+
 void vkr_depot_server_accept(void *context, const VkrNetAddress *address,
                              const uint8_t peer_key[32],
                              const uint8_t *credential,
                              uint32_t credential_size,
                              VkrNetAcceptResult *out_result) {
-  (void)address;
-  (void)credential;
-  (void)credential_size;
   VkrDepotServer *server = context;
   const uint32_t role = server_role(server, peer_key);
   if (role == VKR_DEPOT_ROLE_NONE) {
+    char name[VKR_DEPOT_DISPLAY_NAME];
+    (void)vkr_depot_display_name_clean(credential, credential_size, name);
+    server_request_note(server, peer_key, name, address);
     out_result->code = VKR_NET_CLOSE_ACCESS_DENIED;
     return;
   }
   out_result->user = role;
 }
 
+uint32_t vkr_depot_server_requests(const VkrDepotServer *server,
+                                   VkrDepotAccessRequest *out,
+                                   uint32_t capacity) {
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < VKR_DEPOT_REQUESTS_MAX && count < capacity; ++i) {
+    const ServerRequest *slot = &server->requests[i];
+    if (!slot->live || slot->denied) {
+      continue;
+    }
+    /* Insertion by time, newest first. */
+    uint32_t at = count;
+    while (at > 0u && out[at - 1u].time_us < slot->request.time_us) {
+      out[at] = out[at - 1u];
+      at -= 1u;
+    }
+    out[at] = slot->request;
+    count += 1u;
+  }
+  return count;
+}
+
+uint32_t vkr_depot_server_access(const VkrDepotServer *server,
+                                 VkrDepotAccessEntry *out, uint32_t capacity) {
+  for (uint32_t i = 0u; i < server->access_count && i < capacity; ++i) {
+    MemCopy(out[i].key, server->access[i].key, 32u);
+    out[i].role = (VkrDepotRole)server->access[i].role;
+  }
+  return server->access_count;
+}
+
+/* Gives every live connection its key's current role and closes the ones
+   left without one; drops requests of keys that now have a role. */
+static void server_apply_access(VkrDepotServer *server, uint64_t now_us) {
+  for (uint32_t i = 0u; i < SERVER_PEER_MAX; ++i) {
+    ServerPeer *peer = &server->peers[i];
+    if (!peer->live) {
+      continue;
+    }
+    const uint32_t role = server_role(server, peer->key);
+    if (role == VKR_DEPOT_ROLE_NONE && peer->role != VKR_DEPOT_ROLE_NONE) {
+      vkr_net_core_close(server->core, peer->connection,
+                         VKR_NET_CLOSE_ACCESS_DENIED, now_us);
+    }
+    peer->role = role;
+  }
+  for (uint32_t i = 0u; i < VKR_DEPOT_REQUESTS_MAX; ++i) {
+    ServerRequest *slot = &server->requests[i];
+    if (slot->live &&
+        server_role(server, slot->request.key) != VKR_DEPOT_ROLE_NONE) {
+      MemZero(slot, sizeof(*slot));
+    }
+  }
+}
+
+bool8_t vkr_depot_server_set_role(VkrDepotServer *server, const uint8_t key[32],
+                                  VkrDepotRole role, uint64_t now_us) {
+  if ((uint32_t)role > VKR_DEPOT_ROLE_ADMIN ||
+      !vkr_depot_access_set(server->store.root, key, role) ||
+      !server_access_load(server)) {
+    return false_v;
+  }
+  /* A denied key keeps a hidden slot, so its retries stay out of the list;
+     a key allowed earlier has none yet. */
+  if (role == VKR_DEPOT_ROLE_NONE) {
+    ServerRequest *slot = server_request_slot(server, key);
+    slot->denied = true_v;
+    if (!slot->request.time_us) {
+      slot->request.time_us = server_unix_us();
+    }
+  }
+  server_apply_access(server, now_us);
+  return true_v;
+}
+
+bool8_t vkr_depot_server_reload_access(VkrDepotServer *server,
+                                       uint64_t now_us) {
+  if (!server_access_load(server)) {
+    return false_v;
+  }
+  server_apply_access(server, now_us);
+  return true_v;
+}
+
+void vkr_depot_server_close_peers(VkrDepotServer *server, uint16_t code,
+                                  uint64_t now_us) {
+  for (uint32_t i = 0u; i < SERVER_PEER_MAX; ++i) {
+    if (server->peers[i].live) {
+      vkr_net_core_close(server->core, server->peers[i].connection, code,
+                         now_us);
+    }
+  }
+}
+
+VkrDepotServerStats vkr_depot_server_stats(const VkrDepotServer *server) {
+  VkrDepotServerStats stats = server->stats;
+  stats.peers = 0u;
+  for (uint32_t i = 0u; i < SERVER_PEER_MAX; ++i) {
+    stats.peers += server->peers[i].live ? 1u : 0u;
+  }
+  return stats;
+}
+
 // =============================================================================
 // Requests
 // =============================================================================
-
-typedef struct RefNames {
-  char names[VKR_DEPOT_REFS_MAX][VKR_DEPOT_BRANCH_NAME];
-  uint32_t count;
-} RefNames;
 
 static bool8_t server_ref_name_visit(void *context, const char *name,
                                      bool8_t is_directory) {
@@ -634,20 +820,20 @@ static void server_on_refs(VkrDepotServer *server, ServerPeer *peer,
   MemZero(reply, sizeof(*reply));
   reply->request = request;
   char refs[VKR_DEPOT_PATH_CAPACITY];
-  static RefNames names;
-  names.count = 0u;
+  RefNames *names = &server->ref_names;
+  names->count = 0u;
   if (server_file(server->store.root, "refs", refs, sizeof(refs)) &&
       vkr_bakery_is_directory(refs)) {
     /* More than VKR_DEPOT_REFS_MAX branches: the first ones answer. */
-    (void)vkr_bakery_list_directory(refs, server_ref_name_visit, &names);
+    (void)vkr_bakery_list_directory(refs, server_ref_name_visit, names);
   }
-  for (uint32_t i = 0u; i < names.count; ++i) {
+  for (uint32_t i = 0u; i < names->count; ++i) {
     VkrDepotId commit;
-    if (!vkr_depot_ref_read(server->store.root, names.names[i], &commit)) {
+    if (!vkr_depot_ref_read(server->store.root, names->names[i], &commit)) {
       continue;
     }
     VkrDepotRefWire *ref = &reply->refs[reply->ref_count++];
-    snprintf(ref->name, sizeof(ref->name), "%s", names.names[i]);
+    snprintf(ref->name, sizeof(ref->name), "%s", names->names[i]);
     memcpy(ref->commit, commit.bytes, VKR_DEPOT_ID_SIZE);
   }
   (void)vkr_depot_send(server->session, peer->connection, VKR_DEPOT_MSG_REFS,
@@ -964,10 +1150,13 @@ static void server_service_event(void *context, VkrNetConnectionId connection,
                                  uint64_t now) {
   VkrDepotServer *server = context;
   ServerPeer *peer = server_peer(server, connection);
-  if (!peer || event->type != VKR_NET_EVENT_MESSAGE) {
+  /* A connection whose key lost its role is closing: it gets nothing. */
+  if (!peer || peer->role == VKR_DEPOT_ROLE_NONE ||
+      event->type != VKR_NET_EVENT_MESSAGE) {
     return;
   }
   if (channel == VKR_DEPOT_DATA_CHANNEL) {
+    server->stats.bytes_in += event->size;
     server_on_data(server, peer, event, now);
     return;
   }
@@ -1110,10 +1299,25 @@ static bool8_t server_send_item(VkrDepotServer *server, ServerPeer *peer,
       server->session, peer->connection, VKR_NET_SERVICE_DEPOT,
       VKR_DEPOT_DATA_CHANNEL, stored, (uint32_t)size, &options, now);
   free(stored);
+  if (status == VKR_NET_SEND_OK) {
+    server->stats.bytes_out += size;
+  }
   return status != VKR_NET_SEND_QUEUE_FULL;
 }
 
 void vkr_depot_server_update(VkrDepotServer *server, uint64_t now_us) {
+  /* `vkr_depot access` or another process changed the access file. */
+  if (now_us - server->access_checked_us >= SERVER_ACCESS_POLL_US) {
+    server->access_checked_us = now_us;
+    bool8_t exists = false_v;
+    int64_t mtime_ns = 0;
+    uint64_t size = 0u;
+    server_access_stat(server, &exists, &mtime_ns, &size);
+    if (exists != server->access_exists ||
+        mtime_ns != server->access_mtime_ns || size != server->access_size) {
+      (void)vkr_depot_server_reload_access(server, now_us);
+    }
+  }
   for (uint32_t i = 0u; i < SERVER_PEER_MAX; ++i) {
     ServerPeer *peer = &server->peers[i];
     if (!peer->live) {

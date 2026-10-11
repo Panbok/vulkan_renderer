@@ -806,6 +806,29 @@ bool8_t vkr_bakery_user_cache_directory(char *out, uint32_t capacity) {
 #endif
 }
 
+bool8_t vkr_bakery_user_data_directory(char *out, uint32_t capacity) {
+#if defined(_WIN32)
+  wchar_t wide[4096];
+  const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", wide, 4096u);
+  char base[VKR_BAKERY_PATH_CAPACITY];
+  if (!length || length >= 4096u ||
+      !WideCharToMultiByte(CP_UTF8, 0, wide, -1, base, (int)sizeof(base), NULL,
+                           NULL)) {
+    return false_v;
+  }
+  vkr_bakery_path_portable(base);
+  return vkr_bakery_path_join(out, capacity, base, "VKR");
+#else
+  /* The editor's folder on every POSIX host (editor_project_store.c). */
+  const char *home = getenv("HOME");
+  if (!home || !home[0]) {
+    return false_v;
+  }
+  return (uint32_t)snprintf(out, capacity, "%s/Library/Application Support/VKR",
+                            home) < capacity;
+#endif
+}
+
 uint64_t vkr_bakery_physical_memory_bytes(void) {
 #if defined(_WIN32)
   MEMORYSTATUSEX status = {.dwLength = sizeof(status)};

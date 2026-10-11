@@ -6,6 +6,7 @@
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
 #include "vkr_depot_server.h"
+#include "vkr_depot_sync.h"
 #include "vkr_depot_workspace.h"
 #include "vkr_depot_zstd.h"
 #include "vkr_net_sim.h"
@@ -403,6 +404,15 @@ typedef struct DepotWorld {
   VkrNetSession *client_session;
   VkrNetConnectionId connection;
   bool8_t connected;
+  bool8_t closed;
+  uint16_t close_code;
+  VkrNetAddress server_address;
+  uint8_t server_key[32];
+  /* The credential each connect sends; empty for none. */
+  char name[VKR_DEPOT_DISPLAY_NAME];
+  /* Canceled once a fetch has received this many chunk bytes; zero never. */
+  VkrDepotProgress *cancel_progress;
+  uint64_t cancel_after_bytes;
 } DepotWorld;
 
 static void depot_world_accept(void *context, const VkrNetAddress *address,
@@ -431,12 +441,23 @@ static bool8_t depot_world_pump(void *context, int32_t timeout_ms) {
   }
   vkr_depot_server_update(world->server, world->now);
   while (vkr_net_core_poll(world->client_core, &event)) {
-    if (!vkr_net_session_dispatch(world->client_session, &event, world->now) &&
-        event.type == VKR_NET_EVENT_CONNECTED) {
+    if (vkr_net_session_dispatch(world->client_session, &event, world->now) ||
+        event.connection != world->connection) {
+      continue;
+    }
+    if (event.type == VKR_NET_EVENT_CONNECTED) {
       world->connected = true_v;
+    } else if (event.type == VKR_NET_EVENT_CLOSED) {
+      world->closed = true_v;
+      world->close_code = event.code;
     }
   }
   vkr_net_core_flush(world->client_core);
+  if (world->cancel_progress &&
+      vkr_depot_progress_read(world->cancel_progress).bytes_done >=
+          world->cancel_after_bytes) {
+    vkr_depot_progress_cancel(world->cancel_progress);
+  }
   return true_v;
 }
 
@@ -481,9 +502,32 @@ static void depot_world_init(DepotWorld *world, const char *store_root,
       vkr_net_sim_add(world->sim, world->client_core, &client_address);
   vkr_net_sim_set_link(world->sim, s, c, link);
   vkr_net_sim_set_link(world->sim, c, s, link);
+  world->server_address = server_address;
+  memcpy(world->server_key, server_config.static_keys.public_key, 32u);
   assert(vkr_net_core_connect(world->client_core, &server_address,
-                              server_config.static_keys.public_key, NULL, 0u,
-                              world->now, &world->connection));
+                              world->server_key, NULL, 0u, world->now,
+                              &world->connection));
+}
+
+/* Connects the client again, sending `name` as the credential, to the
+   server that kept running. */
+static void depot_world_reconnect(DepotWorld *world, const char *name) {
+  snprintf(world->name, sizeof(world->name), "%s", name);
+  world->connected = false_v;
+  world->closed = false_v;
+  world->close_code = 0u;
+  assert(vkr_net_core_connect(world->client_core, &world->server_address,
+                              world->server_key, (const uint8_t *)world->name,
+                              (uint32_t)strlen(world->name), world->now,
+                              &world->connection));
+}
+
+/* Pumps until the client connection opens or closes. */
+static void depot_world_settle(DepotWorld *world) {
+  for (uint32_t i = 0u; i < 20000u && !world->connected && !world->closed;
+       ++i) {
+    (void)depot_world_pump(world, 10);
+  }
 }
 
 static void depot_world_destroy(DepotWorld *world) {
@@ -576,6 +620,8 @@ static void test_depot_ignore(void) {
       vkr_depot_file_list_find(&files, ".vkreditor/projects/p/project.json"));
   vkr_depot_file_list_free(&files);
   vkr_depot_workspace_close(&workspace);
+  assert(vkr_bakery_remove_tree(root));
+  printf("  test_depot_ignore PASSED\n");
 }
 
 /* Fails when a push over a lossy path does not reach the server whole, a
@@ -728,6 +774,424 @@ static void test_depot_transfer(void) {
   printf("  test_depot_transfer PASSED\n");
 }
 
+/* A working copy of `store_root`'s `commit`, fetched and checked out over
+   the simulated network as `keys`. */
+static void depot_test_checkout(const char *store_root, VkrNetKeyPair *keys,
+                                VkrDepotWorkspace *workspace,
+                                const VkrDepotId *commit) {
+  const VkrNetSimLink link = {.latency_us = 2000u,
+                              .bandwidth = 100u * 1000u * 1000u};
+  DepotWorld world;
+  depot_world_init(&world, store_root, &link, keys);
+  VkrDepotClient *client = depot_world_client(&world, &workspace->store);
+  assert(client);
+  uint32_t kept = 0u;
+  char error[256];
+  assert(vkr_depot_fetch_checkout(workspace, client, commit,
+                                  VKR_DEPOT_CONFLICT_FAIL, &kept, NULL, error,
+                                  sizeof(error)));
+  vkr_depot_client_destroy(client);
+  depot_world_destroy(&world);
+}
+
+/* Uploads `commit` and moves main from `expected` to it. */
+static void depot_test_push(const char *store_root, VkrNetKeyPair *keys,
+                            VkrDepotWorkspace *workspace,
+                            const VkrDepotId *expected,
+                            const VkrDepotId *commit) {
+  const VkrNetSimLink link = {.latency_us = 2000u,
+                              .bandwidth = 100u * 1000u * 1000u};
+  DepotWorld world;
+  depot_world_init(&world, store_root, &link, keys);
+  VkrDepotClient *client = depot_world_client(&world, &workspace->store);
+  assert(client);
+  VkrDepotTransferStats stats = {0};
+  assert(vkr_depot_client_upload(client, commit, expected, &stats));
+  VkrDepotId current;
+  assert(vkr_depot_client_update_ref(client, "main", expected, commit,
+                                     &current) == VKR_DEPOT_REF_OK);
+  vkr_depot_client_destroy(client);
+  depot_world_destroy(&world);
+}
+
+static bool8_t depot_test_file_is(const char *root, const char *relative,
+                                  const char *text) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  const bool8_t ok = vkr_bakery_path_join(path, sizeof(path), root, relative) &&
+                     vkr_bakery_read_file(path, 1u << 20, &bytes, &size) &&
+                     size == strlen(text) && memcmp(bytes, text, size) == 0;
+  free(bytes);
+  return ok;
+}
+
+/* The change status shows for `path`, or 0 when it shows none. */
+static uint32_t depot_test_status_of(VkrDepotWorkspace *workspace,
+                                     const char *path) {
+  VkrDepotChangeList changes;
+  char error[256];
+  assert(vkr_depot_status(workspace, &changes, error, sizeof(error)));
+  uint32_t change = 0u;
+  for (uint32_t i = 0u; i < changes.count; ++i) {
+    if (strcmp(changes.entries[i].path, path) == 0) {
+      change = changes.entries[i].change;
+    }
+  }
+  vkr_depot_change_list_free(&changes);
+  return change;
+}
+
+/* Fails when an unknown key's refusal is not recorded as a request with the
+   name it sent, when a role given while the server runs does not let the
+   same key in without a restart, when NONE leaves its live connection open
+   or its request listed, or when a changed access file on disk is not
+   picked up by the running server. */
+static void test_depot_runtime_access(void) {
+  printf("  Running test_depot_runtime_access...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char carol_root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("access", store_root, sizeof(store_root));
+  depot_test_dir("carol", carol_root, sizeof(carol_root));
+  VkrNetKeyPair alice_keys, carol_keys;
+  vkr_net_keypair_generate(&alice_keys);
+  vkr_net_keypair_generate(&carol_keys);
+  assert(vkr_depot_access_set(store_root, alice_keys.public_key,
+                              VKR_DEPOT_ROLE_ADMIN));
+  VkrDepotWorkspace carol;
+  assert(vkr_depot_workspace_create(&carol, carol_root, NULL,
+                                    vkr_depot_zstd_codec()));
+  const VkrNetSimLink link = {.latency_us = 2000u,
+                              .bandwidth = 100u * 1000u * 1000u};
+  DepotWorld world;
+  depot_world_init(&world, store_root, &link, &carol_keys);
+  depot_world_settle(&world);
+  assert(world.closed && !world.connected);
+  /* The anonymous first try, then two named ones: one request. */
+  depot_world_reconnect(&world, "carol@laptop");
+  depot_world_settle(&world);
+  depot_world_reconnect(&world, "carol@laptop");
+  depot_world_settle(&world);
+  assert(world.closed && world.close_code == VKR_NET_CLOSE_ACCESS_DENIED);
+  VkrDepotAccessRequest requests[VKR_DEPOT_REQUESTS_MAX];
+  assert(vkr_depot_server_requests(world.server, requests,
+                                   VKR_DEPOT_REQUESTS_MAX) == 1u);
+  assert(memcmp(requests[0].key, carol_keys.public_key, 32u) == 0);
+  assert(strcmp(requests[0].name, "carol@laptop") == 0);
+  assert(requests[0].tries >= 3u);
+
+  /* Allowed at runtime: the same key gets in on its next try. */
+  assert(vkr_depot_server_set_role(world.server, carol_keys.public_key,
+                                   VKR_DEPOT_ROLE_READ, world.now));
+  assert(vkr_depot_server_requests(world.server, requests,
+                                   VKR_DEPOT_REQUESTS_MAX) == 0u);
+  VkrDepotAccessEntry entries[4];
+  assert(vkr_depot_server_access(world.server, entries, 4u) == 2u);
+  depot_world_reconnect(&world, "carol@laptop");
+  VkrDepotClient *client = depot_world_client(&world, &carol.store);
+  assert(client);
+  VkrDepotRef refs[4];
+  uint32_t ref_count = 0u;
+  assert(vkr_depot_client_refs(client, refs, 4u, &ref_count));
+
+  /* Denied: the live connection closes, a retry stays out of the list. */
+  assert(vkr_depot_server_set_role(world.server, carol_keys.public_key,
+                                   VKR_DEPOT_ROLE_NONE, world.now));
+  depot_world_settle(&world);
+  for (uint32_t i = 0u; i < 2000u && !world.closed; ++i) {
+    (void)depot_world_pump(&world, 10);
+  }
+  assert(world.closed);
+  depot_world_reconnect(&world, "carol@laptop");
+  depot_world_settle(&world);
+  assert(world.closed && !world.connected);
+  assert(vkr_depot_server_requests(world.server, requests,
+                                   VKR_DEPOT_REQUESTS_MAX) == 0u);
+
+  /* `vkr_depot access` writes the file; the running server reloads it. */
+  assert(vkr_depot_access_set(store_root, carol_keys.public_key,
+                              VKR_DEPOT_ROLE_WRITE));
+  for (uint32_t i = 0u; i < 150u; ++i) {
+    (void)depot_world_pump(&world, 10);
+  }
+  depot_world_reconnect(&world, "carol@laptop");
+  depot_world_settle(&world);
+  assert(world.connected);
+  vkr_depot_client_destroy(client);
+  depot_world_destroy(&world);
+  vkr_depot_workspace_close(&carol);
+  assert(vkr_bakery_remove_tree(store_root));
+  assert(vkr_bakery_remove_tree(carol_root));
+  printf("  test_depot_runtime_access PASSED\n");
+}
+
+/* Fails when a conflicting path does not fail the checkout unchanged under
+   FAIL, when TAKE_THEIRS keeps the local content or loses a local change
+   the commit did not touch, or when KEEP_MINE overwrites the local content
+   or leaves the base behind instead of showing the content as a change. */
+static void test_depot_conflicts(void) {
+  printf("  Running test_depot_conflicts...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char alice_root[VKR_DEPOT_PATH_CAPACITY];
+  char fail_root[VKR_DEPOT_PATH_CAPACITY];
+  char theirs_root[VKR_DEPOT_PATH_CAPACITY];
+  char mine_root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("conflict_server", store_root, sizeof(store_root));
+  depot_test_dir("conflict_alice", alice_root, sizeof(alice_root));
+  depot_test_dir("conflict_fail", fail_root, sizeof(fail_root));
+  depot_test_dir("conflict_theirs", theirs_root, sizeof(theirs_root));
+  depot_test_dir("conflict_mine", mine_root, sizeof(mine_root));
+  VkrNetKeyPair alice_keys, bob_keys;
+  vkr_net_keypair_generate(&alice_keys);
+  vkr_net_keypair_generate(&bob_keys);
+  assert(vkr_depot_access_set(store_root, alice_keys.public_key,
+                              VKR_DEPOT_ROLE_WRITE));
+  assert(vkr_depot_access_set(store_root, bob_keys.public_key,
+                              VKR_DEPOT_ROLE_WRITE));
+
+  VkrDepotWorkspace alice;
+  assert(vkr_depot_workspace_create(&alice, alice_root, NULL,
+                                    vkr_depot_zstd_codec()));
+  depot_test_write(alice_root, "a.txt", "base", 4u);
+  depot_test_write(alice_root, "b.txt", "base", 4u);
+  VkrDepotId first;
+  VkrDepotId second;
+  VkrDepotFileList files;
+  const VkrDepotId zero = {0};
+  depot_test_commit(&alice, "first", NULL, &first, &files);
+  vkr_depot_file_list_free(&files);
+  depot_test_push(store_root, &alice_keys, &alice, &zero, &first);
+
+  /* Three working copies of the first commit change a.txt and b.txt. */
+  const char *roots[3] = {fail_root, theirs_root, mine_root};
+  VkrDepotWorkspace copies[3];
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    assert(vkr_depot_workspace_create(&copies[i], roots[i], NULL,
+                                      vkr_depot_zstd_codec()));
+    depot_test_checkout(store_root, &bob_keys, &copies[i], &first);
+    depot_test_write(roots[i], "a.txt", "mine", 4u);
+    depot_test_write(roots[i], "b.txt", "local", 5u);
+  }
+
+  /* Alice changes a.txt only. */
+  depot_test_write(alice_root, "a.txt", "theirs", 6u);
+  depot_test_commit(&alice, "second", &first, &second, &files);
+  vkr_depot_file_list_free(&files);
+  depot_test_push(store_root, &alice_keys, &alice, &first, &second);
+
+  const VkrDepotConflictPolicy policies[3] = {VKR_DEPOT_CONFLICT_FAIL,
+                                              VKR_DEPOT_CONFLICT_TAKE_THEIRS,
+                                              VKR_DEPOT_CONFLICT_KEEP_MINE};
+  const VkrNetSimLink link = {.latency_us = 2000u,
+                              .bandwidth = 100u * 1000u * 1000u};
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    DepotWorld world;
+    depot_world_init(&world, store_root, &link, &bob_keys);
+    VkrDepotClient *client = depot_world_client(&world, &copies[i].store);
+    assert(client);
+    uint32_t kept = 0u;
+    VkrDepotChangeList conflicts;
+    char error[256];
+    const bool8_t ok =
+        vkr_depot_fetch_checkout(&copies[i], client, &second, policies[i],
+                                 &kept, &conflicts, error, sizeof(error));
+    assert(conflicts.count == 1u &&
+           strcmp(conflicts.entries[0].path, "a.txt") == 0 &&
+           conflicts.entries[0].change == VKR_DEPOT_CHANGE_MODIFIED);
+    vkr_depot_change_list_free(&conflicts);
+    vkr_depot_client_destroy(client);
+    depot_world_destroy(&world);
+    assert(depot_test_file_is(roots[i], "b.txt", "local"));
+    if (policies[i] == VKR_DEPOT_CONFLICT_FAIL) {
+      assert(!ok && vkr_depot_id_equal(&copies[i].base, &first));
+      assert(depot_test_file_is(roots[i], "a.txt", "mine"));
+      continue;
+    }
+    assert(ok && vkr_depot_id_equal(&copies[i].base, &second));
+    assert(depot_test_status_of(&copies[i], "b.txt") ==
+           VKR_DEPOT_CHANGE_MODIFIED);
+    if (policies[i] == VKR_DEPOT_CONFLICT_TAKE_THEIRS) {
+      assert(kept == 1u);
+      assert(depot_test_file_is(roots[i], "a.txt", "theirs"));
+      assert(depot_test_status_of(&copies[i], "a.txt") == 0u);
+    } else {
+      assert(kept == 2u);
+      assert(depot_test_file_is(roots[i], "a.txt", "mine"));
+      assert(depot_test_status_of(&copies[i], "a.txt") ==
+             VKR_DEPOT_CHANGE_MODIFIED);
+    }
+  }
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    vkr_depot_workspace_close(&copies[i]);
+    assert(vkr_bakery_remove_tree(roots[i]));
+  }
+  vkr_depot_workspace_close(&alice);
+  assert(vkr_bakery_remove_tree(store_root));
+  assert(vkr_bakery_remove_tree(alice_root));
+  printf("  test_depot_conflicts PASSED\n");
+}
+
+/* Fails when a cancel does not stop a fetch, when the canceled fetch
+   leaves the working copy on another base or with files, or when a later
+   fetch of the same commit cannot complete it, including over files a
+   canceled checkout already wrote. */
+static void test_depot_cancel(void) {
+  printf("  Running test_depot_cancel...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char alice_root[VKR_DEPOT_PATH_CAPACITY];
+  char bob_root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("cancel_server", store_root, sizeof(store_root));
+  depot_test_dir("cancel_alice", alice_root, sizeof(alice_root));
+  depot_test_dir("cancel_bob", bob_root, sizeof(bob_root));
+  VkrNetKeyPair alice_keys, bob_keys;
+  vkr_net_keypair_generate(&alice_keys);
+  vkr_net_keypair_generate(&bob_keys);
+  assert(vkr_depot_access_set(store_root, alice_keys.public_key,
+                              VKR_DEPOT_ROLE_WRITE));
+  assert(vkr_depot_access_set(store_root, bob_keys.public_key,
+                              VKR_DEPOT_ROLE_READ));
+  static uint8_t big[4000000];
+  depot_test_random(big, sizeof(big));
+  depot_test_write(alice_root, "textures/big.bin", big, sizeof(big));
+  depot_test_write(alice_root, "scene.json", "{}", 2u);
+  VkrDepotWorkspace alice;
+  assert(vkr_depot_workspace_create(&alice, alice_root, NULL,
+                                    vkr_depot_zstd_codec()));
+  VkrDepotId commit;
+  VkrDepotFileList files;
+  const VkrDepotId zero = {0};
+  depot_test_commit(&alice, "first", NULL, &commit, &files);
+  vkr_depot_file_list_free(&files);
+  depot_test_push(store_root, &alice_keys, &alice, &zero, &commit);
+
+  VkrDepotWorkspace bob;
+  assert(
+      vkr_depot_workspace_create(&bob, bob_root, NULL, vkr_depot_zstd_codec()));
+  VkrDepotProgress progress;
+  vkr_depot_progress_reset(&progress);
+  bob.progress = &progress;
+  const VkrNetSimLink link = {.latency_us = 5000u,
+                              .bandwidth = 20u * 1000u * 1000u};
+  DepotWorld world;
+  depot_world_init(&world, store_root, &link, &bob_keys);
+  VkrDepotClient *client = depot_world_client(&world, &bob.store);
+  assert(client);
+  world.cancel_progress = &progress;
+  world.cancel_after_bytes = 1000000u;
+  uint32_t kept = 0u;
+  char error[256];
+  assert(!vkr_depot_fetch_checkout(&bob, client, &commit,
+                                   VKR_DEPOT_CONFLICT_FAIL, &kept, NULL, error,
+                                   sizeof(error)));
+  assert(strcmp(error, "canceled") == 0);
+  const VkrDepotProgressView view = vkr_depot_progress_read(&progress);
+  assert(view.canceled && view.phase == VKR_DEPOT_PHASE_FETCH &&
+         view.bytes_done < sizeof(big));
+  assert(vkr_depot_id_zero(&bob.base) && bob.index.count == 0u);
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(path, sizeof(path), bob_root, "scene.json"));
+  assert(!vkr_bakery_is_file(path));
+
+  /* A canceled checkout leaves some of the commit's files written. */
+  depot_test_write(bob_root, "scene.json", "{}", 2u);
+  world.cancel_progress = NULL;
+  vkr_depot_progress_reset(&progress);
+  if (!vkr_depot_fetch_checkout(&bob, client, &commit, VKR_DEPOT_CONFLICT_FAIL,
+                                &kept, NULL, error, sizeof(error))) {
+    printf("    resumed fetch failed: %s\n", error);
+    assert(false && "resumed fetch");
+  }
+  assert(vkr_depot_id_equal(&bob.base, &commit) && kept == 0u);
+  assert(vkr_depot_progress_read(&progress).phase == VKR_DEPOT_PHASE_DONE);
+  char a[VKR_DEPOT_PATH_CAPACITY];
+  char b[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(a, sizeof(a), alice_root, "textures/big.bin"));
+  assert(vkr_bakery_path_join(b, sizeof(b), bob_root, "textures/big.bin"));
+  assert(depot_test_files_equal(a, b));
+  vkr_depot_client_destroy(client);
+  depot_world_destroy(&world);
+  vkr_depot_workspace_close(&bob);
+  vkr_depot_workspace_close(&alice);
+  assert(vkr_bakery_remove_tree(store_root));
+  assert(vkr_bakery_remove_tree(alice_root));
+  assert(vkr_bakery_remove_tree(bob_root));
+  printf("  test_depot_cancel PASSED\n");
+}
+
+#if defined(_WIN32)
+#define DEPOT_TEST_HOME_VARIABLE "LOCALAPPDATA"
+#else
+#define DEPOT_TEST_HOME_VARIABLE "HOME"
+#endif
+
+static void depot_test_setenv(const char *name, const char *value) {
+#if defined(_WIN32)
+  assert(_putenv_s(name, value ? value : "") == 0);
+#else
+  if (value) {
+    assert(setenv(name, value, 1) == 0);
+  } else {
+    assert(unsetenv(name) == 0);
+  }
+#endif
+}
+
+/* Fails when a key in the old cache folder is not carried to the user data
+   folder, when the carried key differs (access lists naming it would stop
+   matching), or when a later run without the old file makes another key.
+   Runs under a temporary home, so the user's real keys stay untouched. */
+static void test_depot_identity_migration(void) {
+  printf("  Running test_depot_identity_migration...\n");
+  char home[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("identity_home", home, sizeof(home));
+  char saved_home[VKR_DEPOT_PATH_CAPACITY] = {0};
+  char saved_identity[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const char *home_value = getenv(DEPOT_TEST_HOME_VARIABLE);
+  const char *identity_value = getenv("VKR_DEPOT_IDENTITY");
+  const bool8_t had_home = home_value != NULL;
+  const bool8_t had_identity = identity_value && identity_value[0];
+  snprintf(saved_home, sizeof(saved_home), "%s", had_home ? home_value : "");
+  snprintf(saved_identity, sizeof(saved_identity), "%s",
+           had_identity ? identity_value : "");
+  depot_test_setenv(DEPOT_TEST_HOME_VARIABLE, home);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", NULL);
+
+  char legacy_dir[VKR_DEPOT_PATH_CAPACITY];
+  char legacy[VKR_DEPOT_PATH_CAPACITY];
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_user_cache_directory(legacy_dir, sizeof(legacy_dir)));
+  assert(strncmp(legacy_dir, home, strlen(home)) == 0);
+  assert(vkr_bakery_path_join(legacy, sizeof(legacy), legacy_dir,
+                              "vkr/depot/identity.key"));
+  assert(vkr_depot_identity_path(path, sizeof(path)));
+  assert(strncmp(path, home, strlen(home)) == 0 && strcmp(path, legacy) != 0);
+  VkrNetKeyPair old_keys;
+  vkr_net_keypair_generate(&old_keys);
+  char directory[VKR_DEPOT_PATH_CAPACITY];
+  vkr_bakery_path_parent(directory, sizeof(directory), legacy);
+  assert(vkr_bakery_make_directories(directory));
+  assert(vkr_bakery_write_file_atomic(legacy, old_keys.secret_key,
+                                      VKR_NET_KEY_SIZE));
+
+  VkrNetKeyPair keys;
+  assert(vkr_depot_identity(&keys, false_v));
+  assert(memcmp(keys.public_key, old_keys.public_key, 32u) == 0);
+  assert(vkr_bakery_is_file(path) && vkr_bakery_is_file(legacy));
+  /* Cache cleanup removes the old file; the key stays the same. */
+  assert(vkr_bakery_remove_file(legacy));
+  assert(vkr_depot_identity(&keys, true_v));
+  assert(memcmp(keys.public_key, old_keys.public_key, 32u) == 0);
+
+  char name[VKR_DEPOT_DISPLAY_NAME];
+  vkr_depot_display_name(name);
+  assert(name[0] && strchr(name, '@'));
+
+  depot_test_setenv(DEPOT_TEST_HOME_VARIABLE, had_home ? saved_home : NULL);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
+  assert(vkr_bakery_remove_tree(home));
+  printf("  test_depot_identity_migration PASSED\n");
+}
+
 bool32_t run_depot_tests(void) {
   /* Unbuffered, so a stopped run shows the test it stopped in. */
   setvbuf(stdout, NULL, _IONBF, 0);
@@ -739,6 +1203,10 @@ bool32_t run_depot_tests(void) {
   test_depot_workspace();
   test_depot_ignore();
   test_depot_transfer();
+  test_depot_runtime_access();
+  test_depot_conflicts();
+  test_depot_cancel();
+  test_depot_identity_migration();
   printf("--- Asset depot tests completed ---\n");
   return true;
 }

@@ -1,6 +1,7 @@
 #include "vkr_depot_sync.h"
 
 #include "vkr_bakery_os.h"
+#include "vkr_depot_discovery.h"
 #include "vkr_net_crypto.h"
 #include "vkr_net_host.h"
 #include "vkr_net_session.h"
@@ -10,44 +11,91 @@
 #include <string.h>
 
 // =============================================================================
-// Identity and addresses
+// Identity, name and addresses
 // =============================================================================
 
-static bool8_t depot_identity_path(char *out, uint32_t capacity) {
+bool8_t vkr_depot_identity_path(char *out, uint32_t capacity) {
   const char *override = getenv("VKR_DEPOT_IDENTITY");
   if (override && override[0]) {
     return snprintf(out, capacity, "%s", override) < (int)capacity;
   }
+  char data[VKR_DEPOT_PATH_CAPACITY];
+  return vkr_bakery_user_data_directory(data, sizeof(data)) &&
+         snprintf(out, capacity, "%s/depot/identity.key", data) < (int)capacity;
+}
+
+/* Where the key lived before 2026-10-11: the user cache folder, which
+   cleanup tools empty. */
+static bool8_t depot_identity_legacy_path(char *out, uint32_t capacity) {
   char cache[VKR_DEPOT_PATH_CAPACITY];
   return vkr_bakery_user_cache_directory(cache, sizeof(cache)) &&
          snprintf(out, capacity, "%s/vkr/depot/identity.key", cache) <
              (int)capacity;
 }
 
-bool8_t vkr_depot_identity(VkrNetKeyPair *out, bool8_t create) {
-  char path[VKR_DEPOT_PATH_CAPACITY];
-  if (!depot_identity_path(path, sizeof(path))) {
-    return false_v;
-  }
+static bool8_t depot_identity_read(const char *path, VkrNetKeyPair *out) {
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
-  if (vkr_bakery_is_file(path) &&
-      vkr_bakery_read_file(path, 64u, &bytes, &size) &&
-      size == VKR_NET_KEY_SIZE) {
+  bool8_t ok = vkr_bakery_is_file(path) &&
+               vkr_bakery_read_file(path, 64u, &bytes, &size) &&
+               size == VKR_NET_KEY_SIZE;
+  if (ok) {
     vkr_net_keypair_from_secret(bytes, out);
+  }
+  if (bytes) {
     vkr_net_random(bytes, size);
-    free(bytes);
-    return true_v;
   }
   free(bytes);
-  if (!create) {
+  return ok;
+}
+
+bool8_t vkr_depot_identity(VkrNetKeyPair *out, bool8_t create) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  if (!vkr_depot_identity_path(path, sizeof(path))) {
     return false_v;
+  }
+  if (depot_identity_read(path, out)) {
+    return true_v;
+  }
+  const char *override = getenv("VKR_DEPOT_IDENTITY");
+  char legacy[VKR_DEPOT_PATH_CAPACITY];
+  const bool8_t migrated = !(override && override[0]) &&
+                           depot_identity_legacy_path(legacy, sizeof(legacy)) &&
+                           depot_identity_read(legacy, out);
+  if (!migrated && !create) {
+    return false_v;
+  }
+  if (!migrated) {
+    vkr_net_keypair_generate(out);
   }
   char directory[VKR_DEPOT_PATH_CAPACITY];
   vkr_bakery_path_parent(directory, sizeof(directory), path);
-  vkr_net_keypair_generate(out);
-  return vkr_bakery_make_directories(directory) &&
-         vkr_bakery_write_file_atomic(path, out->secret_key, VKR_NET_KEY_SIZE);
+  const bool8_t written =
+      vkr_bakery_make_directories(directory) &&
+      vkr_bakery_write_file_atomic(path, out->secret_key, VKR_NET_KEY_SIZE);
+  /* A migrated key is valid even where the copy failed; the old file stays
+     and the next run tries again. A new key must persist. */
+  return written || migrated;
+}
+
+void vkr_depot_display_name(char out[VKR_DEPOT_DISPLAY_NAME]) {
+#if defined(_WIN32)
+  const char *user = getenv("USERNAME");
+#else
+  const char *user = getenv("USER");
+#endif
+  char host[VKR_DEPOT_DISCOVERY_TEXT];
+  vkr_depot_host_name(host, sizeof(host));
+  /* macOS names hosts `<computer>.local`; the computer is what people
+     recognize. */
+  const size_t length = strlen(host);
+  if (length > 6u && strcmp(host + length - 6u, ".local") == 0) {
+    host[length - 6u] = '\0';
+  }
+  char name[VKR_DEPOT_DISPLAY_NAME * 2u];
+  snprintf(name, sizeof(name), "%s@%s", user && user[0] ? user : "user", host);
+  (void)vkr_depot_display_name_clean((const uint8_t *)name,
+                                     (uint32_t)strlen(name), out);
 }
 
 bool8_t vkr_depot_address(const char *text, VkrNetAddress *out) {
@@ -129,54 +177,98 @@ void vkr_depot_disconnect(VkrDepotConnection *link) {
   free(link);
 }
 
+static void depot_connect_status(VkrDepotConnectStatus *out,
+                                 VkrDepotConnectStatus status) {
+  if (out) {
+    *out = status;
+  }
+}
+
 VkrDepotConnection *vkr_depot_connect(VkrAllocator *allocator,
-                                      const char *address,
-                                      const uint8_t server_key[32],
-                                      const VkrDepotStore *store, char *error,
-                                      uint32_t capacity) {
+                                      const VkrDepotConnectConfig *config,
+                                      VkrDepotConnectStatus *out_status,
+                                      char *error, uint32_t capacity) {
   VkrNetAddress server;
-  VkrNetHostConfig config = {
+  VkrNetHostConfig host_config = {
       .socket = {.receive_buffer = 8u << 20, .send_buffer = 8u << 20}};
-  if (!vkr_depot_address(address, &server)) {
-    snprintf(error, capacity, "invalid depot address %s", address);
+  depot_connect_status(out_status, VKR_DEPOT_CONNECT_INVALID);
+  if (!config || !config->address || !config->server_key ||
+      !vkr_depot_address(config->address, &server)) {
+    snprintf(error, capacity, "invalid depot address %s",
+             config && config->address ? config->address : "(none)");
     return NULL;
   }
-  if (!vkr_depot_identity(&config.core.static_keys, true_v)) {
+  if (!vkr_depot_identity(&host_config.core.static_keys, true_v)) {
     snprintf(error, capacity, "no depot identity key");
     return NULL;
   }
+  char name[VKR_DEPOT_DISPLAY_NAME];
+  if (config->name) {
+    (void)vkr_depot_display_name_clean((const uint8_t *)config->name,
+                                       (uint32_t)strlen(config->name), name);
+  } else {
+    vkr_depot_display_name(name);
+  }
   VkrDepotConnection *link = calloc(1u, sizeof(*link));
   if (!link) {
+    vkr_net_random(&host_config.core.static_keys,
+                   sizeof(host_config.core.static_keys));
     snprintf(error, capacity, "out of memory");
     return NULL;
   }
-  config.bind = vkr_net_address_any((VkrNetAddressFamily)server.family, 0u);
-  config.core.sent_packet_capacity = 16384u;
-  config.core.background = true_v;
-  link->host = vkr_net_host_create(allocator, &config);
+  host_config.bind =
+      vkr_net_address_any((VkrNetAddressFamily)server.family, 0u);
+  host_config.core.sent_packet_capacity = 16384u;
+  host_config.core.background = true_v;
+  link->host = vkr_net_host_create(allocator, &host_config);
+  vkr_net_random(&host_config.core.static_keys,
+                 sizeof(host_config.core.static_keys));
   link->session =
       link->host
           ? vkr_net_session_create(allocator, vkr_net_host_core(link->host))
           : NULL;
   if (!link->session ||
-      !vkr_net_core_connect(vkr_net_host_core(link->host), &server, server_key,
-                            NULL, 0u, depot_connection_now(link),
+      !vkr_net_core_connect(vkr_net_host_core(link->host), &server,
+                            config->server_key, (const uint8_t *)name,
+                            (uint32_t)strlen(name), depot_connection_now(link),
                             &link->connection)) {
     snprintf(error, capacity, "could not start the connection");
     vkr_depot_disconnect(link);
     return NULL;
   }
+  vkr_depot_progress_phase(config->progress, VKR_DEPOT_PHASE_CONNECTING, 0u,
+                           0u);
+  const uint32_t timeout_ms =
+      config->timeout_ms ? config->timeout_ms : VKR_DEPOT_TIMEOUT_MS;
   const uint64_t limit =
-      depot_connection_now(link) + VKR_DEPOT_TIMEOUT_MS * 1000ull;
+      depot_connection_now(link) + (uint64_t)timeout_ms * 1000ull;
+  bool8_t canceled = false_v;
   while (!link->connected && !link->closed &&
          depot_connection_now(link) < limit) {
-    if (!depot_connection_pump(link, 20)) {
+    canceled = vkr_depot_progress_canceled(config->progress);
+    if (canceled || !depot_connection_pump(link, 20)) {
       break;
     }
   }
   if (!link->connected) {
-    snprintf(error, capacity, "could not connect to %s (code %u)", address,
-             link->close_code);
+    if (canceled) {
+      depot_connect_status(out_status, VKR_DEPOT_CONNECT_CANCELED);
+      snprintf(error, capacity, "canceled");
+    } else if (link->close_code == VKR_NET_CLOSE_ACCESS_DENIED) {
+      depot_connect_status(out_status, VKR_DEPOT_CONNECT_DENIED);
+      snprintf(error, capacity,
+               "%s does not know this machine's key yet; it asks its owner "
+               "to allow %s",
+               config->address, name);
+    } else if (!link->closed || link->close_code == VKR_NET_CLOSE_TIMEOUT) {
+      depot_connect_status(out_status, VKR_DEPOT_CONNECT_UNREACHABLE);
+      snprintf(error, capacity, "no answer from %s within %u ms",
+               config->address, timeout_ms);
+    } else {
+      depot_connect_status(out_status, VKR_DEPOT_CONNECT_REFUSED);
+      snprintf(error, capacity, "%s refused the connection (code %u)",
+               config->address, link->close_code);
+    }
     vkr_depot_disconnect(link);
     return NULL;
   }
@@ -188,18 +280,47 @@ VkrDepotConnection *vkr_depot_connect(VkrAllocator *allocator,
       .pump = depot_connection_pump,
       .now = depot_connection_now,
   };
-  link->client =
-      vkr_depot_client_create(&client_link, store, VKR_DEPOT_TIMEOUT_MS);
+  link->client = vkr_depot_client_create(&client_link, config->store,
+                                         VKR_DEPOT_TIMEOUT_MS);
   if (!link->client) {
+    const bool8_t denied = link->close_code == VKR_NET_CLOSE_ACCESS_DENIED;
+    depot_connect_status(out_status, denied ? VKR_DEPOT_CONNECT_DENIED
+                                            : VKR_DEPOT_CONNECT_REFUSED);
     snprintf(error, capacity, "the server refused the depot service");
     vkr_depot_disconnect(link);
     return NULL;
   }
+  vkr_depot_client_set_progress(link->client, config->progress);
+  depot_connect_status(out_status, VKR_DEPOT_CONNECT_OK);
   return link;
 }
 
 VkrDepotClient *vkr_depot_connection_client(VkrDepotConnection *connection) {
   return connection ? connection->client : NULL;
+}
+
+bool8_t vkr_depot_branches(VkrAllocator *allocator,
+                           const VkrDepotConnectConfig *config,
+                           VkrDepotRef *out_refs, uint32_t capacity,
+                           uint32_t *out_count,
+                           VkrDepotConnectStatus *out_status, char *error,
+                           uint32_t error_capacity) {
+  *out_count = 0u;
+  VkrDepotConnectConfig refs_config = *config;
+  refs_config.store = NULL;
+  VkrDepotConnection *connection = vkr_depot_connect(
+      allocator, &refs_config, out_status, error, error_capacity);
+  if (!connection) {
+    return false_v;
+  }
+  const bool8_t ok =
+      vkr_depot_client_refs(connection->client, out_refs, capacity, out_count);
+  if (!ok) {
+    snprintf(error, error_capacity, "listing branches failed: %s",
+             vkr_depot_client_error(connection->client));
+  }
+  vkr_depot_disconnect(connection);
+  return ok;
 }
 
 // =============================================================================
@@ -407,11 +528,14 @@ bool8_t vkr_depot_mirror(VkrAllocator *allocator, const VkrDepotStore *store,
     snprintf(error, capacity, "out of memory");
     goto cleanup;
   }
-  local = vkr_depot_connect(allocator, local_address, local_key, store, error,
-                            capacity);
-  peer = local ? vkr_depot_connect(allocator, peer_address, peer_key, store,
-                                   error, capacity)
-               : NULL;
+  const VkrDepotConnectConfig local_config = {
+      .address = local_address, .server_key = local_key, .store = store};
+  const VkrDepotConnectConfig peer_config = {
+      .address = peer_address, .server_key = peer_key, .store = store};
+  local = vkr_depot_connect(allocator, &local_config, NULL, error, capacity);
+  peer = local
+             ? vkr_depot_connect(allocator, &peer_config, NULL, error, capacity)
+             : NULL;
   if (!peer) {
     goto cleanup;
   }
@@ -450,6 +574,134 @@ cleanup:
   return ok;
 }
 
+// =============================================================================
+// Status and log
+// =============================================================================
+
+void vkr_depot_change_list_free(VkrDepotChangeList *list) {
+  for (uint32_t i = 0u; i < list->count; ++i) {
+    free(list->entries[i].path);
+  }
+  free(list->entries);
+  MemZero(list, sizeof(*list));
+}
+
+static bool8_t depot_change_list_add(VkrDepotChangeList *list, const char *path,
+                                     VkrDepotChange change) {
+  if (list->count == list->capacity) {
+    const uint32_t capacity = list->capacity ? list->capacity * 2u : 32u;
+    VkrDepotChangeEntry *entries =
+        realloc(list->entries, (size_t)capacity * sizeof(VkrDepotChangeEntry));
+    if (!entries) {
+      return false_v;
+    }
+    list->entries = entries;
+    list->capacity = capacity;
+  }
+  const size_t length = strlen(path);
+  char *copy = malloc(length + 1u);
+  if (!copy) {
+    return false_v;
+  }
+  MemCopy(copy, path, length + 1u);
+  list->entries[list->count++] =
+      (VkrDepotChangeEntry){.path = copy, .change = change};
+  return true_v;
+}
+
+static bool8_t depot_collect_change(void *context, const char *path,
+                                    VkrDepotChange change) {
+  return depot_change_list_add(context, path, change);
+}
+
+/* A failed step's message: "canceled" when the progress asked for it. */
+static void depot_step_error(const VkrDepotWorkspace *workspace, char *error,
+                             uint32_t capacity, const char *message,
+                             const char *detail) {
+  if (vkr_depot_progress_canceled(workspace->progress)) {
+    snprintf(error, capacity, "canceled");
+  } else if (detail) {
+    snprintf(error, capacity, "%s: %s", message, detail);
+  } else {
+    snprintf(error, capacity, "%s", message);
+  }
+}
+
+static void depot_step_done(VkrDepotWorkspace *workspace) {
+  if (workspace->progress) {
+    vkr_atomic_uint32_store(&workspace->progress->phase, VKR_DEPOT_PHASE_DONE,
+                            VKR_MEMORY_ORDER_RELEASE);
+  }
+}
+
+bool8_t vkr_depot_status(VkrDepotWorkspace *workspace,
+                         VkrDepotChangeList *out_changes, char *error,
+                         uint32_t capacity) {
+  MemZero(out_changes, sizeof(*out_changes));
+  VkrDepotId tree;
+  VkrDepotFileList files;
+  if (!vkr_depot_workspace_snapshot(workspace, &tree, &files)) {
+    depot_step_error(workspace, error, capacity,
+                     "the working directory snapshot failed", NULL);
+    return false_v;
+  }
+  bool8_t ok = vkr_depot_file_list_diff(&workspace->index, &files,
+                                        depot_collect_change, out_changes);
+  if (!ok) {
+    snprintf(error, capacity, "out of memory");
+    vkr_depot_change_list_free(out_changes);
+  }
+  /* Files a checkout wrote are hashed once; keep what this one verified. */
+  if (ok && vkr_depot_workspace_settle(workspace, &files) &&
+      !vkr_depot_workspace_save(workspace)) {
+    snprintf(error, capacity, "could not save the working copy's index");
+    vkr_depot_change_list_free(out_changes);
+    ok = false_v;
+  }
+  vkr_depot_file_list_free(&files);
+  if (ok) {
+    depot_step_done(workspace);
+  }
+  return ok;
+}
+
+uint32_t vkr_depot_log(const VkrDepotStore *store, const VkrDepotId *start,
+                       uint32_t count, VkrDepotLogVisitor visit,
+                       void *context) {
+  VkrDepotId commit = *start;
+  uint32_t visited = 0u;
+  while (visited < count && !vkr_depot_id_zero(&commit)) {
+    uint8_t *bytes = NULL;
+    uint64_t size = 0u;
+    VkrDepotCommit parsed;
+    if (!vkr_depot_store_get(store, &commit, &bytes, &size) ||
+        !vkr_depot_commit_parse(bytes, size, &parsed)) {
+      free(bytes);
+      break;
+    }
+    VkrDepotLogEntry entry = {.id = commit,
+                              .time_us = parsed.time_us,
+                              .message = parsed.message,
+                              .message_size = parsed.message_size};
+    if (parsed.parent_count) {
+      entry.parent = parsed.parents[0];
+    }
+    MemCopy(entry.author, parsed.author, 32u);
+    visited += 1u;
+    const bool8_t more = visit(context, &entry);
+    commit = entry.parent;
+    free(bytes);
+    if (!more) {
+      break;
+    }
+  }
+  return visited;
+}
+
+// =============================================================================
+// Commit, fetch and checkout
+// =============================================================================
+
 void vkr_depot_pending_commit_free(VkrDepotPendingCommit *pending) {
   vkr_depot_file_list_free(&pending->files);
 }
@@ -470,7 +722,8 @@ bool8_t vkr_depot_commit_snapshot(VkrDepotWorkspace *workspace,
     return false_v;
   }
   if (!vkr_depot_workspace_snapshot(workspace, &tree, &files)) {
-    snprintf(error, capacity, "the working directory snapshot failed");
+    depot_step_error(workspace, error, capacity,
+                     "the working directory snapshot failed", NULL);
     goto cleanup;
   }
   VkrDepotCommit commit = {.tree = tree,
@@ -479,7 +732,6 @@ bool8_t vkr_depot_commit_snapshot(VkrDepotWorkspace *workspace,
                            .message = message,
                            .message_size = (uint32_t)strlen(message)};
   memcpy(commit.author, identity.public_key, 32u);
-  vkr_net_random(identity.secret_key, sizeof(identity.secret_key));
   if (parent && !vkr_depot_id_zero(parent)) {
     commit.parents[0] = *parent;
     commit.parent_count = 1u;
@@ -498,6 +750,7 @@ bool8_t vkr_depot_commit_snapshot(VkrDepotWorkspace *workspace,
   MemZero(&files, sizeof(files));
   ok = true_v;
 cleanup:
+  vkr_net_random(identity.secret_key, sizeof(identity.secret_key));
   free(commit_bytes);
   vkr_depot_file_list_free(&files);
   return ok;
@@ -513,10 +766,11 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
     snprintf(error, capacity, "invalid branch name %s", branch);
     return false_v;
   }
+  vkr_depot_client_set_progress(client, workspace->progress);
   VkrDepotTransferStats stats = {0};
   if (!vkr_depot_client_upload(client, &pending->commit, parent, &stats)) {
-    snprintf(error, capacity, "upload failed: %s",
-             vkr_depot_client_error(client));
+    depot_step_error(workspace, error, capacity, "upload failed",
+                     vkr_depot_client_error(client));
     return false_v;
   }
   VkrDepotId current;
@@ -547,49 +801,57 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
              "pushed, but the working copy state did not save");
     return false_v;
   }
+  depot_step_done(workspace);
   return true_v;
 }
 
-typedef struct DepotChangeCollector {
-  VkrDepotFileList *list;
-} DepotChangeCollector;
-
-static bool8_t depot_collect_change(void *context, const char *path,
-                                    VkrDepotChange change) {
-  (void)change;
-  DepotChangeCollector *collector = context;
-  const VkrDepotId zero = {0};
-  return vkr_depot_file_list_add(collector->list, path, 0u, 0, &zero);
+/* Whether two entries of a path, either NULL for absent, hold the same
+   content. */
+static bool8_t depot_same_content(const VkrDepotIndexEntry *a,
+                                  const VkrDepotIndexEntry *b) {
+  if (!a || !b) {
+    return a == b;
+  }
+  return vkr_depot_id_equal(&a->blob, &b->blob);
 }
 
-bool8_t vkr_depot_fetch_checkout(VkrDepotWorkspace *workspace,
-                                 VkrDepotClient *client,
-                                 const VkrDepotId *commit, uint32_t *out_kept,
-                                 char *error, uint32_t capacity) {
+bool8_t vkr_depot_fetch_checkout(
+    VkrDepotWorkspace *workspace, VkrDepotClient *client,
+    const VkrDepotId *commit, VkrDepotConflictPolicy policy, uint32_t *out_kept,
+    VkrDepotChangeList *out_conflicts, char *error, uint32_t capacity) {
   VkrDepotFileList local = {0};
-  VkrDepotFileList changes = {0};
+  VkrDepotChangeList changes = {0};
+  VkrDepotChangeList conflicts = {0};
   VkrDepotFileList remote = {0};
+  VkrDepotFileList keep = {0};
   bool8_t ok = false_v;
   *out_kept = 0u;
+  if (out_conflicts) {
+    MemZero(out_conflicts, sizeof(*out_conflicts));
+  }
   if (vkr_depot_id_equal(commit, &workspace->base)) {
+    depot_step_done(workspace);
     return true_v;
   }
+  vkr_depot_client_set_progress(client, workspace->progress);
   VkrDepotTransferStats stats = {0};
   if (!vkr_depot_client_fetch(client, commit, &stats)) {
-    snprintf(error, capacity, "fetch failed: %s",
-             vkr_depot_client_error(client));
+    depot_step_error(workspace, error, capacity, "fetch failed",
+                     vkr_depot_client_error(client));
     goto cleanup;
   }
   /* Local changes stay, unless the commit changed the same paths. */
   VkrDepotId tree;
   if (!vkr_depot_workspace_snapshot(workspace, &tree, &local)) {
-    snprintf(error, capacity, "the working directory snapshot failed");
+    depot_step_error(workspace, error, capacity,
+                     "the working directory snapshot failed", NULL);
     goto cleanup;
   }
-  DepotChangeCollector collector = {.list = &changes};
-  (void)vkr_depot_file_list_diff(&workspace->index, &local,
-                                 depot_collect_change, &collector);
-  vkr_depot_file_list_sort(&changes);
+  if (!vkr_depot_file_list_diff(&workspace->index, &local, depot_collect_change,
+                                &changes)) {
+    snprintf(error, capacity, "out of memory");
+    goto cleanup;
+  }
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   VkrDepotCommit parsed;
@@ -602,20 +864,40 @@ bool8_t vkr_depot_fetch_checkout(VkrDepotWorkspace *workspace,
   }
   const VkrDepotId commit_tree = parsed.tree;
   free(bytes);
+  const VkrDepotId zero = {0};
   for (uint32_t i = 0u; i < changes.count; ++i) {
     const char *path = changes.entries[i].path;
     const VkrDepotIndexEntry *base =
         vkr_depot_file_list_find(&workspace->index, path);
+    const VkrDepotIndexEntry *mine = vkr_depot_file_list_find(&local, path);
     const VkrDepotIndexEntry *theirs = vkr_depot_file_list_find(&remote, path);
-    if ((base == NULL) != (theirs == NULL) ||
-        (base && theirs && !vkr_depot_id_equal(&base->blob, &theirs->blob))) {
-      snprintf(error, capacity,
-               "%s changed here and in the commit; nothing changed", path);
+    bool8_t kept = true_v;
+    /* A path both sides changed to the same content, as a canceled checkout
+       leaves, simply takes the commit's. */
+    if (depot_same_content(mine, theirs)) {
+      kept = false_v;
+    } else if (!depot_same_content(base, theirs)) {
+      if (!depot_change_list_add(&conflicts, path, changes.entries[i].change)) {
+        snprintf(error, capacity, "out of memory");
+        goto cleanup;
+      }
+      kept = policy == VKR_DEPOT_CONFLICT_KEEP_MINE;
+    }
+    if (kept && !vkr_depot_file_list_add(&keep, path, 0u, 0, &zero)) {
+      snprintf(error, capacity, "out of memory");
       goto cleanup;
     }
   }
-  if (!vkr_depot_workspace_checkout(workspace, &commit_tree, &changes)) {
-    snprintf(error, capacity, "checkout failed");
+  if (conflicts.count > 0u && policy == VKR_DEPOT_CONFLICT_FAIL) {
+    snprintf(error, capacity,
+             "%u paths changed here and in the commit (first %s); nothing "
+             "changed",
+             conflicts.count, conflicts.entries[0].path);
+    goto cleanup;
+  }
+  vkr_depot_file_list_sort(&keep);
+  if (!vkr_depot_workspace_checkout(workspace, &commit_tree, &keep)) {
+    depot_step_error(workspace, error, capacity, "checkout failed", NULL);
     goto cleanup;
   }
   workspace->base = *commit;
@@ -623,11 +905,114 @@ bool8_t vkr_depot_fetch_checkout(VkrDepotWorkspace *workspace,
     snprintf(error, capacity, "the working copy state did not save");
     goto cleanup;
   }
-  *out_kept = changes.count;
+  *out_kept = keep.count;
+  depot_step_done(workspace);
   ok = true_v;
 cleanup:
+  if (out_conflicts) {
+    *out_conflicts = conflicts;
+  } else {
+    vkr_depot_change_list_free(&conflicts);
+  }
   vkr_depot_file_list_free(&local);
-  vkr_depot_file_list_free(&changes);
+  vkr_depot_change_list_free(&changes);
   vkr_depot_file_list_free(&remote);
+  vkr_depot_file_list_free(&keep);
+  return ok;
+}
+
+// =============================================================================
+// Clone
+// =============================================================================
+
+/* Opens the working copy whose root is `directory` itself, not a parent. */
+static bool8_t depot_clone_resume(VkrDepotWorkspace *workspace,
+                                  const char *directory,
+                                  const VkrDepotCodec *codec) {
+  char state[VKR_DEPOT_PATH_CAPACITY];
+  return vkr_bakery_path_join(state, sizeof(state), directory,
+                              VKR_DEPOT_META_DIR "/state") &&
+         vkr_bakery_is_file(state) &&
+         vkr_depot_workspace_open(workspace, directory, codec);
+}
+
+bool8_t vkr_depot_clone(VkrAllocator *allocator,
+                        const VkrDepotCloneConfig *config,
+                        VkrDepotCloneResult *out_result, char *error,
+                        uint32_t capacity) {
+  MemZero(out_result, sizeof(*out_result));
+  out_result->connect = VKR_DEPOT_CONNECT_INVALID;
+  const char *branch = config->branch ? config->branch : "main";
+  if (!config->address || !config->server_key || !config->directory ||
+      !vkr_depot_branch_valid(branch)) {
+    snprintf(error, capacity,
+             "clone needs an address, a key, a directory "
+             "and a valid branch");
+    return false_v;
+  }
+  VkrDepotWorkspace workspace;
+  VkrDepotConnection *connection = NULL;
+  bool8_t ok = false_v;
+  if (depot_clone_resume(&workspace, config->directory, config->codec)) {
+    if (MemCompare(workspace.server_key, config->server_key, 32u) != 0 ||
+        (!vkr_depot_id_zero(&workspace.base) &&
+         strcmp(workspace.branch, branch) != 0)) {
+      snprintf(error, capacity,
+               "%s already holds a working copy of another server or branch",
+               config->directory);
+      vkr_depot_workspace_close(&workspace);
+      return false_v;
+    }
+  } else if (!vkr_depot_workspace_create(&workspace, config->directory,
+                                         config->store_root, config->codec)) {
+    snprintf(error, capacity, "could not create the working copy at %s",
+             config->directory);
+    return false_v;
+  }
+  workspace.progress = config->progress;
+  /* Saved before connecting: a refused or canceled clone leaves a working
+     copy that names its server, which a retry or `pull` completes. */
+  snprintf(workspace.remote, sizeof(workspace.remote), "%s", config->address);
+  MemCopy(workspace.server_key, config->server_key, 32u);
+  snprintf(workspace.branch, sizeof(workspace.branch), "%s", branch);
+  if (!vkr_depot_workspace_save(&workspace)) {
+    snprintf(error, capacity, "could not save the working copy at %s",
+             config->directory);
+    goto cleanup;
+  }
+  const VkrDepotConnectConfig connect = {.address = config->address,
+                                         .server_key = config->server_key,
+                                         .store = &workspace.store,
+                                         .name = config->name,
+                                         .progress = config->progress};
+  connection = vkr_depot_connect(allocator, &connect, &out_result->connect,
+                                 error, capacity);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
+  if (!client) {
+    goto cleanup;
+  }
+  bool8_t exists = false_v;
+  if (!vkr_depot_find_ref(client, branch, &out_result->commit, &exists)) {
+    snprintf(error, capacity, "listing branches failed: %s",
+             vkr_depot_client_error(client));
+    goto cleanup;
+  }
+  if (!exists) {
+    out_result->empty = true_v;
+    depot_step_done(&workspace);
+    ok = true_v;
+    goto cleanup;
+  }
+  uint32_t kept = 0u;
+  if (!vkr_depot_fetch_checkout(&workspace, client, &out_result->commit,
+                                VKR_DEPOT_CONFLICT_FAIL, &kept, NULL, error,
+                                capacity)) {
+    goto cleanup;
+  }
+  out_result->files = workspace.index.count;
+  ok = true_v;
+cleanup:
+  vkr_depot_disconnect(connection);
+  vkr_depot_workspace_close(&workspace);
   return ok;
 }

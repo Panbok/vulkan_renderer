@@ -3149,10 +3149,12 @@ static void *session_depot_worker(void *argument) {
         job->kind != SESSION_DEPOT_COMMIT ||
         vkr_depot_commit_snapshot(&workspace, &parent, job->message, &pending,
                                   job->error, sizeof(job->error));
+    const VkrDepotConnectConfig connect = {.address = workspace.remote,
+                                           .server_key = workspace.server_key,
+                                           .store = &workspace.store};
     VkrDepotConnection *connection =
-        snapshot ? vkr_depot_connect(&allocator, workspace.remote,
-                                     workspace.server_key, &workspace.store,
-                                     job->error, sizeof(job->error))
+        snapshot ? vkr_depot_connect(&allocator, &connect, NULL, job->error,
+                                     sizeof(job->error))
                  : NULL;
     VkrDepotClient *client = vkr_depot_connection_client(connection);
     if (client && job->kind == SESSION_DEPOT_COMMIT) {
@@ -3163,7 +3165,8 @@ static void *session_depot_worker(void *argument) {
     } else if (client) {
       uint32_t kept = 0u;
       job->ok = vkr_depot_fetch_checkout(&workspace, client, &job->commit,
-                                         &kept, job->error, sizeof(job->error));
+                                         VKR_DEPOT_CONFLICT_FAIL, &kept, NULL,
+                                         job->error, sizeof(job->error));
     }
     vkr_depot_pending_commit_free(&pending);
     vkr_depot_disconnect(connection);

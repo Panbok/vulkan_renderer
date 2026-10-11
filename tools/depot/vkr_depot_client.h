@@ -1,5 +1,6 @@
 #pragma once
 
+#include "vkr_depot_progress.h"
 #include "vkr_depot_protocol.h"
 #include "vkr_depot_store.h"
 
@@ -42,7 +43,8 @@ typedef bool8_t (*VkrDepotLockVisitor)(void *context, const char *path,
 
 typedef struct VkrDepotClient VkrDepotClient;
 
-/* Registers the depot service on the link's session and opens it. */
+/* Registers the depot service on the link's session and opens it. `store`
+   may be NULL for a client that only lists refs and locks. */
 VkrDepotClient *vkr_depot_client_create(const VkrDepotLink *link,
                                         const VkrDepotStore *store,
                                         uint32_t timeout_ms);
@@ -50,6 +52,11 @@ void vkr_depot_client_destroy(VkrDepotClient *client);
 
 /* Why the last operation failed. */
 const char *vkr_depot_client_error(const VkrDepotClient *client);
+
+/* Fetch and upload report through `progress` (borrowed; NULL for none) and
+   stop with false, the error "canceled", once it is canceled. */
+void vkr_depot_client_set_progress(VkrDepotClient *client,
+                                   VkrDepotProgress *progress);
 
 bool8_t vkr_depot_client_refs(VkrDepotClient *client, VkrDepotRef *out_refs,
                               uint32_t capacity, uint32_t *out_count);

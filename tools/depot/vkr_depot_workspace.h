@@ -1,5 +1,6 @@
 #pragma once
 
+#include "vkr_depot_progress.h"
 #include "vkr_depot_store.h"
 
 /* A depot working copy: a directory of files plus `.vkrdepot/`, which holds
@@ -47,6 +48,9 @@ typedef struct VkrDepotWorkspace {
   VkrDepotId base;
   /* Tracked files at `base`, sorted by path. */
   VkrDepotFileList index;
+  /* Borrowed; NULL for none. Open and create clear it. Snapshot, checkout
+     and the sync steps report through it and stop when it is canceled. */
+  VkrDepotProgress *progress;
 } VkrDepotWorkspace;
 
 typedef enum VkrDepotChange {
@@ -80,7 +84,7 @@ void vkr_depot_workspace_close(VkrDepotWorkspace *workspace);
 
 /* Hashes the working directory into the store. Fills `out_files` with every
    file and its blob (the index after a commit of this snapshot) and returns
-   the root tree. */
+   the root tree. A cancel stops it with false; objects it stored stay. */
 bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
                                      VkrDepotId *out_tree,
                                      VkrDepotFileList *out_files);
@@ -101,7 +105,10 @@ bool8_t vkr_depot_file_list_diff(const VkrDepotFileList *from,
 
 /* Writes `tree` into the working directory and makes it the index. Files the
    caller marks in `keep` (local changes) stay untouched. Written files are not
-   flushed; their index entries carry -1, so the next snapshot hashes them. */
+   flushed; their index entries carry -1, so the next snapshot hashes them.
+   A cancel stops it with false and the index unchanged: files written so far
+   show as local changes that equal the tree, which a later checkout of the
+   same tree takes over. */
 bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
                                      const VkrDepotId *tree,
                                      const VkrDepotFileList *keep);

@@ -79,6 +79,8 @@ static int32_t idset_add(IdSet *set, const VkrDepotId *id) {
 typedef struct WantItem {
   VkrDepotId id;
   uint8_t kind;
+  /* Chunks: the decoded size, for progress. */
+  uint32_t size;
 } WantItem;
 
 typedef struct WantList {
@@ -88,7 +90,8 @@ typedef struct WantList {
   uint32_t head;
 } WantList;
 
-static bool8_t want_push(WantList *list, const VkrDepotId *id, uint8_t kind) {
+static bool8_t want_push(WantList *list, const VkrDepotId *id, uint8_t kind,
+                         uint32_t size) {
   if (list->count == list->capacity) {
     const uint32_t capacity = list->capacity ? list->capacity * 2u : 1024u;
     WantItem *items = realloc(list->items, (size_t)capacity * sizeof(WantItem));
@@ -98,7 +101,8 @@ static bool8_t want_push(WantList *list, const VkrDepotId *id, uint8_t kind) {
     list->items = items;
     list->capacity = capacity;
   }
-  list->items[list->count++] = (WantItem){.id = *id, .kind = kind};
+  list->items[list->count++] =
+      (WantItem){.id = *id, .kind = kind, .size = size};
   return true_v;
 }
 
@@ -131,6 +135,7 @@ typedef struct ClientGet {
 struct VkrDepotClient {
   VkrDepotLink link;
   const VkrDepotStore *store;
+  VkrDepotProgress *progress;
   uint32_t timeout_ms;
   bool8_t opened;
   bool8_t closed;
@@ -159,6 +164,20 @@ const char *vkr_depot_client_error(const VkrDepotClient *client) {
   return client->error;
 }
 
+void vkr_depot_client_set_progress(VkrDepotClient *client,
+                                   VkrDepotProgress *progress) {
+  client->progress = progress;
+}
+
+/* False, with the error set, once the progress was canceled. */
+static bool8_t client_continue(VkrDepotClient *client) {
+  if (vkr_depot_progress_canceled(client->progress)) {
+    client_fail(client, "canceled%s", "");
+    return false_v;
+  }
+  return true_v;
+}
+
 static bool8_t client_bit(const uint8_t *bits, uint32_t index) {
   return (bits[index / 8u] >> (index % 8u)) & 1u ? true_v : false_v;
 }
@@ -167,9 +186,10 @@ static void client_bit_set(uint8_t *bits, uint32_t index) {
   bits[index / 8u] |= (uint8_t)(1u << (index % 8u));
 }
 
-/* A received object: check it, queue its children and store it. */
+/* A received object: check it, queue its children and store it. `size` is
+   a chunk's decoded size. */
 static bool8_t client_process(VkrDepotClient *client, const VkrDepotId *id,
-                              uint8_t kind);
+                              uint8_t kind, uint32_t size);
 
 static bool8_t client_children(VkrDepotClient *client, uint8_t kind,
                                const uint8_t *bytes, uint64_t size);
@@ -182,7 +202,8 @@ typedef struct ChildContext {
 static bool8_t client_chunk_child(void *context,
                                   const VkrDepotChunkRef *chunk) {
   ChildContext *child = context;
-  child->ok = client_process(child->client, &chunk->id, VKR_DEPOT_KIND_CHUNK);
+  child->ok = client_process(child->client, &chunk->id, VKR_DEPOT_KIND_CHUNK,
+                             chunk->size);
   return child->ok;
 }
 
@@ -192,7 +213,8 @@ static bool8_t client_entry_child(void *context,
   child->ok =
       client_process(child->client, &entry->id,
                      entry->kind == VKR_DEPOT_ENTRY_TREE ? VKR_DEPOT_KIND_TREE
-                                                         : VKR_DEPOT_KIND_BLOB);
+                                                         : VKR_DEPOT_KIND_BLOB,
+                     0u);
   return child->ok;
 }
 
@@ -206,7 +228,7 @@ static bool8_t client_children(VkrDepotClient *client, uint8_t kind,
   if (kind == VKR_DEPOT_KIND_COMMIT) {
     VkrDepotCommit commit;
     return vkr_depot_commit_parse(bytes, size, &commit) &&
-           client_process(client, &commit.tree, VKR_DEPOT_KIND_TREE);
+           client_process(client, &commit.tree, VKR_DEPOT_KIND_TREE, 0u);
   }
   if (kind == VKR_DEPOT_KIND_TREE) {
     return vkr_depot_tree_parse(bytes, size, client_entry_child, &child) &&
@@ -216,8 +238,14 @@ static bool8_t client_children(VkrDepotClient *client, uint8_t kind,
          child.ok;
 }
 
+static bool8_t client_want(VkrDepotClient *client, const VkrDepotId *id,
+                           uint8_t kind, uint32_t size) {
+  vkr_depot_progress_add_total(client->progress, 1u, size);
+  return want_push(&client->want, id, kind, size);
+}
+
 static bool8_t client_process(VkrDepotClient *client, const VkrDepotId *id,
-                              uint8_t kind) {
+                              uint8_t kind, uint32_t size) {
   const int32_t added = idset_add(&client->seen, id);
   if (added < 0) {
     client_fail(client, "out of memory%s", "");
@@ -227,7 +255,7 @@ static bool8_t client_process(VkrDepotClient *client, const VkrDepotId *id,
     return true_v;
   }
   if (!vkr_depot_store_has(client->store, id)) {
-    return want_push(&client->want, id, kind);
+    return client_want(client, id, kind, size);
   }
   if (kind == VKR_DEPOT_KIND_CHUNK) {
     return true_v;
@@ -235,11 +263,11 @@ static bool8_t client_process(VkrDepotClient *client, const VkrDepotId *id,
   /* Present already: its children may still be missing. A read that fails
      its hash check removed a torn file, so the object is fetched again. */
   uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  if (!vkr_depot_store_get(client->store, id, &bytes, &size)) {
-    return want_push(&client->want, id, kind);
+  uint64_t stored_size = 0u;
+  if (!vkr_depot_store_get(client->store, id, &bytes, &stored_size)) {
+    return client_want(client, id, kind, size);
   }
-  const bool8_t ok = client_children(client, kind, bytes, size);
+  const bool8_t ok = client_children(client, kind, bytes, stored_size);
   free(bytes);
   return ok;
 }
@@ -287,6 +315,8 @@ static void client_on_data(VkrDepotClient *client, const VkrNetEvent *event,
     client->stats.objects += 1u;
     client->stats.stored_bytes += event->size;
     client->stats.decoded_bytes += size;
+    vkr_depot_progress_add(client->progress, 1u,
+                           item->kind == VKR_DEPOT_KIND_CHUNK ? size : 0u);
   }
   free(bytes);
   client_bit_set(get->done, index);
@@ -581,12 +611,18 @@ bool8_t vkr_depot_client_fetch(VkrDepotClient *client, const VkrDepotId *commit,
   MemZero(&client->stats, sizeof(client->stats));
   client->fetch_failed = false_v;
   client->error[0] = '\0';
-  if (!client_process(client, commit, VKR_DEPOT_KIND_COMMIT)) {
+  if (!client->store) {
+    client_fail(client, "the connection has no store to fetch into%s", "");
+    return false_v;
+  }
+  vkr_depot_progress_phase(client->progress, VKR_DEPOT_PHASE_FETCH, 0u, 0u);
+  if (!client_process(client, commit, VKR_DEPOT_KIND_COMMIT, 0u)) {
     return false_v;
   }
   client->last_progress_us = client->link.now(client->link.context);
   while (client->want.head < client->want.count || client_gets_live(client)) {
-    if (!client_issue_gets(client) || !client_pump(client, CLIENT_PUMP_MS)) {
+    if (!client_continue(client) || !client_issue_gets(client) ||
+        !client_pump(client, CLIENT_PUMP_MS)) {
       return false_v;
     }
     if (client->fetch_failed) {
@@ -773,6 +809,11 @@ bool8_t vkr_depot_client_upload(VkrDepotClient *client,
                                 const VkrDepotId *base,
                                 VkrDepotTransferStats *out_stats) {
   client->error[0] = '\0';
+  if (!client->store) {
+    client_fail(client, "the connection has no store to upload from%s", "");
+    return false_v;
+  }
+  vkr_depot_progress_phase(client->progress, VKR_DEPOT_PHASE_UPLOAD, 0u, 0u);
   UploadSet set = {0};
   VkrDepotTransferStats stats = {0};
   bool8_t ok = upload_add(&set, commit);
@@ -815,6 +856,10 @@ bool8_t vkr_depot_client_upload(VkrDepotClient *client,
   uint32_t cursor = 0u;
   ok = missing != NULL;
   while (ok && (cursor < set.count || live > 0u)) {
+    ok = client_continue(client);
+    if (!ok) {
+      break;
+    }
     if (cursor < set.count && live < CLIENT_HAVES_MAX) {
       VkrDepotIdsWire *message = &client->outgoing.ids;
       MemZero(message, sizeof(*message));
@@ -849,12 +894,26 @@ bool8_t vkr_depot_client_upload(VkrDepotClient *client,
     }
     live -= 1u;
   }
+  /* A failure or cancel abandons the replies still due. */
+  for (uint32_t i = 0u; i < live; ++i) {
+    if (haves[i]) {
+      haves[i]->live = false_v;
+    }
+  }
 
   /* Upload the missing ones: PUT names a batch, its bytes follow. */
   ClientPut puts[CLIENT_PUTS_MAX];
   uint32_t puts_live = 0u;
   cursor = 0u;
+  if (ok) {
+    vkr_depot_progress_phase(client->progress, VKR_DEPOT_PHASE_UPLOAD,
+                             missing_count, 0u);
+  }
   while (ok && (cursor < missing_count || puts_live > 0u)) {
+    ok = client_continue(client);
+    if (!ok) {
+      break;
+    }
     if (cursor < missing_count && puts_live < CLIENT_PUTS_MAX) {
       VkrDepotIdsWire *message = &client->outgoing.ids;
       MemZero(message, sizeof(*message));
@@ -881,6 +940,7 @@ bool8_t vkr_depot_client_upload(VkrDepotClient *client,
           if (status == VKR_NET_SEND_OK) {
             stats.objects += 1u;
             stats.stored_bytes += stored_size;
+            vkr_depot_progress_add(client->progress, 1u, stored_size);
             break;
           }
           if (status != VKR_NET_SEND_QUEUE_FULL) {
@@ -904,6 +964,11 @@ bool8_t vkr_depot_client_upload(VkrDepotClient *client,
       puts[i - 1u] = puts[i];
     }
     puts_live -= 1u;
+  }
+  for (uint32_t i = 0u; i < puts_live; ++i) {
+    if (puts[i].reply) {
+      puts[i].reply->live = false_v;
+    }
   }
   free(missing);
   upload_free(&set);
