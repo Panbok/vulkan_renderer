@@ -120,10 +120,11 @@ static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
 /* `maximized`: the Scene fills the window (layout.maximize, G). `icons`:
    object icons the last build made; `icons_shown`: those the last
-   projection placed on the Scene; `icons_occluded`: those collision hides. */
+   projection placed on the Scene; `icons_occluded`: those collision hides.
+   `resolve_fights`: edits part the z-fighting faces of what they change. */
 static const char *const eval_ui_members[] = {
-    "zoom",  "reduce_motion", "workbench",      "selected", "maximized",
-    "icons", "icons_shown",   "icons_occluded", NULL};
+    "zoom",  "reduce_motion", "workbench",      "selected",       "maximized",
+    "icons", "icons_shown",   "icons_occluded", "resolve_fights", NULL};
 static const char *const eval_gfx_members[] = {"render_scale",
                                                "dynamic",
                                                "vsync",
@@ -806,6 +807,10 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       }
       if (index == 1) {
         *out = eval_bool(frame->ui->reduce_motion);
+        return true_v;
+      }
+      if (index == 8) {
+        *out = eval_bool(eval->editor->resolve_fights);
         return true_v;
       }
       if (index == 3) {
@@ -1562,6 +1567,11 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
     if (index == 1 &&
         eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member)) {
       frame->ui->reduce_motion = value->number != 0.0;
+      return true_v;
+    }
+    if (index == 8 &&
+        eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member)) {
+      eval->editor->resolve_fights = value->number != 0.0;
       return true_v;
     }
     return eval->error[0] ? false_v

@@ -565,7 +565,8 @@ static uint32_t brush_test_pieces_fight(const VkrBlockoutPiece *pieces,
   }
   VkrBrushFaceOverlap fight = {0};
   const uint32_t found = vkr_brush_coplanar_overlaps(
-      faces, face_count, vertices, slots, 1.0e-4f, &fight, 1u);
+      faces, face_count, vertices, slots, VKR_BRUSH_COPLANAR_DISTANCE, 1.0e-4f,
+      &fight, 1u);
   if (found) {
     printf("  pieces %u and %u fight over %g m2 at (%g, %g, %g), normal "
            "(%g, %g, %g)\n",
@@ -885,10 +886,11 @@ static void brush_test_dents(VkrBrushGeometry *geometry) {
 /* Two boxes built as owners 0 and 1, every corner turned `angle` radians
    about Y and moved by `offset`, and the pairs of their faces that
    z-fight; `out` receives the first. */
-static uint32_t brush_test_fights(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi,
-                                  float32_t angle, Vec3 offset,
-                                  VkrBrushGeometry *geometry,
-                                  VkrBrushFaceOverlap *out) {
+static uint32_t brush_test_fights_within(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo,
+                                         Vec3 b_hi, float32_t angle,
+                                         Vec3 offset, float32_t gap,
+                                         VkrBrushGeometry *geometry,
+                                         VkrBrushFaceOverlap *out) {
   VkrBrushFaceRef faces[2u * VKR_BRUSH_FACE_MAX];
   Vec3 vertices[64u];
   uint32_t face_count = 0u;
@@ -919,8 +921,17 @@ static uint32_t brush_test_fights(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi,
     }
   }
   VkrBrushFaceSlot slots[VKR_BRUSH_FACE_SLOT_MAX * ArrayCount(faces)];
-  return vkr_brush_coplanar_overlaps(faces, face_count, vertices, slots,
+  return vkr_brush_coplanar_overlaps(faces, face_count, vertices, slots, gap,
                                      1.0e-4f, out, 1u);
+}
+
+/* As brush_test_fights_within, for faces in one plane. */
+static uint32_t brush_test_fights(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi,
+                                  float32_t angle, Vec3 offset,
+                                  VkrBrushGeometry *geometry,
+                                  VkrBrushFaceOverlap *out) {
+  return brush_test_fights_within(a_lo, a_hi, b_lo, b_hi, angle, offset,
+                                  VKR_BRUSH_COPLANAR_DISTANCE, geometry, out);
 }
 
 /* Z-fighting (ADR-084): boxes whose tops share a plane and overlap fight
@@ -961,6 +972,18 @@ static void brush_test_coplanar(VkrBrushGeometry *geometry) {
                             vec3_new(3.0f, 1.002f, 3.0f), 0.0f, vec3_zero(),
                             geometry, &overlap);
   assert(found == 0u);
+
+  /* A top 4 mm under another fights at a distance the depth buffer does
+     not separate: within a 1 cm gap it is found, its faces and how far the
+     second lies in front of the first named. */
+  found = brush_test_fights_within(lo, hi, vec3_new(1.0f, 0.5f, 1.0f),
+                                   vec3_new(3.0f, 0.996f, 3.0f), 0.0f,
+                                   vec3_zero(), 0.01f, geometry, &overlap);
+  assert(found == 1u);
+  assert(brush_test_near(overlap.area, 1.0f, 1.0e-3f));
+  assert(overlap.face_a != overlap.face_b);
+  assert(brush_test_near(fabsf(overlap.separation), 0.004f, 1.0e-4f));
+  assert(overlap.normal.y > 0.999f);
 
   /* Tops sharing a plane over a 0.2 mm strip, 4 cm2 along a 2 m edge: an
      edge contact float error leaves, not a fight. */

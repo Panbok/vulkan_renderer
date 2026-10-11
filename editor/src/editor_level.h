@@ -43,9 +43,9 @@ typedef enum VkrEditorLevelIssueKind {
   VKR_EDITOR_LEVEL_BROKEN_CONNECTION,
   /* Floor beside walkable floor that only a crouched capsule passes. */
   VKR_EDITOR_LEVEL_CROUCH_ONLY,
-  /* Drawn faces of two solids sharing a plane and facing the same way, so
-     they flicker (vkr_brush_coplanar_overlaps); the value is the shared
-     area. */
+  /* Drawn faces of two solids facing the same way in one plane, or in
+     planes closer than VKR_EDITOR_FIGHT_GAP, so they flicker
+     (vkr_brush_coplanar_overlaps); the value is the shared area. */
   VKR_EDITOR_LEVEL_Z_FIGHT,
   /* A looping mover with no stay at its ends, or a mover a looping mover's
      arrival opens that is not closed again when the looping one sets off;
@@ -124,6 +124,33 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
                                    uint32_t kinds, VkrEditorLevelIssue *out,
                                    uint32_t capacity,
                                    VkrEditorLevelStats *stats);
+
+/* The plane gap under which drawn faces facing the same way z-fight: at the
+   camera's near plane and depth precision, faces 1 cm apart stay apart over
+   the distances a level is seen from (ADR-084). */
+#define VKR_EDITOR_FIGHT_GAP 0.01f
+
+/* A move that parts a z-fighting pair: `face`, a face entity of `brush`,
+   moves `distance` metres along its world normal, outward when positive;
+   `position` is where the pair fought. */
+typedef struct VkrEditorFightMove {
+  VkrEntityId brush;
+  VkrEntityId face;
+  float32_t distance;
+  Vec3 position;
+} VkrEditorFightMove;
+
+/* The face moves that part the pairs of drawn brush faces fighting within
+   `gap` whose shared area lies in lo..hi, at most `capacity` in `out`.
+   The face behind moves back until 1.5 `gap` parts them; when its brush is
+   too thin for that, the face in front moves out instead. Of two faces in one
+   plane, the smaller moves out, as trim or a plate shows over a wall. A
+   pair hidden inside another solid stays, and so does a pair only a
+   mover's open pose shows, which moving faces cannot part at every pose.
+   Returns the moves; `out_fights` receives the pairs found. */
+uint32_t vkr_editor_level_fight_moves(const VkrScene *scene, Vec3 lo, Vec3 hi,
+                                      float32_t gap, VkrEditorFightMove *out,
+                                      uint32_t capacity, uint32_t *out_fights);
 /* Why a route failed: whether each end stands on a walkable floor, and the
    reached floor nearest `to` with the distance left. */
 typedef struct VkrEditorLevelRoute {

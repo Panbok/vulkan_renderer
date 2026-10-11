@@ -215,11 +215,12 @@ uint32_t vkr_brush_hull(const Vec3 *points, uint32_t count, VkrBrushPlane *out,
                         uint32_t capacity);
 
 /* Z-fighting (ADR-084): two drawn faces of different solids that lie in one
-   plane and face the same way, so the depth test picks between them pixel
-   by pixel. Their normals lie within VKR_BRUSH_COPLANAR_DEGREES of each
-   other, and their overlap counts only where it lies within
-   VKR_BRUSH_COPLANAR_DISTANCE of both planes. Faces back to back, or 2 mm
-   apart, do not fight. */
+   plane, or in parallel planes closer than the depth buffer separates, and
+   face the same way, so the depth test picks between them pixel by pixel.
+   Their normals lie within VKR_BRUSH_COPLANAR_DEGREES of each other, and
+   their overlap counts only where it lies within the caller's `gap` of both
+   planes. VKR_BRUSH_COPLANAR_DISTANCE is the gap of faces in one plane;
+   faces back to back do not fight. */
 #define VKR_BRUSH_COPLANAR_DISTANCE 1.0e-3f
 #define VKR_BRUSH_COPLANAR_DEGREES 0.5f
 
@@ -258,6 +259,12 @@ typedef struct VkrBrushFaceSlot {
 typedef struct VkrBrushFaceOverlap {
   uint32_t owner_a;
   uint32_t owner_b;
+  /* The two faces, as indices into the caller's array, and how far face
+     b's plane lies in front of face a's along a's normal (negative:
+     behind). */
+  uint32_t face_a;
+  uint32_t face_b;
+  float32_t separation;
   /* Square meters the two faces share, the middle of that area, and the
      way the first face looks. */
   float32_t area;
@@ -265,14 +272,15 @@ typedef struct VkrBrushFaceOverlap {
   Vec3 normal;
 } VkrBrushFaceOverlap;
 
-/* The pairs of `faces` that z-fight over more than `min_area` square
-   meters, at most `capacity` of them in `out`; returns how many it found.
+/* The pairs of `faces` that z-fight, their planes within `gap` metres,
+   over more than `min_area` square meters, at most `capacity` of them in
+   `out`; returns how many it found.
    `scratch` holds VKR_BRUSH_FACE_SLOT_MAX * `count` slots. Faces group by
    plane and main axis and sweep along one axis, so each meets only faces
    near its plane, facing about its way, around its extent. */
 uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
                                      const Vec3 *vertices,
-                                     VkrBrushFaceSlot *scratch,
+                                     VkrBrushFaceSlot *scratch, float32_t gap,
                                      float32_t min_area,
                                      VkrBrushFaceOverlap *out,
                                      uint32_t capacity);

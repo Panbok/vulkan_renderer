@@ -840,10 +840,11 @@ static uint32_t brush_overlap_clip(const Vec3 *in, uint32_t count, Vec3 normal,
 }
 
 /* The area of face `b` dropped onto face `a`'s plane that lies inside `a`
-   and within VKR_BRUSH_COPLANAR_DISTANCE of `b`'s plane, and its middle. */
+   and within `gap` of `b`'s plane, and its middle. */
 static float32_t brush_face_overlap(const VkrBrushFaceRef *a,
                                     const VkrBrushFaceRef *b,
-                                    const Vec3 *vertices, Vec3 *out_center) {
+                                    const Vec3 *vertices, float32_t gap,
+                                    Vec3 *out_center) {
   Vec3 ping[BRUSH_OVERLAP_POINT_MAX];
   Vec3 pong[BRUSH_OVERLAP_POINT_MAX];
   /* Relative to a corner of `a`, so float precision follows the faces'
@@ -873,10 +874,9 @@ static float32_t brush_face_overlap(const VkrBrushFaceRef *a,
   const float32_t distance =
       vec3_dot(b->normal, vec3_sub(vertices[b->first], origin));
   if (count >= 3u) {
-    count = brush_overlap_clip(in, count, b->normal,
-                               distance + VKR_BRUSH_COPLANAR_DISTANCE, out);
+    count = brush_overlap_clip(in, count, b->normal, distance + gap, out);
     count = brush_overlap_clip(out, count, vec3_negate(b->normal),
-                               -(distance - VKR_BRUSH_COPLANAR_DISTANCE), in);
+                               -(distance - gap), in);
   }
   if (count < 3u) {
     return 0.0f;
@@ -904,7 +904,7 @@ static float32_t brush_face_overlap(const VkrBrushFaceRef *a,
 
 uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
                                      const Vec3 *vertices,
-                                     VkrBrushFaceSlot *scratch,
+                                     VkrBrushFaceSlot *scratch, float32_t gap,
                                      float32_t min_area,
                                      VkrBrushFaceOverlap *out,
                                      uint32_t capacity) {
@@ -963,7 +963,7 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
   const float32_t radians = VKR_BRUSH_COPLANAR_DEGREES * 0.01745329252f;
   const float32_t spread = 2.0f * sinf(0.5f * radians);
   const float32_t cos_min = cosf(radians);
-  const float32_t margin = VKR_BRUSH_COPLANAR_DISTANCE;
+  const float32_t margin = Max(gap, VKR_BRUSH_COPLANAR_DISTANCE);
   const float32_t window = margin + spread * reach_max;
   /* Within a bucket, faces sweep along an axis no common face is
      perpendicular to, so faces far apart in their plane never meet. */
@@ -1038,16 +1038,22 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
         continue;
       }
       Vec3 middle = vec3_zero();
-      const float32_t area = brush_face_overlap(a, b, vertices, &middle);
+      const float32_t area =
+          brush_face_overlap(a, b, vertices, margin, &middle);
       if (area <= min_area) {
         continue;
       }
       if (found < capacity) {
-        out[found] = (VkrBrushFaceOverlap){.owner_a = a->owner,
-                                           .owner_b = b->owner,
-                                           .area = area,
-                                           .center = middle,
-                                           .normal = a->normal};
+        out[found] = (VkrBrushFaceOverlap){
+            .owner_a = a->owner,
+            .owner_b = b->owner,
+            .face_a = first->face,
+            .face_b = second->face,
+            .separation = vec3_dot(
+                a->normal, vec3_sub(vertices[b->first], vertices[a->first])),
+            .area = area,
+            .center = middle,
+            .normal = a->normal};
       }
       found++;
     }

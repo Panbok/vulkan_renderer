@@ -517,6 +517,9 @@ typedef struct VkrEditorUi {
      `labels_max_distance` metres from the camera, 0 for no limit. */
   bool8_t labels_occlusion;
   float32_t labels_max_distance;
+  /* After each edit, level.resolve parts the z-fighting brush faces of what
+     it changed (ADR-084). */
+  bool8_t resolve_fights;
   VkrEditorPlacement placement;
   VkrEditorWorkbenches workbenches;
   /* Empty objects of the primary scene, the World and each added scene, in

@@ -798,6 +798,21 @@ without collision is invisible to the checks. The capsule defaults to
 1.08 m through `VKR_PHYSICS_CROUCH_HEIGHT_SHARE`, `step_up` 0.35 m, 45°)
 and each request may override it; `crouch_height` 0 cannot crouch.
 
+`level.resolve` parts the z-fights of a region by moving faces, as one batch
+of `brush.move_face` edits ([editor_level.c](../../editor/src/editor_level.c),
+`vkr_editor_level_fight_moves`): of two faces apart, the one behind moves
+back until 1.5 gaps part them, unless its brush would be thinner than a gap
+after it, when the one in front moves out; of two in one plane, the smaller
+moves out, as trim over a wall. Pairs hidden inside another solid and pairs
+only a mover's open pose shows stay for the lint to report. The editor runs
+it by itself (`ui.resolve_fights`, on by default and kept with the
+workspace): every applied write batch adds the boxes of what it changed to a
+pending region, and once no batch is in flight and the scene settles one
+`level.resolve` over that region applies as its own unreviewed change, which
+undo takes back alone; a resolve's own moves are checked once more and no
+further. A first pass over the Black Mesa level moved 1,515 faces in 1.3 s
+of checks, and the level then linted clean.
+
 `level.lint` reports steps too high, slopes too steep, ceilings lower than the
 crouched capsule, passages only the crouched capsule fits (`crouch_only`,
 with the headroom), gaps narrower than its diameter, walkable edges with no
@@ -815,16 +830,19 @@ names the kinds to report, and only the checks that find them run, so a
 z-fight sweep of a large region is neither cut short by floor issues nor
 pays for brush overlap checks.
 
-A `z_fight` is two drawn faces of different solids that share a plane and
-face the same way, so the depth test picks between them pixel by pixel and
-they flicker in any view. The check builds, in world space, the faces of
+A `z_fight` is two drawn faces of different solids that face the same way in
+one plane, or in parallel planes closer than 1 cm
+(`VKR_EDITOR_FIGHT_GAP`), so the depth test picks between them pixel by pixel
+and they flicker; faces 4 mm apart flickered across a bridge deck seen from
+50 m with the 0.1 m near plane. The check builds, in world space, the faces of
 every visible solid and visual brush and every blockout shape piece whose
 box touches the region; clip and trigger brushes draw only while editing.
 Faces fight where their normals lie within 0.5° and their overlap, more
-than 1 cm², lies within 1 mm of both planes
+than 1 cm², lies within the gap of both planes
 ([vkr_brush.c](../../runtime/src/level/vkr_brush.c),
-`vkr_brush_coplanar_overlaps`). Faces back to back, faces 2 mm apart and
-faces that only touch along an edge do not fight; an overlap narrower than
+`vkr_brush_coplanar_overlaps`, which names the two faces and how far apart
+they lie). Faces back to back and faces that only touch along an edge do
+not fight; an overlap narrower than
 1 mm (twice its area over its perimeter) is such a touch, as float error
 leaves between ring pieces that share a radial plane. Faces group by plane
 distance and main axis and sweep along one axis, so each meets only faces
@@ -1433,6 +1451,14 @@ material then).
   tile of 2,800 boxes and 21 spirals (21,252 faces), the face search took
   about 9 ms and building the faces about 5 ms in a Release tester. The
   editor's `level.lint` path is built but was not run.
+- Near-coplanar fights and their resolve (2026-10-11, macOS): suite `brush`
+  finds a top 4 mm under another within a 1 cm gap, naming both faces and
+  their 4 mm separation. In the Release editor, boxes 4 mm apart and boxes
+  sharing a top plane were parted by the automatic `level.resolve` right
+  after the batch that made them (to 1.5 cm), and `level.lint` then found
+  none. Suite `heightfield` checks a `backdrop` terrain yielding under a
+  smaller one and standing again outside it and once no longer a backdrop;
+  with the cover test stubbed out it fails at the yielding ground.
 - Headless macOS Release on Bistro (2026-10-04): a doorway carved through a
   wall, a hollowed block, an extruded and face-moved step, a merge, a clip
   keeping both pieces and a refused face move that would break the solid. A

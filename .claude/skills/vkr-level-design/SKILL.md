@@ -243,14 +243,18 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    `c` passable crouched.
 4. `level.lint` in tiles of 76 m or less (0.3 m cells); expect no issue of
    a kind the spec forbids, never a `mover_timing`, and never a `z_fight`
-   (coplanar faces that flicker; sweep them with `kinds` [`z_fight`,
-   `mover_timing`]: `found` above the issues returned means `limit` cut the
-   list, and floor issues come first): move or trim `entity` or `other` until
-   it is gone. A lint during a bake's reload answers no issues before the
-   brushes return: repeat it until its answer has no `settled` false and
-   `samples` above 0. Where two pieces meet on purpose, as a post on a rail or a
-   rack upright on a shelf, make one 4 mm proud of the other on each axis
-   they share, or end it flush at the other's face.
+   (faces in one plane or closer than 1 cm that flicker; sweep them with
+   `kinds` [`z_fight`, `mover_timing`]: `found` above the issues returned
+   means `limit` cut the list, and floor issues come first). A lint during a
+   bake's reload answers no issues before the brushes return: repeat it until
+   its answer has no `settled` false and `samples` above 0. The editor parts
+   the z-fights of every edit by itself (`ui.resolve_fights`, on by default)
+   with an unreviewed "Resolve z-fighting" change after your batch; run
+   `level.resolve` over a region for older work, and leave pieces meeting
+   on purpose (a post on a rail) to it rather than hand insets, which
+   flicker at distance when a few millimetres. A `z_fight` that remains is a
+   pair it cannot part: a mover's open pose or a blockout shape; move or trim
+   `entity` or `other` until it is gone.
 5. One `view.capture` sheet (`views`, `max_width` 768) with labelled
    `marks` at doors, spawns and stairs. Each mark answers its pixel and
    `hidden` (collision between the camera and the point); judge look and

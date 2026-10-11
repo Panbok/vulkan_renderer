@@ -1098,6 +1098,10 @@ typedef struct LevelFightSolid {
   bool8_t open;
   uint32_t first_plane;
   uint32_t plane_count;
+  /* Its faces in the set, one per plane, in the order of its brush's face
+     entities. */
+  uint32_t first_face;
+  uint32_t face_count;
   Vec3 lo;
   Vec3 hi;
 } LevelFightSolid;
@@ -1167,6 +1171,8 @@ static void level_fight_add(LevelFightSet *set, VkrEntityId entity,
                                          .open = open,
                                          .first_plane = set->plane_count,
                                          .plane_count = plane_count,
+                                         .first_face = set->face_count,
+                                         .face_count = geometry->face_count,
                                          .lo = geometry->min,
                                          .hi = geometry->max};
   MemCopy(set->planes + set->plane_count, planes,
@@ -1343,8 +1349,18 @@ static void level_fight_gather(const VkrScene *scene, Vec3 lo, Vec3 hi,
   }
 }
 
-/* Drawn faces of two solids that share a plane and face the same way over
-   more than a square centimeter: z-fighting, which flickers in any view.
+/* The point just in front of a fight's front face: its shared area lies in
+   the first face's plane, and the second face lies `separation` in front
+   of it. */
+static Vec3 level_fight_front(const VkrBrushFaceOverlap *fight) {
+  return vec3_add(fight->center,
+                  vec3_scale(fight->normal,
+                             Max(fight->separation, 0.0f) + LEVEL_FIGHT_FRONT));
+}
+
+/* Drawn faces of two solids that face the same way in one plane, or in
+   planes closer than VKR_EDITOR_FIGHT_GAP, over more than a square
+   centimeter: z-fighting, which flickers in any view.
    A shared area counts in the region its middle lies in, and not when the
    point just in front of it lies inside another solid, as a face buried in
    a wall. A mover's brushes count again at its open pose, as a door leaf
@@ -1367,8 +1383,8 @@ static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
   }
 
   const uint32_t found = vkr_brush_coplanar_overlaps(
-      set.faces, set.face_count, set.vertices, slots, LEVEL_FIGHT_AREA_MIN,
-      fights, LEVEL_FIGHT_MAX);
+      set.faces, set.face_count, set.vertices, slots, VKR_EDITOR_FIGHT_GAP,
+      LEVEL_FIGHT_AREA_MIN, fights, LEVEL_FIGHT_MAX);
   for (uint32_t i = 0; i < Min(found, LEVEL_FIGHT_MAX); ++i) {
     const VkrBrushFaceOverlap *fight = &fights[i];
     const Vec3 at = fight->center;
@@ -1386,9 +1402,7 @@ static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
     if (at.x < grid->min.x || at.x >= grid->max.x || at.z < grid->min.z ||
         at.z >= grid->max.z || at.y < lo.y || at.y > hi.y ||
         level_issue_merges(issues, VKR_EDITOR_LEVEL_Z_FIGHT, at, entity) ||
-        level_fight_hidden(
-            grid->scene, &set, a, b,
-            vec3_add(at, vec3_scale(fight->normal, LEVEL_FIGHT_FRONT)))) {
+        level_fight_hidden(grid->scene, &set, a, b, level_fight_front(fight))) {
       continue;
     }
     const uint32_t index = issues->count;
@@ -1407,6 +1421,161 @@ cleanup:
   free(geometry);
   free(slots);
   free(fights);
+}
+
+/* The extent of a gathered solid along `normal`: how far apart its faces
+   lie in that direction. */
+static float32_t level_fight_thickness(const LevelFightSet *set,
+                                       const LevelFightSolid *solid,
+                                       Vec3 normal) {
+  float32_t lo = INFINITY;
+  float32_t hi = -INFINITY;
+  for (uint32_t f = solid->first_face;
+       f < solid->first_face + solid->face_count; ++f) {
+    const VkrBrushFaceRef *face = &set->faces[f];
+    for (uint32_t k = 0; k < face->count; ++k) {
+      const float32_t d = vec3_dot(normal, set->vertices[face->first + k]);
+      lo = Min(lo, d);
+      hi = Max(hi, d);
+    }
+  }
+  return hi > lo ? hi - lo : 0.0f;
+}
+
+static float32_t level_fight_face_area(const LevelFightSet *set,
+                                       uint32_t face) {
+  const VkrBrushFaceRef *ref = &set->faces[face];
+  const Vec3 origin = set->vertices[ref->first];
+  Vec3 twice = vec3_zero();
+  for (uint32_t k = 1u; k + 1u < ref->count; ++k) {
+    twice = vec3_add(
+        twice,
+        vec3_cross(vec3_sub(set->vertices[ref->first + k], origin),
+                   vec3_sub(set->vertices[ref->first + k + 1u], origin)));
+  }
+  return 0.5f * vec3_length(twice);
+}
+
+/* Adds the move of face `face` (an index into the set) of `solid`, joining
+   one that moves the same face: the larger move of one sign wins, and
+   moves of both signs drop the newer. */
+static void level_fight_move_add(const VkrScene *scene,
+                                 const LevelFightSet *set,
+                                 const LevelFightSolid *solid, uint32_t face,
+                                 float32_t distance, Vec3 position,
+                                 VkrEditorFightMove *out, uint32_t capacity,
+                                 uint32_t *count) {
+  VkrEntityId faces[VKR_BRUSH_FACE_MAX];
+  const uint32_t total =
+      vkr_scene_brush_faces(scene, solid->entity, faces, VKR_BRUSH_FACE_MAX);
+  const uint32_t index = face - solid->first_face;
+  if (total != solid->face_count || index >= total) {
+    return;
+  }
+  for (uint32_t i = 0; i < *count; ++i) {
+    if (out[i].face.u64 == faces[index].u64) {
+      if ((out[i].distance > 0.0f) == (distance > 0.0f) &&
+          fabsf(distance) > fabsf(out[i].distance)) {
+        out[i].distance = distance;
+      }
+      return;
+    }
+  }
+  if (*count < capacity) {
+    out[(*count)++] = (VkrEditorFightMove){.brush = solid->entity,
+                                           .face = faces[index],
+                                           .distance = distance,
+                                           .position = position};
+  }
+}
+
+uint32_t vkr_editor_level_fight_moves(const VkrScene *scene, Vec3 lo, Vec3 hi,
+                                      float32_t gap, VkrEditorFightMove *out,
+                                      uint32_t capacity, uint32_t *out_fights) {
+  LevelFightSet set = {0};
+  uint32_t moves = 0u;
+  uint32_t found = 0u;
+  VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
+  VkrBrushFaceSlot *slots = NULL;
+  VkrBrushFaceOverlap *fights = malloc(LEVEL_FIGHT_MAX * sizeof(*fights));
+  if (!geometry || !fights) {
+    goto cleanup;
+  }
+  const Vec3 margin = vec3_new(gap, gap, gap);
+  level_fight_gather(scene, vec3_sub(lo, margin), vec3_add(hi, margin),
+                     geometry, &set);
+  slots =
+      malloc((size_t)set.face_count * VKR_BRUSH_FACE_SLOT_MAX * sizeof(*slots));
+  if (set.failed || !slots) {
+    goto cleanup;
+  }
+  found = vkr_brush_coplanar_overlaps(set.faces, set.face_count, set.vertices,
+                                      slots, gap, LEVEL_FIGHT_AREA_MIN, fights,
+                                      LEVEL_FIGHT_MAX);
+  for (uint32_t i = 0; i < Min(found, LEVEL_FIGHT_MAX); ++i) {
+    const VkrBrushFaceOverlap *fight = &fights[i];
+    const Vec3 at = fight->center;
+    const LevelFightSolid *a = &set.solids[fight->owner_a];
+    const LevelFightSolid *b = &set.solids[fight->owner_b];
+    if (a->open || b->open || at.x < lo.x || at.y < lo.y || at.z < lo.z ||
+        at.x > hi.x || at.y > hi.y || at.z > hi.z ||
+        level_fight_hidden(scene, &set, a, b, level_fight_front(fight))) {
+      continue;
+    }
+    /* b lies `separation` in front of a along a's normal. */
+    const bool8_t b_front = fight->separation >= 0.0f;
+    const LevelFightSolid *front = b_front ? b : a;
+    const LevelFightSolid *rear = b_front ? a : b;
+    const uint32_t front_face = b_front ? fight->face_b : fight->face_a;
+    const uint32_t rear_face = b_front ? fight->face_a : fight->face_b;
+    const bool8_t front_moves =
+        vkr_scene_get_typed(scene, front->entity, &vkr_scene_brush_type) !=
+        NULL;
+    const bool8_t rear_moves =
+        vkr_scene_get_typed(scene, rear->entity, &vkr_scene_brush_type) != NULL;
+    /* Moves part the pair half a gap past where they count as fighting,
+       so a check after the move finds them apart. */
+    const float32_t apart = fabsf(fight->separation);
+    const float32_t need = 1.5f * gap - apart;
+    if (need <= 0.0f) {
+      continue;
+    }
+    /* One plane: the smaller face moves out, as trim over a wall. */
+    if (apart < VKR_BRUSH_COPLANAR_DISTANCE) {
+      const bool8_t front_smaller = level_fight_face_area(&set, front_face) <=
+                                    level_fight_face_area(&set, rear_face);
+      const bool8_t out_front = front_moves && (front_smaller || !rear_moves);
+      if (out_front || rear_moves) {
+        level_fight_move_add(scene, &set, out_front ? front : rear,
+                             out_front ? front_face : rear_face, need, at, out,
+                             capacity, &moves);
+      }
+      continue;
+    }
+    /* Apart: the face behind moves back, unless its brush is too thin to
+       stay at least `gap` deep after it. */
+    if (rear_moves &&
+        level_fight_thickness(&set, rear, fight->normal) - need >= gap) {
+      level_fight_move_add(scene, &set, rear, rear_face, -need, at, out,
+                           capacity, &moves);
+    } else if (front_moves) {
+      level_fight_move_add(scene, &set, front, front_face, need, at, out,
+                           capacity, &moves);
+    }
+  }
+
+cleanup:
+  if (out_fights) {
+    *out_fights = found;
+  }
+  free(set.faces);
+  free(set.vertices);
+  free(set.solids);
+  free(set.planes);
+  free(geometry);
+  free(slots);
+  free(fights);
+  return moves;
 }
 
 uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,

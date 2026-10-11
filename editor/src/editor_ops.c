@@ -146,6 +146,15 @@ struct VkrEditorOps {
      time its two-click Reject stops waiting for the confirming click. */
   char changes_filter[VKR_EDITOR_AUTHOR_CAPACITY];
   float64_t reject_all_armed_until;
+  /* The box, in container `resolve_container`, around the objects write
+     batches changed since z-fighting was last resolved there (ADR-084);
+     `resolve_chain` counts resolves in a row, so a resolve's own moves are
+     checked once more and no further. */
+  bool8_t resolve_pending;
+  uint16_t resolve_container;
+  Vec3 resolve_min;
+  Vec3 resolve_max;
+  uint32_t resolve_chain;
   /* Claimed boxes of the scene generation `claims_generation`, kept in the
      scene's claims file (ops_claims_save). */
   VkrEditorClaim claims[VKR_EDITOR_CLAIM_MAX];
@@ -5299,6 +5308,43 @@ static VkrEditorOpStatus ops_batch_settle(OpsContext *ctx,
   return VKR_EDITOR_OP_DONE;
 }
 
+/* Notes the objects an applied batch changed for the next z-fight resolve:
+   their boxes join the pending one. A resolve's own batch is checked once
+   more, in case a move met a third face, and not again. */
+static void ops_resolve_note(OpsContext *ctx, uint16_t container,
+                             const VkrScene *scene, const VkrEntityId *entities,
+                             uint32_t count, VkrBrushGeometry *scratch) {
+  VkrEditorOps *ops = ctx->ops;
+  const String8 resolve = string8_lit("level.resolve");
+  const bool8_t resolving = string8_equals(&ctx->call->op, &resolve);
+  ops->resolve_chain = resolving ? ops->resolve_chain + 1u : 0u;
+  if (!scene || !count || ops->resolve_chain > 1u ||
+      (ops->resolve_pending && ops->resolve_container != container)) {
+    return;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!vkr_scene_entity_alive(scene, entities[i])) {
+      continue;
+    }
+    Vec3 lo = {0};
+    Vec3 hi = {0};
+    ops_object_box(scene, entities[i], scratch, &lo, &hi);
+    if (!ops->resolve_pending) {
+      ops->resolve_pending = true_v;
+      ops->resolve_container = container;
+      ops->resolve_min = lo;
+      ops->resolve_max = hi;
+      continue;
+    }
+    ops->resolve_min =
+        vec3_new(Min(ops->resolve_min.x, lo.x), Min(ops->resolve_min.y, lo.y),
+                 Min(ops->resolve_min.z, lo.z));
+    ops->resolve_max =
+        vec3_new(Max(ops->resolve_max.x, hi.x), Max(ops->resolve_max.y, hi.y),
+                 Max(ops->resolve_max.z, hi.z));
+  }
+}
+
 /* Reads the runtime's batch result and answers with each operation's entity;
    a reviewed batch becomes a pending change. */
 static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
@@ -5445,6 +5491,8 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
   for (uint32_t i = 0; i < change.entity_count; ++i) {
     ops_feed_entity(event, scene, change.entities[i], scratch);
   }
+  ops_resolve_note(ctx, change.container, scene, change.entities,
+                   change.entity_count, scratch);
   if (batch->review && ops->change_count < VKR_EDITOR_CHANGE_MAX) {
     ops->review_overflow = false_v;
     change.id = ++ops->next_change_id;
@@ -6442,6 +6490,107 @@ static VkrEditorOpStatus ops_run_write(OpsContext *ctx, const OpsDef *def) {
     return VKR_EDITOR_OP_DONE;
   }
   return ops_submit(ctx, batch, ops_arg_bool(call->args, "dry_run", false_v));
+}
+
+/* Metres along a brush face's local unit normal that move it `world`
+   metres along its world normal; zero when the brush's transform folds the
+   face edge-on. */
+static float32_t ops_face_local_distance(const VkrScene *scene,
+                                         VkrEntityId brush, VkrEntityId face,
+                                         float32_t world) {
+  const SceneBrushFace *value =
+      vkr_scene_get_typed(scene, face, &vkr_scene_brush_face_type);
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, brush, scene->comp_transform);
+  const float32_t length = value ? vec3_length(value->normal) : 0.0f;
+  if (!transform || !(length > 0.0f)) {
+    return 0.0f;
+  }
+  const Vec3 local = vec3_scale(value->normal, 1.0f / length);
+  const Mat4 normal_matrix =
+      mat4_transpose(mat4_inverse_affine(transform->world));
+  const Vec4 wn = mat4_mul_vec4(normal_matrix, vec3_to_vec4(local, 0.0f));
+  const Vec4 step = mat4_mul_vec4(transform->world, vec3_to_vec4(local, 0.0f));
+  const float32_t along = vec3_dot(vec3_normalize(vec3_new(wn.x, wn.y, wn.z)),
+                                   vec3_new(step.x, step.y, step.z));
+  return along > 1.0e-4f ? world / along : 0.0f;
+}
+
+/* level.resolve (ADR-084): parts the z-fighting brush faces of a region by
+   moving faces, as one batch of brush.move_face edits. */
+static VkrEditorOpStatus ops_run_resolve(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  if (call->stage) {
+    return ops_batch_wait(ctx);
+  }
+  const VkrBakeryJson *args = call->args;
+  uint16_t container = 0u;
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  const VkrBakeryJson *region = vkr_bakery_json_get(args, "region");
+  if (!ops_arg_container(ctx, args, &container)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!region || region->type != VKR_BAKERY_JSON_OBJECT ||
+      !ops_arg_vec3(ctx, region, "min", &lo, NULL) ||
+      !ops_arg_vec3(ctx, region, "max", &hi, NULL)) {
+    if (!call->error_code) {
+      ops_fail(ctx, OPS_INVALID, "'region' is {\"min\": [..], \"max\": [..]}");
+    }
+    return VKR_EDITOR_OP_DONE;
+  }
+  float64_t gap = VKR_EDITOR_FIGHT_GAP;
+  (void)ops_arg_number(args, "gap", &gap);
+  if (!(gap >= 0.002 && gap <= 0.1)) {
+    ops_fail(ctx, OPS_INVALID, "'gap' is 0.002 to 0.1 metres");
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, container);
+  VkrEditorFightMove *moves =
+      arena_alloc(ops_arena(ctx), VKR_SAMPLE_EDIT_BATCH_MAX * sizeof(*moves),
+                  ARENA_MEMORY_TAG_ARRAY);
+  OpsBatch *batch =
+      arena_alloc(call->arena, sizeof(*batch), ARENA_MEMORY_TAG_STRUCT);
+  if (!moves || !batch) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  uint32_t fights = 0u;
+  const uint32_t count = vkr_editor_level_fight_moves(
+      scene, lo, hi, (float32_t)gap, moves, VKR_SAMPLE_EDIT_BATCH_MAX, &fights);
+  MemZero(batch, sizeof(*batch));
+  batch->container = -1;
+  batch->review = ops_arg_bool(args, "review", true_v);
+  if (!vkr_bakery_json_get_string(args, "label", &batch->label) ||
+      !batch->label.length) {
+    batch->label = string8_lit("Resolve z-fighting");
+  }
+  const OpsDef *move_face = ops_find(string8_lit("brush.move_face"));
+  for (uint32_t i = 0; move_face && i < count; ++i) {
+    const float32_t distance = ops_face_local_distance(
+        scene, moves[i].brush, moves[i].face, moves[i].distance);
+    if (distance == 0.0f) {
+      continue;
+    }
+    char id[40];
+    ops_id_text(moves[i].face, id, sizeof(id));
+    VkrBakeryJson *move = vkr_bakery_json_object(call->arena);
+    ops_set(ctx, move, "face", vkr_bakery_json_cstr(call->arena, id));
+    ops_set(ctx, move, "distance", ops_number(ctx, distance));
+    /* A move that would break its brush is left out; the rest apply. */
+    if (!ops_build_one(ctx, move_face, move, batch)) {
+      call->error_code = NULL;
+      call->error[0] = '\0';
+    }
+  }
+  if (!batch->count) {
+    call->result = vkr_bakery_json_object(call->arena);
+    ops_set(ctx, call->result, "fights",
+            vkr_bakery_json_int(call->arena, fights));
+    ops_set(ctx, call->result, "moved", vkr_bakery_json_int(call->arena, 0));
+    return VKR_EDITOR_OP_DONE;
+  }
+  return ops_submit(ctx, batch, ops_arg_bool(args, "dry_run", false_v));
 }
 
 static VkrEditorOpStatus ops_run_changes_list(OpsContext *ctx) {
@@ -14189,6 +14338,22 @@ static const OpsDef s_ops[] = {
      ",\"kinds\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}"
      "," OPS_SETTLE_SCHEMA "},\"required\":[\"region\"]}",
      ops_run_lint, NULL, OPS_SETTLES},
+    {"level.resolve",
+     "Part the z-fighting brush faces of a region: of two drawn faces "
+     "facing the same way closer than 'gap' metres (default 0.01), the one "
+     "behind moves back, or the one in front out when the brush behind is "
+     "too thin; of two in one plane, the smaller moves out. Pairs hidden "
+     "inside another solid stay, and so do pairs only a mover's open pose "
+     "shows. One batch of brush.move_face edits; 'fights' and 'moved' "
+     "answer when nothing needed moving. The editor runs it by itself over "
+     "what each edit changed while ui.resolve_fights is on.",
+     "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
+     "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
+     ",\"max\":" OPS_VEC3_SCHEMA
+     "},\"required\":[\"min\",\"max\"]},\"container\":" OPS_CONTAINER_SCHEMA
+     ",\"gap\":{\"type\":\"number\",\"minimum\":0.002,\"maximum\":0.1}"
+     "," OPS_REVIEW_SCHEMA "},\"required\":[\"region\"]}",
+     ops_run_resolve, NULL, 0u},
     {"level.map",
      "The region's floors as text, a floor plan to read instead of a "
      "picture: 'rows' run from min z to max z, each character a cell along "
@@ -14921,6 +15086,45 @@ static void ops_session_update(VkrEditorOps *ops, VkrEditorSession *session,
   }
 }
 
+/* Parts the z-fights of what edits changed (ADR-084): once no batch is in
+   flight and the scene stands still, one level.resolve over the pending box
+   goes through the agent channel as an edit of its own, which undo takes
+   back on its own. */
+static void ops_resolve_auto(VkrEditorOps *ops, const VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame) {
+  if (!ops || !ops->resolve_pending || !editor || !editor->agent ||
+      !frame->scene || frame->simulation_running ||
+      (frame->edit_batch && frame->edit_batch->token) ||
+      !ops_settled(frame, NULL)) {
+    return;
+  }
+  if (!editor->resolve_fights) {
+    ops->resolve_pending = false_v;
+    return;
+  }
+  const Vec3 lo = vec3_sub(ops->resolve_min, vec3_new(0.05f, 0.05f, 0.05f));
+  const Vec3 hi = vec3_add(ops->resolve_max, vec3_new(0.05f, 0.05f, 0.05f));
+  char container[16];
+  if (ops->resolve_container == VKR_SCENE_WORLD_ROOT_ID) {
+    snprintf(container, sizeof(container), "\"world\"");
+  } else if (ops->resolve_container) {
+    snprintf(container, sizeof(container), "%u",
+             (unsigned)ops->resolve_container);
+  } else {
+    snprintf(container, sizeof(container), "\"primary\"");
+  }
+  char line[512];
+  snprintf(line, sizeof(line),
+           "{\"v\":1,\"id\":\"resolve\",\"op\":\"level.resolve\","
+           "\"args\":{\"region\":{\"min\":[%.4f,%.4f,%.4f],"
+           "\"max\":[%.4f,%.4f,%.4f]},\"container\":%s,\"review\":false}}",
+           (double)lo.x, (double)lo.y, (double)lo.z, (double)hi.x, (double)hi.y,
+           (double)hi.z, container);
+  if (vkr_editor_agent_submit(editor->agent, line)) {
+    ops->resolve_pending = false_v;
+  }
+}
+
 void vkr_editor_ops_update(VkrEditorOps *ops, const VkrEditorUi *editor,
                            const VkrSampleUiFrame *frame) {
   if (ops && editor) {
@@ -14937,6 +15141,7 @@ void vkr_editor_ops_update(VkrEditorOps *ops, const VkrEditorUi *editor,
     ops->claims_generation = frame->scene_generation;
     ops_claims_load(ops, frame);
   }
+  ops_resolve_auto(ops, editor, frame);
   for (uint32_t i = 0; ops && i < ops->change_count;) {
     const VkrEditorChange *change = &ops->changes[i];
     const VkrSceneEditState *journal = ops_journal(frame, change->container);

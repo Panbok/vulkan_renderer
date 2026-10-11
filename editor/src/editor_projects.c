@@ -670,6 +670,7 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
       project_json_bool(&writer, "labels_empty", editor->labels_empty) &&
       project_json_bool(&writer, "labels_occlusion",
                         editor->labels_occlusion) &&
+      project_json_bool(&writer, "resolve_fights", editor->resolve_fights) &&
       project_json_number(&writer, "labels_max_distance",
                           editor->labels_max_distance) &&
       project_json_number(&writer, "place_target",
@@ -927,6 +928,7 @@ static void project_restore_settings(VkrEditorProjects *projects,
   editor->labels_empty = true_v;
   editor->labels_occlusion = true_v;
   editor->labels_max_distance = VKR_EDITOR_LABEL_DISTANCE_DEFAULT;
+  editor->resolve_fights = true_v;
   editor->console.follow_tail = true_v;
   editor->console.search[0] = '\0';
   for (uint32_t i = 0; i < ArrayCount(editor->console.levels); ++i) {
@@ -976,6 +978,7 @@ static void project_restore_settings(VkrEditorProjects *projects,
   panels.pos = 0;
   (void)vkr_json_get_bool(&panels, "labels_occlusion",
                           &editor->labels_occlusion);
+  (void)vkr_json_get_bool(&panels, "resolve_fights", &editor->resolve_fights);
   panels.pos = 0;
   {
     float32_t distance = VKR_EDITOR_LABEL_DISTANCE_DEFAULT;

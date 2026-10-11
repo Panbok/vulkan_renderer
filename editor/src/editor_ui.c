@@ -169,6 +169,7 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .scatter_spacing = 0.5f,
       .labels_occlusion = true_v,
       .labels_max_distance = VKR_EDITOR_LABEL_DISTANCE_DEFAULT,
+      .resolve_fights = true_v,
       .placement = {.target = VKR_EDITOR_SNAP_SURFACE,
                     .magnet = true_v,
                     .move_grid = true_v,
