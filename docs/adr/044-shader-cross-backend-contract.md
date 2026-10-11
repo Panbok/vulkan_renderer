@@ -1134,7 +1134,10 @@ Direct-light helpers reject noncontributing light hemispheres before half-vector
 construction. Shared GGX math defines zero contribution when the half-vector's
 squared length is zero or subnormal; finite back-view diffuse behavior remains
 unchanged. Local probe influence bounds remain active independently of parallax
-projection. Bloom gain follows ADR-042's maximum-chain normalization.
+projection. Box projection (`vkr_metal_packet_box_project`,
+`packet_box_project`) returns the plain reflection for a point more than
+1 cm outside the probe's box on both backends. Bloom gain follows ADR-042's
+maximum-chain normalization.
 
 Audit remediation changes visibility, HZB producer-grid metadata, Metal reset
 ordering, optional resolve outputs and numerical edges. Its Vulkan evidence is

@@ -351,9 +351,21 @@ float vkr_metal_packet_probe_influence(
              : 0.0;
 }
 
+// A point this far outside a probe's box still counts as inside it, so a
+// surface lying on a wall, such as a floor at the box's bottom, stays
+// box-projected despite position rounding (metres).
+constant float vkr_metal_packet_box_project_wall_tolerance = 0.01;
+
+// The probe lookup direction of a reflection from `world_position`: toward
+// where the reflection leaves the probe's box. A point outside the box has
+// no box wall ahead of it, so it looks up the plain reflection, as a probe
+// without box projection does.
 float3 vkr_metal_packet_box_project(float3 direction, float3 world_position,
                                     float3 center, float3 extents) {
   if (any(extents <= 1e-4))
+    return normalize(direction);
+  if (any(abs(world_position - center) >
+          extents + vkr_metal_packet_box_project_wall_tolerance))
     return normalize(direction);
   float3 safe_direction = direction;
   for (uint axis = 0u; axis < 3u; ++axis) {
