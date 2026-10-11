@@ -12,8 +12,8 @@ Accepted. Froxel fog belongs to the desktop pipeline, and Vulkan is its only
 implementation; the tiled pipeline turns it off
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7). The graph and
 scene authoring are integrated. The output evidence below comes from the Metal
-desktop implementation, removed on 2026-10-06; native Vulkan execution is not
-yet recorded.
+desktop implementation, removed on 2026-10-06. Native Vulkan ran on
+2026-10-11 after the fix under Verification.
 
 ## Context
 
@@ -206,3 +206,13 @@ used `vkr_harness profile`,
 Vulkan, and `tools/profiles/local-offscreen-gpu-single.json`; the [cost
 record](../../assets/verification/renderer-features/froxel-cost-numeric.txt)
 retains exact report identities.
+
+Native Vulkan (Windows, RX 6700 XT, 2026-10-11): every frame of
+`froxel_bistro_on_local` failed in `Froxel.Apply.Fullscreen`. The integrate
+pass recorded the integrated volume's storage slot, the apply pass compared
+it with the same image's sampled slot, which another table numbers, and
+forward shading sampled `g_3d_textures` at the storage index. The integrate
+pass now records the image's sampled slot. Debug `vkr_harness profile` of
+that case then completes both repetitions with every assertion passing and
+no error; the profile stays incomplete on
+`determinism.work_volume_mismatch` between its repetitions.

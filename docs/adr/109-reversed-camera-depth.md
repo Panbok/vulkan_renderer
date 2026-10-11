@@ -12,8 +12,8 @@ Accepted (partial). Every camera depth buffer on both backends holds
 reversed depth: the near plane at 1, the far plane at 0, cleared to 0 and
 tested with greater-than. Shadow maps keep forward depth. The Scene and app
 camera's default far plane is 20 km. Metal ran the tiled pipeline on Bistro
-before and after the change; Vulkan compiles only, and no native Vulkan run
-exists.
+before and after the change. Vulkan ran the desktop pipeline on Bistro on
+Windows after it; no matched before run exists there.
 
 ## Context
 
@@ -181,4 +181,22 @@ reprojection, reversed occupied-depth feedback and the recalled far plane.
 
 Vulkan: the 13 changed SPIR-V modules pass `spirv-val --target-env
 vulkan1.4 --scalar-block-layout`. The FSR 3.1 source is not compiled on
-macOS, and no native Vulkan run of any changed pass exists.
+macOS.
+
+Native Vulkan (Windows, AMD Radeon RX 6700 XT, driver 26.6.3, `main` at
+`6c314d11` plus the froxel fix below), 2026-10-11:
+
+- Release `vkr_harness snapshot --case
+  tools/cases/smoke/bistro_snapshot.case.json --profile
+  tools/profiles/local-offscreen.json` rendered all 14 views. The harness
+  reports `missing_baseline`: the accepted 2026-10-03 generation predates a
+  workload fingerprint change. Against its captures by hand, each view
+  keeps its geometry, sky and occlusion; 2–32% of pixels differ by more
+  than 8/255 and under 0.6% by more than 32/255, in lamp light, foliage and
+  shading, which the lighting changes since 2026-10-03 also touch. This is
+  not a matched before/after of the change.
+- A Debug snapshot with synchronization validation of a scratch case built
+  from `froxel_bistro_on_local` with depth of field, motion blur, FSR 3.1
+  at render scale 0.67 and the scene's glass passes with no validation
+  message. It first failed every frame in `Froxel.Apply.Fullscreen`, a
+  fault older than this change (ADR-059).
