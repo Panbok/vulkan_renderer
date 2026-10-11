@@ -158,6 +158,10 @@ from the caller's thread.
   the machine is on, or sends it to `--to`, and lists the answers. An
   answer is unauthenticated; the transport then proves the key, so the key
   is checked once against the one `serve` prints.
+- **Ignore rules**: `.vkrdepotignore` at a working copy's root keeps paths
+  out of snapshots, so an editor workspace commits its project and assets
+  but not each machine's jobs, logs, caches and `workspace.json`. A working
+  copy beside the server shares its store with `clone --store`.
 - **Command** ([vkr_depot_main.c](../../tools/depot/vkr_depot_main.c)):
   `keygen`, `init`, `serve`, `discover`, `mirror` (once or `--watch`),
   `access`, `clone`, `status`, `commit` (snapshot, upload, move the
