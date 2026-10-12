@@ -470,8 +470,11 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   if (level_shown) {
     vkr_editor_grid_build(editor, frame);
   }
-  if (!preparing_scene && level_shown) {
+  /* The overlay draws the Model view's tool previews too. */
+  if (!preparing_scene) {
     vkr_editor_physics_build(editor, frame);
+  }
+  if (!preparing_scene && level_shown) {
     vkr_editor_labels_build(editor, frame);
     vkr_editor_session_names_build(editor, frame);
   }

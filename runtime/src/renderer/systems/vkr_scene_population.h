@@ -58,3 +58,11 @@ uint32_t vkr_scene_population_instances(const VkrScene *scene,
                                         VkrEntityId entity);
 const char *vkr_scene_population_status(const VkrScene *scene,
                                         VkrEntityId entity);
+
+/* Advances whenever a rule places its copies again. */
+uint64_t vkr_scene_population_revision(const VkrScene *scene);
+/* Every rule's copies, up to `capacity`; the model stage copies those that
+   land on its subject (vkr_model_stage.h). */
+uint32_t vkr_scene_population_copies(const VkrScene *scene,
+                                     VkrMeshInstanceHandle *out,
+                                     uint32_t capacity);

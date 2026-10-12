@@ -4,6 +4,7 @@
 #include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_scene_population.h"
 
 /* A neutral studio: a uniform grey sky that lights from every side, a warm
    key sun from above and in front, and a mid-grey ground whose top is
@@ -126,6 +127,58 @@ static void model_stage_copy(VkrModelStage *stage, VkrRenderAssets *assets,
   }
 }
 
+/* Copies the scatter and spline copies whose bounds' centres lie within the
+   subject's copied bounds, half a metre wider, so what was scattered onto
+   the subject stands on it on the stage. */
+static void model_stage_copy_scatter(VkrModelStage *stage,
+                                     VkrRenderAssets *assets,
+                                     const VkrScene *source, Vec3 offset) {
+  VkrMeshManager *manager = &assets->mesh_manager;
+  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  for (uint32_t i = 0; i < stage->copy_count; ++i) {
+    const VkrMeshInstance *instance =
+        vkr_mesh_manager_get_instance(manager, stage->sources[i]);
+    if (!instance || !instance->bounds_valid) {
+      continue;
+    }
+    const Vec3 c = instance->bounds_world_center;
+    const float32_t r = instance->bounds_world_radius + 0.5f;
+    lo = vec3_new(Min(lo.x, c.x - r), Min(lo.y, c.y - r), Min(lo.z, c.z - r));
+    hi = vec3_new(Max(hi.x, c.x + r), Max(hi.y, c.y + r), Max(hi.z, c.z + r));
+  }
+  if (!(lo.x <= hi.x)) {
+    return;
+  }
+  VkrMeshInstanceHandle copies[VKR_MODEL_STAGE_COPY_MAX];
+  const uint32_t count =
+      vkr_scene_population_copies(source, copies, ArrayCount(copies));
+  const Mat4 move = mat4_translate(offset);
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrMeshInstance *instance =
+        vkr_mesh_manager_get_instance(manager, copies[i]);
+    if (!instance || !instance->bounds_valid) {
+      continue;
+    }
+    const Vec3 c = instance->bounds_world_center;
+    if (c.x < lo.x || c.x > hi.x || c.y < lo.y || c.y > hi.y || c.z < lo.z ||
+        c.z > hi.z) {
+      continue;
+    }
+    if (stage->copy_count == VKR_MODEL_STAGE_COPY_MAX) {
+      stage->truncated = true_v;
+      return;
+    }
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    const VkrMeshInstanceHandle copy = vkr_mesh_manager_instance_clone(
+        manager, copies[i], mat4_mul(move, instance->model), &error);
+    if (copy.id != 0u) {
+      stage->sources[stage->copy_count] = copies[i];
+      stage->copies[stage->copy_count++] = copy;
+    }
+  }
+}
+
 void vkr_model_stage_show(VkrModelStage *stage, VkrRenderAssets *assets,
                           const VkrScene *source, VkrEntityId subject,
                           Vec3 offset) {
@@ -136,16 +189,20 @@ void vkr_model_stage_show(VkrModelStage *stage, VkrRenderAssets *assets,
   if (!alive) {
     subject = VKR_ENTITY_ID_INVALID;
   }
+  const uint64_t population = vkr_scene_population_revision(source);
   if (subject.u64 == stage->subject.u64 &&
       vec3_length(vec3_sub(offset, stage->offset)) < 1.0e-5f &&
+      population == stage->population_revision &&
       model_stage_current(stage, assets)) {
     return;
   }
   model_stage_clear(stage, assets);
   stage->subject = subject;
   stage->offset = offset;
+  stage->population_revision = population;
   if (alive) {
     model_stage_copy(stage, assets, source, subject, offset);
+    model_stage_copy_scatter(stage, assets, source, offset);
   }
 }
 

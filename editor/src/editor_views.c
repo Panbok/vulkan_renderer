@@ -314,6 +314,16 @@ static void model_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   }
 }
 
+VkrEntityId vkr_editor_views_scatter(const VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame) {
+  const VkrEntityId scatter = editor->model.scatter;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, scatter);
+  return scene && vkr_scene_entity_alive(scene, scatter) &&
+                 vkr_scene_get_typed(scene, scatter, &vkr_scene_scatter_type)
+             ? scatter
+             : VKR_ENTITY_ID_INVALID;
+}
+
 // =============================================================================
 // Update and bodies
 // =============================================================================

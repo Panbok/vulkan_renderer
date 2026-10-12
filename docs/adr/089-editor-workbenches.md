@@ -175,7 +175,17 @@ editor stops asking, and Play shows the level. While it shows:
   the subject's box stands on the ground centred on the origin. A copy whose
   source asset or overrides change is copied again, so an Assign shows at
   once. Brushes, shapes and terrain are generated per scene and are not
-  copied; the caption says so.
+  copied; the caption says so. Scatter copies standing within the
+  subject's bounds are copied too, again whenever a scatter places its
+  copies anew, and the subject's decals and its descendants' draw moved
+  onto the stage.
+- The Art palette's Decal and Scatter paint tools work on the subject: the
+  pointer ray, moved back from the stage, meets the subject's drawn
+  triangles (`vkr_mesh_raycast_instance`). Decals become the subject's
+  children without being selected (ADR-101); scatter paint adds to the
+  scatter chosen under PAINT WITH and lands on drawn meshes (ADR-102).
+  The tools' previews draw on the stage; the rest of the level's overlay
+  does not.
 - Picking, the gizmo, the selection outline, the ground grid and the
   editor's level overlays (icons, physics shapes, brush outlines) rest.
 - A switch to or from the stage starts temporal history and the shadow

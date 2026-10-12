@@ -20,6 +20,7 @@
 #include "material_graph_tests.h"
 #include "mesh_lightmap_uv_tests.h"
 #include "mesh_material_override_tests.h"
+#include "mesh_raycast_tests.h"
 #include "mesh_skin_tests.h"
 #include "net_scene_edit_test.h"
 #include "net_test.h"
@@ -141,6 +142,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_mesh_cooked_tests),
     VKR_TEST_SUITE(run_mesh_lightmap_uv_tests),
     VKR_TEST_SUITE(run_mesh_material_override_tests),
+    VKR_TEST_SUITE(run_mesh_raycast_tests),
     VKR_TEST_SUITE(run_lightmap_bake_tests),
     VKR_TEST_SUITE(run_filesystem_tests),
     VKR_TEST_SUITE(run_asset_path_tests),

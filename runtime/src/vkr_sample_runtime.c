@@ -4141,6 +4141,7 @@ sample_model_stage_update(VkrStandardSceneRuntime *application) {
                          !application->editor_viewport.simulation_running;
   VkrScene *before = application->stage_scene;
   application->stage_scene = NULL;
+  application->stage_source = NULL;
   if (!wanted) {
     vkr_model_stage_close(&state->model_stage, &application->assets);
   } else {
@@ -4149,10 +4150,13 @@ sample_model_stage_update(VkrStandardSceneRuntime *application) {
     if (vkr_allocator_scope_is_valid(&scope) &&
         vkr_model_stage_open(&state->model_stage, &application->assets,
                              application->frame_allocator)) {
-      vkr_model_stage_show(
-          &state->model_stage, &application->assets,
-          sample_entity_container(application, request->subject, NULL),
-          request->subject, request->offset);
+      VkrScene *source =
+          sample_entity_container(application, request->subject, NULL);
+      vkr_model_stage_show(&state->model_stage, &application->assets, source,
+                           request->subject, request->offset);
+      application->stage_source = source;
+      application->stage_subject = request->subject;
+      application->stage_offset = request->offset;
       vkr_scene_handle_update_and_sync(state->model_stage.scene,
                                        &application->assets, 0.0);
       application->stage_scene = vkr_model_stage_scene(&state->model_stage);
@@ -4200,6 +4204,11 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
     }
   }
   sample_model_stage_update(application);
+  /* A cooked file decoded for mesh ray tests is let go once unused. */
+  if (application->assets.mesh_raycast) {
+    vkr_mesh_raycast_cache_trim(application->assets.mesh_raycast,
+                                vkr_platform_get_absolute_time());
+  }
   /* During a session the IO router drains sensor events after each tick
      (vkr_io_router.h); otherwise they are discarded here so the queue never
      fills. */

@@ -215,8 +215,26 @@ void vkr_scene_decal_frame_begin(VkrSceneDecalFrame *frame) {
   frame->next_sequence = 0u;
 }
 
-void vkr_scene_decal_frame_append(VkrSceneDecalFrame *frame, VkrScene *scene,
-                                  Vec3 camera_position) {
+/* Whether `entity` is `root` or lies below it. */
+static bool8_t decal_under(const VkrScene *scene, VkrEntityId entity,
+                           VkrEntityId root) {
+  for (uint32_t depth = 0; entity.u64 && depth < scene->world->dir.capacity;
+       ++depth) {
+    if (entity.u64 == root.u64) {
+      return true_v;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return false_v;
+}
+
+/* Appends the decals of `root`'s subtree, or every decal for an invalid
+   root, moved by `offset`. */
+static void decal_frame_append(VkrSceneDecalFrame *frame, VkrScene *scene,
+                               Vec3 camera_position, VkrEntityId root,
+                               Vec3 offset) {
   VkrSceneDecals *state = scene ? decal_state(scene, false_v) : NULL;
   if (!state || !scene->assets) {
     return;
@@ -243,16 +261,36 @@ void vkr_scene_decal_frame_append(VkrSceneDecalFrame *frame, VkrScene *scene,
         !vkr_scene_entity_visible(scene, record->entity)) {
       continue;
     }
+    if (root.u64 && !decal_under(scene, record->entity, root)) {
+      continue;
+    }
     const SceneTransform *transform = vkr_entity_get_component(
         scene->world, record->entity, scene->comp_transform);
+    if (!transform) {
+      continue;
+    }
+    const Mat4 world = mat4_mul(mat4_translate(offset), transform->world);
     VkrDecal decal;
-    if (!transform ||
-        !decal_lower(&transform->world, value, record->material, &decal)) {
+    if (!decal_lower(&world, value, record->material, &decal)) {
       continue;
     }
     decal_frame_keep(frame, &decal,
                      decal_distance_squared(&decal, camera_position),
                      value->sort_order);
+  }
+}
+
+void vkr_scene_decal_frame_append(VkrSceneDecalFrame *frame, VkrScene *scene,
+                                  Vec3 camera_position) {
+  decal_frame_append(frame, scene, camera_position, VKR_ENTITY_ID_INVALID,
+                     vec3_zero());
+}
+
+void vkr_scene_decal_frame_append_moved(VkrSceneDecalFrame *frame,
+                                        VkrScene *scene, Vec3 camera_position,
+                                        VkrEntityId root, Vec3 offset) {
+  if (root.u64) {
+    decal_frame_append(frame, scene, camera_position, root, offset);
   }
 }
 

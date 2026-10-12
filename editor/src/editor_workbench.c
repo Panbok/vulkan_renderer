@@ -1329,6 +1329,65 @@ static void workbench_slider_row(VkrEditorPalette *palette, String8 id,
   palette->y += 26.0f;
 }
 
+/* In the Model view the selection is the viewed model, so scatter paint
+   adds to a scatter chosen here: one button per scatter of the model's
+   container, the only one chosen at once. */
+static void workbench_model_scatters(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     VkrEditorPalette *palette) {
+  const VkrScene *scene = vkr_editor_entity_scene(frame, editor->model.subject);
+  vkr_editor_palette_heading(palette, string8_lit("art.model_scatter"),
+                             string8_lit("PAINT WITH"));
+  uint32_t shown = 0u;
+  VkrEntityId only = VKR_ENTITY_ID_INVALID;
+  for (uint32_t i = 0; scene && i < scene->topo_count && shown < 12u; ++i) {
+    const VkrEntityId entity = scene->topo_order[i];
+    const SceneScatter *scatter =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_scatter_type);
+    if (!scatter) {
+      continue;
+    }
+    only = shown ? VKR_ENTITY_ID_INVALID : entity;
+    shown++;
+    const String8 name = vkr_scene_get_name(scene, entity);
+    char label[64];
+    snprintf(label, sizeof(label), "%.*s", (int)Min(name.length, 60u),
+             name.length ? (const char *)name.str : "Scatter");
+    (void)vkr_ui_push_id_u64(palette->ui, entity.u64);
+    if (vkr_editor_palette_button(
+            palette, string8_lit("art.model_scatter_pick"), label,
+            VKR_UI_ICON_TREE,
+            scatter->mesh[0]
+                ? string8_lit("Paint this scatter's copies onto the model")
+                : string8_lit("This scatter names no mesh yet; set it in "
+                              "Details in the Scene view"),
+            editor->model.scatter.u64 == entity.u64, !scatter->mesh[0])) {
+      editor->model.scatter = entity;
+    }
+    (void)vkr_ui_pop_id(palette->ui);
+  }
+  /* A lone scatter is the one painted. */
+  if (shown == 1u && !vkr_editor_views_scatter(editor, frame).u64) {
+    editor->model.scatter = only;
+  }
+  vkr_editor_palette_end(palette);
+  if (!shown && !palette->folded) {
+    const VkrUiTheme *theme = vkr_ui_theme();
+    VkrUiWidgetConfig note = vkr_editor_details_widget(
+        PALETTE_PAD_PT, palette->y, palette->width - PALETTE_PAD_PT * 2.0f,
+        36.0f);
+    note.style.font_size_pt = theme->font_caption;
+    note.style.text_color = theme->text_secondary;
+    note.text.layout.word_wrap = true_v;
+    note.text.layout.max_width = palette->width - PALETTE_PAD_PT * 2.0f;
+    vkr_ui_label(palette->ui, string8_lit("art.model_scatter_none"),
+                 string8_lit("No scatter in this scene: add one in the Scene "
+                             "view (Terrain tools) and name its mesh"),
+                 &note);
+    palette->y += 40.0f;
+  }
+}
+
 static float32_t workbench_art_palette(VkrEditorUi *editor,
                                        const VkrSampleUiFrame *frame,
                                        VkrUiRect bounds) {
@@ -1465,6 +1524,9 @@ static float32_t workbench_art_palette(VkrEditorUi *editor,
                          0.01f, 10.0f);
     workbench_slider_row(&palette, string8_lit("art.scatter_spacing"),
                          "Spacing", "m", &editor->scatter_spacing, 0.0f, 5.0f);
+    if (editor->view_shown == VKR_EDITOR_VIEW_MODEL) {
+      workbench_model_scatters(editor, frame, &palette);
+    }
   }
   if (decal_tool) {
     workbench_slider_row(&palette, string8_lit("art.decal_size"), "Size", "m",

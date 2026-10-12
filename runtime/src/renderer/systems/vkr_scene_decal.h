@@ -44,6 +44,13 @@ void vkr_scene_decal_frame_begin(VkrSceneDecalFrame *frame);
 void vkr_scene_decal_frame_append(VkrSceneDecalFrame *frame, VkrScene *scene,
                                   Vec3 camera_position);
 
+/** As vkr_scene_decal_frame_append, for the decals of `root` and the
+ * entities below it only, each moved by `offset`: the model stage shows its
+ * subject's decals where it stands the subject (vkr_model_stage.h). */
+void vkr_scene_decal_frame_append_moved(VkrSceneDecalFrame *frame,
+                                        VkrScene *scene, Vec3 camera_position,
+                                        VkrEntityId root, Vec3 offset);
+
 /** Orders the kept decals for compositing, builds their grid and keeps their
  * materials' textures resident. Call inside the frame's texture residency
  * pass (after vkr_scene_build_world_draws). */

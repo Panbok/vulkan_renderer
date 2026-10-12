@@ -427,6 +427,9 @@ typedef struct SceneScatter {
   /* Copies lean to the surface's normal instead of standing upright. */
   bool8_t align_to_surface;
   bool8_t random_yaw;
+  /* Copies also land on the triangles of drawn meshes, which need no
+     collision (vkr_mesh_raycast.h); the Model view's scatter paint sets it. */
+  bool8_t render_surfaces;
 } SceneScatter;
 
 /* A painted area of the scatter that is its parent (ADR-102): copies fill a
@@ -454,6 +457,10 @@ typedef struct SceneScatterArea {
   float32_t spacing;
   uint32_t seed;
   uint32_t order;
+  /* World box copies must land inside, or none for an empty box: a stroke
+     painted onto one model keeps its copies off what lies beyond it. */
+  Vec3 within_min;
+  Vec3 within_max;
 } SceneScatterArea;
 
 /* Entity IO (ADR-084): engine components whose outputs connections wire to

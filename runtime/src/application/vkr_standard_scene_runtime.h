@@ -283,6 +283,11 @@ typedef struct VkrStandardSceneRuntime {
      light and draw it in place of the containers, whose objects the editor
      hides, and leave out added scenes' lights, decals and world text. */
   VkrScene *stage_scene;
+  /* The stage's subject, the container it lies in and the offset that
+     stands it on the stage; its decals show there too. */
+  VkrScene *stage_source;
+  VkrEntityId stage_subject;
+  Vec3 stage_offset;
   uint64_t scene_generation;
   /** Cloud wind offset in world X and Z metres, wrapped at
       VKR_CLOUD_WIND_PERIOD_M. Float64 keeps metre precision over a session. */

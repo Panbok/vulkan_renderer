@@ -2612,6 +2612,12 @@ static const VkrPropertyDesc s_scatter_properties[] = {
      .tooltip = "Copies turn about their up axis at random",
      .offset = TYPE_OFFSET(SceneScatter, random_yaw),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "render_surfaces",
+     .label = "Land on meshes",
+     .tooltip = "Copies also land on drawn meshes that have no collision, "
+                "such as imported models",
+     .offset = TYPE_OFFSET(SceneScatter, render_surfaces),
+     .kind = VKR_PROPERTY_BOOL},
 };
 
 static void scatter_defaults(void *value) {
@@ -2676,6 +2682,25 @@ static const VkrPropertyDesc s_scatter_area_properties[] = {
                 "leave room for earlier copies",
      .offset = TYPE_OFFSET(SceneScatterArea, order),
      .kind = VKR_PROPERTY_U32},
+    {.name = "within_min",
+     .label = "Within min",
+     .unit = "m",
+     .tooltip = "Lowest corner of the world box copies land in; an empty "
+                "box leaves them anywhere",
+     .offset = TYPE_OFFSET(SceneScatterArea, within_min),
+     .kind = VKR_PROPERTY_VEC3,
+     .min = -100000.0f,
+     .max = 100000.0f,
+     .step = 0.1f},
+    {.name = "within_max",
+     .label = "Within max",
+     .unit = "m",
+     .tooltip = "Highest corner of the world box copies land in",
+     .offset = TYPE_OFFSET(SceneScatterArea, within_max),
+     .kind = VKR_PROPERTY_VEC3,
+     .min = -100000.0f,
+     .max = 100000.0f,
+     .step = 0.1f},
 };
 
 static void scatter_area_defaults(void *value) {

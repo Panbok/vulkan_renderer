@@ -27,16 +27,21 @@ typedef struct VkrModelStage {
   VkrMeshInstanceHandle copies[VKR_MODEL_STAGE_COPY_MAX];
   /* The subject had more mesh instances than the stage copies. */
   bool8_t truncated;
+  /* The source's population revision the scatter copies were taken at:
+     copies that land within the subject's bounds show with it. */
+  uint64_t population_revision;
 } VkrModelStage;
 
 /* Loads the stage's scene once; true while it is open. */
 bool8_t vkr_model_stage_open(VkrModelStage *stage, VkrRenderAssets *assets,
                              VkrAllocator *temp_alloc);
 
-/* Shows `subject` of `source` on the stage, its copies moved by `offset`,
-   copying again when the subject or offset changes or a copied instance's
-   asset or materials no longer match its source. A NULL source or dead
-   subject leaves the stage empty. */
+/* Shows `subject` of `source` on the stage, its copies moved by `offset`:
+   its mesh instances and its descendants', and the scatter copies standing
+   within their bounds. It copies again when the subject or offset changes,
+   a scatter places its copies again, or a copied instance's asset or
+   materials no longer match its source. A NULL source or dead subject
+   leaves the stage empty. */
 void vkr_model_stage_show(VkrModelStage *stage, VkrRenderAssets *assets,
                           const VkrScene *source, VkrEntityId subject,
                           Vec3 offset);

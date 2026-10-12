@@ -2,6 +2,7 @@
 
 #include "core/logger.h"
 #include "renderer/systems/vkr_mesh_manager.h"
+#include "renderer/systems/vkr_mesh_raycast.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_physics.h"
@@ -42,6 +43,8 @@ struct s_VkrScenePopulation {
   PopulationRule rules[VKR_SCENE_POPULATION_RULE_MAX];
   uint32_t rule_count;
   uint32_t instance_total;
+  /* Counts builds, which may replace any rule's copies. */
+  uint64_t revision;
 };
 
 // =============================================================================
@@ -170,6 +173,24 @@ const char *vkr_scene_population_status(const VkrScene *scene,
                                         VkrEntityId entity) {
   const PopulationRule *rule = population_find(scene, entity);
   return rule && rule->status[0] ? rule->status : NULL;
+}
+
+uint64_t vkr_scene_population_revision(const VkrScene *scene) {
+  return scene && scene->population ? scene->population->revision : 0u;
+}
+
+uint32_t vkr_scene_population_copies(const VkrScene *scene,
+                                     VkrMeshInstanceHandle *out,
+                                     uint32_t capacity) {
+  const VkrScenePopulation *state = scene ? scene->population : NULL;
+  uint32_t count = 0u;
+  for (uint32_t r = 0; state && r < state->rule_count; ++r) {
+    const PopulationRule *rule = &state->rules[r];
+    for (uint32_t i = 0; i < rule->instance_count && count < capacity; ++i) {
+      out[count++] = rule->instances[i];
+    }
+  }
+  return count;
 }
 
 // =============================================================================
@@ -335,20 +356,85 @@ static uint32_t population_spline_models(const VkrScene *scene,
   return sampled;
 }
 
+/* Drawn meshes a scatter with `render_surfaces` lands on: the scene's mesh
+   renderers whose bounds meet the region its copies fall through, gathered
+   once a build. Its own copies are no mesh renderers, so none stack. */
+typedef struct PopulationSurfaces {
+  VkrMeshRaycastCache *cache;
+  VkrMeshManager *meshes;
+  VkrMeshInstanceHandle *instances;
+  uint32_t count;
+} PopulationSurfaces;
+
+static void population_surfaces_collect(VkrScene *scene, Vec3 lo, Vec3 hi,
+                                        VkrAllocator *scratch,
+                                        PopulationSurfaces *out) {
+  *out = (PopulationSurfaces){0};
+  VkrMeshRaycastCache *cache = vkr_render_assets_mesh_raycast(scene->assets);
+  if (!cache || !scene->topo_count) {
+    return;
+  }
+  out->instances = vkr_allocator_alloc(
+      scratch, sizeof(VkrMeshInstanceHandle) * scene->topo_count,
+      POPULATION_TAG);
+  if (!out->instances) {
+    return;
+  }
+  out->cache = cache;
+  out->meshes = &scene->assets->mesh_manager;
+  for (uint32_t i = 0; i < scene->topo_count; ++i) {
+    const VkrEntityId entity = scene->topo_order[i];
+    const SceneMeshRenderer *renderer = vkr_entity_get_component(
+        scene->world, entity, scene->comp_mesh_renderer);
+    const VkrMeshInstance *instance =
+        renderer
+            ? vkr_mesh_manager_get_instance(out->meshes, renderer->instance)
+            : NULL;
+    /* Editor hiding does not take a surface away, only visibility does. */
+    if (!instance || !instance->bounds_valid ||
+        !vkr_scene_entity_visible(scene, entity)) {
+      continue;
+    }
+    const Vec3 c = instance->bounds_world_center;
+    const float32_t r = instance->bounds_world_radius;
+    if (c.x + r < lo.x || c.x - r > hi.x || c.y + r < lo.y || c.y - r > hi.y ||
+        c.z + r < lo.z || c.z - r > hi.z) {
+      continue;
+    }
+    out->instances[out->count++] = renderer->instance;
+  }
+}
+
 /* Drops one copy straight down from `top` to `bottom` onto the first
    surface between them, turned and scaled from `seed` and `index` as the
    rule asks; false when the column meets nothing. A streamed terrain has
    collision only near its streaming sources, so terrain samples answer
-   where they lie above what the ray met. */
+   where they lie above what the ray met. With `surfaces`, drawn meshes
+   count as surfaces too. */
 static bool8_t population_drop(VkrScene *scene, const SceneScatter *rule,
-                               Vec3 top, Vec3 bottom, uint32_t seed,
-                               uint32_t index, Vec3 *out_position,
-                               Mat4 *out_model) {
+                               const PopulationSurfaces *surfaces, Vec3 top,
+                               Vec3 bottom, uint32_t seed, uint32_t index,
+                               Vec3 *out_position, Mat4 *out_model) {
   VkrPhysicsRayHit hit = {0};
-  const bool8_t struck =
-      vkr_scene_physics_raycast(scene, top, vec3_sub(bottom, top), &hit);
+  const Vec3 delta = vec3_sub(bottom, top);
+  bool8_t struck = vkr_scene_physics_raycast(scene, top, delta, &hit);
   Vec3 position = vec3_new(hit.position[0], hit.position[1], hit.position[2]);
   Vec3 normal = vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
+  const float32_t length_sq = Max(vec3_dot(delta, delta), 1.0e-12f);
+  float32_t nearest =
+      struck ? vec3_dot(vec3_sub(position, top), delta) / length_sq : 2.0f;
+  for (uint32_t i = 0; surfaces && i < surfaces->count; ++i) {
+    VkrMeshRaycastHit mesh_hit;
+    if (vkr_mesh_raycast_instance(surfaces->cache, surfaces->meshes,
+                                  surfaces->instances[i], top, delta,
+                                  &mesh_hit) &&
+        mesh_hit.fraction < nearest) {
+      nearest = mesh_hit.fraction;
+      position = mesh_hit.position;
+      normal = mesh_hit.normal;
+      struck = true_v;
+    }
+  }
   Vec3 ground = vec3_zero();
   Vec3 ground_normal = vec3_zero();
   if (vkr_scene_terrain_ground(scene, top, bottom.y, &ground, &ground_normal) &&
@@ -381,12 +467,28 @@ static bool8_t population_drop(VkrScene *scene, const SceneScatter *rule,
    first surface below the box's top; a column that meets nothing places
    none. */
 static uint32_t population_scatter_models(VkrScene *scene, VkrEntityId entity,
-                                          const SceneScatter *rule, Mat4 *out,
+                                          const SceneScatter *rule,
+                                          VkrAllocator *scratch, Mat4 *out,
                                           uint32_t capacity) {
   const SceneTransform *transform =
       vkr_entity_get_component(scene->world, entity, scene->comp_transform);
   if (!transform) {
     return 0u;
+  }
+  PopulationSurfaces surfaces = {0};
+  if (rule->render_surfaces) {
+    Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+    Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    for (uint32_t corner = 0; corner < 8u; ++corner) {
+      const Vec3 point = mat4_mul_vec3(
+          transform->world,
+          vec3_new((corner & 1u) ? rule->extents.x : -rule->extents.x,
+                   (corner & 2u) ? rule->extents.y : -rule->extents.y,
+                   (corner & 4u) ? rule->extents.z : -rule->extents.z));
+      lo = vec3_new(Min(lo.x, point.x), Min(lo.y, point.y), Min(lo.z, point.z));
+      hi = vec3_new(Max(hi.x, point.x), Max(hi.y, point.y), Max(hi.z, point.z));
+    }
+    population_surfaces_collect(scene, lo, hi, scratch, &surfaces);
   }
   uint32_t placed = 0u;
   const uint32_t wanted = Min(rule->count, capacity);
@@ -400,8 +502,8 @@ static uint32_t population_scatter_models(VkrScene *scene, VkrEntityId entity,
         transform->world,
         vec3_new(u * rule->extents.x, -rule->extents.y, v * rule->extents.z));
     Vec3 position;
-    if (population_drop(scene, rule, top, bottom, rule->seed, i, &position,
-                        &out[placed])) {
+    if (population_drop(scene, rule, &surfaces, top, bottom, rule->seed, i,
+                        &position, &out[placed])) {
       placed++;
     }
   }
@@ -460,6 +562,28 @@ static uint32_t population_area_models(VkrScene *scene, VkrEntityId entity,
     }
     sorted[at] = c;
   }
+  PopulationSurfaces surfaces = {0};
+  if (rule->render_surfaces) {
+    Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+    Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    for (uint32_t a = 0; a < area_count; ++a) {
+      const VkrEntityId child = children[sorted[a]];
+      const SceneScatterArea *area =
+          vkr_scene_get_typed(scene, child, &vkr_scene_scatter_area_type);
+      const SceneTransform *transform =
+          vkr_entity_get_component(scene->world, child, scene->comp_transform);
+      if (!transform) {
+        continue;
+      }
+      const Vec3 center = mat4_position(transform->world);
+      const float32_t reach = area->radius + 1.0f;
+      lo = vec3_new(Min(lo.x, center.x - reach), Min(lo.y, center.y - reach),
+                    Min(lo.z, center.z - reach));
+      hi = vec3_new(Max(hi.x, center.x + reach), Max(hi.y, center.y + reach),
+                    Max(hi.z, center.z + reach));
+    }
+    population_surfaces_collect(scene, lo, hi, scratch, &surfaces);
+  }
   uint32_t placed = 0u;
   for (uint32_t a = 0; a < area_count; ++a) {
     const VkrEntityId child = children[sorted[a]];
@@ -484,11 +608,27 @@ static uint32_t population_area_models(VkrScene *scene, VkrEntityId entity,
           area->radius * sqrtf(population_random(area->seed, i, 1u));
       const Vec3 column = vec3_new(center.x + cosf(angle) * distance, center.y,
                                    center.z + sinf(angle) * distance);
+      /* An area painted onto one model drops only through that model's
+         box, so what hangs above it cannot catch the copy, and a column
+         beside the box drops none. */
+      const Vec3 lo = area->within_min;
+      const Vec3 hi = area->within_max;
+      const bool8_t within = lo.x < hi.x && lo.y < hi.y && lo.z < hi.z;
+      if (within && (column.x < lo.x || column.x > hi.x || column.z < lo.z ||
+                     column.z > hi.z)) {
+        continue;
+      }
+      const float32_t top =
+          within ? Min(center.y + reach, hi.y) : center.y + reach;
+      const float32_t bottom =
+          within ? Max(center.y - reach, lo.y) : center.y - reach;
       Vec3 position;
       Mat4 model;
-      if (!population_drop(scene, rule, vec3_add(column, vec3_new(0, reach, 0)),
-                           vec3_sub(column, vec3_new(0, reach, 0)), area->seed,
-                           i, &position, &model)) {
+      if (top <= bottom ||
+          !population_drop(scene, rule, &surfaces,
+                           vec3_new(column.x, top, column.z),
+                           vec3_new(column.x, bottom, column.z), area->seed, i,
+                           &position, &model)) {
         continue;
       }
       bool8_t crowded = false_v;
@@ -662,6 +802,7 @@ static void population_build(VkrScene *scene, PopulationRule *rule,
                              uint64_t signature) {
   struct VkrRenderAssets *assets = scene->assets;
   VkrScenePopulation *state = scene->population;
+  state->revision++;
   rule->signature = signature;
   rule->status[0] = '\0';
   rule->visible = population_visible(scene, rule);
@@ -716,8 +857,8 @@ static void population_build(VkrScene *scene, PopulationRule *rule,
                                    &assets->scratch_allocator, models, room,
                                    &wanted);
   } else if (models) {
-    count =
-        population_scatter_models(scene, rule->entity, scatter, models, room);
+    count = population_scatter_models(scene, rule->entity, scatter,
+                                      &assets->scratch_allocator, models, room);
   }
   if (painted && count < Min(wanted, room)) {
     snprintf(rule->status, sizeof(rule->status),

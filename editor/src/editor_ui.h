@@ -450,6 +450,9 @@ typedef struct VkrEditorModelView {
   uint64_t scene_generation;
   /* The primary selection the stage shows; a new one is framed. */
   VkrEntityId subject;
+  /* The scatter the view's scatter paint adds to, chosen in the Art
+     palette, since the selection is the subject. */
+  VkrEntityId scatter;
   /* Moves the subject from the level onto the stage: its box centred on
      the origin and standing on the ground (VkrSampleModelStageRequest). */
   Vec3 offset;

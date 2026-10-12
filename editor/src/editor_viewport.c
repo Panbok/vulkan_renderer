@@ -9,6 +9,8 @@
 #include "editor_projects.h"
 
 #include "renderer/systems/vkr_gizmo_system.h"
+#include "renderer/systems/vkr_mesh_raycast.h"
+#include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
 
@@ -1905,6 +1907,59 @@ static bool8_t viewport_surface_point(const VkrSampleUiFrame *frame, Vec2 pixel,
   return true_v;
 }
 
+/* In the Model view the pointer meets the subject standing on the model
+   stage: the ray moved back from the stage to the level meets the
+   triangles the subject's meshes draw (vkr_mesh_raycast.h), which need no
+   collision. The point, normal and ray direction are the level's; the
+   point plus the stage offset is where it shows. */
+static bool8_t viewport_model_surface(const VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame, Vec2 pixel,
+                                      Vec3 *out_point, Vec3 *out_normal,
+                                      Vec3 *out_direction) {
+  const VkrEntityId subject = editor->model.subject;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, subject);
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  if (!scene || !vkr_scene_entity_alive(scene, subject) ||
+      !viewport_ray(frame, pixel, &origin, &direction)) {
+    return false_v;
+  }
+  VkrMeshRaycastCache *cache = vkr_render_assets_mesh_raycast(scene->assets);
+  if (!cache) {
+    return false_v;
+  }
+  origin = vec3_sub(origin, editor->model.offset);
+  const Vec3 delta = vec3_scale(direction, 1000.0f);
+  float32_t nearest = 2.0f;
+  for (uint32_t i = 0; i < scene->topo_count; ++i) {
+    const VkrEntityId candidate = scene->topo_order[i];
+    const SceneMeshRenderer *renderer = vkr_entity_get_component(
+        scene->world, candidate, scene->comp_mesh_renderer);
+    if (!renderer) {
+      continue;
+    }
+    VkrEntityId ancestor = candidate;
+    for (uint32_t depth = 0; ancestor.u64 && ancestor.u64 != subject.u64 &&
+                             depth < scene->world->dir.capacity;
+         ++depth) {
+      const SceneTransform *parent = vkr_entity_get_component(
+          scene->world, ancestor, scene->comp_transform);
+      ancestor = parent ? parent->parent : VKR_ENTITY_ID_INVALID;
+    }
+    VkrMeshRaycastHit hit;
+    if (ancestor.u64 == subject.u64 &&
+        vkr_mesh_raycast_instance(cache, &scene->assets->mesh_manager,
+                                  renderer->instance, origin, delta, &hit) &&
+        hit.fraction < nearest) {
+      nearest = hit.fraction;
+      *out_point = hit.position;
+      *out_normal = hit.normal;
+    }
+  }
+  *out_direction = direction;
+  return nearest <= 1.0f;
+}
+
 /* The measure tool: a click sets the first point on the surface under the
    pointer, the next click the second, and a third starts over; Shift snaps
    each point to the grid. The Scene overlay draws the line and its
@@ -1983,11 +2038,17 @@ static void viewport_decal_tool(VkrEditorUi *editor,
   Vec3 direction = {0};
   Vec3 point = {0};
   Vec3 normal = {0};
-  if (!viewport_ray(frame, mouse, &origin, &direction) ||
-      !viewport_surface_point(frame, mouse, false_v, &point, &normal)) {
+  /* In the Model view decals go onto the subject, as its children, and
+     the view keeps it. */
+  const bool8_t model = editor->view_shown == VKR_EDITOR_VIEW_MODEL;
+  if (model
+          ? !viewport_model_surface(editor, frame, mouse, &point, &normal,
+                                    &direction)
+          : (!viewport_ray(frame, mouse, &origin, &direction) ||
+             !viewport_surface_point(frame, mouse, false_v, &point, &normal))) {
     return;
   }
-  editor->decal_hover = point;
+  editor->decal_hover = model ? vec3_add(point, editor->model.offset) : point;
   editor->decal_hover_normal = normal;
   editor->decal_hover_facing = direction;
   editor->decal_hover_valid = true_v;
@@ -1995,9 +2056,19 @@ static void viewport_decal_tool(VkrEditorUi *editor,
       !editor->agent) {
     return;
   }
-  char target[16];
-  if (!viewport_target(frame, target, sizeof(target))) {
-    return;
+  char target[48];
+  if (model) {
+    const VkrEntityId subject = editor->model.subject;
+    snprintf(target, sizeof(target), "\"parent\":\"%u:%u:%u\"",
+             (unsigned)subject.parts.world, (unsigned)subject.parts.index,
+             (unsigned)subject.parts.generation);
+  } else {
+    char container[16];
+    if (!viewport_target(frame, container, sizeof(container))) {
+      return;
+    }
+    snprintf(target, sizeof(target), "\"container\":%s,\"select\":true",
+             container);
   }
   /* Faces, meshes and decals take material files, not graphs. */
   const char *open = vkr_editor_material_open_path(editor->materials);
@@ -2011,8 +2082,7 @@ static void viewport_decal_tool(VkrEditorUi *editor,
            "{\"v\":1,\"id\":\"decal\",\"op\":\"decal.place\",\"args\":{"
            "\"position\":[%g,%g,%g],\"normal\":[%g,%g,%g],"
            "\"facing\":[%g,%g,%g],\"size\":%g,\"depth\":%g,\"angle\":%g,"
-           "\"material\":\"%s\",\"container\":%s,\"review\":false,"
-           "\"select\":true}}",
+           "\"material\":\"%s\",%s,\"review\":false}}",
            point.x, point.y, point.z, normal.x, normal.y, normal.z, direction.x,
            direction.y, direction.z, editor->decal_size, editor->decal_depth,
            editor->decal_angle, material ? open : "", target);
@@ -2044,21 +2114,66 @@ static void viewport_scatter_send(VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame,
                                   VkrEntityId target) {
   VkrUiSystem *ui = frame->ui;
-  const uint64_t capacity = 512u + (uint64_t)editor->scatter_dab_count * 64u;
+  const uint64_t capacity = 768u + (uint64_t)editor->scatter_dab_count * 64u;
   char *line = vkr_allocator_alloc(ui->frame_allocator, capacity,
                                    VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!line || !editor->agent || !editor->scatter_dab_count) {
     return;
   }
+  /* Painted onto a model in the Model view, the scatter lands on drawn
+     meshes too, in the same undo step. */
+  const VkrScene *scene = vkr_editor_entity_scene(frame, target);
+  const SceneScatter *scatter =
+      scene ? vkr_scene_get_typed(scene, target, &vkr_scene_scatter_type)
+            : NULL;
+  const bool8_t surfaces = editor->view_shown == VKR_EDITOR_VIEW_MODEL &&
+                           scatter && !scatter->render_surfaces &&
+                           !editor->scatter_erasing;
   int32_t written =
       snprintf(line, capacity,
-               "{\"v\":1,\"id\":\"scatter\",\"op\":\"scatter.paint\",\"args\":{"
-               "\"scatter\":\"%u:%u:%u\",\"radius\":%g,\"density\":%g,"
-               "\"spacing\":%g,\"erase\":%s,\"review\":false,\"points\":[",
-               (unsigned)target.parts.world, (unsigned)target.parts.index,
-               (unsigned)target.parts.generation, editor->scatter_radius,
-               editor->scatter_density, editor->scatter_spacing,
-               editor->scatter_erasing ? "true" : "false");
+               "{\"v\":1,\"id\":\"scatter\",\"op\":\"batch\",\"args\":{"
+               "\"review\":false,\"ops\":[");
+  if (surfaces && written > 0) {
+    written += snprintf(
+        line + written, capacity - (uint64_t)written,
+        "{\"op\":\"component.set\",\"args\":{\"entity\":\"%u:%u:%u\","
+        "\"type\":\"scatter\",\"values\":{\"render_surfaces\":true}}},",
+        (unsigned)target.parts.world, (unsigned)target.parts.index,
+        (unsigned)target.parts.generation);
+  }
+  /* A stroke on the viewed model keeps its copies within the model's box,
+     off whatever lies beside or below it in the level. */
+  char within[160] = "";
+  const VkrScene *subject_scene =
+      vkr_editor_entity_scene(frame, editor->model.subject);
+  VkrBrushGeometry *geometry =
+      editor->view_shown == VKR_EDITOR_VIEW_MODEL && !editor->scatter_erasing &&
+              subject_scene
+          ? vkr_allocator_alloc(ui->frame_allocator, sizeof(*geometry),
+                                VKR_ALLOCATOR_MEMORY_TAG_STRUCT)
+          : NULL;
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  if (geometry &&
+      vkr_editor_entity_world_box(subject_scene, editor->model.subject,
+                                  geometry, &lo, &hi)) {
+    const float32_t margin = 0.05f;
+    snprintf(within, sizeof(within),
+             ",\"within\":{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g]}",
+             lo.x - margin, lo.y - margin, lo.z - margin, hi.x + margin,
+             hi.y + margin, hi.z + margin);
+  }
+  if (written > 0) {
+    written +=
+        snprintf(line + written, capacity - (uint64_t)written,
+                 "{\"op\":\"scatter.paint\",\"args\":{"
+                 "\"scatter\":\"%u:%u:%u\",\"radius\":%g,\"density\":%g,"
+                 "\"spacing\":%g,\"erase\":%s%s,\"points\":[",
+                 (unsigned)target.parts.world, (unsigned)target.parts.index,
+                 (unsigned)target.parts.generation, editor->scatter_radius,
+                 editor->scatter_density, editor->scatter_spacing,
+                 editor->scatter_erasing ? "true" : "false", within);
+  }
   for (uint32_t i = 0; i < editor->scatter_dab_count && written > 0 &&
                        (uint64_t)written < capacity;
        ++i) {
@@ -2066,8 +2181,8 @@ static void viewport_scatter_send(VkrEditorUi *editor,
     written += snprintf(line + written, capacity - (uint64_t)written,
                         "%s[%g,%g,%g]", i ? "," : "", dab.x, dab.y, dab.z);
   }
-  if (written > 0 && (uint64_t)written + 4u < capacity) {
-    (void)snprintf(line + written, capacity - (uint64_t)written, "]}}");
+  if (written > 0 && (uint64_t)written + 8u < capacity) {
+    (void)snprintf(line + written, capacity - (uint64_t)written, "]}}]}}");
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
 }
@@ -2098,7 +2213,11 @@ static void viewport_scatter_tool(VkrEditorUi *editor,
     }
     return;
   }
-  const VkrEntityId target = vkr_editor_scatter_target(frame);
+  /* The Model view paints the scatter chosen for it onto the subject; the
+     Scene paints the selected scatter. */
+  const bool8_t model = editor->view_shown == VKR_EDITOR_VIEW_MODEL;
+  const VkrEntityId target = model ? vkr_editor_views_scatter(editor, frame)
+                                   : vkr_editor_scatter_target(frame);
   const bool8_t held = input_is_button_down(frame->input, BUTTON_LEFT);
   if (editor->scatter_stroking && !held) {
     if (target.u64) {
@@ -2112,10 +2231,16 @@ static void viewport_scatter_tool(VkrEditorUi *editor,
   }
   const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
   Vec3 point = {0};
-  if (!viewport_surface_point(frame, mouse, false_v, &point, NULL)) {
+  Vec3 normal = {0};
+  Vec3 direction = {0};
+  if (model ? !viewport_model_surface(editor, frame, mouse, &point, &normal,
+                                      &direction)
+            : !viewport_surface_point(frame, mouse, false_v, &point, NULL)) {
     return;
   }
-  editor->scatter_hover = point;
+  /* Dabs keep the level's points; the brush shows where the stage puts
+     them. */
+  editor->scatter_hover = model ? vec3_add(point, editor->model.offset) : point;
   editor->scatter_hover_valid = true_v;
   if (!target.u64 || editor->menu != VKR_EDITOR_MENU_NONE) {
     return;
@@ -2219,7 +2344,12 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
                  "Esc stops.";
     break;
   case VKR_EDITOR_SCENE_TOOL_SCATTER:
-    hint = !vkr_editor_scatter_target(frame).u64
+    hint = editor->view_shown == VKR_EDITOR_VIEW_MODEL &&
+                   !vkr_editor_views_scatter(editor, frame).u64
+               ? "Choose a scatter under PAINT WITH in the Art palette. Esc "
+                 "stops."
+           : editor->view_shown != VKR_EDITOR_VIEW_MODEL &&
+                   !vkr_editor_scatter_target(frame).u64
                ? "Select a scatter to paint it (Level palette, Scatter). Esc "
                  "stops."
            : editor->scatter_stroking

@@ -12,6 +12,7 @@
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
+#include "renderer/systems/vkr_mesh_raycast.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_world_resources.h"
@@ -33,6 +34,13 @@ typedef struct VkrRenderAssets {
   VkrTextureSystem texture_system;
   VkrMaterialSystem material_system;
   VkrMeshManager mesh_manager;
+  /* CPU triangles of drawn meshes for ray tests where no collision exists,
+     created on first use (vkr_render_assets_mesh_raycast). Main thread
+     only. */
+  VkrMeshRaycastCache *mesh_raycast;
+  /* The cache's own heap: it frees one asset's triangles at a time. */
+  VkrDMemory mesh_raycast_memory;
+  VkrAllocator mesh_raycast_allocator;
   VkrFontSystem font_system;
   VkrWorldResources world_resources;
   VkrMeshLoaderContext mesh_loader;
@@ -59,6 +67,12 @@ typedef struct VkrRenderAssets {
     uint16_t world_id;
   } scene_container_requests[8];
 } VkrRenderAssets;
+
+/* CPU triangle memory the mesh ray cache keeps before it evicts. */
+#define VKR_RENDER_ASSETS_MESH_RAYCAST_BUDGET (128ull * 1024ull * 1024ull)
+
+/* The mesh ray cache, created on first use; NULL when it cannot be. */
+VkrMeshRaycastCache *vkr_render_assets_mesh_raycast(VkrRenderAssets *assets);
 
 /* On failure, partial ownership remains in assets for shutdown after the caller
  * joins workers and proves GPU idle. The native publisher stays alive

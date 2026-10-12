@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-09
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -61,7 +61,17 @@ click-to-place decal tool.
    - `facing`;
    - `material`;
    - `values`: other decal fields;
-   - `name`, `container`, `review` and `select`.
+   - `name`, `container`, `review` and `select`;
+   - `parent`: an existing object the decal becomes a child of, in its
+     container. The decal keeps its placed world pose, stored in the
+     parent's space, and moves with the parent.
+
+   In the Model view ([ADR-089](089-editor-workbenches.md)) the tool meets
+   the viewed object's drawn triangles on the model stage
+   (`vkr_mesh_raycast_instance`, no collision needed), places the decal as
+   that object's child with the level's position and normal, and does not
+   select it, so the view keeps its object; the stage draws the object's
+   decals.
 5. **Scene image.** `editor.status` reports `view.image`, the Scene image's
    [x, y, width, height] in window points. Scripts can then aim `ui.click`
    into the Scene.

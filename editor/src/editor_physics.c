@@ -1107,7 +1107,12 @@ static void physics_scatter_paint(VkrEditorUi *editor,
                 input_is_key_down(frame->input, KEY_LSHIFT) ||
                 input_is_key_down(frame->input, KEY_RSHIFT);
   const Vec4 brush = erasing ? theme->error : theme->success;
-  const VkrEntityId target = vkr_editor_scatter_target(frame);
+  /* The Model view draws the level's areas and dabs where the stage
+     stands its subject. */
+  const bool8_t model = editor->view_shown == VKR_EDITOR_VIEW_MODEL;
+  const Vec3 shift = model ? editor->model.offset : vec3_zero();
+  const VkrEntityId target = model ? vkr_editor_views_scatter(editor, frame)
+                                   : vkr_editor_scatter_target(frame);
   const VkrScene *scene =
       target.u64 ? vkr_editor_entity_scene(frame, target) : NULL;
   uint32_t child_count = 0u;
@@ -1119,13 +1124,15 @@ static void physics_scatter_paint(VkrEditorUi *editor,
     const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
         scene->world, children[c], scene->comp_transform);
     if (area && transform) {
-      physics_ring(editor, frame, mat4_position(transform->world), area->radius,
-                   vkr_ui_color_alpha(theme->success, 0.35f), capacity);
+      physics_ring(
+          editor, frame, vec3_add(mat4_position(transform->world), shift),
+          area->radius, vkr_ui_color_alpha(theme->success, 0.35f), capacity);
     }
   }
   for (uint32_t i = 0; i < editor->scatter_dab_count; ++i) {
-    physics_ring(editor, frame, editor->scatter_dabs[i], editor->scatter_radius,
-                 vkr_ui_color_alpha(brush, 0.6f), capacity);
+    physics_ring(editor, frame, vec3_add(editor->scatter_dabs[i], shift),
+                 editor->scatter_radius, vkr_ui_color_alpha(brush, 0.6f),
+                 capacity);
   }
   if (editor->scatter_hover_valid) {
     physics_ring(editor, frame, editor->scatter_hover, editor->scatter_radius,
@@ -1309,46 +1316,61 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       frame->scene_rendering_stopped) {
     return;
   }
+  /* The Model view's stage shows none of the level's overlay, only the
+     decal and scatter tools' previews over its subject. */
+  const bool8_t model = editor->view_shown == VKR_EDITOR_VIEW_MODEL;
   const uint32_t bodies =
-      frame->scene ? vkr_scene_physics_body_count(frame->scene) : 0u;
+      frame->scene && !model ? vkr_scene_physics_body_count(frame->scene) : 0u;
   const uint32_t starts =
-      frame->scripts_running ? 0u : physics_player_start_count(frame);
+      frame->scripts_running || model ? 0u : physics_player_start_count(frame);
   /* Pending agent changes and a brush being drawn draw in this overlay too
      (ADR-084). */
   const VkrEditorLevelReport *report = editor->level_report;
-  const uint32_t changes =
-      vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent)) +
-      vkr_editor_ops_claim_count(vkr_editor_agent_ops(editor->agent)) +
-      (editor->brush_dragging || editor->brush_raising ? 1u : 0u) +
-      (editor->selection_extra_count ? 1u : 0u) +
-      (editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE && editor->path_count
-           ? 1u
-           : 0u) +
-      (editor->terrain_tool && editor->terrain_hit_valid ? 1u : 0u) +
+  const uint32_t tool_previews =
       (editor->decal_tool && editor->decal_hover_valid ? 1u : 0u) +
       (editor->scatter_tool &&
                (editor->scatter_hover_valid || editor->scatter_dab_count)
            ? 1u
-           : 0u) +
-      (editor->face_handle_count ? 1u : 0u) +
-      vkr_editor_brush_grid_lines(editor, NULL) +
-      vkr_editor_blockout_lines(editor, NULL) +
-      vkr_editor_lighting_lines(editor, frame, NULL, 0u) +
-      Min(vkr_editor_session_lines(editor->session, frame, NULL, 0u),
-          VKR_EDITOR_SESSION_LINE_MAX) +
-      (report && report->checked &&
-               vkr_editor_window_shown(editor, frame, VKR_EDITOR_WINDOW_LEVEL)
-           ? 1u
-           : 0u) +
-      (frame->scripts_running
-           ? 0u
-           : physics_io_lines(editor, frame, 0u, false_v) +
-                 physics_mover_lines(editor, frame, 0u, false_v)) +
-      physics_population_lines(editor, frame, 0u, false_v) +
-      physics_measure_count(editor, frame);
+           : 0u);
+  const uint32_t changes =
+      model
+          ? tool_previews
+          : vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent)) +
+                vkr_editor_ops_claim_count(
+                    vkr_editor_agent_ops(editor->agent)) +
+                (editor->brush_dragging || editor->brush_raising ? 1u : 0u) +
+                (editor->selection_extra_count ? 1u : 0u) +
+                (editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE &&
+                         editor->path_count
+                     ? 1u
+                     : 0u) +
+                (editor->terrain_tool && editor->terrain_hit_valid ? 1u : 0u) +
+                (editor->decal_tool && editor->decal_hover_valid ? 1u : 0u) +
+                (editor->scatter_tool && (editor->scatter_hover_valid ||
+                                          editor->scatter_dab_count)
+                     ? 1u
+                     : 0u) +
+                (editor->face_handle_count ? 1u : 0u) +
+                vkr_editor_brush_grid_lines(editor, NULL) +
+                vkr_editor_blockout_lines(editor, NULL) +
+                vkr_editor_lighting_lines(editor, frame, NULL, 0u) +
+                Min(vkr_editor_session_lines(editor->session, frame, NULL, 0u),
+                    VKR_EDITOR_SESSION_LINE_MAX) +
+                (report && report->checked &&
+                         vkr_editor_window_shown(editor, frame,
+                                                 VKR_EDITOR_WINDOW_LEVEL)
+                     ? 1u
+                     : 0u) +
+                (frame->scripts_running
+                     ? 0u
+                     : physics_io_lines(editor, frame, 0u, false_v) +
+                           physics_mover_lines(editor, frame, 0u, false_v)) +
+                physics_population_lines(editor, frame, 0u, false_v) +
+                physics_measure_count(editor, frame);
   /* Brushes collide through their hulls, which the collision display draws
      too. */
-  const bool8_t hulls = frame->scene && frame->view_state.collision_display;
+  const bool8_t hulls =
+      frame->scene && frame->view_state.collision_display && !model;
   if (!bodies && !starts && !changes && !hulls) {
     return;
   }
@@ -1373,9 +1395,10 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
     return;
   }
   /* Size labels first, so the lines' share of the nodes leaves them out. */
-  if (changes && ui->frame_node_count + PHYSICS_RESERVED_NODES +
-                         VKR_EDITOR_MEASURE_LABEL_MAX <
-                     ui->frame_node_capacity) {
+  if (changes && !model &&
+      ui->frame_node_count + PHYSICS_RESERVED_NODES +
+              VKR_EDITOR_MEASURE_LABEL_MAX <
+          ui->frame_node_capacity) {
     physics_measure_labels(editor, frame);
   }
   const uint32_t available =
@@ -1395,7 +1418,14 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   if (editor->physics_lines && starts) {
     physics_player_starts(editor, frame, capacity);
   }
-  if (editor->physics_lines && changes) {
+  if (editor->physics_lines && changes && model) {
+    if (editor->decal_tool && editor->decal_hover_valid) {
+      physics_decal_preview(editor, frame, capacity);
+    }
+    if (editor->scatter_tool) {
+      physics_scatter_paint(editor, frame, capacity);
+    }
+  } else if (editor->physics_lines && changes) {
     physics_pending_changes(editor, frame, capacity);
     physics_claims(editor, frame, capacity);
     if (editor->brush_dragging || editor->brush_raising) {

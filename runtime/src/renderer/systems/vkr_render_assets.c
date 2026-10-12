@@ -198,6 +198,24 @@ bool8_t vkr_render_assets_initialize(
   return true_v;
 }
 
+VkrMeshRaycastCache *vkr_render_assets_mesh_raycast(VkrRenderAssets *assets) {
+  if (assets->mesh_raycast)
+    return assets->mesh_raycast;
+  if (!assets->mesh_raycast_allocator.ctx) {
+    /* Address space for the budget plus BVH and table overhead; pages
+       commit as triangles arrive. */
+    if (!vkr_dmemory_create(MB(4), VKR_RENDER_ASSETS_MESH_RAYCAST_BUDGET * 2u,
+                            &assets->mesh_raycast_memory))
+      return NULL;
+    assets->mesh_raycast_allocator =
+        (VkrAllocator){.ctx = &assets->mesh_raycast_memory};
+    vkr_dmemory_allocator_create(&assets->mesh_raycast_allocator);
+  }
+  assets->mesh_raycast = vkr_mesh_raycast_cache_create(
+      &assets->mesh_raycast_allocator, VKR_RENDER_ASSETS_MESH_RAYCAST_BUDGET);
+  return assets->mesh_raycast;
+}
+
 void vkr_render_assets_shutdown(VkrRenderAssets *assets) {
   if (!assets)
     return;
@@ -208,6 +226,11 @@ void vkr_render_assets_shutdown(VkrRenderAssets *assets) {
     vkr_resource_system_quiesce();
   if (assets->world_resources.initialized)
     vkr_world_resources_shutdown(assets, &assets->world_resources);
+  if (assets->mesh_raycast)
+    vkr_mesh_raycast_cache_destroy(assets->mesh_raycast);
+  assets->mesh_raycast = NULL;
+  if (assets->mesh_raycast_allocator.ctx)
+    vkr_dmemory_allocator_destroy(&assets->mesh_raycast_allocator);
   if (assets->mesh_manager.arena)
     vkr_mesh_manager_shutdown(&assets->mesh_manager);
   vkr_font_system_shutdown(&assets->font_system);

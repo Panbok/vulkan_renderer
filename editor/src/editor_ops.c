@@ -2633,6 +2633,19 @@ static bool8_t ops_build_probe_create(OpsContext *ctx,
 static bool8_t ops_build_decal_place(OpsContext *ctx, const VkrBakeryJson *args,
                                      OpsBatch *batch) {
   uint16_t container = 0u;
+  /* With 'parent' the decal is the parent's child in the parent's
+     container, so it moves with it; its world pose stays as placed. */
+  OpsRef parent = {.item = -1};
+  const VkrBakeryJson *parent_value = vkr_bakery_json_get(args, "parent");
+  if (parent_value && parent_value->type != VKR_BAKERY_JSON_NULL) {
+    if (!ops_ref(ctx, batch, parent_value, "parent", &parent)) {
+      return false_v;
+    }
+    if (parent.item >= 0) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "A decal's 'parent' must already exist");
+    }
+  }
   Vec3 position = {0};
   Vec3 normal = vec3_new(0.0f, 1.0f, 0.0f);
   Vec3 facing = vec3_new(0.0f, 0.0f, -1.0f);
@@ -2643,8 +2656,12 @@ static bool8_t ops_build_decal_place(OpsContext *ctx, const VkrBakeryJson *args,
   bool8_t has_origin = false_v;
   bool8_t has_direction = false_v;
   bool8_t has_facing = false_v;
-  if (!ops_arg_container(ctx, args, &container) ||
-      !ops_arg_vec3(ctx, args, "position", &position, &has_position) ||
+  if (parent.entity.u64) {
+    container = parent.container;
+  } else if (!ops_arg_container(ctx, args, &container)) {
+    return false_v;
+  }
+  if (!ops_arg_vec3(ctx, args, "position", &position, &has_position) ||
       !ops_arg_vec3(ctx, args, "normal", &normal, &has_normal) ||
       !ops_arg_vec3(ctx, args, "origin", &origin, &has_origin) ||
       !ops_arg_vec3(ctx, args, "direction", &direction, &has_direction) ||
@@ -2729,6 +2746,40 @@ static bool8_t ops_build_decal_place(OpsContext *ctx, const VkrBakeryJson *args,
   values->rotation = vkr_editor_decal_orientation(
       normal, facing, (float32_t)angle * (VKR_PI / 180.0f));
   values->scale = vec3_new(size[0], (float32_t)depth, size[1]);
+  if (parent.entity.u64) {
+    const VkrScene *scene = ops_scene(ctx->frame, container);
+    const SceneTransform *parent_transform =
+        scene ? vkr_entity_get_component(scene->world, parent.entity,
+                                         scene->comp_transform)
+              : NULL;
+    if (!parent_transform) {
+      return ops_fail(ctx, OPS_NOT_FOUND, "The decal's parent has no pose");
+    }
+    /* The parent's space holds the same world box: an unsheared parent
+       leaves a rotation and per-axis scale. */
+    const Mat4 world = mat4_mul(mat4_translate(values->position),
+                                mat4_mul(vkr_quat_to_mat4(values->rotation),
+                                         mat4_scale(values->scale)));
+    const Mat4 local =
+        mat4_mul(mat4_inverse_affine(parent_transform->world), world);
+    Mat4 basis = mat4_identity();
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      const Vec3 column = vec3_new(local.elements[axis * 4u + 0u],
+                                   local.elements[axis * 4u + 1u],
+                                   local.elements[axis * 4u + 2u]);
+      const float32_t length = vec3_length(column);
+      values->scale.elements[axis] = length;
+      const Vec3 unit =
+          length > 0.0f ? vec3_scale(column, 1.0f / length) : vec3_zero();
+      basis.elements[axis * 4u + 0u] = unit.x;
+      basis.elements[axis * 4u + 1u] = unit.y;
+      basis.elements[axis * 4u + 2u] = unit.z;
+    }
+    values->position = mat4_position(local);
+    values->rotation = vkr_quat_normalize(vkr_quat_from_mat4(basis));
+    item->request.parent = parent.entity;
+    item->parent_ref = -1;
+  }
   values->component_type = &vkr_scene_decal_type;
   MemCopy(values->component, &decal, sizeof(decal));
   batch->op_item[batch->op_count] = batch->count - 1u;
@@ -9570,6 +9621,23 @@ static bool8_t ops_build_scatter_paint(OpsContext *ctx,
   if (ops_arg_number(args, "spacing", &number)) {
     area.spacing = (float32_t)number;
   }
+  /* 'within' keeps the copies inside a world box, as a stroke on one
+     model does. */
+  const VkrBakeryJson *within = vkr_bakery_json_get(args, "within");
+  if (within) {
+    bool8_t has_min = false_v;
+    bool8_t has_max = false_v;
+    if (!ops_arg_vec3(ctx, within, "min", &area.within_min, &has_min) ||
+        !ops_arg_vec3(ctx, within, "max", &area.within_max, &has_max)) {
+      return false_v;
+    }
+    if (!has_min || !has_max || !(area.within_min.x < area.within_max.x) ||
+        !(area.within_min.y < area.within_max.y) ||
+        !(area.within_min.z < area.within_max.z)) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'within' takes 'min' below 'max' on every axis");
+    }
+  }
   char error[160] = {0};
   if (!vkr_type_validate(&vkr_scene_scatter_area_type, &area, error,
                          sizeof(error))) {
@@ -14064,10 +14132,13 @@ static const OpsDef s_ops[] = {
      "wall, or along 'facing' (default the ray, else -Z) on a floor; "
      "'angle' turns it about the normal in degrees. 'material' is a .mt "
      "file (empty: the default decal) and 'values' other decal fields "
-     "(opacity, sort_order, fade_angle_start, fade_angle_end, depth_fade).",
-     "{\"type\":\"object\",\"properties\":{\"position\":" OPS_VEC3_SCHEMA
-     ",\"normal\":" OPS_VEC3_SCHEMA ",\"origin\":" OPS_VEC3_SCHEMA
-     ",\"direction\":" OPS_VEC3_SCHEMA ",\"facing\":" OPS_VEC3_SCHEMA
+     "(opacity, sort_order, fade_angle_start, fade_angle_end, depth_fade). "
+     "With 'parent' it becomes that object's child, in its container, and "
+     "moves with it.",
+     "{\"type\":\"object\",\"properties\":{\"parent\":" OPS_ENTITY_SCHEMA
+     ",\"position\":" OPS_VEC3_SCHEMA ",\"normal\":" OPS_VEC3_SCHEMA
+     ",\"origin\":" OPS_VEC3_SCHEMA ",\"direction\":" OPS_VEC3_SCHEMA
+     ",\"facing\":" OPS_VEC3_SCHEMA
      ",\"size\":{},\"depth\":{\"type\":\"number\"},\"angle\":{\"type\":"
      "\"number\"},\"material\":{\"type\":\"string\"},\"values\":{\"type\":"
      "\"object\"},\"name\":{\"type\":\"string\"},"
@@ -14478,14 +14549,16 @@ static const OpsDef s_ops[] = {
      "'density' copies per square metre (default 1), leaving out copies "
      "within 'spacing' metres (default 0) of earlier ones. Once a scatter "
      "has areas it places copies only in them. With 'erase' it deletes the "
-     "areas whose centre lies within 'radius' of a point instead. One undo "
-     "step.",
+     "areas whose centre lies within 'radius' of a point instead. "
+     "'within' {min, max} keeps each new area's copies inside that world "
+     "box. One undo step.",
      "{\"type\":\"object\",\"properties\":{\"scatter\":" OPS_ENTITY_SCHEMA
      ",\"points\":{\"type\":\"array\",\"items\":" OPS_VEC3_SCHEMA
      "},\"radius\":{\"type\":\"number\"},\"density\":{\"type\":"
      "\"number\"},\"spacing\":{\"type\":\"number\"},\"erase\":{\"type\":"
-     "\"boolean\"}," OPS_REVIEW_SCHEMA "},\"required\":[\"scatter\","
-     "\"points\"]}",
+     "\"boolean\"},\"within\":{\"type\":\"object\",\"properties\":{"
+     "\"min\":" OPS_VEC3_SCHEMA ",\"max\":" OPS_VEC3_SCHEMA
+     "}}," OPS_REVIEW_SCHEMA "},\"required\":[\"scatter\",\"points\"]}",
      NULL, ops_build_scatter_paint},
     {"terrain.road",
      "Shape a road 'width' metres wide (default 6) along an existing "

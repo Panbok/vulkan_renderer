@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-09
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -38,7 +38,9 @@ On 2026-10-09 the owner chose painted areas from three options:
    - `density` (copies per square metre);
    - `spacing` (metres);
    - `seed`;
-   - `order`.
+   - `order`;
+   - `within_min` and `within_max`: a world box the area's copies must land
+     in, or none while the box is empty.
 
    The area's centre is its entity's world position. Area entities are
    saved like spline points, show the scatter's icon in the Outliner and
@@ -78,6 +80,30 @@ On 2026-10-09 the owner chose painted areas from three options:
 
    `entity.get` reports a spline mesh's or scatter's placed `copies` and
    `status`.
+4. **Drawn surfaces.** A scatter's `render_surfaces` ("Land on meshes",
+   off by default) lets its copies land on the triangles of the scene's
+   drawn meshes too, through the CPU mesh ray cache
+   ([vkr_mesh_raycast.h](../../runtime/src/renderer/systems/vkr_mesh_raycast.h)),
+   so models without collision take copies. A build gathers the visible
+   mesh renderers whose bounds meet the region its columns fall through,
+   and each drop takes the nearest of collision, terrain and those
+   triangles. The first ray at an asset decodes its triangles from its
+   cooked file and keeps them, up to 128 MB, so that build pauses once.
+5. **Model view.** The Model view ([ADR-089](089-editor-workbenches.md))
+   paints onto the viewed object with a scatter chosen under the Art
+   palette's PAINT WITH (the selection is the viewed object; a lone scatter
+   is chosen by itself). Its dabs are the level points where the pointer
+   meets the object's drawn triangles on the model stage, and the stroke
+   turns on `render_surfaces` in the same undo step. Each new area keeps the
+   object's world box, 5 cm wider, as `within` (`scatter.paint` takes
+   `within` {min, max}): a column outside the box drops nothing, and a
+   column inside drops only from the box's top to its bottom, so a balcony
+   above or the street below never catches a copy. An imported model's
+   nodes have no document-stable id, so the area keeps the box rather than
+   a reference. The stage shows the scatter copies standing within the
+   object's bounds.
+6. **Hide.** Copies follow Hide and Isolate as their scatter does, by
+   visibility only, without placing them again.
 4. **Tool.** Cmd `scatter.tool` and the Art palette's DRESSING Scatter paint
    button start the Scatter paint Scene tool. It paints the selected
    scatter, or the scatter of a selected area.

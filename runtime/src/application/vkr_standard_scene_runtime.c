@@ -1042,7 +1042,12 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
     vkr_scene_decal_frame_append(
         decals, vkr_standard_scene_runtime_render_scene(application),
         application->globals.view_position);
-    /* The model stage shows no level decals. */
+    /* The model stage shows its subject's decals and no others. */
+    if (application->stage_scene && application->stage_source) {
+      vkr_scene_decal_frame_append_moved(
+          decals, application->stage_source, application->globals.view_position,
+          application->stage_subject, application->stage_offset);
+    }
     for (uint32_t i = 0;
          !application->stage_scene && i < application->additive_count; ++i) {
       vkr_scene_decal_frame_append(decals, application->additive_scenes[i],

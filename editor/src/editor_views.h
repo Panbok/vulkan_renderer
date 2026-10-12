@@ -45,6 +45,11 @@ void vkr_editor_view_remove(VkrEditorUi *editor, VkrEditorView view);
    shows the view. */
 VkrEditorView vkr_editor_window_view(VkrEditorWindowKind kind);
 
+/* The scatter the Model view's scatter paint adds to while it is alive and
+   still a scatter, else invalid. */
+VkrEntityId vkr_editor_views_scatter(const VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame);
+
 /* Runs at the start of the UI build, after a workbench switch and the
    selection update: moves an open window into its view, marks the dock's
    Scene hidden under Graph and Script, and enters, updates or leaves the
