@@ -879,6 +879,19 @@ bool8_t vkr_metal_packet_renderer_create_material(
   }
 }
 
+/* The textures a published material's row samples outlive the row's last
+   use. */
+vkr_internal void
+vkr_metal_packet_hold_material_textures(VkrMetalPacketRenderer *renderer,
+                                        const VkrMetalPacketMaterial *slot) {
+  for (uint32_t i = 0; i < ArrayCount(slot->texture_handles); ++i) {
+    VkrMetalPacketTexture *texture =
+        vkr_metal_packet_resolve_texture(renderer, slot->texture_handles[i]);
+    if (texture && texture->last_use_submit_value < slot->last_use_submit_value)
+      texture->last_use_submit_value = slot->last_use_submit_value;
+  }
+}
+
 bool8_t
 vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
                                            VkrMaterialHandle handle) {
@@ -892,23 +905,16 @@ vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
                                                slot->last_use_submit_value) !=
         VKR_METAL_MATERIAL_STATUS_OK)
       return false_v;
-    const uint32_t texture_count = slot->owns_textures
-                                       ? ArrayCount(slot->textures)
-                                       : ArrayCount(slot->texture_handles);
-    for (uint32_t texture_index = 0; texture_index < texture_count;
-         ++texture_index) {
-      if (slot->owns_textures) {
+    if (slot->owns_textures) {
+      for (uint32_t texture_index = 0;
+           texture_index < ArrayCount(slot->textures); ++texture_index) {
         if (vkr_metal_memory_device_retire(
                 renderer->memory, slot->textures[texture_index].handle,
                 slot->last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
           return false_v;
-      } else {
-        VkrMetalPacketTexture *texture = vkr_metal_packet_resolve_texture(
-            renderer, slot->texture_handles[texture_index]);
-        if (texture &&
-            texture->last_use_submit_value < slot->last_use_submit_value)
-          texture->last_use_submit_value = slot->last_use_submit_value;
       }
+    } else {
+      vkr_metal_packet_hold_material_textures(renderer, slot);
     }
     if (slot->custom_slot)
       renderer->custom_graphs[slot->custom_slot].references--;
@@ -963,7 +969,13 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
     if (!@available(macOS 26.0, *))
       return false_v;
     VkrMetalPacketMaterial *slot = &renderer->packet_materials[handle.id - 1];
-    if (slot->live)
+    /* Publishing a live material of the same generation updates it, as on
+       Vulkan (a terrain's layers change, for one): the new row replaces the
+       old, which retires after the GPU's last use. The slot keeps the old row
+       until the new one is published. */
+    const bool8_t republish = slot->live;
+    if (republish &&
+        (slot->generation != handle.generation || slot->owns_textures))
       return false_v;
     const VkrTextureSlot common_slots[12] = {
         VKR_TEXTURE_SLOT_DIFFUSE,
@@ -1027,6 +1039,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
     }
     VkrMetalPacketTexture *textures[VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT] = {
         0};
+    VkrTextureHandle texture_handles[VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT];
     for (uint32_t i = 0; i < ArrayCount(source_slots); ++i) {
       const VkrMaterialTexture *source = &material->textures[source_slots[i]];
       if (source->handle.id == 0 ||
@@ -1034,7 +1047,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                 vkr_metal_packet_resolve_texture(renderer, source->handle)) ||
           textures[i]->sampler_resource_id == 0)
         return false_v;
-      slot->texture_handles[i] = source->handle;
+      texture_handles[i] = source->handle;
     }
     uint32_t flags = 0;
     if (material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled)
@@ -1191,18 +1204,34 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
     };
     const float32_t tint_values[4] = {tint.x, tint.y, tint.z, tint.w};
     MemCopy(row.material.tint, tint_values, sizeof(row.material.tint));
+    VkrMetalMaterialHandle published_row = {0};
+    uint32_t published_row_index = 0;
     if (vkr_metal_material_table_device_publish(renderer->materials, &row,
-                                                &slot->row) !=
+                                                &published_row) !=
             VKR_METAL_MATERIAL_STATUS_OK ||
-        vkr_metal_material_table_device_resolve(renderer->materials, slot->row,
-                                                &slot->row_index) !=
-            VKR_METAL_MATERIAL_STATUS_OK) {
-      if (slot->row.generation != 0)
+        vkr_metal_material_table_device_resolve(
+            renderer->materials, published_row, &published_row_index) !=
+            VKR_METAL_MATERIAL_STATUS_OK ||
+        (republish &&
+         vkr_metal_material_table_device_retire(renderer->materials, slot->row,
+                                                slot->last_use_submit_value) !=
+             VKR_METAL_MATERIAL_STATUS_OK)) {
+      if (published_row.generation != 0)
         (void)vkr_metal_material_table_device_retire(
-            renderer->materials, slot->row, renderer->submit_value);
-      *slot = (VkrMetalPacketMaterial){0};
+            renderer->materials, published_row, renderer->submit_value);
+      if (!republish)
+        *slot = (VkrMetalPacketMaterial){0};
       return false_v;
     }
+    if (republish) {
+      vkr_metal_packet_hold_material_textures(renderer, slot);
+      if (slot->custom_slot)
+        renderer->custom_graphs[slot->custom_slot].references--;
+    }
+    slot->row = published_row;
+    slot->row_index = published_row_index;
+    MemCopy(slot->texture_handles, texture_handles,
+            sizeof(slot->texture_handles));
     slot->generation = handle.generation;
     slot->last_use_submit_value = renderer->submit_value;
     slot->pbr = pbr;
@@ -2536,10 +2565,9 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
                              : 0u;
   /* Every frame root names a lightmap record; with a sampled set it carries
      the set's rectangle table (ADR-088). */
-  plan->lightmap_rect_count =
-      vkr_metal_packet_lightmap_sampled(packet)
-          ? packet->input.lighting->lightmap.rect_count
-          : 0u;
+  plan->lightmap_rect_count = vkr_metal_packet_lightmap_sampled(packet)
+                                  ? packet->input.lighting->lightmap.rect_count
+                                  : 0u;
   plan->lightmap_offset = vkr_metal_packet_align_up(
       plan->diffuse_volume_offset + diffuse_volume_bytes,
       AlignOf(VkrMetalPacketLightmap));
