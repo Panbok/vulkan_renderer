@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -20,6 +21,7 @@
 #if defined(__APPLE__)
 #include <CoreServices/CoreServices.h>
 #include <dispatch/dispatch.h>
+#include <sys/stat.h>
 #endif
 
 /* `vkr_bakery serve`: one long-lived process per workspace or checkout.
@@ -89,7 +91,16 @@ typedef struct VkrServeWatch {
   float64_t due;
   char changed[VKR_SERVE_MAX_CHANGED][VKR_BAKERY_PATH_CAPACITY];
   uint32_t changed_count;
+  /* Wall-clock nanoseconds at registration: a file whose status last changed
+     earlier is history a late event reports, not an edit. */
+  int64_t started_ns;
 } VkrServeWatch;
+
+/* A file one of the daemon's runs published, as it was when published. */
+typedef struct VkrServePublished {
+  char path[VKR_BAKERY_PATH_CAPACITY];
+  VkrBakeryStat stat;
+} VkrServePublished;
 
 #if defined(_WIN32)
 /* Directories one Windows watcher thread waits on, beside its stop event. */
@@ -137,11 +148,14 @@ typedef struct VkrServe {
   char changes[256][VKR_BAKERY_PATH_CAPACITY];
   uint32_t change_count;
   bool8_t change_overflow;
-  /* Paths the daemon's own runs just published; the watcher ignores their
-     change events until `published_until`. */
-  char published[128][VKR_BAKERY_PATH_CAPACITY];
+  /* Files the daemon's own runs published, newest replacing oldest. A change
+     event for one that still matches is the daemon's own write, however late
+     the file system reports it. */
+  VkrServePublished published[128];
   uint32_t published_count;
-  float64_t published_until;
+  uint32_t published_next;
+  /* A command is running: its outputs are known only when it ends. */
+  bool8_t publishing;
 #if defined(__APPLE__)
   FSEventStreamRef stream;
   dispatch_queue_t stream_queue;
@@ -290,8 +304,9 @@ vkr_internal void vkr_serve_resolve(const char *path, char *out) {
 #endif
 }
 
-/* Records the output paths of a `done` event so the watcher can tell the
-   daemon's own publications from edits. */
+/* Records the outputs of a `done` event, as they are on disk now, so the
+   watcher can tell the daemon's own publications from edits. The event lists
+   outputs only after they are published. */
 vkr_internal void vkr_serve_note_outputs(VkrServe *serve, const char *line,
                                          uint64_t length) {
   if (!vkr_serve_find(line, length, "\"ev\":\"done\"")) {
@@ -307,12 +322,19 @@ vkr_internal void vkr_serve_note_outputs(VkrServe *serve, const char *line,
   vkr_mutex_lock(serve->changes_mutex);
   for (const VkrBakeryJson *output = outputs ? outputs->first : NULL; output;
        output = output->next) {
-    if (output->type != VKR_BAKERY_JSON_STRING ||
-        serve->published_count == ArrayCount(serve->published)) {
+    if (output->type != VKR_BAKERY_JSON_STRING) {
       continue;
     }
-    vkr_serve_resolve((const char *)output->string.str,
-                      serve->published[serve->published_count++]);
+    VkrServePublished *published = &serve->published[serve->published_next];
+    serve->published_next =
+        (serve->published_next + 1u) % ArrayCount(serve->published);
+    if (serve->published_count < ArrayCount(serve->published)) {
+      serve->published_count += 1u;
+    }
+    vkr_serve_resolve((const char *)output->string.str, published->path);
+    if (!vkr_bakery_stat(published->path, &published->stat)) {
+      published->stat.exists = false_v;
+    }
   }
   vkr_mutex_unlock(serve->changes_mutex);
   arena_destroy(arena);
@@ -460,7 +482,7 @@ vkr_internal void *vkr_serve_builder(void *context) {
 
     /* Outputs written while the command runs are its own. */
     vkr_mutex_lock(serve->changes_mutex);
-    serve->published_until = 1e300;
+    serve->publishing = true_v;
     vkr_mutex_unlock(serve->changes_mutex);
     VkrServeJob *job = &serve->running;
     const int code =
@@ -476,9 +498,10 @@ vkr_internal void *vkr_serve_builder(void *context) {
                       (unsigned long long)job->request, code);
     }
 
-    /* Publication events arrive shortly after the files change. */
+    /* Its outputs are recorded; their change events, however late, now
+       match them. */
     vkr_mutex_lock(serve->changes_mutex);
-    serve->published_until = vkr_bakery_monotonic_seconds() + 2.0;
+    serve->publishing = false_v;
     vkr_mutex_unlock(serve->changes_mutex);
 
     vkr_mutex_lock(serve->mutex);
@@ -846,18 +869,53 @@ vkr_internal bool8_t vkr_serve_restart_stream(VkrServe *serve) {
 
 #endif
 
+vkr_internal int64_t vkr_serve_wall_clock_ns(void) {
+  struct timespec now = {0};
+  (void)timespec_get(&now, TIME_UTC);
+  return (int64_t)now.tv_sec * 1000000000LL + (int64_t)now.tv_nsec;
+}
+
+/* The file a run published is still there as the run left it. */
+vkr_internal bool8_t
+vkr_serve_still_published(const VkrServePublished *published) {
+  VkrBakeryStat info;
+  return published->stat.exists && vkr_bakery_stat(published->path, &info) &&
+         info.exists && info.device == published->stat.device &&
+         info.file_id == published->stat.file_id &&
+         info.size == published->stat.size &&
+         info.mtime_ns == published->stat.mtime_ns;
+}
+
+/* Wall-clock nanoseconds of the last status change of `path` (content,
+   metadata or a rename into place), or -1 when the path is gone or the
+   platform's watcher reports no history. FSEvents can deliver changes made
+   before its stream started, seconds late under endpoint security. */
+vkr_internal int64_t vkr_serve_status_changed_ns(const char *path) {
+#if defined(__APPLE__)
+  struct stat info;
+  if (lstat(path, &info) != 0) {
+    return -1;
+  }
+  return (int64_t)info.st_ctimespec.tv_sec * 1000000000LL +
+         (int64_t)info.st_ctimespec.tv_nsec;
+#else
+  (void)path;
+  return -1;
+#endif
+}
+
 /* Matches drained changes against watches; returns the earliest due time. */
 vkr_internal void vkr_serve_match_changes(VkrServe *serve, float64_t now) {
   static char changes[256][VKR_BAKERY_PATH_CAPACITY];
+  static int64_t changed_ns[256];
   vkr_mutex_lock(serve->changes_mutex);
-  if (serve->published_until > now + 3600.0) {
+  if (serve->publishing) {
     /* A command is running: its outputs are known only when it ends, so its
        changes wait until then. */
     vkr_mutex_unlock(serve->changes_mutex);
     return;
   }
   const bool8_t overflow = serve->change_overflow;
-  const bool8_t recent = now <= serve->published_until;
   uint32_t count = 0u;
   for (uint32_t c = 0u; c < serve->change_count; ++c) {
     const char *path = serve->changes[c];
@@ -866,20 +924,20 @@ vkr_internal void vkr_serve_match_changes(VkrServe *serve, float64_t now) {
     /* Atomic writers stage dot-prefixed .tmp siblings. */
     bool8_t ignored = name && name[1] == '.' && length > 4u &&
                       strcmp(path + length - 4u, ".tmp") == 0;
-    for (uint32_t p = 0u; recent && !ignored && p < serve->published_count;
-         ++p) {
-      ignored = vkr_serve_path_equal(path, serve->published[p]);
+    for (uint32_t p = 0u; !ignored && p < serve->published_count; ++p) {
+      ignored = vkr_serve_path_equal(path, serve->published[p].path) &&
+                vkr_serve_still_published(&serve->published[p]);
     }
     if (!ignored) {
       MemCopy(changes[count++], path, length + 1u);
     }
   }
-  if (!recent) {
-    serve->published_count = 0u;
-  }
   serve->change_count = 0u;
   serve->change_overflow = false_v;
   vkr_mutex_unlock(serve->changes_mutex);
+  for (uint32_t c = 0u; c < count; ++c) {
+    changed_ns[c] = vkr_serve_status_changed_ns(changes[c]);
+  }
   for (uint32_t w = 0u; w < VKR_SERVE_MAX_WATCHES; ++w) {
     VkrServeWatch *watch = &serve->watches[w];
     if (!watch->id) {
@@ -890,7 +948,8 @@ vkr_internal void vkr_serve_match_changes(VkrServe *serve, float64_t now) {
       for (uint32_t p = 0u; p < watch->path_count && !matched; ++p) {
         matched = vkr_serve_path_under(changes[c], watch->paths[p]);
       }
-      if (!matched) {
+      if (!matched ||
+          (changed_ns[c] >= 0 && changed_ns[c] < watch->started_ns)) {
         continue;
       }
       bool8_t listed = false_v;
@@ -1028,6 +1087,7 @@ vkr_internal void vkr_serve_request_watch(VkrServe *serve, uint32_t client,
     return;
   }
   prepared.id = ++serve->next_watch;
+  prepared.started_ns = vkr_serve_wall_clock_ns();
   *watch = prepared;
   serve->watches_changed = true_v;
   vkr_serve_sendf(serve, client, watch->client_generation,
