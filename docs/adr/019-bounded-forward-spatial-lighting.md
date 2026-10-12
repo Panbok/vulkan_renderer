@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -16,7 +16,13 @@ set of dynamic lights, and a shadowed one takes one bilinear comparison tap
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decisions 8 and 11). Since
 2026-10-09 a cached face holds static casters only and moving casters draw
 into a per-frame copy of it, on both pipeline classes; the tiled pipeline's
-side has native Metal evidence since 2026-10-10.
+side has native Metal evidence since 2026-10-10. Since 2026-10-11 a dynamic
+square that motionless casters leave unchanged is reused, the atlas keeps to
+a layer budget per preset, the table ranks lights by camera distance, and
+`Shadow.LocalMask` runs only while a shadowed light reaches the camera
+frustum. Native Vulkan harness runs cover the reuse and the mask's light
+mask; the skipped mask, the budget and the ranked table ran only on the
+user's level in the editor, and none of the four ran on Metal (Evidence).
 
 ## Context
 
@@ -25,11 +31,23 @@ per draw causes large meshes to inherit the wrong local environment.
 
 ## Decision
 
-Use a stable table of up to 128 punctual lights and a conservative 384-cell
-fragment-local bitmask grid. CPU scene synchronization owns membership; shaders
-perform exact range and spot-cone rejection. Four-vector, 64-byte light rows
-share position/range, direction/cone, color/intensity and type semantics across
-Metal and Vulkan shading paths.
+Use a table of up to 128 punctual lights, its rows in render-id order, and a
+conservative 384-cell fragment-local bitmask grid. CPU scene synchronization
+owns membership; shaders perform exact range and spot-cone rejection.
+Four-vector, 64-byte light rows share position/range, direction/cone,
+color/intensity and type semantics across Metal and Vulkan shading paths.
+When more lights are offered than the table
+holds, it keeps the 128 nearest the camera by the distance to their range,
+ties by the distance to their centre, and a light selected the frame before
+ranks as if the camera were 1.15 times closer. While lights compete for the
+table, a newly selected light fades in over 0.25 s once a slot is free and
+a light no longer selected fades out in its slot; the fade scales the
+table's `intensity`
+([`vkr_lighting_system_select_point_lights`](../../runtime/src/renderer/systems/vkr_lighting_system.h)).
+The table therefore changes while the camera moves, so SSR and SSGI history
+signatures leave it out
+([ADR-055](055-screen-space-reflections.md),
+[ADR-060](060-screen-space-diffuse-indirect-lighting.md)).
 
 Pack up to 16 ready local IBL probes per frame. Compute their influence from
 fragment position and AABB weights; keep the global environment as fallback.
@@ -56,16 +74,41 @@ Saved editor overrides can disable shadows; scene-authored JSON lights remain
 opt-in.
 
 Local shadows are a persistent cache, phase 1 of the
-[local shadow architecture](../proposals/local-shadow-architecture.md). Every
-shadow-casting light of the scene table is resident: a spot owns one
-perspective face and a point six, in +X, -X, +Y, -Y, +Z, -Z order. Each face
-is a square of one shared 4096-squared D16 atlas array that every frame in
-flight samples. A face's side follows only its light's range: the power of two
-nearest the range times 64 texels per metre, from 128 to the preset's largest
-face, so a 7.5 m Bistro lamp takes 512 squared and the 15 m lamp 1024 squared
-under High, and camera motion never resizes a face. The atlas takes as many
-layers as its resident faces need, at most 32; the lowest-importance lights
-shrink only if they would exceed that. Squares pack in descending size by layer
+[local shadow architecture](../proposals/local-shadow-architecture.md) with a
+fixed atlas budget. A spot owns one perspective face and a point six, in +X,
+-X, +Y, -Y, +Z, -Z order. Each face is a square of one shared 4096-squared
+D16 atlas array that every frame in flight samples; a layer is 32 MiB. The
+atlas holds at most the preset's layer budget,
+`VkrShadowConfig.local_shadow_atlas_layer_budget`: Balanced 8, High 12 and
+Ultra 16 layers, the dynamic band and the baked-lamp layer included; zero
+allows 32, and `VKR_LOCAL_SHADOW_ATLAS_LAYERS=<1..32>` overrides it for
+diagnosis. The band and the baked layer take their layers first and the static
+squares keep at least one layer, so a diagnostic budget below that sum is
+exceeded. While the faces at their range sizes fit the remaining layers,
+every shadow-casting light of the scene table is resident, a face's side
+follows only its light's range and the atlas takes as many layers as its
+resident faces need. That side is the power of two nearest the range times
+64 texels per metre, from 128 to the preset's largest face, so a 7.5 m Bistro
+lamp takes 512 squared and the 15 m lamp 1024 squared under High, and camera
+motion never resizes a face. Bistro's 72 lamps fit every preset: Balanced's
+budget leaves exactly the 7 static layers they need at 512 squared beside the
+band. Past the budget
+([`vkr_local_shadow_fit_budget`](../../runtime/src/renderer/systems/vkr_local_shadow_system.c))
+the atlas keeps every layer it may take, so a change of lights does not
+recreate it. Lights farther from the camera than the fade distance plus their
+range leave it, and a resident light stays until its distance exceeds 1.15
+times that reach. Then the lights of lowest distance importance (below)
+shrink one size at a time until half a layer stays free for packing, and a
+light resists a shrink below its previous size until a competitor is 1.5
+times more important; if every light reaches the smallest size, the least
+important leave until the rest fit. Turning the camera therefore resizes
+nothing. A light that returns or resizes has invalid
+content and draws first within the face budget; if the budget cannot draw it
+in that frame, its shadow is hidden until it draws and then fades in. The
+ranking takes each light's intensity before the light table's fade
+(`VkrLocalShadowCacheInput.unfaded_intensity`, 2026-10-12), so a light
+fading out of the table keeps its face size and content while it shows.
+Squares pack in descending size by layer
 and first free aligned cell; power-of-two squares that fit by area always pack.
 A light whose size and layer count are unchanged keeps its squares.
 
@@ -123,15 +166,29 @@ clear. Culling views carry `STATIC_CASTERS_ONLY` or `DYNAMIC_CASTERS_ONLY`
 the candidate table lists static candidates first. The receiver view of such a
 face names the dynamic square, and a companion view after `view_count` names
 its static square (`dynamic_source_views`); receivers sample whichever square
-their view names, so receiver shaders are unchanged. A dynamic square is never
-committed: when the caster leaves, the face shows its static square again
-without a draw. Dynamic squares take render slots first, at most 16 per frame,
-and the static budget is the smaller of the face budget and the slots left; a
-face over the cap shows its static square. The frame falls back to the full
-redraw of every face a caster reaches, with static and dynamic casters
-together, when the dynamic scan is unavailable or a publication is pending
-(all lights), when a refractive dynamic caster reaches a light (that light),
-or when the static squares fill all 32 layers and leave no band.
+their view names, so receiver shaders are unchanged. A dynamic square commits
+its own history (`VkrLocalShadowDynamicHistory`): its band cell, the
+submission that drew the static square it copied, and the dynamic,
+publication and atlas resource generations. While none of them changed, the
+light draws nothing this frame and the band layer kept its content, the face
+keeps the square in its cell and takes no companion view, copy or render slot
+([`vkr_local_shadow_reused_dynamic_faces`](../../runtime/src/renderer/systems/vkr_local_shadow_system.c),
+`VkrLocalShadowPassPayload.dynamic_reused_count`). A motionless dynamic
+caster therefore costs each face it reaches one copy and one draw, then
+nothing while it stays. The dynamic generation
+(`VkrWorldPassPayload.dynamic_generation`) advances on any change to a
+dynamic caster and on topology changes; a pending publication or an
+unavailable scan reuses nothing. When the caster leaves, the face shows its
+static square again without a draw. Dynamic faces, drawn or kept, number at
+most 16 per frame and each reserves a render slot before the static fill, so
+the static budget is the smaller of the face budget and the slots left
+whether a square is kept or drawn; a face over the cap shows its static
+square, and `draw.local_shadow.dynamic_faces_dropped` counts it. The frame
+falls back to the full redraw of every face a caster reaches, with static and
+dynamic casters together, when the dynamic scan is unavailable or a
+publication is pending (all lights), or when a refractive dynamic caster
+reaches a light (that light). Until 2026-10-11 static squares that filled all
+32 layers left no band and forced that redraw too.
 The preset's face budget bounds the faces drawn per frame: High 30, Balanced 12
 and Ultra 60. Complete lights draw in that budget, invalid lights first, then
 lights waiting for transmission layers, then stale ones, each by importance. A
@@ -165,8 +222,9 @@ street and indoor captures stayed within 6 of 255.
 lights require a finite positive range, and shadowed spot outer half angles
 must be below 90 degrees.
 
-Importance orders the fill and the filter. It is luminance times intensity
-times range squared over the squared camera distance, held constant within a
+Importance orders the fill and the filter. It is luminance times intensity,
+before the light table's fade, times range squared over the squared camera
+distance, held constant within a
 tenth of the range, so the nearest of several overlapping lights wins. Distance
 cannot tell a lamp lighting the street from one enclosed in a building, so
 importance is instead each light's measured visible contribution once a sample
@@ -444,8 +502,19 @@ Vulkan, the only implementation since 2026-10-06, has not run contact
 hardening.
 
 Deferred lighting does not filter local shadow maps itself. The
-`Shadow.LocalMask` compute pass runs before it when local shadows are active
-and, for every opaque pixel, stores the filtered RGB visibility, with strength
+`Shadow.LocalMask` compute pass runs before it while a shadowed light's range
+sphere, widened by 0.05 m, meets the frustum of the jittered camera
+projection that drew the visibility buffer, or while baked lamps' moving
+casters are shown (`local_shadow_mask_active`,
+[`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c),
+2026-10-11); a light without a finite range always counts. Every visible
+pixel lies in that frustum, so a skipped pass leaves no pixel that needs it,
+and the four deferred-lighting passes read the mask under the same condition.
+The frame's mask of those lights (`VkrVulkanLocalShadowMaskRoot.mask_lights`)
+limits the pass's light traversal: a pixel in no such light's grid cell
+returns before its normal, noise and material loads, and the baked-lamp
+kernels skip only the material load. For every other opaque pixel the pass
+stores the filtered RGB visibility, with strength
 applied, of the k-th shadowed light in range of the pixel that can light it, in
 light traversal order, in layer k of an eight-layer full-resolution RGBA8
 array. A light can light the pixel when it lies in front of the shadow normal,
@@ -529,16 +598,19 @@ only and does not establish arbitrary wall or furniture occlusion.
 ## Consequences
 
 Lighting is bounded and independent of draw partitioning. Unshadowed lights and probe bounds can still leak illumination through geometry.
-Every resident face costs atlas memory whether or not it is on screen: each
-4096-squared D16 layer is 32 MiB, one image for all frames in flight. Bistro's
-71 lamps of 7.5 m take 426 faces at 512 squared and its 15 m lamp six at 1024
-squared under High, eight layers or 512 MiB; the per-image atlas it replaces
-took 64 MiB per target image. These are storage figures from the layout, not
-a measured allocation. A face redraws whenever its content is invalid or
-stale, within the face budget per frame; after the fill, cost scales with
-moved lights and with the faces moving casters reach, each a copy and a
-dynamic-caster draw. The dynamic band adds one 32 MiB layer while a dynamic
-caster exists. A scene load draws its faces over
+The atlas takes at most the preset's layer budget, 256, 384 or 512 MiB, one
+image for all frames in flight; within it every resident face costs atlas
+memory whether or not it is on screen. Bistro's 71 lamps of 7.5 m take 426
+faces at 512 squared and its 15 m lamp six at 1024 squared under High, eight
+layers or 256 MiB; the per-image atlas it replaces took 64 MiB per target
+image. These are storage figures from the layout, not a measured allocation.
+A scene past the budget gives distant and less important lights smaller
+faces or no shadow, and a camera cut can resize many lights at once, each
+hidden until the face budget draws it. A face redraws whenever its content is
+invalid or stale, within the face budget per frame; after the fill, cost
+scales with moved lights and with the faces that changing dynamic casters
+reach, each a copy and a dynamic-caster draw. The dynamic band takes one of
+the budget's layers while a dynamic caster exists. A scene load draws its faces over
 several frames: 432 Bistro faces take 15 frames under High. The shadow mask
 adds 32 bytes per pixel while local shadows are active, about 28 MiB per
 physical image at 1280x720. With refractive casters, the single transmission
@@ -557,7 +629,10 @@ contract.
 
 ## Alternatives considered
 
-A first-N global list makes visibility depend on source order. Per-draw probe
+A first-N global list makes visibility depend on source order; until
+2026-10-11 the table kept the 128 lowest render ids, such a list for scenes
+past 128 lights. A Balanced atlas budget of 6 layers would shrink Bistro's
+lamps, which need 7 static layers beside the band. Per-draw probe
 selection fails on large meshes. Hard light influence boxes produced discontinuous
 slabs without solving diffuse occlusion. Excluding glass from depth-only shadows
 would restore light but discard tint and attenuation. Four transmitting crossings
@@ -570,7 +645,9 @@ boundary to prevent leaks.
 The remaining phases of the
 [local shadow architecture](../proposals/local-shadow-architecture.md) land:
 mask filtering bounded by a distance fade, measured cache format and face size,
-residency for open worlds. Scene scale exceeds
+residency that follows world streaming cells with prefetch (the fixed layer
+budget per preset landed on 2026-10-11). A scene past 128 lights or past the
+atlas budget shows popping lights or face-size churn. Scene scale exceeds
 these capacities, stored probe source requirements change,
 or local-light transport requires more crossings, refracted caustics, or a
 different memory or raster budget.
@@ -582,9 +659,14 @@ parses and owns direct source loading. [`vkr_world_resources.c`](../../runtime/s
 requests the one-time probe bake. [`vkr_bakery_bake.c`](../../tools/bakery/vkr_bakery_bake.c)
 and [`vkr_hdr_cube_packer.cpp`](../../tools/vkr_hdr_cube_packer.cpp) define the
 offline artifact and provenance contract. [`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
+[`vkr_local_shadow_system.c`](../../runtime/src/renderer/systems/vkr_local_shadow_system.c),
 [`vkr_standard_scene_runtime.c`](../../runtime/src/application/vkr_standard_scene_runtime.c),
-and the Metal/Vulkan retained graph providers implement local-shadow reuse and
-submit-only promotion.
+and the Metal/Vulkan retained graph providers implement local-shadow reuse,
+the atlas budget and submit-only promotion.
+[`vkr_lighting_system.c`](../../runtime/src/renderer/systems/vkr_lighting_system.c)
+selects the light table, and
+[`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c)
+gates `Shadow.LocalMask`.
 
 ## Evidence
 
@@ -724,4 +806,93 @@ owner indoor cameras, frame wall time fell from 20.16 to 19.09 ms median,
 20.6 ms of frame time in both builds. Captures after the fill were
 byte-identical indoors and differed in the street view by at most 8 of 255, as
 two captures of one build do.
+
+The unfaded size ranking (2026-10-12) has a CPU test,
+`test_local_shadow_fade_keeps_face_size` in
+[`shadow_system_test.c`](../../tests/src/shadow_system_test.c): of two
+lights over a one-layer budget the nearer takes 1024 squared and the other
+512, and fading the nearer to a tenth of its intensity must neither redraw
+nor swap the sizes. It fails with the faded intensity, and the Debug CPU
+suite passes on Windows. No native run has checked a Bistro night view past
+the atlas layer budget with more than 128 lights for face resizes while
+lights fade.
+
+Idle-mover reuse, the atlas budget, the ranked table and the mask gate
+(2026-10-11) ran on native Vulkan on 2026-10-12: Release, RX 6700 XT, driver
+26.6.3, Windows 10 19045, Ryzen 5 2600, a dirty tree on `4eaeecbb` and local
+profiles, so no result is authoritative. Harness runs used
+`build_release/tools/vkr_harness.exe snapshot|profile --case tools/cases/local/<case>.case.json --profile tools/profiles/<profile>.json`
+with the graphics validation variables unset.
+
+- `local_shadow_bistro_vulkan_street_motionless_capture` (snapshot,
+  `local-offscreen`, Ultra, 1280x720, 120 warmup frames and one measured
+  frame). A copy that differed only in a shorter description ran on the
+  change set's first build
+  (`sha256:b6b71cd43db950b30da02f8aafc9740f03aade2d1cc80d1c6c5b9c0dccabe48f`):
+  12 faces wanted a dynamic square and none drew on the measured frame,
+  dynamic squares drew only in warmup frames 1, 2 and 10 (10, 2 and 1
+  faces), no face was dropped after frame 1, the cascades were reused and all
+  72 lamps were shadowed. The tracked case, whose description now fits the
+  manifest's 255 bytes, passed on the final tree with all six child
+  assertions, among them `draw.local_shadow.faces_dynamic` at most 0
+  (`sha256:50c5e5b1c9cbd953874097ea86a4518815d6c3c571c79af215f61930433cf2da`).
+  No capture compared a kept square with a fresh draw.
+- Builds before (B) and after the change set (A, and A' after a rebuild)
+  alternated under `local-offscreen-perf-audit-gpu`, two children each. In
+  `ssr_tier_bistro_cost` (640x360, TAA, 24 warmup and 32 measured frames, 48
+  to 72 shadowed lights while their shadows fade in) `Shadow.LocalMask` read
+  0.178 ms in B against 0.125 ms in A and 0.120 ms in a repeat of A', beyond
+  the per-child spread (`sha256:b6373852f3be`, `sha256:a6b37e05f249`,
+  `sha256:d9c6935044f2`). In `local_shadow_bistro_vulkan_walk_ultra`
+  (1280x720, no TAA, 240 warmup and 1,086 measured frames) it read 1.909
+  against 1.958 and 1.908 ms, within spread (`sha256:c1b3b735bca4`,
+  `sha256:b809f9367308`, `sha256:9dfda34f0ad8`), and in the sparse-volume
+  case at 2560x1440 5.04 against 5.10 and 5.04 ms. Work rows (`draw.*`,
+  `lighting.*`, `visibility.*`) matched in every phase. These figures time the
+  whole change set on a dirty tree: local observations, not speed claims.
+- Bistro selected 72 lights and dropped none, and its render-graph images
+  stayed at 1,391.62 MiB in every phase of the walk, so its atlas did not
+  change. The walk draws local faces on 26 of its 2,172 measured frames, so
+  it exercises neither the reuse nor the budget.
+
+The Testbed project's "Level Design Test" scene (226 point lights, 111 movers
+as dynamic casters, Epic preset) is not a harness case. A headless Release editor
+(`build_release/editor/vkr_editor.exe`, `--metrics-json` exit frames,
+`VKR_RG_GPU_TIMING=1`, validation variables unset) showed it with the change
+set. The before values are single runs of 2026-10-11 on `4eaeecbb` with a
+dirty tree, not a matched alternation, and other processes loaded the host
+at times. These figures are indicative. They are not harness reports.
+
+- At the lobby, at rest in Edit mode, no local face was copied or drawn
+  dynamic (16 of each before); 23 faces wanted a dynamic square and 7 past
+  the 16-face cap showed their static square, as before. With the cascades
+  (ADR-041) the frame ran 86 passes instead of 128, and the maximized Scene
+  view's exit frame summed 11.37 ms of pass time with no cascade, face or
+  moments pass, against 12.55 ms with 1.26 ms of them.
+- The table selected 128 lights and dropped 98 at every view, and 120 lights
+  were shadowed (114 before).
+- At the bridge view the gate skipped `Shadow.LocalMask` (0.12 ms before).
+- The Draws window at the lobby showed render-graph images at 1,315.89 MB
+  instead of 1,795.89 MB. The atlas layer count was not read, so the atlas
+  budget's share of that fall is inferred, not measured.
+
+CPU tests in [`shadow_system_test.c`](../../tests/src/shadow_system_test.c)
+cover a kept dynamic square and its loss after a move, a static redraw or a
+band clear (`test_local_shadow_idle_dynamic_square_is_reused`), the band
+beside 31 static layers (`test_local_shadow_band_survives_full_static_layers`),
+residency and size hysteresis past the budget
+(`test_local_shadow_atlas_budget_ranks_residents`) and Bistro's lamps under
+every preset (`test_local_shadow_bistro_lamps_fit_every_preset`);
+[`render_graph_barrier_test.c`](../../tests/src/render_graph_barrier_test.c)
+covers the mask gate (`test_local_shadow_mask_gate`) and
+[`lighting_system_tests.c`](../../tests/src/lighting_system_tests.c) the
+ranked table. The Debug CPU suite passes on Windows (2026-10-12).
+
+Unverified: Metal runs of the reuse, the budget and the ranked table, which
+share the runtime code; a Bistro fixture past 128 lights, so the ranked
+table, its fades and the `light_overflow` level check ran in no harness case;
+a Bistro case past the atlas budget; a harness case that skips
+`Shadow.LocalMask`, since no Bistro case faces away from every lamp;
+capture equivalence of kept squares and of the gate; authoritative
+clean-tree timing.
 

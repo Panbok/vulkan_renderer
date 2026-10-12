@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -12,7 +12,11 @@ Accepted. Both pipeline classes run the GPU culling, classification and
 indirect draw encoding. The visibility buffer, G-buffer resolve, deferred
 lighting and transmission peels belong to the desktop pipeline, which Vulkan
 implements; the tiled pipeline shades forward instead
-([ADR-087](087-gpu-class-graphics-pipelines.md), decisions 5 and 6).
+([ADR-087](087-gpu-class-graphics-pipelines.md), decisions 5 and 6). Since
+2026-10-11 the desktop pipeline gives each culling view one row per candidate
+and each state bucket an exact command partition; native Vulkan runs show the
+smaller tables with unchanged work counts, and no capture compared the
+output (Evidence).
 
 ## Context
 
@@ -63,6 +67,26 @@ negative determinant selects reflected winding. `VKR_FRUSTUM_DISABLED=1` zeros
 packed native frustum planes for reference captures without adding
 per-candidate validation.
 
+In the desktop pipeline each culling view owns `C` rows of the
+classification, visible-row and indirect-command tables, `C` being the
+candidate capacity, because a view classifies each candidate at most once. A
+candidate's state bucket is fixed when it is packed, so the host counts the
+packed candidates of each bucket and gives the bucket a command partition of
+exactly that size in every view's rows, in bucket order
+(`VkrVulkanCommandPartitions`, the last 64 bytes of the 272-byte
+`VkrVulkanCullRoot`). The prefix pass clamps each bucket to its partition and
+encoding writes command `view * C + first + local index`; raster takes the
+partition's first row for its argument offset and its size for
+`maxDrawCount`, and an empty bucket records no draw. Static bucket counts
+belong to the static residency they were counted for, and a frame whose
+committed residency differs repacks the static rows
+([`vkr_vulkan_draws.c`](../../renderer/src/vulkan/vkr_vulkan_draws.c)). A
+disagreement between counts and rows would show as an overflow count, not as
+a write outside the partition. The transmission stream partitions its own
+candidates for its one view. The tiled pipeline keeps eight buckets of at
+least the smaller of `C` and 65,536 rows per view
+([ADR-002](002-render-graph.md)).
+
 HZB rejection requires completed compatible history, matching world epoch and
 unjittered view-projection and the exact raster projection that produced depth;
 camera motion cannot silently relax those gates. Vulkan maps NDC Y directly to
@@ -92,6 +116,10 @@ visibility resolve require ABI and native GPU evidence. Exact HZB history gates
 limit reuse under motion. A GPU-driven topology does not imply mesh shaders,
 meshlets or automatic LOD; ranges with detail levels select them during
 culling ([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md)).
+Desktop culling tables take 56 bytes per candidate and culling view in each
+frame slot; up to 65,536 candidates that is an eighth of the eight buckets
+of `min(C, 65536)` rows they replaced on 2026-10-11. They are `GROW_ONLY`
+(ADR-002), so a session keeps the backing of its largest view count.
 
 ## Alternatives considered
 
@@ -102,7 +130,9 @@ measured workload.
 ## Revisit when
 
 Candidate scale, deforming geometry or measured visibility cost justifies a new
-classification policy without weakening visibility correctness.
+classification policy without weakening visibility correctness. A session's
+peak culling view count holds enough memory that the culling tables should
+shrink after a lower peak.
 
 ## Implementation
 
@@ -111,3 +141,49 @@ classification policy without weakening visibility correctness.
 [`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c),
 [`vkr_metal_packet_commands.inc`](../../renderer/src/metal/internal/vkr_metal_packet_commands.inc),
 and [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json).
+
+## Evidence
+
+Culling rows per candidate (2026-10-11) ran on native Vulkan on 2026-10-12:
+Release, RX 6700 XT, driver 26.6.3, Windows 10 19045, Ryzen 5 2600, a dirty
+tree on `4eaeecbb` and local profiles, so no result is authoritative.
+Harness runs used
+`build_release/tools/vkr_harness.exe snapshot|profile --case tools/cases/local/<case>.case.json --profile tools/profiles/<profile>.json`
+with the graphics validation variables unset.
+
+- Builds before and after the change set alternated under
+  `local-offscreen-perf-audit-gpu` (before, after, after again on a rebuild;
+  two or five children each). `memory.gpu.owner.render_graph.bytes.live`,
+  constant within each run, fell from 789.66 to 655.87 MiB in
+  `ssr_tier_bistro_cost` (640x360), from 1,454.70 to 1,320.90 MiB in
+  `ssgi_bistro_on_profile_local` (1280x720), from 3,977.66 to 3,678.50 MiB in
+  `sparse_volume_bistro_street_on_timing` (2560x1440) and from 2,111.32 to
+  1,536.53 MiB in `local_shadow_bistro_vulkan_walk_ultra` (1280x720).
+  Render-graph images did not change, so the whole fall is in buffers. Every
+  `draw.*` and `visibility.*` row matched in all phases, and `Cull.*` timing
+  stayed within spread.
+- `local_shadow_bistro_vulkan_street_capture` (snapshot, `local-offscreen`,
+  `sha256:d4418437aae0fc15429d36f97f4742d1b03f49007bc85030aa0dbe78828606d0`)
+  and `local_shadow_bistro_vulkan_walk_ultra` (profile, `local-offscreen`,
+  `sha256:c9763acdab237627e15866ad31fd241ce5a70bb200113bad4795970350cf98cf`)
+  reported no visible-row, transmission, compact-pixel or cascade overflow.
+- A copy of `ssr_ghost_under_bar` with longer timeouts ran under
+  `local-offscreen-gpu-single` with `VK_LAYER_KHRONOS_validation`, its core
+  and synchronization checks enabled by a layer settings file, and logged no
+  message
+  (`sha256:4c08ff5cb67021c8df1e94609156bf05e5486a33b681e4c45d6547187f6e971b`).
+  No layer status line confirmed that the synchronization checks ran.
+- The Testbed project's "Level Design Test" scene is not a harness case. In a
+  headless Release editor, against single runs of 2026-10-11 rather than a
+  matched alternation, its render graph took 1,762 MiB instead of 4,940 MiB at
+  the default layout and 2,449 MiB instead of 5,626 MiB with the Scene view
+  maximized, and the Draws window showed graph buffers at 422.69 MB instead
+  of 3,105.44 MB at the lobby. These figures are indicative. They are not
+  harness reports.
+
+`test_draw_table_capacity_and_json_sizes` in
+[`render_graph_barrier_test.c`](../../tests/src/render_graph_barrier_test.c)
+expects a 20-byte table of 240 bytes for a capacity of four candidates and
+three culling views; a source that ignores the views (80 bytes) or keeps the
+bucket stride (1,920 bytes) fails it. No depth or G-buffer capture compared
+the output before and after the change, and the Metal tables are unchanged.

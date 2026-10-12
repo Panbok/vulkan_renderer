@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -14,7 +14,13 @@ it, with native evidence on Bistro. The tiled pipeline (Metal) composes and
 samples it too, with native evidence on Bistro and the leak fixture since
 2026-10-10, and a Mac bakes volumes on Metal ray tracing. Since 2026-10-11
 baked sky light scales environment reflections on both pipelines, with
-native evidence on Metal only. Light paths are not yet shared across layers.
+native evidence on Metal only. Also since 2026-10-11 the desktop pipeline
+keeps lamp bounce apart from sky light on every frame with an active lamp
+group, and its lightmapped pixels add their lamp light to the reflected
+surroundings. Native Vulkan runs on Bistro (2026-10-12) find its indirect
+diffuse unchanged within rounding against an unmatched older run and show
+the extra lookups' cost in a local timing; the reflections it changes are
+not yet checked on hardware. Light paths are not yet shared across layers.
 
 ## Context
 
@@ -185,9 +191,15 @@ nearest the current sun share weight one, and each lamp group takes its light
 group's factor. When a weight moves by more than one percent, at most every
 0.25 s, the composition revision advances (`vkr_scene_update_diffuse_volume`).
 `DiffuseVolume.Compose`, a compute pass in both render graphs, then writes the
-weighted sum into the composed texture's first band. On a frame that samples
-baked lamps, the active lamp groups and their direct bands go to the second
-band instead. The tiled pipeline keeps no lamp band apart: it looks the volume
+weighted sum into the composed texture's first band. The desktop pipeline
+keeps the active lamp groups apart in the second band whenever one is
+active, so the first band holds only the sun-key layers and every lookup can
+tell baked sky light from lamp light. The lamp groups' direct bands join the
+second band only on a frame that samples baked lamps, since a frame without
+baked lamps lights the static lamps at runtime (owner decision, 2026-10-11;
+`vkr_vk_diffuse_volume_lamp_rows` and `vkr_vk_diffuse_volume_lamps_baked` in
+[`vkr_vulkan_diffuse_volume.c`](../../renderer/src/vulkan/vkr_vulkan_diffuse_volume.c)).
+The tiled pipeline keeps no lamp band apart: it looks the volume
 up only for draws without a lightmap, so while a lightmap is sampled its
 compose adds each active lamp group's direct band into the single sum (owner
 decision, 2026-10-10). Its second band holds, in each probe's first texel,
@@ -223,8 +235,9 @@ composed texture before rewriting it in place.
 Deferred lighting reads the result per pixel. Transmission shading and SSGI
 call the lookup inline. The tiled pipeline calls it inline in
 `Tiled.Opaque`. Frame roots carry the textures, origin, spacing, `sh_scale`,
-moment rows, lamp band offset and dimensions
-([ADR-044](044-shader-cross-backend-contract.md) owns the ABI checks).
+moment rows, lamp band offset (zero when no lamp group is active) and
+dimensions ([ADR-044](044-shader-cross-backend-contract.md) owns the ABI
+checks).
 
 ### Baked sky in environment reflections
 
@@ -245,7 +258,10 @@ A surface with baked light, from its lightmap
   probe or global cube, the cloud layer included, with the probe's radiance
   scale and specular gain, pre-exposed.
 - `D` is the surface's baked diffuse response E/π, the one its indirect
-  diffuse uses. It stands for its surroundings' mean radiance.
+  diffuse uses. It stands for its surroundings' mean radiance. On the
+  desktop pipeline a lightmap holds only the lamp groups, so a lightmapped
+  surface's `D` is its volume light, which leaves the lamp groups out, plus
+  its lightmap's lamp irradiance over π, less the light moving casters hide.
 - `D_sky` is the part of `D` from sun-key layers: sky light and sun bounce,
   without the lamp groups ([`vkr_light_layers.h`](../../runtime/src/assets/vkr_light_layers.h)).
 - `D_env` is the response the same environment's SH gives at the normal, with
@@ -264,15 +280,24 @@ Per backend:
   volume reads the composed sun-key luminance from the second band (row
   offset in `VkrMetalPacketDiffuseVolume::dimensions.w`). `D_env` is the
   draw's probe or the global SH, evaluated for every baked surface.
-- **Desktop (Vulkan).** `packet_diffuse_volume_lookup` returns the sky share
-  `lum(rows 0) / lum(total)` when the frame keeps the lamp band apart, else
-  one: the single sum then holds the lamp groups' indirect light too. The
-  volume images carry the share in alpha (at least 1/1024, so a covered pixel
-  stays nonzero); deferred lighting, forward and transmission shading pass it
-  with `D` to `packet_environment_specular_radiance`, which blends the
-  probes' SH with the same weights as their radiance. `SSR.Composite` reads
-  the volume image (binding 13) so that the environment reflection it
-  replaces is the one lighting added; an SSR hit stays unscaled.
+- **Desktop (Vulkan).** `packet_diffuse_volume_lookup` returns the sky
+  share `lum(rows 0) / lum(total)`: the sun-key part's share of the
+  response. The share is one where the response holds no lamp part: no lamp
+  group is active, or the surface's lightmap holds the lamps and the lookup
+  leaves them out. The volume images carry the share in alpha (at least
+  1/1024, so a covered pixel stays nonzero); deferred lighting, forward and
+  transmission shading pass it with `D` to
+  `packet_environment_specular_radiance`, which blends the probes' SH with
+  the same weights as their radiance. A lightmapped surface the volume
+  covers adds its lamps' light to `D` but not to `D_sky`
+  (`packet_baked_light_with_lamps` in
+  [`default.slang`](../../renderer/src/shaders/vulkan/slang/world/default.slang));
+  one outside the volume keeps the environment, because nothing measures
+  its sky light. `SSR.Composite` reads the volume image (binding 13), the
+  baked lamp irradiance (binding 14) and the hidden baked-lamp light
+  (binding 15), so the environment reflection it replaces is the one
+  lighting added; an SSR hit stays unscaled. Transmission shading adds its
+  lightmap's lamp light without subtracting the light moving casters hide.
 
 Cost per baked pixel on Metal: one L2 SH evaluation (seven `float4`
 constant reads, about 30 FMA), one multiply-add per sun-key layer, two
@@ -291,6 +316,15 @@ after). Frame wall time p50 rose 14.69 to 14.82 ms. The time is register pressur
 constant or dropping the sun-key sums left it within 0.1 ms, and computing the
 share before the cube sample cost 2.4 ms.
 
+On the desktop pipeline a frame without baked lamps reads the lamp band too
+while a lamp group is active: three more texel reads per valid corner in
+`DiffuseVolume.Sample`, `DiffuseVolume.Fallback`, forward and transmission
+lookups. A frame with baked lamps and no active lamp group reads three fewer.
+On a frame with baked lamps, `SSR.Composite` adds one storage read per
+eligible covered pixel, and one more on lightmapped pixels with a selected
+moving-caster lamp. These are
+source counts; the cost is not measured.
+
 ## Consequences
 
 - Static geometry, material, light or layer changes need a rebake.
@@ -303,9 +337,14 @@ share before the cube sample cost 2.4 ms.
   half-open place loses sky detail in the directions that do see the sky, and
   an enclosed one reflects a uniform colour, not the shapes around it: local
   probes or planar reflections supply those.
-- On the desktop pipeline, a frame that keeps no lamp band apart (no baked
-  lamps) counts the lamp groups' bounce light as sky light, so lamp-lit
-  rooms there keep more of the sky than on the tiled pipeline.
+- On the desktop pipeline a lightmapped surface outside the volume keeps
+  the full environment reflection: its lightmap holds only the lamp groups,
+  so it has no baked sky light to scale by. The tiled pipeline also scales
+  environment specular by the lightmap's baked ambient visibility; the
+  desktop pipeline has GTAO's cone only.
+- On a desktop frame without a lightmap, a pixel's indirect diffuse is the
+  sum of two RGBA16F texels, the sun-key band and the lamp band, added in
+  fp32, where it was one texel. The result differs within fp16 rounding.
 - Moments trade some light near thin occluders for leak control. At the
   previous 6 × 6 interior, a probe just past a thin roof saw its hits and
   escapes in one texel, and light leaked through.
@@ -453,6 +492,51 @@ Baked sky in reflections (2026-10-11, Release, validation unset, M1):
   vulkan1.4 --scalar-block-layout`; CPU suites pass. No native Vulkan run:
   the desktop pipeline's reflections, the volume images' alpha and the SSR
   composite's subtraction are unchecked on hardware.
+- Vulkan lamp band on every frame and lamp light in lightmapped reflections
+  (2026-10-11): a scratch compile of the Vulkan shader catalog
+  (`vkr_bakery shaders --backend vulkan`) built every module, and the
+  modules pass `spirv-val --target-env vulkan1.4 --scalar-block-layout`.
+  Reflection of `packet.ssr_composite.comp.spv` gives the baked lamp fields
+  at bytes 424 and 428 of the 432-byte root. The changed host files pass
+  `clang -fsyntax-only`.
+- Native Vulkan after that change, 2026-10-12 (Windows 10 Pro 19045, Ryzen 5
+  2600, RX 6700 XT, AMD 26.6.3, Release, graphics validation unset, dirty
+  tree, not authoritative). Bistro's volume fixture has no lightmap, and its
+  lamp group has no light group to scale it, so it is active and every
+  lookup there now sums the sun-key and lamp bands.
+  - **Indirect diffuse.** `vkr_harness snapshot --case
+    tools/cases/local/sparse_volume_bistro_street_on_mode9.case.json
+    --profile tools/profiles/local-offscreen.json` passed
+    (`sha256:3a01412f0a0b06669b9a2568991528a4f017994fda275de2fcc57a6425d3590a`).
+    Against the newest earlier run (2026-10-10, 98 commits older, not
+    matched), depth agrees within 9.5e-7 and `indirect_diffuse` is identical
+    on 95.6 % of pixels; 566 isolated pixels differ by more than 2 codes,
+    and the mean stays 89.778.
+  - **Cost.** `vkr_harness profile --case
+    tools/cases/local/sparse_volume_bistro_street_on_timing.case.json
+    --profile tools/profiles/local-offscreen-perf-audit-gpu.json` (2560 ×
+    1440, TAA off, five children of 480 warmup and 300 measured frames),
+    once before the 2026-10-11 change set and three times after it, in one
+    session: `DiffuseVolume.Sample` 0.247 ms before against 0.286 to
+    0.295 ms after (+16 to +19 %), `DiffuseVolume.Fallback` 0.034 against
+    0.037 to 0.039 ms. `DiffuseVolume.Upsample`, `Lighting.Deferred` and
+    frame wall time showed no change beyond the spread between runs, and the
+    work counters were equal. In these passes the change set changes only
+    the lamp band read. Reports
+    `sha256:e56494b4eea04a609f75ad439a960cc9770d809d510abc397682277b31e7b0b9`
+    (before),
+    `sha256:f8b8daeb1c69382ee43d62ef65b8d315dffe5737bb72f5fe541dfc6e27766d70`,
+    `sha256:90b1a5f4100c58dd0a1fe8e3798980384814e8282a933aaf99463f9ebe73cd7b`
+    and
+    `sha256:ca8f8f548a080895fb1ec44a5808309b6327a5783333c9ab2cf7b967a516d5d2`
+    (after). This is a local observation on a dirty tree, not a speed claim.
+  - **Unchecked on hardware:** a matched mode 9 capture before and after; a
+    frame with baked lamps and no active lamp group, which reads three
+    texels fewer; a sealed lamp-lit room's reflections, since no Bistro case
+    views an enclosed room inside the volume yet; and the lightmapped
+    reflections of `bistro_lamps_baked_volume_night_capture`, which ran with
+    the change ([ADR-104](104-desktop-baked-lamps.md#evidence-and-remaining-checks))
+    but was not compared with a capture without it.
 
 ## Revisit when
 

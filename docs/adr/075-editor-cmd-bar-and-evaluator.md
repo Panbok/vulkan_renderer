@@ -7,7 +7,10 @@ authority: adr
 
 ## Status
 
-Accepted.
+Accepted. The 2026-10-11 `wait.scene` rule, which also waits for an
+opened project scene's rebuilds, ran in the headless Windows Release editor
+on 2026-10-12. Its 2026-10-12 failed-load end has no native run yet; a
+scene whose runtime file is missing checks it.
 
 ## Context
 
@@ -45,6 +48,29 @@ after <s> s`; a build or `scene.bake` hold then prints its result line, an
 `error:` line when the job failed. After
 600 s it reports an error and drops the queue. An unsaved-edits prompt does not
 hold the queue: a script saves or discards first.
+
+`wait.scene` returns once a scene is loaded and, for an opened project scene,
+usable: its overlay has applied, which for a large overlay takes several
+frames after the resource load ([ADR-076](076-project-object-model.md)), and
+its brushes, terrain and scatter copies are built, the end of the opening
+that [ADR-069](069-editor-projects-and-workspaces.md) shows (user decision,
+2026-10-11; `vkr_editor_cmd_update` in
+[`editor_cmd.c`](../../editor/src/editor_cmd.c)). A script then reads built
+geometry without a timed `wait`. The 120 s limit counts the rebuilds too, so
+a large level comes closer to it; a terrain that never settles holds the
+wait until that limit. A load that fails ends the wait at once (2026-10-12):
+when no scene is loaded or loading, no opening runs and the runtime reports
+a status for its scene path, `wait.scene` prints `wait.scene: the scene did
+not load: <status>; dropped the remaining commands` as an error and drops
+the queue. Every terminal load failure in the runtime sets that status
+([`vkr_sample_runtime.c`](../../runtime/src/vkr_sample_runtime.c)).
+In 11 scripted headless Release editor runs on Windows (2026-10-12, RX 6700
+XT, native Vulkan) that issued `wait.scene` while the Testbed project's
+Level Design Test scene opened, the next command ran on the log line after
+`SCENE_OPEN_TIME`, and status reads then found `opening` null,
+`rebuilding.settled` true, 54,143 entities and no pending texture. The
+opening's timings are
+[ADR-069](069-editor-projects-and-workspaces.md#verification-and-limits)'s.
 
 `--headless` starts the editor without a window. Frames render into an
 offscreen present target (ADR-014) of the editor's 1680x1050 size in pixels at
@@ -149,7 +175,7 @@ dependable channel for scripts.
 | `help` | `[command]` | List commands or describe one |
 | `echo` | `<text>` | Print text |
 | `wait` | `<seconds>` | Pause the queue (at most 600 s) |
-| `wait.scene` | | Pause the queue until a scene is loaded (120 s limit; a timeout drops the queue) |
+| `wait.scene` | | Pause the queue until a scene is loaded and its brushes, terrain and scatter copies are built (120 s limit; a timeout or a failed load drops the queue) |
 | `quit` | `[discard]` | Close the editor; refuses while scene edits are unsaved unless `discard` |
 
 Shared commands reuse the menu table's enabled checks, so an unavailable action

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-13
+updated: 2026-10-12
 authority: adr
 ---
 # ADR-010: ECS-owned scene state with a retained render mirror
@@ -32,6 +32,29 @@ child index accelerates hierarchy traversal; a query scan remains the fallback
 when the index cannot be built. The same update marks renderable entities for
 mirror synchronization.
 
+Since 2026-10-11 the first pass writes a transform only when it clears a
+flag. When no transform is dirty and no transform archetype carries an
+evaluated pose, a physics body or a character controller, the world pass is
+skipped; Debug builds then walk it read-only and assert that no entity would
+change. Every transform write marks the transform world-dirty, and
+`VkrScene.transform_revision` advances whenever the world pass recomputes a
+matrix ([`vkr_scene_system.h`](../../runtime/src/renderer/systems/vkr_scene_system.h)).
+Consumers that run after the transform update, brush rebuilds and
+population, compare it to skip their own walks while nothing moved; a brush
+the update marks dirty still counts in `vkr_scene_brush_pending`.
+Population also compares `child_index_revision`, which advances with each
+full rebuild of the child index, since a rebuild can list a parent's
+children in another order, and it builds no rule while the index is
+invalid, since a rule's spline points and painted areas are children; the
+next update after the rebuild builds it (2026-10-12,
+`vkr_scene_population_update`). A scene
+looks a component type's id up through an open-addressed table keyed by the
+type descriptor's address, which finds the entry a scan of the registered
+types would. The Debug CPU suite passes with the skips, the lookup and the
+child-index gate on Windows (2026-10-12); its
+`test_scene_population_waits_for_child_index` fails without the gate. No
+timing supports the skips or the lookup.
+
 Source scene entities keep their authored JSON entity index. A glTF instance
 expands below that wrapper into the selected glTF scene's nodes, including
 non-renderable parents. `SceneSourceIdentity` pairs the wrapper index with the
@@ -49,7 +72,8 @@ propagation. Render synchronization binds those palettes to compute deformation
 and actor-space bounds without writing sampled values into authored ECS transforms.
 This avoids persisting a sampled animation frame through editor save. [ADR-071](071-animation-bank-and-reference-pose.md) owns playback,
 request lifetime and binding invalidation. `structure_revision` identifies create, destroy, rename and reparent
-changes for editor hierarchy rebuilding.
+changes and the addition or removal of a world component, for editor hierarchy
+rebuilding and the editor's cached overlay entity lists.
 
 ## Consequences
 

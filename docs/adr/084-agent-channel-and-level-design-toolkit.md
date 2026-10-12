@@ -12,8 +12,9 @@ checks, entity IO, terrain and population (phases 0 to 5 of the
 [level design toolkit](../proposals/level-design-toolkit.md)) are
 implemented, with terrain tile levels in
 [ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md). The toolkit
-proposal keeps the tools no phase covered; native Vulkan execution is
-unverified.
+proposal keeps the tools no phase covered. Headless Windows editor runs on
+native Vulkan since 2026-10-04, including the brush rebuild budget of
+2026-10-12, are under [Evidence](#evidence); they are not harness reports.
 
 ## Context
 
@@ -92,7 +93,7 @@ thread during the editor's build.
 
 | Operation | Purpose |
 |---|---|
-| `ops.list`, `editor.status` | The table, with whether each operation settles; loaded containers with their journal `revision`, selection, simulation, view, pending changes and what still rebuilds |
+| `ops.list`, `editor.status` | The table, with whether each operation settles; loaded containers with their journal `revision`, selection, simulation, view, pending changes, what still rebuilds and the scene opening |
 | `scene.describe`, `entity.get`, `query.bounds` | Entities with ID, name, parent, component types, [tags](#tags), local pose and world bounds; one entity's components as descriptor JSON |
 | `entity.create`, `entity.set`, `entity.move`, `entity.delete`, `entity.parent` | Structure, pose and tags; `entity.move` shifts by a world offset; delete with `recursive` deletes descendants first |
 | `tag.list`, `tag.vocabulary` | Each tag a scene's entities carry, with its count and vocabulary category; the shared tag vocabulary |
@@ -168,7 +169,12 @@ view can stream terrain tiles in.
 A write with `settle` answers once the scene settles and adds each
 operation entity's world bounds and build status to its result, so one
 request applies, rebuilds and measures. `editor.status` reports what still
-rebuilds under `rebuilding`. The scene does not rebuild while the simulation
+rebuilds under `rebuilding`, and a project scene that is opening under
+`opening`: `phase` (`preparing`, `loading` or `building`), `scene`, `step`
+and `seconds`, plus `done` and `total` for a counted step (applying edits,
+building brushes, placing scatter copies); `opening` is null when no scene opens
+(2026-10-11; [ADR-069](069-editor-projects-and-workspaces.md#verification-and-limits)
+records its native Vulkan run). The scene does not rebuild while the simulation
 runs, so Play counts as settled. Texture and mesh streaming do not count.
 
 ### Review
@@ -407,12 +413,23 @@ scene bakes build solid and visual brushes from their faces
 
 [vkr_scene_brush.c](../../runtime/src/renderer/systems/vkr_scene_brush.c)
 rebuilds a brush after a change to it or its faces, or after its transform
-moved and then rested for two updates, at most 256 brushes per update. A
-rebuild makes one generated mesh with one submesh per face material (16 at
-most), attached as the entity's runtime shape through
-`vkr_scene_attach_generated_mesh`, so transform sync, picking, visibility and
-the Show filter follow the shape path. Materials load once per scene and
-path.
+moved and then rested for two updates, at most 256 brushes and about 6 ms of
+rebuilds per update (`VKR_SCENE_BRUSH_REBUILD_BUDGET_MS`, checked after each
+rebuild, so an update rebuilds at least one brush). A rebuild makes one
+generated mesh with one submesh per face material (16 at most), attached as
+the entity's runtime shape through `vkr_scene_attach_generated_mesh`, so
+transform sync, picking, visibility and the Show filter follow the shape
+path. A brush without a mesh attaches its first one after the update's
+rebuilds, without waiting for its uploads, since an attach invalidates the
+scene's child index that the next brush's face lookup reads
+(`brush_pending_attach`). That pass runs before the update rebuilds the
+cell and mover bodies, so a mesh that fails to attach leaves no hull behind
+and its brush reports "the mesh failed". A brush with a mesh keeps drawing
+it until the new one's uploads settle. Each mesh's geometries take a
+released geometry slot, else the first slot never served, without a search
+of the slot table (`used_slots` in
+[vkr_geometry_system.h](../../runtime/src/renderer/systems/vkr_geometry_system.h)).
+Materials load once per scene and path.
 
 #### Surface tags and greybox looks
 
@@ -819,8 +836,11 @@ with the headroom), gaps narrower than its diameter, walkable edges with no
 floor within
 4 m below, walkable areas the `start` (or the first enabled Player Start)
 cannot reach, overlapping solid brushes, brushes that did not build,
-z-fighting (`z_fight`) and movers that break a vehicle's stay
-(`mover_timing`). Each
+z-fighting (`z_fight`), movers that break a vehicle's stay
+(`mover_timing`) and a scene with more enabled point lights than the
+renderer's 128-light table, which keeps those nearest the camera
+(`light_overflow`, with the count and the lights' centroid; 2026-10-11,
+[ADR-019](019-bounded-forward-spatial-lighting.md)). Each
 issue names its position, the entity at fault and the step height, slope,
 headroom, gap, area or seconds; issues of one kind on one entity within 8 m
 merge, except broken connections and mover timings, each its own issue.
@@ -1449,13 +1469,21 @@ collision follows the brush only after its transform rests, so a dragged
 brush collides at its old place until the drag ends. A rebuilt brush keeps
 drawing its previous mesh until the new geometry and materials settle, as a
 terrain does (level toolkit audit A1); a brush without a mesh, such as a new
-one, takes its mesh at once and shows it as the uploads finish.
+one, takes its mesh in the update that built it and shows it as the uploads
+finish. The 6 ms budget covers the rebuilds only: the first-mesh attach
+pass and the cell and mover bodies that the rebuilds marked finish in the
+same update, so an update can run past it. A level's first build spreads
+over many frames; `wait.scene` waits for it for up to 120 s, and an agent
+read for up to 240 builds.
 
 ## Revisit when
 
 Reviews must survive a scene reload, or a level's brush count makes the
 per-brush draw cost visible next to its other geometry (merge per cell and
-material then).
+material then). Revisit the rebuild budget when a large level's opening
+must stay smooth: one 241 to 248 ms CPU frame during the Level Design Test
+level's brush build is unexplained (see Evidence), and a CPU sample of that
+frame comes first.
 
 ## Evidence
 
@@ -1706,3 +1734,51 @@ material then).
   103 ms (1,047 ms before). Suite `scene_edit` compares the indexed lookup
   with the scan after a face rejoins its brush, after a parent written past
   the index and at a short capacity.
+- `build_test.bat` (Windows Debug, 2026-10-12; "All tests completed.", 103
+  suites): in suite `scene_edit`, `edit_test_brush_first_meshes` builds
+  three new solid boxes in one 32 m cell with every upload in flight and
+  room for two meshes. After each update every built brush draws and a
+  downward ray hits it; the brush left without room reports "the mesh
+  failed" and has no hull.
+  The test fails when first meshes wait for their uploads, or when the
+  attach pass runs before the rebuilds or after the cell rebuilds. In suite
+  `mesh_material_override`, `test_geometry_slots_reuse_released` fills an
+  eight-slot geometry table and releases one slot: the next create takes it
+  under a new generation, the old handle stops resolving, and a create past
+  the capacity fails. It fails with a capacity one short, a live slot served
+  twice, or a free list that is never read.
+- Windows and native Vulkan, 2026-10-12 (Windows 10 Pro 19045, Ryzen 5
+  2600, RX 6700 XT, AMD 26.6.3; scripted headless Release editor, graphics
+  validation unset, dirty tree) on the Testbed project's Level Design Test
+  scene (6,973 brushes; 54,143 entities once open). The tree without and
+  with the rebuild budget, the deferred first-mesh attach and the geometry
+  slot change, built and run in one session with the same scripts and one
+  `editor.status` per frame:
+
+  | Opening | Before | After |
+  |---|---:|---:|
+  | "Building brushes" frames | 26 | 29 to 30 |
+  | Median frame | 268.0 ms | 36.2 ms |
+  | Longest frame | 513.9 ms | 241.3 to 248.4 ms |
+  | Step total | 7.26 s | 1.42 to 1.44 s |
+  | `SCENE_OPEN_TIME` `build=` | 8.13 and 8.85 s | 2.00 to 2.15 s |
+  | `SCENE_OPEN_TIME` `seconds=` | 12.41 and 13.47 s | 5.95 to 6.93 s |
+
+  Two runs before and four after give the `SCENE_OPEN_TIME` rows;
+  [ADR-069](069-editor-projects-and-workspaces.md#verification-and-limits)
+  records the opening's other phases. Both builds rebuilt 256 brushes per
+  update at the median, so in Release the count, not the 6 ms budget, ends
+  most updates, and the median frame misses the 30 ms aim. The longest
+  frame comes at the same point of every run after the change and is CPU
+  time: with `VKR_RG_GPU_TIMING=1 VKR_RG_SLOW_FRAME_MS=30` no frame logged
+  30 ms of pass GPU time, and a replay of the cell collision work gives
+  that update 264 to 323 hulls, fewer than a later update of 613 hulls that
+  took about 35 ms. Its cause is unknown. `scene.describe` (all 6,973
+  brushes built; ids and world bounds of its 9,651 entities), six downward
+  `query.raycast` hits on solid and clip brushes and `level.lint` over three
+  regions answered the same before and after, except that one `too_narrow`
+  issue between two touching bodies names the other body. These figures are
+  indicative. They are not harness reports. Bistro has no brushes, so no
+  Bistro gate covers this. A Debug editor on the level, where shorter
+  updates may leave agent reads `settled` false after 240 builds, was not
+  run.

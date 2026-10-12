@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-06
+updated: 2026-10-12
 authority: proposal
 ---
 # Local shadow architecture
@@ -33,7 +33,9 @@ light passes through walls. Within 15 m of those cameras are 40 to 51 lamps.
 
 Since 2026-10-02 the phase 1 cache is implemented per ADR-019: every
 shadow-casting light is resident in one shared multi-layer 4096² D16 atlas,
-with face sizes fixed by range; invalid and stale faces redraw by importance
+with face sizes fixed by range, while the faces fit the preset's atlas layer
+budget (since 2026-10-11; past it, residency and face sizes follow camera
+distance); invalid and stale faces redraw by importance
 within the preset's face budget per frame, and a transmission pool of one layer
 per budgeted face serves the most important lights. Importance is measured
 visible contribution, distance until a sample arrives.

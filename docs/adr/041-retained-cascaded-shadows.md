@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-10
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -43,8 +43,9 @@ matches the common desired projection. The newest compatible submitted static
 fit containing the current cascade supplies that projection. Other physical
 images render into their own depth storage using the same descriptor when next
 acquired; selecting its CPU metadata never borrows another image's depth.
-Dynamic overlap, generation drift,
-invalid contents or incomplete publication forces rendering. The caster
+Dynamic overlap forces rendering unless the layer already holds the dynamic
+casters of the current dynamic generation (below); generation drift, invalid
+contents or incomplete publication force rendering. The caster
 bounds generation (`VkrWorldPassPayload.caster_bounds_generation`) follows
 the box around every visible caster that `vkr_scene_measure_caster_bounds`
 measures each frame, since the scene-bounds Z fit is derived from that box
@@ -57,9 +58,10 @@ geometry change only through mesh-manager calls that bump the static
 generation, adding and removing a drawn mesh included; an edit therefore
 redraws once. Runtime-created instances and
 skinned meshes stay dynamic, as do meshes that move at runtime (ADR-108). A
-dynamic caster that overlaps a local light redraws its dynamic squares
-every frame (ADR-019); one that reaches a cascade composes it over the
-cascade's static layer (below). Pending fits and
+dynamic caster that overlaps a local light draws its dynamic squares
+(ADR-019), and one that reaches a cascade composes it over the cascade's
+static layer (below); while the dynamic generation the content was drawn
+under holds, both are reused instead. Pending fits and
 content validity commit only after successful submit. Reused cascades publish
 the fit that actually produced their depth.
 
@@ -152,6 +154,19 @@ for drawn or copied layers. Receivers still sample only `shadow_map`
 ([`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
 `static_render_mask`, `copy_mask`, `dynamic_render_mask`).
 
+Since 2026-10-11 a layer drawn whole or composed while no publication is
+pending records that it holds every dynamic caster that reaches it, and the
+dynamic generation it was drawn under
+(`VkrShadowCascadeHistory.dynamic_contents`, `dynamic_generation`).
+`VkrWorldPassPayload.dynamic_generation` advances on any change to a dynamic
+caster and on topology changes. While it is unchanged, such a layer is reused
+like static content when its submitted inputs (static world, publications,
+caster bounds, bias, light and resource) and descriptor match, so motionless
+movers cost no copy, dynamic draw, dynamic culling view or moments rebuild,
+and each target image converges after one composition. A static layer holds
+static casters only and records no dynamic contents, and fit selection keeps
+the static-only rule.
+
 ### Far-cascade EVSM
 
 The **Filtered far shadows** setting (`VkrShadowConfig.far_cascade_evsm`) gives
@@ -196,7 +211,7 @@ reuse. Once the images agree, static frames omit those passes again. Static
 frames need no new GPU storage, copies or waits; while the world has dynamic
 casters, the static layers take one more shadow-map-sized depth image (64 MiB
 at four 2048² cascades) and a composed cascade one copy of its layer per
-frame.
+frame while its dynamic casters change.
 
 While the light moves, a cascade's shadow can lag the lit direction by up to
 its tolerance: under 7 mm for a 15 m caster in cascade 0 and 5.2 cm in cascade
@@ -366,7 +381,38 @@ Play included, reported nothing. `run_shadow_system_tests` (composition
 cases, first frame of the static image, a turning sun drawing whole, a
 discarded static layer redrawn) and `run_render_graph_barrier_tests`
 (static draw, copy and dynamic draw barriers on both graphs) pass. The
-Vulkan path compiles and its graph tests pass; it did not run.
+Vulkan path compiles and its graph tests pass; its native runs are under
+[Idle dynamic-caster evidence](#idle-dynamic-caster-evidence).
+
+## Idle dynamic-caster evidence
+
+Native Vulkan, Release, RX 6700 XT, driver 26.6.3, Windows 10 19045, Ryzen 5
+2600, 2026-10-12, a dirty tree on `4eaeecbb`, local and non-authoritative.
+
+- `local_shadow_bistro_vulkan_street_motionless_capture`, a motionless
+  mannequin under a street lamp (`build_release/tools/vkr_harness.exe snapshot
+  --case tools/cases/local/local_shadow_bistro_vulkan_street_motionless_capture.case.json
+  --profile tools/profiles/local-offscreen.json`, validation variables unset):
+  in a copy with a shorter description on the change set's first build, the
+  cascades were reused after 120 warmup frames and no local face drew
+  dynamic casters; the tracked case passes all six child assertions on the
+  final tree
+  (`sha256:50c5e5b1c9cbd953874097ea86a4518815d6c3c571c79af215f61930433cf2da`;
+  ADR-019 has the face counts).
+- The Testbed "Level Design Test" scene (111 movers as dynamic
+  casters) in a headless Release editor at the Epic preset, at rest in Edit
+  mode at the lobby: all four cascades were reused and none drawn, where the
+  2026-10-11 build drew all four with dynamic overlap; with the local faces
+  the frame ran 86 passes instead of 128, and the maximized view's exit frame
+  ran no cascade, face or moments pass (1.26 ms of them before). The before
+  values are single runs, not a matched alternation. These figures are
+  indicative. They are not harness reports.
+
+`test_idle_dynamic_caster_reuses_composed_cascades` in
+[`shadow_system_test.c`](../../tests/src/shadow_system_test.c) fails when a
+motionless caster still forces a copy and a dynamic draw, or when a move or
+a pending publication does not draw again. The tiled pipeline (Metal) has not
+run the reuse.
 
 ## Retained-cascade culling evidence
 

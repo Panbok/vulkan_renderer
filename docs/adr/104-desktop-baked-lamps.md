@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-10
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -15,7 +15,12 @@ transmissive surfaces. Moving receivers take lamp light from the sparse
 volume, and moving casters shadow the two baked lamps whose light at them is
 strongest. The tiled pipeline (Metal) runs the shared payload, validation and
 atlas changes with native evidence since 2026-10-10. No timing here is
-authoritative.
+authoritative. Of the 2026-10-11 changes, native Vulkan runs on 2026-10-12
+show a Bistro set named under `lightmaps.desktop` baking the static lamps,
+and the lamp band's indirect diffuse and cost
+([ADR-054](054-baked-diffuse-volumes.md#evidence-and-remaining-checks)).
+Lamp light in lightmapped reflections and the moving-caster fixtures have
+no native run with these changes yet.
 
 ## Context
 
@@ -45,6 +50,11 @@ Owner decisions:
     lamps stood 8 to 12 m from the mannequin and its shadow barely showed.
   - Each platform is baked, packaged and tested on its own machine, so a bake
     writes only its host's planes and BC planes need not match across hosts.
+- **2026-10-11:**
+  - A scene names one lightmap set per pipeline class.
+  - The volume keeps the active lamp groups apart from the sun keys on every
+    frame, and a lightmapped pixel adds its lamp light to the baked light
+    its reflections fall back to.
 
 ## Decision
 
@@ -59,7 +69,11 @@ Owner decisions:
    groups alone; a Mac bake writes the tiled pipeline's ASTC planes
    ([ADR-088](088-baked-lightmap-sets.md)). Each platform is baked,
    packaged and tested on its own machine (owner decision, 2026-10-09), so
-   no bake carries the other platform's data.
+   no bake carries the other platform's data. The scene names the two
+   platforms' sets apart, as `lightmaps.tiled` and `lightmaps.desktop`
+   ([ADR-088](088-baked-lightmap-sets.md#bakery-and-projects), owner
+   decision 2026-10-11), so a Windows bake keeps the Mac's set and the
+   reverse.
    The bake encodes BC on the GPU with DirectXTex's compute shaders
    ([`vkr_bake_gpu.h`](../../tools/bake/vkr_bake_gpu.h),
    [vendor note](../../vendor/directxtex.md)): BC6H tries modes 11 to 14,
@@ -71,8 +85,8 @@ Owner decisions:
    or sky; a scene with none has nothing to bake, and `vkr_bakery bake
    lightmap` reports it as skipped (status 4), as it does a scene without
    lightmap UVs.
-2. **Selection.** A scene whose set has desktop lamp planes, loaded on the
-   desktop pipeline, marks its lamps baked (`lamps_baked`,
+2. **Selection.** A scene whose `lightmaps.desktop` set has desktop lamp
+   planes, loaded on the desktop pipeline, marks its lamps baked (`lamps_baked`,
    [`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c)).
    `vkr_standard_scene_runtime_static_lights_baked` then drops its static
    lamps from the point lights, the light grid, contribution ranking and
@@ -98,11 +112,16 @@ Owner decisions:
    its volume lookup then leaves out the lamp part, as below.
 4. **Moving receivers.** The sparse volume keeps each lamp group's bounce in
    its layer and the group's direct light in a direct band
-   ([ADR-054](054-baked-diffuse-volumes.md)). On a frame that samples baked
-   lamps, `DiffuseVolume.Compose` writes the lamp groups and their direct
-   bands into a second band. A pixel without a lightmap reads both bands; a
-   lightmapped pixel reads only the first, so its lightmap's lamp light is
-   not counted twice. With runtime lamps the direct bands stay out.
+   ([ADR-054](054-baked-diffuse-volumes.md)). `DiffuseVolume.Compose`
+   writes the active lamp groups into a second band whenever one is active,
+   so the first band holds only the sun keys' light (owner decision,
+   2026-10-11). On a frame that samples baked lamps their direct bands join
+   them. A pixel without a lightmap reads both bands; a lightmapped pixel
+   reads only the first, so its lightmap's lamp light is not counted twice.
+   With runtime lamps the direct bands stay out. A lightmapped pixel the
+   volume covers adds its lightmap's lamp light to the baked light its
+   environment reflection falls back to, but not to its sky light
+   ([ADR-054](054-baked-diffuse-volumes.md#baked-sky-in-environment-reflections)).
 5. **Moving casters.** The lighting system keeps the static shadow-casting
    lamps it drops as baked candidates. Each frame the shadow system scores a
    candidate by its light at the moving casters it reaches, colour luminance
@@ -256,9 +275,26 @@ are recorded in [ADR-108](108-baked-lamp-direct-pages.md).
   every layer; a set without one disables lightmaps and keeps the runtime
   lamps (`scene_loader_lightmap_slices`, source review).
 
+Native Vulkan after the 2026-10-11 changes (Windows 10 Pro 19045, Ryzen 5
+2600, RX 6700 XT, AMD 26.6.3, Release, graphics validation unset, dirty
+tree, 2026-10-12): `vkr_harness snapshot --case
+tools/cases/local/bistro_lamps_baked_volume_night_capture.case.json
+--profile tools/profiles/local-offscreen.json` passed with two replays
+(`sha256:bd2726ef8e2af26836f7b0974f53b9d50dff653ac5137609a38abb210ad3bc91`).
+Its fixture names the set under `lightmaps.desktop`, and
+`lighting.point.selected` was 0 with the scene's 72 static lamps, so the
+lamps were baked and left runtime lighting (decision 2). The night view is
+lamp-lit. Harness children write no engine log, so the loader's "static
+lamps baked" line was not read.
+
 Unavailable:
 - an authoritative, clean-tree timing;
-- a Mac load of a Windows-baked set (source review only).
+- a Mac load of a Windows-baked set (source review only);
+- lamp light in lightmapped reflections on native Vulkan:
+  `bistro_lamps_baked_volume_night_capture` ran with the change, but no
+  capture without it was compared;
+- the moving-caster fixtures with the per-class reference, and the light
+  that moving casters hide, which `SSR.Composite` now subtracts.
 
 ## Revisit when
 

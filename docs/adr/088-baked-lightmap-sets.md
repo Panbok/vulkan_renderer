@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-10
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -23,7 +23,12 @@ inside solids; a level-scale check of that change is pending. The bake runs
 on Metal ray tracing or, since 2026-10-09, on Vulkan ray queries. The Metal
 side of that day's changes compiles; Mac bakes run its punctual shadow clip
 since 2026-10-10. Its direction gather serves only desktop planes, which a
-Mac bake does not write, and has not run.
+Mac bake does not write, and has not run. Since 2026-10-11 a scene names one
+set per pipeline class, and the loader checks the plane table before it
+reads the pages. Their CPU checks pass, and on native Vulkan a Bistro
+fixture loads its `lightmaps.desktop` set while a project scene that names
+only `lightmaps.tiled` reads no set (2026-10-12). A Windows bake that keeps
+`lightmaps.tiled` and a Mac load after a depot pull have not run.
 
 ## Context
 
@@ -337,9 +342,11 @@ machine (owner decision, 2026-10-09): a Mac bake writes every layer's ASTC
 4×4 HDR irradiance plane, and a Windows or Linux bake only the lamp groups,
 with their desktop irradiance and direction planes, and no sun-key layer,
 since the desktop pipeline takes sun bounce from the diffuse volume
-([ADR-054](054-baked-diffuse-volumes.md)). A set baked on one platform
-therefore does not light the other pipeline class until that platform bakes
-it. Version 3 (ASTC irradiance only) is refused. Every scalar is little-endian. An instance carries its entity's
+([ADR-054](054-baked-diffuse-volumes.md)). A scene therefore names one set
+per pipeline class (owner decision, 2026-10-11; see
+[Bakery and projects](#bakery-and-projects)). Each platform's bake writes
+and replaces only its own class's set, and each runtime reads only its own
+class's set. Version 3 (ASTC irradiance only) is refused. Every scalar is little-endian. An instance carries its entity's
 document id (zero when the entity has none), the entity's index in the baked
 entity array (the document's entities, then the World's, then editor-created
 ones) and its source-node index in the entity's cooked model (zero without
@@ -366,15 +373,37 @@ accepts `--samples` (64), `--max-depth` (4), `--seed`, `--page-size` (4096),
 `--indirect-clamp` (0), records them in the sidecar's recipe, and exits 4
 without publishing when no model carries lightmap UVs.
 
+A scene's `lightmaps` block names one set per pipeline class,
+`{"tiled": {"asset": …}, "desktop": {"asset": …}}`; each member is
+optional or `null` (owner decision, 2026-10-11). Each platform bakes only
+its own class, and scenes travel between machines through the depot
+([ADR-105](105-network-transport-and-asset-depot.md)). With one reference,
+each platform's bake replaced the other's set. Scene validation
+(`vkr_project_validate_semantics` in
+[`vkr_project_scene.c`](../../tools/bakery/project/vkr_project_scene.c))
+refuses any other member, so a scene that still names one `asset` for every
+class fails to open, bake or edit with a message that asks for a port; no
+code converts it.
+
 A managed `bake_scene` request with `bakes.lightmap` and optional
 `lightmap_settings` (`samples`, `max_depth`, `seed`, `page_size`,
 `texels_per_unit`, `denoise_iterations`, `indirect_clamp` and the boolean
 `denoise`) bakes the effective runtime scene into
-`builds/<uuid>/lightmaps.vklm`, records an asset of kind and role `lightmap`,
-and sets the scene's `lightmaps` block to that asset
+`builds/<uuid>/lightmaps.vklm`
 ([`vkr_project_bake.c`](../../tools/bakery/project/vkr_project_bake.c)).
-Lowering replaces the asset reference with a path. A bake without lightmapped
-models drops the previous set and warns. Bundles store `.vklm` uncompressed
+The job reads the published set's header and plane table and fails when the
+set lacks the host class's planes (`vkr_project_check_lightmap_class`). It
+records an asset of kind and role `lightmap`, named "Tiled lightmaps" or
+"Desktop lightmaps", and sets only `lightmaps.<class>` of the host's class
+(`VKR_PROJECT_LIGHTMAP_CLASS`: tiled on Apple hosts, desktop elsewhere, the
+rule the lightmap baker also uses). The other class's reference and record
+stay. A record that both classes name (a VKLM v4 set with both classes'
+planes) stays for the other class, and the bake records a new one. A bake
+with nothing to bake for the host's class drops only that class's
+reference and record, and the block once it is empty, and warns. Lowering
+keeps only the host's class and replaces its asset reference with a path,
+`{"<class>": {"path": …}}`, so neither the runtime nor a package reads the
+other class's set; the depot carries both sets. Bundles store `.vklm` uncompressed
 and mappable under pack loader `VKR_PACK_LOADER_LIGHTMAP`. The Bakery panel's
 "Scene lightmaps" option adds the bake to Prepare and to Bake lighting; the
 Cmd statement `scene.bake lightmaps` adds it without the option and reports
@@ -382,10 +411,22 @@ the bake's outcome ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
 
 ### Runtime set
 
-The scene loader reads a `lightmaps` block's `path`
-([`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c)),
-decodes the set and publishes the irradiance planes its renderer's pipeline
-class samples. The tiled pipeline takes every layer's ASTC plane as one
+The scene loader reads only the set of its renderer's pipeline class,
+`lightmaps.tiled.path` on Metal and `lightmaps.desktop.path` on Vulkan
+([`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c),
+`scene_loader_parse_lightmap_import`). It never opens the other class's
+file, and it refuses a block-level `path` with a message that names the
+per-class members; the scene then loads without lightmaps. It warns about
+every other member than `tiled` and `desktop`, such as a misspelt class or
+a leftover `asset`, which loads nothing (2026-10-12,
+`scene_loader_warn_lightmap_members`). Before it reads
+the pages, it decodes the header, layer table and plane table from the
+file's first 4,224 bytes (`VKR_LIGHTMAP_SET_PLANES_PREFIX_BYTES`,
+`vkr_lightmap_set_decode_planes`) and selects the class's planes
+(`vkr_lightmap_set_class_planes`, the rule the bakery's class check also
+uses). A set without them stays off, and its pages are not read. The
+loader then decodes the whole set and publishes the irradiance planes its
+renderer's pipeline class samples. The tiled pipeline takes every layer's ASTC plane as one
 `VKR_TEXTURE_FORMAT_ASTC_4x4_HDR` 2D array whose slice
 `page * layer_count + layer` is the file's page image, uploaded from the file
 bytes in place. The desktop pipeline takes the lamp groups' RGB9E5 or BC6H
@@ -449,6 +490,12 @@ draw's rectangle and its forward shader sums the active layers.
   is baked again with lightmaps selected.
 - The runtime binds instances only within the scene that owns the set; the
   project World's entities, which the bake includes, stay unbound.
+- A project scene saved before 2026-10-11 names one `asset` for every class.
+  It does not open, bake or take edits until its block is ported to the
+  per-class members, by the plane formats of the set it names; neither the
+  bakery nor the runtime converts it. Two machines that bake one scene at
+  the same time conflict on `scene.json` at the depot, so one bakes and
+  commits before the other pulls and bakes.
 - The texels store irradiance, so a surface's diffuse response is its
   diffuse albedo over π times the blended texel.
 - On the toolkit test level (23 brushes, ten layers on one 1024 page), the
@@ -690,6 +737,35 @@ texels per meter with deferred textures:
   the lanterns ([ADR-104](104-desktop-baked-lamps.md)).
 
 Unavailable: a Windows or Vulkan host.
+
+- Per-class scene references, 2026-10-11 (Windows): every
+  changed C and C++ translation unit passes `clang -fsyntax-only` with the
+  `build_release` flags. The 13 tracked fixtures under
+  `assets/scenes/fixtures` name their sets by class, chosen from each set's
+  plane formats; `sparse_volume_leak_lamps_local` names its VKLM v4 set
+  under both classes. On 2026-10-12 the Debug CPU suite (`build_test.bat`,
+  including `test_lightmap_set_class_planes_from_prefix` and the
+  `scene_loader` suite) passed on Windows, and
+  [`check_lightmap_classes.py`](../../tools/checks/check_lightmap_classes.py)
+  `--bakery build_debug/tools/bakery/vkr_bakery.exe` passed on the desktop
+  host, with a case where both classes name one VKLM v4 record: a
+  nothing-to-bake run drops only this host's reference and keeps the record
+  and its file for the other class.
+- Per-class scene references on native Vulkan, 2026-10-12 (Windows 10 Pro
+  19045, Ryzen 5 2600, RX 6700 XT, AMD 26.6.3, Release, graphics validation
+  unset, dirty tree, not authoritative). A Bistro fixture that names its set
+  under `lightmaps.desktop` loads it with every lamp group's desktop planes
+  and drops its static lamps from runtime lighting
+  ([ADR-104](104-desktop-baked-lamps.md#evidence-and-remaining-checks)
+  records the run). The headless Release editor opened the Testbed
+  project's Level Design Test scene, whose block names only
+  `lightmaps.tiled`, in 13 runs; no log has a lightmap line, since lowering
+  drops the block without a desktop member. Before the per-class
+  references the same opening read the 890 MB tiled set, decoded it and
+  dropped it with the warning that it "has no irradiance planes the desktop
+  pipeline samples" (2026-10-11). The editor figures are indicative,
+  not harness reports. Not yet run: a Windows bake that keeps
+  `lightmaps.tiled`, and a Mac load of `lightmaps.tiled` after a depot pull.
 
 ## Revisit when
 

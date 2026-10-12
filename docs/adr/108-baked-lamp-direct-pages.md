@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-10
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -131,7 +131,12 @@ take runtime shadows from the lamps that light them most.
   making them moving casters then forced the sun cascades, which redrew
   whole while a moving caster was in them, to redraw every frame (lobby
   passes 2.2 to 5.4 ms). The cascades now keep a static layer and draw
-  only the moving casters over a copy of it (ADR-041).
+  only the moving casters over a copy of it (ADR-041). While the moving
+  casters stand still, as in Edit mode, the composed cascades and the
+  local dynamic squares are reused without a copy or a draw (ADR-019,
+  ADR-041, since 2026-10-11). On Vulkan, which reads no tiled lightmap set,
+  this level showed it for the cascades and the table lights' squares; the
+  tiled pipeline, with the baked lamps' composite squares, has not run it.
 
 ## Alternatives considered
 

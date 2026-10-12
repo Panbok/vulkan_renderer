@@ -249,7 +249,10 @@ millisecond use `select` on POSIX; Windows rounds them up to 1 ms.
 - **Ignore rules**: `.vkrdepotignore` at a working copy's root keeps paths
   out of snapshots, so an editor workspace commits its project and assets
   but not each machine's jobs, logs, caches and `workspace.json`. A working
-  copy beside the server shares its store with `clone --store`.
+  copy beside the server shares its store with `clone --store`. Lightmap
+  sets (`.vklm`) travel: each machine bakes and commits the set of its own
+  pipeline class, and the scene names both
+  ([ADR-088](088-baked-lightmap-sets.md#bakery-and-projects)).
 - **Command** ([vkr_depot_main.c](../../tools/depot/vkr_depot_main.c)):
   `keygen`, `init`, `serve`, `discover`, `mirror` (once or `--watch`),
   `access` (takes effect without a restart), `clone`, `status`, `commit`

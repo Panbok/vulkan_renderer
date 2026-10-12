@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -86,7 +86,8 @@ aggregate contains nonzero anisotropy. The coarse feature and absent-binding
 contract follows [ADR-062](062-layered-clearcoat.md). At 1280×720 this adds 10.546875 MiB for three
 images, or 28.125 MiB at the supported eight-image maximum. Resolve writes binding
 15; deferred lighting, SSGI composite and SSR composite read bindings 12, 10 and
-12 respectively. Images use the existing graph resize and completion lifetime.
+12 respectively, and SSR trace and temporal bindings 10 and 19. Images use the
+existing graph resize and completion lifetime.
 
 Immutable tables belong to each native renderer until shutdown after GPU drain.
 Startup upload staging is retired after its submitted use completes. Metal
@@ -100,10 +101,19 @@ and transitions all 64 array layers before shader reads.
 
 Probe IBL uses a bent reflection direction and one equivalent scalar roughness
 mip. Its existing circular prefilter cannot reproduce an elliptical footprint.
-SSR keeps its single mirror ray, existing scalar traversal/filtering and history;
-clearcoat still has priority. Receiver energy and probe subtraction use the
-anisotropic DFG. These are explicit approximations within the approved ray and
-storage budgets.
+Since 2026-10-11 SSR samples the anisotropic GGX lobe of an uncoated receiver
+along the decoded axis with its one ray, and weights reused rays by the same
+lobe ([ADR-055](055-screen-space-reflections.md)); clearcoat still has
+priority. The environment prefilter keeps its circular footprint, so SSR and
+probe reflections differ in shape on brushed surfaces. Receiver energy and
+probe subtraction use the anisotropic DFG. These are explicit approximations
+within the approved ray and storage budgets. Native Vulkan runs on
+2026-10-12 (RX 6700 XT, Release, dirty tree, local) sampled the lobe: on
+the anisotropic floor of `ssr_shaded_layers.scene.json` the moving
+emitter's reflection arrived as 17 to 30 lobe hits scattered over 80 to 120
+pixels per frame, and `ssr_shaded_layers` passed its only assertion, no
+invalid G-buffer resolve. No check yet compares the lobe's shape or energy
+with a reference.
 
 ## Consequences
 

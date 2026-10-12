@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -65,9 +65,14 @@ requires completion and metadata checks in the owning backend.
 
 Draw-table byte sizes use typed frame-capacity sources. Frame preparation derives
 source capacity from the next power of two covering the scene candidate count,
-with a minimum of one and the existing 262,144-candidate ceiling. Visible-row,
-classification and indirect-command strides preserve four buckets, each allowing
-at least the smaller of source capacity and the existing 65,536-draw limit.
+with a minimum of one and the existing 262,144-candidate ceiling. The desktop
+pipeline sizes the visible-row, classification and indirect-command tables at
+the source capacity per culling view (`gpu_draw_view_candidates`), and the
+transmission tables at the transmission source capacity for their one view;
+[ADR-028](028-gpu-driven-deferred-visibility-buffer.md) partitions each
+view's commands by state bucket. The tiled pipeline
+keeps eight buckets per view, each allowing at least the smaller of source
+capacity and the 65,536-draw limit (`gpu_draw_view_rows`).
 The five main-view storage regions remain fixed in number.
 
 Owned, non-history buffers can declare `GROW_ONLY`. The graph still records the

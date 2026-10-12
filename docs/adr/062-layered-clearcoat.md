@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -67,12 +67,21 @@ This retains ADR-053's directional approximation and is not an exact reciprocal
 multiple-scattering layered BSDF. Zero factor takes the existing base path.
 
 Coated opaque pixels use the existing SSR ray and history for the coat normal
-and roughness. A valid hit replaces only coat environment specular; the base
-retains probes. Misses retain both environment lobes. Uncoated pixels retain
-base SSR. The existing roughness cutoff, traversal and history budgets stay in
-force. Temporal validation uses the selected lobe's normal and roughness.
-Material/texture publication changes the radiance revision, invalidating completed
-SSR history from a different base/coat selection without another identity field.
+and roughness: since 2026-10-11 the ray samples the isotropic coat lobe's
+visible normals at the filtered coat roughness
+([ADR-055](055-screen-space-reflections.md)). A valid hit replaces only coat
+environment specular; the base retains probes. Misses retain both environment
+lobes. Uncoated pixels retain base SSR. The existing roughness cutoff,
+traversal and history budgets stay in force. Temporal validation uses the
+selected lobe's normal and roughness. A material or texture publication keeps
+SSR history (ADR-055). History from a different base/coat selection passes
+only where the selected normal still matches; incoming radiance along the
+same mirror direction does not depend on the lobe, and the current-sample
+bounds limit the roughness-dependent difference. On 2026-10-12 the
+`ssr_shaded_layers` case, whose fixture has coated SSR receivers, ran on
+native Vulkan (RX 6700 XT, Release, dirty tree, local) and passed its only
+assertion, no invalid G-buffer resolve; no check yet compares coat-lobe SSR
+output with a reference.
 
 SSGI's source includes the source surface's layered direct lighting and
 attenuated emission. Its receiver composite attenuates only the receiver's

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-08
+updated: 2026-10-12
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -14,7 +14,14 @@ physics and animation settings, generated Details for every component
 including shape, text, animation and a read-only mesh view, structural undo,
 presets, the Content folder browser, the Outliner above Details, a
 registration boundary for module-owned component types, document-stable
-entity IDs, version 5 scene documents and prefab instances.
+entity IDs, version 5 scene documents and prefab instances. The 2026-10-11
+overlay load in parts, the change-only `world_revision` and the scene
+folder's loading mark, with the 2026-10-12 load-request, type-registry and
+collision-layer fixes, pass the Debug CPU suite on Windows. The headless
+Windows Release editor applied a large overlay in parts and kept a load
+request during the apply to one load (2026-10-12); the type-registry and
+collision-layer fixes, `world_revision` and the loading mark have no native
+check yet.
 
 ## Context
 
@@ -121,7 +128,12 @@ and scenes store it generically; its behavior belongs to its module.
 An entity is an ID plus component instances in archetype chunks (ADR-010).
 Components are plain data with bounded fields. A world component type may be
 a **singleton**: at most one instance takes effect per frame. Details shows a
-losing instance as inactive and still edits it.
+losing instance as inactive and still edits it. `vkr_scene_set_typed`
+advances `world_revision` only when the stored bytes change, and adding or
+removing a component always advances it and `structure_revision`; the change
+hooks run in both cases (2026-10-11). World resolution visits only the
+archetypes that carry each world type, so ties still go to the enabled
+instance with the lowest entity index.
 
 Structural edits go through the journal
 ([`vkr_scene_edit.h`](../../runtime/src/renderer/systems/vkr_scene_edit.h)):
@@ -153,7 +165,69 @@ project jobs read up to it, and save refuses to write past it and keeps the
 last overlay. Load and the jobs had stopped at 16 MiB while save wrote any
 size, so a level of about 37,600 created objects (a brush face's record is
 about 450 bytes) saved a 16.9 MB overlay and then would not open
-(2026-10-11). New objects come from built-in **object
+(2026-10-11).
+
+The primary scene's overlay loads in parts (2026-10-11). A job worker reads
+the file in 4 MiB parts and parses it while the scene loads
+(`vkr_scene_edit_overlay_read` in
+[`vkr_scene_edit.c`](../../runtime/src/renderer/systems/vkr_scene_edit.c));
+the override records are only checked there, because binding them needs the
+scene. At activation the runtime binds and commits the overrides in one
+frame (`vkr_scene_edit_overlay_begin`), so a rejected file leaves the scene
+and the journal unchanged and the whole file still commits or fails
+together. It then creates the created objects, their parent links and their
+physics bodies within 8 ms of each frame (`vkr_scene_edit_overlay_step`,
+`SAMPLE_OVERLAY_APPLY_SECONDS`), in that order, and commits the scene and
+collision settings last. The scene activates after the last part, so
+`scene_loading`, the editor's Loading phase ("Applying edits N of M",
+[ADR-069](069-editor-projects-and-workspaces.md)) and `wait.scene` cover
+the apply, and no edit, save, simulation or script reload reaches the scene
+before it. A load request while the overlay applies, the runtime's L key or
+a `VKR_SCENE_EDIT_LOAD` edit, waits for that activation and starts no
+second load:
+only an unload releases a loaded scene's handle, and a new scene request or
+Reload unloads first (`vkr_standard_scene_runtime_init_scene_system` in
+[`vkr_sample_runtime.c`](../../runtime/src/vkr_sample_runtime.c)). The
+worker owns the overlay's private pool until it publishes completion with
+release order, and the frame thread uses the pool only after it reads that
+completion with acquire order. The read job claims the overlay slot with a
+ticket before it touches it. A new request, an unload or a failed or
+cancelled scene load revokes the ticket of a read that has not started and
+does not wait for it; a running read gets its cancel flag set and is waited
+for at most one part or one record. Either way the overlay is freed before
+its scene unloads. Activation loads the overlay in one call as before
+without a job slot or the handle's memory, when the job system ended the
+read without running it, and when a script module registered a component
+type after the read began, since the read may have rejected that type's
+records. The registry's count is atomic: registration stores it with release
+order after filling the slot, and readers load it with acquire order. The
+applying scene syncs its world types before the overlay begins. The last
+step applies the saved collision settings by the owner of the collision
+layers at that commit, not at begin (`edit_overlay_finish`): staged settings
+commit, then the owner, this scene or a World that joined since begin,
+shares its layers, which also rebuilds bodies built with the staged matrix;
+when begin skipped the saved settings for another owner that has since
+left, this scene applies them. The World, added scenes, cell documents
+and the harness load their overlays in one call
+(`vkr_scene_edit_load`, which runs the same stages without a budget). The
+texture limit at the request comes from the settings at the end of the
+overlay, which every save writes last: the request reads only the file's
+last 64 KiB and reads another layout whole. A file the editor writes
+between the request and activation is not seen; the editor cannot save the
+opening scene in that window.
+
+A scripted headless Release editor on Windows (2026-10-12; Windows 10 Pro
+19045, Ryzen 5 2600, RX 6700 XT, AMD 26.6.3, native Vulkan) opened the
+Testbed project's Level Design Test scene, whose overlay holds 108,159
+edits. While Loading showed "Applying edits", frames took about 12 ms. A
+script pressed L (`ui.key l`) after every `editor.status` poll, 38 times,
+four of them before activation and one at "Applying edits 101550 of
+108159": the scene loaded and activated once, with no unload, and opened
+with 54,143 entities. `ui.key u` in the same setup unloaded the scene, so
+the injected keys reach the runtime. These figures are indicative. They
+are not harness reports.
+
+New objects come from built-in **object
 kinds** (empty, four light kinds, one per live world type and the Player Start),
 grouped under headings in menus; Cmd `create` also accepts each registered
 script component type. A new object lands by the Scene's Snapping settings
@@ -360,7 +434,12 @@ World reload, the chip names the loading model first ("Loading"), and the
 [project store](../../editor/src/editor_project_store.c) lists the World's
 mesh asset IDs so Content can lock those mesh cards with "Loading". A folder
 card containing a locked item, and a World object card whose mesh loaded from
-a cooking revision, carry the same lock and status. Details shows mesh
+a cooking revision, carry the same lock and status. While a project scene
+opens, from its request until it is usable
+([ADR-069](069-editor-projects-and-workspaces.md)), Content also locks that
+scene's mesh assets and marks the scene's folder card and row with a lock and
+"Loading...", its tree row with a spinner and its footer with the scene's
+name. Details shows mesh
 information for World and added-scene objects through the entity's own
 container.
 

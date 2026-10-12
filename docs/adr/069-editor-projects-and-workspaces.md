@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -13,6 +13,10 @@ Windows empty-project creation, reopening and Back navigation have been checked;
 broader Windows interaction and filesystem verification remain outstanding.
 Selected native Metal workflows passed as recorded below;
 this does not establish backend parity, long-session stability or performance.
+The scene opening's phases, step texts and `SCENE_OPEN_TIME` (2026-10-11,
+success-frame phase 2026-10-12) ran in the headless Windows Release editor
+on 2026-10-12; its card, Outliner row, Content marks and input layer have
+no native run yet.
 
 ## Context
 
@@ -166,6 +170,56 @@ navigation, abandons a stopped request and keeps whatever the job committed;
 a new project whose first job stopped then opens with its saved settings.
 Projects and Scenes use the shared navigation-button style on the left before Metrics,
 with a distinct background highlight.
+
+A scene **opens** from the request that unloads the open scene until the
+opened scene is usable: activated, with no brush, terrain or population
+rebuild pending for the primary scene (`vkr_scene_brush_pending`,
+`vkr_scene_terrain_settled`, `vkr_scene_population_pending`, the queries
+the agent channel's `settle` uses). `VkrEditorProjects` computes the state
+once per UI build (`project_opening_update`) and publishes it through
+`vkr_editor_projects_opening` in three phases:
+
+| Phase | While | Step text |
+|---|---|---|
+| Preparing | the scene's Bakery job is queued or running, and on the frame it succeeds | the Bakery stage, else "Preparing scene" |
+| Loading | the runtime loads the scene and applies its overlay | "Reading scene files", then "Applying edits N of M" ([ADR-076](076-project-object-model.md)), then "Reading scene files" on the activation frame |
+| Building | the activated scene rebuilds, outside simulation | "Building brushes N of M", "Building terrain", "Placing scatter copies N of M" |
+
+A Building count's M is the most brushes or scatter rules seen waiting
+since activation (`project_opening_rebuilds`), so "Building brushes" can
+start below the level's brush count by what the first updates built. The
+brushes build within [ADR-084](084-agent-channel-and-level-design-toolkit.md#brushes)'s
+rebuild budget.
+
+From the request to the end of Building an opening always has a phase, so
+`editor.status` never reports a null `opening` in between
+([ADR-084](084-agent-channel-and-level-design-toolkit.md)): the job's
+success frame stays Preparing, and the same update starts the wait for
+activation, so the next frame is Loading (2026-10-12,
+`project_opening_job` in
+[`editor_projects.c`](../../editor/src/editor_projects.c)). The clock runs
+on, so `prepare=` below is the Bakery time. The opening keeps its own copy
+of the Bakery stage text, which only its update rewrites. A failed load
+ends the opening at once: every terminal load failure sets the runtime's
+scene status, which ends the wait for activation with "scene could not
+open" and that status.
+Each phase shows the elapsed time. The Scene loader covers Preparing. From
+Loading on, a card in the Scene names the scene, the step and the time over
+an activity bar; it moves to the bottom edge with a filled bar while the
+scene builds. The card neither blurs nor darkens the Scene, so the World and
+streamed content stay visible, and it takes clicks on its own rectangle
+(`VKR_EDITOR_SCENE_TOOLBAR_LAYER`) so a click on it picks nothing behind it.
+The Outliner shows a "Loading" row naming the scene, with a pulsing spinner,
+above the tree, and the scene header's icon pulses while the scene builds. Content
+marks the scene and its mesh assets as loading until the scene is usable
+([ADR-076](076-project-object-model.md)). The new pulse and bar
+stand still under `ui.reduce_motion`. When the scene becomes usable, the log
+records `SCENE_OPEN_TIME scene='…' seconds=… prepare=… load=… build=…`.
+While nothing opens, the update costs two flag tests; while the scene
+builds, it reads the brush records and scatter rules once per build, with no
+heap allocation or file IO. A terrain that never settles keeps the card on
+"Building terrain".
+
 Graphics controls, runtime input/presentation preferences, layout, panel state,
 Console filters, Bakery defaults and Content preferences belong to the project
 and are per-machine state: the editor keeps them, with the scene recall below,
@@ -181,11 +235,17 @@ without the local file takes the settings and recall `project.json` still
 carries (manifests written before the split), and a writer publishes them to
 the local file at once; the next `project.json` save drops them. A depot clone
 without either starts from default settings.
-Graphics settings that apply only at start (vsync, HDR, temporal upscaling,
+The restart-checked Graphics settings (vsync, HDR, temporal upscaling,
 dynamic resolution and render scale) belong to the
 machine: the editor starts from the last applied settings in a machine-local
 `graphics.json` beside the workspace locator, and a project's stored values
-of those settings do not apply.
+of those settings do not apply. Vsync applies between frames
+(`sample_graphics_apply_display` in
+[`vkr_sample_runtime.c`](../../runtime/src/vkr_sample_runtime.c)) and asks
+for a restart only when the renderer refuses the present mode; render scale
+and dynamic resolution apply between frames inside the renderer's live
+range, and HDR and temporal upscaling at the next start
+([ADR-027](027-immediate-mode-grid-ui.md)).
 Viewport and hierarchy recall are keyed by scene within the project. A
 recalled view restores the camera pose, clip planes and grid height; its
 `fov` is still read and written for older editors, but the Scene keeps its
@@ -206,7 +266,9 @@ jobs return to the draft for correction; Cancel reloads the original scene.
 The [job runner](../../tools/bakery/project/vkr_project_main.c),
 `vkr_bakery project` ([ADR-077](077-asset-build-system.md)), validates managed
 scene versions 3 to 5 and lowers typed asset references into explicit runtime scene and font
-inputs. Runtime loaders do not discover workspaces. New source imports use
+inputs. A scene's lightmaps reference one asset per pipeline class, and
+lowering keeps only the host's class
+([ADR-088](088-baked-lightmap-sets.md#bakery-and-projects)). Runtime loaders do not discover workspaces. New source imports use
 explicit cooker destinations. Cooked-only imports preserve `.vkb` geometry bytes
 and use an adjacent versioned material-remap document; the
 [cooked mesh decoder](../../runtime/src/assets/vkr_mesh_cooked_decode.c) requires
@@ -291,6 +353,25 @@ retirement owners; the browser retains at most 64 texture requests and prunes it
 generated disk cache through a bounded worker operation.
 
 ## Verification and limits
+
+The scene opening state (2026-10-11) first passed source checks: the four
+changed editor translation units pass `clang -fsyntax-only` with the
+`build_release` flags. On 2026-10-12 a scripted headless Release editor
+(Windows 10 Pro 19045, Ryzen 5 2600, RX 6700 XT, AMD 26.6.3, native Vulkan,
+graphics validation unset, dirty tree) opened the Testbed project's Level
+Design Test scene, a brush, terrain and scatter level, in 13 editor runs.
+The runs that polled `editor.status` every frame or every 0.5 s saw
+Preparing ("Preparing scene", "Resolving scene assets"), Loading ("Reading
+scene files", "Applying edits N of 108159") and Building ("Building
+brushes", "Building terrain", "Placing scatter copies N of 8"). `opening`
+was first null in the frame that logged `SCENE_OPEN_TIME`, never before
+it, and no step text was stale or cut short. In all 13 runs `prepare=` took
+0.52 to 0.96 s (median 0.66 s) and `load=` 3.21 to 4.27 s (median 3.71 s);
+[ADR-084](084-agent-channel-and-level-design-toolkit.md#evidence) records
+`build=` and the total before and after the brush rebuild budget. These
+figures are indicative. They are not harness reports. The headless runs did
+not check the card, the Outliner row, the Content marks or the input
+layer; a Bistro project scene can check the card and marks.
 
 On 2026-10-11 the per-machine split passed the Release
 `vulkan_renderer_tester --suite editor_project_store`: a settings save leaves

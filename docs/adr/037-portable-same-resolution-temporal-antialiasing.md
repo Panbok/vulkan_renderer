@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -30,6 +30,15 @@ than failing the frame or overwriting live storage. Arbitrary completed-frame
 selection can split the eight jitter phases into independent accumulation chains.
 Reset publication invalidates older history entries, so an in-flight reset frame
 cannot leave pre-reset producers eligible for the next frame.
+Without final TAA, the temporal-transform tuple that SSR, SSGI and motion
+blur read follows the same rule: the immediately preceding frame's tuple,
+in flight or complete, or none (`vkr_vk_prepare_temporal_transform`).
+Until 2026-10-12 that mode took the newest GPU-completed tuple, up to five
+frames old. On `ssr_reflected_hit_motion` (TAA off) frames then read a
+tuple two to five frames old 53.5 % of the time, so screen-space history
+skipped submitted frames by GPU timing and replays differed. The same-queue
+transform-buffer and image barriers order the in-flight producer's writes,
+and output reuse still waits for completed last use.
 Projection jitter translates clip xy in proportion to clip w, so perspective
 and orthographic views both receive the requested depth-independent pixel shift.
 
@@ -74,8 +83,10 @@ identity do not establish stationarity of animated alpha, materials or lighting.
 For consecutive unchanged scenes, a checked accumulation path retains coverage
 even when thin geometry disappears from the entire current neighborhood. One
 allocation-free CPU scan hashes explicit packet semantics into two 64-bit
-words: unjittered camera, geometry and transforms, materials, lighting, shadows
-and GTAO controls. Native color history also records resource-radiance,
+words: unjittered camera, geometry and transforms, materials, lighting with
+every point light of the scene table, shadows and GTAO controls. SSR and SSGI
+history signatures leave the point-light table out
+([ADR-055](055-screen-space-reflections.md)). Native color history also records resource-radiance,
 candidate-publication and graph revisions. Both eligible records must match; a
 camera-only match is insufficient. Text and pending publication/upload/IBL
 writer frames are excluded. SSR-enabled frames first remain on ordinary TAA for
@@ -115,8 +126,23 @@ runs only while portable TAA, SSR or SSGI is on.
 That path reads canonical history at the same pixel without coverage rejection,
 neighborhood clipping or contrast-derived glass reactivity. Authored material
 reactivity and basic validity/identity exclusions still apply. The unused second
-depth-history channel stores sample age: ordinary resolve writes zero, excluding
-moving/rejected history from the next stationary integral. Checked accumulation
+depth-history channel stores sample age. Since 2026-10-11 the ordinary resolve
+writes the effective sample count of its result, `1 / ((1 - w)² + w² / n)`
+from the history texel's count `n` and its blend weight `w`, capped at 127
+(`vkr_temporal_effective_samples`): a running mean gives `n + 1`, and a
+constant 0.9 converges to 19. The static integral therefore continues from
+the ordinary history, 19 samples after SSR settling at 0.9, instead of
+restarting at one sample, and it includes ordinary-phase samples. Since
+2026-10-12 a still pixel (stationary camera, under 0.01 pixel of motion) in
+an ordinary frame stores zero instead. An unchanged scene matches its
+signature on the camera's first still frame and leaves the ordinary mode,
+for the static path with SSR off or for settling with it on, so such a pixel
+saw a content change; its 0.99 history still holds the old content, and the
+static integral restarts from the current frame there. Moving pixels keep
+the camera-stop seed, and SSR's settling frames keep theirs. A hashed input
+that still changes on the frames after a camera stop, as cascades that SDSM
+fits to the new view can, keeps those frames ordinary and restarts every
+still pixel's integral. The ordinary resolve reads one more float2 per pixel. Checked accumulation
 increments it up to 128 and uses `(age - 1) / age` retention. After 128 unchanged
 samples, nonreactive pixels copy their completed history exactly. A capped
 exponential average would continue oscillating with subpixel coverage indefinitely.
@@ -168,7 +194,30 @@ color after settling and accumulation. The first static sample could still
 change visibly, and early motion outliers remained.
 [The settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
 records the transitions. Native Vulkan, the only implementation since
-2026-10-06, has not run the settling window.
+2026-10-06, has not run the settling window or the 2026-10-11 seeded
+integral; that check captures a static Bistro SSR view across the settle
+to static switch. The 2026-10-12 zero seed needs a static SSR-off Bistro
+case with a content change while the camera is still, such as a light
+toggle, captured across the switch to static mode: no pre-change radiance
+may remain after static mode starts. No such case exists yet.
+
+The exact predecessor without final TAA has native Vulkan evidence
+(2026-10-12; Windows 10 19045, RX 6700 XT, driver 26.6.3, Release harness
+from a dirty tree, local and not authoritative). A temporary log of the
+selected predecessor, removed afterwards, showed 113 to 270 of about 285
+frames per `ssr_reflected_hit_motion` replay child reading an older tuple
+before the change, and none after it, in that case and in five children of
+`ssr_ghost_under_bar` (1,655 to 1,911 frames each). `ssr_reflected_hit_motion`
+then passes its checker in six of six replays with byte-identical
+reflection captures ([ADR-055](055-screen-space-reflections.md)), and a
+`ssr_ghost_under_bar` run with core and synchronization validation reports
+no message. The previous skinned positions that motion blur reads take the
+same in-flight predecessor without a barrier of their own, as they did with
+TAA on; no validated case has a skinned mesh. Cloud history without TAA
+([ADR-074](074-volumetric-cloud-layer.md)) and froxel fog history
+([ADR-059](059-froxel-volumetric-fog.md)) still take the newest completed
+producer, so their history age follows GPU timing; no capture has yet
+shown whether fog's varies.
 
 The 90% settling cap was measured on the Metal desktop implementation. At the
 user under-bar camera, half a second after stopping, scene-linear error against

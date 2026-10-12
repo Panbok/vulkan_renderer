@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -69,10 +69,15 @@ feedback source already fogged. Its composition is
 `T * local + (1 - T) * J * (1 - W) + already_fogged_background * W`,
 where `W` is the current transmission-feedback coefficient and `J` is evaluated
 along the layer's view ray. World blend fogs RGB
-and retains source alpha. Canonical fog parameters participate in normal temporal and SSR content
-signatures. Preparation also compares them with the last successfully submitted
-fog record and requests a temporal scene-change reset before exposure
-preparation. Failed or cancelled frames do not replace that record.
+and retains source alpha. Canonical fog parameters participate in the normal
+temporal signature. SSR traces opaque HDR before fog, so its history ignores
+fog content (2026-10-11, [ADR-055](055-screen-space-reflections.md)).
+Preparation also compares the parameters with the last successfully
+submitted fog record and requests a temporal scene-change reset before
+exposure preparation, which also resets SSR and SSGI history, so an
+authored fog change still restarts them. Failed or cancelled frames do not
+replace that record. SSR history has native Vulkan runs since 2026-10-12
+(ADR-055), but none has yet changed fog while SSR history is selected.
 
 ## Consequences
 
