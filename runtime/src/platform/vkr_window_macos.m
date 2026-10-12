@@ -937,6 +937,12 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
 
   @autoreleasepool {
 
+    /* Programs restore their own layout. AppKit's window restoration would
+       otherwise ask after a crash whether to reopen windows, a modal alert
+       that blocks startup, since the executable carries a bundle
+       identifier (cmake/vkr_info_plist.cmake). */
+    [[NSUserDefaults standardUserDefaults]
+        registerDefaults:@{@"ApplePersistenceIgnoreState" : @YES}];
     [NSApplication sharedApplication];
 
     // App delegate creation
