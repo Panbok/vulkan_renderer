@@ -107,7 +107,7 @@ and a TCP fallback.
 | Gap | Work | Evidence needed |
 |---|---|---|
 | Cross-machine numbers | `vkr_net_bench` and a depot push and pull between a Mac and a Windows machine on 1 GbE; the depot already moves a 1.46 GB scene both ways over Wi-Fi (ADR-105), which measures neither | Raw UDP and transport RTT and throughput per direction; depot MB/s and cores per side against the 110 MB/s target |
-| Threaded host | The host thread exists and runs the depot server inside the sharing editor (ADR-105, ADR-110); the collaborative session still pumps on the UI thread | Editor frame time unchanged while a depot transfer runs |
+| Threaded host | The host thread runs the depot server inside the sharing editor; serving 2.71 GB moved the Bistro editor's median frame time from 23.8 to 25.1 ms on one Mac shared with the receiver (ADR-110). The collaborative session still pumps on the UI thread | The session on the host thread; the frame time measured with the receiver on another machine |
 | Windows server I/O | Registered I/O per worker in phase 8 | Datagrams per second per core against the one-call baseline |
 | Sparse working copy | Files fetched when opened, through the remote content mount of asset streaming | A Bistro scene opens from a sparse working copy |
 | Shared Bakery cache | Action keys to output hashes in a depot; a cook downloads instead of re-encoding | A second machine's cook of Bistro hits the cache |

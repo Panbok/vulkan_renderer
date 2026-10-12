@@ -176,6 +176,14 @@ Design Test), and a launchd `vkr_depot serve` holding UDP 7319 and IPv4 7320.
   second Submit went through, and the copy got it.
 - Windowed captures of the top bar, the request card, the Project sharing
   window and the hub with a Get waiting for approval.
+- The sharing editor, windowed with Bistro open, while a headless editor
+  on the same Mac got the project (2.71 GB): frame time median 25.05 ms and
+  p95 25.65 ms over 38 samples during the transfer, against 23.82 ms and
+  28.03 ms over 14 samples before it; one frame took 93 ms during it. The
+  receiving editor's hashing and writes share the machine, so this bounds
+  the server thread's cost from above.
+- A script module added and submitted on the sharer stayed held on the
+  copy after Get (`scripts_held`) and built only after `depot.trust`.
 
 Unverified: the editor part on Windows; a share between two computers; the
 Local Network prompt for the editor binary; scene reload after a pull with
