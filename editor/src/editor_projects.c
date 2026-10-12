@@ -5461,6 +5461,7 @@ static void project_build_dropdown(VkrEditorProjects *projects,
   panel.columns = panel.rows = &one;
   panel.column_count = panel.row_count = 1;
   panel.clip_children = true_v;
+  panel.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, string8_lit("projects.dropdown"), &panel)) {
     return;
   }
@@ -6422,6 +6423,8 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
         (int32_t)(PROJECT_LAUNCHER_TITLE_PT * ui->content_scale),
         ui->hot_id == VKR_UI_ID_NONE);
   }
+  /* The launcher fills the window; a modal over the editor grows in. */
+  modal.presence = launcher ? VKR_UI_PRESENCE_NONE : VKR_UI_PRESENCE_WINDOW;
   if (!vkr_ui_panel_begin(ui, string8_lit("projects.modal"), &modal)) {
     return;
   }

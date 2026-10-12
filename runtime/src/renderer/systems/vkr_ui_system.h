@@ -25,6 +25,8 @@ typedef struct VkrPreparedUiDrawList VkrPreparedUiDrawList;
 #define VKR_UI_RETAINED_BUCKET_CAPACITY 4096u
 #define VKR_UI_RETAINED_GRACE_FRAMES 120u
 #define VKR_UI_CONTAINER_STACK_CAPACITY 32u
+/* Panels animating their presence at once; more snap. */
+#define VKR_UI_PRESENCE_CAPACITY 16u
 
 typedef struct VkrUiInputCapture {
   bool8_t mouse;
@@ -52,6 +54,16 @@ typedef struct VkrUiPlacement {
     .align = VKR_UI_ALIGN_STRETCH                                              \
   }
 
+/** How a panel appears and disappears. Both fade: a popup drops in from its
+ * top edge and a window grows from its centre. The panel takes input from its
+ * first frame; after its last one, its final picture fades out. Snapped under
+ * reduce_motion. */
+typedef enum VkrUiPresence {
+  VKR_UI_PRESENCE_NONE = 0,
+  VKR_UI_PRESENCE_POPUP,
+  VKR_UI_PRESENCE_WINDOW,
+} VkrUiPresence;
+
 /** Track declarations and box style for a panel or scroll container. */
 typedef struct VkrUiPanelConfig {
   VkrUiPlacement placement;
@@ -61,6 +73,8 @@ typedef struct VkrUiPanelConfig {
   uint32_t row_count;
   VkrUiStyle style;
   bool8_t clip_children;
+  /** Panels only; scroll areas ignore it. */
+  VkrUiPresence presence;
 } VkrUiPanelConfig;
 
 /** Phosphor icon glyphs (MIT) drawn from the cooked MTSDF icon atlases set by
@@ -382,6 +396,22 @@ typedef struct VkrUiCodeView {
 VkrUiPanelConfig vkr_ui_panel_config_default(void);
 VkrUiWidgetConfig vkr_ui_widget_config_default(void);
 
+/** One panel's presence transition. `commands` keeps the panel's last shown
+ * picture, untransformed, so it can fade out after the caller stops building
+ * the panel. Grow-only, owned by the retained allocator. */
+typedef struct VkrUiPresenceState {
+  VkrUiId id;
+  VkrUiPresence kind;
+  /** 0 hidden to 1 shown, linear in time; the transform eases it. */
+  float32_t t;
+  bool8_t shown;
+  /** The panel's last laid-out rectangle in pixels. */
+  VkrUiRect rect_px;
+  VkrUiDrawCommand *commands;
+  uint32_t command_count;
+  uint32_t command_capacity;
+} VkrUiPresenceState;
+
 /** Persistent UI system plus one frame's scratch-backed immediate context. */
 typedef struct VkrUiSystem {
   VkrDMemory retained_memory;
@@ -457,6 +487,8 @@ typedef struct VkrUiSystem {
   float32_t tooltip_opacity;
   /** Animations still in flight; the caller keeps redrawing while true. */
   bool8_t animating;
+  /** Panels appearing, shown with a transition, or fading out. */
+  VkrUiPresenceState presences[VKR_UI_PRESENCE_CAPACITY];
   /** Accessibility: snap every transition instead of easing it. */
   bool8_t reduce_motion;
   /** Accessibility: interface zoom multiplied into the window content scale

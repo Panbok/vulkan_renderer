@@ -2852,6 +2852,7 @@ static void depot_overlay_request(VkrEditorDepot *depot, VkrEditorUi *editor,
   };
   card.style = vkr_editor_glass_style();
   card.style.min_size_pt = card.style.max_size_pt = (Vec2){width, 104.0f};
+  card.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, string8_lit("depot.request"), &card)) {
     return;
   }
@@ -2917,6 +2918,7 @@ static void depot_overlay_scripts(VkrEditorDepot *depot, VkrEditorUi *editor,
   };
   card.style = vkr_editor_glass_style();
   card.style.min_size_pt = card.style.max_size_pt = (Vec2){width, 122.0f};
+  card.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, string8_lit("depot.scripts"), &card)) {
     return;
   }

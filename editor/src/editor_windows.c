@@ -1137,6 +1137,7 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui,
       (Vec2){rect.width / ui->content_scale, rect.height / ui->content_scale};
   popup.style.max_size_pt = popup.style.min_size_pt;
   popup.clip_children = true_v;
+  popup.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.menu.popup"), &popup)) {
     (void)vkr_ui_input_layer_set(ui, 0u);
     return;
@@ -2132,6 +2133,7 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   panel.style.min_size_pt = window->size_pt;
   panel.style.max_size_pt = window->size_pt;
   panel.clip_children = true_v;
+  panel.presence = VKR_UI_PRESENCE_WINDOW;
   if (!vkr_ui_panel_begin(ui, string8_lit("window"), &panel)) {
     (void)vkr_ui_pop_id(ui);
     return;
@@ -3429,6 +3431,7 @@ static EditorContextPanel editor_context_panel(VkrUiSystem *ui, String8 id,
   popup.style.gap_pt = 0.0f;
   popup.style.min_size_pt = popup.style.max_size_pt =
       (Vec2){rect.width / ui->content_scale, rect.height / ui->content_scale};
+  popup.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, id, &popup))
     return result;
   for (uint32_t i = 0; i < count; ++i) {

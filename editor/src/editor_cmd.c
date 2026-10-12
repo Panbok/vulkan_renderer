@@ -3099,6 +3099,7 @@ void vkr_editor_cmd_suggestions_build(VkrEditorUi *editor,
   popup.style.min_size_pt = popup.style.max_size_pt =
       (Vec2){width / scale, height / scale};
   popup.clip_children = true_v;
+  popup.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.cmd.suggestions"), &popup)) {
     (void)vkr_ui_input_layer_set(ui, 0u);
     return;

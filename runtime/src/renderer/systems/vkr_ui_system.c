@@ -100,6 +100,9 @@ struct VkrUiFrameNode {
   uint64_t build_hash;
   uint32_t draw_first_command;
   uint32_t draw_command_count;
+  /* One past the last command of the node and its descendants. */
+  uint32_t draw_end_command;
+  VkrUiPresence presence;
   float32_t slider_fraction;
   bool8_t checked;
   bool8_t hovered;
@@ -414,6 +417,14 @@ void vkr_ui_system_shutdown(VkrUiSystem *system) {
   if (!system || !system->initialized)
     return;
   vkr_ui_tile_cache_destroy(&system->tile_cache);
+  for (uint32_t i = 0u; i < ArrayCount(system->presences); ++i) {
+    VkrUiPresenceState *presence = &system->presences[i];
+    if (presence->commands)
+      vkr_allocator_free(&system->retained_allocator, presence->commands,
+                         (uint64_t)presence->command_capacity *
+                             sizeof(*presence->commands),
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
   for (uint32_t i = 0u; i < system->retained_bucket_capacity; ++i) {
     VkrUiRetainedState *state = system->retained_buckets[i];
     if (!state || state == VKR_UI_RETAINED_TOMBSTONE)
@@ -968,6 +979,7 @@ bool8_t vkr_ui_panel_begin(VkrUiSystem *system, String8 id_label,
   node->rows = rows;
   node->row_count = config->row_count ? config->row_count : 1u;
   node->clip_children = config->clip_children;
+  node->presence = config->presence;
   system->container_stack[system->container_count++] = index;
   return vkr_ui_id_stack_push_label(&system->id_stack, id_label);
 }
@@ -3618,7 +3630,190 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
     vkr_ui_emit_node(system, child, buffer);
   if (node->kind == VKR_UI_NODE_SCROLL)
     vkr_ui_emit_scrollbar(system, node, buffer);
+  node->draw_end_command = buffer->command_count;
   (void)vkr_ui_draw_buffer_pop_clip(buffer);
+}
+
+/* Presence transitions (VkrUiPresence): seconds to appear and to fade out.
+   Quick enough not to delay a click, long enough to read as motion. */
+#define VKR_UI_PRESENCE_IN_SECONDS 0.14f
+#define VKR_UI_PRESENCE_OUT_SECONDS 0.10f
+
+vkr_internal VkrUiPresenceState *vkr_ui_presence_find(VkrUiSystem *system,
+                                                      VkrUiId id) {
+  VkrUiPresenceState *free_state = NULL;
+  for (uint32_t i = 0u; i < ArrayCount(system->presences); ++i) {
+    VkrUiPresenceState *presence = &system->presences[i];
+    if (presence->id == id)
+      return presence;
+    if (!free_state && presence->id == VKR_UI_ID_NONE)
+      free_state = presence;
+  }
+  if (!free_state)
+    return NULL;
+  free_state->id = id;
+  free_state->t = 0.0f;
+  free_state->command_count = 0u;
+  free_state->rect_px = (VkrUiRect){0};
+  return free_state;
+}
+
+/* Advances every transition by this frame's time: panels built this frame
+   move toward shown, the others toward hidden, and a hidden one releases its
+   slot. Runs once the frame's nodes are known, before its draw hash. */
+vkr_internal void vkr_ui_presence_update(VkrUiSystem *system) {
+  for (uint32_t i = 0u; i < ArrayCount(system->presences); ++i)
+    system->presences[i].shown = false_v;
+  for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
+    const VkrUiFrameNode *node = &system->frame_nodes[i];
+    if (node->presence == VKR_UI_PRESENCE_NONE)
+      continue;
+    VkrUiPresenceState *presence = vkr_ui_presence_find(system, node->id);
+    if (!presence)
+      continue;
+    presence->kind = node->presence;
+    presence->shown = true_v;
+  }
+  const float32_t dt = (float32_t)system->delta_time;
+  for (uint32_t i = 0u; i < ArrayCount(system->presences); ++i) {
+    VkrUiPresenceState *presence = &system->presences[i];
+    if (presence->id == VKR_UI_ID_NONE)
+      continue;
+    if (system->reduce_motion)
+      presence->t = presence->shown ? 1.0f : 0.0f;
+    else if (presence->shown)
+      presence->t = Min(1.0f, presence->t + dt / VKR_UI_PRESENCE_IN_SECONDS);
+    else
+      presence->t = Max(0.0f, presence->t - dt / VKR_UI_PRESENCE_OUT_SECONDS);
+    if (!presence->shown && presence->t <= 0.0f) {
+      presence->id = VKR_UI_ID_NONE;
+      presence->command_count = 0u;
+      continue;
+    }
+    if (presence->t < 1.0f)
+      system->animating = true_v;
+  }
+}
+
+/* Folds the transitions into the frame's draw hash: a moving one redraws. */
+vkr_internal uint64_t vkr_ui_presence_hash(const VkrUiSystem *system,
+                                           uint64_t hash) {
+  for (uint32_t i = 0u; i < ArrayCount(system->presences); ++i) {
+    const VkrUiPresenceState *presence = &system->presences[i];
+    if (presence->id == VKR_UI_ID_NONE)
+      continue;
+    hash = vkr_ui_hash_bytes(hash, &presence->id, sizeof(presence->id));
+    hash = vkr_ui_hash_bytes(hash, &presence->t, sizeof(presence->t));
+    hash = vkr_ui_hash_bytes(hash, &presence->shown, sizeof(presence->shown));
+  }
+  return hash;
+}
+
+vkr_internal Vec2 vkr_ui_presence_point(Vec2 point, Vec2 origin, float32_t s,
+                                        float32_t dy) {
+  return (Vec2){origin.x + (point.x - origin.x) * s,
+                origin.y + (point.y - origin.y) * s + dy};
+}
+
+vkr_internal VkrUiRect vkr_ui_presence_rect(VkrUiRect rect, Vec2 origin,
+                                            float32_t s, float32_t dy) {
+  const Vec2 corner =
+      vkr_ui_presence_point((Vec2){rect.x, rect.y}, origin, s, dy);
+  return (VkrUiRect){corner.x, corner.y, rect.width * s, rect.height * s};
+}
+
+/* Draws `count` commands as the panel at `rect` looks at transition time `t`:
+   faded, scaled about its top centre (popup) or centre (window), and a popup
+   lifted toward its top edge. Clips move with the content they clip. */
+vkr_internal void vkr_ui_presence_transform(VkrUiDrawCommand *commands,
+                                            uint32_t count, VkrUiPresence kind,
+                                            VkrUiRect rect, float32_t t,
+                                            float32_t content_scale) {
+  if (t >= 1.0f)
+    return;
+  const float32_t inverse = 1.0f - t;
+  const float32_t eased = 1.0f - inverse * inverse * inverse;
+  const bool8_t popup = kind == VKR_UI_PRESENCE_POPUP;
+  const float32_t s = popup ? 0.97f + 0.03f * eased : 0.95f + 0.05f * eased;
+  const float32_t dy = popup ? -(1.0f - eased) * 6.0f * content_scale : 0.0f;
+  const Vec2 origin = {rect.x + rect.width * 0.5f,
+                       popup ? rect.y : rect.y + rect.height * 0.5f};
+  for (uint32_t i = 0u; i < count; ++i) {
+    VkrUiDrawCommand *command = &commands[i];
+    command->rect_px = vkr_ui_presence_rect(command->rect_px, origin, s, dy);
+    command->clip_rect_px =
+        vkr_ui_presence_rect(command->clip_rect_px, origin, s, dy);
+    for (uint32_t corner = 0u; corner < command->corner_count; ++corner)
+      command->corners_px[corner] =
+          vkr_ui_presence_point(command->corners_px[corner], origin, s, dy);
+    command->corner_radius_px = vec4_scale(command->corner_radius_px, s);
+    command->border_px *= s;
+    command->softness_px *= s;
+    command->screen_px_range *= s;
+    command->color.w *= eased;
+    command->border_color.w *= eased;
+  }
+}
+
+/* After the root's commands: keeps each shown transitioning panel's picture
+   and draws it at its transition time, then draws the pictures of panels
+   fading out above everything but the tooltip. */
+vkr_internal void vkr_ui_presence_emit(VkrUiSystem *system,
+                                       VkrUiDrawBuffer *buffer) {
+  for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
+    const VkrUiFrameNode *node = &system->frame_nodes[i];
+    if (node->presence == VKR_UI_PRESENCE_NONE ||
+        node->draw_end_command <= node->draw_first_command)
+      continue;
+    VkrUiPresenceState *presence = NULL;
+    for (uint32_t j = 0u; j < ArrayCount(system->presences); ++j) {
+      if (system->presences[j].id == node->id)
+        presence = &system->presences[j];
+    }
+    if (!presence)
+      continue;
+    VkrUiDrawCommand *commands = &buffer->commands[node->draw_first_command];
+    const uint32_t count = node->draw_end_command - node->draw_first_command;
+    if (count > presence->command_capacity) {
+      uint32_t capacity = Max(presence->command_capacity, 64u);
+      while (capacity < count)
+        capacity *= 2u;
+      VkrUiDrawCommand *grown = vkr_allocator_alloc(
+          &system->retained_allocator, (uint64_t)capacity * sizeof(*grown),
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      if (grown) {
+        if (presence->commands)
+          vkr_allocator_free(&system->retained_allocator, presence->commands,
+                             (uint64_t)presence->command_capacity *
+                                 sizeof(*presence->commands),
+                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+        presence->commands = grown;
+        presence->command_capacity = capacity;
+      }
+    }
+    /* Without room the panel still animates in; it only snaps out. */
+    presence->command_count = count <= presence->command_capacity ? count : 0u;
+    if (presence->command_count)
+      MemCopy(presence->commands, commands, count * sizeof(*commands));
+    presence->rect_px = node->rect;
+    vkr_ui_presence_transform(commands, count, presence->kind, node->rect,
+                              presence->t, system->content_scale);
+  }
+  for (uint32_t i = 0u; i < ArrayCount(system->presences); ++i) {
+    const VkrUiPresenceState *presence = &system->presences[i];
+    if (presence->id == VKR_UI_ID_NONE || presence->shown ||
+        presence->command_count == 0u ||
+        presence->command_count >
+            buffer->command_capacity - buffer->command_count)
+      continue;
+    VkrUiDrawCommand *commands = &buffer->commands[buffer->command_count];
+    MemCopy(commands, presence->commands,
+            presence->command_count * sizeof(*commands));
+    buffer->command_count += presence->command_count;
+    vkr_ui_presence_transform(commands, presence->command_count, presence->kind,
+                              presence->rect_px, presence->t,
+                              system->content_scale);
+  }
 }
 
 vkr_internal VkrUiRect vkr_ui_rect_union(VkrUiRect a, VkrUiRect b) {
@@ -3712,6 +3907,12 @@ vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
       if (node->kind == VKR_UI_NODE_TEXT_FIELD)
         estimate += node->retained->text.layout.glyphs.length;
     }
+  }
+  /* Panels fading out redraw their last picture. */
+  for (uint32_t i = 0u; i < ArrayCount(system->presences); ++i) {
+    const VkrUiPresenceState *presence = &system->presences[i];
+    if (presence->id != VKR_UI_ID_NONE && !presence->shown)
+      estimate += presence->command_count;
   }
   return (uint32_t)Min(estimate, (uint64_t)VKR_UI_INDEX_CAPACITY / 6u);
 }
@@ -3858,6 +4059,7 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
     system->active_id = VKR_UI_ID_NONE;
 
   vkr_ui_focus_traverse(system);
+  vkr_ui_presence_update(system);
   system->frame_tooltip_source = VKR_UI_NODE_NONE;
   system->frame_tooltip =
       vkr_ui_tooltip_prepare(system, &system->frame_tooltip_source);
@@ -3942,6 +4144,7 @@ vkr_internal bool8_t vkr_ui_resolve_draw_commands(VkrUiSystem *system) {
     draw_hash = vkr_ui_hash_bytes(
         draw_hash, &system->frame_nodes[tooltip_source].id, sizeof(VkrUiId));
   }
+  draw_hash = vkr_ui_presence_hash(system, draw_hash);
   system->frame_draw_hash = draw_hash;
   if (system->draw_cache_valid && system->cached_draw_hash == draw_hash &&
       system->cached_target_width == system->target_width &&
@@ -3990,6 +4193,7 @@ vkr_internal bool8_t vkr_ui_resolve_draw_commands(VkrUiSystem *system) {
       if (vkr_ui_draw_buffer_begin(&buffer, system->frame_commands,
                                    command_capacity, target)) {
         vkr_ui_emit_node(system, 0u, &buffer);
+        vkr_ui_presence_emit(system, &buffer);
         if (tooltip != VKR_UI_NODE_NONE)
           vkr_ui_emit_node(system, tooltip, &buffer);
         system->frame_command_count = buffer.command_count;

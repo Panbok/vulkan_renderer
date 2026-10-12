@@ -387,6 +387,7 @@ void vkr_editor_color_picker_build(VkrEditorUi *editor,
   popup.style.padding_pt = (VkrUiEdges){0};
   popup.style.min_size_pt = popup.style.max_size_pt =
       (Vec2){COLOR_WIDTH_PT, height};
+  popup.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.color.picker"), &popup)) {
     (void)vkr_ui_input_layer_set(ui, 0u);
     return;

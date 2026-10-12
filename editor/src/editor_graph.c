@@ -1619,6 +1619,7 @@ static void graph_popup_build(GraphFrame *g) {
   panel.style.min_size_pt = (Vec2){popup->rect.width, popup->rect.height};
   panel.style.max_size_pt = (Vec2){popup->rect.width, popup->rect.height};
   panel.clip_children = true_v;
+  panel.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, string8_lit("popup"), &panel)) {
     (void)vkr_ui_input_layer_set(ui, previous_layer);
     return;

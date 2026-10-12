@@ -2650,6 +2650,7 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       (Vec2){editor->view_popup_rect_pt.z, editor->view_popup_rect_pt.w};
   panel.rows = tracks;
   panel.row_count = count;
+  panel.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.viewport.options"), &panel))
     return;
   VkrSampleViewState next = frame->view_state;

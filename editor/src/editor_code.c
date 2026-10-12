@@ -2287,6 +2287,7 @@ static void code_build_completion(VkrEditorCode *code, VkrEditorUi *editor,
   popup.placement.margin_pt.left = x_pt;
   popup.style.min_size_pt = popup.style.max_size_pt = size;
   popup.clip_children = true_v;
+  popup.presence = VKR_UI_PRESENCE_POPUP;
   if (!vkr_ui_panel_begin(ui, string8_lit("code.completion"), &popup)) {
     return;
   }

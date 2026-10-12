@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-08
+updated: 2026-10-12
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -86,7 +86,17 @@ batches split only on texture and scissor. Polygon lowering remains for the
 animation graph's bezier ribbons.
 
 Hover, press and keyboard focus ease exponentially through retained per-widget
-factors. Tooltips appear after 0.45 seconds and fade in. Checkboxes, sliders,
+factors. Tooltips appear after 0.45 seconds and fade in. A panel with a
+`VkrUiPanelConfig.presence` fades in over 140 ms with an ease-out curve while it
+scales up, a popup dropping 6 pt from its top edge (97 to 100 %) and a window
+growing about its centre (95 to 100 %); it takes input from its first frame.
+After its caller stops building it, its last picture fades out over 100 ms,
+drawn above the rest of the UI. The UI system transforms the panel's draw
+commands, so layout and input never see the motion; at most 16 panels animate
+at once, and Reduce motion snaps both. The editor's menus, context menus and
+dropdowns, Scene toolbar options, Cmd suggestions, code completion, colour
+picker, graph popup, project dropdown, sharing cards, floating windows and the
+Projects modal over the editor use it. Checkboxes, sliders,
 text fields (border and blinking caret), focus rings and scroll thumbs use the
 same tokens. Labels may center their icon and text. A label or button whose
 text overflows its box clips to that box. Word wrap breaks between words; a word
