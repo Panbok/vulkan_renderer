@@ -201,6 +201,11 @@ static void test_local_socket_stale_and_live(void) {
   assert(vkr_local_socket_listen(path, 1, &second) ==
          VKR_LOCAL_SOCKET_LISTEN_IN_USE);
   assert(second == VKR_LOCAL_SOCKET_INVALID);
+  /* The liveness probe left its connection in the backlog of 1. A live server
+     accepts it; macOS refuses the next connect while that slot is full. */
+  VkrLocalSocket probe = VKR_LOCAL_SOCKET_INVALID;
+  assert(vkr_local_socket_accept(first, &probe) == VKR_LOCAL_SOCKET_OK);
+  vkr_local_socket_close(probe);
   VkrLocalSocket client = VKR_LOCAL_SOCKET_INVALID;
   assert(vkr_local_socket_connect(path, &client));
   vkr_local_socket_close(client);
