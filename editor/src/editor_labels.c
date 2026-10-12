@@ -140,6 +140,8 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
   if (editor->label_anchor_count >= build->capacity ||
       (build->empty && !editor->labels_empty) ||
       vkr_editor_scene_panels_icons_off(editor->scene_panels, frame, entity) ||
+      /* Hide and Isolate leave no icon of what the Scene does not draw. */
+      !vkr_editor_hide_shown(editor, scene, entity) ||
       (!build->empty && !editor_label_kind(editor, scene, entity, &kind))) {
     return;
   }

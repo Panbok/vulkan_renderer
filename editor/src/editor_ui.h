@@ -277,6 +277,17 @@ typedef enum VkrEditorSceneTool {
   VKR_EDITOR_SCENE_TOOL_COUNT,
 } VkrEditorSceneTool;
 
+/* The views a workbench's Views panel switches between (editor_views.h):
+   the Scene, the selection alone, the open material's graph and the Script
+   editor. One shows at a time; Graph and Script leave the Scene unrendered. */
+typedef enum VkrEditorView {
+  VKR_EDITOR_VIEW_SCENE = 0,
+  VKR_EDITOR_VIEW_MODEL,
+  VKR_EDITOR_VIEW_GRAPH,
+  VKR_EDITOR_VIEW_SCRIPT,
+  VKR_EDITOR_VIEW_COUNT,
+} VkrEditorView;
+
 typedef struct VkrEditorWorkbenchMode {
   /* VkrGizmoMode of the transform tool. */
   uint32_t gizmo_tool;
@@ -306,6 +317,10 @@ typedef struct VkrEditorWorkbench {
   /* One bit per VkrEditorWindowKind open in the workbench. */
   uint32_t windows;
   VkrEditorWorkbenchMode mode;
+  /* One bit per VkrEditorView its Views panel offers, Scene always, and the
+     one it shows. */
+  uint32_t views;
+  VkrEditorView view;
 } VkrEditorWorkbench;
 
 typedef struct VkrEditorWorkbenches {
@@ -424,6 +439,32 @@ typedef enum VkrEditorContextKind {
   VKR_EDITOR_CONTEXT_WORKBENCH,
 } VkrEditorContextKind;
 
+/* The Model view (editor_views.c): the Scene's camera and Hide set it puts
+   aside while it shows, and its orbit about the selection. */
+typedef struct VkrEditorModelView {
+  /* Restored on leaving while the same scene stays loaded. */
+  bool8_t camera_saved;
+  Vec3 scene_position;
+  float32_t scene_yaw;
+  float32_t scene_pitch;
+  uint64_t scene_generation;
+  VkrEntityId hidden[VKR_SCENE_EDITOR_HIDDEN_MAX];
+  uint32_t hidden_count;
+  bool8_t hidden_isolate;
+  /* The primary selection it isolates; a change isolates and frames the
+     new one. */
+  VkrEntityId subject;
+  uint32_t subject_extra;
+  /* The camera looks at `pivot`, the centre of the subject's box, from
+     `distance` metres along yaw and pitch in degrees. */
+  Vec3 pivot;
+  float32_t yaw;
+  float32_t pitch;
+  float32_t distance;
+  bool8_t framed;
+  bool8_t orbiting;
+} VkrEditorModelView;
+
 typedef struct VkrEditorUi {
   VkrEditorPhysicsLine *physics_lines;
   uint32_t physics_line_count;
@@ -524,6 +565,10 @@ typedef struct VkrEditorUi {
   bool8_t resolve_fights;
   VkrEditorPlacement placement;
   VkrEditorWorkbenches workbenches;
+  /* The view the Views panel applied last build, and the Model view's
+     state. */
+  VkrEditorView view_shown;
+  VkrEditorModelView model;
   /* Empty objects of the primary scene, the World and each added scene, in
      the labels' container order. */
   VkrEditorLabelEmpties label_empties[2u + VKR_SCENE_ADDITIVE_MAX];
@@ -767,6 +812,15 @@ typedef struct VkrEditorUi {
   uint32_t grid_line_count;
   VkrEditorGridLine grid_lines[VKR_EDITOR_GRID_LINE_CAPACITY];
   VkrEditorColorPicker color_picker;
+  /* The Tools panel's scroll and content height per palette, and the
+     Terrain body's in either host. */
+  float32_t tools_scroll[VKR_EDITOR_WORKBENCH_COUNT];
+  float32_t tools_height[VKR_EDITOR_WORKBENCH_COUNT];
+  float32_t terrain_scroll;
+  float32_t terrain_height;
+  /* Hashes of the palette sections folded this session. */
+  uint64_t palette_folded[32];
+  uint32_t palette_folded_count;
   /* Preferences window rows and scroll offset. */
   VkrEditorDetails preferences_details;
   float32_t preferences_scroll;

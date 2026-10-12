@@ -593,25 +593,11 @@ void vkr_editor_environment_window_build(VkrEditorUi *editor,
   }
   environment_list_presets(editor, frame);
 
-  if (ui->mouse_input_layer == ui->input_layer && !ui->mouse_captured &&
-      ui->mouse_x >= bounds.x && ui->mouse_x < bounds.x + bounds.width &&
-      ui->mouse_y >= bounds.y && ui->mouse_y < bounds.y + bounds.height) {
-    editor->environment_scroll -= ui->mouse_wheel * 40.0f;
-  }
-  const float32_t content = Max(height, editor->environment_height);
-  editor->environment_scroll =
-      Clamp(editor->environment_scroll, 0.0f, Max(0.0f, content - height));
-  const VkrUiTrack content_track = {.value = content, .unit = VKR_UI_TRACK_PX};
-  VkrUiPanelConfig area = vkr_ui_panel_config_default();
-  area.placement.column = 0u;
-  area.placement.row = 0u;
-  area.rows = &content_track;
-  area.row_count = 1u;
-  area.clip_children = true_v;
-  if (!vkr_ui_scroll_area_begin(ui, string8_lit("environment.scroll"), &area)) {
+  if (!vkr_editor_scroll_begin(ui, string8_lit("environment.scroll"), bounds,
+                               &editor->environment_scroll,
+                               editor->environment_height)) {
     return;
   }
-  (void)vkr_ui_scroll_area_offset(ui, &editor->environment_scroll);
 
   float32_t y = 6.0f;
   y = environment_note(

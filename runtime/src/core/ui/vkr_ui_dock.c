@@ -251,7 +251,9 @@ bool8_t vkr_ui_dock_find_panel(const VkrUiDockTree *tree,
                                VkrUiDockPanelKind panel_kind,
                                uint32_t *out_leaf,
                                VkrUiRect *out_content_rect) {
-  if (!tree || panel_kind >= VKR_UI_DOCK_PANEL_COUNT)
+  if (!tree || panel_kind >= VKR_UI_DOCK_PANEL_COUNT ||
+      (panel_kind == VKR_UI_DOCK_PANEL_SCENE_VIEWPORT &&
+       tree->scene_view_hidden))
     return false_v;
   for (uint32_t i = 0u; i < tree->node_high_water; ++i) {
     const VkrUiDockNode *node = &tree->nodes[i];
@@ -277,7 +279,7 @@ bool8_t vkr_ui_dock_find_panel(const VkrUiDockTree *tree,
 String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
   switch (panel_kind) {
   case VKR_UI_DOCK_PANEL_SCENE_VIEWPORT:
-    return string8_lit("Scene");
+    return string8_lit("Views");
   case VKR_UI_DOCK_PANEL_HIERARCHY:
     return string8_lit("Outliner");
   case VKR_UI_DOCK_PANEL_INSPECTOR:
@@ -296,12 +298,8 @@ String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
     return string8_lit("Tools");
   case VKR_UI_DOCK_PANEL_LEVEL_CHECKS:
     return string8_lit("Level checks");
-  case VKR_UI_DOCK_PANEL_SCRIPT:
-    return string8_lit("Script editor");
   case VKR_UI_DOCK_PANEL_TERRAIN:
     return string8_lit("Terrain");
-  case VKR_UI_DOCK_PANEL_MATERIAL:
-    return string8_lit("Material");
   default:
     return string8_lit("Panel");
   }
@@ -544,9 +542,7 @@ VkrUiRect vkr_ui_dock_tab_rect(const VkrUiDockTree *tree, uint32_t leaf,
       [VKR_UI_DOCK_PANEL_BUILD] = 98.0f,
       [VKR_UI_DOCK_PANEL_TOOLS] = 92.0f,
       [VKR_UI_DOCK_PANEL_LEVEL_CHECKS] = 140.0f,
-      [VKR_UI_DOCK_PANEL_SCRIPT] = 140.0f,
       [VKR_UI_DOCK_PANEL_TERRAIN] = 104.0f,
-      [VKR_UI_DOCK_PANEL_MATERIAL] = 108.0f,
   };
   float32_t total = 0.0f;
   float32_t preceding = 0.0f;
@@ -629,7 +625,7 @@ static bool8_t vkr_ui_dock_point_over_chrome(const VkrUiDockTree *tree,
       continue;
     const VkrUiDockPanelKind active =
         node->as.leaf.tabs[node->as.leaf.active_tab].panel_kind;
-    if (active != VKR_UI_DOCK_PANEL_SCENE_VIEWPORT ||
+    if (active != VKR_UI_DOCK_PANEL_SCENE_VIEWPORT || tree->scene_view_hidden ||
         (float32_t)y < node->rect_px.y + tree->tab_bar_px)
       return true_v;
   }
@@ -819,9 +815,9 @@ static String8 vkr_ui_dock_kind_name(VkrUiDockNodeKind kind) {
 
 static String8 vkr_ui_dock_panel_name(VkrUiDockPanelKind kind) {
   static const char *const names[VKR_UI_DOCK_PANEL_COUNT] = {
-      "scene_viewport", "hierarchy", "inspector", "console", "toolbar",
-      "custom",         "bakery",    "content",   "build",   "tools",
-      "level_checks",   "script",    "terrain",   "material",
+      "scene_viewport", "hierarchy", "inspector",    "console",
+      "toolbar",        "custom",    "bakery",       "content",
+      "build",          "tools",     "level_checks", "terrain",
   };
   return string8_create_from_cstr((const uint8_t *)names[kind],
                                   string_length(names[kind]));

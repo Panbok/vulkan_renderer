@@ -12419,19 +12419,24 @@ static VkrEditorOpStatus ops_run_material_open(OpsContext *ctx) {
     ops_fail(ctx, OPS_INVALID, "%s does not open in the Material panel", path);
     return VKR_EDITOR_OP_DONE;
   }
+  /* The Graph view shows it, in the Art workbench when asked. */
+  uint32_t shown = ctx->editor->workbenches.active;
   if (ops_arg_bool(ctx->call->args, "workbench", false_v)) {
     const VkrEditorWorkbenches *workbenches = &ctx->editor->workbenches;
     for (uint32_t i = 0; i < workbenches->count; ++i) {
       const VkrEditorWorkbench *item = &workbenches->items[i];
       if (item->kind == VKR_EDITOR_WORKBENCH_ART && !item->custom) {
         char message[128];
-        (void)vkr_editor_workbench_request(ctx->editor, ctx->frame, i,
-                                           message, sizeof(message));
+        if (i == workbenches->active ||
+            vkr_editor_workbench_request(ctx->editor, ctx->frame, i, message,
+                                         sizeof(message))) {
+          shown = i;
+        }
         break;
       }
     }
   }
-  vkr_editor_dock_show(ctx->frame->dock, VKR_UI_DOCK_PANEL_MATERIAL);
+  vkr_editor_view_show(ctx->editor, ctx->frame, shown, VKR_EDITOR_VIEW_GRAPH);
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "path",
           vkr_bakery_json_cstr(ops_arena(ctx), path));

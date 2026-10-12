@@ -684,6 +684,12 @@ static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
   assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
                                 &scene_content));
   assert(scene_content.height >= 128.0f);
+  /* A Views panel showing another view hides the Scene as a tab in front
+     of it would, so the runtime stops rendering it. */
+  tree.scene_view_hidden = true_v;
+  assert(!vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
+                                 NULL));
+  tree.scene_view_hidden = false_v;
   assert(tree.nodes[7u].rect_px.width >= 192.0f);
   assert(tree.nodes[8u].rect_px.width >= 192.0f);
   /* When the root cannot fit the minima, all descendants stay inside it. */

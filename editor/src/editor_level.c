@@ -2772,9 +2772,9 @@ static void palette_paint(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
 }
 
-void vkr_editor_level_palette_build(VkrEditorUi *editor,
-                                    const VkrSampleUiFrame *frame,
-                                    VkrUiRect bounds) {
+float32_t vkr_editor_level_palette_build(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         VkrUiRect bounds) {
   VkrUiSystem *ui = frame->ui;
   VkrEditorPalette palette =
       vkr_editor_palette_begin(editor, frame, bounds, 4.0f);
@@ -2835,15 +2835,24 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
                                           : VKR_EDITOR_SCENE_TOOL_CORRIDOR);
   }
 
-  /* The kind of the next stairs and the shape of the next corridor. */
-  vkr_editor_palette_heading(&palette, string8_lit("palette.paths"),
-                             string8_lit("STAIRS AND CORRIDORS"));
+  /* The kind of the next stairs and the shape of the next corridor, while
+     the tool that reads them runs. */
+  const bool8_t stairs_tool = running == VKR_EDITOR_SCENE_TOOL_STAIRS;
+  const bool8_t corridor_tool = running == VKR_EDITOR_SCENE_TOOL_CORRIDOR;
+  if (stairs_tool) {
+    vkr_editor_palette_heading(&palette, string8_lit("palette.stairs_options"),
+                               string8_lit("STAIRS"));
+  } else if (corridor_tool) {
+    vkr_editor_palette_heading(&palette,
+                               string8_lit("palette.corridor_options"),
+                               string8_lit("CORRIDOR"));
+  }
   static const char *const stairs_labels[SCENE_STAIRS_KIND_COUNT] = {
       "Straight", "L turn", "U turn", "Curved", "Spiral"};
   static const VkrUiIcon stairs_icons[SCENE_STAIRS_KIND_COUNT] = {
       VKR_UI_ICON_CHART_BAR, VKR_UI_ICON_ARROW_RIGHT, VKR_UI_ICON_ARROW_UP,
       VKR_UI_ICON_WAVES, VKR_UI_ICON_CIRCLE};
-  for (uint32_t i = 0; i < SCENE_STAIRS_KIND_COUNT; ++i) {
+  for (uint32_t i = 0; stairs_tool && i < SCENE_STAIRS_KIND_COUNT; ++i) {
     (void)vkr_ui_push_id_u64(ui, i);
     if (vkr_editor_palette_button(
             &palette, string8_lit("palette.stairs_kind"), stairs_labels[i],
@@ -2856,15 +2865,18 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
     }
     (void)vkr_ui_pop_id(ui);
   }
-  if (vkr_editor_palette_button(
+  /* Straight stairs do not turn. */
+  if (stairs_tool &&
+      vkr_editor_palette_button(
           &palette, string8_lit("palette.stairs_left"), "Turn left",
           VKR_UI_ICON_ARROW_LEFT,
           string8_lit("Turning and spiral stairs turn left instead of right"),
-          editor->stairs_left, false_v)) {
+          editor->stairs_left, editor->stairs_kind == SCENE_STAIRS_STRAIGHT)) {
     editor->stairs_left = !editor->stairs_left;
   }
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.corridor_curved"), "Curved",
+  if (corridor_tool &&
+      vkr_editor_palette_button(
+          &palette, string8_lit("palette.corridor_curved"), "Round corners",
           VKR_UI_ICON_WAVES,
           string8_lit("New corridors round their corners with 2 m arcs; "
                       "Details sets the radius afterwards"),
@@ -2895,12 +2907,17 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
 
   vkr_editor_palette_heading(&palette, string8_lit("palette.edit"),
                              string8_lit("EDIT"));
-  vkr_editor_palette_command(
-      &palette, string8_lit("palette.select"), "Select", VKR_UI_ICON_SELECT,
-      CMD_TOOL_SELECT, frame->view_state.gizmo_tool == VKR_GIZMO_MODE_NONE);
-  vkr_editor_palette_command(
-      &palette, string8_lit("palette.move"), "Move", VKR_UI_ICON_MOVE,
-      CMD_TOOL_MOVE, frame->view_state.gizmo_tool == VKR_GIZMO_MODE_TRANSLATE);
+  vkr_editor_palette_command(&palette, string8_lit("palette.select"), "Select",
+                             VKR_UI_ICON_SELECT, CMD_TOOL_SELECT,
+                             running == VKR_EDITOR_SCENE_TOOL_NONE &&
+                                 frame->view_state.gizmo_tool ==
+                                     VKR_GIZMO_MODE_NONE);
+  /* A running Scene tool takes the clicks, so neither lights then. */
+  vkr_editor_palette_command(&palette, string8_lit("palette.move"), "Move",
+                             VKR_UI_ICON_MOVE, CMD_TOOL_MOVE,
+                             running == VKR_EDITOR_SCENE_TOOL_NONE &&
+                                 frame->view_state.gizmo_tool ==
+                                     VKR_GIZMO_MODE_TRANSLATE);
   vkr_editor_palette_command(&palette, string8_lit("palette.clip"), "Clip",
                              VKR_UI_ICON_RULER, CMD_BRUSH_CLIP,
                              editor->clip_tool);
@@ -2999,7 +3016,7 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
   if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.snap_together"), "Snap",
+          &palette, string8_lit("palette.snap_together"), "Align to first",
           VKR_UI_ICON_SNAP,
           string8_lit("Move the other selected objects flush against and "
                       "lined up with the first one, free ones excepted; "
@@ -3015,7 +3032,7 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
   /* Free marks the selection to stay out of every snap, or clears it. */
   const bool8_t all_free = selected && free_count == selected;
   if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.free"), "Free", VKR_UI_ICON_HAND,
+          &palette, string8_lit("palette.free"), "Never snap", VKR_UI_ICON_HAND,
           string8_lit("The selected objects never snap: the magnet, Snap and "
                       "parenting in the Outliner leave them where they are"),
           all_free, !ops || !selected)) {
@@ -3057,7 +3074,8 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
       alive && vkr_scene_get_typed(scene, frame->selected_entity,
                                    &vkr_scene_blockout_type) != NULL;
   if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.bake"), "Bake", VKR_UI_ICON_LAYERS,
+          &palette, string8_lit("palette.bake"), "To brushes",
+          VKR_UI_ICON_SHAPES,
           string8_lit("Turn the selected stairs or corridor into plain "
                       "brushes to edit one by one; its handles and settings "
                       "go"),
@@ -3130,7 +3148,7 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
   }
   if (vkr_editor_palette_button(
           &palette, string8_lit("palette.greybox"), "Greybox view",
-          VKR_UI_ICON_EYE,
+          VKR_UI_ICON_VIEW_MODE,
           string8_lit("Show every face in its surface's greybox look, over "
                       "any material the art pass gave it"),
           frame->view_state.greybox_view, !frame->view_request)) {
@@ -3218,4 +3236,5 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
     editor->scale_figure = !editor->scale_figure;
   }
   vkr_editor_palette_end(&palette);
+  return palette.y + VKR_EDITOR_PALETTE_BOTTOM_PT;
 }

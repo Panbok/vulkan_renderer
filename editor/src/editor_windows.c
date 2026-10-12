@@ -97,14 +97,22 @@ static void editor_window_toggle(VkrEditorUi *editor,
     editor_window_raise(editor, kind);
 }
 
-/* The View menu's toggle of a window whose body a dock panel can host: the
-   tab while the live tree holds the panel, else the window. */
+/* The View menu's toggle of a window whose body a view or a dock panel can
+   host: the view while the workbench offers it (back to the Scene when it
+   shows), the tab while the live tree holds the panel, else the window. */
 static void editor_window_command(VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame,
                                   VkrEditorWindowKind kind) {
   const VkrUiDockPanelKind panel = vkr_editor_window_dock_panel(kind);
-  if (panel != VKR_UI_DOCK_PANEL_COUNT &&
-      vkr_editor_dock_has(frame->dock, panel))
+  const VkrEditorView view = vkr_editor_window_view(kind);
+  if (view != VKR_EDITOR_VIEW_COUNT && !frame->scene_only &&
+      ((vkr_editor_views_offered(editor) >> view) & 1u))
+    vkr_editor_view_show(editor, frame, editor->workbenches.active,
+                         vkr_editor_view_shown(editor, frame, view)
+                             ? VKR_EDITOR_VIEW_SCENE
+                             : view);
+  else if (panel != VKR_UI_DOCK_PANEL_COUNT &&
+           vkr_editor_dock_has(frame->dock, panel))
     vkr_editor_dock_toggle(frame->dock, panel);
   else
     editor_window_toggle(editor, kind);
@@ -591,7 +599,9 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
   /* The startup Scene-only mode and the project launcher have no panels to
      maximize over. */
   case CMD_SCENE_MAXIMIZE:
+    /* Graph and Script views have no Scene image to maximize. */
     return frame->scene_maximized_next && frame->dock && frame->mapping_valid &&
+           (frame->scene_maximized || !frame->dock->scene_view_hidden) &&
            (!frame->scene_only || frame->scene_maximized) &&
            (!editor->projects ||
             vkr_editor_projects_project(editor->projects) != NULL);
@@ -2458,6 +2468,8 @@ typedef enum EditorContextAction {
   CONTEXT_COPY_NAME,
   CONTEXT_TAB_CLOSE,
   CONTEXT_TAB_LAYOUT,
+  /* Offer or take out the view `value` in the Views panel. */
+  CONTEXT_VIEW_TOGGLE,
   /* The workbench tab `context_panel` names. */
   CONTEXT_WORKBENCH_SWITCH,
   CONTEXT_WORKBENCH_RESET,
@@ -2994,16 +3006,38 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
   }
   case VKR_EDITOR_CONTEXT_DOCK_TAB: {
     const VkrUiDockPanelKind panel = (VkrUiDockPanelKind)editor->context_panel;
-    if (frame && !vkr_ui_dock_find_panel(frame->dock, panel, NULL, NULL))
+    /* The Views panel stays shown whichever view it holds. */
+    const bool8_t views = panel == VKR_UI_DOCK_PANEL_SCENE_VIEWPORT;
+    if (frame && !views &&
+        !vkr_ui_dock_find_panel(frame->dock, panel, NULL, NULL))
       return 0u;
     const String8 name = vkr_ui_dock_panel_label(panel);
     snprintf(label, label_capacity, "Close %.*s", (int)name.length, name.str);
     uint32_t count = 0u;
     context_push(items, &count,
-                 (EditorContextItem){label, VKR_UI_ICON_CLOSE, NULL,
-                                     panel == VKR_UI_DOCK_PANEL_SCENE_VIEWPORT,
+                 (EditorContextItem){label, VKR_UI_ICON_CLOSE, NULL, views,
                                      CONTEXT_TAB_CLOSE});
     context_separator(items, &count);
+    if (views) {
+      static const char *const view_rows[VKR_EDITOR_VIEW_COUNT] = {
+          [VKR_EDITOR_VIEW_MODEL] = "Model view",
+          [VKR_EDITOR_VIEW_GRAPH] = "Graph view",
+          [VKR_EDITOR_VIEW_SCRIPT] = "Script view",
+      };
+      const uint32_t offered = vkr_editor_views_offered(editor);
+      for (uint32_t view = VKR_EDITOR_VIEW_MODEL; view < VKR_EDITOR_VIEW_COUNT;
+           ++view) {
+        context_push(items, &count,
+                     (EditorContextItem){
+                         .label = view_rows[view],
+                         .icon = vkr_editor_view_icon((VkrEditorView)view),
+                         .action = CONTEXT_VIEW_TOGGLE,
+                         .value = view,
+                         .checked = (offered >> view) & 1u,
+                     });
+      }
+      context_separator(items, &count);
+    }
     context_push(items, &count,
                  (EditorContextItem){"Reset panel layout", VKR_UI_ICON_LAYOUT,
                                      NULL, false_v, CONTEXT_TAB_LAYOUT});
@@ -3297,6 +3331,13 @@ static void editor_context_run(VkrEditorUi *editor,
   case CONTEXT_TAB_CLOSE:
     vkr_editor_dock_toggle(frame->dock,
                            (VkrUiDockPanelKind)editor->context_panel);
+    break;
+  case CONTEXT_VIEW_TOGGLE:
+    if ((vkr_editor_views_offered(editor) >> item->value) & 1u)
+      vkr_editor_view_remove(editor, (VkrEditorView)item->value);
+    else
+      vkr_editor_view_show(editor, frame, editor->workbenches.active,
+                           (VkrEditorView)item->value);
     break;
   case CONTEXT_TAB_LAYOUT:
     vkr_editor_workbench_reset(editor, frame);

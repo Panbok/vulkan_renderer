@@ -77,7 +77,7 @@ dependable channel for scripts.
 | `frame` | | Frame the selection |
 | `visibility.toggle` | | Hide or show the selection in the game too: its saved Visibility, undoable |
 | `hide`, `isolate`, `unhide` | | Hide the selection, show only it, or show everything hidden, in the editor only (H, Shift+H, Alt+H; ADR-084) |
-| `panel` | `<outliner\|details\|console\|bakery\|content\|build\|tools\|level_checks\|script\|terrain> [on\|off\|toggle]` | Docked panels; `window level`, `window script` and `window terrain` show a docked tab instead of the window (ADR-089) |
+| `panel` | `<outliner\|details\|console\|bakery\|content\|build\|tools\|level_checks\|terrain> [on\|off\|toggle]` | Docked panels; `window level` and `window terrain` show a docked tab instead of the window, and `window script` shows the Script view where the workbench offers one (ADR-089) |
 | `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes\|level\|terrain\|partition\|environment\|bake\|lights\|session> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window, `level` the Level checks window and `terrain` the Terrain window (ADR-084); `environment` is the Environment window (ADR-098), `bake` Bake settings and `lights` the Lights window (ADR-100); `session` the Collaborative session window (ADR-106) |
 | `build.game`, `build.run` | `[profile]` | Package the project with a build profile (quoted when it has spaces; the selected profile by default), then for `build.run` run the game ([ADR-078](078-project-build-and-packaging.md)) |
 | `build.settings`, `build.open` | | Build Settings window; the last package's folder |
@@ -89,6 +89,7 @@ dependable channel for scripts.
 | `select.toggle` | `<name>` | Add an object to the selection or take it out, as Ctrl+click does (ADR-089) |
 | `brush.stairs_tool`, `brush.corridor_tool` | `[on\|off\|toggle]` | The two-click stairs and corridor tools (ADR-089) |
 | `workbench` | `[general\|level_design\|terrain\|lighting\|scripting\|1-9\|next\|prev]` | List the workbenches, or switch at the start of the next frame (ADR-089) |
+| `views` | `[scene\|model\|graph\|script\|-<view>]` | List the Views panel's views, show one (adding it to the workbench), or take one other than the Scene out (ADR-089) |
 | `sim.play`, `sim.pause`, `sim.step`, `sim.stop` | | Simulation transport |
 | `render.start`, `render.stop` | | Scene rendering |
 | `camera.capture` | | Toggle free-camera capture |
@@ -177,7 +178,7 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 | `.light` | `kind`, `color`, `intensity` (radiance for rectangles), `range`, `enabled`, `inner`, `outer` (degrees) | all but `kind` |
 | `.<component>` | Descriptor properties of a component the entity carries, by type name (`sel.post_process.exposure_compensation_ev`, `sel.point_light.intensity`) | visible, non-read-only properties |
 | `view` | `camera`, `mode`, `grid`, `grid_spacing`, `grid_labels`, `grid_through`, `collision` (0 off, 1 selected, 2 all), `camera_speed`, `camera_sensitivity` (mouse-look multiplier), `grid_height` (world Y of the ground grid), `tool`, `snap` (`free`, `surface`, `grid`), `snap_offset`, `snap_yaw`, `snap_align`, `snap_centers`, `snap_magnet` (brushes snap to nearby brushes), `snap_moves` (moves keep box corners on the grid), `snap_turns` (rotate handles turn in 15° steps) | all |
-| `ui` | `zoom`, `reduce_motion`, `workbench` (read-only id), `selected` (read-only count), `maximized` (read-only), `icons` (object icons the last build made), `icons_shown` (those the last projection placed on the Scene), `icons_occluded` (those collision hides) | `zoom`, `reduce_motion` |
+| `ui` | `zoom`, `reduce_motion`, `workbench` (read-only id), `selected` (read-only count), `maximized` (read-only), `view` (read-only: the Views panel's shown view), `icons` (object icons the last build made), `icons_shown` (those the last projection placed on the Scene), `icons_occluded` (those collision hides) | `zoom`, `reduce_motion` |
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |
 | `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures`, `render_width`, `render_height` (the Scene's current internal extent), `texture_mb` (resident material textures in MiB), `frame_ms_max` (the longest of the last 120 frame intervals), `pending_pipelines` (Custom material graphs whose pipelines are being created), `pipelines_late` (camera draws that took a Custom material's fallback since start; [ADR-096](096-custom-material-graphs.md)), `scene_frames` and `present_frames` (frames that rendered a Scene and frames that only presented the UI since start; [ADR-111](111-editor-presenter.md)) | none |

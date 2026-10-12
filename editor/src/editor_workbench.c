@@ -6,6 +6,7 @@
 #include "editor_lighting.h"
 #include "editor_material.h"
 #include "editor_projects.h"
+#include "editor_views.h"
 
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
@@ -42,7 +43,6 @@ static const struct {
   VkrUiDockPanelKind panel;
 } s_docked_windows[] = {
     {VKR_EDITOR_WINDOW_LEVEL, VKR_UI_DOCK_PANEL_LEVEL_CHECKS},
-    {VKR_EDITOR_WINDOW_SCRIPT, VKR_UI_DOCK_PANEL_SCRIPT},
     {VKR_EDITOR_WINDOW_TERRAIN, VKR_UI_DOCK_PANEL_TERRAIN},
 };
 
@@ -117,8 +117,8 @@ static void workbench_tabs(VkrUiDockTree *tree, uint32_t leaf, uint32_t parent,
   tree->nodes[leaf].as.leaf.tab_count = count;
 }
 
-/* `side` left of the Scene with the window share `side_share`, the `bottom`
-   tabs under the Scene, which keeps `scene_share` of the column, and the
+/* `side` left of the Views panel with the window share `side_share`, the
+   `bottom` tabs under it, which keeps `scene_share` of the column, and the
    Outliner over Details on the right with the Outliner's share
    `outliner`. */
 static void workbench_side_layout(VkrUiDockTree *tree, VkrUiDockPanelKind side,
@@ -137,21 +137,6 @@ static void workbench_side_layout(VkrUiDockTree *tree, VkrUiDockPanelKind side,
   workbench_leaf(tree, 10u, 6u, VKR_UI_DOCK_PANEL_INSPECTOR);
 }
 
-/* The Script editor over the Console on the left, the Scene over the
-   Outliner and Details on the right. */
-static void workbench_scripting_layout(VkrUiDockTree *tree) {
-  workbench_tree_begin(tree, 11u);
-  workbench_split(tree, 2u, 0u, VKR_UI_DOCK_SPLIT_X, 0.6f, 3u, 4u);
-  workbench_split(tree, 3u, 2u, VKR_UI_DOCK_SPLIT_Y, 0.72f, 5u, 6u);
-  workbench_leaf(tree, 5u, 3u, VKR_UI_DOCK_PANEL_SCRIPT);
-  workbench_leaf(tree, 6u, 3u, VKR_UI_DOCK_PANEL_CONSOLE);
-  workbench_split(tree, 4u, 2u, VKR_UI_DOCK_SPLIT_Y, 0.45f, 7u, 8u);
-  workbench_leaf(tree, 7u, 4u, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT);
-  workbench_split(tree, 8u, 4u, VKR_UI_DOCK_SPLIT_Y, 0.45f, 9u, 10u);
-  workbench_leaf(tree, 9u, 8u, VKR_UI_DOCK_PANEL_HIERARCHY);
-  workbench_leaf(tree, 10u, 8u, VKR_UI_DOCK_PANEL_INSPECTOR);
-}
-
 static void workbench_builtin_layout(uint32_t index, VkrUiDockTree *tree) {
   static const VkrUiDockPanelKind level_design[] = {
       VKR_UI_DOCK_PANEL_LEVEL_CHECKS, VKR_UI_DOCK_PANEL_CONTENT,
@@ -159,8 +144,7 @@ static void workbench_builtin_layout(uint32_t index, VkrUiDockTree *tree) {
   static const VkrUiDockPanelKind terrain[] = {VKR_UI_DOCK_PANEL_CONTENT,
                                                VKR_UI_DOCK_PANEL_CONSOLE};
   static const VkrUiDockPanelKind lighting[] = {VKR_UI_DOCK_PANEL_CONSOLE};
-  static const VkrUiDockPanelKind art[] = {VKR_UI_DOCK_PANEL_MATERIAL,
-                                           VKR_UI_DOCK_PANEL_CONTENT,
+  static const VkrUiDockPanelKind art[] = {VKR_UI_DOCK_PANEL_CONTENT,
                                            VKR_UI_DOCK_PANEL_CONSOLE};
   switch (index) {
   case VKR_EDITOR_WORKBENCH_LEVEL_DESIGN:
@@ -178,14 +162,13 @@ static void workbench_builtin_layout(uint32_t index, VkrUiDockTree *tree) {
                           lighting, ArrayCount(lighting), 0.32f);
     break;
   case VKR_EDITOR_WORKBENCH_ART:
-    /* The material graph needs room; the Scene keeps the upper half. */
-    workbench_side_layout(tree, VKR_UI_DOCK_PANEL_TOOLS, 0.13f, 0.5f, art,
+    /* The material graph and the Model view are views in the Views
+       panel, so it keeps the column's height. */
+    workbench_side_layout(tree, VKR_UI_DOCK_PANEL_TOOLS, 0.13f, 0.74f, art,
                           ArrayCount(art), 0.42f);
     break;
-  case VKR_EDITOR_WORKBENCH_SCRIPTING:
-    workbench_scripting_layout(tree);
-    break;
   default:
+    /* General, and Scripting, whose Script editor is a view. */
     vkr_ui_dock_default_editor_layout(tree);
     break;
   }
@@ -207,6 +190,8 @@ void vkr_editor_workbench_init(VkrEditorWorkbenches *workbenches) {
     snprintf(item->id, sizeof(item->id), "%s", s_workbenches[i].id);
     snprintf(item->name, sizeof(item->name), "%s", s_workbenches[i].name);
     workbench_builtin_layout(i, &item->layout);
+    item->views = vkr_editor_views_builtin(item->kind);
+    item->view = vkr_editor_view_builtin(item->kind);
   }
   workbenches->items[VKR_EDITOR_WORKBENCH_GENERAL].mode =
       (VkrEditorWorkbenchMode){.gizmo_tool = VKR_GIZMO_MODE_TRANSLATE,
@@ -498,7 +483,10 @@ bool8_t vkr_editor_window_shown(const VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 VkrEditorWindowKind kind) {
   const VkrUiDockPanelKind panel = vkr_editor_window_dock_panel(kind);
+  const VkrEditorView view = vkr_editor_window_view(kind);
   return editor->windows[kind].visible ||
+         (view != VKR_EDITOR_VIEW_COUNT &&
+          vkr_editor_view_shown(editor, frame, view)) ||
          (panel != VKR_UI_DOCK_PANEL_COUNT && frame->dock &&
           !frame->scene_only &&
           vkr_ui_dock_find_panel(frame->dock, panel, NULL, NULL));
@@ -512,6 +500,8 @@ void vkr_editor_workbench_reset_index(VkrEditorUi *editor,
     return;
   }
   const VkrEditorWorkbenchKind kind = workbenches->items[index].kind;
+  workbenches->items[index].views = vkr_editor_views_builtin(kind);
+  workbenches->items[index].view = vkr_editor_view_builtin(kind);
   if (index != workbenches->active) {
     workbench_builtin_layout(kind, &workbenches->items[index].layout);
     return;
@@ -924,18 +914,26 @@ void vkr_editor_workbench_build_row(VkrEditorUi *editor,
 #define PALETTE_ROW_PT 28.0f
 #define PALETTE_GAP_PT 4.0f
 
+/* An icon-only cell's side. */
+#define PALETTE_ICON_CELL_PT 28.0f
+
 VkrEditorPalette vkr_editor_palette_begin(VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame,
                                           VkrUiRect bounds, float32_t y) {
   const float32_t width = bounds.width / frame->ui->content_scale;
+  const bool8_t labels = width >= 110.0f;
+  /* Without labels, as many square icon cells as fit. */
+  const uint32_t icon_columns =
+      (uint32_t)Max(1.0f, (width - PALETTE_PAD_PT * 2.0f + PALETTE_GAP_PT) /
+                              (PALETTE_ICON_CELL_PT + PALETTE_GAP_PT));
   return (VkrEditorPalette){
       .editor = editor,
       .frame = frame,
       .ui = frame->ui,
       .width = width,
       .y = y,
-      .columns = width >= 200.0f ? 2u : 1u,
-      .labels = width >= 110.0f,
+      .columns = labels ? (width >= 200.0f ? 2u : 1u) : icon_columns,
+      .labels = labels,
   };
 }
 
@@ -948,29 +946,84 @@ void vkr_editor_palette_end(VkrEditorPalette *palette) {
   }
 }
 
-void vkr_editor_palette_heading(VkrEditorPalette *palette, String8 id,
-                                String8 text) {
+static uint64_t palette_section_hash(String8 id) {
+  uint64_t hash = 1469598103934665603ull;
+  for (uint64_t i = 0u; i < id.length; ++i) {
+    hash = (hash ^ id.str[i]) * 1099511628211ull;
+  }
+  return hash;
+}
+
+bool8_t vkr_editor_palette_heading(VkrEditorPalette *palette, String8 id,
+                                   String8 text) {
   vkr_editor_palette_end(palette);
+  VkrEditorUi *editor = palette->editor;
   const VkrUiTheme *theme = vkr_ui_theme();
-  palette->y += 6.0f;
-  VkrUiWidgetConfig label =
-      vkr_editor_details_widget(PALETTE_PAD_PT, palette->y,
-                                palette->width - PALETTE_PAD_PT * 2.0f, 18.0f);
-  label.style.font_size_pt = theme->font_caption;
-  label.style.text_color = theme->text_secondary;
-  label.text.font = palette->editor->heading_font;
-  vkr_ui_label(palette->ui, id, text, &label);
-  palette->y += 22.0f;
+  const uint64_t hash = palette_section_hash(id);
+  uint32_t found = UINT32_MAX;
+  for (uint32_t i = 0u; i < editor->palette_folded_count; ++i) {
+    if (editor->palette_folded[i] == hash) {
+      found = i;
+    }
+  }
+  /* A rule above every section but the first parts the groups. */
+  if (palette->y > 12.0f) {
+    palette->y += 4.0f;
+    VkrUiWidgetConfig rule =
+        vkr_editor_details_widget(PALETTE_PAD_PT, palette->y,
+                                  palette->width - PALETTE_PAD_PT * 2.0f, 1.0f);
+    rule.style.padding_pt = (VkrUiEdges){0};
+    rule.style.background_color = theme->separator;
+    vkr_ui_label(palette->ui,
+                 string8_create_formatted(palette->ui->frame_allocator,
+                                          "%.*s.rule", (int)id.length, id.str),
+                 (String8){0}, &rule);
+  }
+  palette->y += 5.0f;
+  VkrUiWidgetConfig heading = vkr_editor_details_widget(
+      PALETTE_PAD_PT - 4.0f, palette->y,
+      palette->width - PALETTE_PAD_PT * 2.0f + 8.0f, 20.0f);
+  vkr_editor_ghost_style(&heading);
+  heading.style.font_size_pt = theme->font_caption;
+  heading.style.text_color = theme->text_secondary;
+  heading.style.padding_pt = (VkrUiEdges){2.0f, 4.0f, 2.0f, 4.0f};
+  heading.text.font = editor->heading_font;
+  heading.leading = true_v;
+  heading.icon = found == UINT32_MAX ? VKR_UI_ICON_DISCLOSURE_OPEN
+                                     : VKR_UI_ICON_DISCLOSURE_CLOSED;
+  heading.icon_size_pt = 10.0f;
+  heading.icon_color = theme->text_secondary;
+  heading.tooltip = found == UINT32_MAX ? string8_lit("Fold this section")
+                                        : string8_lit("Unfold this section");
+  if (vkr_ui_button(palette->ui, id, text, &heading)) {
+    if (found != UINT32_MAX) {
+      editor->palette_folded[found] =
+          editor->palette_folded[--editor->palette_folded_count];
+      found = UINT32_MAX;
+    } else if (editor->palette_folded_count <
+               ArrayCount(editor->palette_folded)) {
+      found = editor->palette_folded_count;
+      editor->palette_folded[editor->palette_folded_count++] = hash;
+    }
+  }
+  palette->y += 24.0f;
+  palette->folded = found != UINT32_MAX;
+  return !palette->folded;
 }
 
 bool8_t vkr_editor_palette_button(VkrEditorPalette *palette, String8 id,
                                   const char *label, VkrUiIcon icon,
                                   String8 tooltip, bool8_t active,
                                   bool8_t disabled) {
+  if (palette->folded) {
+    return false_v;
+  }
   const float32_t inner = palette->width - PALETTE_PAD_PT * 2.0f;
   const float32_t cell =
-      (inner - PALETTE_GAP_PT * (float32_t)(palette->columns - 1u)) /
-      (float32_t)palette->columns;
+      palette->labels
+          ? (inner - PALETTE_GAP_PT * (float32_t)(palette->columns - 1u)) /
+                (float32_t)palette->columns
+          : PALETTE_ICON_CELL_PT;
   const uint32_t column = palette->slot % palette->columns;
   const uint32_t row = palette->slot / palette->columns;
   palette->slot++;
@@ -984,6 +1037,13 @@ bool8_t vkr_editor_palette_button(VkrEditorPalette *palette, String8 id,
   const String8 text =
       string8_create_from_cstr((const uint8_t *)label, strlen(label));
   button.tooltip = tooltip.length ? tooltip : text;
+  /* An icon alone does not say which of a group it is, so its tooltip
+     leads with the label. */
+  if (!palette->labels && tooltip.length) {
+    button.tooltip =
+        string8_create_formatted(palette->ui->frame_allocator, "%s: %.*s",
+                                 label, (int)tooltip.length, tooltip.str);
+  }
   button.disabled = disabled;
   if (disabled) {
     button.style.text_color = vkr_ui_theme()->text_disabled;
@@ -1025,11 +1085,11 @@ void vkr_editor_palette_create(VkrEditorPalette *palette, String8 id,
   }
 }
 
-/* Lights and environment objects, Bake lighting, the lighting view modes and
-   the light icons. */
-static void workbench_lighting_palette(VkrEditorUi *editor,
-                                       const VkrSampleUiFrame *frame,
-                                       VkrUiRect bounds) {
+/* Lights and environment objects, Bake lighting, the time of day, the
+   lighting view modes and the light icons. */
+static float32_t workbench_lighting_palette(VkrEditorUi *editor,
+                                            const VkrSampleUiFrame *frame,
+                                            VkrUiRect bounds) {
   VkrEditorPalette palette =
       vkr_editor_palette_begin(editor, frame, bounds, 4.0f);
   vkr_editor_palette_heading(&palette, string8_lit("lighting.lights"),
@@ -1076,10 +1136,25 @@ static void workbench_lighting_palette(VkrEditorUi *editor,
                             "Look volume", VKR_UI_ICON_BOUNDING_BOX,
                             "look_volume");
 
+  /* Baking is the workbench's main action, so it comes before the views. */
+  vkr_editor_palette_heading(&palette, string8_lit("lighting.bake"),
+                             string8_lit("BAKE"));
+  vkr_editor_palette_command(&palette, string8_lit("lighting.bake_button"),
+                             "Bake lighting", VKR_UI_ICON_BAKERY,
+                             CMD_SCENE_BAKE, false_v);
+  vkr_editor_palette_command(
+      &palette, string8_lit("lighting.bake_settings"), "Bake settings",
+      VKR_UI_ICON_GRAPHICS, CMD_BAKE_SETTINGS,
+      editor->windows[VKR_EDITOR_WINDOW_BAKE_SETTINGS].visible);
+  vkr_editor_palette_command(&palette, string8_lit("lighting.preferences"),
+                             "Preferences", VKR_UI_ICON_SETTINGS, CMD_GRAPHICS,
+                             false_v);
+
   /* The time of day: scrub the live clock, keep an hour (ADR-100). */
-  vkr_editor_palette_heading(&palette, string8_lit("lighting.time"),
-                             string8_lit("TIME"));
-  vkr_editor_lighting_time_rows(editor, frame, palette.width, &palette.y);
+  if (vkr_editor_palette_heading(&palette, string8_lit("lighting.time"),
+                                 string8_lit("TIME"))) {
+    vkr_editor_lighting_time_rows(editor, frame, palette.width, &palette.y);
+  }
 
   /* View modes set the render mode directly, as Cmd view.mode does. */
   vkr_editor_palette_heading(&palette, string8_lit("lighting.view"),
@@ -1113,19 +1188,8 @@ static void workbench_lighting_palette(VkrEditorUi *editor,
                              "Light icons", VKR_UI_ICON_EYE, CMD_LABELS,
                              editor->labels_enabled);
 
-  vkr_editor_palette_heading(&palette, string8_lit("lighting.bake"),
-                             string8_lit("BAKE"));
-  vkr_editor_palette_command(&palette, string8_lit("lighting.bake_button"),
-                             "Bake lighting", VKR_UI_ICON_BAKERY,
-                             CMD_SCENE_BAKE, false_v);
-  vkr_editor_palette_command(
-      &palette, string8_lit("lighting.bake_settings"), "Bake settings",
-      VKR_UI_ICON_GRAPHICS, CMD_BAKE_SETTINGS,
-      editor->windows[VKR_EDITOR_WINDOW_BAKE_SETTINGS].visible);
-  vkr_editor_palette_command(&palette, string8_lit("lighting.preferences"),
-                             "Preferences", VKR_UI_ICON_GRAPHICS, CMD_GRAPHICS,
-                             false_v);
   vkr_editor_palette_end(&palette);
+  return palette.y + VKR_EDITOR_PALETTE_BOTTOM_PT;
 }
 
 /* The material of the selected brush face, else of the selected brush's
@@ -1241,6 +1305,9 @@ static void workbench_slider_row(VkrEditorPalette *palette, String8 id,
                                  const char *label, const char *unit,
                                  float32_t *value, float32_t minimum,
                                  float32_t maximum) {
+  if (palette->folded) {
+    return;
+  }
   VkrUiSystem *ui = palette->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   const float32_t inner = palette->width - PALETTE_PAD_PT * 2.0f;
@@ -1262,9 +1329,9 @@ static void workbench_slider_row(VkrEditorPalette *palette, String8 id,
   palette->y += 26.0f;
 }
 
-static void workbench_art_palette(VkrEditorUi *editor,
-                                  const VkrSampleUiFrame *frame,
-                                  VkrUiRect bounds) {
+static float32_t workbench_art_palette(VkrEditorUi *editor,
+                                       const VkrSampleUiFrame *frame,
+                                       VkrUiRect bounds) {
   VkrEditorPalette palette =
       vkr_editor_palette_begin(editor, frame, bounds, 4.0f);
   const char *open = vkr_editor_material_open_path(editor->materials);
@@ -1285,7 +1352,8 @@ static void workbench_art_palette(VkrEditorUi *editor,
                       "Material panel"),
           false_v, !selected[0])) {
     (void)vkr_editor_material_open(editor->materials, frame, selected);
-    vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_MATERIAL);
+    vkr_editor_view_show(editor, frame, editor->workbenches.active,
+                         VKR_EDITOR_VIEW_GRAPH);
   }
   if (vkr_editor_palette_button(
           &palette, string8_lit("art.assign"), "Assign",
@@ -1348,7 +1416,8 @@ static void workbench_art_palette(VkrEditorUi *editor,
                       "a material per surface tag"),
           false_v, false_v)) {
     (void)vkr_editor_material_open(editor->materials, frame, theme);
-    vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_MATERIAL);
+    vkr_editor_view_show(editor, frame, editor->workbenches.active,
+                         VKR_EDITOR_VIEW_GRAPH);
   }
   if (!theme[0] &&
       vkr_editor_palette_button(
@@ -1408,8 +1477,8 @@ static void workbench_art_palette(VkrEditorUi *editor,
   vkr_editor_palette_heading(&palette, string8_lit("art.view"),
                              string8_lit("VIEW"));
   if (vkr_editor_palette_button(
-          &palette, string8_lit("art.greybox"), "Greybox",
-          VKR_UI_ICON_GRID,
+          &palette, string8_lit("art.greybox"), "Greybox view",
+          VKR_UI_ICON_VIEW_MODE,
           string8_lit("Show every brush face's greybox look, art materials "
                       "too"),
           frame->view_state.greybox_view, !frame->view_request)) {
@@ -1419,6 +1488,7 @@ static void workbench_art_palette(VkrEditorUi *editor,
         (VkrSampleViewRequest){.value = next, .apply = true_v};
   }
   vkr_editor_palette_end(&palette);
+  return palette.y + VKR_EDITOR_PALETTE_BOTTOM_PT;
 }
 
 void vkr_editor_workbench_tools_build(VkrEditorUi *editor,
@@ -1426,19 +1496,26 @@ void vkr_editor_workbench_tools_build(VkrEditorUi *editor,
                                       VkrUiRect bounds) {
   const VkrEditorWorkbenchKind kind =
       editor->workbenches.items[editor->workbenches.active].kind;
-  if (kind == VKR_EDITOR_WORKBENCH_LEVEL_DESIGN) {
-    vkr_editor_level_palette_build(editor, frame, bounds);
-    return;
-  }
-  if (kind == VKR_EDITOR_WORKBENCH_LIGHTING) {
-    workbench_lighting_palette(editor, frame, bounds);
-    return;
-  }
-  if (kind == VKR_EDITOR_WORKBENCH_ART) {
-    workbench_art_palette(editor, frame, bounds);
-    return;
-  }
   VkrUiSystem *ui = frame->ui;
+  if (kind == VKR_EDITOR_WORKBENCH_LEVEL_DESIGN ||
+      kind == VKR_EDITOR_WORKBENCH_LIGHTING ||
+      kind == VKR_EDITOR_WORKBENCH_ART) {
+    /* A palette taller than the panel scrolls; it measures itself as it
+       builds, so the extent trails a build behind a palette that grew. */
+    if (!vkr_editor_scroll_begin(ui, string8_lit("tools.scroll"), bounds,
+                                 &editor->tools_scroll[kind],
+                                 editor->tools_height[kind])) {
+      return;
+    }
+    editor->tools_height[kind] =
+        kind == VKR_EDITOR_WORKBENCH_LEVEL_DESIGN
+            ? vkr_editor_level_palette_build(editor, frame, bounds)
+        : kind == VKR_EDITOR_WORKBENCH_LIGHTING
+            ? workbench_lighting_palette(editor, frame, bounds)
+            : workbench_art_palette(editor, frame, bounds);
+    (void)vkr_ui_scroll_area_end(ui);
+    return;
+  }
   const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiWidgetConfig note = vkr_editor_details_widget(
       10.0f, 10.0f, Max(40.0f, bounds.width / ui->content_scale - 20.0f),
@@ -1501,6 +1578,17 @@ bool8_t vkr_editor_workbench_write_json(const VkrEditorUi *editor,
          vkr_json_writer_begin_object(writer) &&
          workbench_text(writer, "kind", s_workbenches[item->kind].id) &&
          workbench_text(writer, "name", item->name) &&
+         workbench_text(writer, "view", vkr_editor_view_id(item->view)) &&
+         workbench_name(writer, "views") && vkr_json_writer_begin_array(writer);
+    for (uint32_t v = 0u; ok && v < VKR_EDITOR_VIEW_COUNT; ++v) {
+      if ((item->views >> v) & 1u) {
+        const char *view = vkr_editor_view_id((VkrEditorView)v);
+        ok = vkr_json_writer_string(
+            writer,
+            string8_create_from_cstr((const uint8_t *)view, strlen(view)));
+      }
+    }
+    ok = ok && vkr_json_writer_end_array(writer) &&
          (!item->scene_known ||
           workbench_text(writer, "scene", item->scene_id)) &&
          workbench_name(writer, "layout") &&
@@ -1558,6 +1646,28 @@ static uint32_t workbench_choice(String8 json, const char *name,
   return fallback;
 }
 
+/* The next string of a JSON array of strings at `*at`; false at its end. */
+static bool8_t workbench_next_string(String8 array, uint64_t *at,
+                                     String8 *out) {
+  uint64_t start = *at;
+  while (start < array.length && array.str[start] != '"') {
+    if (array.str[start] == ']') {
+      return false_v;
+    }
+    ++start;
+  }
+  uint64_t end = start + 1u;
+  while (end < array.length && array.str[end] != '"') {
+    ++end;
+  }
+  if (end >= array.length) {
+    return false_v;
+  }
+  *out = string8_create(array.str + start + 1u, end - start - 1u);
+  *at = end + 1u;
+  return true_v;
+}
+
 static void workbench_read_item(String8 json, VkrEditorWorkbench *item) {
   VkrJsonReader scene_reader = vkr_json_reader_from_string(json);
   String8 scene = {0};
@@ -1581,6 +1691,28 @@ static void workbench_read_item(String8 json, VkrEditorWorkbench *item) {
   if (layout.length && vkr_ui_dock_read_json(layout, &tree)) {
     tree.toolbar_pt = workbench_chrome_pt();
     item->layout = tree;
+  }
+  /* Files from before the Views panel keep the built-in views. */
+  const String8 views = workbench_member(json, "views");
+  if (views.length) {
+    uint64_t at = 0u;
+    String8 word = {0};
+    item->views = 1u << VKR_EDITOR_VIEW_SCENE;
+    while (workbench_next_string(views, &at, &word)) {
+      const VkrEditorView view = vkr_editor_view_find(word);
+      if (view != VKR_EDITOR_VIEW_COUNT) {
+        item->views |= 1u << view;
+      }
+    }
+  }
+  VkrJsonReader view_reader = vkr_json_reader_from_string(json);
+  String8 view_word = {0};
+  if (vkr_json_find_root_field(&view_reader, "view") &&
+      vkr_json_parse_string(&view_reader, &view_word)) {
+    const VkrEditorView view = vkr_editor_view_find(view_word);
+    if (view != VKR_EDITOR_VIEW_COUNT && ((item->views >> view) & 1u)) {
+      item->view = view;
+    }
   }
   const String8 windows = workbench_member(json, "windows");
   item->windows = 0u;
@@ -1613,28 +1745,6 @@ static void workbench_read_item(String8 json, VkrEditorWorkbench *item) {
       out->grid = grid;
     }
   }
-}
-
-/* The next string of a JSON array of strings at `*at`; false at its end. */
-static bool8_t workbench_next_string(String8 array, uint64_t *at,
-                                     String8 *out) {
-  uint64_t start = *at;
-  while (start < array.length && array.str[start] != '"') {
-    if (array.str[start] == ']') {
-      return false_v;
-    }
-    ++start;
-  }
-  uint64_t end = start + 1u;
-  while (end < array.length && array.str[end] != '"') {
-    ++end;
-  }
-  if (end >= array.length) {
-    return false_v;
-  }
-  *out = string8_create(array.str + start + 1u, end - start - 1u);
-  *at = end + 1u;
-  return true_v;
 }
 
 /* Builds the list in the saved order: built-ins by id, copies by their

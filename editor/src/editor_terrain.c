@@ -277,11 +277,11 @@ static float32_t terrain_slider(VkrUiSystem *ui, String8 id, String8 label,
   return value;
 }
 
-void vkr_editor_terrain_window_build(VkrEditorUi *editor,
-                                     const VkrSampleUiFrame *frame,
-                                     VkrUiRect bounds) {
+/* The sculpt tool, its modes and brush, and the Create section; returns
+   the body's height in points. */
+static float32_t terrain_body(VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame, VkrUiRect bounds) {
   VkrUiSystem *ui = frame->ui;
-  const VkrUiTheme *theme = vkr_ui_theme();
   const float32_t width = bounds.width / ui->content_scale;
   float32_t y = 8.0f;
   /* The tool toggle. */
@@ -338,14 +338,31 @@ void vkr_editor_terrain_window_build(VkrEditorUi *editor,
     y += TERRAIN_ROW_PT;
   }
   if (editor->terrain_mode == VKR_EDITOR_TERRAIN_PAINT) {
-    const float32_t layer = terrain_slider(
-        ui, string8_lit("terrain.layer"), string8_lit("Layer"), y, width,
-        (float32_t)editor->terrain_layer + 1.0f, 1.0f, 4.0f, "%.0f");
-    editor->terrain_layer =
-        (uint32_t)Min(3.0f, Max(0.0f, roundf(layer) - 1.0f));
+    /* One button per layer of the four-layer terrain material. */
+    const float32_t label_w = 96.0f;
+    terrain_label(ui, string8_lit("Layer"), y, label_w + TERRAIN_PAD_PT * 2.0f,
+                  string8_lit("Layer"));
+    const float32_t layer_w =
+        Max(24.0f, (width - label_w - TERRAIN_PAD_PT * 2.0f) / 4.0f);
+    for (uint32_t i = 0; i < 4u; ++i) {
+      VkrUiWidgetConfig layer = vkr_editor_details_widget(
+          TERRAIN_PAD_PT + label_w + layer_w * (float32_t)i, y, layer_w - 4.0f,
+          TERRAIN_ROW_PT - 4.0f);
+      vkr_editor_toggle_style(&layer, editor->terrain_layer == i);
+      layer.tooltip = string8_lit("The terrain material layer strokes paint");
+      char text[4];
+      snprintf(text, sizeof(text), "%u", i + 1u);
+      (void)vkr_ui_push_id_u64(ui, i);
+      if (vkr_ui_button(
+              ui, string8_lit("terrain.layer"),
+              string8_create_from_cstr((const uint8_t *)text, strlen(text)),
+              &layer)) {
+        editor->terrain_layer = i;
+      }
+      (void)vkr_ui_pop_id(ui);
+    }
     y += TERRAIN_ROW_PT;
   }
-  (void)theme;
   terrain_label(ui, string8_lit("terrain.hint"), y + 4.0f, width,
                 editor->terrain_hit_valid
                     ? string8_lit("Hold the left button over the terrain")
@@ -403,4 +420,19 @@ void vkr_editor_terrain_window_build(VkrEditorUi *editor,
     }
   }
   vkr_editor_palette_end(&palette);
+  return palette.y + VKR_EDITOR_PALETTE_BOTTOM_PT;
+}
+
+void vkr_editor_terrain_window_build(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     VkrUiRect bounds) {
+  /* One state for both hosts: the panel and the window never show
+     together (ADR-089). */
+  if (!vkr_editor_scroll_begin(frame->ui, string8_lit("terrain.scroll"), bounds,
+                               &editor->terrain_scroll,
+                               editor->terrain_height)) {
+    return;
+  }
+  editor->terrain_height = terrain_body(editor, frame, bounds);
+  (void)vkr_ui_scroll_area_end(frame->ui);
 }

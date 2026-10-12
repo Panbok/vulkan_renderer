@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_ui.h"
+#include "editor_views.h"
 #include "editor_workbench.h"
 
 #define VKR_EDITOR_SCENE_TOOLBAR_LAYER 1u
@@ -129,6 +130,13 @@ VkrUiWidgetConfig vkr_editor_icon_button_config(uint32_t column, uint32_t row,
                                                 VkrUiIcon icon,
                                                 String8 tooltip);
 VkrUiWidgetConfig vkr_editor_section_label_config(VkrFontHandle heading);
+/* Opens a vertical scroll area over a panel body `bounds` in pixels whose
+   content measured `content` points last build. The wheel over the body
+   and the area's scrollbar move `*scroll`, which stays within the
+   content. Widgets then place themselves from the content's top; close
+   the area with vkr_ui_scroll_area_end when this returns true. */
+bool8_t vkr_editor_scroll_begin(VkrUiSystem *ui, String8 id, VkrUiRect bounds,
+                                float32_t *scroll, float32_t content);
 /** Themed search field with a magnifier, placeholder and clear button.
  * Returns true when the text changed. */
 bool8_t vkr_editor_search_field(VkrUiSystem *ui, String8 id,
@@ -247,7 +255,10 @@ void vkr_editor_scene_label(const VkrEditorUi *editor,
                             uint64_t size);
 
 /* Workbench palettes (editor_workbench.c): rows of equal buttons under
-   headings, two labelled columns when the panel is wide enough. */
+   headings, two labelled columns when the panel is wide enough, square
+   icon cells below that. The panels scroll; a builder returns its height,
+   palette.y after the last end plus VKR_EDITOR_PALETTE_BOTTOM_PT. */
+#define VKR_EDITOR_PALETTE_BOTTOM_PT 12.0f
 typedef struct VkrEditorPalette {
   VkrEditorUi *editor;
   const VkrSampleUiFrame *frame;
@@ -257,14 +268,19 @@ typedef struct VkrEditorPalette {
   uint32_t columns;
   bool8_t labels;
   uint32_t slot;
+  /* The last heading's section is folded: its buttons neither build nor
+     take room. */
+  bool8_t folded;
 } VkrEditorPalette;
 
 /* A palette over `bounds` that starts `y` points down. */
 VkrEditorPalette vkr_editor_palette_begin(VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame,
                                           VkrUiRect bounds, float32_t y);
-void vkr_editor_palette_heading(VkrEditorPalette *palette, String8 id,
-                                String8 text);
+/* A section heading that folds and unfolds its section on a click; true
+   while the section is open. */
+bool8_t vkr_editor_palette_heading(VkrEditorPalette *palette, String8 id,
+                                   String8 text);
 /* One button in the next slot; true when clicked while enabled. */
 bool8_t vkr_editor_palette_button(VkrEditorPalette *palette, String8 id,
                                   const char *label, VkrUiIcon icon,

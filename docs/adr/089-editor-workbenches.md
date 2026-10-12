@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -10,8 +10,9 @@ authority: adr
 
 Accepted (partial). The workbench row with General, Level Design, Terrain,
 Lighting, Scripting, Art ([ADR-093](093-material-graphs-and-art-workbench.md))
-and custom copies, their palettes, the docked Level checks, Script editor,
-Terrain and Material panels, switching, the keys, the tab menu
+and custom copies, their palettes, the Views panel with its Scene, Model,
+Graph and Script views, the docked Level checks and Terrain panels,
+scrolling and folding palettes, switching, the keys, the tab menu
 and inline rename, Cmd `workbench*` statements and `ui.workbench`, the
 `workbench.*` agent operations, and persistence in the project's
 per-machine settings ([ADR-069](069-editor-projects-and-workspaces.md)) and in
@@ -20,7 +21,9 @@ Each tab keeps its own project scene, the scene a switch closes keeps its
 meshes, materials and textures loaded for a switch back, and Delete,
 Duplicate and Merge act on the whole selection. No macOS capture of the row
 and its title-bar drag region exists, and the runtime's asset hold has not
-run on Metal.
+run on Metal. The Views panel, Model view, palette scrolling and folding
+were verified headless on macOS/Metal with Bistro on 2026-10-12; the Model
+view's middle drag and wheel ran on no device input.
 
 ## Context
 
@@ -41,6 +44,15 @@ own scene, as in General for one scene and Level Design for another. The
 owner then asked for Delete and Duplicate to act on the whole selection and
 for tab switches to stop reloading, and chose to keep the closed scene's
 assets loaded over keeping two scenes live.
+
+On 2026-10-12 the owner asked to rename the Scene tab to Views, holding the
+Scene by default; to give Art a Model view that shows a selected item alone,
+as Blender's local view does, and a graph view in place of the Material panel
+docked under the Scene; to give Scripting a Scene view and a Script editor
+view, with visual scripting to follow; to scroll the Tools panels; and for a
+usability review of the palettes. The owner chose a switcher inside the Views
+panel over plain dock tabs, and Isolate with the Model view's own orbit
+camera under the scene's light over a separate studio stage.
 
 ## Decision
 
@@ -107,6 +119,51 @@ there, in the View menu, in a dock tab's menu and as `layout.reset`,
 restores one workbench's built-in dock tree only: the tab's, or the active
 one's.
 
+### Views panel
+
+The dock tab that holds the Scene image is the **Views** panel (panel kind
+`scene_viewport`, label "Views"). Its tab bar carries a switcher after the
+dock tabs with one tab per view the workbench offers; a workbench that
+offers only the Scene shows none
+([editor_views.c](../../editor/src/editor_views.c),
+[editor_dock.c](../../editor/src/editor_dock.c)):
+
+| View | Shows | Offered by default |
+|---|---|---|
+| Scene | The Scene image | Every workbench |
+| Model | The selection alone over the Scene image | Art |
+| Graph | The open material's node canvas, header and inspector (ADR-093) | Art |
+| Script | The Script editor (ADR-079) | Scripting, which shows it first |
+
+One view shows at a time. While Graph or Script shows, the editor sets
+`VkrUiDockTree.scene_view_hidden`, so `vkr_ui_dock_find_panel` does not
+report the Scene, the dock takes the panel's pointer, and the runtime stops
+rendering the Scene as it does behind another tab. Scene and Model share the
+one Scene image, so the Model view adds no render path. The shown view's
+tab has an accent underline and a close button, which takes the view out of
+the workbench; the Views tab's menu adds and removes Model, Graph and Script
+views, and Reset panel layout restores the built-in views. Opening a material
+(Content, the Art palette, `material.open`) shows the Graph view, adding it
+to the workbench when it lacks one. The Script editor window and the Script
+view keep one host, as docked panels do: while the workbench offers the
+Script view, the window stays closed and opening it shows the view; other
+workbenches open the floating window. Maximize (G) is unavailable under
+Graph and Script.
+
+The **Model view** puts aside the Scene's camera and Hide set on entry. Each
+new non-empty selection becomes its subject: the primary selection and its
+companions are isolated, and an orbit about the centre of their world box
+frames them at the Scene's lens, keeping the orbit's angles after the first
+subject. An emptied selection keeps the last subject. A drag on the orbit
+ring or a middle drag over the image turns the orbit, the wheel moves in and
+out, and Frame frames the subject again; a caption names it. Leaving the
+view restores the Scene's camera and Hide set unless another scene opened
+meanwhile. Object icons of objects that Hide or Isolate leaves undrawn no
+longer show, in any view.
+
+Cmd `views` lists, shows (`views graph`) or takes out (`views -model`) a
+view of the active workbench, and `ui.view` reads the shown view.
+
 ### Warm assets
 
 Before a scene switch or `scene.reload` closes the primary scene, the
@@ -162,7 +219,8 @@ drops.
 | Level Design | Tools left of the Scene; Level checks, Content and Console under it; Outliner over Details on the right | Select tool, Grid snapping, grid shown, no Scene tool |
 | Terrain | Terrain left of the Scene, a fifth of the width so the sculpt modes keep their labels; Content and Console under it; Outliner over Details | Select tool, terrain tool on, Surface snapping, grid hidden |
 | Lighting | Tools left of the Scene; Console under it; the Outliner over a taller Details | Move tool, Surface snapping, grid hidden |
-| Scripting | The Script editor over the Console on 60% of the width; the Scene over the Outliner and Details on the right | Move tool, Surface snapping, grid shown |
+| Scripting | `vkr_ui_dock_default_editor_layout`, with the Script view shown in the Views panel | Move tool, Surface snapping, grid shown |
+| Art | Tools left of the Views panel; Content and Console under it; Outliner over Details on the right | Select tool, Surface snapping |
 
 Level Design never starts box drawing on entry, so entering it does not turn a
 click into a brush. Terrain turns its tool on because sculpting is its task;
@@ -170,38 +228,44 @@ leaving Terrain ends the tool.
 
 ### Docked tool panels
 
-Dock panel kinds gain `tools`, `level_checks`, `script` and `terrain`
-([vkr_ui_dock.h](../../runtime/src/core/ui/vkr_ui_dock.h)). The last three
-build the bodies of the Level checks, Script editor and Terrain windows. One
-rule keeps one host per body: while any tab of the live tree holds the panel,
-the window stays closed, and whatever opens the window (its View menu command,
-Cmd `window`, a script double-click in Content) shows the tab instead.
-Level checks' issue markers draw while either host shows.
+Dock panel kinds gain `tools`, `level_checks` and `terrain`
+([vkr_ui_dock.h](../../runtime/src/core/ui/vkr_ui_dock.h)). The last two
+build the bodies of the Level checks and Terrain windows. One rule keeps one
+host per body: while any tab of the live tree holds the panel, the window
+stays closed, and whatever opens the window (its View menu command, Cmd
+`window`) shows the tab instead. Level checks' issue markers draw while
+either host shows. The `script` and `material` panel kinds are gone: their
+bodies are the Script and Graph views, and a saved layout that names them
+does not load, so its workbench keeps its built-in layout.
 
 The Tools panel shows the active workbench's palette; General and Scripting
 have none and say so. Palettes share one layout
 (`vkr_editor_palette_*` in [editor_workbench.c](../../editor/src/editor_workbench.c)):
 headed rows of equal buttons, two labelled columns when the panel is at least
-200 points wide, one column below that, and icons only below 110 points.
-Palettes add no geometry or scene code. Each button runs an existing command,
+200 points wide, one column below that, and below 110 points as many 28-point
+icon cells as fit, whose tooltips lead with the button's name. A palette
+taller than its panel scrolls (`vkr_editor_scroll_begin`, shared with the
+Environment and Lights windows); the Terrain body scrolls in either host. A
+click on a section heading folds or unfolds the section for the session, and
+a rule parts the sections. Palettes add no geometry or scene code. Each button runs an existing command,
 object kind or agent operation, and each operation is one undo step without
 review:
 
 | Palette | Section | Buttons | Runs |
 |---|---|---|---|
 | Level Design | Draw and create | Draw box, Box, Wedge, Cylinder, Room, Trigger, Stairs, Corridor | `CMD_BRUSH_DRAW`; the Create menu's Level kinds at the Scene's placement point; the drag-to-place stairs tool and the multi-point corridor tool, both building editable shapes (ADR-084) |
-| Level Design | Stairs and corridors | Straight, L turn, U turn, Curved, Spiral; Turn left, Curved | The kind and turn of the next stairs; whether the next corridor rounds its corners |
+| Level Design | Stairs, Corridor | Straight, L turn, U turn, Curved, Spiral, Turn left; Round corners | The kind and turn of the next stairs, shown while the stairs tool runs, Turn left disabled for Straight; whether the next corridor rounds its corners, shown while the corridor tool runs |
 | Level Design | New brush role | Solid, Visual, Clip, Trigger | The `role` of the next box, wedge or cylinder from the palette or the Create menu, a drawn box and stairs |
-| Level Design | Edit | Select, Move, Clip, Extrude, Hollow, Carve, Doorway, Merge, Snap, Free, Bake, Duplicate, Delete | Tool and brush commands; `brush.extrude` on the selected face by one grid step; `brush.hollow`; `brush.carve` with the selection as cutter; the grid patch cut through the brush, else `blockout.doorway` through the middle of the selected wall brush; `brush.merge` of 2 to 8 selected brushes; `brush.snap` of 2 to 16 selected objects against the first; `free_placement` added to the selection or cleared; the selected shape's `blockout` component removed |
+| Level Design | Edit | Select, Move, Clip, Extrude, Hollow, Carve, Doorway, Mover, Merge, Align to first, Never snap, To brushes, Duplicate, Delete | Tool and brush commands, Select and Move lit only while no Scene tool runs; `mover.create` over the selection; `brush.extrude` on the selected face by one grid step; `brush.hollow`; `brush.carve` with the selection as cutter; the grid patch cut through the brush, else `blockout.doorway` through the middle of the selected wall brush; `brush.merge` of 2 to 8 selected brushes; `brush.snap` of 2 to 16 selected objects against the first; `free_placement` added to the selection or cleared; the selected shape's `blockout` component removed |
 | Level Design | Surface, Mark | None, Concrete, Metal, Wood, Tile, Plaster, Brick, Rock, Dirt, Grass, Glass, Fabric, Water, Emissive; None, Hazard, Orange, Blue, Red, Green, Dark | The surface tag or mark of the next brush, and of the selected face as one `brush_face` edit, else `brush.set_surface` on every face of the selected brush (ADR-084). The lit button is the selected face's value, the selected brush's when all its faces share one, else the next brush's |
 | Level Design | Snapping | Free, Surface, Grid, Magnet; Show grid, Finer, Coarser | The Snapping target; the brush magnet (ADR-084); the grid toggle; the grid step halved or doubled between 1/16 m and 64 m |
 | Level Design | Check | Level checks | Shows the Level checks tab |
 | Terrain body | Create | Terrain, Spline, Scatter, Road | The Level kinds; `terrain.road` along the selected spline over the first terrain of its scene |
 | Lighting | Lights, Environment | Point, Spot, Rect, Directional; Sky, Clouds, Fog, Volumetric fog, Post process | The Create menu's kinds |
+| Lighting | Bake | Bake lighting, Bake settings, Preferences | `CMD_SCENE_BAKE`, `CMD_BAKE_SETTINGS`, `CMD_GRAPHICS`; before Time and View, as the workbench's main action |
 | Lighting | View | Lit, Lighting only, Detail lighting, Light icons | The render mode, as `view.mode` sets it; `CMD_LABELS` |
-| Lighting | Bake | Bake lighting, Preferences | `CMD_SCENE_BAKE`, `CMD_GRAPHICS` |
-| Art | Materials | Edit, Assign, Reset | Opens the selected face's or brush's material in the Material panel; `face.set_material` of the open material on the selected face, else every face of the selected brush; the same with an empty material |
-| Art | View | Greybox | Toggles the greybox view (ADR-084) |
+| Art | Materials | Edit, Assign, Reset | Opens the selected face's or brush's material in the Graph view; `face.set_material` of the open material on the selected face, else every face of the selected brush; the same with an empty material |
+| Art | View | Greybox view | Toggles the greybox view (ADR-084), as Level Design's Greybox view does |
 
 The Terrain body's Create section shows in the Terrain window too, so the
 floating window opens 440 points tall. Brushes the Create path makes are
@@ -262,6 +326,8 @@ project keeps its own workbenches ([ADR-069](069-editor-projects-and-workspaces.
   "version": 1,
   "active": "level_design",
   "general": {
+    "view": "scene",
+    "views": ["scene"],
     "layout": { "version": 1, "root": 0, "nodes": [] },
     "windows": { "animation": true },
     "mode": { "tool": "move", "scene_tool": "none", "snap": "surface",
@@ -271,8 +337,10 @@ project keeps its own workbenches ([ADR-069](069-editor-projects-and-workspaces.
 }
 ```
 
-Each workbench has a member named by its id that holds its `kind` and
-`name`, and `order` lists the ids in tab order. On load, built-ins the order
+Each workbench has a member named by its id that holds its `kind`,
+`name`, the views it offers (`views`) and the one it shows (`view`), and
+`order` lists the ids in tab order. A member without `views` keeps its
+built-in views. On load, built-ins the order
 leaves out follow it, and a copy whose kind is unknown is dropped. The active
 workbench's layout is the live tree and its windows are the open ones. On load, a missing member or
 a workbench without a valid layout keeps its built-in state, so a new built-in
@@ -315,6 +383,15 @@ Ctrl+1 to Ctrl+9 select workbenches by position rather than Unity's main
 windows. The keymap rule still applies: modified keys act unless a text field
 holds the keyboard.
 
+Graph and Script views take the Scene's place, so the material graph and the
+level, or the code and the level, no longer show side by side in the built-in
+Art and Scripting layouts; a switch back to the Scene costs one click and
+resizes the Scene image as a tab switch does. While they show, the GPU
+renders no Scene. The Model view moves the one Scene camera, so a capture
+taken in it frames the subject, and leaving it puts the camera back.
+Layouts saved with `script` or `material` tabs fall back to their built-in
+trees once.
+
 ## Alternatives considered
 
 "Workspace", Blender's word, would collide with the on-disk workspace, its
@@ -330,19 +407,25 @@ array iteration in the reader; members keyed by id read with the existing
 root-field lookups. Per-workbench window geometry would move windows between
 tabs; shared geometry keeps each window in one place. A Tools palette for
 Terrain would build the terrain body a second time; the Terrain panel hosts
-the body itself.
+the body itself. Plain dock tabs for Model, Graph and Script would have let
+them dock anywhere, but Model and the Scene share one image and could then
+show at once; the owner chose the switcher. A neutral studio stage for the
+Model view would swap and restore the environment on every switch; Isolate
+under the scene's light reuses existing state.
 
 ## Revisit when
 
 A task needs a palette the
 five kinds do not cover, warm assets cost more memory than a project can
 spare, switches back need to skip rebuilding objects too (two live scenes),
-or rotate and scale need to act on the whole selection.
+or rotate and scale need to act on the whole selection, or a view needs to
+show beside the Scene (a second Scene image).
 
 ## Implementation
 
 - [Workbench state, switching, row, palettes, Lighting palette and persistence](../../editor/src/editor_workbench.c) and [header](../../editor/src/editor_workbench.h)
 - [Workbench types in editor state](../../editor/src/editor_ui.h) and [palette and window-host declarations](../../editor/src/editor_internal.h)
+- [Views panel and Model view](../../editor/src/editor_views.c) and [header](../../editor/src/editor_views.h); [palette scroll helper](../../editor/src/editor_ui.c)
 - [Level Design palette](../../editor/src/editor_level.c) and [Terrain body](../../editor/src/editor_terrain.c)
 - [Dock panel kinds and toolbar height](../../runtime/src/core/ui/vkr_ui_dock.c) and [panel bodies](../../editor/src/editor_dock.c)
 - [Commands, keymap, View menu and tab menu](../../editor/src/editor_windows.c), [Cmd `workbench`](../../editor/src/editor_cmd.c), [`ui.workbench`](../../editor/src/editor_cmd_eval.c) and [agent operations](../../editor/src/editor_ops.c)
@@ -414,3 +497,25 @@ Release editor, Windows/Vulkan, headless 1680 x 1050 with isolated
 - Project settings (a scratch copy of a project with a version 1 `layout`):
   the first run migrates it, and the next run starts in Level Design with its
   window, Grid snapping, and Surface again after `workbench general`.
+
+Release editor, macOS/Metal (M1), headless 1680 x 1050 with isolated
+`HOME`, `VKR_EDITOR_LAYOUT_PATH` and `VKR_GRAPHICS_SETTINGS_PATH`, Bistro,
+2026-10-12, Cmd `--exec` and agent-channel window captures:
+
+- `views` lists `scene` in General, `scene (shown), model, graph` in Art and
+  `scene, script (shown)` in Scripting; `views graph`, `views model`,
+  `views -model` and `ui.view` apply and read back.
+- `stats.scene_frames` stayed at 422 across 30 s of the Graph view and at
+  2509 across 20 s of the Script view, and rose by 1150 in 10 s of the Model
+  view. `layout.maximize` is refused under Graph.
+- `window script` in General opens the floating window with the Scene shown.
+- Captures show the "Views" tab with the Scene, Model and Graph switcher;
+  the Graph view's header in place of the Scene; the Model view with
+  `paris_bistroawning_5` alone, framed, captioned and without other objects'
+  icons; a `ui.drag` on the orbit ring turning it about its centre; and
+  `views scene` returning the earlier camera with every object drawn.
+- Level Design: the Stairs section appears only with `brush.stairs_tool on`
+  and Select stays unlit then; a click on DRAW AND CREATE folds it; a
+  `ui.drag` on the Tools scrollbar scrolls the palette to CHECK.
+- CPU: `vulkan_renderer_tester --suite ui_layout` passes, including the
+  hidden Scene view check.

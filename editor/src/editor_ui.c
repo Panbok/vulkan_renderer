@@ -128,6 +128,30 @@ VkrUiWidgetConfig vkr_editor_icon_button_config(uint32_t column, uint32_t row,
   return config;
 }
 
+bool8_t vkr_editor_scroll_begin(VkrUiSystem *ui, String8 id, VkrUiRect bounds,
+                                float32_t *scroll, float32_t content) {
+  const float32_t height = bounds.height / Max(ui->content_scale, 0.001f);
+  if (ui->mouse_input_layer == ui->input_layer && !ui->mouse_captured &&
+      ui->mouse_x >= bounds.x && ui->mouse_x < bounds.x + bounds.width &&
+      ui->mouse_y >= bounds.y && ui->mouse_y < bounds.y + bounds.height) {
+    *scroll -= ui->mouse_wheel * 40.0f;
+  }
+  const float32_t extent = Max(height, content);
+  *scroll = Clamp(*scroll, 0.0f, Max(0.0f, extent - height));
+  const VkrUiTrack track = {.value = extent, .unit = VKR_UI_TRACK_PX};
+  VkrUiPanelConfig area = vkr_ui_panel_config_default();
+  area.placement.column = 0u;
+  area.placement.row = 0u;
+  area.rows = &track;
+  area.row_count = 1u;
+  area.clip_children = true_v;
+  if (!vkr_ui_scroll_area_begin(ui, id, &area)) {
+    return false_v;
+  }
+  (void)vkr_ui_scroll_area_offset(ui, scroll);
+  return true_v;
+}
+
 /* A toggled icon button keeps an accent-tinted fill while active. */
 void vkr_editor_toggle_style(VkrUiWidgetConfig *config, bool8_t active) {
   const VkrUiTheme *theme = vkr_ui_theme();
@@ -370,6 +394,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
      reads this build's dock or input. */
   vkr_editor_workbench_update(editor, frame);
   vkr_editor_selection_update(editor, frame);
+  vkr_editor_views_update(editor, frame);
   vkr_editor_commands_update(editor, frame);
   vkr_editor_cmd_update(editor, frame);
   vkr_editor_agent_update(editor->agent, editor, frame);
@@ -432,8 +457,8 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   }
   vkr_editor_projects_build_scene_progress(editor->projects, editor, frame);
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
-  /* The Material panel's canvas places itself from the window origin, so
-     it builds here, over the dock it sits in. */
+  /* The Graph view's canvas places itself from the window origin, so it
+     builds here, over the dock it sits in. */
   vkr_editor_material_canvas_build(editor, frame);
   const bool8_t preparing_scene =
       frame->scene_backdrop_blur && *frame->scene_backdrop_blur;
@@ -558,7 +583,8 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL) {
       (void)vkr_editor_material_open(editor->materials, frame,
                                      content_action.source);
-      vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_MATERIAL);
+      vkr_editor_view_show(editor, frame, editor->workbenches.active,
+                           VKR_EDITOR_VIEW_GRAPH);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT) {
       vkr_editor_drop_script(editor, frame, content_action.name,
                              content_action.drop_px);

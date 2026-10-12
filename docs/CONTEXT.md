@@ -122,7 +122,7 @@ below are starting points for checking a definition, not alternate API specs.
 | Transient entity | An entity tagged runtime-only, such as anything a script spawned; saving skips it. | [vkr_scene_system.h](../runtime/src/renderer/systems/vkr_scene_system.h) |
 | Script object | An object kind creating an entity with one registered script component; the same component attaches through Add component. | [ADR-079](adr/079-c-script-modules.md) |
 | Hot reload | Swapping a script library's code between frames while instances keep their data; a changed data shape or version restarts the session and a changed component layout is refused. | [vkr_script_host.h](../runtime/src/script/vkr_script_host.h) |
-| Script editor | The editor's floating window for script sources, with highlighting, completion and compiler diagnostics. | [editor_code.c](../editor/src/editor_code.c) |
+| Script editor | The editor's code editor for script sources, with highlighting, completion and compiler diagnostics: a floating window, or the Script view where a workbench offers it. | [editor_code.c](../editor/src/editor_code.c) |
 | Player Start | Engine component whose entity's world transform is the spawn pose the scene resolves for a game's player. | [vkr_scene_types.c](../runtime/src/renderer/systems/vkr_scene_types.c) |
 | Scene simulation | Scene-owned fixed clock and optional C hooks around native animation/physics; distinct from display-frame callbacks. | [ADR-073](adr/073-native-gameplay-foundation.md) |
 | Physics body | Entity owning motion, mass/material settings, sensor role and collision membership/mask; runtime state is separate from authored TRS. | [vkr_scene_physics.h](../runtime/src/renderer/systems/vkr_scene_physics.h), [ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) |
@@ -154,7 +154,8 @@ Editor workflow terms:
 | Term | Meaning in VKR | Owner |
 |---|---|---|
 | Workspace | User-selected directory whose `.vkreditor` child contains managed projects, editor bundles and caches. | [Project store](../editor/src/editor_project_store.h) |
-| Workbench | Editor tab under the top bar: a dock layout, the floating windows open in it and the Scene's editing mode for one task, such as Level Design. Not a workspace. | [ADR-089](adr/089-editor-workbenches.md) |
+| Workbench | Editor tab under the top bar: a dock layout, the floating windows open in it, the views of its Views panel and the Scene's editing mode for one task, such as Level Design. Not a workspace. |
+| Views panel, view | The dock tab that holds the Scene image and switches it with the workbench's other views: Model (the selection alone), Graph (the open material) and Script (the Script editor). | [ADR-089](adr/089-editor-workbenches.md) | [ADR-089](adr/089-editor-workbenches.md) |
 | Host path | Filesystem location represented as UTF-8 at C interfaces and converted to native syntax at I/O. | [ADR-070](adr/070-portable-path-boundaries.md) |
 | Managed reference | Owner-relative serialized path with `/` separators and validated raw segments, resolved with physical containment checks. | [ADR-070](adr/070-portable-path-boundaries.md) |
 | Resource reference | Runtime asset reference with explicit owner-relative or legacy repository-root semantics, separate from a source format URI. | [Asset resolver](../lib/src/filesystem/vkr_asset_path.h) |

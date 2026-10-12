@@ -121,10 +121,12 @@ static const char *const eval_snap_targets[] = {"free", "surface", "grid",
 /* `maximized`: the Scene fills the window (layout.maximize, G). `icons`:
    object icons the last build made; `icons_shown`: those the last
    projection placed on the Scene; `icons_occluded`: those collision hides.
-   `resolve_fights`: edits part the z-fighting faces of what they change. */
+   `resolve_fights`: edits part the z-fighting faces of what they change.
+   `view`: the view the Views panel shows. */
 static const char *const eval_ui_members[] = {
-    "zoom",  "reduce_motion", "workbench",      "selected",       "maximized",
-    "icons", "icons_shown",   "icons_occluded", "resolve_fights", NULL};
+    "zoom",           "reduce_motion", "workbench",   "selected",
+    "maximized",      "icons",         "icons_shown", "icons_occluded",
+    "resolve_fights", "view",          NULL};
 static const char *const eval_gfx_members[] = {"render_scale",
                                                "dynamic",
                                                "vsync",
@@ -804,6 +806,10 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       }
       if (index == 8) {
         *out = eval_bool(eval->editor->resolve_fights);
+        return true_v;
+      }
+      if (index == 9) {
+        *out = eval_string("%s", vkr_editor_view_id(eval->editor->view_shown));
         return true_v;
       }
       if (index == 3) {

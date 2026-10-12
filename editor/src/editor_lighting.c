@@ -1162,25 +1162,10 @@ void vkr_editor_lights_window_build(VkrEditorUi *editor,
   const uint32_t count =
       vkr_editor_lighting_list(frame, ui->frame_allocator, &entries);
 
-  if (ui->mouse_input_layer == ui->input_layer && !ui->mouse_captured &&
-      ui->mouse_x >= bounds.x && ui->mouse_x < bounds.x + bounds.width &&
-      ui->mouse_y >= bounds.y && ui->mouse_y < bounds.y + bounds.height) {
-    editor->lights_scroll -= ui->mouse_wheel * 40.0f;
-  }
-  const float32_t content = Max(height, editor->lights_height);
-  editor->lights_scroll =
-      Clamp(editor->lights_scroll, 0.0f, Max(0.0f, content - height));
-  const VkrUiTrack content_track = {.value = content, .unit = VKR_UI_TRACK_PX};
-  VkrUiPanelConfig area = vkr_ui_panel_config_default();
-  area.placement.column = 0u;
-  area.placement.row = 0u;
-  area.rows = &content_track;
-  area.row_count = 1u;
-  area.clip_children = true_v;
-  if (!vkr_ui_scroll_area_begin(ui, string8_lit("lights.scroll"), &area)) {
+  if (!vkr_editor_scroll_begin(ui, string8_lit("lights.scroll"), bounds,
+                               &editor->lights_scroll, editor->lights_height)) {
     return;
   }
-  (void)vkr_ui_scroll_area_offset(ui, &editor->lights_scroll);
 
   VkrEditorDetails *details = &editor->lights_details;
   vkr_editor_details_begin(details);

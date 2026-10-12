@@ -305,7 +305,8 @@ void vkr_editor_magnet_destroy(VkrEditorUi *editor);
 
 /* The Level Design workbench's Tools palette: drawing and creating brushes,
    brush operations on the selection, dev materials, snapping and Level
-   checks. Every button runs an existing command or agent operation. */
-void vkr_editor_level_palette_build(VkrEditorUi *editor,
-                                    const VkrSampleUiFrame *frame,
-                                    VkrUiRect bounds);
+   checks. Every button runs an existing command or agent operation.
+   Returns the palette's height in points. */
+float32_t vkr_editor_level_palette_build(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         VkrUiRect bounds);

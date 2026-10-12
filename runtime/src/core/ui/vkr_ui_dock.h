@@ -30,6 +30,8 @@ typedef enum VkrUiDockSplitAxis {
 } VkrUiDockSplitAxis;
 
 typedef enum VkrUiDockPanelKind {
+  /* The Views panel: the Scene image, or another view the editor shows in
+     its place (scene_view_hidden). */
   VKR_UI_DOCK_PANEL_SCENE_VIEWPORT = 0,
   VKR_UI_DOCK_PANEL_HIERARCHY,
   VKR_UI_DOCK_PANEL_INSPECTOR,
@@ -44,12 +46,8 @@ typedef enum VkrUiDockPanelKind {
   VKR_UI_DOCK_PANEL_TOOLS,
   /* Level checks against the player capsule (ADR-084). */
   VKR_UI_DOCK_PANEL_LEVEL_CHECKS,
-  /* The Script editor (ADR-079). */
-  VKR_UI_DOCK_PANEL_SCRIPT,
   /* Terrain sculpting and painting (ADR-084). */
   VKR_UI_DOCK_PANEL_TERRAIN,
-  /* The material graph editor (docs/proposals/artist-toolkit.md). */
-  VKR_UI_DOCK_PANEL_MATERIAL,
   VKR_UI_DOCK_PANEL_COUNT,
 } VkrUiDockPanelKind;
 
@@ -112,6 +110,11 @@ typedef struct VkrUiDockTree {
      VKR_UI_DOCK_TOOLBAR_PT. The application owns it; files do not store
      it. */
   float32_t toolbar_pt;
+  /* The Views panel shows a view other than the Scene image, so the Scene
+     counts as hidden, as behind another tab: find_panel does not report
+     it and nothing renders it. The application sets it every build; files
+     do not store it. */
+  bool8_t scene_view_hidden;
   VkrUiDockInteraction interaction;
 } VkrUiDockTree;
 

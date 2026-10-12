@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-09
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -11,7 +11,7 @@ authority: adr
 Accepted (partial). Material graphs (`.mtg`) and graph instances (`.mt`
 with `graph=`) lower to the `.mt` definition the material loader already
 reads, in the Standard tier only: a Standard graph costs no shader and no
-pipeline. The editor edits graphs on a node canvas in the Material panel of
+pipeline. The editor edits graphs on a node canvas in the Graph view of
 the Art workbench, keeps material files in a document journal that undoes
 in order with scene edits, and agents drive every step through `material.*`
 operations. Surface themes ([ADR-094](094-surface-themes-and-art-pass.md))
@@ -94,15 +94,17 @@ consumer that chose a shader or pipeline.
    a pending change with a `document`; Reject reverts its group when no
    later step changed the same file.
 8. **Editor.** The Art workbench (tab id `art`) puts the Tools palette left
-   of the Scene, the Material panel, Content and Console under it, and the
-   Outliner and Details on the right. The Material panel shows the open
+   of the Views panel, Content and Console under it, and the Outliner and
+   Details on the right. Its Views panel offers the Scene, the Model view of
+   the selection alone and the Graph view
+   ([ADR-089](089-editor-workbenches.md)). The Graph view shows the open
    document's tier and cost, the graph on a node canvas
    ([editor_graph.h](../../editor/src/editor_graph.h)), which builds over the
    dock at the root because it places itself from the window origin, and an
    inspector for the selected node, the graph settings or an instance's
    parameters. A plain definition shows read-only with Convert to graph,
    which writes `<name>.mtg` and rewrites the definition as its instance in
-   one step. Content opens materials in the panel. The palette edits the
+   one step. Content opens materials in the Graph view. The palette edits the
    selected face's material, assigns the open material to the selected face
    or brush, resets faces to greybox and toggles the greybox view.
 9. **Mesh material overrides.** A `material_override` component

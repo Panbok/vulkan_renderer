@@ -1,7 +1,7 @@
 #include "editor_internal.h"
-#include "editor_material.h"
 #include "editor_level.h"
 #include "editor_terrain.h"
+#include "editor_views.h"
 
 /* Dock layout owns these rectangles, including the Scene mapping. Present them
    as overlapping root-grid items so drawing never solves a second split tree.
@@ -28,7 +28,7 @@ static VkrUiPanelConfig editor_dock_rect_panel(VkrUiSystem *ui,
 /* Category hue on the tab icon only; tab surfaces stay neutral. */
 static Vec4 editor_dock_icon_color(VkrUiDockPanelKind kind) {
   static const Vec4 colors[VKR_UI_DOCK_PANEL_COUNT] = {
-      {0.46f, 0.72f, 0.98f, 1.0f}, /* Scene */
+      {0.46f, 0.72f, 0.98f, 1.0f}, /* Views */
       {0.52f, 0.82f, 0.58f, 1.0f}, /* Hierarchy */
       {0.96f, 0.74f, 0.42f, 1.0f}, /* Inspector */
       {0.72f, 0.64f, 0.96f, 1.0f}, /* Console */
@@ -38,20 +38,17 @@ static Vec4 editor_dock_icon_color(VkrUiDockPanelKind kind) {
       {0.86f, 0.78f, 0.40f, 1.0f}, /* Build */
       {0.94f, 0.58f, 0.72f, 1.0f}, /* Tools */
       {0.58f, 0.86f, 0.52f, 1.0f}, /* Level checks */
-      {0.52f, 0.76f, 0.98f, 1.0f}, /* Script editor */
       {0.62f, 0.84f, 0.62f, 1.0f}, /* Terrain */
-      {0.92f, 0.66f, 0.30f, 1.0f}, /* Material */
   };
   return colors[kind];
 }
 
 static VkrUiIcon editor_dock_panel_icon(VkrUiDockPanelKind kind) {
   static const VkrUiIcon icons[VKR_UI_DOCK_PANEL_COUNT] = {
-      VKR_UI_ICON_SCENE,   VKR_UI_ICON_HIERARCHY,   VKR_UI_ICON_INSPECTOR,
+      VKR_UI_ICON_WINDOW,  VKR_UI_ICON_HIERARCHY,   VKR_UI_ICON_INSPECTOR,
       VKR_UI_ICON_CONSOLE, VKR_UI_ICON_NONE,        VKR_UI_ICON_NONE,
       VKR_UI_ICON_BAKERY,  VKR_UI_ICON_CONTENT,     VKR_UI_ICON_EXPORT,
-      VKR_UI_ICON_SHAPES,  VKR_UI_ICON_PERSON_WALK, VKR_UI_ICON_CODE,
-      VKR_UI_ICON_WAVES,   VKR_UI_ICON_MATERIAL,
+      VKR_UI_ICON_SHAPES,  VKR_UI_ICON_PERSON_WALK, VKR_UI_ICON_WAVES,
   };
   return icons[kind];
 }
@@ -127,6 +124,110 @@ void vkr_editor_dock_toggle(VkrUiDockTree *dock, VkrUiDockPanelKind kind) {
     }
   }
   vkr_editor_dock_show(dock, kind);
+}
+
+/* The view tabs after the Views panel's dock tab in its bar, from `left` px:
+   one per view the workbench offers, the shown one marked as dock tabs
+   are, with a close button. A lone Scene view needs no switcher. */
+static void editor_dock_view_switcher(VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      VkrUiRect bar, float32_t left) {
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const uint32_t offered = vkr_editor_views_offered(editor);
+  if (offered == (1u << VKR_EDITOR_VIEW_SCENE)) {
+    return;
+  }
+  const VkrEditorView shown = vkr_editor_view_active(editor);
+  const float32_t scale = ui->content_scale;
+  const float32_t gap = 4.0f * scale;
+  float32_t x = left + 6.0f * scale;
+  /* A thin rule parts the dock tabs from the views. */
+  VkrUiPanelConfig rule = editor_dock_rect_panel(
+      ui, (VkrUiRect){x, bar.y + 7.0f * scale, 1.0f * scale,
+                      Max(1.0f, bar.height - 14.0f * scale)});
+  rule.style.background_color = theme->separator;
+  if (vkr_ui_panel_begin(ui, string8_lit("views.rule"), &rule)) {
+    (void)vkr_ui_panel_end(ui);
+  }
+  x += 1.0f * scale + gap;
+  for (uint32_t view = 0u; view < VKR_EDITOR_VIEW_COUNT; ++view) {
+    if (!((offered >> view) & 1u)) {
+      continue;
+    }
+    const bool8_t selected = view == shown;
+    const bool8_t closable = selected && view != VKR_EDITOR_VIEW_SCENE;
+    const float32_t width = (closable ? 96.0f : 76.0f) * scale;
+    if (x + width > bar.x + bar.width) {
+      break;
+    }
+    const VkrUiRect rect = {x, bar.y + 3.0f * scale, width,
+                            bar.height - 3.0f * scale};
+    x += width + gap;
+    /* Apart from the dock tabs' ids, which are panel kinds plus one. */
+    if (!vkr_ui_push_id_u64(ui, 0x76696577u + view)) {
+      continue;
+    }
+    const VkrUiTrack columns[] = {
+        {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+        {.value = closable ? 20.0f : 0.0f, .unit = VKR_UI_TRACK_PX},
+    };
+    VkrUiPanelConfig tab = editor_dock_rect_panel(ui, rect);
+    tab.columns = columns;
+    tab.column_count = ArrayCount(columns);
+    tab.style.corner_radius_pt = (Vec4){5.0f, 5.0f, 0.0f, 0.0f};
+    /* Opaque, so the underline does not show through the fill. */
+    tab.style.background_color =
+        selected ? vkr_ui_color_mix(theme->header, theme->accent, 0.14f)
+                 : (Vec4){0};
+    tab.style.border_pt =
+        selected ? (VkrUiEdges){0.0f, 0.0f, 2.0f, 0.0f} : (VkrUiEdges){0};
+    tab.style.border_color = theme->accent;
+    if (vkr_ui_panel_begin(ui, string8_lit("views.tab"), &tab)) {
+      VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+      button.placement.column_span = 1u;
+      button.fill = true_v;
+      button.style.font_size_pt = theme->font_body;
+      button.text.font =
+          selected ? editor->heading_font : VKR_FONT_HANDLE_INVALID;
+      button.style.padding_pt = (VkrUiEdges){3.0f, 6.0f, 3.0f, 8.0f};
+      button.style.corner_radius_pt = (Vec4){5.0f, 5.0f, 0.0f, 0.0f};
+      button.style.background_color = (Vec4){0};
+      button.style.hover_background_color =
+          selected ? (Vec4){0} : theme->row_hover;
+      button.style.text_color = selected ? theme->text : theme->text_secondary;
+      button.icon = vkr_editor_view_icon((VkrEditorView)view);
+      button.icon_size_pt = 13.0f;
+      button.icon_color = selected ? theme->accent : theme->text_secondary;
+      button.tooltip = vkr_editor_view_tooltip((VkrEditorView)view);
+      const char *name = vkr_editor_view_name((VkrEditorView)view);
+      if (vkr_ui_button(
+              ui, string8_lit("select"),
+              string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+              &button) &&
+          !selected) {
+        vkr_editor_view_show(editor, frame, editor->workbenches.active,
+                             (VkrEditorView)view);
+      }
+      if (closable) {
+        VkrUiWidgetConfig close = vkr_editor_icon_button_config(
+            1u, 0u, VKR_UI_ICON_CLOSE,
+            string8_lit("Remove this view; the Views tab's menu adds it "
+                        "back"));
+        close.style.min_size_pt = close.style.max_size_pt =
+            (Vec2){18.0f, 18.0f};
+        close.style.padding_pt = (VkrUiEdges){3.0f, 3.0f, 3.0f, 3.0f};
+        close.icon_size_pt = 11.0f;
+        close.placement.margin_pt.right = 4.0f;
+        close.icon_color = theme->text_secondary;
+        if (vkr_ui_button(ui, string8_lit("close"), (String8){0}, &close)) {
+          vkr_editor_view_remove(editor, (VkrEditorView)view);
+        }
+      }
+      (void)vkr_ui_panel_end(ui);
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
 }
 
 void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
@@ -263,6 +364,11 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       }
       (void)vkr_ui_pop_id(ui);
     }
+    if (active.panel_kind == VKR_UI_DOCK_PANEL_SCENE_VIEWPORT) {
+      const VkrUiRect last =
+          vkr_ui_dock_tab_rect(dock, leaf, node->as.leaf.tab_count - 1u);
+      editor_dock_view_switcher(editor, frame, bar_rect, last.x + last.width);
+    }
 
     const VkrUiDockTab content_tab =
         node->as.leaf.tabs[node->as.leaf.active_tab];
@@ -272,10 +378,14 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     if (!vkr_ui_rect_has_area(rect) || !vkr_ui_push_id_u64(ui, content_tab.id))
       continue;
     VkrUiPanelConfig content = editor_dock_rect_panel(ui, rect);
-    if (content_tab.panel_kind != VKR_UI_DOCK_PANEL_SCENE_VIEWPORT)
+    if (content_tab.panel_kind != VKR_UI_DOCK_PANEL_SCENE_VIEWPORT ||
+        dock->scene_view_hidden)
       content.style.background_color = theme->panel;
     if (vkr_ui_panel_begin(ui, string8_lit("dock.content"), &content)) {
       switch (content_tab.panel_kind) {
+      case VKR_UI_DOCK_PANEL_SCENE_VIEWPORT:
+        vkr_editor_views_build_body(editor, frame, rect);
+        break;
       case VKR_UI_DOCK_PANEL_HIERARCHY:
         vkr_editor_hierarchy_build(editor, frame, rect, heading_font);
         break;
@@ -306,14 +416,8 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       case VKR_UI_DOCK_PANEL_LEVEL_CHECKS:
         vkr_editor_level_window_build(editor, frame, rect);
         break;
-      case VKR_UI_DOCK_PANEL_SCRIPT:
-        vkr_editor_code_build(editor->code, editor, frame, rect);
-        break;
       case VKR_UI_DOCK_PANEL_TERRAIN:
         vkr_editor_terrain_window_build(editor, frame, rect);
-        break;
-      case VKR_UI_DOCK_PANEL_MATERIAL:
-        vkr_editor_material_panel_build(editor, frame, rect);
         break;
       default:
         break;

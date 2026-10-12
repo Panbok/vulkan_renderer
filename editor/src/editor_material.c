@@ -902,7 +902,8 @@ void vkr_editor_material_new_theme(VkrEditorUi *editor,
   }
   panel_select_theme(editor, path, container);
   (void)vkr_editor_material_open(materials, frame, path);
-  vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_MATERIAL);
+  vkr_editor_view_show(editor, frame, editor->workbenches.active,
+                       VKR_EDITOR_VIEW_GRAPH);
 }
 
 /* Writes the shown theme as one journal step by the designer. */

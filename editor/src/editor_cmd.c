@@ -52,15 +52,14 @@ typedef enum CmdArg {
 /* Enumerated argument words, in completion order and matching the value
  * tables below index for index. */
 static const char *const cmd_panels[] = {
-    "outliner", "details",      "console", "bakery",  "content", "build",
-    "tools",    "level_checks", "script",  "terrain", "material", NULL};
+    "outliner", "details", "console",      "bakery",  "content",
+    "build",    "tools",   "level_checks", "terrain", NULL};
 static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_HIERARCHY, VKR_UI_DOCK_PANEL_INSPECTOR,
     VKR_UI_DOCK_PANEL_CONSOLE,   VKR_UI_DOCK_PANEL_BAKERY,
     VKR_UI_DOCK_PANEL_CONTENT,   VKR_UI_DOCK_PANEL_BUILD,
     VKR_UI_DOCK_PANEL_TOOLS,     VKR_UI_DOCK_PANEL_LEVEL_CHECKS,
-    VKR_UI_DOCK_PANEL_SCRIPT,    VKR_UI_DOCK_PANEL_TERRAIN,
-    VKR_UI_DOCK_PANEL_MATERIAL};
+    VKR_UI_DOCK_PANEL_TERRAIN};
 
 static const char *const cmd_windows[] = {
     "animation", "physics",     "preferences", "draws",   "memory",  "help",
@@ -573,6 +572,16 @@ static bool8_t cmd_run_panel(CmdContext *ctx, const CmdDef *def, String8 arg) {
     return true_v;
   }
   const VkrEditorWindowKind kind = cmd_window_kinds[index];
+  /* A view of the Views panel hosts the window's body: show it. */
+  const VkrEditorView view = vkr_editor_window_view(kind);
+  if (view != VKR_EDITOR_VIEW_COUNT && !ctx->frame->scene_only &&
+      ((vkr_editor_views_offered(ctx->editor) >> view) & 1u)) {
+    vkr_editor_view_show(ctx->editor, ctx->frame,
+                         ctx->editor->workbenches.active, view);
+    snprintf(ctx->message, sizeof(ctx->message),
+             "%s is a view here; showing it", vkr_editor_view_name(view));
+    return true_v;
+  }
   /* A docked panel hosts the window's body: show its tab. */
   const VkrUiDockPanelKind docked = vkr_editor_window_dock_panel(kind);
   if (docked != VKR_UI_DOCK_PANEL_COUNT &&
@@ -656,6 +665,56 @@ static bool8_t cmd_run_workbench(CmdContext *ctx, const CmdDef *def,
   }
   return vkr_editor_workbench_request(ctx->editor, ctx->frame, index,
                                       ctx->message, sizeof(ctx->message));
+}
+
+/* views [scene | model | graph | script | -<view>]: lists the active
+   workbench's views, shows one (adding it when the workbench lacks it), or
+   with a leading minus takes one out. */
+static bool8_t cmd_run_views(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  (void)def;
+  String8 word = cmd_unquote(arg);
+  const uint32_t offered = vkr_editor_views_offered(ctx->editor);
+  if (!word.length) {
+    uint64_t used = 0u;
+    for (uint32_t view = 0u; view < VKR_EDITOR_VIEW_COUNT; ++view) {
+      if (!((offered >> view) & 1u)) {
+        continue;
+      }
+      used += (uint64_t)snprintf(
+          ctx->message + used, sizeof(ctx->message) - used, "%s%s%s",
+          used ? ", " : "", vkr_editor_view_id((VkrEditorView)view),
+          vkr_editor_view_active(ctx->editor) == view ? " (shown)" : "");
+      if (used >= sizeof(ctx->message))
+        break;
+    }
+    return true_v;
+  }
+  const bool8_t remove = word.str[0] == '-';
+  if (remove) {
+    word = string8_create(word.str + 1u, word.length - 1u);
+  }
+  const VkrEditorView view = vkr_editor_view_find(word);
+  if (view == VKR_EDITOR_VIEW_COUNT ||
+      (remove && view == VKR_EDITOR_VIEW_SCENE)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "Unknown view '%.*s'; scene, model, graph or script%s",
+             (int)word.length, word.str, remove ? " other than scene" : "");
+    return false_v;
+  }
+  if (ctx->frame->scene_only) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "The Scene-only view has no Views panel");
+    return false_v;
+  }
+  if (remove) {
+    vkr_editor_view_remove(ctx->editor, view);
+  } else {
+    vkr_editor_view_show(ctx->editor, ctx->frame,
+                         ctx->editor->workbenches.active, view);
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "%s %s",
+           remove ? "Removed" : "Showing", vkr_editor_view_name(view));
+  return true_v;
 }
 
 /* Viewport commands copy the runtime's current view and submit one change. */
@@ -2235,6 +2294,9 @@ static const CmdDef cmd_defs[] = {
      "[general|level_design|terrain|lighting|scripting|1-9|next|prev]",
      "List the workbenches, or switch to one and to the scene it shows",
      cmd_run_workbench, CMD_COUNT, 0u, .holds = true_v},
+    {"views", CMD_ARG_TEXT, "[scene|model|graph|script|-<view>]",
+     "List the Views panel's views, show one, or take one out with -",
+     cmd_run_views, CMD_COUNT, 0u},
     CMD_SIMPLE("sim.play", "Start the simulation", CMD_SIM_START),
     CMD_SIMPLE("sim.pause", "Pause the simulation", CMD_SIM_PAUSE),
     CMD_SIMPLE("sim.step", "Advance a paused simulation one frame",
