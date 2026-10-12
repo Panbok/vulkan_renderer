@@ -91,14 +91,23 @@ millisecond use `select` on POSIX; Windows rounds them up to 1 ms.
   accept callback refuses with a close code or accepts with a payload and a
   user value. A server demands a stateless retry cookie when configured or
   when 256 handshakes are half-open, and sends at most three times the bytes
-  it received to an unvalidated address. There is no 0-RTT data.
+  it received to an unvalidated address. There is no 0-RTT data. The first message carries the client's
+  Unix time in microseconds; a server drops one not newer than the last it
+  accepted from that static key (1,024 keys remembered), so a captured
+  handshake cannot be replayed. A server connection gets its packet tables
+  and reaches the application (CONNECTED) only with the client's first
+  authenticated packet; the retry threshold defaults to an eighth of the
+  connection limit (at least 4). Protocol version 2.
 - **Delivery.** Up to 64 channels per connection; channel 0 is the reliable
   ordered session channel. Classes: unreliable, sequenced, reliable ordered,
   reliable unordered and deadline (dropped and cancelled after its time).
   Reliable messages up to 64 MiB split into fixed fragments at send time.
   Each channel has priority 0–7, weight, send queue and receive window;
   WINDOW frames raise the sender's limit as the application consumes.
-  Data for a channel this side closed is dropped.
+  Data for a channel this side closed is dropped. Reassembly is capped at
+  256 MiB per connection (a channel opens only when its window and largest
+  message fit) and 1 GiB per core; past it the connection closes with
+  RESOURCES (13). One ACK frame per packet.
 - **Recovery.** RFC 9002 loss detection with packet and time thresholds that
   grow when an acknowledgment proves a declared loss spurious, probe
   timeouts, ACK ranges pruned once acknowledged, and a 2,048-packet replay
@@ -114,7 +123,8 @@ millisecond use `select` on POSIX; Windows rounds them up to 1 ms.
   samples count as app-limited.
 - **Path.** PMTU discovery probes 1,452 bytes and then the configured
   maximum (8,952 for jumbo frames); lost probes do not count as congestion.
-  A new peer address is validated with PATH_CHALLENGE.
+  A packet from a new peer address only makes it a candidate; the
+  connection moves when that address answers PATH_CHALLENGE.
 - **Lifetime.** Idle timeout with keep-alives at a third of it, CLOSE with a
   numeric code, and a drain period of three probe timeouts. A session keeps
   state only for a connection it saw connect and not close.
@@ -139,7 +149,14 @@ millisecond use `select` on POSIX; Windows rounds them up to 1 ms.
 - **Objects** ([vkr_depot_object.h](../../tools/depot/vkr_depot_object.h)):
   chunks, blob manifests, trees and commits, named by the SHA-256 of their
   bytes, in a canonical binary form whose parser, like the encoder, refuses
-  unsorted, invalid or case-colliding names (compared without ASCII case).
+  unsorted, invalid or case-colliding names. A valid name is not `.vkrdepot`
+  or `.git` in any case, holds none of `: < > " | ? *` or a control
+  character, is no Windows device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9,
+  with any extension), is well-formed UTF-8 without combining marks (NFC),
+  and compares by one folding key (ASCII, Latin-1, Latin Extended-A, Greek
+  and Cyrillic) that trees, checkout and locks share. A tree is at most 64
+  folders deep, 1,000,000 files and 512 GiB; a file at most 4 GiB. The
+  server refuses a push that breaks a rule (`VKR_DEPOT_REF_INVALID`).
 - **Store** ([vkr_depot_store.h](../../tools/depot/vkr_depot_store.h)): a
   content-addressed directory; each file is a 5-byte header (raw or zstd,
   decoded size) and the payload, kept compressed when that saves a tenth.
@@ -161,7 +178,12 @@ millisecond use `select` on POSIX; Windows rounds them up to 1 ms.
   so the next snapshot hashes it once, and a file a crash tore with its size
   and time intact shows as a change instead of passing as current. A later
   checkout leaves such a file alone when its size and blob match, and
-  `status` saves the times it verified.
+  `status` saves the times it verified. Checkout reads `.vkrdepotignore` as
+  it stands before it starts and never writes or removes an ignored path,
+  so a commit cannot plant per-machine files such as built script
+  libraries; ignore rules apply to untracked files only, as in git. It
+  removes before it writes, so a rename that changes only case keeps the
+  file. Index paths that fail validation when the state loads are dropped.
 - **Service** ([vkr_depot_protocol.h](../../tools/depot/vkr_depot_protocol.h)):
   schema `vkr.depot` version 1 on a reliable ordered control channel; stored
   representations as raw messages on a reliable unordered priority-7
@@ -169,13 +191,19 @@ millisecond use `select` on POSIX; Windows rounds them up to 1 ms.
 - **Server** ([vkr_depot_server.h](../../tools/depot/vkr_depot_server.h)):
   refs move only by compare-and-swap after the server checks the commit's
   objects are present and that it changes no path another key has locked;
-  lock paths compare without ASCII case. Keys need a role (read, write,
-  admin) in the store's access list. A key without one is refused at the
+  lock paths compare by the folding key. Keys need a role (read, write,
+  admin) in the store's access list, looked up again when the transport
+  reports the connection. A key without one is refused at the
   handshake and remembered, with the display name it sent as its credential
   (`user@computer`), as one of the last eight access requests; giving it a
   role at runtime (`vkr_depot_server_set_role`) writes the access file and
-  lets its next try in, and NONE closes its connections. The server reloads
-  an access file changed on disk about once a second.
+  lets its next try in, and NONE closes its connections and keeps the key
+  out of the requests (256 refused keys until restart). One address holds
+  at most two requests. The server reloads an access file changed on disk
+  about once a second. Each peer may hold 128 MiB of object bytes ahead of
+  their PUT and 8,192 queued GET replies; past them it is closed or told
+  the rest is missing. Its server key and the identity key are written
+  readable by their owner only.
 - **Service thread** ([vkr_depot_service.h](../../tools/depot/vkr_depot_service.h)):
   the store, server, session, UDP host and discovery responder on a host
   thread, safe to call from any thread. It binds `[::]:7320` or the next of
@@ -330,8 +358,14 @@ during the transport runs, so loopback numbers are noisy.
   unused), background mode (0.01 beside a normal flow at 0.93, 0.96 alone;
   fails above 25%, below 65% or below 70%), header protection (consecutive
   numbers do not count up on the wire; a flipped number or length bit fails
-  authentication) and a session event after CLOSED.
-- Debug `--suite depot` with ASan and UBSan: 11 tests, including access
+  authentication) and a session event after CLOSED. After the security
+  fixes below, 41 of 41, adding a replayed handshake (with the timestamp
+  check disabled the test fails), an address spoof that must not move a
+  connection, and the reassembly caps.
+- Debug `--suite depot` with ASan and UBSan: 15 tests after the security
+  fixes (refused names, tree limits, checkout safety with planted state
+  paths, ignored paths and a case-only rename, refused pushes, request
+  floods), and before them 11 tests, including access
   requests granted at runtime, the three conflict policies, a cancelled
   fetch that a later fetch completes, the identity copy from the cache
   folder, the service's port fallback past an IPv4 holder, discovery by a
@@ -352,6 +386,13 @@ during the transport runs, so loopback numbers are noisy.
   after header protection the core ran 96,035 executions in 60 s. A depot
   tree with case-colliding names, which the parser accepted, is now refused
   and kept as `tests/fuzz/crashes/depot_tree_case_fold`.
+- An agent security review on 2026-10-12 (not independent) found that a
+  checkout could write into `.vkrdepot/`, that a project's scripts from
+  another computer could run without consent, a replayable handshake that
+  filled server slots, unbounded trees, impersonated access requests,
+  case-only renames that lost files, and smaller limits; each is fixed
+  above or in [ADR-110](110-project-sharing-in-the-editor.md), and the
+  core fuzzer ran 98,155 executions in 60 s after the handshake change.
 
 ## Gaps
 

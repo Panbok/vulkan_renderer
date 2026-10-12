@@ -68,9 +68,11 @@ thread reads finished results and progress counters only.
 - The store's owner is the editor's identity. A computer the server does
   not know is refused at the handshake and recorded with the name it sent
   (`user@computer`); the top bar shows `N asking`, and a card offers Allow,
-  View only and Deny. The waiting computer retries every 3 s and continues
-  on its own once allowed. Names of allowed computers are kept for the
-  access list.
+  View only and Deny, with the first eight digits of the asking key; the
+  waiting computer shows its own, so two people can tell a real request from
+  an impostor that sends the same name. The waiting computer retries every
+  3 s and continues on its own once allowed. Names of allowed computers are
+  kept for the access list.
 - The identity key lives in the user data folder, not the cache
   (`vkr_depot_identity_path`).
 
@@ -87,6 +89,19 @@ thread reads finished results and progress counters only.
   (`recook_textures`), then opens the project.
 - A copy whose server moved to another address follows its key through
   discovery and saves the new address.
+- Discovery is not authenticated: each found project shows its key's first
+  digits and whether it was used before, and an answer with a known
+  project's name but another key says it is not that computer.
+
+### Scripts
+
+Scripts are native code. A project copied from another computer does not
+build or run its scripts until its user chooses Run scripts (a card, the
+Project sharing window or `depot.trust`); a pull that changes a `Scripts/`
+folder holds them again until the user trusts the change. The project's
+own sharer trusts its scripts. Built libraries never travel: the
+workspace's `.vkrdepotignore` names `.vkreditor/scripts/`, and checkout
+writes no ignored path (ADR-105).
 
 ### Changes
 
