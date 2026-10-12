@@ -1720,27 +1720,28 @@ typedef struct VkrNoData {
   } Name_##_module_options;                                                    \
   static const Name_##_module_options Name_##_options = {.reserved = 0u,       \
                                                          __VA_ARGS__};         \
-  static void Name_##_hook_start(VkrCtx *ctx, void *data) {                    \
+  static void Name_##_module_hook_start(VkrCtx *ctx, void *data) {             \
     Name_##_options.start(ctx, (Data_ *)data);                                 \
   }                                                                            \
-  static void Name_##_hook_stop(VkrCtx *ctx, void *data) {                     \
+  static void Name_##_module_hook_stop(VkrCtx *ctx, void *data) {              \
     Name_##_options.stop(ctx, (Data_ *)data);                                  \
   }                                                                            \
-  static void Name_##_hook_update(VkrCtx *ctx, void *data, float32_t dt) {     \
+  static void Name_##_module_hook_update(VkrCtx *ctx, void *data,              \
+                                         float32_t dt) {                       \
     Name_##_options.update(ctx, (Data_ *)data, dt);                            \
   }                                                                            \
-  static void Name_##_hook_late_update(VkrCtx *ctx, void *data,                \
-                                       float32_t dt) {                         \
+  static void Name_##_module_hook_late_update(VkrCtx *ctx, void *data,         \
+                                              float32_t dt) {                  \
     Name_##_options.late_update(ctx, (Data_ *)data, dt);                       \
   }                                                                            \
-  static void Name_##_hook_fixed_update(VkrCtx *ctx, void *data) {             \
+  static void Name_##_module_hook_fixed_update(VkrCtx *ctx, void *data) {      \
     Name_##_options.fixed_update(ctx, (Data_ *)data);                          \
   }                                                                            \
-  static void Name_##_hook_late_fixed_update(VkrCtx *ctx, void *data) {        \
+  static void Name_##_module_hook_late_fixed_update(VkrCtx *ctx, void *data) { \
     Name_##_options.late_fixed_update(ctx, (Data_ *)data);                     \
   }                                                                            \
-  static void Name_##_hook_input(VkrCtx *ctx, void *data,                      \
-                                 const VkrInputEvent *event) {                 \
+  static void Name_##_module_hook_input(VkrCtx *ctx, void *data,               \
+                                        const VkrInputEvent *event) {          \
     Name_##_options.input(ctx, (Data_ *)data, event);                          \
   }                                                                            \
   VKR_SDK_EXPORT const VkrModuleDesc *vkr_module_##Name_(                      \
@@ -1756,17 +1757,19 @@ typedef struct VkrNoData {
         .data_size = (uint32_t)sizeof(Data_),                                  \
         .data_align = (uint32_t)AlignOf(Data_),                                \
         .data_version = Name_##_options.data_version,                          \
-        .start = Name_##_options.start ? Name_##_hook_start : NULL,            \
-        .stop = Name_##_options.stop ? Name_##_hook_stop : NULL,               \
-        .update = Name_##_options.update ? Name_##_hook_update : NULL,         \
+        .start = Name_##_options.start ? Name_##_module_hook_start : NULL,     \
+        .stop = Name_##_options.stop ? Name_##_module_hook_stop : NULL,        \
+        .update = Name_##_options.update ? Name_##_module_hook_update : NULL,  \
         .late_update =                                                         \
-            Name_##_options.late_update ? Name_##_hook_late_update : NULL,     \
+            Name_##_options.late_update ? Name_##_module_hook_late_update      \
+                                        : NULL,                                \
         .fixed_update =                                                        \
-            Name_##_options.fixed_update ? Name_##_hook_fixed_update : NULL,   \
+            Name_##_options.fixed_update ? Name_##_module_hook_fixed_update    \
+                                         : NULL,                               \
         .late_fixed_update = Name_##_options.late_fixed_update                 \
-                                 ? Name_##_hook_late_fixed_update              \
+                                 ? Name_##_module_hook_late_fixed_update       \
                                  : NULL,                                       \
-        .input = Name_##_options.input ? Name_##_hook_input : NULL,            \
+        .input = Name_##_options.input ? Name_##_module_hook_input : NULL,     \
     };                                                                         \
     VKR_SDK_EXPORTS_(exports_)                                                 \
     return &desc;                                                              \

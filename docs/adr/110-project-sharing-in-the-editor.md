@@ -184,8 +184,9 @@ Design Test), and a launchd `vkr_depot serve` holding UDP 7319 and IPv4 7320.
   the server thread's cost from above.
 - A script module added and submitted on the sharer stayed held on the
   copy after Get (`scripts_held`); its build started only after
-  `depot.trust`. The `script.new` template does not compile against the
-  current script SDK (12 errors on both editors), a defect outside sharing.
+  `depot.trust`. That module, named in lower case, then failed to compile
+  because `VKR_MODULE` and `VKR_BEHAVIOR` defined the same hook wrapper
+  names; the SDK now names the module's apart.
 
 Unverified: the editor part on Windows; a share between two computers; the
 Local Network prompt for the editor binary; scene reload after a pull with

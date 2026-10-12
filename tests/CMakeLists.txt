@@ -76,6 +76,14 @@ foreach(variant 1 2 3 4)
         VKR_TEST_RELOAD_PROBE_${variant}="$<TARGET_FILE:vkr_test_reload_probe_${variant}>")
 endforeach()
 
+# The new-module template's shape for a lowercase name, compiled only: a
+# module, component and behavior sharing one identifier (sdk.h).
+add_library(vkr_test_sdk_names_probe OBJECT scripts/sdk_names_probe.c)
+target_include_directories(vkr_test_sdk_names_probe PRIVATE
+    "${VKR_SCRIPT_SDK_DIR}")
+add_dependencies(vkr_test_sdk_names_probe vkr_script_sdk)
+add_dependencies(vulkan_renderer_tester vkr_test_sdk_names_probe)
+
 # A project library the host's project tests load: one source, four
 # variants listing their modules through vkr_project_modules.
 foreach(variant 1 2 3 4)
