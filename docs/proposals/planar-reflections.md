@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-06
+updated: 2026-10-12
 authority: proposal
 ---
 
@@ -25,6 +25,10 @@ mirrors, still water, polished floors and glass panes viewed at grazing angles.
   It needs the frame's depth and colour before shading, so it would split the
   one on-chip `Tiled.Opaque` pass and store its attachments. It also needs a
   history to hide noise, which the tiled pipeline does not keep.
+- **Water uses planar reflections on both pipelines** (owner decision,
+  2026-10-12). The desktop pipeline loses SSR, and baked reflection probes
+  serve metal, weapons and other surfaces
+  ([Short-history rendering](short-history-rendering.md)).
 - **Probes alone fail for mirrors.** A cube captured at one point has
   parallax errors away from that point, even when box-projected, and it does
   not show dynamic objects or the player.

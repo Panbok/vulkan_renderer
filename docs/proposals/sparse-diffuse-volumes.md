@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-11
+updated: 2026-10-12
 authority: proposal
 ---
 
@@ -32,12 +32,13 @@ time per sun key and 183 s for the lamp group.
    lights and sky at its vertices instead of tracing nine sets of paths. On
    Bistro this would remove most of the 8 × 22 s of sun-key gathering;
    lightmap bakes would gain the same.
-2. **SSGI from unbaked light.** Let SSGI add dynamic lights and the emission
-   of dynamic objects on covered pixels without counting baked light twice;
-   ADR-060 names this revisit.
-3. **Runtime ray-traced updates** of the same bricks and moments on the
-   desktop pipeline, for dynamic lights and time of day without baked
-   layers.
+2. **Runtime ray-traced updates** (DDGI style) of the same bricks and
+   moments on the desktop pipeline only, for dynamic lights and time of day
+   without baked layers, and for blockout without a rebake. The owner chose
+   this on 2026-10-12 as the desktop pipeline's dynamic diffuse GI in place
+   of SSGI, which is being removed. The design, open choices and evidence
+   are in [Short-history rendering](short-history-rendering.md#6-ddgi-style-volume-updates-on-the-desktop-pipeline).
+   The tiled pipeline stays baked.
 
 ## Evidence needed
 
