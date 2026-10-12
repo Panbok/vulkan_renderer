@@ -135,6 +135,14 @@ def check_names(build, textures, recipes):
     return mesh_recipes, image_recipes
 
 
+def replace_bytes(path, data):
+    """Writes `data` as a new file at `path`. Where the volume cannot clone
+    (NTFS), a build texture is a hard link to its bakery cache blob, so an
+    in-place write would change the cached bytes that a re-cook restores."""
+    path.unlink()
+    path.write_bytes(data)
+
+
 def family(data):
     format_ = struct.unpack('<I', data[12:16])[0]
     return 'bc' if format_ in (141, 142, 145, 146) else 'astc' if 157 <= format_ <= 184 else 'other'
@@ -204,7 +212,7 @@ def main():
             (build / 'textures' / name).unlink()
         foreign = bytearray(textures[names[0]])
         foreign[12:16] = struct.pack('<I', 145 if family(textures[names[0]]) == 'astc' else 157)
-        (build / 'textures' / names[0]).write_bytes(bytes(foreign))
+        replace_bytes(build / 'textures' / names[0], bytes(foreign))
         recook = {'operation': 'recook_textures', 'scene_id': final['scene_id'],
                   'scene_path': final['scene_path']}
         recooked = run(recook, 'recook')
@@ -257,7 +265,7 @@ def main():
         # host's cook has, and records `platform` for it.
         changed = bytearray(textures[names[1]])
         changed[-1] ^= 0xff
-        (build / 'textures' / names[1]).write_bytes(bytes(changed))
+        replace_bytes(build / 'textures' / names[1], bytes(changed))
         run({'operation': 'prepare_scene', 'scene_id': final['scene_id'],
              'scene_path': final['scene_path']}, 'prepare')
         prepared = jobs.read_managed_scene(scene_path)
@@ -265,7 +273,7 @@ def main():
         assert any(path.endswith('.vkt') for closure in closures for path in closure)
         assert all(value == 'platform' for closure in closures for path, value in closure.items()
                    if path.endswith('.vkt')), closures
-        (build / 'textures' / names[1]).write_bytes(textures[names[1]])
+        replace_bytes(build / 'textures' / names[1], textures[names[1]])
 
         # A build without recipes, as a cook before them left it, needs a
         # rebuild; the rebuild records recipes and retires the texture
