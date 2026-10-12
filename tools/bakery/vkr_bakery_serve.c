@@ -1,5 +1,6 @@
 #include "vkr_bakery_commands.h"
 
+#include "containers/vkr_hashtable.h"
 #include "core/vkr_threads.h"
 #include "platform/vkr_local_socket.h"
 #include "platform/vkr_platform.h"
@@ -94,6 +95,13 @@ typedef struct VkrServeWatch {
   /* Wall-clock nanoseconds at registration: a file whose status last changed
      earlier is history a late event reports, not an edit. */
   int64_t started_ns;
+  /* The last report's paths, as hashes, with each file's status change time
+     when it fired: FSEvents can deliver one edit in batches further apart
+     than the settle time, and a late batch for a reported state is not
+     another edit. */
+  uint64_t reported_hash[VKR_SERVE_MAX_CHANGED];
+  int64_t reported_ns[VKR_SERVE_MAX_CHANGED];
+  uint32_t reported_count;
 } VkrServeWatch;
 
 /* A file one of the daemon's runs published, as it was when published. */
@@ -582,11 +590,21 @@ vkr_internal void vkr_serve_fsevents(ConstFSEventStreamRef stream,
                                      const FSEventStreamEventFlags flags[],
                                      const FSEventStreamEventId ids[]) {
   (void)stream;
-  (void)flags;
   (void)ids;
   VkrServe *serve = (VkrServe *)context;
   char **names = (char **)paths;
   for (size_t i = 0u; i < count; ++i) {
+    /* Dropped or coalesced events name a directory or `/`, not the changed
+       files, so every watch reruns. */
+    if (flags[i] & (kFSEventStreamEventFlagMustScanSubDirs |
+                    kFSEventStreamEventFlagUserDropped |
+                    kFSEventStreamEventFlagKernelDropped)) {
+      vkr_mutex_lock(serve->changes_mutex);
+      serve->change_overflow = true_v;
+      vkr_mutex_unlock(serve->changes_mutex);
+      vkr_serve_wake(serve);
+      continue;
+    }
     vkr_serve_note_change(serve, names[i]);
   }
 }
@@ -904,6 +922,19 @@ vkr_internal int64_t vkr_serve_status_changed_ns(const char *path) {
 #endif
 }
 
+/* Whether the watch's last report already covered this file state. */
+vkr_internal bool8_t vkr_serve_reported(const VkrServeWatch *watch,
+                                        const char *path, int64_t changed_ns) {
+  const uint64_t hash = vkr_hash_table_hash_cstr(path);
+  for (uint32_t i = 0u; i < watch->reported_count; ++i) {
+    if (watch->reported_hash[i] == hash &&
+        watch->reported_ns[i] == changed_ns) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 /* Matches drained changes against watches; returns the earliest due time. */
 vkr_internal void vkr_serve_match_changes(VkrServe *serve, float64_t now) {
   static char changes[256][VKR_BAKERY_PATH_CAPACITY];
@@ -949,7 +980,9 @@ vkr_internal void vkr_serve_match_changes(VkrServe *serve, float64_t now) {
         matched = vkr_serve_path_under(changes[c], watch->paths[p]);
       }
       if (!matched ||
-          (changed_ns[c] >= 0 && changed_ns[c] < watch->started_ns)) {
+          (changed_ns[c] >= 0 &&
+           (changed_ns[c] < watch->started_ns ||
+            vkr_serve_reported(watch, changes[c], changed_ns[c])))) {
         continue;
       }
       bool8_t listed = false_v;
@@ -991,6 +1024,15 @@ vkr_internal void vkr_serve_fire_watch(VkrServe *serve, VkrServeWatch *watch) {
                    (const char *)line.data, line.length);
   }
   vkr_bakery_buffer_free(&line);
+  watch->reported_count = 0u;
+  for (uint32_t i = 0u; i < watch->changed_count; ++i) {
+    const int64_t changed_ns = vkr_serve_status_changed_ns(watch->changed[i]);
+    if (changed_ns >= 0) {
+      watch->reported_hash[watch->reported_count] =
+          vkr_hash_table_hash_cstr(watch->changed[i]);
+      watch->reported_ns[watch->reported_count++] = changed_ns;
+    }
+  }
   watch->pending = false_v;
   watch->changed_count = 0u;
   if (!watch->arguments.count) {
@@ -1019,6 +1061,24 @@ vkr_internal void vkr_serve_drop_watch(VkrServe *serve, VkrServeWatch *watch) {
   vkr_serve_arguments_free(&watch->arguments);
   MemZero(watch, sizeof(*watch));
   serve->watches_changed = true_v;
+}
+
+/* Rebuilds the watcher after the watch set changed. */
+vkr_internal void vkr_serve_apply_watches(VkrServe *serve) {
+  if (!serve->watches_changed) {
+    return;
+  }
+  serve->watches_changed = false_v;
+  if (!vkr_serve_restart_stream(serve)) {
+    bool8_t any = false_v;
+    for (uint32_t w = 0u; w < VKR_SERVE_MAX_WATCHES; ++w) {
+      any = any || serve->watches[w].id != 0u;
+    }
+    if (any) {
+      fprintf(stderr, "warning: file watching is unavailable on this "
+                      "host\n");
+    }
+  }
 }
 
 // =============================================================================
@@ -1089,7 +1149,10 @@ vkr_internal void vkr_serve_request_watch(VkrServe *serve, uint32_t client,
   prepared.id = ++serve->next_watch;
   prepared.started_ns = vkr_serve_wall_clock_ns();
   *watch = prepared;
+  /* The watcher runs before the reply, so a client may edit as soon as it
+     reads it. */
   serve->watches_changed = true_v;
+  vkr_serve_apply_watches(serve);
   vkr_serve_sendf(serve, client, watch->client_generation,
                   "{\"v\":1,\"ev\":\"reply\",\"req\":%llu,\"exit\":0,"
                   "\"watch\":%u}",
@@ -1344,19 +1407,7 @@ vkr_internal bool8_t vkr_serve_idle(const VkrServe *serve) {
 vkr_internal void vkr_serve_loop(VkrServe *serve, uint64_t idle_exit_seconds) {
   float64_t idle_since = vkr_bakery_monotonic_seconds();
   while (!vkr_serve_signalled) {
-    if (serve->watches_changed) {
-      serve->watches_changed = false_v;
-      if (!vkr_serve_restart_stream(serve)) {
-        bool8_t any = false_v;
-        for (uint32_t w = 0u; w < VKR_SERVE_MAX_WATCHES; ++w) {
-          any = any || serve->watches[w].id != 0u;
-        }
-        if (any) {
-          fprintf(stderr, "warning: file watching is unavailable on this "
-                          "host\n");
-        }
-      }
-    }
+    vkr_serve_apply_watches(serve);
     VkrLocalSocketPoll fds[VKR_SERVE_MAX_CLIENTS + 2u];
     uint32_t indices[VKR_SERVE_MAX_CLIENTS];
     uint32_t count = 0u;

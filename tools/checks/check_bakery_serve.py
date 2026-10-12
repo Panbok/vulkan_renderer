@@ -20,6 +20,9 @@ import zlib
 
 import project_jobs as jobs
 
+# Seconds a watch event may take to arrive; see the watch case in main().
+WATCH_DELIVERY_TIMEOUT = 120.0
+
 
 def write_png(path, width, height, seed):
     """Writes an RGB PNG; seeded noise keeps encodes from being trivial."""
@@ -123,10 +126,13 @@ def main():
             # One edit reports one change and one rebuild; the rebuild's own
             # output does not report another change.
             watch_request = client.send('watch', paths=['src'], argv=['cook', 'src'])
+            # The reply means the watcher is armed: an edit right after it is seen.
             watch = client.reply(watch_request)[-1]['watch']
-            time.sleep(0.5)
             write_png(sources / 'small.png', 16, 16, 2)
-            events = client.until(lambda e: e.get('ev') == 'reply' and e.get('watch') == watch)
+            # FSEvents delivery queues behind fseventsd, which a parallel build's
+            # file churn can keep busy: changes arrived 2-14 s late at load 21.
+            events = client.until(lambda e: e.get('ev') == 'reply' and e.get('watch') == watch,
+                                  timeout=WATCH_DELIVERY_TIMEOUT)
             changed = [event for event in events if event.get('ev') == 'changed']
             assert len(changed) == 1 and changed[0]['paths'] == [str(sources / 'small.png')], changed
             assert events[-1]['exit'] == 0
