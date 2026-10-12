@@ -75,12 +75,14 @@ bool8_t vkr_bakery_shader_toolchain(VkrBakeryShaderToolchain *toolchain,
   (void)snprintf(toolchain->slangc, sizeof(toolchain->slangc), "%s",
                  slangc && slangc[0] ? slangc : "");
   if (!toolchain->slangc[0]) {
-    const char *environment = getenv("VKR_SLANGC");
-    const char *sdk = getenv("VULKAN_SDK");
-    if (environment && environment[0]) {
-      (void)snprintf(toolchain->slangc, sizeof(toolchain->slangc), "%s",
-                     environment);
-    } else if (sdk && sdk[0]) {
+    /* Both variables are paths, read as UTF-8; one that does not fit is
+       left empty and the next choice applies. */
+    (void)vkr_platform_environment_variable("VKR_SLANGC", toolchain->slangc,
+                                            sizeof(toolchain->slangc));
+    char sdk[VKR_BAKERY_PATH_CAPACITY];
+    if (!toolchain->slangc[0] &&
+        vkr_platform_environment_variable("VULKAN_SDK", sdk, sizeof(sdk)) &&
+        sdk[0]) {
       (void)snprintf(toolchain->slangc, sizeof(toolchain->slangc),
                      "%s/bin/slangc", sdk);
     }

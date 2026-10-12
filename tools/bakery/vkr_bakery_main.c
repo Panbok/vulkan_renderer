@@ -330,8 +330,19 @@ vkr_internal bool8_t vkr_bakery_resolve_config(VkrBakeryCli *cli) {
                                 config->root, sizeof(config->root))) {
     return false_v;
   }
-  const char *cache =
-      cli->cache_option ? cli->cache_option : getenv("VKR_BAKERY_CACHE");
+  /* The variable is read as UTF-8: getenv would hand Windows a cache under a
+     non-ASCII profile folder in the active code page, which names no folder. */
+  char environment_cache[VKR_BAKERY_PATH_CAPACITY];
+  const char *cache = cli->cache_option;
+  if (!cache) {
+    if (!vkr_platform_environment_variable(
+            "VKR_BAKERY_CACHE", environment_cache, sizeof(environment_cache))) {
+      fprintf(stderr, "error VKR-CACHE-0001: VKR_BAKERY_CACHE is too long "
+                      "or not valid text; pass --cache\n");
+      return false_v;
+    }
+    cache = environment_cache;
+  }
   char default_cache[VKR_BAKERY_PATH_CAPACITY];
   if (!cache || !cache[0]) {
     if (!vkr_bakery_user_cache_directory(default_cache,

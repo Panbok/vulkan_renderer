@@ -714,9 +714,10 @@ bool8_t vkr_project_source_file(VkrProjectJob *job, const char *value,
                                 char *out) {
   char expanded[VKR_PROJECT_PATH];
   if (value[0] == '~' && (value[1] == '/' || value[1] == 0)) {
-    const char *home = getenv("HOME");
-    (void)snprintf(expanded, sizeof(expanded), "%s%s", home ? home : "",
-                   value + 1);
+    /* An unset or unreadable HOME expands to nothing. */
+    char home[VKR_PROJECT_PATH];
+    (void)vkr_platform_environment_variable("HOME", home, sizeof(home));
+    (void)snprintf(expanded, sizeof(expanded), "%s%s", home, value + 1);
   } else {
     (void)snprintf(expanded, sizeof(expanded), "%s", value);
   }

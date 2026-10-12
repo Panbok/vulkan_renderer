@@ -112,6 +112,15 @@ typedef enum VkrPlatformUserDirectory {
 bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
                                     uint32_t capacity);
 
+/** Copies the UTF-8 value of the environment variable `name`, such as a
+ * path, into `value`; an unset variable leaves `value` empty. False, with
+ * `value` empty, when the value does not fit `capacity`. Windows reads the
+ * wide environment and also rejects a value that is not valid UTF-16: the
+ * narrow CRT copy (getenv) is in the active code page, which turns a
+ * non-ASCII path into another one. POSIX values are copied as bytes. */
+bool8_t vkr_platform_environment_variable(const char *name, char *value,
+                                          uint32_t capacity);
+
 bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info);
 
 /**

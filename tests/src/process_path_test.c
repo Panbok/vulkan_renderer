@@ -10,6 +10,11 @@
 bool32_t run_process_path_tests(void);
 int32_t process_path_test_child(void);
 
+/* A non-ASCII value the launcher sets for the child, as the Bakery hands its
+   tools a usage-report path inside a cache below a non-ASCII profile. */
+#define PROCESS_PATH_TEST_VARIABLE "VKR_PROCESS_PATH_TEST_VALUE"
+#define PROCESS_PATH_TEST_VALUE "C:/Users/Пользователь/кэш"
+
 int32_t process_path_test_child(void) {
 #if defined(PLATFORM_WINDOWS)
   // Relative native creation independently proves the working directory the
@@ -26,7 +31,15 @@ int32_t process_path_test_child(void) {
   if (!success || written != sizeof(bytes) - 1) {
     return 22;
   }
-  vkr_platform_stdout_write("process stdout confirmed\n");
+  // The parent compares these bytes with the UTF-8 value it set.
+  char value[128];
+  if (!vkr_platform_environment_variable(PROCESS_PATH_TEST_VARIABLE, value,
+                                         sizeof(value))) {
+    return 25;
+  }
+  vkr_platform_stdout_write("process stdout confirmed ");
+  vkr_platform_stdout_write(value);
+  vkr_platform_stdout_write("\n");
   vkr_platform_stderr_write("process stderr confirmed\n");
   return 23;
 #else
@@ -93,6 +106,9 @@ bool32_t run_process_path_tests(void) {
   char executable[32768];
   assert(vkr_platform_executable_path(executable, sizeof(executable)));
   const char *arguments[] = {"--process-path-test-child"};
+  const VkrPlatformEnvironmentVariable environment[] = {
+      {.name = PROCESS_PATH_TEST_VARIABLE, .value = PROCESS_PATH_TEST_VALUE},
+  };
   VkrPlatformProcessConfig config = {
       .executable = executable,
       .arguments = arguments,
@@ -100,6 +116,8 @@ bool32_t run_process_path_tests(void) {
       .working_directory = working,
       .stdout_path = stdout_path,
       .stderr_path = stderr_path,
+      .environment = environment,
+      .environment_count = ArrayCount(environment),
       .timeout_ms = 10000,
       .hidden = true_v,
   };
@@ -127,7 +145,13 @@ bool32_t run_process_path_tests(void) {
   }
   assert(!timed_out && exit_code == 23);
   process_path_test_contents(marker_path, "child working directory confirmed");
-  process_path_test_contents(stdout_path, "process stdout confirmed\n");
+  process_path_test_contents(
+      stdout_path, "process stdout confirmed " PROCESS_PATH_TEST_VALUE "\n");
+  // The launcher restores its own environment after the launch.
+  char value[128];
+  assert(vkr_platform_environment_variable(PROCESS_PATH_TEST_VARIABLE, value,
+                                           sizeof(value)));
+  assert(value[0] == '\0');
   process_path_test_contents(stderr_path, "process stderr confirmed\n");
   // Each directory was exclusively acquired above; remove only those now-empty
   // directories in reverse order, never a recursively computed subtree.

@@ -78,8 +78,12 @@ const VkrBakeryTool *vkr_bakery_tool_at(uint32_t index) {
 /* The scheduler reads CPU time and peak memory of each tool process from this
  * file. atexit covers tools that call exit() directly. */
 vkr_internal void vkr_bakery_tool_write_usage(void) {
-  const char *path = getenv("VKR_BAKERY_USAGE_PATH");
-  if (!path || !path[0]) {
+  /* The path is in the cache's staging folder, often below a non-ASCII
+     profile folder; the scheduler sets it as UTF-8. */
+  char path[VKR_BAKERY_PATH_CAPACITY];
+  if (!vkr_platform_environment_variable("VKR_BAKERY_USAGE_PATH", path,
+                                         sizeof(path)) ||
+      !path[0]) {
     return;
   }
   uint64_t cpu_ms = 0u;

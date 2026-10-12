@@ -80,6 +80,36 @@ bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
   return true_v;
 }
 
+bool8_t vkr_platform_environment_variable(const char *name, char *value,
+                                          uint32_t capacity) {
+  if (!value || capacity == 0u || capacity > INT_MAX) {
+    return false_v;
+  }
+  value[0] = '\0';
+  wchar_t wide_name[256];
+  if (!name || !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name, -1,
+                                    wide_name, (int)ArrayCount(wide_name))) {
+    return false_v;
+  }
+  /* 32767 characters is the longest value the environment holds. */
+  wchar_t wide_value[32768];
+  SetLastError(ERROR_SUCCESS);
+  const DWORD length =
+      GetEnvironmentVariableW(wide_name, wide_value, ArrayCount(wide_value));
+  if (length == 0u) {
+    /* Unset, or set to the empty string. */
+    return GetLastError() == ERROR_SUCCESS ||
+           GetLastError() == ERROR_ENVVAR_NOT_FOUND;
+  }
+  if (length >= ArrayCount(wide_value) ||
+      !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_value, -1, value,
+                           (int)capacity, NULL, NULL)) {
+    value[0] = '\0';
+    return false_v;
+  }
+  return true_v;
+}
+
 bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
                                          uint32_t *out_length) {
   if (!buffer || capacity == 0u || !out_length)
@@ -564,9 +594,13 @@ vkr_internal bool8_t vkr_platform_build_command(const char *executable,
   return true_v;
 }
 
+/* Names and values are widened from UTF-8, as for every other "W" call: a
+   path in a value, such as a tool's usage report in a non-ASCII cache, would
+   otherwise reach the child decoded in the active code page. Children read
+   them back through vkr_platform_environment_variable. */
 typedef struct VkrPlatformSavedEnvironment {
-  char name[128];
-  char value[4096];
+  wchar_t name[128];
+  wchar_t value[4096];
   bool8_t existed;
 } VkrPlatformSavedEnvironment;
 
@@ -577,24 +611,27 @@ vkr_internal bool8_t vkr_platform_environment_apply(
     return false_v;
   }
   for (uint32_t i = 0; i < count; ++i) {
-    if (!variables[i].name ||
-        string_length(variables[i].name) >= sizeof(saved[i].name)) {
+    if (!vkr_platform_widen(variables[i].name, saved[i].name,
+                            (int32_t)ArrayCount(saved[i].name))) {
       return false_v;
     }
-    string_format(saved[i].name, sizeof(saved[i].name), "%s",
-                  variables[i].name);
     SetLastError(ERROR_SUCCESS);
-    const DWORD length = GetEnvironmentVariableA(
-        variables[i].name, saved[i].value, sizeof(saved[i].value));
-    if (length >= sizeof(saved[i].value)) {
+    const DWORD length = GetEnvironmentVariableW(saved[i].name, saved[i].value,
+                                                 ArrayCount(saved[i].value));
+    if (length >= ArrayCount(saved[i].value)) {
       return false_v;
     }
     saved[i].existed = length > 0u || GetLastError() != ERROR_ENVVAR_NOT_FOUND;
   }
   for (uint32_t i = 0; i < count; ++i) {
-    if (!SetEnvironmentVariableA(variables[i].name, variables[i].value)) {
+    wchar_t value[4096];
+    const bool8_t widened =
+        !variables[i].value || vkr_platform_widen(variables[i].value, value,
+                                                  (int32_t)ArrayCount(value));
+    if (!widened || !SetEnvironmentVariableW(
+                        saved[i].name, variables[i].value ? value : NULL)) {
       for (uint32_t rollback = 0; rollback < i; ++rollback) {
-        SetEnvironmentVariableA(saved[rollback].name,
+        SetEnvironmentVariableW(saved[rollback].name,
                                 saved[rollback].existed ? saved[rollback].value
                                                         : NULL);
       }
@@ -608,7 +645,7 @@ vkr_internal void
 vkr_platform_environment_restore(const VkrPlatformSavedEnvironment *saved,
                                  uint32_t count) {
   for (uint32_t i = 0; i < count; ++i) {
-    SetEnvironmentVariableA(saved[i].name,
+    SetEnvironmentVariableW(saved[i].name,
                             saved[i].existed ? saved[i].value : NULL);
   }
 }

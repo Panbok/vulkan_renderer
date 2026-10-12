@@ -71,6 +71,27 @@ bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
   return true_v;
 }
 
+bool8_t vkr_platform_environment_variable(const char *name, char *value,
+                                          uint32_t capacity) {
+  if (!value || capacity == 0u) {
+    return false_v;
+  }
+  value[0] = '\0';
+  if (!name) {
+    return false_v;
+  }
+  const char *variable = getenv(name);
+  if (!variable) {
+    return true_v;
+  }
+  const uint64_t length = strlen(variable);
+  if (length >= capacity) {
+    return false_v;
+  }
+  MemCopy(value, variable, length + 1u);
+  return true_v;
+}
+
 static bool32_t timebase_initialized = false;
 
 bool8_t vkr_platform_init() {
