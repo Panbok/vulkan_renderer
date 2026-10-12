@@ -29,6 +29,7 @@
     "../shared/transmission_kernel.slangh",
     "../shared/punctual_light_kernel.slangh",
     "../shared/sh_l2_kernel.slangh",
+    "../shared/reflection_probe_kernel.slangh",
     "../shared/diffuse_volume_kernel.slangh",
     "../shared/local_shadow.slangh",
     "../shared/local_shadow_transmission.slangh",

@@ -326,9 +326,9 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
 }
 
 // The reflection probe a camera-view draw shades with on the tiled pipeline
-// (ADR-087), as frame probe index + 1: the probe with the largest influence
-// at the draw's bounding-sphere centre, the smaller box on a tie, when that
-// reaches one half. Zero takes the global environment.
+// (ADR-087), as frame probe index + 1: the first probe, in the host's
+// smaller-box-first order, whose influence at the draw's bounding-sphere
+// centre reaches one half. Zero takes the global environment.
 static uint vkr_metal_packet_draw_probe(
     constant VkrMetalPacketFrameRoot *frame,
     const device VkrMetalPacketInstance &instance, float4 local_sphere) {
@@ -336,22 +336,12 @@ static uint vkr_metal_packet_draw_probe(
   if (count == 0u || frame->ibl_probes == nullptr)
     return 0u;
   float3 center = (instance.model * float4(local_sphere.xyz, 1.0f)).xyz;
-  uint best = 0u;
-  float best_weight = 0.5f;
-  float best_volume = 0.0f;
   for (uint i = 0u; i < count; ++i) {
-    const device VkrMetalPacketIblProbe &probe = frame->ibl_probes[i];
-    float weight = vkr_metal_packet_probe_influence(probe, center);
-    float3 extents = max(probe.extents_weight.xyz, 0.0f);
-    float volume = extents.x * extents.y * extents.z;
-    if (weight > best_weight ||
-        (best != 0u && weight == best_weight && volume < best_volume)) {
-      best = i + 1u;
-      best_weight = weight;
-      best_volume = volume;
-    }
+    if (vkr_metal_packet_probe_influence(frame->ibl_probes[i], center) >=
+        0.5f)
+      return i + 1u;
   }
-  return best;
+  return 0u;
 }
 
 kernel void vkr_metal_packet_gpu_draw_encode(

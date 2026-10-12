@@ -30,29 +30,6 @@
       "path": "assets/textures/bistro_lamps_local.vklm"
     }
   },
-  "reflection_probes": [
-    {
-      "enabled": true,
-      "center": [
-        -7.5,
-        2.2,
-        9.0
-      ],
-      "extents": [
-        5.5,
-        2.5,
-        8.0
-      ],
-      "blend_distance": 0.75,
-      "intensity": 1.0,
-      "diffuse_intensity": 1.0,
-      "specular_intensity": 0.0,
-      "cubemap": {
-        "base_path": "assets/textures/bistro_indoor_probe",
-        "extension": "png"
-      }
-    }
-  ],
   "entities": [
     {
       "name": "SceneRoot",

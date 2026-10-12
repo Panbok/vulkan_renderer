@@ -31,11 +31,8 @@
       "blend_distance": 0.75,
       "intensity": 1.0,
       "diffuse_intensity": 1.0,
-      "specular_intensity": 0.0,
-      "cubemap": {
-        "base_path": "assets/textures/bistro_indoor_probe",
-        "extension": "png"
-      }
+      "specular_intensity": 1.0,
+      "cubemap": {"path": "assets/textures/bistro_cafe_probe.vkt"}
     }
   ],
   "entities": [

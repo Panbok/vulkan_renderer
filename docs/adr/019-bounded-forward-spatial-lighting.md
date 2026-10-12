@@ -23,6 +23,13 @@ a layer budget per preset, the table ranks lights by camera distance, and
 frustum. Native Vulkan harness runs cover the reuse and the mask's light
 mask; the skipped mask, the budget and the ranked table ran only on the
 user's level in the editor, and none of the four ran on Metal (Evidence).
+Since 2026-10-12 probes blend in priority order with an inward blend band,
+look up the dominant specular direction, carry only their own gains, and
+bake with source mips and without the sky's discs, glow and stars
+([Short-history rendering](../proposals/short-history-rendering.md),
+section 5). Native Vulkan evidence covers the Bistro street view and the
+café probe bake; the Metal side of the change was neither compiled nor run
+(Evidence).
 
 ## Context
 
@@ -46,18 +53,63 @@ table's `intensity`
 ([`vkr_lighting_system_select_point_lights`](../../runtime/src/renderer/systems/vkr_lighting_system.h)).
 The table therefore changes while the camera moves.
 
-Pack up to 16 ready local IBL probes per frame. Compute their influence from
-fragment position and AABB weights; keep the global environment as fallback.
-Box projection controls only parallax-corrected reflection lookup. Each probe
-authors it as `box_projection` (default true, so existing probes keep it);
-false looks up the plain reflection direction, as an outdoor probe needs.
-Disabling it does not bypass a local probe's influence extents or blend
-falloff. A shaded point more than 1 cm outside the box, such as one in the
-blend band, also looks up the plain reflection: no box wall lies ahead of it,
-and the projected point would only point from the box centre to the surface,
-whatever the view. The tolerance keeps surfaces on a wall, such as a floor at
-the box's bottom, projected. The global environment remains the unbounded
-source.
+Pack up to 16 ready local IBL probes per frame
+(`VKR_FRAME_IBL_PROBE_MAX`). The host lists them in priority order
+(`vkr_standard_scene_runtime_order_probes` in
+[`vkr_standard_scene_runtime.c`](../../runtime/src/application/vkr_standard_scene_runtime.c)):
+when more are ready than `ibl_probe_limit` allows, it keeps those nearest the
+camera by distance to their box, then sorts the kept probes by box volume,
+smallest first. The scene and the frame both hold at most 16 probes, so
+today the distance rank drops probes only under a lower `ibl_probe_limit`.
+
+The shared kernel
+[`reflection_probe_kernel.slangh`](../../renderer/src/shaders/shared/reflection_probe_kernel.slangh)
+gives both pipelines one meaning for influence and lookup direction:
+
+- **Influence** (`vkr_reflection_probe_influence`, times the probe's
+  `weight`): one inside the box, falling linearly to zero across
+  `blend_distance` inward from the four side faces and the top face, and zero
+  outside. The bottom face has no band, so a floor lying on it keeps full
+  influence. A point within 1 cm outside a face still counts as inside
+  (`VKR_REFLECTION_PROBE_WALL_TOLERANCE`). The band lies inside the box, so a
+  room's probe does not reach through its walls into the next room.
+- **Priority blend** (`vkr_reflection_probe_share`, desktop pipeline): in
+  host order each probe takes `influence × (1 − covered)`, where `covered`
+  is the sum of the shares before it, and the loop stops once `covered`
+  reaches one. The global environment takes `1 − covered`. A room probe
+  inside a hall probe owns its room; the hall fills only the room's band and
+  the rest of the hall (`packet_environment_terms_with_diffuse_normal` and
+  `packet_environment_specular_radiance` in
+  [`default.slang`](../../renderer/src/shaders/vulkan/slang/world/default.slang)).
+  The tiled pipeline takes one probe per surface by the same order
+  ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8).
+- **Lookup direction.** Every environment lookup, global and probe, uses the
+  dominant direction of the GGX lobe (Lagarde and de Rousiers, 2014):
+  `normalize(N + (R − N) · s (√s + α))` with `s = 1 − α` and `α` the squared
+  perceptual roughness (`vkr_specular_dominant_direction`).
+- **Box projection** (`vkr_reflection_probe_direction`), authored per probe
+  as `box_projection` (default true); false looks up the dominant direction
+  itself, as an outdoor probe needs, and does not change the influence. The
+  shaded position is clamped to the box, a ray along the dominant direction
+  finds where it leaves the box, and the lookup points from the box centre,
+  where the probe was captured, to that point. The result then blends toward the unprojected
+  direction by `α`, because a rough lobe spans much of the cube. One
+  axis-aligned box serves influence and projection; there is no separate
+  projection box, capture-origin offset or rotation.
+
+A probe's `intensity_box.x` carries its own intensity, the frame's
+pre-exposure P and its source's bake scale, `intensity × P × 2^−B_probe`
+([ADR-081](081-physical-night-sky.md); `vkr_vk_upload_packet_tables` in
+[`vkr_vulkan_draws.c`](../../renderer/src/vulkan/vkr_vulkan_draws.c),
+`vkr_metal_packet_write_upload_environment` in
+[`vkr_metal_packet_resources.inc`](../../renderer/src/metal/internal/vkr_metal_packet_resources.inc)).
+Its `diffuse_intensity` and `specular_intensity` scale its own terms. The
+environment's `intensity`, `diffuse_intensity` and `specular_intensity`
+(`ibl_controls`) scale only the global environment's share: a capture
+already holds the sun, lamps and sky its room sees. For the same reason
+baked sky visibility scales only the global share
+([ADR-054](054-baked-diffuse-volumes.md), "Baked sky in environment
+reflections"). The global environment remains the unbounded source.
 Diffuse uses ADR-038 coefficients and specular uses prefiltered cubemaps.
 Prepared scene metadata can override exact glTF light-definition ranges at the
 cold import boundary; malformed or unmatched overrides fail preparation.
@@ -424,19 +476,50 @@ disables that probe instead of aliasing the environment.
 
 The runtime uses a direct source cubemap once: it creates one writable prefilter
 cubemap and asks the retained IBL publisher to derive both the probe's SH
-coefficients and prefilter. Source mip count comes from the finalized texture;
-a one-mip saved source therefore projects SH from mip 0 and prefilter sampling
-falls back to mip 0. The runtime does not render six scene views for a saved
-probe. A probe with no cubemap continues to alias the ready scene environment.
+coefficients and prefilter. Source mip count comes from the finalized texture,
+so the prefilter's filtered importance sampling reads the source mips the
+baker wrote; a one-mip source, such as a cube baked before 2026-10-12, falls
+back to mip 0 and aliases on rough surfaces. The runtime does not render six
+scene views for a saved probe. A probe with no cubemap continues to alias the
+ready scene environment.
+
+A probe without an authored `sh_deringing` takes a window of 1.0
+([ADR-038](038-sh-l2-diffuse-irradiance.md)).
 
 [`vkr_bakery bake probe`](../../tools/bakery/vkr_bakery_bake.c) owns offline
 six-view capture in one harness session. A bake records
 the source scene manifest, per-face capture and report digests, output digest,
 and one stable native provenance record in `<output>.bake.json`. It captures the
 six KTX cube faces in `+X, -X, +Y, -Y, +Z, -Z` order with local probes disabled,
-then the packer vertically flips each top-left capture exactly once. The emitted
-`.vkt` is an uncompressed KTX2 cube with six RGBA16F faces, one array layer, and
-one mip level. It has no runtime-generated source mips or orientation repair.
+then the packer vertically flips each top-left capture exactly once. The
+capture's visible sky leaves out the sun and moon discs, their glow and the
+stars, as the global IBL source does
+([ADR-058](058-revision-baked-sky-atmosphere.md)), so a probe does not
+reflect the sun a second time over its direct light: the harness child sets
+`VkrFrameGlobals.sky_light_sources_hidden`
+([`vkr_frame_input.h`](../../renderer/src/vkr_frame_input.h)) for a case
+with cubemap camera modes, and `vkr_renderer_prepare_frame_data` zeroes the
+sky record's `solar.w`, `lunar.w`, `mie_extinction.w` and `star_axis.w`.
+`--size` is a power of two from 1 to 256, the runtime prefilter size
+(`VKR_IBL_PREFILTER_SIZE`); a larger capture would only alias the top level.
+The emitted `.vkt` is an uncompressed KTX2 cube with six RGBA16F faces, one
+array layer and the full mip chain, `log2(size) + 1` levels
+([`vkr_hdr_cube_packer.cpp`](../../tools/vkr_hdr_cube_packer.cpp)): each
+level is a 2×2 box filter of the level above, averaged in fp32 and rounded
+to the nearest even binary16. It has no orientation repair.
+
+A scene may name the bake's own output as its probe's cubemap, so a re-bake
+replaces the cube the scene uses. Captures turn local probes off, so that
+cube never feeds the capture. The scene-manifest check
+(`vkr_bake_scene_manifest`) skips the output: it neither compares the file
+with its recorded digest nor counts it as a source the output would
+overwrite, and the recorded digest still enters the aggregate. Output
+protection and `--check` freshness therefore work for such a scene.
+
+A project bake (`vkr_project_perform_bakes` in
+[`vkr_project_bake.c`](../../tools/bakery/project/vkr_project_bake.c)) bakes
+the diffuse volume, then lightmaps, then probes. The earlier bakes point the
+scene at their new artifacts, so probes capture this bake's light.
 
 Example bake and freshness check:
 
@@ -449,6 +532,29 @@ Example bake and freshness check:
 ./build_release/tools/bakery/vkr_bakery bake probe \
   --output assets/probes/example.vkt --check
 ```
+
+Bistro's café probe (box centre (-7.5, 2.2, 9.0), half extents
+(5.5, 2.5, 8.0), band 0.75 m) reads
+`assets/textures/bistro_cafe_probe.vkt`, a 256² cube of nine levels, about
+4.2 MB. The cube and its `.vkt.bake.json` are tracked as an exception to the
+`.vkt` rule in `.gitignore`: an uncompressed RGBA16F cube is the same on
+every host. The editor Bakery panel's probe row writes it, as does:
+
+```sh
+./build_release/tools/bakery/vkr_bakery bake probe \
+  --scene assets/scenes/bistro.scene.json \
+  --output assets/textures/bistro_cafe_probe.vkt \
+  --position -7.5 2.2 9.0 --size 256 \
+  --harness build_release/tools/vkr_harness.exe
+```
+
+`--harness` is needed on Windows only: the default,
+`build_release/tools/vkr_harness`, has no `.exe`.
+
+`bistro.scene.json` and the 28 fixtures that keep Bistro's sky point their
+probe at this cube with `specular_intensity` 1. The 16 fixtures with another
+atmosphere or environment, such as night or another sun, have no probe until
+probes follow the time of day (audit B4).
 
 Desktop receivers use nine comparison-PCF Poisson taps with a 1.5-texel radius,
 in texels of the face that owns each tap. Normal offset is two local shadow
@@ -621,8 +727,14 @@ Saved probes consume a source cubemap plus a runtime prefilter cubemap and SH
 slot. Their offline artifact is valid only with its matching sidecar provenance;
 `--check` verifies its output digest, scene-manifest source digests, face list,
 and recorded provenance consistency. The saved source must remain a finite,
-uncompressed RGBA16F KTX2 cube with the baker's face order and one-mip storage
-contract.
+uncompressed RGBA16F KTX2 cube with the baker's face order and full mip
+chain; a 256² cube takes about 4.2 MB.
+
+Probes blend by box volume, not by authored priority, and the band reaches
+inward only, so a probe box must enclose the floor area it serves plus its
+band width. Probe light still ignores the hour: a capture holds the World's
+sky at bake time (audit B4 in
+[Short-history rendering](../proposals/short-history-rendering.md)).
 
 ## Alternatives considered
 
@@ -630,7 +742,13 @@ A first-N global list makes visibility depend on source order; until
 2026-10-11 the table kept the 128 lowest render ids, such a list for scenes
 past 128 lights. A Balanced atlas budget of 6 layers would shrink Bistro's
 lamps, which need 7 static layers beside the band. Per-draw probe
-selection fails on large meshes. Hard light influence boxes produced discontinuous
+selection fails on large meshes. Until 2026-10-12 the desktop pipeline
+normalized overlapping probes, so a room probe inside a hall probe ended
+half and half, and its blend band lay outside the box, crossing walls into
+the next room; a point in that outer band also lost box projection, which
+left a seam where a floor ran through a doorway. Applying the environment's
+gains and baked sky visibility to probes double-counted what their captures
+hold. Hard light influence boxes produced discontinuous
 slabs without solving diffuse occlusion. Excluding glass from depth-only shadows
 would restore light but discard tint and attenuation. Four transmitting crossings
 would add 624 MiB across three full-pool target images and five passes per
@@ -647,7 +765,10 @@ budget per preset landed on 2026-10-11). A scene past 128 lights or past the
 atlas budget shows popping lights or face-size churn. Scene scale exceeds
 these capacities, stored probe source requirements change,
 or local-light transport requires more crossings, refracted caustics, or a
-different memory or raster budget.
+different memory or raster budget. A scene needs more than 16 probes, an
+authored probe priority, or probes that follow the hour, capture origins
+apart from the box centre, or captures without moving entities (audit B4,
+B5 and B7).
 
 ## Implementation
 
@@ -664,8 +785,45 @@ the atlas budget and submit-only promotion.
 selects the light table, and
 [`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c)
 gates `Shadow.LocalMask`.
+[`reflection_probe_kernel.slangh`](../../renderer/src/shaders/shared/reflection_probe_kernel.slangh)
+defines probe influence, priority share and lookup direction for
+[`default.slang`](../../renderer/src/shaders/vulkan/slang/world/default.slang)
+and, through
+[`library.recipe.json`](../../renderer/src/shaders/metal/library.recipe.json),
+for [`lighting.metalh`](../../renderer/src/shaders/metal/msl/world/lighting.metalh),
+[`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal) and
+[`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal).
+`vkr_standard_scene_runtime_order_probes` orders the frame's probes.
 
 ## Evidence
+
+Probe audit fixes, Vulkan, RX 6700 XT, Windows, 2026-10-12, local and
+non-authoritative:
+- Debug `build_test.bat` passed every CPU suite, including
+  `test_vulkan_shader_abi_reflection`.
+- The café probe bake wrote a cube of nine levels.
+- Release `vkr_harness snapshot` with `local-offscreen.json`, TAA off, of the
+  street camera of `decals_bistro_street_baseline_capture` (1920×1080) and
+  the indoor camera of `local_shadow_bistro_indoor_capture` (1280×720),
+  against the step-1 build (SSR, SSGI and FSR 3.1 removed, before these
+  fixes):
+  - Before Bistro took its diffuse volume: street depth and G-buffers
+    byte-identical, final colour different by more than 2/255 on 1.7 % of
+    pixels, from the dominant-direction lookup. Indoors the café turned grey
+    and blue: the old placeholder probe had been a flat warm ambient about 20
+    to 60 times brighter than the captured room and gave no specular, and
+    without baked light the café's only ambient was the probe's capture.
+  - With the volume (final): street depth and G-buffers byte-identical again;
+    final colour differs on 96 % of pixels by more than 2/255 and on 37 % by
+    more than 16, the volume's bounce replacing the sky's SH. Indoors the café
+    is warm again and its bar top and glassware reflect the room; 91 % of
+    pixels differ by more than 16/255 from the placeholder render. A small
+    green patch of bounce on the street's cobbles comes from the volume.
+- `vkr_bakery bake probe --check --output assets/textures/bistro_cafe_probe.vkt`
+  reports `current` for the café probe baked from `bistro.scene.json`, a scene
+  that names the probe it replaces.
+- Not run: Metal (no Mac available), so the tiled pipeline's side was
+  neither compiled nor run, and no timing.
 
 Static and dynamic squares, Vulkan Release, RX 6700 XT, 2026-10-09, local and
 non-authoritative (`local-offscreen-gpu-repeated`, 5 repetitions of 300

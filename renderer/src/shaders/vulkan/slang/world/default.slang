@@ -788,48 +788,23 @@ float3 packet_shadow_debug_color(uint mode, VkrVulkanShadowDebugSample sample)
 
 float packet_probe_influence(VkrVulkanIblProbe probe, float3 world_position)
 {
-    float weight = max(probe.extents_weight.w, 0.0f);
-    if (weight <= 1e-6f)
-        return weight;
-    float3 outside = max(abs(world_position - probe.center_blend.xyz) -
-                             max(probe.extents_weight.xyz, 0.0f),
-                         0.0f);
-    float distance = length(outside);
-    if (distance <= 1e-6f)
-        return weight;
-    return probe.center_blend.w > 1e-6f
-               ? weight * saturate(1.0f - distance / probe.center_blend.w)
-               : 0.0f;
+    return max(probe.extents_weight.w, 0.0f) *
+           vkr_reflection_probe_influence(world_position,
+                                          probe.center_blend.xyz,
+                                          max(probe.extents_weight.xyz, 0.0f),
+                                          probe.center_blend.w);
 }
 
-// A point this far outside a probe's box still counts as inside it, so a
-// surface lying on a wall, such as a floor at the box's bottom, stays
-// box-projected despite position rounding (metres).
-static const float packet_box_project_wall_tolerance = 0.01f;
-
-// The probe lookup direction of a reflection from `world_position`: toward
-// where the reflection leaves the probe's box. A point outside the box has
-// no box wall ahead of it, so it looks up the plain reflection, as a probe
-// without box projection does.
-float3 packet_box_project(float3 direction, float3 world_position,
-                          float3 center, float3 extents)
+// The cube direction of `dominant`, the lobe's dominant reflection, in one
+// probe: box-projected unless the probe turns that off.
+float3 packet_probe_direction(VkrVulkanIblProbe probe, float3 dominant,
+                              float3 world_position, float alpha)
 {
-    if (any(extents <= 1e-4f))
-        return normalize(direction);
-    if (any(abs(world_position - center) >
-            extents + packet_box_project_wall_tolerance))
-        return normalize(direction);
-    float3 safe_direction = direction;
-    for (uint axis = 0u; axis < 3u; ++axis)
-    {
-        if (abs(safe_direction[axis]) < 1e-4f)
-            safe_direction[axis] = safe_direction[axis] < 0.0f ? -1e-4f : 1e-4f;
-    }
-    float3 t_min = (center - extents - world_position) / safe_direction;
-    float3 t_max = (center + extents - world_position) / safe_direction;
-    float3 t_far = max(t_min, t_max);
-    float t_hit = max(min(t_far.x, min(t_far.y, t_far.z)), 0.0f);
-    return normalize(world_position + safe_direction * t_hit - center);
+    return probe.intensity_box.w > 0.5f
+               ? vkr_reflection_probe_direction(
+                     dominant, world_position, probe.center_blend.xyz,
+                     max(probe.extents_weight.xyz, 0.0f), alpha)
+               : dominant;
 }
 
 // Gate discrete crossing depths before selecting their cumulative RGB prefix.
@@ -1523,7 +1498,13 @@ packet_environment_terms_with_diffuse_normal(
 {
     float no_v = max(dot(normal, view), 0.0f);
     roughness = vkr_anisotropy_environment_roughness(roughness, energy);
-    float3 reflection = reflect(-view, vkr_anisotropy_environment_normal(normal, view, energy));
+    float3 environment_normal =
+        vkr_anisotropy_environment_normal(normal, view, energy);
+    float3 reflection = reflect(-view, environment_normal);
+    float alpha = roughness * roughness;
+    float3 dominant =
+        vkr_specular_dominant_direction(environment_normal, reflection, alpha);
+    float lod = roughness * float(max(frame.prefilter_mip_count, 1u) - 1u);
     float3 kd = energy.diffuse_weight * (1.0f - metallic);
     // Frame-root indices are uniform. Each local-probe loop iteration also
     // visits one shared table row across the active lanes.
@@ -1532,61 +1513,49 @@ packet_environment_terms_with_diffuse_normal(
     float horizon = saturate(1.0f + dot(reflection, horizon_normal));
     float specular_visibility =
         horizon * horizon * packet_specular_ao(ao, no_v, roughness);
+    // Probes carry their own pre-exposed gains; the environment's gains
+    // scale only the share the global environment fills.
     float3 irradiance = 0.0f;
-    float3 diffuse = 0.0f;
     float3 specular = 0.0f;
-    float local_weight_sum = 0.0f;
+    float covered = 0.0f;
     uint probe_count = min(frame.ibl_probe_count, 16u);
-    for (uint i = 0u; i < probe_count; ++i)
-        local_weight_sum +=
-            packet_probe_influence(frame.ibl_probes[i], world_position);
-    float weight_scale =
-        local_weight_sum > 1.0f ? 1.0f / local_weight_sum : 1.0f;
-    for (uint i = 0u; i < probe_count; ++i)
+    for (uint i = 0u; i < probe_count && covered < 1.0f; ++i)
     {
         VkrVulkanIblProbe probe = frame.ibl_probes[i];
-        float weight =
-            packet_probe_influence(probe, world_position) * weight_scale;
+        float weight = vkr_reflection_probe_share(
+            packet_probe_influence(probe, world_position), covered);
         if (weight <= 1e-6f)
             continue;
-        float3 probe_reflection =
-            probe.intensity_box.w > 0.5f
-                ? packet_box_project(reflection, world_position,
-                                     probe.center_blend.xyz,
-                                     max(probe.extents_weight.xyz, 0.0f))
-                : reflection;
+        covered += weight;
         float3 probe_irradiance =
             vkr_sh_l2_evaluate(frame.sh_coefficients[probe.sh_slot],
                                sh_evaluation);
         float3 probe_prefiltered =
             g_cube_textures[probe.prefilter_texture]
-                .SampleLevel(
-                    g_samplers[probe.prefilter_sampler], probe_reflection,
-                    roughness * float(max(frame.prefilter_mip_count, 1u) - 1u))
+                .SampleLevel(g_samplers[probe.prefilter_sampler],
+                             packet_probe_direction(probe, dominant,
+                                                    world_position, alpha),
+                             lod)
                 .rgb;
-        irradiance += probe_irradiance * ao * probe.intensity_box.x * probe.intensity_box.y * weight;
-        diffuse += kd * probe_irradiance * albedo * ao * probe.intensity_box.x *
-                   probe.intensity_box.y * weight;
-        specular += probe_prefiltered * energy.reflectance *
-                    specular_visibility * probe.intensity_box.x *
+        irradiance += probe_irradiance * probe.intensity_box.x *
+                      probe.intensity_box.y * weight;
+        specular += probe_prefiltered * probe.intensity_box.x *
                     probe.intensity_box.z * weight;
     }
-    float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
+    float global_weight = saturate(1.0f - covered);
     // Global results are consumed after the local sum, so do not keep them
     // live across the local-probe sampling and SH evaluation loop.
     float3 global_irradiance = vkr_sh_l2_evaluate(
         frame.sh_coefficients[frame.sh_global_slot], sh_evaluation);
-    irradiance += global_irradiance * ao * global_weight;
-    diffuse += kd * global_irradiance * albedo * ao * global_weight;
-    float3 global_prefiltered = packet_global_prefiltered(
-        frame, reflection,
-        roughness * float(max(frame.prefilter_mip_count, 1u) - 1u));
-    specular += global_prefiltered * energy.reflectance *
-                specular_visibility * global_weight;
+    irradiance += global_irradiance * global_weight * frame.ibl_controls.x *
+                  frame.ibl_controls.y;
+    float3 global_prefiltered = packet_global_prefiltered(frame, dominant, lod);
+    specular += global_prefiltered * global_weight * frame.ibl_controls.x *
+                frame.ibl_controls.z;
     VkrVulkanEnvironmentResult result;
-    result.irradiance = irradiance * frame.ibl_controls.y * frame.ibl_controls.x;
-    result.diffuse = diffuse * frame.ibl_controls.y * frame.ibl_controls.x;
-    result.specular = specular * frame.ibl_controls.z * frame.ibl_controls.x;
+    result.irradiance = irradiance * ao;
+    result.diffuse = kd * albedo * result.irradiance;
+    result.specular = specular * energy.reflectance * specular_visibility;
     return result;
 }
 
@@ -1602,67 +1571,56 @@ packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
 }
 
 // The environment's prefiltered radiance along the reflection about
-// `normal`, its probes blended with the global environment, pre-exposed and
-// with the probes' specular gains. With `baked` light the surface reflects
-// the environment only in the share its baked sky light supports and its
-// surroundings in the rest (ADR-054); that compares the baked light with the
-// response the same blend's SH gives at `normal`.
+// `normal`, pre-exposed and with its specular gains: the probes in priority
+// order, then the global environment in the share they leave. A probe's
+// capture already holds what its room sees. The global environment does not:
+// with `baked` light the surface reflects it only in the share its baked sky
+// light supports and its surroundings in the rest (ADR-054), comparing the
+// baked light with the response the global SH gives at `normal`.
 float3 packet_environment_specular_radiance(
     VkrVulkanPacketFrameRoot *frame, float3 world_position, float3 normal,
     float3 view, float roughness, VkrVulkanBakedLight baked)
 {
     float3 reflection = reflect(-view, normal);
-    VkrShL2Evaluation sh_evaluation = vkr_sh_l2_prepare_evaluation(normal);
+    float alpha = roughness * roughness;
+    float3 dominant = vkr_specular_dominant_direction(normal, reflection, alpha);
+    float lod = roughness * float(max(frame.prefilter_mip_count, 1u) - 1u);
     float3 radiance = 0.0f;
-    float3 response = 0.0f;
-    float local_weight_sum = 0.0f;
+    float covered = 0.0f;
     uint probe_count = min(frame.ibl_probe_count, 16u);
-    for (uint i = 0u; i < probe_count; ++i)
-        local_weight_sum +=
-            packet_probe_influence(frame.ibl_probes[i], world_position);
-    float weight_scale =
-        local_weight_sum > 1.0f ? 1.0f / local_weight_sum : 1.0f;
-    for (uint i = 0u; i < probe_count; ++i)
+    for (uint i = 0u; i < probe_count && covered < 1.0f; ++i)
     {
         VkrVulkanIblProbe probe = frame.ibl_probes[i];
-        float weight =
-            packet_probe_influence(probe, world_position) * weight_scale;
+        float weight = vkr_reflection_probe_share(
+            packet_probe_influence(probe, world_position), covered);
         if (weight <= 1e-6f)
             continue;
-        float3 probe_reflection =
-            probe.intensity_box.w > 0.5f
-                ? packet_box_project(reflection, world_position,
-                                     probe.center_blend.xyz,
-                                     max(probe.extents_weight.xyz, 0.0f))
-                : reflection;
+        covered += weight;
         radiance += g_cube_textures[probe.prefilter_texture]
-                        .SampleLevel(
-                            g_samplers[probe.prefilter_sampler],
-                            probe_reflection,
-                            roughness * float(max(frame.prefilter_mip_count, 1u) - 1u))
-                        .rgb * probe.intensity_box.x * probe.intensity_box.z *
-                    weight;
-        if (baked.valid)
-            response += vkr_sh_l2_evaluate(
-                            frame.sh_coefficients[probe.sh_slot],
-                            sh_evaluation) *
-                        probe.intensity_box.x * weight;
+                        .SampleLevel(g_samplers[probe.prefilter_sampler],
+                                     packet_probe_direction(probe, dominant,
+                                                            world_position,
+                                                            alpha),
+                                     lod)
+                        .rgb *
+                    probe.intensity_box.x * probe.intensity_box.z * weight;
     }
-    float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
-    radiance += packet_global_prefiltered(
-                    frame, reflection,
-                    roughness * float(max(frame.prefilter_mip_count, 1u) - 1u)) *
-                global_weight;
-    radiance *= frame.ibl_controls.x;
-    if (!baked.valid)
+    float global_weight = saturate(1.0f - covered);
+    if (global_weight <= 0.0f)
         return radiance;
-    response += vkr_sh_l2_evaluate(frame.sh_coefficients[frame.sh_global_slot],
-                                   sh_evaluation) *
-                global_weight;
-    return vkr_sh_l2_occluded_radiance(
-        radiance, baked.response,
-        vkr_sh_l2_sky_visibility(baked.sky,
-                                 response * frame.ibl_controls.x));
+    float3 global = packet_global_prefiltered(frame, dominant, lod) *
+                    frame.ibl_controls.x;
+    if (baked.valid)
+    {
+        float3 response =
+            vkr_sh_l2_evaluate(frame.sh_coefficients[frame.sh_global_slot],
+                               vkr_sh_l2_prepare_evaluation(normal)) *
+            frame.ibl_controls.x;
+        global = vkr_sh_l2_occluded_radiance(
+            global, baked.response,
+            vkr_sh_l2_sky_visibility(baked.sky, response));
+    }
+    return radiance + global * (global_weight * frame.ibl_controls.z);
 }
 
 float3 packet_environment_specular_weight(float3 normal, float3 horizon_normal,
@@ -1689,8 +1647,7 @@ float3 packet_environment_specular(VkrVulkanPacketFrameRoot *frame,
                 vkr_anisotropy_environment_roughness(roughness, energy),
                 baked) *
            packet_environment_specular_weight(normal, horizon_normal, view,
-                                              roughness, ao, energy) *
-           frame.ibl_controls.z;
+                                              roughness, ao, energy);
 }
 
 float3 packet_sheen_environment(VkrVulkanPacketFrameRoot *frame,
@@ -1706,7 +1663,7 @@ float3 packet_sheen_environment(VkrVulkanPacketFrameRoot *frame,
     float3 receiver = packet_environment_specular_weight(
         normal, normal, view, sheen.roughness, ao, approximation);
     return sheen.color * sheen.directional_albedo * incoming * receiver *
-           gtao_specular_cone * frame.ibl_controls.z;
+           gtao_specular_cone;
 }
 
 float3 packet_environment(VkrVulkanPacketFrameRoot *frame,

@@ -1303,6 +1303,8 @@ static void probe_defaults(void *value) {
   probe->diffuse_intensity = 1.0f;
   probe->specular_intensity = 1.0f;
   probe->box_projection = true_v;
+  /* Matches the scene loader's default for a probe without the field. */
+  probe->sh_deringing = 1.0f;
   probe->slot = UINT32_MAX;
   probe->source = UINT32_MAX;
 }

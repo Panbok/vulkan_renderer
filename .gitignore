@@ -19,7 +19,7 @@ build_font_cooker
 build_novcpkg
 # Runtime textures stay local except for explicitly committed source assets.
 assets/textures/*
-!assets/textures/bistro_indoor_probe_*.png
+!assets/textures/bistro_cafe_probe.vkt.bake.json
 !assets/textures/UbuntuMono21px_0.png
 !assets/textures/editor-light-labels.png
 assets/models/*
@@ -85,3 +85,6 @@ __pycache__/
 # Cooked textures are host-native (ASTC on Apple silicon, BC on x86-64) and
 # cooked locally by vkr_bakery; only their sources are tracked (ADR-012).
 *.vkt
+# Bistro's café reflection probe: an uncompressed RGBA16F KTX2 cube, the
+# same on every host, baked by `vkr_bakery bake probe` (ADR-019).
+!assets/textures/bistro_cafe_probe.vkt

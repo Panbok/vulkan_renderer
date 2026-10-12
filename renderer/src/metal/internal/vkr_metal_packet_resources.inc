@@ -3253,8 +3253,6 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
   }
   ((VkrMetalPacketSky *)(cpu + plan->sky_offset))->clear_sh_slot =
       renderer->ibl_sh_slot;
-  const int32_t global_radiance_stops =
-      vkr_metal_packet_global_radiance_stops(renderer, packet);
   if (plan->ibl_probe_count > 0) {
     VkrMetalPacketIblProbe *packed =
         (VkrMetalPacketIblProbe *)(cpu + plan->ibl_probes_offset);
@@ -3271,11 +3269,12 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
                            probe->blend_distance},
           .extents_weight = {probe->extents.x, probe->extents.y,
                              probe->extents.z, probe->weight},
-          /* The frame gain carries pre-exposure over the global source's
-             bake scale; each probe exchanges that scale for its own. */
+          /* A probe carries its own pre-exposed radiance scale: the
+             environment's intensity and gains scale only the global share
+             (ADR-019). */
           .intensity_box = {probe->intensity *
-                                ldexpf(1.0f, global_radiance_stops -
-                                                 prefilter->radiance_stops),
+                                packet->exposure.pre_exposure *
+                                ldexpf(1.0f, -prefilter->radiance_stops),
                             probe->diffuse_intensity, probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
       };

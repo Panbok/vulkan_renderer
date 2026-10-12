@@ -1642,6 +1642,13 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   application->globals.bloom_knee = case_manifest->renderer.bloom_knee;
   application->globals.bloom_intensity =
       case_manifest->renderer.bloom_intensity;
+  /* Cubemap faces are reflection-probe captures (vkr_bakery bake probe). */
+  bool8_t cubemap_capture =
+      case_manifest->camera.mode >= VKR_HARNESS_CAMERA_CUBEMAP_PX &&
+      case_manifest->camera.mode <= VKR_HARNESS_CAMERA_CUBEMAP_NZ;
+  for (uint32_t i = 0u; i < case_manifest->capture_count; ++i)
+    cubemap_capture |= case_manifest->captures[i].has_camera_mode;
+  application->globals.sky_light_sources_hidden = cubemap_capture;
   application->globals.dof_enabled = case_manifest->renderer.dof_enabled;
   application->globals.dof_focus_distance =
       case_manifest->renderer.dof_focus_distance;

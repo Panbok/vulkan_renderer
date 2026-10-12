@@ -708,13 +708,15 @@ vkr_internal bool8_t vkr_vk_resolve_ibl(VkrVulkanRenderer *renderer,
                             probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
       };
-      /* The frame gain carries pre-exposure over the global source's bake
-         scale; each probe exchanges that scale for its own. */
+      /* A probe carries its own pre-exposed radiance scale: the
+         environment's intensity and gains scale only the global share
+         (ADR-019). */
       const VkrVulkanPublishedTexture *probe_prefilter =
           vkr_vk_published_texture(renderer, probe->prefilter, NULL);
-      packed.intensity_box.x *= ldexpf(
-          1.0f, slot->ibl_radiance_stops -
-                    (probe_prefilter ? probe_prefilter->radiance_stops : 0));
+      packed.intensity_box.x *=
+          renderer->graph->packet->exposure.pre_exposure *
+          ldexpf(1.0f,
+                 -(probe_prefilter ? probe_prefilter->radiance_stops : 0));
       if (!vkr_vk_resolve_sampled_pair(renderer, probe->prefilter,
                                        &packed.prefilter_texture,
                                        &packed.prefilter_sampler)) {

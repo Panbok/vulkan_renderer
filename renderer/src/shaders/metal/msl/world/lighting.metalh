@@ -335,48 +335,13 @@ float vkr_metal_packet_specular_ao(float ao, float no_v, float roughness) {
   return saturate(pow(no_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
 }
 
+
 float vkr_metal_packet_probe_influence(
     const device VkrMetalPacketIblProbe &probe, float3 world_position) {
-  float weight = max(probe.extents_weight.w, 0.0);
-  if (weight <= 1e-6)
-    return weight;
-  float3 outside = max(abs(world_position - probe.center_blend.xyz) -
-                           max(probe.extents_weight.xyz, 0.0),
-                       0.0);
-  float distance = length(outside);
-  if (distance <= 1e-6)
-    return weight;
-  return probe.center_blend.w > 1e-6
-             ? weight * saturate(1.0 - distance / probe.center_blend.w)
-             : 0.0;
-}
-
-// A point this far outside a probe's box still counts as inside it, so a
-// surface lying on a wall, such as a floor at the box's bottom, stays
-// box-projected despite position rounding (metres).
-constant float vkr_metal_packet_box_project_wall_tolerance = 0.01;
-
-// The probe lookup direction of a reflection from `world_position`: toward
-// where the reflection leaves the probe's box. A point outside the box has
-// no box wall ahead of it, so it looks up the plain reflection, as a probe
-// without box projection does.
-float3 vkr_metal_packet_box_project(float3 direction, float3 world_position,
-                                    float3 center, float3 extents) {
-  if (any(extents <= 1e-4))
-    return normalize(direction);
-  if (any(abs(world_position - center) >
-          extents + vkr_metal_packet_box_project_wall_tolerance))
-    return normalize(direction);
-  float3 safe_direction = direction;
-  for (uint axis = 0u; axis < 3u; ++axis) {
-    if (abs(safe_direction[axis]) < 1e-4)
-      safe_direction[axis] = safe_direction[axis] < 0.0 ? -1e-4 : 1e-4;
-  }
-  float3 t_min = (center - extents - world_position) / safe_direction;
-  float3 t_max = (center + extents - world_position) / safe_direction;
-  float3 t_far = max(t_min, t_max);
-  float t_hit = max(min(t_far.x, min(t_far.y, t_far.z)), 0.0);
-  return normalize(world_position + safe_direction * t_hit - center);
+  return max(probe.extents_weight.w, 0.0) *
+         vkr_reflection_probe_influence(world_position, probe.center_blend.xyz,
+                                        max(probe.extents_weight.xyz, 0.0),
+                                        probe.center_blend.w);
 }
 
 uint4 vkr_metal_packet_point_light_mask(constant VkrMetalPacketFrameRoot *root,
@@ -575,29 +540,6 @@ static float4 vkr_metal_packet_diffuse_volume(
   return float4(vkr_diffuse_volume_l1(red, green, blue, normal) * scale, 1.0f);
 }
 
-/* The local/global probe reduction. `incoming_specular` deliberately excludes
- * receiver BRDF terms, so a caller shades filtered incoming radiance with its
- * receiver's weight. */
-struct VkrMetalPacketEnvironmentLighting {
-  float3 irradiance;
-  float3 incoming_specular;
-  /* The receiver weight with authored IBL gain. */
-  float3 specular_receiver_weight;
-  /* The same weight without IBL gain, for radiance already in scene units,
-     such as a screen-space reflection's hit. */
-  float3 ssr_receiver_weight;
-};
-
-static float3 vkr_metal_environment_receiver_weight(
-    float3 reflection, float3 normal, float roughness, float occlusion,
-    float gtao_specular_cone, VkrGgxMaterialEnergy energy) {
-  float horizon = saturate(1.0f + dot(reflection, normal));
-  float visibility = horizon * horizon *
-      vkr_metal_packet_specular_ao(occlusion, energy.no_v, roughness) *
-      gtao_specular_cone;
-  return energy.reflectance * visibility;
-}
-
 // One level of this frame's cloud chain at a face coordinate, bilinear
 // across face seams.
 static float4
@@ -639,75 +581,6 @@ static float3 vkr_metal_packet_global_prefiltered(
                      vkr_metal_packet_cloud_sky_light_level(sky, at, coarse),
                      chain_level - float(fine));
   return vkr_cloud_sky_light_radiance(clear, cloud);
-}
-
-static VkrMetalPacketEnvironmentLighting
-vkr_metal_packet_environment_lighting(
-    constant VkrMetalPacketFrameRoot *frame, float3 world_position,
-    float3 diffuse_normal, float3 specular_normal, float3 view,
-    float roughness, float occlusion, float gtao_specular_cone,
-    VkrGgxMaterialEnergy energy, bool evaluate_diffuse) {
-  VkrMetalPacketEnvironmentLighting result = {};
-  roughness = vkr_anisotropy_environment_roughness(roughness, energy);
-  float3 reflection = reflect(-view, vkr_anisotropy_environment_normal(specular_normal, view, energy));
-  result.ssr_receiver_weight = vkr_metal_environment_receiver_weight(
-      reflection, specular_normal, roughness, occlusion, gtao_specular_cone, energy);
-  if ((frame->flags & 2u) == 0u)
-    return result;
-  constexpr sampler environment_sampler(coord::normalized,
-                                        address::clamp_to_edge, filter::linear,
-                                        mip_filter::linear);
-  float local_weight_sum = 0.0;
-  uint probe_count = min(frame->ibl_probe_count, 16u);
-  VkrShL2Evaluation sh_evaluation;
-  if (evaluate_diffuse)
-    sh_evaluation = vkr_sh_l2_prepare_evaluation(diffuse_normal);
-  if (frame->ibl_probes != nullptr) {
-    for (uint i = 0u; i < probe_count; ++i)
-      local_weight_sum +=
-          vkr_metal_packet_probe_influence(frame->ibl_probes[i], world_position);
-    float weight_scale = local_weight_sum > 1.0 ? 1.0 / local_weight_sum : 1.0;
-    for (uint i = 0u; i < probe_count; ++i) {
-      const device VkrMetalPacketIblProbe &probe = frame->ibl_probes[i];
-      float weight = vkr_metal_packet_probe_influence(probe, world_position) *
-                     weight_scale;
-      if (weight <= 1e-6)
-        continue;
-      float3 probe_reflection =
-          probe.intensity_box.w > 0.5
-              ? vkr_metal_packet_box_project(
-                    reflection, world_position, probe.center_blend.xyz,
-                    max(probe.extents_weight.xyz, 0.0))
-              : reflection;
-      if (evaluate_diffuse)
-        result.irradiance +=
-            vkr_sh_l2_evaluate(frame->sh_coefficients[probe.sh_slot],
-                                sh_evaluation) *
-            probe.intensity_box.x * probe.intensity_box.y * weight;
-      result.incoming_specular +=
-          probe.prefilter
-              .sample(environment_sampler, probe_reflection,
-                      level(roughness *
-                            float(max(frame->prefilter_mip_count, 1u) - 1u)))
-              .rgb *
-          probe.intensity_box.x * probe.intensity_box.z * weight;
-    }
-  }
-  float global_weight = max(1.0 - min(local_weight_sum, 1.0), 0.0);
-  if (evaluate_diffuse)
-    result.irradiance +=
-        vkr_sh_l2_evaluate(frame->sh_coefficients[frame->sh_global_slot],
-                            sh_evaluation) *
-        global_weight;
-  result.incoming_specular +=
-      vkr_metal_packet_global_prefiltered(
-          frame, environment_sampler, reflection,
-          roughness * float(max(frame->prefilter_mip_count, 1u) - 1u)) *
-      global_weight;
-  result.specular_receiver_weight = result.ssr_receiver_weight *
-                                    frame->ibl_controls.z *
-                                    frame->ibl_controls.x;
-  return result;
 }
 
 constexpr sampler vkr_metal_packet_sky_sampler(coord::normalized,

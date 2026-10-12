@@ -452,8 +452,9 @@ Adopt B now, then measure D.
   `box_projection` on, or off for a plane seen only from far away. A
   `capture_height` below the plane turns B into B2 for a plane seen mostly
   from one height, such as the lake from the bridge. The reflector's draws
-  use this probe directly, not the largest influence at the draw's centre,
-  so a valley probe cannot win over the plane's own probe. The cost is the
+  use this probe directly, not the first probe whose influence at the
+  draw's centre reaches one half, so a smaller valley probe cannot win over
+  the plane's own probe. The cost is the
   existing probe lookup.
 - **D, near field.** The real-time pass draws only candidates within the
   plane's `reflection_distance` and dynamic casters, using section 1's test

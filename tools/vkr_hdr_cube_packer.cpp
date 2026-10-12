@@ -12,6 +12,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -198,6 +199,106 @@ bool read_face(const fs::path &path, uint64_t expected_bytes,
   return true;
 }
 
+float half_to_float(uint16_t bits) {
+  const uint32_t sign = static_cast<uint32_t>(bits & 0x8000u) << 16u;
+  const uint32_t exponent = (bits >> 10u) & 0x1fu;
+  uint32_t mantissa = bits & 0x3ffu;
+  uint32_t result = 0u;
+  if (exponent == 0u) {
+    if (mantissa != 0u) {
+      // Subnormal: normalize into a float exponent.
+      uint32_t shift = 0u;
+      while ((mantissa & 0x400u) == 0u) {
+        mantissa <<= 1u;
+        ++shift;
+      }
+      mantissa &= 0x3ffu;
+      result = sign | ((113u - shift) << 23u) | (mantissa << 13u);
+    } else {
+      result = sign;
+    }
+  } else {
+    result = sign | ((exponent + 112u) << 23u) | (mantissa << 13u);
+  }
+  float value = 0.0f;
+  std::memcpy(&value, &result, sizeof(value));
+  return value;
+}
+
+// Round-to-nearest-even conversion of a finite value; values beyond the
+// largest half clamp to it, so averaged finite faces stay finite.
+uint16_t float_to_half(float value) {
+  uint32_t bits = 0u;
+  std::memcpy(&bits, &value, sizeof(bits));
+  const uint16_t sign = static_cast<uint16_t>((bits >> 16u) & 0x8000u);
+  const uint32_t magnitude = bits & 0x7fffffffu;
+  if (magnitude >= 0x477ff000u) {
+    return static_cast<uint16_t>(sign | 0x7bffu);
+  }
+  if (magnitude < 0x38800000u) {
+    // Subnormal half or zero.
+    if (magnitude < 0x33000000u) {
+      return sign;
+    }
+    const uint32_t exponent = magnitude >> 23u;
+    const uint32_t mantissa = (magnitude & 0x7fffffu) | 0x800000u;
+    const uint32_t shift = 126u - exponent;
+    uint32_t half = mantissa >> shift;
+    const uint32_t remainder = mantissa & ((1u << shift) - 1u);
+    const uint32_t halfway = 1u << (shift - 1u);
+    if (remainder > halfway || (remainder == halfway && (half & 1u))) {
+      ++half;
+    }
+    return static_cast<uint16_t>(sign | half);
+  }
+  uint32_t half = ((magnitude - 0x38000000u) >> 13u);
+  const uint32_t remainder = magnitude & 0x1fffu;
+  if (remainder > 0x1000u || (remainder == 0x1000u && (half & 1u))) {
+    ++half;
+  }
+  return static_cast<uint16_t>(sign | half);
+}
+
+uint32_t cube_level_count(uint32_t size) {
+  uint32_t levels = 1u;
+  while ((size >> levels) != 0u) {
+    ++levels;
+  }
+  return levels;
+}
+
+// One 2x2 box-filtered level of a face. The prefilter's filtered importance
+// sampling reads these levels, so a rough lobe averages the face instead of
+// aliasing over its sharp top level.
+void downsample_face(const std::vector<uint8_t> &source, uint32_t size,
+                     std::vector<uint8_t> *out_level) {
+  const uint32_t half_size = size / 2u;
+  out_level->resize(static_cast<size_t>(half_size) * half_size *
+                    kBytesPerTexel);
+  for (uint32_t y = 0u; y < half_size; ++y) {
+    for (uint32_t x = 0u; x < half_size; ++x) {
+      for (uint32_t component = 0u; component < 4u; ++component) {
+        float sum = 0.0f;
+        for (uint32_t dy = 0u; dy < 2u; ++dy) {
+          for (uint32_t dx = 0u; dx < 2u; ++dx) {
+            const size_t texel =
+                static_cast<size_t>(2u * y + dy) * size + (2u * x + dx);
+            sum += half_to_float(read_u16_le(
+                source.data() + texel * kBytesPerTexel + component * 2u));
+          }
+        }
+        const uint16_t half = float_to_half(0.25f * sum);
+        uint8_t *const out =
+            out_level->data() +
+            (static_cast<size_t>(y) * half_size + x) * kBytesPerTexel +
+            component * 2u;
+        out[0] = static_cast<uint8_t>(half & 0xffu);
+        out[1] = static_cast<uint8_t>(half >> 8u);
+      }
+    }
+  }
+}
+
 void flip_rows(const std::vector<uint8_t> &source, uint32_t size,
                std::vector<uint8_t> *out_flipped) {
   const size_t row_bytes = static_cast<size_t>(size) * kBytesPerTexel;
@@ -218,12 +319,21 @@ bool publish_temporary_output(const fs::path &temporary,
   }
   out_error->clear();
 #if defined(_WIN32)
-  if (MoveFileExW(temporary.c_str(), destination.c_str(),
-                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    return true;
+  // A scanner or a just-exited reader may hold the destination for a moment
+  // after the capture that loaded it, so a denied replace is retried briefly.
+  for (uint32_t attempt = 0u; attempt < 20u; ++attempt) {
+    if (MoveFileExW(temporary.c_str(), destination.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      return true;
+    }
+    const DWORD failure = GetLastError();
+    *out_error =
+        std::error_code(static_cast<int>(failure), std::system_category());
+    if (failure != ERROR_ACCESS_DENIED && failure != ERROR_SHARING_VIOLATION) {
+      return false;
+    }
+    Sleep(100u);
   }
-  *out_error =
-      std::error_code(static_cast<int>(GetLastError()), std::system_category());
   return false;
 #else
   fs::rename(temporary, destination, *out_error);
@@ -257,7 +367,8 @@ bool validate_written_ktx(const fs::path &path, uint32_t size,
       texture->supercompressionScheme != KTX_SS_NONE ||
       ktxTexture2_NeedsTranscoding(texture) || base->numDimensions != 2u ||
       base->baseWidth != size || base->baseHeight != size ||
-      base->baseDepth != 1u || base->numLevels != 1u || base->numLayers != 1u ||
+      base->baseDepth != 1u || base->numLevels != cube_level_count(size) ||
+      base->numLayers != 1u ||
       base->numFaces != kFaceCount || !base->isCubemap) {
     std::cerr << "Temporary KTX2 does not satisfy the direct HDR cubemap "
                  "contract\n";
@@ -265,17 +376,28 @@ bool validate_written_ktx(const fs::path &path, uint32_t size,
   }
   const uint8_t *data = ktxTexture_GetData(base);
   const ktx_size_t data_size = ktxTexture_GetDataSize(base);
-  if (!data || data_size != image_bytes * kFaceCount) {
+  uint64_t expected_bytes = 0u;
+  for (uint32_t level = 0u; level < base->numLevels; ++level) {
+    const uint64_t extent = size >> level;
+    expected_bytes += extent * extent * kBytesPerTexel * kFaceCount;
+  }
+  if (!data || data_size != expected_bytes ||
+      ktxTexture_GetImageSize(base, 0u) != image_bytes) {
     std::cerr << "Temporary KTX2 has an unexpected payload size\n";
     return false;
   }
-  for (uint32_t face = 0u; face < kFaceCount; ++face) {
-    ktx_size_t offset = 0u;
-    if (ktxTexture_GetImageOffset(base, 0u, 0u, face, &offset) != KTX_SUCCESS ||
-        ktxTexture_GetImageSize(base, 0u) != image_bytes ||
-        offset > data_size || image_bytes > data_size - offset) {
-      std::cerr << "Temporary KTX2 has an invalid face layout\n";
-      return false;
+  for (uint32_t level = 0u; level < base->numLevels; ++level) {
+    const uint64_t extent = size >> level;
+    const uint64_t level_bytes = extent * extent * kBytesPerTexel;
+    for (uint32_t face = 0u; face < kFaceCount; ++face) {
+      ktx_size_t offset = 0u;
+      if (ktxTexture_GetImageOffset(base, level, 0u, face, &offset) !=
+              KTX_SUCCESS ||
+          ktxTexture_GetImageSize(base, level) != level_bytes ||
+          offset > data_size || level_bytes > data_size - offset) {
+        std::cerr << "Temporary KTX2 has an invalid face layout\n";
+        return false;
+      }
     }
   }
   return true;
@@ -301,7 +423,7 @@ bool pack_hdr_cube(const Config &config) {
   create_info.baseHeight = config.size;
   create_info.baseDepth = 1u;
   create_info.numDimensions = 2u;
-  create_info.numLevels = 1u;
+  create_info.numLevels = cube_level_count(config.size);
   create_info.numLayers = 1u;
   create_info.numFaces = kFaceCount;
   create_info.isArray = KTX_FALSE;
@@ -324,13 +446,21 @@ bool pack_hdr_cube(const Config &config) {
       return false;
     }
     flip_rows(source, config.size, &flipped);
-    result = ktxTexture_SetImageFromMemory(
-        ktxTexture(texture), 0u, 0u, face, flipped.data(),
-        static_cast<ktx_size_t>(flipped.size()));
-    if (result != KTX_SUCCESS) {
-      std::cerr << "Failed to set KTX2 face " << face << ": "
-                << ktxErrorString(result) << "\n";
-      return false;
+    uint32_t extent = config.size;
+    for (uint32_t level = 0u; level < create_info.numLevels; ++level) {
+      if (level > 0u) {
+        downsample_face(flipped, extent, &source);
+        extent /= 2u;
+        flipped.swap(source);
+      }
+      result = ktxTexture_SetImageFromMemory(
+          ktxTexture(texture), level, 0u, face, flipped.data(),
+          static_cast<ktx_size_t>(flipped.size()));
+      if (result != KTX_SUCCESS) {
+        std::cerr << "Failed to set KTX2 face " << face << " level " << level
+                  << ": " << ktxErrorString(result) << "\n";
+        return false;
+      }
     }
   }
 
@@ -364,6 +494,7 @@ bool pack_hdr_cube(const Config &config) {
   }
   std::cout << "vkr_hdr_cube_packer: status=packed output=" << config.output
             << " size=" << config.size << " faces=" << kFaceCount
+            << " levels=" << cube_level_count(config.size)
             << " format=R16G16B16A16_SFLOAT row_flip=vertical\n";
   return true;
 }

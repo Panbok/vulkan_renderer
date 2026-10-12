@@ -1244,6 +1244,14 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.sky.atmosphere.lunar.y *= pre_exposure;
   prepared->frame.sky.atmosphere.lunar.z *= pre_exposure;
   prepared->frame.sky.star_pole.w *= pre_exposure;
+  /* The discs' projected solid angles, the glow strength and the star gate
+     feed only the visible sky's discs, glow and star field. */
+  if (packet->globals.sky_light_sources_hidden) {
+    prepared->frame.sky.atmosphere.solar.w = 0.0f;
+    prepared->frame.sky.atmosphere.lunar.w = 0.0f;
+    prepared->frame.sky.atmosphere.mie_extinction.w = 0.0f;
+    prepared->frame.sky.star_axis.w = 0.0f;
+  }
 
   prepared->frame.color_grading = vkr_color_grading_prepare(
       packet->globals.white_balance_temperature,

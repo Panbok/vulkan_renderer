@@ -141,6 +141,10 @@ typedef struct VkrFrameGlobals {
   float32_t gtao_power;
   /** Presentation-only sharpness in [0, 1]. Zero bypasses sharpening. */
   float32_t image_sharpness;
+  /** Reflection-probe captures: the visible sky leaves out the sun and moon
+   * discs, their glow and the stars, as the IBL source does (ADR-058), so a
+   * probe does not reflect the sun a second time over its direct light. */
+  bool8_t sky_light_sources_hidden;
   VkrFogSettings fog;
   /** Opt-in local participating medium; supersedes analytic fog when enabled.
    */

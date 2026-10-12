@@ -37,6 +37,10 @@
 #define VKR_BAKE_MAX_JSON_BYTES (256ull * 1024ull * 1024ull)
 #define VKR_BAKE_PATH VKR_BAKERY_PATH_CAPACITY
 #define VKR_BAKE_PROBE_CHANNEL "hdr_post_transmission"
+/* The runtime prefilters every probe into VKR_IBL_PREFILTER_SIZE faces
+   (renderer/src/vkr_ibl_math.h); a larger capture only aliases its top
+   level. */
+#define VKR_BAKE_PROBE_SIZE_MAX 256
 #define VKR_BAKE_PROBE_CASE "local.probe_bake"
 /* Boot warmup before the first face, then frames each later face renders
    after the previous capture; both exceed the readback latency. */
@@ -1912,11 +1916,15 @@ vkr_internal int vkr_bake_compare_assets(const void *lhs, const void *rhs) {
  * (ADR-051) that only the harness can derive, and folds the identity alone;
  * the bake then records each asset's byte digest beside it, so a stored
  * manifest still detects any later change to a scene input. */
-vkr_internal bool8_t vkr_bake_scene_manifest(VkrBake *bake,
-                                             const VkrBakeryJson *manifest,
-                                             const char *scene,
-                                             const char *root,
-                                             VkrBakeryJson *out_paths) {
+/* Validates a harness scene-content manifest against the files on disk and
+   lists its asset paths in `out_paths`. `self_output`, when set, is a probe
+   bake's own cube: the scene may name it as its probe's cubemap, but captures
+   turn local probes off, so it never feeds the capture. Its recorded digest
+   still counts toward the aggregate, and it is neither checked against the
+   file nor listed, so a re-bake may replace it. */
+vkr_internal bool8_t vkr_bake_scene_manifest(
+    VkrBake *bake, const VkrBakeryJson *manifest, const char *scene,
+    const char *root, const char *self_output, VkrBakeryJson *out_paths) {
   Arena *arena = bake->arena;
   int64_t schema = 0;
   if (!manifest || manifest->type != VKR_BAKERY_JSON_OBJECT) {
@@ -1964,6 +1972,19 @@ vkr_internal bool8_t vkr_bake_scene_manifest(VkrBake *bake,
     char path[VKR_BAKE_PATH];
     VKR_BAKE_TRY(vkr_bake_confined(bake, root, relative, "Scene asset", path));
     int64_t bytes = -1;
+    if (self_output && strcmp(path, self_output) == 0) {
+      const char *recorded =
+          identities ? identity : vkr_bake_text(asset, "sha256");
+      if (!recorded ||
+          !vkr_bake_int(vkr_bakery_json_get(asset, "bytes"), &bytes) ||
+          bytes < 0) {
+        return vkr_bake_fail(bake, "Scene-content manifest contains an "
+                                   "invalid asset");
+      }
+      entries[count++] =
+          (VkrBakeManifestAsset){relative, recorded, (uint64_t)bytes};
+      continue;
+    }
     if (vkr_bakery_json_get(out_paths, path) || !vkr_bakery_is_file(path) ||
         !vkr_bake_int(vkr_bakery_json_get(asset, "bytes"), &bytes)) {
       return vkr_bake_fail(bake, "Scene-content manifest contains an "
@@ -2028,7 +2049,8 @@ vkr_internal bool8_t vkr_bake_protect_scene(VkrBake *bake, const char *output,
                                             const VkrBakeryJson *manifest,
                                             const char *root) {
   VkrBakeryJson *sources = vkr_bakery_json_object(bake->arena);
-  VKR_BAKE_TRY(vkr_bake_scene_manifest(bake, manifest, scene, root, sources));
+  VKR_BAKE_TRY(
+      vkr_bake_scene_manifest(bake, manifest, scene, root, output, sources));
   const char *targets[] = {output, sidecar};
   for (uint32_t i = 0u; i < ArrayCount(targets); ++i) {
     if (strcmp(targets[i], scene) == 0 ||
@@ -2508,7 +2530,8 @@ vkr_internal bool8_t vkr_bake_capture_faces(
       "Scene-content manifest");
   VKR_BAKE_TRY(manifest);
   VkrBakeryJson *paths = vkr_bakery_json_object(arena);
-  VKR_BAKE_TRY(vkr_bake_scene_manifest(bake, manifest, scene, root, paths));
+  VKR_BAKE_TRY(
+      vkr_bake_scene_manifest(bake, manifest, scene, root, NULL, paths));
   *scene_manifest = manifest;
   VKR_BAKE_TRY(vkr_bake_check_child(bake, out_run, report));
   for (uint32_t f = 0u; f < ArrayCount(vkr_bake_faces); ++f) {
@@ -2555,8 +2578,12 @@ vkr_internal bool8_t vkr_bake_probe(VkrBake *bake, const VkrBakeProbe *args,
     return vkr_bake_fail(bake, "--position requires three finite world "
                                "coordinates");
   }
-  if (args->size < 1 || args->size > 2048 || (args->size & (args->size - 1))) {
-    return vkr_bake_fail(bake, "--size must be a power of two from 1 to 2048");
+  if (args->size < 1 || args->size > VKR_BAKE_PROBE_SIZE_MAX ||
+      (args->size & (args->size - 1))) {
+    return vkr_bake_fail(bake,
+                         "--size must be a power of two from 1 to %d, "
+                         "the runtime's prefilter size",
+                         VKR_BAKE_PROBE_SIZE_MAX);
   }
   if (!isfinite(args->near_plane) || !isfinite(args->far_plane) ||
       !(0.0 < args->near_plane && args->near_plane < args->far_plane)) {
@@ -4088,7 +4115,7 @@ vkr_internal bool8_t vkr_preview_render(VkrBake *bake,
     (void)vkr_bake_resolve(scene_path, resolved_scene);
     ok = manifest &&
          vkr_bake_scene_manifest(bake, manifest, resolved_scene, workspace,
-                                 vkr_bakery_json_object(arena)) &&
+                                 NULL, vkr_bakery_json_object(arena)) &&
          vkr_preview_publish(bake, run_root, report, args->size, output);
   }
   if (ok) {

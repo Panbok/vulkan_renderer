@@ -962,7 +962,9 @@ See [ADR-012](adr/012-texture-compression-pipeline.md).
 Punctual lighting uses a 128-light table, ranked by camera distance with
 hysteresis and 0.25 s fades when more lights compete, and a 384-cell
 fragment-local bitmask grid with exact range/cone rejection. Up to 16 ready
-probes contribute fragment-space AABB weights. Directional lighting samples
+probes, listed smaller box first, take priority shares inside their boxes
+before the global environment on the desktop pipeline; the tiled pipeline
+gives a surface the first probe whose influence reaches one half. Directional lighting samples
 CSM. Point/spot shadows use one 4096-squared D16 atlas array that all frames
 in flight share, at most 8 (Balanced), 12 (High) or 16 (Ultra) layers, with
 faces of 128 to 1024 texels, one per spot and six per point; presets draw at
@@ -1003,7 +1005,8 @@ area-shadow pass, while the offline baker traces rectangle visibility and transp
 [ADR-056](adr/056-rectangular-ltc-lights.md) owns authoring, lookup lifetime,
 baker transport and native-evidence limits.
 
-Scene-captured reflection probes persist as portable one-mip RGBA16F KTX2 assets.
+Scene-captured reflection probes persist as portable RGBA16F KTX2 cubes with
+full mip chains.
 A scene document's `reflection_probes` array holds them; in a project scene
 the editor creates and edits probes as entities and rewrites that array on
 save, and Bake lighting captures new ones

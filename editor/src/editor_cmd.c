@@ -1507,8 +1507,8 @@ static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
   }
   ctx->editor->cmd_holding_bake = true_v;
   snprintf(ctx->message, sizeof(ctx->message),
-           "Baking reflection probes, the diffuse volume%s",
-           lightmap ? " and this machine's pipeline's lightmaps" : "");
+           "Baking the diffuse volume%s, then reflection probes",
+           lightmap ? ", this machine's pipeline's lightmaps" : "");
   return true_v;
 }
 

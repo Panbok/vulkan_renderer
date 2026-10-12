@@ -575,25 +575,21 @@ struct VkrMetalTiledNoLocalShadow {
 };
 
 // The reflection probe a blended surface shades with, as frame probe index
-// + 1: the probe with the largest influence at the pixel, when that reaches
-// one half. Opaque draws take the one their encode chose for the whole draw
-// (vkr_metal_packet_draw_probe).
+// + 1: the first probe, in the host's smaller-box-first order, whose
+// influence at the pixel reaches one half, as the desktop pipeline's priority
+// blend would give it most of the pixel. Opaque draws take the one their
+// encode chose for the whole draw (vkr_metal_packet_draw_probe).
 static uint vkr_metal_tiled_pixel_probe(constant VkrMetalPacketFrameRoot *frame,
                                         float3 world_position) {
   const uint count = min(frame->ibl_probe_count, VKR_GPU_DRAW_PROBE_MASK - 1u);
   if (frame->ibl_probes == nullptr)
     return 0u;
-  uint best = 0u;
-  float best_weight = 0.5f;
   for (uint i = 0u; i < count; ++i) {
-    float weight =
-        vkr_metal_packet_probe_influence(frame->ibl_probes[i], world_position);
-    if (weight > best_weight) {
-      best = i + 1u;
-      best_weight = weight;
-    }
+    if (vkr_metal_packet_probe_influence(frame->ibl_probes[i],
+                                         world_position) >= 0.5f)
+      return i + 1u;
   }
-  return best;
+  return 0u;
 }
 
 // The irradiance the moving casters take from a lightmapped surface
@@ -786,25 +782,28 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     const float lod =
         roughness * float(max(frame->prefilter_mip_count, 1u) - 1u);
     float3 reflection = reflect(-view, normal);
+    const float alpha = roughness * roughness;
+    const float3 dominant =
+        vkr_specular_dominant_direction(normal, reflection, alpha);
     // One environment per surface: its probe, box-projected, or the global
     // environment with the cloud layer. The two paths share no live values,
     // so the probe costs the pass few registers.
     float3 prefiltered;
     uint sh_slot = frame->sh_global_slot;
-    // The environment's radiance scale and its authored diffuse and
-    // specular gains.
-    float radiance_scale = 1.0f;
-    float diffuse_gain = 1.0f;
-    float specular_gain = 1.0f;
+    // The environment's pre-exposed radiance scale and its diffuse and
+    // specular gains: a probe's own, or the global environment's.
+    float radiance_scale = frame->ibl_controls.x;
+    float diffuse_gain = frame->ibl_controls.y;
+    float specular_gain = frame->ibl_controls.z;
     if (probe != 0u) {
       const device VkrMetalPacketIblProbe &local =
           frame->ibl_probes[probe - 1u];
       float3 direction =
           local.intensity_box.w > 0.5f
-              ? vkr_metal_packet_box_project(
-                    reflection, input.world_position, local.center_blend.xyz,
-                    max(local.extents_weight.xyz, 0.0f))
-              : reflection;
+              ? vkr_reflection_probe_direction(
+                    dominant, input.world_position, local.center_blend.xyz,
+                    max(local.extents_weight.xyz, 0.0f), alpha)
+              : dominant;
       prefiltered =
           local.prefilter.sample(environment_sampler, direction, level(lod))
               .rgb;
@@ -814,24 +813,23 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
       specular_gain = local.intensity_box.z;
     } else {
       prefiltered = vkr_metal_packet_global_prefiltered(
-          frame, environment_sampler, reflection, lod);
+          frame, environment_sampler, dominant, lod);
     }
-    // The environment's radiance, with a probe's specular gain, and the
-    // diffuse response it gives at the normal, pre-exposed.
-    const float environment_scale = radiance_scale * frame->ibl_controls.x;
-    float3 incoming = prefiltered * (environment_scale * specular_gain);
+    // The environment's radiance and the diffuse response it gives at the
+    // normal, pre-exposed.
+    float3 incoming = prefiltered * radiance_scale;
     const float3 environment_response =
         vkr_sh_l2_evaluate(frame->sh_coefficients[sh_slot],
                            vkr_sh_l2_prepare_evaluation(normal)) *
-        environment_scale;
+        radiance_scale;
     // A surface without baked light takes its diffuse light from the
-    // environment. One with baked light reflects the environment in the
-    // share its baked sky light supports and its surroundings in the rest,
-    // so a room or tunnel does not reflect the sky (ADR-054).
+    // environment. One with baked light reflects the global environment in
+    // the share its baked sky light supports and its surroundings in the
+    // rest, so a room or tunnel does not reflect the sky (ADR-054). A probe's
+    // capture already holds what its room sees, so it is not scaled again.
     if (environment_diffuse)
-      diffuse_light =
-          environment_response * diffuse_gain * frame->ibl_controls.y;
-    else
+      diffuse_light = environment_response * diffuse_gain;
+    else if (probe == 0u)
       incoming = vkr_sh_l2_occluded_radiance(
           incoming, diffuse_light,
           vkr_sh_l2_sky_visibility(baked_sky, environment_response));
@@ -839,8 +837,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     float specular_visibility =
         horizon * horizon *
         vkr_metal_packet_specular_ao(ao * baked_occlusion, no_v, roughness);
-    light.specular += incoming * energy.reflectance * specular_visibility *
-                      frame->ibl_controls.z;
+    light.specular +=
+        incoming * energy.reflectance * specular_visibility * specular_gain;
   } else if (environment_diffuse) {
     diffuse_light = frame->ambient_color.rgb;
   }

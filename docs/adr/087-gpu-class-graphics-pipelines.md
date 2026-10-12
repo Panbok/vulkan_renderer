@@ -180,11 +180,12 @@ pipeline rather than a backend mechanism.
    `sha256:3d997af39190c2f9509c53699ecb461bb6158eb84bd7c8a6d4034d28caec4a91`,
    `sha256:12fddc9dd2ba7295ac64a6fdccf432e849011c4b276d4ddca3c0e0cc4cd7ce07`;
    2026-10-06, both on the set with visibility).
-   A surface with a lightmap or the volume reflects the environment only in
-   the share its baked sky light supports and its surroundings' baked light
-   in the rest, so rooms and tunnels do not reflect the sky
+   A surface with a lightmap or the volume reflects the global environment
+   only in the share its baked sky light supports and its surroundings'
+   baked light in the rest, so rooms and tunnels do not reflect the sky
    ([ADR-054](054-baked-diffuse-volumes.md)); that cost `Tiled.Opaque` about
-   0.3 ms on the baked orbit (2026-10-11). A terrain material blends its
+   0.3 ms on the baked orbit (2026-10-11). A surface that took a probe
+   skips that blend, since the capture already holds its room. A terrain material blends its
    four layers by the vertex colour's weights as the G-buffer resolve does
    ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), reading the
    material table's terrain rows through the frame root. Projected decals
@@ -192,18 +193,30 @@ pipeline rather than a backend mechanism.
    ([ADR-092](092-projected-decals.md)). Blended surfaces,
    drawn after `Tiled.Atmosphere`, apply aerial perspective and fog to their
    own light only. Reflection probes give one environment per surface: the
-   camera view's encode kernel assigns each draw the frame probe whose
-   influence at the draw's bounding-sphere centre is largest and at least
-   one half, in the visible row's `state_flags` bits 27 to 31
+   camera view's encode kernel assigns each draw the first frame probe, in
+   the host's smaller-box-first order
+   ([ADR-019](019-bounded-forward-spatial-lighting.md)), whose influence at
+   the draw's bounding-sphere centre reaches one half, in the visible row's
+   `state_flags` bits 27 to 31
    (`VKR_GPU_DRAW_PROBE_SHIFT`, `vkr_metal_packet_draw_probe` in
    [`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal)),
    and the surface takes that probe's box-projected prefiltered cube and
-   SH diffuse in place of the global environment; glass picks its probe per
-   pixel by the same rule. The desktop pipeline instead blends every probe
-   per pixel by influence; that blend cost the tiled pass 0.35 ms median and
-   0.75 ms p95 on Bistro and was rejected. Frames whose camera frustum meets
-   no probe's box and blend band take shading variants without probe code
-   (`vkr_metal_packet_tiled_probe_variant`). Clearcoat, sheen, anisotropy and
+   SH diffuse, with the probe's own gains, in place of the global
+   environment; glass picks its probe per pixel by the same rule
+   (`vkr_metal_tiled_pixel_probe` in
+   [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)).
+   The first probe past one half is the one the desktop pipeline's priority
+   blend gives most of the point. Influence and lookup direction come from
+   the shared
+   [`reflection_probe_kernel.slangh`](../../renderer/src/shaders/shared/reflection_probe_kernel.slangh).
+   The desktop pipeline instead blends the probes per pixel; that blend
+   cost the tiled pass 0.35 ms median and 0.75 ms p95 on Bistro and was
+   rejected. Frames whose camera frustum meets no sphere around a probe's
+   box take shading variants without probe code
+   (`vkr_metal_packet_tiled_probe_variant`). The 2026-10-12 probe changes
+   on this pipeline (first-in-order choice, dominant-direction lookup, own
+   gains, no baked sky scaling under a probe) were neither compiled nor run
+   on Metal. Clearcoat, sheen, anisotropy and
    diffuse transmission are not drawn yet. The
    vertex stage is MSL, because the Slang module numbers entry point buffers
    in declaration order and the GPU-encoded commands bind the draw root at
@@ -726,8 +739,8 @@ means within 0.2 of 255).
 
 Release, M1 Pro, 2026-10-06, the build before probes (`VKR_SHADER_CATALOG`
 copy at `982b3d77`) alternating with the probe build, two runs each, on
-`tiled_bistro_baked_native`, whose one indoor probe (specular intensity 0,
-diffuse 1) is in view for much of the orbit. With pass timestamps
+`tiled_bistro_baked_native`, whose one indoor probe (then a placeholder
+cube with specular intensity 0, diffuse 1) is in view for much of the orbit. With pass timestamps
 (`local-windowed-gpu-single`), `Tiled.Opaque` went from 7.67 / 12.24 and
 7.72 / 12.24 ms median / p95 to 8.03 / 12.44 and 7.85 / 12.77 ms
 (`sha256:7f53db6b4f0bfc7beed82f65c3ec9b72f82dc39d119ecbe2092dee576125698c`,

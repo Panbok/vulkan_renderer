@@ -75,9 +75,10 @@ cloud and froxel-injection histories are rescaled on reuse by 2^(k_now − k_pro
 outside the ring is treated as this frame's scale.
 
 Each texture records the scale its IBL bake was written at
-(`radiance_stops`). The global IBL gain is P/B_global, and each probe's
-intensity is multiplied by B_global/B_probe, because the frame gain already
-applies to probes.
+(`radiance_stops`). The global IBL gain is P/B_global. Since 2026-10-12 the
+frame gain scales only the global environment's share, so each probe's
+intensity carries P/B_probe itself
+([ADR-019](019-bounded-forward-spatial-lighting.md)).
 
 Inspection render modes write non-radiance values into the HDR target, so they
 force P = 1. `VKR_PRE_EXPOSURE_FORCE_STOPS=<k>` forces an exponent for

@@ -14,7 +14,9 @@ it, with native evidence on Bistro. The tiled pipeline (Metal) composes and
 samples it too, with native evidence on Bistro and the leak fixture since
 2026-10-10, and a Mac bakes volumes on Metal ray tracing. Since 2026-10-11
 baked sky light scales environment reflections on both pipelines, with
-native evidence on Metal only. Also since 2026-10-11 the desktop pipeline
+native evidence on Metal only; since 2026-10-12 it scales only the global
+environment's share, and local probes keep their captured radiance (the
+tiled side not compiled or run on Metal). Also since 2026-10-11 the desktop pipeline
 keeps lamp bounce apart from sky light on every frame with an active lamp
 group, and its lightmapped pixels add their lamp light to the reflected
 surroundings. Native Vulkan runs on Bistro (2026-10-12) find its indirect
@@ -184,7 +186,23 @@ into five scene-owned textures:
 - a writable RGBA16F composed-SH texture with two row bands.
 
 A volume is used only once all five publications are confirmed and their
-uploads have completed; until then the frame lights without it.
+uploads have completed; until then the frame lights without it. A missing or
+invalid file logs an error, and the scene loads without a volume.
+
+Since 2026-10-12 `assets/scenes/bistro.scene.json` names
+`assets/textures/bistro_sparse_volume_local.vkdv`, so the café takes baked
+bounce light. The file is generated and untracked, about 315 MB; the
+2026-10-09 Windows bake below wrote it from the fixture that names the same
+file. Regenerate it with
+
+```sh
+./build_release/tools/bakery/vkr_bakery bake diffuse \
+  --scene assets/scenes/fixtures/bistro_sparse_volume_local.scene.json \
+  --output assets/textures/bistro_sparse_volume_local.vkdv
+```
+
+whose defaults are that bake's recipe: 1 m spacing, three levels and a 1 m
+margin ([`vkr_bakery_bake.c`](../../tools/bakery/vkr_bakery_bake.c)).
 
 The scene weighs the layers ([ADR-090](090-time-of-day.md)): the two sun keys
 nearest the current sun share weight one, and each lamp group takes its light
@@ -242,20 +260,20 @@ checks).
 
 A surface that cannot see the sky must not reflect it. Without local probes
 the environment specular of rooms, tunnels and a transit chasm showed sky and
-clouds (Black Mesa test level, 2026-10-11). The global and probe cubes are
-captured from one point; only baked light knows what a surface sees.
+clouds (Black Mesa test level, 2026-10-11). The global cube is captured from
+one point; only baked light knows what a surface sees.
 
 A surface with baked light, from its lightmap
-([ADR-088](088-baked-lightmap-sets.md)) or the volume, reflects
+([ADR-088](088-baked-lightmap-sets.md)) or the volume, reflects the global
+environment's share as
 
 `L = D + (E − D) · V`, with
 `V = min(1, lum(D_sky) / lum(D_env))`
 ([`sh_l2_kernel.slangh`](../../renderer/src/shaders/shared/sh_l2_kernel.slangh),
 `vkr_sh_l2_sky_visibility`, `vkr_sh_l2_occluded_radiance`):
 
-- `E` is the environment's prefiltered radiance along the reflection: the
-  probe or global cube, the cloud layer included, with the probe's radiance
-  scale and specular gain, pre-exposed.
+- `E` is the global environment's prefiltered radiance along the
+  reflection, the cloud layer included, pre-exposed.
 - `D` is the surface's baked diffuse response E/π, the one its indirect
   diffuse uses. It stands for its surroundings' mean radiance. On the
   desktop pipeline a lightmap holds only the lamp groups, so a lightmapped
@@ -263,8 +281,9 @@ A surface with baked light, from its lightmap
   its lightmap's lamp irradiance over π, less the light moving casters hide.
 - `D_sky` is the part of `D` from sun-key layers: sky light and sun bounce,
   without the lamp groups ([`vkr_light_layers.h`](../../runtime/src/assets/vkr_light_layers.h)).
-- `D_env` is the response the same environment's SH gives at the normal, with
-  its radiance scale but without the authored diffuse and specular gains.
+- `D_env` is the response the global environment's SH gives at the normal,
+  with its radiance scale but without the authored diffuse and specular
+  gains.
 
 An open surface, whose baked sky light matches or exceeds the environment's,
 keeps `V = 1` and reflects the environment unchanged. An enclosed one reflects
@@ -272,13 +291,24 @@ its lit surroundings at their mean radiance. The frame's IBL specular gain,
 horizon fade, specular occlusion and, on the desktop pipeline, GTAO's cone
 still apply after. A surface without baked light keeps the environment.
 
+A local probe's share is not scaled: its capture already holds its room's
+occlusion and lamps, which `D_sky` leaves out, so scaling it collapsed a
+lamp-lit room's reflection to the flat colour `D` (audit R1 in
+[Short-history rendering](../proposals/short-history-rendering.md), owner
+decision 2026-10-12). The probes take their shares first
+([ADR-019](019-bounded-forward-spatial-lighting.md)), and `V` applies to the
+share they leave.
+
 Per backend:
 - **Tiled (Metal).** A lightmapped draw sums its sun-key layers beside its
   irradiance; `VkrLightmapBinding::active_lamp_mask` marks the lamp-group
   layers and reaches the shader in `VkrMetalPacketLightmap`. A draw on the
   volume reads the composed sun-key luminance from the second band (row
   offset in `VkrMetalPacketDiffuseVolume::dimensions.w`). `D_env` is the
-  draw's probe or the global SH, evaluated for every baked surface.
+  global SH. A surface whose draw, or blended pixel, took a probe skips the
+  blend
+  ([`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal);
+  not compiled or run on Metal since this change).
 - **Desktop (Vulkan).** `packet_diffuse_volume_lookup` returns the sky
   share `lum(rows 0) / lum(total)`: the sun-key part's share of the
   response. The share is one where the response holds no lamp part: no lamp
@@ -286,8 +316,8 @@ Per backend:
   leaves them out. The volume images carry the share in alpha (at least
   1/1024, so a covered pixel stays nonzero); deferred lighting, forward and
   transmission shading pass it with `D` to
-  `packet_environment_specular_radiance`, which blends the probes' SH with
-  the same weights as their radiance. A lightmapped surface the volume
+  `packet_environment_specular_radiance`, which scales only the global
+  environment's share, against the global SH. A lightmapped surface the volume
   covers adds its lamps' light to `D` but not to `D_sky`
   (`packet_baked_light_with_lamps` in
   [`default.slang`](../../renderer/src/shaders/vulkan/slang/world/default.slang));

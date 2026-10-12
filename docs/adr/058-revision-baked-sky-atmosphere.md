@@ -39,6 +39,11 @@ one-texel-per-face RGBA16F cube and prepares it with the ordinary IBL bake.
 Equirectangular and cubemap global environments, their conversion kernels, the
 Radiance texture decoder and the cross-scene fallback environment are removed.
 Local reflection probes keep their separately prepared cubemap sources.
+Since 2026-10-12 a probe capture's visible sky leaves out the sun and moon
+discs, their glow and the stars, as this source does, so a probe does not
+add the sun a second time over its direct light
+(`sky_light_sources_hidden`,
+[ADR-019](019-bounded-forward-spatial-lighting.md)).
 
 The `environment` block is the sky light. Its `enabled`, `intensity`,
 `diffuse_intensity`, `specular_intensity` and `sh_deringing` fields apply to

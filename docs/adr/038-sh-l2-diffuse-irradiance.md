@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-24
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -23,6 +23,18 @@ Projection weights exact source texels by solid angle and folds band factors
 `1`, `2/3`, `1/4` into storage. A constant radiance source evaluates to that
 radiance; shading does not add another division by pi. Authored deringing
 windows higher bands; evaluation clamps negative reconstructed output.
+
+The global environment's `sh_deringing` defaults to 0, the identity. A
+reflection probe without an authored `sh_deringing` defaults to 1.0
+(`scene_reflection_probe_import_defaults` in
+[`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c),
+`probe_defaults` in
+[`vkr_scene_types.c`](../../runtime/src/renderer/systems/vkr_scene_types.c)),
+since 2026-10-12: a baked room holds bright windows and lamps, around which
+an unwindowed L2 projection rings and the zero clamp shows black lobes. A
+probe without a cubemap aliases the environment's coefficients and always
+inherits its window; the loader warns only when the probe authors a
+different one.
 
 Keep coefficients GPU-resident in a copy-on-write pool: immutable black slot 0
 plus 36 reusable slots for two generations of the fallback, active environment

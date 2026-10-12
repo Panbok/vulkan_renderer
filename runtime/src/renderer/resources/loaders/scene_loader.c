@@ -169,6 +169,9 @@ typedef struct SceneReflectionProbeImport {
   float32_t specular_intensity;
   bool8_t box_projection;
   float32_t sh_deringing;
+  /* Whether the document names `sh_deringing`; the default applies
+     otherwise. */
+  bool8_t sh_deringing_authored;
   bool8_t has_cubemap;
   String8 cubemap_path;
   String8 cubemap_base_path;
@@ -2486,7 +2489,10 @@ scene_reflection_probe_import_defaults(void) {
       .diffuse_intensity = 1.0f,
       .specular_intensity = 1.0f,
       .box_projection = true_v,
-      .sh_deringing = 0.0f,
+      /* Baked rooms hold bright windows and lamps, which an unwindowed L2
+         projection rings around; the evaluation's zero clamp would show
+         the negative lobes as black (ADR-038). */
+      .sh_deringing = 1.0f,
       .has_cubemap = false_v,
       .cubemap_path = {0},
       .cubemap_base_path = {0},
@@ -2559,8 +2565,9 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
                                       &import.specular_intensity);
     (void)scene_json_read_bool_field(&probe_object, "box_projection",
                                      &import.box_projection);
-    if (scene_json_read_float_field(&probe_object, "sh_deringing",
-                                    &import.sh_deringing) &&
+    import.sh_deringing_authored = scene_json_read_float_field(
+        &probe_object, "sh_deringing", &import.sh_deringing);
+    if (import.sh_deringing_authored &&
         !(isfinite(import.sh_deringing) && import.sh_deringing >= 0.0f)) {
       log_error("Scene loader: $.reflection_probes[%u].sh_deringing must be "
                 "finite and greater than or equal to zero",
@@ -2929,13 +2936,14 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
           /* An aliasing probe shares the environment's published coefficients
              and inherits its window; it must not carry a conflicting one
              (ADR-038). */
-          if (probe.sh_deringing != 0.0f) {
+          if (import->sh_deringing_authored &&
+              probe.sh_deringing != scene->environment.sh_deringing) {
             log_warn("Scene loader: $.reflection_probes[%u].sh_deringing is "
                      "ignored because the probe aliases the scene environment "
                      "source and inherits its window",
                      i);
-            probe.sh_deringing = scene->environment.sh_deringing;
           }
+          probe.sh_deringing = scene->environment.sh_deringing;
           source_valid = true_v;
         } else {
           log_warn(

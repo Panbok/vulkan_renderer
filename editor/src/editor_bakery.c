@@ -350,7 +350,7 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
       "",
       "",
       "assets/textures/bakery_diffuse_room.vkdv",
-      "assets/textures/bistro_bakery_probe.vkt"};
+      "assets/textures/bistro_cafe_probe.vkt"};
   for (uint32_t i = 0u; i < ArrayCount(sources); ++i)
     bakery->source_lengths[i] =
         (uint32_t)snprintf((char *)bakery->source_paths[i],
@@ -1464,9 +1464,8 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
       "renderer after this recipe succeeds.",
       "Writes a checked diffuse volume and dependency metadata. Uses the "
       "existing bounded 4x4x4, 1M-photon recipe.",
-      "Captures six 256px HDR faces at Bistro's selected probe center and "
-      "writes a reflection cubemap. Uses the existing 330-second-per-face "
-      "recipe.",
+      "Captures six 256px HDR faces at the Bistro cafe probe's center and "
+      "rewrites the tracked reflection cubemap with its mip chain.",
       "Cooks one convex hull from static glTF/GLB geometry into the .vkc "
       "output.\nSplit detailed sources into subtrees with the CLI.",
       "Cooks triangle collision from static glTF/GLB geometry into the .vkc "

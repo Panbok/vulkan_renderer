@@ -1,0 +1,82 @@
+// Portable reflection-probe weighting and lookup direction (ADR-019). Native
+// code owns the probe table, which the host lists smaller boxes first, the
+// cube sampling and the gains.
+#ifndef VKR_SHADER_REFLECTION_PROBE_KERNEL_SLANGH
+#define VKR_SHADER_REFLECTION_PROBE_KERNEL_SLANGH
+
+// A point this far outside a probe's box still counts as inside it, so a
+// floor lying on the box's bottom face stays inside despite position rounding
+// (metres).
+#define VKR_REFLECTION_PROBE_WALL_TOLERANCE 0.01f
+
+// A probe's influence at a point: one inside its box, falling to zero at the
+// side and top faces across the inward blend band, and zero outside. The band
+// lies inside the box, so a room's probe never reaches through its walls into
+// the next room. The bottom face takes no band, so a floor lying on it keeps
+// the full influence.
+float vkr_reflection_probe_influence(float3 position, float3 center,
+                                     float3 extents, float blend_distance)
+{
+    float3 offset = position - center;
+    float3 inside = extents - abs(offset);
+    if (inside.x < -VKR_REFLECTION_PROBE_WALL_TOLERANCE ||
+        inside.y < -VKR_REFLECTION_PROBE_WALL_TOLERANCE ||
+        inside.z < -VKR_REFLECTION_PROBE_WALL_TOLERANCE)
+        return 0.0f;
+    if (blend_distance <= 1e-6f)
+        return 1.0f;
+    float face = min(inside.x, inside.z);
+    if (offset.y > 0.0f)
+        face = min(face, inside.y);
+    return saturate(face / blend_distance);
+}
+
+// The share a probe takes after the probes listed before it, which already
+// cover `covered` of the point: smaller boxes come first, so a room probe
+// inside a hall probe takes priority and the hall fills only the rest.
+float vkr_reflection_probe_share(float influence, float covered)
+{
+    return influence * saturate(1.0f - covered);
+}
+
+// The dominant direction of a GGX lobe for a prefiltered lookup (Lagarde and
+// de Rousiers, Moving Frostbite to PBR, 2014): rougher lobes lean toward the
+// normal. `alpha` is the squared perceptual roughness.
+float3 vkr_specular_dominant_direction(float3 normal, float3 reflection,
+                                       float alpha)
+{
+    float smoothness = saturate(1.0f - alpha);
+    float factor = smoothness * (sqrt(smoothness) + alpha);
+    return normalize(normal + (reflection - normal) * factor);
+}
+
+// The cube direction of a reflection from `position` inside a probe's box:
+// toward where the reflection leaves the box, seen from the box centre, where
+// the probe was captured. A rough lobe spans much of the cube, so the
+// correction fades toward the plain reflection as `alpha` grows instead of
+// aiming the whole lobe at one wall point.
+float3 vkr_reflection_probe_direction(float3 reflection, float3 position,
+                                      float3 center, float3 extents,
+                                      float alpha)
+{
+    if (extents.x <= 1e-4f || extents.y <= 1e-4f || extents.z <= 1e-4f)
+        return reflection;
+    // The influence is zero outside the box, so only points within the
+    // tolerance of a face reach here; clamping keeps them on its wall.
+    float3 inside = clamp(position, center - extents, center + extents);
+    float3 safe_direction = reflection;
+    if (abs(safe_direction.x) < 1e-4f)
+        safe_direction.x = safe_direction.x < 0.0f ? -1e-4f : 1e-4f;
+    if (abs(safe_direction.y) < 1e-4f)
+        safe_direction.y = safe_direction.y < 0.0f ? -1e-4f : 1e-4f;
+    if (abs(safe_direction.z) < 1e-4f)
+        safe_direction.z = safe_direction.z < 0.0f ? -1e-4f : 1e-4f;
+    float3 t_min = (center - extents - inside) / safe_direction;
+    float3 t_max = (center + extents - inside) / safe_direction;
+    float3 t_far = max(t_min, t_max);
+    float t_hit = max(min(t_far.x, min(t_far.y, t_far.z)), 0.0f);
+    float3 projected = normalize(inside + safe_direction * t_hit - center);
+    return normalize(projected + (reflection - projected) * saturate(alpha));
+}
+
+#endif

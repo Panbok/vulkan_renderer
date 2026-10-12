@@ -741,6 +741,7 @@ domain under the [evidence rules](#evidence-rules).
 | Shadow receiver | Shared | `shared/shadow_kernel.slangh`, `local_shadow.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Local shadow mask and transmitting shadows | Desktop | `shared/local_shadow.slangh`, `local_shadow_transmission.slangh` | — | `vulkan/slang/world/deferred.slang`, `local_shadow_transmission.slang` |
 | Baked diffuse volumes | Shared | `shared/diffuse_volume_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/lighting.metalh`, `tiled.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Reflection probe influence, priority share and lookup direction | Shared | `shared/reflection_probe_kernel.slangh` | `metal/msl/world/lighting.metalh`, `tiled.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang` |
 | Rectangle LTC | Shared | `shared/ltc_kernel.slangh` | `metal/msl/world/lighting.metalh`, `tiled.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Analytic fog | Shared | `shared/fog_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/post/fog.slang`, `world/default.slang` |
 | Froxel volumetric fog | Desktop | `shared/froxel_fog_kernel.slangh`, `fog_kernel.slangh`, `punctual_light_kernel.slangh` | — | `vulkan/slang/post/froxel_fog.slang` |

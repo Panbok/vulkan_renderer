@@ -1664,6 +1664,61 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
                         : NULL;
 }
 
+/* Distance from `position` to a probe's box; zero inside it. */
+vkr_internal float32_t vkr_standard_scene_runtime_probe_distance(
+    const VkrFrameIblProbe *probe, Vec3 position) {
+  const Vec3 offset = vec3_sub(position, probe->center);
+  const Vec3 outside = {Max(fabsf(offset.x) - probe->extents.x, 0.0f),
+                        Max(fabsf(offset.y) - probe->extents.y, 0.0f),
+                        Max(fabsf(offset.z) - probe->extents.z, 0.0f)};
+  return vec3_length(outside);
+}
+
+vkr_internal float32_t
+vkr_standard_scene_runtime_probe_volume(const VkrFrameIblProbe *probe) {
+  return probe->extents.x * probe->extents.y * probe->extents.z;
+}
+
+/* Keeps the `cap` probes nearest the camera, then lists them smaller box
+   first: shaders give each probe the share the ones before it leave, so a
+   room probe takes priority over the hall around it (ADR-019). Insertion
+   sorts over at most VKR_FRAME_IBL_PROBE_MAX entries. */
+vkr_internal uint32_t vkr_standard_scene_runtime_order_probes(
+    VkrFrameIblProbe *probes, VkrTextureHandle *sources, uint32_t count,
+    uint32_t cap, Vec3 camera_position) {
+  for (uint32_t i = 1u; i < count; ++i) {
+    const VkrFrameIblProbe probe = probes[i];
+    const VkrTextureHandle source = sources[i];
+    const float32_t distance =
+        vkr_standard_scene_runtime_probe_distance(&probe, camera_position);
+    uint32_t j = i;
+    while (j > 0u && vkr_standard_scene_runtime_probe_distance(
+                         &probes[j - 1u], camera_position) > distance) {
+      probes[j] = probes[j - 1u];
+      sources[j] = sources[j - 1u];
+      --j;
+    }
+    probes[j] = probe;
+    sources[j] = source;
+  }
+  count = Min(count, cap);
+  for (uint32_t i = 1u; i < count; ++i) {
+    const VkrFrameIblProbe probe = probes[i];
+    const VkrTextureHandle source = sources[i];
+    const float32_t volume = vkr_standard_scene_runtime_probe_volume(&probe);
+    uint32_t j = i;
+    while (j > 0u &&
+           vkr_standard_scene_runtime_probe_volume(&probes[j - 1u]) > volume) {
+      probes[j] = probes[j - 1u];
+      sources[j] = sources[j - 1u];
+      --j;
+    }
+    probes[j] = probe;
+    sources[j] = source;
+  }
+  return count;
+}
+
 /* Packs ready reflection probes and lowers the lighting system into the
    frame lighting. */
 vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
@@ -1678,7 +1733,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
       Min(application->ibl_probe_limit, VKR_FRAME_IBL_PROBE_MAX);
   if (active_scene) {
     for (uint32_t i = 0; i < active_scene->reflection_probe_count &&
-                         frame_ibl_probe_count < frame_ibl_probe_cap;
+                         frame_ibl_probe_count < VKR_FRAME_IBL_PROBE_MAX;
          ++i) {
       const VkrSceneReflectionProbe *probe =
           &active_scene->reflection_probes[i];
@@ -1705,6 +1760,9 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
           .box_projection_enabled = probe->box_projection,
       };
     }
+    frame_ibl_probe_count = vkr_standard_scene_runtime_order_probes(
+        frame_ibl_probes, draw->frame_ibl_probe_sources, frame_ibl_probe_count,
+        frame_ibl_probe_cap, application->globals.view_position);
   }
   draw->frame_ibl_enabled =
       draw->frame_ibl_enabled || frame_ibl_probe_count > 0u;

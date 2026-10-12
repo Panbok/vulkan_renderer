@@ -1512,14 +1512,17 @@ bool8_t vkr_project_perform_bakes(VkrProjectJob *job, VkrBakeryJson *scene,
   if (!asset_root || !asset_root[0]) {
     asset_root = job->stage;
   }
-  if (vkr_project_truthy(vkr_bakery_json_get(bakes, "reflection"))) {
-    VKR_PROJECT_TRY(vkr_project_bake_probes(job, scene, asset_root));
-  }
   if (vkr_project_truthy(vkr_bakery_json_get(bakes, "diffuse"))) {
     VKR_PROJECT_TRY(vkr_project_bake_volume(job, scene, asset_root));
   }
   if (vkr_project_truthy(vkr_bakery_json_get(bakes, "lightmap"))) {
     VKR_PROJECT_TRY(vkr_project_bake_lightmaps(job, scene, asset_root));
+  }
+  /* Probes capture last: the volume and lightmap bakes above point `scene`
+     at their new artifacts, so the captured rooms show this bake's light
+     instead of the previous one. */
+  if (vkr_project_truthy(vkr_bakery_json_get(bakes, "reflection"))) {
+    VKR_PROJECT_TRY(vkr_project_bake_probes(job, scene, asset_root));
   }
   return true_v;
 }
