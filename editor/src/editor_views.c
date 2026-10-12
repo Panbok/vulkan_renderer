@@ -288,9 +288,29 @@ static void model_leave(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   }
 }
 
-/* A new selection becomes the subject the stage shows, and the orbit
-   frames it; an empty selection keeps the last subject. The stage is asked
-   for every build the view shows. */
+/* Whether `entity` is the subject or lies below it, as its decals and parts
+   do. */
+static bool8_t model_under_subject(const VkrSampleUiFrame *frame,
+                                   VkrEntityId subject, VkrEntityId entity) {
+  const VkrScene *scene = vkr_editor_entity_scene(frame, subject);
+  if (!scene || entity.parts.world != subject.parts.world) {
+    return false_v;
+  }
+  for (uint32_t depth = 0; entity.u64 && depth < scene->world->dir.capacity;
+       ++depth) {
+    if (entity.u64 == subject.u64) {
+      return true_v;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return false_v;
+}
+
+/* A new selection outside the subject becomes the subject the stage shows,
+   and the orbit frames it; selecting a decal or part of the subject, or
+   nothing, keeps it. The stage is asked for every build the view shows. */
 static void model_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   VkrEditorModelView *model = &editor->model;
   if (frame->scene_generation != model->scene_generation) {
@@ -298,7 +318,8 @@ static void model_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     model->camera_saved = false_v;
   }
   const VkrEntityId selected = frame->selected_entity;
-  if (selected.u64 && selected.u64 != model->subject.u64) {
+  if (selected.u64 && selected.u64 != model->subject.u64 &&
+      !model_under_subject(frame, model->subject, selected)) {
     model->subject = selected;
     model_frame(editor, frame);
   }
@@ -364,6 +385,78 @@ void vkr_editor_views_update(VkrEditorUi *editor,
   if (view == VKR_EDITOR_VIEW_MODEL) {
     model_update(editor, frame);
   }
+}
+
+/* Whether a click at the pointer lands on the Scene image itself, not on
+   other UI or a flying camera. */
+static bool8_t over_image_click(const VkrSampleUiFrame *frame, VkrUiRect rect) {
+  const VkrUiSystem *ui = frame->ui;
+  return !frame->mouse_captured && ui->mouse_input_layer == 0u &&
+         ui->hot_id == VKR_UI_ID_NONE && (float32_t)ui->mouse_x >= rect.x &&
+         (float32_t)ui->mouse_x < rect.x + rect.width &&
+         (float32_t)ui->mouse_y >= rect.y &&
+         (float32_t)ui->mouse_y < rect.y + rect.height;
+}
+
+/* The subject's decal, or a decal below it, whose box the pointer's ray
+   meets first on the stage; invalid when none. Decals draw no ids into the
+   picking image, so their unit boxes are tested here. */
+static VkrEntityId model_pick_decal(const VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame, Vec2 pixel) {
+  const VkrEntityId subject = editor->model.subject;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, subject);
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  if (!scene || !vkr_editor_viewport_ray(frame, pixel, &origin, &direction)) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  /* The stage stands the level's subject at an offset. */
+  origin = vec3_sub(origin, editor->model.offset);
+  VkrEntityId nearest_entity = VKR_ENTITY_ID_INVALID;
+  float32_t nearest = INFINITY;
+  for (uint32_t i = 0; i < scene->topo_count; ++i) {
+    const VkrEntityId entity = scene->topo_order[i];
+    if (!vkr_scene_get_typed(scene, entity, &vkr_scene_decal_type) ||
+        !model_under_subject(frame, subject, entity)) {
+      continue;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    if (!transform) {
+      continue;
+    }
+    /* The ray in the decal's unit box, [-0.5, 0.5] on each axis. */
+    const Mat4 inverse = mat4_inverse_affine(transform->world);
+    const Vec4 o = mat4_mul_vec4(inverse, vec3_to_vec4(origin, 1.0f));
+    const Vec4 d = mat4_mul_vec4(inverse, vec3_to_vec4(direction, 0.0f));
+    float32_t enter = 0.0f;
+    float32_t leave = INFINITY;
+    const float32_t from[3] = {o.x, o.y, o.z};
+    const float32_t step[3] = {d.x, d.y, d.z};
+    for (uint32_t axis = 0; axis < 3u && enter <= leave; ++axis) {
+      if (fabsf(step[axis]) < 1.0e-8f) {
+        if (from[axis] < -0.5f || from[axis] > 0.5f) {
+          leave = -1.0f;
+        }
+        continue;
+      }
+      float32_t t0 = (-0.5f - from[axis]) / step[axis];
+      float32_t t1 = (0.5f - from[axis]) / step[axis];
+      if (t0 > t1) {
+        const float32_t swap = t0;
+        t0 = t1;
+        t1 = swap;
+      }
+      enter = Max(enter, t0);
+      leave = Min(leave, t1);
+    }
+    /* `direction` is unit in the world, so `enter` orders hits along it. */
+    if (enter <= leave && enter < nearest) {
+      nearest = enter;
+      nearest_entity = entity;
+    }
+  }
+  return nearest_entity;
 }
 
 /* The caption, orbit ring and Frame button over the Scene image, and the
@@ -464,13 +557,22 @@ static void model_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     model_frame(editor, frame);
   }
 
+  /* A click with no Scene tool selects the subject's decal under the
+     pointer, else the subject itself; either keeps the view on it. */
+  if (over_image_click(frame, rect) && ui->mouse_pressed &&
+      vkr_editor_scene_tool(editor) == VKR_EDITOR_SCENE_TOOL_NONE &&
+      !input_is_button_down(frame->input, BUTTON_MIDDLE) && frame->scene_edit) {
+    const VkrEntityId decal = model_pick_decal(
+        editor, frame, (Vec2){(float32_t)ui->mouse_x, (float32_t)ui->mouse_y});
+    const VkrEntityId chosen = decal.u64 ? decal : model->subject;
+    if (chosen.u64 != frame->selected_entity.u64) {
+      *frame->scene_edit = (VkrSceneEditRequest){
+          .action = VKR_SCENE_EDIT_SELECT, .entity = chosen};
+    }
+  }
+
   /* Middle drag and the wheel over the Scene image, not over other UI. */
-  const bool8_t over_image =
-      !frame->mouse_captured && ui->mouse_input_layer == 0u &&
-      ui->hot_id == VKR_UI_ID_NONE && (float32_t)ui->mouse_x >= rect.x &&
-      (float32_t)ui->mouse_x < rect.x + rect.width &&
-      (float32_t)ui->mouse_y >= rect.y &&
-      (float32_t)ui->mouse_y < rect.y + rect.height;
+  const bool8_t over_image = over_image_click(frame, rect);
   if (over_image && input_button_just_pressed(frame->input, BUTTON_MIDDLE)) {
     model->orbiting = true_v;
   }

@@ -101,7 +101,10 @@ On 2026-10-09 the owner chose painted areas from three options:
    above or the street below never catches a copy. An imported model's
    nodes have no document-stable id, so the area keeps the box rather than
    a reference. The stage shows the scatter copies standing within the
-   object's bounds.
+   object's bounds. The brush ring and each dab's ring lie on the surface
+   under the pointer, turned to its normal, in both views; copies still
+   drop straight down within each area's disc. PAINT WITH lists one
+   scatter per row.
 6. **Hide.** Copies follow Hide and Isolate as their scatter does, by
    visibility only, without placing them again.
 4. **Tool.** Cmd `scatter.tool` and the Art palette's DRESSING Scatter paint

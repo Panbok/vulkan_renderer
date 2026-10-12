@@ -1338,6 +1338,11 @@ static void workbench_model_scatters(VkrEditorUi *editor,
   const VkrScene *scene = vkr_editor_entity_scene(frame, editor->model.subject);
   vkr_editor_palette_heading(palette, string8_lit("art.model_scatter"),
                              string8_lit("PAINT WITH"));
+  /* Scatter names need the panel's width: one per row. */
+  const uint32_t columns = palette->columns;
+  if (palette->labels) {
+    palette->columns = 1u;
+  }
   uint32_t shown = 0u;
   VkrEntityId only = VKR_ENTITY_ID_INVALID;
   for (uint32_t i = 0; scene && i < scene->topo_count && shown < 12u; ++i) {
@@ -1371,6 +1376,7 @@ static void workbench_model_scatters(VkrEditorUi *editor,
     editor->model.scatter = only;
   }
   vkr_editor_palette_end(palette);
+  palette->columns = columns;
   if (!shown && !palette->folded) {
     const VkrUiTheme *theme = vkr_ui_theme();
     VkrUiWidgetConfig note = vkr_editor_details_widget(

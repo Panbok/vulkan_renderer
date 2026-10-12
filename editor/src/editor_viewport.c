@@ -2235,12 +2235,13 @@ static void viewport_scatter_tool(VkrEditorUi *editor,
   Vec3 direction = {0};
   if (model ? !viewport_model_surface(editor, frame, mouse, &point, &normal,
                                       &direction)
-            : !viewport_surface_point(frame, mouse, false_v, &point, NULL)) {
+            : !viewport_surface_point(frame, mouse, false_v, &point, &normal)) {
     return;
   }
   /* Dabs keep the level's points; the brush shows where the stage puts
-     them. */
+     them, lying on the surface. */
   editor->scatter_hover = model ? vec3_add(point, editor->model.offset) : point;
+  editor->scatter_hover_normal = normal;
   editor->scatter_hover_valid = true_v;
   if (!target.u64 || editor->menu != VKR_EDITOR_MENU_NONE) {
     return;
@@ -2264,6 +2265,7 @@ static void viewport_scatter_tool(VkrEditorUi *editor,
       return;
     }
   }
+  editor->scatter_dab_normals[editor->scatter_dab_count] = normal;
   editor->scatter_dabs[editor->scatter_dab_count++] = point;
 }
 

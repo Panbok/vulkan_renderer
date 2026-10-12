@@ -777,6 +777,80 @@ static void physics_ring(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
 }
 
+/* A ring of `radius` about `center` lying on the surface whose normal is
+   `normal`, lifted a little off it so the surface does not cover it, with
+   a tick along the normal. */
+static void physics_surface_ring(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame, Vec3 center,
+                                 Vec3 normal, float32_t radius, Vec4 color,
+                                 uint32_t capacity) {
+  const Vec3 up = vec3_length(normal) > 1.0e-4f ? vec3_normalize(normal)
+                                                : vec3_new(0.0f, 1.0f, 0.0f);
+  const Vec3 helper = fabsf(up.y) < 0.9f ? vec3_new(0.0f, 1.0f, 0.0f)
+                                         : vec3_new(1.0f, 0.0f, 0.0f);
+  const Vec3 u = vec3_normalize(vec3_cross(helper, up));
+  const Vec3 v = vec3_cross(up, u);
+  const Vec3 lifted = vec3_add(center, vec3_scale(up, 0.02f));
+  for (uint32_t segment = 0; segment < 32u; ++segment) {
+    const float32_t a = (float32_t)segment * (6.28318530718f / 32.0f);
+    const float32_t b = (float32_t)(segment + 1u) * (6.28318530718f / 32.0f);
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+                 vec3_add(lifted, vec3_add(vec3_scale(u, radius * cosf(a)),
+                                           vec3_scale(v, radius * sinf(a)))),
+                 vec3_add(lifted, vec3_add(vec3_scale(u, radius * cosf(b)),
+                                           vec3_scale(v, radius * sinf(b)))),
+                 color, capacity);
+  }
+  physics_line(editor, frame, VKR_ENTITY_ID_INVALID, lifted,
+               vec3_add(lifted, vec3_scale(up, Min(radius * 0.4f, 0.5f))),
+               color, capacity);
+}
+
+/* The edges of the unit box [-0.5, 0.5]^3 that `world` places, moved by
+   `shift`, as a decal's box is placed. */
+static void physics_unit_box(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                             Mat4 world, Vec3 shift, Vec4 color,
+                             uint32_t capacity) {
+  const Mat4 placed = mat4_mul(mat4_translate(shift), world);
+  for (uint32_t corner = 0; corner < 8u; ++corner) {
+    for (uint32_t axis = 0; axis < 3u; ++axis) {
+      if (corner & (1u << axis)) {
+        continue;
+      }
+      const uint32_t other = corner | (1u << axis);
+      const Vec3 from =
+          mat4_mul_vec3(placed, vec3_new((corner & 1u) ? 0.5f : -0.5f,
+                                         (corner & 2u) ? 0.5f : -0.5f,
+                                         (corner & 4u) ? 0.5f : -0.5f));
+      const Vec3 to =
+          mat4_mul_vec3(placed, vec3_new((other & 1u) ? 0.5f : -0.5f,
+                                         (other & 2u) ? 0.5f : -0.5f,
+                                         (other & 4u) ? 0.5f : -0.5f));
+      physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from, to, color,
+                   capacity);
+    }
+  }
+}
+
+/* The selected decal's box in the Model view, where the stage stands its
+   subject: decals draw no selection outline of their own. */
+static void physics_model_selection(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    uint32_t capacity) {
+  const VkrEntityId selected = frame->selected_entity;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, selected);
+  if (!scene || !vkr_scene_entity_alive(scene, selected) ||
+      !vkr_scene_get_typed(scene, selected, &vkr_scene_decal_type)) {
+    return;
+  }
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, selected, scene->comp_transform);
+  if (transform) {
+    physics_unit_box(editor, frame, transform->world, editor->model.offset,
+                     vkr_ui_theme()->accent, capacity);
+  }
+}
+
 /* A horizontal cross at `at`, `reach` out along X and Z. */
 static void physics_cross(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                           Vec3 at, float32_t reach, Vec4 color,
@@ -1130,13 +1204,15 @@ static void physics_scatter_paint(VkrEditorUi *editor,
     }
   }
   for (uint32_t i = 0; i < editor->scatter_dab_count; ++i) {
-    physics_ring(editor, frame, vec3_add(editor->scatter_dabs[i], shift),
-                 editor->scatter_radius, vkr_ui_color_alpha(brush, 0.6f),
-                 capacity);
+    physics_surface_ring(editor, frame,
+                         vec3_add(editor->scatter_dabs[i], shift),
+                         editor->scatter_dab_normals[i], editor->scatter_radius,
+                         vkr_ui_color_alpha(brush, 0.6f), capacity);
   }
   if (editor->scatter_hover_valid) {
-    physics_ring(editor, frame, editor->scatter_hover, editor->scatter_radius,
-                 brush, capacity);
+    physics_surface_ring(editor, frame, editor->scatter_hover,
+                         editor->scatter_hover_normal, editor->scatter_radius,
+                         brush, capacity);
   }
 }
 
@@ -1326,7 +1402,10 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   /* Pending agent changes and a brush being drawn draw in this overlay too
      (ADR-084). */
   const VkrEditorLevelReport *report = editor->level_report;
+  const bool8_t part_selected =
+      model && frame->selected_entity.u64 != editor->model.subject.u64;
   const uint32_t tool_previews =
+      (part_selected ? 1u : 0u) +
       (editor->decal_tool && editor->decal_hover_valid ? 1u : 0u) +
       (editor->scatter_tool &&
                (editor->scatter_hover_valid || editor->scatter_dab_count)
@@ -1419,6 +1498,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
     physics_player_starts(editor, frame, capacity);
   }
   if (editor->physics_lines && changes && model) {
+    physics_model_selection(editor, frame, capacity);
     if (editor->decal_tool && editor->decal_hover_valid) {
       physics_decal_preview(editor, frame, capacity);
     }

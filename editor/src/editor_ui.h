@@ -704,8 +704,11 @@ typedef struct VkrEditorUi {
   bool8_t scatter_erasing;
   uint32_t scatter_dab_count;
   Vec3 scatter_dabs[VKR_EDITOR_SCATTER_DAB_MAX];
+  /* Each dab's surface normal, so its ring lies on the surface. */
+  Vec3 scatter_dab_normals[VKR_EDITOR_SCATTER_DAB_MAX];
   bool8_t scatter_hover_valid;
   Vec3 scatter_hover;
+  Vec3 scatter_hover_normal;
   /* The scale figure, for this session: the player's capsule standing on
      the surface under the pointer while it rests over the Scene. */
   bool8_t scale_figure;

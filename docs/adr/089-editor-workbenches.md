@@ -191,10 +191,13 @@ editor stops asking, and Play shows the level. While it shows:
 - A switch to or from the stage starts temporal history and the shadow
   fits afresh.
 
-Each new non-empty selection becomes the subject and an orbit about the
-centre of its box frames it at the Scene's lens, keeping the orbit's angles
-after the first subject; with none, the orbit looks at the stage's origin.
-An emptied selection keeps the last subject. A drag on the orbit ring or a
+Each new non-empty selection outside the subject becomes the subject and an
+orbit about the centre of its box frames it at the Scene's lens, keeping the
+orbit's angles after the first subject; with none, the orbit looks at the
+stage's origin. An emptied selection, or one of the subject's decals or
+parts, keeps the subject. A click with no Scene tool selects the subject's
+decal whose box the pointer's ray meets first (decals draw no picking ids),
+outlined on the stage, else the subject itself. A drag on the orbit ring or a
 middle drag over the image turns the orbit, the wheel moves in and out, and
 Frame frames the subject again; a caption names it. Leaving the view puts
 the Scene camera back unless another scene opened meanwhile.
