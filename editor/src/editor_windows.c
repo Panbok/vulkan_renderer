@@ -22,6 +22,8 @@
 #define EDITOR_MENU_WIDTH_PT 272.0f
 #define EDITOR_MENU_ROW_PT 26.0f
 #define EDITOR_MENU_SEPARATOR_PT 9.0f
+/* Rows a menu popup declares: its items and the separators before them. */
+#define EDITOR_MENU_ROW_MAX 64u
 #define EDITOR_MENU_PADDING_PT 5.0f
 #define EDITOR_TRANSPORT_BUTTON_PT 27.0f
 /* Floating windows resize from borders just past their right and bottom
@@ -1094,10 +1096,17 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui,
   vkr_ui_keyboard_layer_set(ui, EDITOR_MENU_LAYER);
   (void)vkr_ui_input_layer_set(ui, EDITOR_MENU_LAYER);
   const VkrUiRect rect = editor_menu_popup_rect(editor, ui);
-  VkrUiTrack rows[32];
+  VkrUiTrack rows[EDITOR_MENU_ROW_MAX];
   uint32_t row_count = 0u;
-  for (uint32_t i = 0u; i < definition->count && row_count + 2u < 32u; ++i) {
-    if (definition->entries[i].separator_before)
+  /* Items past the declared rows would fail the popup's grid layout, and
+     with it the frame's UI, so only the items that fit are built. */
+  uint32_t entry_count = 0u;
+  for (; entry_count < definition->count; ++entry_count) {
+    const uint32_t needed =
+        definition->entries[entry_count].separator_before ? 2u : 1u;
+    if (row_count + needed > ArrayCount(rows))
+      break;
+    if (definition->entries[entry_count].separator_before)
       rows[row_count++] = (VkrUiTrack){.value = EDITOR_MENU_SEPARATOR_PT,
                                        .unit = VKR_UI_TRACK_PX};
     rows[row_count++] =
@@ -1134,7 +1143,7 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui,
   }
   EditorCommand execute = CMD_COUNT;
   uint32_t row = 0u;
-  for (uint32_t i = 0u; i < definition->count; ++i) {
+  for (uint32_t i = 0u; i < entry_count; ++i) {
     const EditorMenuEntry *entry = &definition->entries[i];
     if (entry->separator_before) {
       VkrUiPanelConfig separator = vkr_ui_panel_config_default();
