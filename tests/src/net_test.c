@@ -1586,20 +1586,23 @@ static void net_bottleneck_measure(NetTestBottleneck *net, uint64_t duration,
    half of 16 s) or leave more than a fifth of the link unused. */
 static void test_net_shared_bottleneck_fairness(void) {
   printf("  Running test_net_shared_bottleneck_fairness...\n");
-  NetTestBottleneck net;
+  /* Four sides' receive records exceed the 1 MB Windows main-thread stack. */
+  NetTestBottleneck *net = calloc(1u, sizeof(*net));
+  assert(net);
   const bool8_t background[NET_TEST_PAIRS] = {false_v, false_v};
-  net_bottleneck_init(&net, background);
-  net_bottleneck_connect(&net);
-  net.pairs[0].sending = true_v;
-  net.pairs[1].sending = true_v;
+  net_bottleneck_init(net, background);
+  net_bottleneck_connect(net);
+  net->pairs[0].sending = true_v;
+  net->pairs[1].sending = true_v;
   float64_t share[NET_TEST_PAIRS];
-  net_bottleneck_measure(&net, 8u * NET_TEST_SECOND, share);
-  net_bottleneck_measure(&net, 8u * NET_TEST_SECOND, share);
+  net_bottleneck_measure(net, 8u * NET_TEST_SECOND, share);
+  net_bottleneck_measure(net, 8u * NET_TEST_SECOND, share);
   const float64_t total = share[0] + share[1];
   printf("    shares of the link %.2f and %.2f\n", share[0], share[1]);
   assert(total >= 0.8);
   assert(share[0] / total >= 0.35 && share[0] / total <= 0.65);
-  net_bottleneck_destroy(&net);
+  net_bottleneck_destroy(net);
+  free(net);
   printf("  test_net_shared_bottleneck_fairness PASSED\n");
 }
 
@@ -1610,27 +1613,30 @@ static void test_net_shared_bottleneck_fairness(void) {
    recover at least 70% of the link within 8 s. */
 static void test_net_shared_bottleneck_background(void) {
   printf("  Running test_net_shared_bottleneck_background...\n");
-  NetTestBottleneck net;
+  /* Four sides' receive records exceed the 1 MB Windows main-thread stack. */
+  NetTestBottleneck *net = calloc(1u, sizeof(*net));
+  assert(net);
   const bool8_t background[NET_TEST_PAIRS] = {false_v, true_v};
-  net_bottleneck_init(&net, background);
-  net_bottleneck_connect(&net);
-  net.pairs[0].sending = true_v;
-  net.pairs[1].sending = true_v;
+  net_bottleneck_init(net, background);
+  net_bottleneck_connect(net);
+  net->pairs[0].sending = true_v;
+  net->pairs[1].sending = true_v;
   float64_t share[NET_TEST_PAIRS];
-  net_bottleneck_measure(&net, 8u * NET_TEST_SECOND, share);
-  net_bottleneck_measure(&net, 8u * NET_TEST_SECOND, share);
+  net_bottleneck_measure(net, 8u * NET_TEST_SECOND, share);
+  net_bottleneck_measure(net, 8u * NET_TEST_SECOND, share);
   const float64_t total = share[0] + share[1];
   printf("    together: normal %.2f, background %.2f of the link\n", share[0],
          share[1]);
   assert(share[1] / total < 0.25);
   assert(share[0] >= 0.65);
 
-  net.pairs[0].sending = false_v;
-  net_bottleneck_measure(&net, 4u * NET_TEST_SECOND, share);
-  net_bottleneck_measure(&net, 4u * NET_TEST_SECOND, share);
+  net->pairs[0].sending = false_v;
+  net_bottleneck_measure(net, 4u * NET_TEST_SECOND, share);
+  net_bottleneck_measure(net, 4u * NET_TEST_SECOND, share);
   printf("    alone: background %.2f of the link\n", share[1]);
   assert(share[1] >= 0.7);
-  net_bottleneck_destroy(&net);
+  net_bottleneck_destroy(net);
+  free(net);
   printf("  test_net_shared_bottleneck_background PASSED\n");
 }
 
