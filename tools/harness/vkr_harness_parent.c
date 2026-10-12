@@ -174,10 +174,13 @@ vkr_internal bool8_t vkr_harness_child_sample_digest_matches(
  * evidence regardless of its average.
  */
 vkr_internal bool8_t vkr_harness_work_metric(const char *name) {
-  /* Completion-only HZB selection is scheduling state. Its reject count is
-   *
-   * work volume and remains covered by the visibility prefix below. */
-  if (string_equals(name, "visibility.hzb.history_valid"))
+  /* HZB history selection is scheduling state: a history whose producer has
+     not completed is rejected as incomplete before the world, extent, camera
+     and raster checks run, so the selection and every rejection count depend
+     on GPU completion timing. */
+  if (string_equals(name, "visibility.hzb.history_valid") ||
+      string_n_equals(name, "visibility.hzb.history_rejection.",
+                      sizeof("visibility.hzb.history_rejection.") - 1u))
     return false_v;
   return string_n_equals(name, "draw.", 5u) ||
          string_n_equals(name, "visibility.", 11u) ||

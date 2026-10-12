@@ -416,6 +416,44 @@ vkr_harness_report_find_metric(const VkrHarnessReport *report,
   return NULL;
 }
 
+/* The most samples, in percent, a completion-owned metric may miss before an
+   assertion on it is incomplete. */
+#define VKR_HARNESS_COMPLETION_MISSING_PERCENT 1u
+
+/**
+ * Returns whether a metric is published only from a completed GPU readback
+ * (vkr_renderer_metrics_collect_visibility and _collect_shadows). A frame on
+ * which no submission completed has no sample of these metrics, so a missing
+ * sample is an unobserved frame, not missing evidence.
+ */
+vkr_internal bool8_t vkr_harness_metric_is_completion_owned(const char *name) {
+  static const char *const prefixes[] = {
+      "visibility.gpu_visible.",
+      "visibility.transmission.gpu_visible.",
+      "visibility.transmission.covered_pixels.",
+      "visibility.transmission.coverage_extent.",
+  };
+  static const char *const names[] = {
+      "visibility.gbuffer.resolve_invalid",
+      "visibility.transmission.resolve_invalid",
+      "visibility.transmission.compact_pixels.overflow",
+      "visibility.hzb.rejected",
+      "visibility.transmission.hzb.rejected",
+  };
+  for (uint32_t i = 0u; i < ArrayCount(prefixes); ++i) {
+    if (string_n_equals(name, prefixes[i], string_length(prefixes[i]))) {
+      return true_v;
+    }
+  }
+  for (uint32_t i = 0u; i < ArrayCount(names); ++i) {
+    if (string_equals(name, names[i])) {
+      return true_v;
+    }
+  }
+  return string_n_equals(name, "draw.shadow.", sizeof("draw.shadow.") - 1u) &&
+         string_find(name, ".indirect_");
+}
+
 VkrHarnessAssertionOutcome
 vkr_harness_assertion_evaluate(const VkrHarnessReport *report,
                                const VkrHarnessAssertion *assertion,
@@ -425,9 +463,16 @@ vkr_harness_assertion_evaluate(const VkrHarnessReport *report,
   }
   const VkrHarnessMetricResult *metric =
       vkr_harness_report_find_metric(report, assertion->metric);
-  if (!metric || metric->statistics.sample_count == 0u ||
-      metric->statistics.invalid_count > 0u) {
+  if (!metric || metric->statistics.sample_count == 0u) {
     return VKR_HARNESS_ASSERTION_INCOMPLETE;
+  }
+  const uint64_t missing = metric->statistics.invalid_count;
+  if (missing > 0u) {
+    const uint64_t frames = metric->statistics.sample_count + missing;
+    if (!vkr_harness_metric_is_completion_owned(assertion->metric) ||
+        missing * 100u > frames * VKR_HARNESS_COMPLETION_MISSING_PERCENT) {
+      return VKR_HARNESS_ASSERTION_INCOMPLETE;
+    }
   }
   const float64_t actual =
       vkr_harness_statistic_value(&metric->statistics, assertion->statistic);

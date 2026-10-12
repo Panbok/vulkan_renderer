@@ -59,8 +59,14 @@ static bool8_t vkr_harness_git_first_line(const char *repo_root,
                                           VkrHarnessGitQuery query, char *out,
                                           uint32_t capacity) {
   const char *head_arguments[] = {"-C", repo_root, "rev-parse", "HEAD"};
-  const char *status_arguments[] = {"-C", repo_root, "status", "--porcelain",
-                                    "--untracked-files=normal"};
+  /* Configure patches vendored sources in place (KTX), so edited files inside
+     a submodule do not count; a submodule moved to another commit does. */
+  const char *status_arguments[] = {"-C",
+                                    repo_root,
+                                    "status",
+                                    "--porcelain",
+                                    "--untracked-files=normal",
+                                    "--ignore-submodules=dirty"};
   const char *const *arguments =
       query == VKR_HARNESS_GIT_HEAD ? head_arguments : status_arguments;
   const uint32_t argument_count = query == VKR_HARNESS_GIT_HEAD
@@ -91,8 +97,9 @@ void vkr_harness_provenance_collect(const char *executable,
                                   sizeof(provenance->git_sha))) {
     string_format(provenance->git_sha, sizeof(provenance->git_sha), "unknown");
   }
-  /* Any porcelain output at all — tracked or untracked — is a dirty tree. An
-     unavailable git is treated as dirty rather than silently authoritative. */
+  /* Any porcelain output at all — tracked, untracked or a moved submodule —
+     is a dirty tree. An unavailable git is treated as dirty rather than
+     silently authoritative. */
   char status[8] = {0};
   const bool8_t status_available = vkr_harness_git_first_line(
       repo_root, VKR_HARNESS_GIT_STATUS, status, sizeof(status));

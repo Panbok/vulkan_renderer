@@ -1438,7 +1438,8 @@ vkr_internal void test_harness_assertion_verdict(void) {
   assert(vkr_harness_assertion_evaluate(&report, &assertion, &actual) ==
          VKR_HARNESS_ASSERTION_FAIL);
 
-  /* Missing or partially invalid evidence is never a pass and never a fail. */
+  /* Missing or partially invalid evidence is never a pass and never a fail,
+     except a completion-owned metric missing at most 1% of its frames. */
   snprintf(assertion.metric, sizeof(assertion.metric), "no.such.metric");
   assert(vkr_harness_assertion_evaluate(&report, &assertion, &actual) ==
          VKR_HARNESS_ASSERTION_INCOMPLETE);
@@ -1449,6 +1450,34 @@ vkr_internal void test_harness_assertion_verdict(void) {
          VKR_HARNESS_ASSERTION_INCOMPLETE);
   metric.statistics.invalid_count = 0u;
   metric.statistics.sample_count = 0u;
+  assert(vkr_harness_assertion_evaluate(&report, &assertion, &actual) ==
+         VKR_HARNESS_ASSERTION_INCOMPLETE);
+
+  /* A frame on which no GPU submission completed has no sample of a
+     readback count; up to 1% of such frames still give a verdict. */
+  const char *const completion_owned[] = {
+      "draw.shadow.cascade0.indirect_commands",
+      "visibility.gpu_visible.overflow",
+  };
+  for (uint32_t i = 0u; i < ArrayCount(completion_owned); ++i) {
+    snprintf(metric.name, sizeof(metric.name), "%s", completion_owned[i]);
+    snprintf(assertion.metric, sizeof(assertion.metric), "%s",
+             completion_owned[i]);
+    metric.statistics.sample_count = 1485u;
+    metric.statistics.invalid_count = 15u;
+    assert(vkr_harness_assertion_evaluate(&report, &assertion, &actual) ==
+           VKR_HARNESS_ASSERTION_FAIL);
+    metric.statistics.sample_count = 1484u;
+    metric.statistics.invalid_count = 16u;
+    assert(vkr_harness_assertion_evaluate(&report, &assertion, &actual) ==
+           VKR_HARNESS_ASSERTION_INCOMPLETE);
+  }
+  /* Indirect and current-frame shadow rows do not share the exemption. */
+  snprintf(metric.name, sizeof(metric.name), "draw.shadow.cascade0.rendered");
+  snprintf(assertion.metric, sizeof(assertion.metric),
+           "draw.shadow.cascade0.rendered");
+  metric.statistics.sample_count = 1499u;
+  metric.statistics.invalid_count = 1u;
   assert(vkr_harness_assertion_evaluate(&report, &assertion, &actual) ==
          VKR_HARNESS_ASSERTION_INCOMPLETE);
   printf("  test_harness_assertion_verdict PASSED\n");
