@@ -1201,7 +1201,8 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
               {"ctrl", KEY_LCONTROL}, {"alt", KEY_LMENU},
               {"a", KEY_A},           {"c", KEY_C},
               {"v", KEY_V},           {"x", KEY_X},
-              {"y", KEY_Y},           {"z", KEY_Z}};
+              {"y", KEY_Y},           {"z", KEY_Z},
+              {"[", KEY_LBRACKET},    {"]", KEY_RBRACKET}};
   static const struct {
     const char *prefix;
     Keys key;

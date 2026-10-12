@@ -17,11 +17,74 @@
 /* Terrains one ray tests per scene. */
 #define TERRAIN_RAY_MAX VKR_SCENE_TERRAIN_MAX
 
-/* Mode buttons one row of the Terrain window holds. */
-#define TERRAIN_MODES_PER_ROW 4u
+/* The brush's ranges; [ and ] step the radius and strength by a quarter. */
+#define TERRAIN_RADIUS_MIN 0.5f
+#define TERRAIN_RADIUS_MAX 64.0f
+#define TERRAIN_FALLOFF_MIN 0.05f
+#define TERRAIN_STRENGTH_MIN 0.05f
+#define TERRAIN_STRENGTH_MAX 4.0f
+#define TERRAIN_KEY_STEP 1.25f
 
-static const char *const s_terrain_mode_labels[VKR_EDITOR_TERRAIN_MODE_COUNT] =
-    {"Raise", "Lower", "Smooth", "Flatten", "Paint", "Hole", "Fill"};
+/* One mode's button: its label, icon and what it does, and the heightfield
+   brush it applies, inverted while Shift is held. */
+typedef struct TerrainModeInfo {
+  const char *id;
+  const char *label;
+  VkrUiIcon icon;
+  const char *tooltip;
+  /* The Scene's line while the tool is on. */
+  const char *hint;
+  VkrHeightfieldBrush brush;
+  VkrEditorTerrainMode inverse;
+} TerrainModeInfo;
+
+static const TerrainModeInfo s_terrain_modes[VKR_EDITOR_TERRAIN_MODE_COUNT] = {
+    {"terrain.mode.raise", "Raise", VKR_UI_ICON_ARROW_UP,
+     "Raise the ground, at full weight four times Strength metres a "
+     "second; Shift lowers",
+     "Hold the left button to raise the ground; Shift lowers. [ ] radius, "
+     "Shift+[ ] strength. Esc stops.",
+     VKR_HEIGHTFIELD_RAISE, VKR_EDITOR_TERRAIN_LOWER},
+    {"terrain.mode.lower", "Lower", VKR_UI_ICON_ARROW_DOWN,
+     "Lower the ground, at full weight four times Strength metres a "
+     "second; Shift raises",
+     "Hold the left button to lower the ground; Shift raises. [ ] radius, "
+     "Shift+[ ] strength. Esc stops.",
+     VKR_HEIGHTFIELD_LOWER, VKR_EDITOR_TERRAIN_RAISE},
+    {"terrain.mode.smooth", "Smooth", VKR_UI_ICON_WAVES,
+     "Average the ground with its neighbours",
+     "Hold the left button to smooth the ground. [ ] radius, Shift+[ ] "
+     "strength. Esc stops.",
+     VKR_HEIGHTFIELD_SMOOTH, VKR_EDITOR_TERRAIN_SMOOTH},
+    {"terrain.mode.flatten", "Flatten", VKR_UI_ICON_MINUS,
+     "Pull the ground toward its height where the stroke starts",
+     "Hold the left button to flatten to where the stroke starts. [ ] "
+     "radius, Shift+[ ] strength. Esc stops.",
+     VKR_HEIGHTFIELD_FLATTEN, VKR_EDITOR_TERRAIN_FLATTEN},
+    {"terrain.mode.paint", "Paint", VKR_UI_ICON_PALETTE,
+     "Paint the chosen material layer",
+     "Hold the left button to paint the chosen layer. [ ] radius, "
+     "Shift+[ ] strength. Esc stops.",
+     VKR_HEIGHTFIELD_PAINT, VKR_EDITOR_TERRAIN_PAINT},
+    {"terrain.mode.hole", "Hole", VKR_UI_ICON_CIRCLE,
+     "Cut a hole for an entrance; Shift fills",
+     "Hold the left button to cut holes; Shift fills. [ ] radius. Esc "
+     "stops.",
+     VKR_HEIGHTFIELD_HOLE, VKR_EDITOR_TERRAIN_FILL},
+    {"terrain.mode.fill", "Fill", VKR_UI_ICON_PLUS_CIRCLE,
+     "Close holes back to ground; Shift cuts",
+     "Hold the left button to fill holes; Shift cuts. [ ] radius. Esc "
+     "stops.",
+     VKR_HEIGHTFIELD_FILL, VKR_EDITOR_TERRAIN_HOLE},
+};
+
+/* The mode strokes apply now: the chosen one, inverted while Shift is
+   held. */
+static VkrEditorTerrainMode terrain_applied_mode(const VkrEditorUi *editor) {
+  const VkrEditorTerrainMode mode = (VkrEditorTerrainMode)Min(
+      editor->terrain_mode, (uint32_t)VKR_EDITOR_TERRAIN_MODE_COUNT - 1u);
+  return editor->terrain_inverted ? s_terrain_modes[mode].inverse : mode;
+}
 
 // =============================================================================
 // Rays
@@ -129,14 +192,35 @@ bool8_t vkr_editor_terrain_ray(const VkrSampleUiFrame *frame, Vec3 origin,
 // Scene tool
 // =============================================================================
 
+/* [ and ] shrink and grow the brush radius, with Shift its strength. */
+static void terrain_shortcuts(VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame) {
+  if (frame->ui->focused_is_text || editor->cmd_active) {
+    return;
+  }
+  static const Keys keys[2] = {KEY_LBRACKET, KEY_RBRACKET};
+  for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
+    if (!input_key_just_pressed(frame->input, keys[i])) {
+      continue;
+    }
+    const float32_t scale = i ? TERRAIN_KEY_STEP : 1.0f / TERRAIN_KEY_STEP;
+    if (input_key_press_modifiers(frame->input, keys[i]) &
+        VKR_INPUT_MOD_SHIFT) {
+      editor->terrain_strength =
+          Clamp(editor->terrain_strength * scale, TERRAIN_STRENGTH_MIN,
+                TERRAIN_STRENGTH_MAX);
+    } else {
+      editor->terrain_radius = Clamp(editor->terrain_radius * scale,
+                                     TERRAIN_RADIUS_MIN, TERRAIN_RADIUS_MAX);
+    }
+    frame->ui->capture.keyboard = true_v;
+  }
+}
+
 void vkr_editor_terrain_update(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   editor->terrain_hit_valid = false_v;
-  if (!(editor->terrain_radius > 0.0f)) {
-    editor->terrain_radius = 8.0f;
-    editor->terrain_strength = 1.0f;
-  }
   const float64_t now = vkr_platform_get_absolute_time();
   const float32_t dt =
       (float32_t)Min(0.1, Max(0.0, now - editor->terrain_last_time));
@@ -145,6 +229,7 @@ void vkr_editor_terrain_update(VkrEditorUi *editor,
       frame->mouse_captured || frame->simulation_running ||
       editor->menu != VKR_EDITOR_MENU_NONE) {
     editor->terrain_stroke = 0u;
+    editor->terrain_inverted = false_v;
     return;
   }
   const Vec4 image = frame->mapping.image_rect_px;
@@ -155,6 +240,10 @@ void vkr_editor_terrain_update(VkrEditorUi *editor,
     editor->terrain_stroke = 0u;
     return;
   }
+  terrain_shortcuts(editor, frame);
+  editor->terrain_inverted = input_is_key_down(frame->input, KEY_SHIFT) ||
+                             input_is_key_down(frame->input, KEY_LSHIFT) ||
+                             input_is_key_down(frame->input, KEY_RSHIFT);
   /* The Scene image stops picking objects while the tool is on. */
   (void)vkr_ui_input_layer_register(
       ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
@@ -183,21 +272,18 @@ void vkr_editor_terrain_update(VkrEditorUi *editor,
     editor->terrain_stroke = 0u;
     return;
   }
-  /* Raise and lower move `strength` metres a second; the rest blend by
-     their fraction a second. */
-  static const VkrHeightfieldBrush brushes[VKR_EDITOR_TERRAIN_MODE_COUNT] = {
-      VKR_HEIGHTFIELD_RAISE,   VKR_HEIGHTFIELD_LOWER, VKR_HEIGHTFIELD_SMOOTH,
-      VKR_HEIGHTFIELD_FLATTEN, VKR_HEIGHTFIELD_PAINT, VKR_HEIGHTFIELD_HOLE,
-      VKR_HEIGHTFIELD_FILL};
+  /* At full weight raise and lower move four times `strength` metres a
+     second; the rest blend by twice their fraction a second. */
+  const VkrEditorTerrainMode mode = terrain_applied_mode(editor);
   const VkrHeightfieldOp op = {
       .kind = VKR_HEIGHTFIELD_OP_BRUSH,
-      .brush = brushes[editor->terrain_mode],
+      .brush = s_terrain_modes[mode].brush,
       .layer = editor->terrain_layer,
       .a = point,
       .radius = editor->terrain_radius,
-      .strength =
-          editor->terrain_strength * Max(dt, 1.0f / 120.0f) *
-          (editor->terrain_mode <= VKR_EDITOR_TERRAIN_LOWER ? 4.0f : 2.0f),
+      .falloff = editor->terrain_radius * editor->terrain_falloff,
+      .strength = editor->terrain_strength * Max(dt, 1.0f / 120.0f) *
+                  (mode <= VKR_EDITOR_TERRAIN_LOWER ? 4.0f : 2.0f),
       .height = editor->terrain_flatten_height,
   };
   *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_TERRAIN,
@@ -208,7 +294,8 @@ void vkr_editor_terrain_update(VkrEditorUi *editor,
 
 uint32_t vkr_editor_terrain_brush_outline(const VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame,
-                                          Vec3 *out, uint32_t capacity) {
+                                          Vec3 *out_edge, Vec3 *out_inner,
+                                          uint32_t capacity, Vec4 *out_color) {
   if (!editor->terrain_tool || !editor->terrain_hit_valid || capacity < 3u) {
     return 0u;
   }
@@ -221,20 +308,40 @@ uint32_t vkr_editor_terrain_brush_outline(const VkrEditorUi *editor,
                                             vec3_zero(), &offset)) {
     return 0u;
   }
-  /* The circle follows the ground a little above it. */
-  for (uint32_t i = 0; i < capacity; ++i) {
-    const float32_t angle = 6.28318531f * (float32_t)i / (float32_t)capacity;
-    Vec3 p = vec3_add(editor->terrain_hit,
-                      vec3_new(cosf(angle) * editor->terrain_radius, 0.0f,
-                               sinf(angle) * editor->terrain_radius));
-    float32_t ground = 0.0f;
-    if (vkr_heightfield_sample(field, p.x + offset.x, p.z + offset.z,
-                               &ground)) {
-      p.y = ground - offset.y + 0.05f;
+  /* Building up reads green, cutting down warm, reshaping blue. */
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const Vec4 colors[VKR_EDITOR_TERRAIN_MODE_COUNT] = {
+      theme->success, theme->warning, theme->info,   theme->info,
+      theme->accent,  theme->error,   theme->success};
+  *out_color = colors[terrain_applied_mode(editor)];
+  /* Both circles follow the ground a little above it; the inner one is
+     where the brush starts to fade, the full radius with no falloff. */
+  const float32_t inner =
+      editor->terrain_radius *
+      (1.0f - Clamp(editor->terrain_falloff, TERRAIN_FALLOFF_MIN, 1.0f));
+  for (uint32_t ring = 0; ring < 2u; ++ring) {
+    Vec3 *out = ring ? out_inner : out_edge;
+    const float32_t radius = ring ? inner : editor->terrain_radius;
+    for (uint32_t i = 0; i < capacity; ++i) {
+      const float32_t angle = 6.28318531f * (float32_t)i / (float32_t)capacity;
+      Vec3 p =
+          vec3_add(editor->terrain_hit,
+                   vec3_new(cosf(angle) * radius, 0.0f, sinf(angle) * radius));
+      float32_t ground = 0.0f;
+      if (vkr_heightfield_sample(field, p.x + offset.x, p.z + offset.z,
+                                 &ground)) {
+        p.y = ground - offset.y + 0.05f;
+      }
+      out[i] = p;
     }
-    out[i] = p;
   }
   return capacity;
+}
+
+const char *vkr_editor_terrain_hint(const VkrEditorUi *editor) {
+  return s_terrain_modes[Min(editor->terrain_mode,
+                             (uint32_t)VKR_EDITOR_TERRAIN_MODE_COUNT - 1u)]
+      .hint;
 }
 
 // =============================================================================
@@ -251,21 +358,23 @@ static void terrain_label(VkrUiSystem *ui, String8 id, float32_t y,
   vkr_ui_label(ui, id, text, &label);
 }
 
-/* A labelled slider row; returns the value. */
+/* A labelled slider row showing `shown`, the value as `format` prints it
+   after scaling by `display`; returns the value. */
 static float32_t terrain_slider(VkrUiSystem *ui, String8 id, String8 label,
-                                float32_t y, float32_t width, float32_t value,
-                                float32_t minimum, float32_t maximum,
+                                String8 tooltip, float32_t y, float32_t width,
+                                float32_t value, float32_t minimum,
+                                float32_t maximum, float32_t display,
                                 const char *format) {
-  const float32_t label_w = 96.0f;
+  const float32_t label_w = 80.0f;
   terrain_label(ui, label, y, label_w + TERRAIN_PAD_PT * 2.0f, label);
-  (void)id;
   VkrUiWidgetConfig slider = vkr_editor_details_widget(
       TERRAIN_PAD_PT + label_w, y + 2.0f,
       Max(40.0f, width - label_w - TERRAIN_PAD_PT * 2.0f - 56.0f),
       TERRAIN_ROW_PT - 6.0f);
+  slider.tooltip = tooltip;
   (void)vkr_ui_slider_f32(ui, id, &value, minimum, maximum, &slider);
   char text[32];
-  snprintf(text, sizeof(text), format, value);
+  snprintf(text, sizeof(text), format, value * display);
   VkrUiWidgetConfig shown = vkr_editor_details_widget(
       width - TERRAIN_PAD_PT - 52.0f, y, 52.0f, TERRAIN_ROW_PT - 4.0f);
   shown.style.font_size_pt = vkr_ui_theme()->font_body;
@@ -275,6 +384,44 @@ static float32_t terrain_slider(VkrUiSystem *ui, String8 id, String8 label,
                string8_create_from_cstr((const uint8_t *)text, strlen(text)),
                &shown);
   return value;
+}
+
+/* The terrain the window's layer names come from: the selected one, else
+   the last one the brush met. */
+static const SceneTerrain *terrain_target(const VkrEditorUi *editor,
+                                          const VkrSampleUiFrame *frame) {
+  const VkrEntityId entities[2] = {frame->selected_entity,
+                                   editor->terrain_hit_entity};
+  for (uint32_t i = 0; i < ArrayCount(entities); ++i) {
+    const VkrScene *scene = vkr_editor_entity_scene(frame, entities[i]);
+    const SceneTerrain *terrain =
+        scene && vkr_scene_entity_alive(scene, entities[i])
+            ? vkr_scene_get_typed(scene, entities[i], &vkr_scene_terrain_type)
+            : NULL;
+    if (terrain) {
+      return terrain;
+    }
+  }
+  return NULL;
+}
+
+/* Layer `index`'s button text: its number and material file name, without
+   folders or extension. */
+static void terrain_layer_name(const SceneTerrain *terrain, uint32_t index,
+                               char *out, uint64_t size) {
+  const char *const paths[VKR_HEIGHTFIELD_LAYERS] = {
+      terrain ? terrain->layer0 : "", terrain ? terrain->layer1 : "",
+      terrain ? terrain->layer2 : "", terrain ? terrain->layer3 : ""};
+  const char *path = paths[index];
+  const char *slash = strrchr(path, '/');
+  const char *name = slash ? slash + 1 : path;
+  const char *dot = strrchr(name, '.');
+  const int length = dot ? (int)(dot - name) : (int)strlen(name);
+  if (length > 0) {
+    snprintf(out, size, "%u  %.*s", index + 1u, length, name);
+  } else {
+    snprintf(out, size, "Layer %u", index + 1u);
+  }
 }
 
 /* The sculpt tool, its modes and brush, and the Create section; returns
@@ -300,79 +447,122 @@ static float32_t terrain_body(VkrEditorUi *editor,
                                           ? VKR_EDITOR_SCENE_TOOL_NONE
                                           : VKR_EDITOR_SCENE_TOOL_TERRAIN);
   }
-  y += TERRAIN_ROW_PT + 8.0f;
-  /* Modes, one button each, in rows of TERRAIN_MODES_PER_ROW. */
-  const float32_t mode_w =
-      (width - TERRAIN_PAD_PT * 2.0f) / (float32_t)TERRAIN_MODES_PER_ROW;
+  y += TERRAIN_ROW_PT + 4.0f;
+
+  /* Modes in two groups: shaping the ground and its surface. Choosing one
+     turns the tool on. */
+  VkrEditorPalette palette = vkr_editor_palette_begin(editor, frame, bounds, y);
+  const VkrEditorTerrainMode applied = terrain_applied_mode(editor);
   for (uint32_t i = 0; i < VKR_EDITOR_TERRAIN_MODE_COUNT; ++i) {
-    const float32_t column = (float32_t)(i % TERRAIN_MODES_PER_ROW);
-    const float32_t row = (float32_t)(i / TERRAIN_MODES_PER_ROW);
-    VkrUiWidgetConfig mode = vkr_editor_details_widget(
-        TERRAIN_PAD_PT + mode_w * column, y + (TERRAIN_ROW_PT + 4.0f) * row,
-        mode_w - 4.0f, TERRAIN_ROW_PT);
-    vkr_editor_toggle_style(&mode, editor->terrain_mode == i);
-    (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_ui_button(
-            ui, string8_lit("terrain.mode"),
-            string8_create_from_cstr((const uint8_t *)s_terrain_mode_labels[i],
-                                     strlen(s_terrain_mode_labels[i])),
-            &mode)) {
-      editor->terrain_mode = i;
+    if (i == VKR_EDITOR_TERRAIN_RAISE) {
+      vkr_editor_palette_heading(&palette, string8_lit("terrain.sculpt"),
+                                 string8_lit("SCULPT"));
+    } else if (i == VKR_EDITOR_TERRAIN_PAINT) {
+      vkr_editor_palette_heading(&palette, string8_lit("terrain.surface"),
+                                 string8_lit("SURFACE"));
     }
-    (void)vkr_ui_pop_id(ui);
+    const TerrainModeInfo *info = &s_terrain_modes[i];
+    if (vkr_editor_palette_button(
+            &palette,
+            string8_create_from_cstr((const uint8_t *)info->id,
+                                     strlen(info->id)),
+            info->label, info->icon,
+            string8_create_from_cstr((const uint8_t *)info->tooltip,
+                                     strlen(info->tooltip)),
+            (editor->terrain_tool ? applied : editor->terrain_mode) == i,
+            false_v)) {
+      editor->terrain_mode = i;
+      if (!editor->terrain_tool) {
+        vkr_editor_scene_tool_set(editor, VKR_EDITOR_SCENE_TOOL_TERRAIN);
+      }
+    }
   }
-  const uint32_t mode_rows =
-      (VKR_EDITOR_TERRAIN_MODE_COUNT + TERRAIN_MODES_PER_ROW - 1u) /
-      TERRAIN_MODES_PER_ROW;
-  y += (TERRAIN_ROW_PT + 4.0f) * (float32_t)mode_rows + 4.0f;
-  editor->terrain_radius =
-      terrain_slider(ui, string8_lit("terrain.radius"), string8_lit("Radius"),
-                     y, width, editor->terrain_radius, 0.5f, 64.0f, "%.1f m");
-  y += TERRAIN_ROW_PT;
-  /* Hole and fill change every sample inside the radius alike. */
-  if (editor->terrain_mode != VKR_EDITOR_TERRAIN_HOLE &&
-      editor->terrain_mode != VKR_EDITOR_TERRAIN_FILL) {
-    editor->terrain_strength = terrain_slider(
-        ui, string8_lit("terrain.strength"), string8_lit("Strength"), y, width,
-        editor->terrain_strength, 0.05f, 4.0f, "%.2f");
+
+  /* The brush. Hole and fill change every sample inside the radius
+     alike, so they have no falloff or strength. */
+  vkr_editor_palette_heading(&palette, string8_lit("terrain.brush"),
+                             string8_lit("BRUSH"));
+  vkr_editor_palette_end(&palette);
+  y = palette.y;
+  const bool8_t cut = editor->terrain_mode == VKR_EDITOR_TERRAIN_HOLE ||
+                      editor->terrain_mode == VKR_EDITOR_TERRAIN_FILL;
+  if (!palette.folded) {
+    editor->terrain_radius = terrain_slider(
+        ui, string8_lit("terrain.radius"), string8_lit("Radius"),
+        string8_lit("The brush's reach; [ and ] shrink and grow it"), y, width,
+        editor->terrain_radius, TERRAIN_RADIUS_MIN, TERRAIN_RADIUS_MAX, 1.0f,
+        "%.1f m");
     y += TERRAIN_ROW_PT;
+    if (!cut) {
+      editor->terrain_falloff = terrain_slider(
+          ui, string8_lit("terrain.falloff"), string8_lit("Falloff"),
+          string8_lit("The share of the radius the brush fades over, from "
+                      "its edge: low is a hard edge, 100% fades from the "
+                      "centre"),
+          y, width, editor->terrain_falloff, TERRAIN_FALLOFF_MIN, 1.0f, 100.0f,
+          "%.0f%%");
+      y += TERRAIN_ROW_PT;
+      editor->terrain_strength = terrain_slider(
+          ui, string8_lit("terrain.strength"), string8_lit("Strength"),
+          string8_lit("How fast strokes change the ground; Shift+[ and "
+                      "Shift+] lower and raise it"),
+          y, width, editor->terrain_strength, TERRAIN_STRENGTH_MIN,
+          TERRAIN_STRENGTH_MAX, 1.0f, "%.2f");
+      y += TERRAIN_ROW_PT;
+    }
+    if (editor->terrain_mode == VKR_EDITOR_TERRAIN_FLATTEN) {
+      /* Flatten holds the height the stroke started at. */
+      terrain_label(ui, string8_lit("terrain.flatten"), y, width,
+                    editor->terrain_stroke
+                        ? string8_create_formatted(
+                              ui->frame_allocator, "Flattening to %.2f m",
+                              (float64_t)editor->terrain_flatten_height)
+                        : string8_lit("Flattens to the height where the "
+                                      "stroke starts"));
+      y += TERRAIN_ROW_PT;
+    }
   }
+  palette.y = y;
+
+  /* Paint picks one layer of the terrain's four-layer material, named by
+     its material. */
   if (editor->terrain_mode == VKR_EDITOR_TERRAIN_PAINT) {
-    /* One button per layer of the four-layer terrain material. */
-    const float32_t label_w = 96.0f;
-    terrain_label(ui, string8_lit("Layer"), y, label_w + TERRAIN_PAD_PT * 2.0f,
-                  string8_lit("Layer"));
-    const float32_t layer_w =
-        Max(24.0f, (width - label_w - TERRAIN_PAD_PT * 2.0f) / 4.0f);
-    for (uint32_t i = 0; i < 4u; ++i) {
-      VkrUiWidgetConfig layer = vkr_editor_details_widget(
-          TERRAIN_PAD_PT + label_w + layer_w * (float32_t)i, y, layer_w - 4.0f,
-          TERRAIN_ROW_PT - 4.0f);
-      vkr_editor_toggle_style(&layer, editor->terrain_layer == i);
-      layer.tooltip = string8_lit("The terrain material layer strokes paint");
-      char text[4];
-      snprintf(text, sizeof(text), "%u", i + 1u);
+    vkr_editor_palette_heading(&palette, string8_lit("terrain.layers"),
+                               string8_lit("PAINT LAYER"));
+    const SceneTerrain *terrain = terrain_target(editor, frame);
+    for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
+      char name[SCENE_TERRAIN_MATERIAL_CAPACITY + 8];
+      terrain_layer_name(terrain, i, name, sizeof(name));
       (void)vkr_ui_push_id_u64(ui, i);
-      if (vkr_ui_button(
-              ui, string8_lit("terrain.layer"),
-              string8_create_from_cstr((const uint8_t *)text, strlen(text)),
-              &layer)) {
+      if (vkr_editor_palette_button(
+              &palette, string8_lit("terrain.layer"), name, VKR_UI_ICON_LAYERS,
+              string8_lit("The terrain material layer strokes paint"),
+              editor->terrain_layer == i, false_v)) {
         editor->terrain_layer = i;
       }
       (void)vkr_ui_pop_id(ui);
     }
-    y += TERRAIN_ROW_PT;
+    vkr_editor_palette_end(&palette);
   }
-  terrain_label(ui, string8_lit("terrain.hint"), y + 4.0f, width,
-                editor->terrain_hit_valid
-                    ? string8_lit("Hold the left button over the terrain")
-                    : string8_lit("Point at a terrain; Terrain below adds "
-                                  "one"));
-  y += TERRAIN_ROW_PT + 4.0f;
+
+  /* What the tool waits for, and its keys. */
+  y = palette.y + 4.0f;
+  terrain_label(ui, string8_lit("terrain.hint"), y, width,
+                !editor->terrain_tool ? string8_lit("Choose a mode to sculpt")
+                : editor->terrain_hit_valid
+                    ? string8_lit("Hold the left button to apply")
+                    : string8_lit("Point at a terrain to sculpt"));
+  y += TERRAIN_ROW_PT - 6.0f;
+  terrain_label(ui, string8_lit("terrain.keys"), y, width,
+                string8_lit("Shift inverts the mode"));
+  y += TERRAIN_ROW_PT - 6.0f;
+  terrain_label(ui, string8_lit("terrain.keys_size"), y, width,
+                string8_lit("[ ] radius  ·  Shift+[ ] strength"));
+  y += TERRAIN_ROW_PT;
+  palette.y = y;
 
   /* Outdoor objects at the Scene's placement point, as the Create menu's
      Level group makes them. */
-  VkrEditorPalette palette = vkr_editor_palette_begin(editor, frame, bounds, y);
   vkr_editor_palette_heading(&palette, string8_lit("terrain.create"),
                              string8_lit("CREATE"));
   vkr_editor_palette_create(&palette, string8_lit("terrain.new"), "Terrain",

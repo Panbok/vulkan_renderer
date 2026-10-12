@@ -102,6 +102,45 @@ static void heightfield_test_file(void) {
   printf("  heightfield_test_file PASSED\n");
 }
 
+/* A brush's falloff band: full strength inside it, nothing at the radius,
+   and the centre fade without one. */
+static void heightfield_test_brush_falloff(void) {
+  printf("  Running heightfield_test_brush_falloff...\n");
+  HeightfieldTest test;
+  heightfield_test_begin(&test);
+  VkrHeightfield field;
+  assert(vkr_heightfield_create(&field, 64u, 1.0f, -50.0f, 50.0f, 0.0f,
+                                &test.allocator));
+  const float32_t step = 100.0f / 65535.0f;
+  VkrHeightfieldRect touched;
+  /* 1 m of falloff in a 4 m radius: 3 m from the centre still takes the
+     full 2 m. */
+  VkrHeightfieldOp op = {.kind = VKR_HEIGHTFIELD_OP_BRUSH,
+                         .brush = VKR_HEIGHTFIELD_RAISE,
+                         .a = vec3_new(-16.0f, 0.0f, 0.0f),
+                         .radius = 4.0f,
+                         .falloff = 1.0f,
+                         .strength = 2.0f};
+  assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
+  assert(heightfield_test_near(vkr_heightfield_at(&field, 16u, 32u), 2.0f,
+                               2.0f * step));
+  assert(heightfield_test_near(vkr_heightfield_at(&field, 19u, 32u), 2.0f,
+                               2.0f * step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 20u, 32u), 0.0f, step));
+  /* No falloff fades from the centre: halfway out takes half. */
+  op.a = vec3_new(16.0f, 0.0f, 0.0f);
+  op.falloff = 0.0f;
+  assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
+  assert(heightfield_test_near(vkr_heightfield_at(&field, 48u, 32u), 2.0f,
+                               2.0f * step));
+  assert(heightfield_test_near(vkr_heightfield_at(&field, 50u, 32u), 1.0f,
+                               2.0f * step));
+  vkr_heightfield_destroy(&field, &test.allocator);
+  heightfield_test_end(&test);
+  printf("  heightfield_test_brush_falloff PASSED\n");
+}
+
 /* Operations change what they name and nothing beyond it. */
 static void heightfield_test_operations(void) {
   printf("  Running heightfield_test_operations...\n");
@@ -1011,6 +1050,7 @@ bool32_t run_heightfield_tests(void) {
   heightfield_test_file();
   heightfield_test_streamed();
   heightfield_test_operations();
+  heightfield_test_brush_falloff();
   heightfield_test_journal();
   heightfield_test_tile_levels();
   heightfield_test_holes();

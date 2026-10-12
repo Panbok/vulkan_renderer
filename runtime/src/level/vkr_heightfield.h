@@ -222,13 +222,15 @@ typedef enum VkrHeightfieldBrush {
 } VkrHeightfieldBrush;
 
 /* One round brush stroke step at local (x, z): `strength` is metres (raise,
-   lower) or a 0..1 fraction (smooth, flatten, paint) at the centre, falling
-   off smoothly to zero at `radius`; hole and fill ignore it. Smoothing
-   stages the touched heights in `scratch`. */
+   lower) or a 0..1 fraction (smooth, flatten, paint) out to `falloff` metres
+   inside `radius`, falling off smoothly to zero at `radius`; a `falloff` of
+   zero or past the radius fades from the centre. Hole and fill ignore
+   both. Smoothing stages the touched heights in `scratch`. */
 bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
                               float32_t x, float32_t z, float32_t radius,
-                              float32_t strength, float32_t height,
-                              uint32_t layer, VkrAllocator *scratch,
+                              float32_t falloff, float32_t strength,
+                              float32_t height, uint32_t layer,
+                              VkrAllocator *scratch,
                               VkrHeightfieldRect *touched);
 
 /* Sets the rectangle of local [min, max] (x, z) to `height`, blending back to
@@ -267,7 +269,8 @@ typedef enum VkrHeightfieldOpKind {
 } VkrHeightfieldOpKind;
 
 /* One edit in the field's local space (metres from its centre, heights
-   relative to its origin): a brush step at `a` (x, z) of `radius`, a
+   relative to its origin): a brush step at `a` (x, z) of `radius` fading
+   over its outer `falloff` metres, a
    flattened rectangle [`min`, `max`] at `height`, or a ramp from `a` to `b`
    `width` wide. */
 typedef struct VkrHeightfieldOp {

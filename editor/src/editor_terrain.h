@@ -5,8 +5,10 @@
 /* Terrain sculpting and painting in the Scene (ADR-084). While the tool is
  * on, the Scene takes the mouse: the brush follows the terrain under the
  * pointer, and holding the left button applies the Terrain window's mode,
- * radius, strength and layer every frame as one undoable stroke. The brush
- * still meets the ground over a hole, so Fill can close it. */
+ * radius, falloff, strength and layer every frame as one undoable stroke.
+ * Shift inverts raise, lower, hole and fill; [ and ] shrink and grow the
+ * radius, with Shift the strength. The brush still meets the ground over a
+ * hole, so Fill can close it. */
 
 typedef enum VkrEditorTerrainMode {
   VKR_EDITOR_TERRAIN_RAISE = 0,
@@ -35,8 +37,14 @@ void vkr_editor_terrain_window_build(VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect bounds);
 
-/* Points of the brush circle on the ground, for the overlay; zero when the
-   brush is not over a terrain. */
+/* The Scene's line for the tool: what holding the button does, and its
+   keys. */
+const char *vkr_editor_terrain_hint(const VkrEditorUi *editor);
+
+/* The brush on the ground for the overlay: `capacity` points each of its
+   edge and of the circle its falloff starts at, and its colour for the
+   mode it applies; zero when the brush is not over a terrain. */
 uint32_t vkr_editor_terrain_brush_outline(const VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame,
-                                          Vec3 *out, uint32_t capacity);
+                                          Vec3 *out_edge, Vec3 *out_inner,
+                                          uint32_t capacity, Vec4 *out_color);

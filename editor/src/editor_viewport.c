@@ -7,6 +7,7 @@
 #include "editor_material.h"
 #include "editor_ops.h"
 #include "editor_projects.h"
+#include "editor_terrain.h"
 
 #include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_mesh_raycast.h"
@@ -2323,8 +2324,7 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
     }
     break;
   case VKR_EDITOR_SCENE_TOOL_TERRAIN:
-    hint = "Hold the left button over a terrain to sculpt or paint. Esc "
-           "stops.";
+    hint = vkr_editor_terrain_hint(editor);
     break;
   case VKR_EDITOR_SCENE_TOOL_STAIRS:
     hint = editor->path_count

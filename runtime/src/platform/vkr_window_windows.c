@@ -1464,6 +1464,8 @@ static const Keys s_win32_keys[256] = {
     [VK_OEM_1] = KEY_SEMICOLON,
     [VK_OEM_2] = KEY_SLASH,
     [VK_OEM_3] = KEY_GRAVE,
+    [VK_OEM_4] = KEY_LBRACKET,
+    [VK_OEM_6] = KEY_RBRACKET,
 
     [VK_BACK] = KEY_BACKSPACE,
     [VK_CAPITAL] = KEY_CAPITAL,

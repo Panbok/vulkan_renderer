@@ -1318,13 +1318,18 @@ static void physics_level_tools(VkrEditorUi *editor,
       }
     }
   }
-  Vec3 circle[48];
+  /* The terrain brush: its edge, and fainter where its falloff starts. */
+  Vec3 edge[48];
+  Vec3 inner[48];
+  Vec4 brush_color = {0};
   const uint32_t circle_count = vkr_editor_terrain_brush_outline(
-      editor, frame, circle, ArrayCount(circle));
+      editor, frame, edge, inner, ArrayCount(edge), &brush_color);
   for (uint32_t i = 0; i < circle_count; ++i) {
-    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, circle[i],
-                 circle[(i + 1u) % circle_count],
-                 (Vec4){0.45f, 0.95f, 0.55f, 1.0f}, capacity);
+    const uint32_t next = (i + 1u) % circle_count;
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, edge[i], edge[next],
+                 brush_color, capacity);
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, inner[i], inner[next],
+                 vkr_ui_color_alpha(brush_color, 0.45f), capacity);
   }
   /* The extra selected brushes outline their faces, as the Scene outlines
      the primary selection. */

@@ -9037,13 +9037,17 @@ static bool8_t ops_build_terrain_brush(OpsContext *ctx,
   if (ops_arg_number(args, "strength", &number)) {
     op.strength = (float32_t)number;
   }
+  if (ops_arg_number(args, "falloff", &number)) {
+    op.falloff = (float32_t)number;
+  }
   const bool8_t has_height = ops_arg_number(args, "height", &number);
   op.height = (float32_t)number;
   if (ops_arg_number(args, "layer", &number)) {
     op.layer = (uint32_t)Max(0.0, number - 1.0);
   }
   if (op.brush == VKR_HEIGHTFIELD_BRUSH_COUNT || !(op.radius > 0.0f) ||
-      op.layer >= VKR_HEIGHTFIELD_LAYERS || !isfinite(op.strength)) {
+      op.layer >= VKR_HEIGHTFIELD_LAYERS || !isfinite(op.strength) ||
+      !isfinite(op.falloff)) {
     return ops_fail(ctx, OPS_INVALID,
                     "'mode' is raise, lower, smooth, flatten, paint, hole or "
                     "fill, with a "
@@ -14446,14 +14450,16 @@ static const OpsDef s_ops[] = {
      "Sculpt or paint with a round brush at each of 'points' (or one "
      "'point'): 'mode' raise or lower by 'strength' metres, smooth or "
      "flatten (toward 'height', default the point's y) by a 0-1 'strength', "
-     "or paint 'layer' 1-4. Falls off to zero at 'radius'. 'mode' hole cuts "
+     "or paint 'layer' 1-4. Falls off to zero at 'radius' over its outer "
+     "'falloff' metres (default the whole radius). 'mode' hole cuts "
      "and fill closes every hole sample inside 'radius'.",
      "{\"type\":\"object\",\"properties\":{\"terrain\":" OPS_ENTITY_SCHEMA
      ",\"mode\":{\"type\":\"string\",\"enum\":[\"raise\",\"lower\","
      "\"smooth\",\"flatten\",\"paint\",\"hole\",\"fill\"]},"
      "\"point\":" OPS_VEC3_SCHEMA
      ",\"points\":{\"type\":\"array\",\"items\":" OPS_VEC3_SCHEMA
-     ",\"maxItems\":256},\"radius\":{\"type\":\"number\"},\"strength\":"
+     ",\"maxItems\":256},\"radius\":{\"type\":\"number\"},\"falloff\":"
+     "{\"type\":\"number\"},\"strength\":"
      "{\"type\":\"number\"},\"height\":{\"type\":\"number\"},\"layer\":"
      "{\"type\":\"integer\",\"minimum\":1,\"maximum\":4}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"terrain\"]}",

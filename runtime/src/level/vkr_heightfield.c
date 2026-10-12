@@ -529,11 +529,13 @@ static void heightfield_cut(VkrHeightfield *field, uint32_t x, uint32_t z,
 
 bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
                               float32_t x, float32_t z, float32_t radius,
-                              float32_t strength, float32_t height,
-                              uint32_t layer, VkrAllocator *scratch,
+                              float32_t falloff, float32_t strength,
+                              float32_t height, uint32_t layer,
+                              VkrAllocator *scratch,
                               VkrHeightfieldRect *touched) {
-  if (!(radius > 0.0f) || !isfinite(strength) || !isfinite(height) ||
-      brush >= VKR_HEIGHTFIELD_BRUSH_COUNT || layer >= VKR_HEIGHTFIELD_LAYERS ||
+  if (!(radius > 0.0f) || !isfinite(falloff) || !isfinite(strength) ||
+      !isfinite(height) || brush >= VKR_HEIGHTFIELD_BRUSH_COUNT ||
+      layer >= VKR_HEIGHTFIELD_LAYERS ||
       !vkr_heightfield_rect_around(field, x, z, radius, touched)) {
     return false_v;
   }
@@ -548,12 +550,14 @@ bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
       return false_v;
     }
   }
+  /* Full weight inside the band, fading to zero across it. */
+  const float32_t band = falloff > 0.0f ? Min(falloff, radius) : radius;
   const uint32_t width = touched->x1 - touched->x0 + 1u;
   for (uint32_t sz = touched->z0; sz <= touched->z1; ++sz) {
     for (uint32_t sx = touched->x0; sx <= touched->x1; ++sx) {
       const Vec2 at = heightfield_local(field, sx, sz);
       const float32_t d = vec2_length(vec2_new(at.x - x, at.y - z));
-      const float32_t w = heightfield_smooth01(1.0f - d / radius);
+      const float32_t w = heightfield_smooth01((radius - d) / band);
       if (w <= 0.0f) {
         continue;
       }
@@ -749,8 +753,8 @@ static bool8_t heightfield_op_run(VkrHeightfield *field,
   switch (op->kind) {
   case VKR_HEIGHTFIELD_OP_BRUSH:
     return vkr_heightfield_brush(field, op->brush, op->a.x, op->a.z, op->radius,
-                                 op->strength, op->height, op->layer, scratch,
-                                 touched);
+                                 op->falloff, op->strength, op->height,
+                                 op->layer, scratch, touched);
   case VKR_HEIGHTFIELD_OP_FLATTEN:
     return vkr_heightfield_flatten(field, op->min, op->max, op->height,
                                    op->falloff, touched);

@@ -262,6 +262,10 @@ typedef enum Keys {
   DEFINE_KEY(SLASH, 0xBF),  /**< Slash key (OEM_2 typically '/?' for US). */
   DEFINE_KEY(GRAVE,
              0xC0), /**< Grave accent key (OEM_3 typically '`~' for US). */
+  DEFINE_KEY(LBRACKET,
+             0xDB), /**< Left bracket key (OEM_4 typically '[{' for US). */
+  DEFINE_KEY(RBRACKET,
+             0xDD), /**< Right bracket key (OEM_6 typically ']}' for US). */
 
   // Gamepad buttons
   DEFINE_KEY(GAMEPAD_A, 0x100),

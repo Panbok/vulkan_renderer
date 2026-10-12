@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-10
+updated: 2026-10-12
 authority: adr
 ---
 # ADR-084: Agent channel and level design toolkit
@@ -1242,13 +1242,20 @@ Agents edit regions with operations that take world coordinates:
 | `terrain.hole` | Cut holes for an entrance, the samples strictly inside a `min`/`max` box (a box on grid lines opens exactly) or within `radius` of `points`; `fill` closes them |
 
 In the editor ([editor_terrain.c](../../editor/src/editor_terrain.c)), the
-Terrain window holds the sculpt tool and its mode (Raise, Lower, Smooth,
-Flatten, Paint, Hole, Fill), radius, strength and paint layer. Hole and Fill
-change every sample inside the radius and take no strength. While the tool is on, the Scene draws the brush circle where
-the pointer's ray meets a terrain, and holding the left button applies the
-mode every frame as one stroke. Raise and lower move a sample by up to four
-times the strength in metres per second. The Create menu's Level group adds
-a 256 m Terrain. Cmd `terrain.tool` and `window terrain` reach the same
+Terrain window holds the sculpt tool, its modes in a Sculpt group (Raise,
+Lower, Smooth, Flatten) and a Surface group (Paint, Hole, Fill), and the
+brush: radius, falloff (the share of the radius the brush fades over from
+its edge, `terrain.brush` `falloff` in metres) and strength. Paint names its
+four layers by the target terrain's layer materials, and Flatten shows the
+height it holds. Choosing a mode turns the tool on. Hole and Fill change
+every sample inside the radius and take no falloff or strength. While the
+tool is on, the Scene draws the brush's edge and the circle its falloff
+starts at, coloured by the mode, where the pointer's ray meets a terrain,
+and holding the left button applies the mode every frame as one stroke.
+Shift inverts Raise and Lower and Hole and Fill; `[` and `]` shrink and grow
+the radius, with Shift the strength. Raise and lower move a sample by up to
+four times the strength in metres per second. The Create menu's Level group
+adds a 256 m Terrain. Cmd `terrain.tool` and `window terrain` reach the same
 tool.
 
 ### Population

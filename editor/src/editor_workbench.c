@@ -152,7 +152,7 @@ static void workbench_builtin_layout(uint32_t index, VkrUiDockTree *tree) {
                           level_design, ArrayCount(level_design), 0.42f);
     break;
   case VKR_EDITOR_WORKBENCH_TERRAIN:
-    /* Wide enough for the five sculpt modes' labels. */
+    /* Wide enough for two columns of labelled mode buttons. */
     workbench_side_layout(tree, VKR_UI_DOCK_PANEL_TERRAIN, 0.2f, 0.74f,
                           terrain, ArrayCount(terrain), 0.42f);
     break;

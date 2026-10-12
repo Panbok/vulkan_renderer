@@ -1655,7 +1655,7 @@ void center_cursor_in_window(PlatformState *state) {
 /*
  * macOS virtual keycodes (kVK_*) to VKR keys. Top-row digits share the numpad
  * keys, as on Windows. Unlisted codes, including apostrophe, backslash, equal,
- * the brackets, section, menu and the page keys, map to KEY_MAX_KEYS; `Keys`
+ * section, menu and the page keys, map to KEY_MAX_KEYS; `Keys`
  * has no zero value, so zero marks an unlisted code.
  */
 static const Keys s_macos_keys[128] = {
@@ -1676,6 +1676,7 @@ static const Keys s_macos_keys[128] = {
 
     [0x2B] = KEY_COMMA,     [0x32] = KEY_GRAVE,     [0x1B] = KEY_MINUS,
     [0x2F] = KEY_PERIOD,    [0x29] = KEY_SEMICOLON, [0x2C] = KEY_SLASH,
+    [0x21] = KEY_LBRACKET,  [0x1E] = KEY_RBRACKET,
 
     [0x33] = KEY_BACKSPACE, [0x39] = KEY_CAPITAL,   [0x75] = KEY_DELETE,
     [0x7D] = KEY_DOWN,      [0x77] = KEY_END,       [0x24] = KEY_ENTER,

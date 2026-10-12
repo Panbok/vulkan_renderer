@@ -753,8 +753,12 @@ typedef struct VkrEditorUi {
   VkrSurfaceMark brush_mark;
   uint32_t terrain_mode;
   float32_t terrain_radius;
+  /* The share of the radius the brush fades over, from its edge. */
+  float32_t terrain_falloff;
   float32_t terrain_strength;
   uint32_t terrain_layer;
+  /* Shift is held: raise lowers, lower raises, hole fills and fill cuts. */
+  bool8_t terrain_inverted;
   uint64_t terrain_stroke;
   uint64_t terrain_stroke_counter;
   float32_t terrain_flatten_height;
