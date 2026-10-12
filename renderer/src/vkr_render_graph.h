@@ -545,7 +545,7 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t viewport_width;  /**< Viewport width */
   uint32_t viewport_height; /**< Viewport height */
   float32_t render_scale;   /**< Internal Scene extent / Scene output extent. */
-  bool8_t editor_enabled; /**< Whether editor is enabled */
+  bool8_t editor_enabled;   /**< Whether editor is enabled */
   bool8_t scene_rendering;
   bool8_t skinning_enabled;
   uint32_t skinning_vertex_capacity;
