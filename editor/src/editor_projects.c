@@ -1431,6 +1431,11 @@ static bool8_t project_load(VkrEditorProjects *projects, const char *id,
       snprintf(scripts_output, sizeof(scripts_output), "%s/scripts/%s",
                projects->workspace.root,
                candidate->id) < (int32_t)sizeof(scripts_output)) {
+    /* Scripts are native code: a project from another computer runs them
+       once its user trusts them (ADR-110). */
+    vkr_editor_scripts_hold(editor->scripts,
+                            !vkr_editor_depot_scripts_trusted(
+                                editor->depot, projects->workspace_directory));
     vkr_editor_scripts_open(editor->scripts, scripts_directory, scripts_output,
                             vkr_editor_bakery_service(editor->bakery), frame);
   }

@@ -45,6 +45,9 @@ typedef struct ScriptsBuild {
 struct VkrEditorScripts {
   VkrAllocator *allocator;
   bool8_t open;
+  /* Nothing builds or loads: the project's scripts came from another
+     computer and its user has not trusted them yet (ADR-110). */
+  bool8_t held;
   char scripts_directory[VKR_EDITOR_SCRIPT_PATH];
   char output_root[VKR_EDITOR_SCRIPT_PATH];
   VkrEditorScriptModule modules[VKR_EDITOR_SCRIPT_MODULE_MAX];
@@ -644,6 +647,11 @@ void vkr_editor_scripts_open(VkrEditorScripts *scripts,
   if (!scripts->module_count) {
     return;
   }
+  if (scripts->held) {
+    scripts_set_status(scripts, VKR_EDITOR_SCRIPT_UNBUILT,
+                       "Not run until you trust this project's scripts");
+    return;
+  }
   if (scripts_is_file(scripts->library)) {
     /* Load the last build now; a background build replaces it when the
        sources moved on. */
@@ -660,7 +668,7 @@ void vkr_editor_scripts_open(VkrEditorScripts *scripts,
 }
 
 bool8_t vkr_editor_scripts_settling(const VkrEditorScripts *scripts) {
-  return scripts->open && scripts->first_build &&
+  return scripts->open && !scripts->held && scripts->first_build &&
          (scripts->status == VKR_EDITOR_SCRIPT_UNBUILT ||
           scripts->status == VKR_EDITOR_SCRIPT_BUILDING ||
           scripts->status == VKR_EDITOR_SCRIPT_LOADING);
@@ -758,9 +766,33 @@ void vkr_editor_scripts_update(VkrEditorScripts *scripts,
     scripts_build_finished(scripts, scripts->process_ok, scripts->exit_code,
                            scripts->worker_build.events, frame);
   }
-  if (!scripts->worker_live && scripts->rebuild && scripts->module_count) {
+  if (!scripts->worker_live && scripts->rebuild && scripts->module_count &&
+      !scripts->held) {
     (void)scripts_start_build(scripts);
   }
+}
+
+void vkr_editor_scripts_hold(VkrEditorScripts *scripts, bool8_t held) {
+  if (!scripts || scripts->held == held) {
+    return;
+  }
+  scripts->held = held;
+  if (held) {
+    if (scripts->open && scripts->module_count) {
+      scripts_set_status(scripts, scripts->status,
+                         "Not run until you trust the new scripts");
+    }
+    return;
+  }
+  /* Released: build from the sources, which a pull may have changed, and
+     load the result. */
+  if (scripts->open && scripts->module_count) {
+    scripts->rebuild = true_v;
+  }
+}
+
+bool8_t vkr_editor_scripts_held(const VkrEditorScripts *scripts) {
+  return scripts && scripts->held && scripts->open && scripts->module_count;
 }
 
 uint32_t vkr_editor_scripts_header_folders(const VkrEditorScripts *scripts,

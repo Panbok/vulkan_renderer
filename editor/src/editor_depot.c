@@ -5,6 +5,7 @@
 #include "editor_material.h"
 #include "editor_project_store.h"
 #include "editor_projects.h"
+#include "editor_scripts.h"
 
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
@@ -107,6 +108,8 @@ typedef struct DepotJob {
   /* Paths a pull or clone wrote, for the scene reload and texture cook. */
   bool8_t scene_files_changed;
   bool8_t materials_changed;
+  /* A project's Scripts folder changed: native code someone else wrote. */
+  bool8_t scripts_changed;
   uint32_t textures_cooked;
   uint32_t textures_failed;
   VkrDepotId base;
@@ -137,6 +140,8 @@ typedef struct DepotProject {
   char path[DEPOT_PATH];
   char name[96];
   char project_id[40];
+  /* Its user let the scripts others committed run here. */
+  bool8_t trusted;
 } DepotProject;
 
 struct VkrEditorDepot {
@@ -197,6 +202,8 @@ struct VkrEditorDepot {
   char notice[DEPOT_TEXT];
   /* A scene reload the last pull asked for, sent once the scene is saved. */
   bool8_t reload_pending;
+  /* The scripts prompt was dismissed for this run of the editor. */
+  bool8_t scripts_prompt_dismissed;
   /* The job to repeat once a server allows this computer. */
   DepotJobKind waiting_kind;
   float64_t retry_at;
@@ -285,7 +292,7 @@ static void depot_default_destination(const char *name, char *out,
   char base[DEPOT_PATH];
   snprintf(base, sizeof(base), "%s/VKR Projects/%s", home ? home : ".", folder);
   snprintf(out, capacity, "%s", base);
-  for (uint32_t i = 2u; i < 100u && vkr_bakery_is_directory(out); ++i) {
+  for (uint32_t i = 2u; vkr_bakery_is_directory(out); ++i) {
     snprintf(out, capacity, "%s %u", base, i);
   }
 }
@@ -397,6 +404,7 @@ static void depot_registry_load(VkrEditorDepot *depot) {
                             sizeof(project->name));
       (void)depot_json_text(entry, "project", project->project_id,
                             sizeof(project->project_id));
+      (void)vkr_bakery_json_get_bool(entry, "trusted", &project->trusted);
       depot->project_count++;
     }
   }
@@ -443,6 +451,8 @@ static void depot_registry_save(const VkrEditorDepot *depot) {
                         vkr_bakery_json_cstr(arena, project->name));
     vkr_bakery_json_set(arena, entry, "project",
                         vkr_bakery_json_cstr(arena, project->project_id));
+    vkr_bakery_json_set(arena, entry, "trusted",
+                        vkr_bakery_json_bool(arena, project->trusted));
     vkr_bakery_json_append(projects, entry);
   }
   vkr_bakery_json_set(arena, root, "projects", projects);
@@ -495,7 +505,8 @@ static void depot_remember_server(VkrEditorDepot *depot, const char *name,
 }
 
 static void depot_remember_project(VkrEditorDepot *depot, const char *path,
-                                   const char *name, const char *project_id) {
+                                   const char *name, const char *project_id,
+                                   bool8_t trusted) {
   uint32_t at = depot->project_count;
   for (uint32_t i = 0u; i < depot->project_count; ++i) {
     if (strcmp(depot->projects[i].path, path) == 0) {
@@ -508,6 +519,7 @@ static void depot_remember_project(VkrEditorDepot *depot, const char *path,
       return;
     }
     depot->project_count++;
+    depot->projects[at].trusted = trusted;
   }
   DepotProject *project = &depot->projects[at];
   snprintf(project->path, sizeof(project->path), "%s", path);
@@ -515,6 +527,44 @@ static void depot_remember_project(VkrEditorDepot *depot, const char *path,
   snprintf(project->project_id, sizeof(project->project_id), "%s",
            project_id ? project_id : "");
   depot_registry_save(depot);
+}
+
+static DepotProject *depot_project_entry(VkrEditorDepot *depot,
+                                         const char *path) {
+  for (uint32_t i = 0u; i < depot->project_count; ++i) {
+    if (strcmp(depot->projects[i].path, path) == 0) {
+      return &depot->projects[i];
+    }
+  }
+  return NULL;
+}
+
+static void depot_set_trusted(VkrEditorDepot *depot, const char *path,
+                              bool8_t trusted) {
+  DepotProject *project = depot_project_entry(depot, path);
+  if (project && project->trusted != trusted) {
+    project->trusted = trusted;
+    depot_registry_save(depot);
+  }
+}
+
+/* The first 8 hexadecimal digits of a key as `ab12 cd34`: both computers
+   show it, so people can tell their own key from an impostor's. */
+static void depot_fingerprint(const uint8_t key[32], char out[16]) {
+  char hex[VKR_DEPOT_ID_HEX];
+  depot_key_hex(key, hex);
+  snprintf(out, 16u, "%.4s %.4s", hex, hex + 4);
+}
+
+/* Whether this editor got a project from, or allowed, this key before. */
+static bool8_t depot_key_known(const VkrEditorDepot *depot,
+                               const uint8_t key[32]) {
+  for (uint32_t i = 0u; i < depot->known_count; ++i) {
+    if (MemCompare(depot->known[i].key, key, 32u) == 0) {
+      return true_v;
+    }
+  }
+  return false_v;
 }
 
 /* Remembers the name a key asked with, for the access list. */
@@ -712,6 +762,11 @@ static void depot_cook_add(DepotCookList *list, const char *root,
 
 /* A texture source whose cooked file for this computer is missing. */
 static bool8_t depot_needs_cook(const char *root, const char *path) {
+  /* Project builds re-cook from their recipes (depot_job_recook); their
+     source snapshots are not textures the scenes read. */
+  if (strncmp(path, ".vkreditor/", 11u) == 0) {
+    return false_v;
+  }
   if (!depot_ends_with(path, ".png") && !depot_ends_with(path, ".jpg") &&
       !depot_ends_with(path, ".jpeg") && !depot_ends_with(path, ".tga")) {
     return false_v;
@@ -786,8 +841,13 @@ static bool8_t depot_pull_visit(void *context, const char *path,
   if (depot_ends_with(path, ".mt") || depot_ends_with(path, ".mtg")) {
     job->materials_changed = true_v;
   }
+  if (strstr(path, "/Scripts/")) {
+    job->scripts_changed = true_v;
+  }
   return true_v;
 }
+
+static void depot_job_recook(DepotJob *job, const char *folder);
 
 /* Fetches the server's commit and checks it out; cooks the textures it
    brought and notes whether the scene must reload. */
@@ -823,6 +883,7 @@ static void depot_job_pull(DepotWorker *worker) {
   if (job->ok) {
     (void)vkr_depot_file_list_diff(&before, &ws->index, depot_pull_visit, job);
     depot_job_cook(job, ws->root, &ws->index);
+    depot_job_recook(job, ws->root);
   }
   vkr_depot_file_list_free(&before);
 }
@@ -881,6 +942,11 @@ static void depot_job_submit(DepotWorker *worker) {
 static void depot_job_status(DepotWorker *worker) {
   DepotJob *job = worker->job;
   VkrDepotWorkspace *ws = worker->workspace;
+  /* A server that moved: discovery found its key at a new address. */
+  if (job->save_remote && strcmp(ws->remote, job->address) != 0) {
+    snprintf(ws->remote, sizeof(ws->remote), "%s", job->address);
+    (void)vkr_depot_workspace_save(ws);
+  }
   VkrDepotChangeList changes = {0};
   if (!vkr_depot_status(ws, &changes, job->error, sizeof(job->error))) {
     return;
@@ -944,74 +1010,51 @@ static void depot_job_clone(DepotWorker *worker) {
   if (vkr_depot_workspace_open(ws, job->directory, vkr_depot_zstd_codec())) {
     ws->progress = &job->progress;
     depot_job_cook(job, ws->root, &ws->index);
+    depot_job_recook(job, ws->root);
     depot_job_history(job, ws);
     vkr_depot_workspace_close(ws);
   }
   depot_first_project(job->directory, job->opened_project);
 }
 
-/* Copies the project's live files and every asset they use into the new
-   workspace (Bakery's share_project), then makes it a working copy whose
-   store the server serves. The first commit follows once the server
-   runs. */
-static void depot_job_share(DepotWorker *worker) {
-  DepotJob *job = worker->job;
-  /* Project jobs live in the source workspace's jobs folder, as the
-     editor's other project operations do. */
-  char request[DEPOT_PATH];
-  char result[DEPOT_PATH];
-  char jobs[DEPOT_PATH];
+/* Runs one Bakery project operation in the workspace at `folder`: writes
+   `request` (to which it adds the version and the workspace root) into the
+   workspace's jobs folder, runs it and parses its result into `arena`.
+   False with the reason in the job's error; `what` names the step. */
+static bool8_t depot_project_job(DepotJob *job, const char *folder,
+                                 Arena *arena, VkrBakeryJson *request,
+                                 const char *what,
+                                 const VkrBakeryJson **out_result) {
+  *out_result = NULL;
   char job_id[40];
+  char jobs[DEPOT_PATH];
+  char request_path[DEPOT_PATH];
+  char result_path[DEPOT_PATH];
+  char workspace_root[DEPOT_PATH];
   VkrEditorProjectError project_error = {0};
   if (!vkr_editor_project_id_generate(job_id, &project_error)) {
     snprintf(job->error, sizeof(job->error), "%s", project_error.message);
-    return;
+    return false_v;
   }
-  snprintf(jobs, sizeof(jobs), "%s/.vkreditor/jobs/%s", job->source, job_id);
-  snprintf(request, sizeof(request), "%s/request.json", jobs);
-  snprintf(result, sizeof(result), "%s/result.json", jobs);
-  if (!vkr_bakery_make_directories(jobs)) {
-    snprintf(job->error, sizeof(job->error), "%s could not be made", jobs);
-    return;
-  }
-  Arena *arena = arena_create(KB(64), KB(16));
-  if (!arena) {
-    snprintf(job->error, sizeof(job->error), "out of memory");
-    return;
-  }
-  char workspace_root[DEPOT_PATH];
-  char project_path[DEPOT_PATH];
-  snprintf(workspace_root, sizeof(workspace_root), "%s/.vkreditor",
-           job->source);
-  snprintf(project_path, sizeof(project_path), "%s/projects/%s/project.json",
-           workspace_root, job->project_id);
-  VkrBakeryJson *root = vkr_bakery_json_object(arena);
-  vkr_bakery_json_set(arena, root, "version", vkr_bakery_json_int(arena, 1));
-  vkr_bakery_json_set(arena, root, "read_only",
+  snprintf(workspace_root, sizeof(workspace_root), "%s/.vkreditor", folder);
+  snprintf(jobs, sizeof(jobs), "%s/jobs/%s", workspace_root, job_id);
+  snprintf(request_path, sizeof(request_path), "%s/request.json", jobs);
+  snprintf(result_path, sizeof(result_path), "%s/result.json", jobs);
+  vkr_bakery_json_set(arena, request, "version", vkr_bakery_json_int(arena, 1));
+  vkr_bakery_json_set(arena, request, "read_only",
                       vkr_bakery_json_bool(arena, false_v));
-  vkr_bakery_json_set(arena, root, "operation",
-                      vkr_bakery_json_cstr(arena, "share_project"));
-  vkr_bakery_json_set(arena, root, "workspace_root",
+  vkr_bakery_json_set(arena, request, "workspace_root",
                       vkr_bakery_json_cstr(arena, workspace_root));
-  vkr_bakery_json_set(arena, root, "project_path",
-                      vkr_bakery_json_cstr(arena, project_path));
-  vkr_bakery_json_set(arena, root, "destination",
-                      vkr_bakery_json_cstr(arena, job->directory));
-  vkr_bakery_json_set(arena, root, "legacy_root",
-                      vkr_bakery_json_cstr(arena, vkr_content_root()));
   String8 text = {0};
-  const bool8_t written =
-      vkr_bakery_json_write(arena, root, VKR_BAKERY_JSON_PRETTY, &text) &&
-      vkr_bakery_write_file_atomic(request, text.str, text.length);
-  arena_destroy(arena);
-  if (!written) {
-    snprintf(job->error, sizeof(job->error), "%s could not be written",
-             request);
-    return;
+  if (!vkr_bakery_make_directories(jobs) ||
+      !vkr_bakery_json_write(arena, request, VKR_BAKERY_JSON_PRETTY, &text) ||
+      !vkr_bakery_write_file_atomic(request_path, text.str, text.length)) {
+    snprintf(job->error, sizeof(job->error), "%s: %s could not be written",
+             what, request_path);
+    return false_v;
   }
-  vkr_depot_progress_phase(&job->progress, VKR_DEPOT_PHASE_SNAPSHOT, 0u, 0u);
-  const char *arguments[] = {"project", "--request", request, "--result",
-                             result};
+  const char *arguments[] = {"project", "--request", request_path, "--result",
+                             result_path};
   const VkrPlatformProcessConfig config = {
       .executable = vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY),
       .arguments = arguments,
@@ -1027,32 +1070,232 @@ static void depot_job_share(DepotWorker *worker) {
   int32_t exit_code = 0;
   bool8_t timed_out = false_v;
   const bool8_t ran = vkr_platform_process_run(&config, &exit_code, &timed_out);
-  remove(request);
-  if (!ran || exit_code != 0) {
-    uint8_t *bytes = NULL;
-    uint64_t size = 0u;
-    if (vkr_bakery_read_file(result, KB(64), &bytes, &size)) {
-      Arena *parse = arena_create(KB(256), KB(64));
-      const VkrBakeryJson *answer =
-          parse ? vkr_bakery_json_parse(parse, bytes, size, 16u, NULL) : NULL;
-      if (!depot_json_text(answer, "error", job->error, sizeof(job->error))) {
-        snprintf(job->error, sizeof(job->error),
-                 "Copying the project failed (exit %d)", exit_code);
-      }
-      if (parse) {
-        arena_destroy(parse);
-      }
-      free(bytes);
-    } else {
-      snprintf(job->error, sizeof(job->error),
-               timed_out ? "Copying the project timed out"
-                         : "Copying the project failed (exit %d)",
-               exit_code);
-    }
-    remove(result);
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (vkr_bakery_read_file(result_path, MB(4), &bytes, &size)) {
+    *out_result = vkr_bakery_json_parse(arena, bytes, size, 32u, NULL);
+  }
+  free(bytes);
+  char progress_path[DEPOT_PATH + 16];
+  snprintf(progress_path, sizeof(progress_path), "%s.progress.json",
+           result_path);
+  remove(progress_path);
+  remove(result_path);
+  remove(request_path);
+  remove(jobs);
+  if (ran && exit_code == 0 && *out_result) {
+    return true_v;
+  }
+  char reason[DEPOT_TEXT] = {0};
+  if (!depot_json_text(*out_result, "error", reason, sizeof(reason))) {
+    snprintf(reason, sizeof(reason),
+             timed_out ? "timed out" : "the Bakery step failed (exit %d)",
+             exit_code);
+  }
+  snprintf(job->error, sizeof(job->error), "%s: %s", what, reason);
+  return false_v;
+}
+
+/* Cooks, for this computer, the textures every scene's imported models and
+   the project's own assets name in their recipes but lack here: cooked
+   textures never travel, since each GPU family samples its own format
+   (recook_textures). Imported models cooked before recipes existed are
+   rebuilt once where they are shared, not here. */
+static void depot_job_recook(DepotJob *job, const char *folder) {
+  char projects[DEPOT_PATH];
+  snprintf(projects, sizeof(projects), "%s/.vkreditor/projects", folder);
+  char project_id[40];
+  depot_first_project(folder, project_id);
+  if (!project_id[0]) {
     return;
   }
-  remove(result);
+  Arena *arena = arena_create(MB(1), KB(256));
+  if (!arena) {
+    return;
+  }
+  char project_path[DEPOT_PATH];
+  snprintf(project_path, sizeof(project_path), "%s/%s/project.json", projects,
+           project_id);
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  const VkrBakeryJson *project =
+      vkr_bakery_read_file(project_path, MB(8), &bytes, &size)
+          ? vkr_bakery_json_parse(arena, bytes, size, 32u, NULL)
+          : NULL;
+  free(bytes);
+  const VkrBakeryJson *scenes = vkr_bakery_json_get(project, "scenes");
+  const uint32_t total = (scenes ? scenes->count : 0u) + 1u;
+  vkr_atomic_uint32_store(&job->cook_total, total, VKR_MEMORY_ORDER_RELAXED);
+  uint32_t done = 0u;
+  for (const VkrBakeryJson *scene = scenes ? scenes->first : NULL;
+       scene && !vkr_depot_progress_canceled(&job->progress);
+       scene = scene->next) {
+    char scene_id[40] = {0};
+    char relative[DEPOT_PATH] = {0};
+    if (depot_json_text(scene, "id", scene_id, sizeof(scene_id)) &&
+        depot_json_text(scene, "path", relative, sizeof(relative))) {
+      char scene_path[DEPOT_PATH];
+      snprintf(scene_path, sizeof(scene_path), "%s/%s/%s", projects, project_id,
+               relative);
+      VkrBakeryJson *request = vkr_bakery_json_object(arena);
+      vkr_bakery_json_set(arena, request, "operation",
+                          vkr_bakery_json_cstr(arena, "recook_textures"));
+      vkr_bakery_json_set(arena, request, "project_path",
+                          vkr_bakery_json_cstr(arena, project_path));
+      vkr_bakery_json_set(arena, request, "scene_id",
+                          vkr_bakery_json_cstr(arena, scene_id));
+      vkr_bakery_json_set(arena, request, "scene_path",
+                          vkr_bakery_json_cstr(arena, scene_path));
+      const VkrBakeryJson *result = NULL;
+      if (depot_project_job(job, folder, arena, request, "Preparing textures",
+                            &result)) {
+        int64_t recooked = 0;
+        (void)vkr_bakery_json_get_int(result, "recooked", &recooked);
+        job->textures_cooked += (uint32_t)recooked;
+      } else {
+        job->textures_failed++;
+        log_warn("Project sharing: %s", job->error);
+        job->error[0] = '\0';
+      }
+    }
+    vkr_atomic_uint32_store(&job->cook_done, ++done, VKR_MEMORY_ORDER_RELAXED);
+  }
+  VkrBakeryJson *request = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, request, "operation",
+                      vkr_bakery_json_cstr(arena, "recook_textures"));
+  vkr_bakery_json_set(arena, request, "project_path",
+                      vkr_bakery_json_cstr(arena, project_path));
+  const VkrBakeryJson *result = NULL;
+  if (!vkr_depot_progress_canceled(&job->progress) &&
+      !depot_project_job(job, folder, arena, request, "Preparing textures",
+                         &result)) {
+    job->textures_failed++;
+    log_warn("Project sharing: %s", job->error);
+    job->error[0] = '\0';
+  }
+  vkr_atomic_uint32_store(&job->cook_done, total, VKR_MEMORY_ORDER_RELAXED);
+  arena_destroy(arena);
+}
+
+/* Rebuilds each imported model the share reported as cooked before
+   texture recipes existed, in the shared workspace, so another computer
+   can cook its textures (rebuild_asset). */
+static void depot_job_rebuild_old_models(DepotJob *job,
+                                         const VkrBakeryJson *share_result) {
+  const VkrBakeryJson *list =
+      vkr_bakery_json_get(share_result, "needs_rebuild");
+  if (!list || !list->count) {
+    return;
+  }
+  Arena *arena = arena_create(MB(1), KB(256));
+  if (!arena) {
+    return;
+  }
+  char projects[DEPOT_PATH];
+  snprintf(projects, sizeof(projects), "%s/.vkreditor/projects/%s",
+           job->directory, job->project_id);
+  char project_path[DEPOT_PATH];
+  snprintf(project_path, sizeof(project_path), "%s/project.json", projects);
+  vkr_atomic_uint32_store(&job->cook_total, list->count,
+                          VKR_MEMORY_ORDER_RELAXED);
+  uint32_t done = 0u;
+  for (const VkrBakeryJson *entry = list->first;
+       entry && !vkr_depot_progress_canceled(&job->progress);
+       entry = entry->next) {
+    char scene_id[40] = {0};
+    char asset_id[64] = {0};
+    if (depot_json_text(entry, "scene", scene_id, sizeof(scene_id)) &&
+        depot_json_text(entry, "asset_id", asset_id, sizeof(asset_id))) {
+      char scene_path[DEPOT_PATH];
+      snprintf(scene_path, sizeof(scene_path), "%s/scenes/%s/scene.json",
+               projects, scene_id);
+      VkrBakeryJson *request = vkr_bakery_json_object(arena);
+      vkr_bakery_json_set(arena, request, "operation",
+                          vkr_bakery_json_cstr(arena, "rebuild_asset"));
+      vkr_bakery_json_set(arena, request, "project_path",
+                          vkr_bakery_json_cstr(arena, project_path));
+      vkr_bakery_json_set(arena, request, "scene_id",
+                          vkr_bakery_json_cstr(arena, scene_id));
+      vkr_bakery_json_set(arena, request, "scene_path",
+                          vkr_bakery_json_cstr(arena, scene_path));
+      vkr_bakery_json_set(arena, request, "asset_id",
+                          vkr_bakery_json_cstr(arena, asset_id));
+      vkr_bakery_json_set(arena, request, "texture_tier",
+                          vkr_bakery_json_cstr(arena, "final"));
+      vkr_bakery_json_set(arena, request, "texture_encode_speed",
+                          vkr_bakery_json_cstr(arena, "fast"));
+      const VkrBakeryJson *result = NULL;
+      if (!depot_project_job(job, job->directory, arena, request,
+                             "Rebuilding a model for sharing", &result)) {
+        log_warn("Project sharing: %s", job->error);
+        job->textures_failed++;
+        job->error[0] = '\0';
+      }
+    }
+    vkr_atomic_uint32_store(&job->cook_done, ++done, VKR_MEMORY_ORDER_RELAXED);
+  }
+  /* The builds the rebuilds replaced would otherwise travel too. */
+  VkrBakeryJson *request = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, request, "operation",
+                      vkr_bakery_json_cstr(arena, "collect_garbage"));
+  /* No other job writes the new workspace yet, so nothing needs the grace
+     period that protects builds a running job has not recorded. */
+  vkr_bakery_json_set(arena, request, "grace_seconds",
+                      vkr_bakery_json_int(arena, 0));
+  vkr_bakery_json_set(arena, request, "project_path",
+                      vkr_bakery_json_cstr(arena, project_path));
+  const VkrBakeryJson *result = NULL;
+  if (!vkr_depot_progress_canceled(&job->progress) &&
+      !depot_project_job(job, job->directory, arena, request,
+                         "Removing replaced builds", &result)) {
+    log_warn("Project sharing: %s", job->error);
+    job->error[0] = '\0';
+  } else if (result) {
+    int64_t freed = 0;
+    (void)vkr_bakery_json_get_int(result, "freed_bytes", &freed);
+    log_info("Project sharing: removed %lld bytes of replaced builds",
+             (long long)freed);
+  }
+  arena_destroy(arena);
+}
+
+/* Copies the project's live files and every asset they use into the new
+   workspace (Bakery's share_project), rebuilds models cooked before texture
+   recipes, then makes it a working copy whose store the server serves. The
+   first commit follows once the server runs. */
+static void depot_job_share(DepotWorker *worker) {
+  DepotJob *job = worker->job;
+  Arena *arena = arena_create(MB(1), KB(256));
+  if (!arena) {
+    snprintf(job->error, sizeof(job->error), "out of memory");
+    return;
+  }
+  char project_path[DEPOT_PATH];
+  snprintf(project_path, sizeof(project_path),
+           "%s/.vkreditor/projects/%s/project.json", job->source,
+           job->project_id);
+  VkrBakeryJson *request = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, request, "operation",
+                      vkr_bakery_json_cstr(arena, "share_project"));
+  vkr_bakery_json_set(arena, request, "project_path",
+                      vkr_bakery_json_cstr(arena, project_path));
+  vkr_bakery_json_set(arena, request, "destination",
+                      vkr_bakery_json_cstr(arena, job->directory));
+  vkr_bakery_json_set(arena, request, "legacy_root",
+                      vkr_bakery_json_cstr(arena, vkr_content_root()));
+  vkr_depot_progress_phase(&job->progress, VKR_DEPOT_PHASE_SNAPSHOT, 0u, 0u);
+  const VkrBakeryJson *result = NULL;
+  if (!depot_project_job(job, job->source, arena, request,
+                         "Copying the project", &result)) {
+    arena_destroy(arena);
+    return;
+  }
+  depot_job_rebuild_old_models(job, result);
+  arena_destroy(arena);
+  if (vkr_depot_progress_canceled(&job->progress)) {
+    snprintf(job->error, sizeof(job->error), "canceled");
+    return;
+  }
   VkrDepotWorkspace *ws = worker->workspace;
   if (!vkr_depot_workspace_create(ws, job->directory, NULL,
                                   vkr_depot_zstd_codec())) {
@@ -1150,6 +1393,7 @@ static bool8_t depot_start(VkrEditorDepot *depot, DepotJobKind kind) {
   job->remote_known = false_v;
   job->scene_files_changed = false_v;
   job->materials_changed = false_v;
+  job->scripts_changed = false_v;
   job->textures_cooked = 0u;
   job->textures_failed = 0u;
   job->opened_project[0] = '\0';
@@ -1336,7 +1580,8 @@ static void depot_follow_workspace(VkrEditorDepot *depot, VkrEditorUi *editor) {
     depot->role = DEPOT_ROLE_MEMBER;
     snprintf(depot->address, sizeof(depot->address), "%s", depot->remote);
   }
-  depot_remember_project(depot, folder, depot->project_name, depot->project_id);
+  depot_remember_project(depot, folder, depot->project_name, depot->project_id,
+                         depot->role == DEPOT_ROLE_SHARER);
   depot->next_status = 0.0;
 }
 
@@ -1457,6 +1702,12 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   case DEPOT_JOB_PULL:
     if (job->ok) {
       depot->reload_pending = job->scene_files_changed;
+      if (job->scripts_changed) {
+        /* Someone else's native code: it runs once this user trusts it. */
+        depot_set_trusted(depot, depot->workspace, false_v);
+        vkr_editor_scripts_hold(editor->scripts, true_v);
+        depot->scripts_prompt_dismissed = false_v;
+      }
       if (job->materials_changed) {
         vkr_editor_material_index_reset(editor->materials);
       }
@@ -1470,7 +1721,7 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   case DEPOT_JOB_CLONE:
     if (job->ok) {
       depot_remember_project(depot, job->directory, depot->dialog_name,
-                             job->opened_project);
+                             job->opened_project, false_v);
       depot_remember_server(depot, depot->dialog_name, depot->dialog_host,
                             job->address, job->server_key);
       snprintf(depot->open_directory, sizeof(depot->open_directory), "%s",
@@ -1484,7 +1735,7 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
     if (job->ok) {
       depot->share_switch = true_v;
       depot_remember_project(depot, job->directory, depot->project_name,
-                             job->project_id);
+                             job->project_id, true_v);
     }
     break;
   default:
@@ -1547,10 +1798,14 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
     if (now - depot->service_polled > 0.5) {
       depot->service_polled = now;
       vkr_depot_service_info(depot->service, &depot->service_info);
-      depot->request_count = vkr_depot_service_requests(
-          depot->service, depot->requests, DEPOT_REQUESTS_MAX);
-      depot->access_count = vkr_depot_service_access(
-          depot->service, depot->access, DEPOT_ACCESS_MAX);
+      depot->request_count =
+          Min(vkr_depot_service_requests(depot->service, depot->requests,
+                                         DEPOT_REQUESTS_MAX),
+              DEPOT_REQUESTS_MAX);
+      depot->access_count =
+          Min(vkr_depot_service_access(depot->service, depot->access,
+                                       DEPOT_ACCESS_MAX),
+              DEPOT_ACCESS_MAX);
     }
     if (depot->service_info.failed) {
       snprintf(depot->service_error, sizeof(depot->service_error),
@@ -1852,6 +2107,39 @@ void vkr_editor_depot_cancel(VkrEditorDepot *depot) {
   }
 }
 
+bool8_t vkr_editor_depot_scripts_trusted(VkrEditorDepot *depot,
+                                         const char *folder) {
+  if (!depot || !folder || !folder[0]) {
+    return true_v;
+  }
+  if (!depot->registry_loaded) {
+    depot_registry_load(depot);
+  }
+  char path[DEPOT_PATH];
+  snprintf(path, sizeof(path), "%s/" VKR_DEPOT_META_DIR, folder);
+  if (!vkr_bakery_is_directory(path)) {
+    return true_v;
+  }
+  const DepotProject *project = depot_project_entry(depot, folder);
+  if (project) {
+    return project->trusted;
+  }
+  /* A working copy no step of this editor made: trusted only when this
+     editor serves it. */
+  snprintf(path, sizeof(path), "%s/" VKR_DEPOT_META_DIR "/store/server.key",
+           folder);
+  return vkr_bakery_is_file(path);
+}
+
+void vkr_editor_depot_trust_scripts(VkrEditorDepot *depot,
+                                    VkrEditorUi *editor) {
+  if (!depot) {
+    return;
+  }
+  depot_set_trusted(depot, depot->workspace, true_v);
+  vkr_editor_scripts_hold(editor->scripts, false_v);
+}
+
 bool8_t vkr_editor_depot_dialog_open(const VkrEditorDepot *depot) {
   return depot && depot->dialog_open;
 }
@@ -1989,8 +2277,11 @@ static float32_t depot_job_text(const VkrEditorDepot *depot, char *out,
   if (cook_total && cook_done < cook_total &&
       (view.phase == VKR_DEPOT_PHASE_DONE ||
        view.phase == VKR_DEPOT_PHASE_CHECKOUT || job->kind == DEPOT_JOB_PULL ||
-       job->kind == DEPOT_JOB_CLONE)) {
-    snprintf(out, capacity, "%s: preparing textures for this computer %u/%u",
+       job->kind == DEPOT_JOB_CLONE || job->kind == DEPOT_JOB_SHARE)) {
+    snprintf(out, capacity,
+             job->kind == DEPOT_JOB_SHARE
+                 ? "%s: rebuilding imported models for other computers %u/%u"
+                 : "%s: preparing textures for this computer %u/%u",
              step, cook_done, cook_total);
     return (float32_t)cook_done / (float32_t)cook_total;
   }
@@ -2258,7 +2549,14 @@ static void depot_window_requests(VkrEditorDepot *depot, VkrEditorUi *editor,
     char text[160];
     snprintf(text, sizeof(text), "%s asks to work on this project", who);
     depot_label(ui, "request", text, 12, *y, width - 24, theme->warning);
-    *y += 26;
+    *y += 22;
+    char print[16];
+    depot_fingerprint(request->key, print);
+    snprintf(text, sizeof(text),
+             "Its key starts %s; that computer shows the same while it waits",
+             print);
+    depot_caption(ui, "request.key", text, 12, *y, width - 24);
+    *y += 24;
     char key[VKR_DEPOT_ID_HEX];
     depot_key_hex(request->key, key);
     char error[DEPOT_TEXT] = {0};
@@ -2492,6 +2790,15 @@ void vkr_editor_depot_window_build(VkrEditorUi *editor,
     if (depot->role == DEPOT_ROLE_SHARER) {
       depot_window_access(depot, editor, ui, &y, width);
     }
+    if (vkr_editor_scripts_held(editor->scripts)) {
+      depot_label(ui, "scripts.held", "Scripts from others are not running", 12,
+                  y, width - 160, theme->warning);
+      if (depot_button(editor, ui, "scripts.trust", "Run scripts", width - 136,
+                       y - 2, 124, false_v, false_v)) {
+        vkr_editor_depot_trust_scripts(depot, editor);
+      }
+      y += 34;
+    }
     depot_window_history(depot, ui, &y, width);
   }
   if (depot_busy(depot) && depot->job->kind != DEPOT_JOB_STATUS) {
@@ -2558,7 +2865,10 @@ static void depot_overlay_request(VkrEditorDepot *depot, VkrEditorUi *editor,
   c.text.font = editor->heading_font;
   vkr_ui_label(ui, string8_lit("who"), depot_string(who), &c);
   char text[200];
-  snprintf(text, sizeof(text), "asks to work on %s", depot->project_name);
+  char print[16];
+  depot_fingerprint(request->key, print);
+  snprintf(text, sizeof(text), "asks to work on %s  \xc2\xb7  key %s",
+           depot->project_name, print);
   depot_caption(ui, "text", text, 34, 34, width - 46);
   char key[VKR_DEPOT_ID_HEX];
   depot_key_hex(request->key, key);
@@ -2580,12 +2890,66 @@ static void depot_overlay_request(VkrEditorDepot *depot, VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
 }
 
+/* Scripts are native code: a project's scripts from another computer wait
+   for this user's trust before they build and run. */
+static void depot_overlay_scripts(VkrEditorDepot *depot, VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame) {
+  if (!vkr_editor_scripts_held(editor->scripts) ||
+      depot->scripts_prompt_dismissed) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t target_width =
+      (float32_t)ui->target_width / ui->content_scale;
+  const float32_t width = Min(400.0f, target_width - 24.0f);
+  const bool8_t below_request =
+      depot->request_count && !editor->windows[VKR_EDITOR_WINDOW_DEPOT].visible;
+  const float32_t top =
+      VKR_EDITOR_NAVIGATION_HEIGHT_PT + 12.0f + (below_request ? 116.0f : 0.0f);
+  VkrUiPanelConfig card = vkr_ui_panel_config_default();
+  card.placement = (VkrUiPlacement){
+      .column_span = 1,
+      .row_span = 1,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_START,
+      .margin_pt = {top, 0, 0, target_width - width - 12.0f},
+  };
+  card.style = vkr_editor_glass_style();
+  card.style.min_size_pt = card.style.max_size_pt = (Vec2){width, 122.0f};
+  if (!vkr_ui_panel_begin(ui, string8_lit("depot.scripts"), &card)) {
+    return;
+  }
+  VkrUiWidgetConfig c = depot_widget(12, 10, width - 24, 22);
+  c.icon = VKR_UI_ICON_CODE;
+  c.icon_size_pt = 13.0f;
+  c.icon_color = theme->warning;
+  c.text.font = editor->heading_font;
+  vkr_ui_label(ui, string8_lit("title"),
+               string8_lit("Scripts from another computer"), &c);
+  (void)depot_paragraph(ui, "text",
+                        "This project's scripts run as programs on this "
+                        "computer. Run them only if you trust the people "
+                        "you share it with.",
+                        34, 34, width - 46);
+  if (depot_button(editor, ui, "trust", "Run scripts", 12, 84, 130, true_v,
+                   false_v)) {
+    vkr_editor_depot_trust_scripts(depot, editor);
+  }
+  if (depot_button(editor, ui, "later", "Not now", 150, 84, 100, false_v,
+                   false_v)) {
+    depot->scripts_prompt_dismissed = true_v;
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
 void vkr_editor_depot_overlay_build(VkrEditorDepot *depot, VkrEditorUi *editor,
                                     const VkrSampleUiFrame *frame) {
   if (!depot) {
     return;
   }
   depot_overlay_request(depot, editor, frame);
+  depot_overlay_scripts(depot, editor, frame);
 }
 
 // =============================================================================
@@ -2657,10 +3021,16 @@ static float32_t depot_hub_dialog(VkrEditorDepot *depot, VkrEditorUi *editor,
     char text[DEPOT_TEXT];
     float32_t fraction = -1.0f;
     if (waiting) {
+      char print[16] = "";
+      VkrNetKeyPair identity;
+      if (vkr_depot_identity(&identity, true_v)) {
+        depot_fingerprint(identity.public_key, print);
+        vkr_net_random(identity.secret_key, sizeof(identity.secret_key));
+      }
       snprintf(text, sizeof(text),
-               "Waiting for %s to allow this computer. Ask them to click "
-               "Allow.",
-               depot->dialog_host[0] ? depot->dialog_host : "the other editor");
+               "Waiting for %s to allow this computer, key %s",
+               depot->dialog_host[0] ? depot->dialog_host : "the other editor",
+               print);
     } else {
       fraction = depot_job_text(depot, text, sizeof(text));
     }
@@ -2754,9 +3124,31 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
     depot_card(ui, "card", x, y, width, 52);
     depot_row_title(ui, found->name, VKR_UI_ICON_CLOUD, x + 12, y + 6,
                     width - 150);
-    snprintf(text, sizeof(text), "Shared by %s  \xc2\xb7  %s", found->host,
-             address);
+    char print[16];
+    depot_fingerprint(found->server_key, print);
+    snprintf(
+        text, sizeof(text), "Shared by %s  \xc2\xb7  %s  \xc2\xb7  key %s%s",
+        found->host, address, print,
+        depot_key_known(depot, found->server_key) ? "  \xc2\xb7  used before"
+                                                  : "");
     depot_caption(ui, "host", text, x + 36, y + 28, width - 170);
+    /* An answer with the name of a server used before but another key:
+       discovery is not authenticated, so say it is not that computer. */
+    for (uint32_t k = 0u; k < depot->known_count; ++k) {
+      if (strcmp(depot->known[k].name, found->name) == 0 &&
+          !depot_key_known(depot, found->server_key)) {
+        VkrUiWidgetConfig warning =
+            depot_widget(x + 36, y + 46, width - 170, 18);
+        warning.style.font_size_pt = theme->font_caption;
+        warning.style.text_color = theme->warning;
+        vkr_ui_label(ui, string8_lit("impostor"),
+                     string8_lit("Not the computer you got this project from "
+                                 "before"),
+                     &warning);
+        y += 16;
+        break;
+      }
+    }
     const bool8_t chosen =
         depot->dialog_open &&
         MemCompare(depot->dialog_key, found->server_key, 32u) == 0;

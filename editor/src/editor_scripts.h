@@ -82,6 +82,15 @@ void vkr_editor_scripts_open(VkrEditorScripts *scripts,
  * reported, so documents that use its component types should wait. */
 bool8_t vkr_editor_scripts_settling(const VkrEditorScripts *scripts);
 
+/** Holds or releases a project's scripts. While held nothing builds or
+ * loads and vkr_editor_scripts_settling stays false; a release rebuilds from
+ * the sources and loads the result. Scripts are native code, so a project
+ * from another computer is held until its user trusts it (ADR-110). */
+void vkr_editor_scripts_hold(VkrEditorScripts *scripts, bool8_t held);
+/** True while an open project has modules that the hold keeps from
+ * running. */
+bool8_t vkr_editor_scripts_held(const VkrEditorScripts *scripts);
+
 /** Retires the project's libraries in the runtime and forgets its modules. */
 void vkr_editor_scripts_close_project(VkrEditorScripts *scripts,
                                       EditorBakeryService *service,

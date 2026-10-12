@@ -13688,9 +13688,23 @@ static VkrEditorOpStatus ops_run_session_status(OpsContext *ctx) {
 // Project sharing (editor_depot.h)
 // =============================================================================
 
+static VkrBakeryJson *ops_depot_status(OpsContext *ctx) {
+  VkrBakeryJson *result =
+      vkr_editor_depot_status_json(ctx->editor->depot, ops_arena(ctx));
+  ops_set(ctx, result, "scripts_held",
+          vkr_bakery_json_bool(ops_arena(ctx),
+                               vkr_editor_scripts_held(ctx->editor->scripts)));
+  return result;
+}
+
 static VkrEditorOpStatus ops_run_depot_status(OpsContext *ctx) {
-  ctx->call->result = vkr_editor_depot_status_json(ctx->editor->depot,
-                                                   ops_arena(ctx));
+  ctx->call->result = ops_depot_status(ctx);
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_depot_trust(OpsContext *ctx) {
+  vkr_editor_depot_trust_scripts(ctx->editor->depot, ctx->editor);
+  ctx->call->result = ops_depot_status(ctx);
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -13766,7 +13780,7 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
     ops_fail(ctx, OPS_BUSY, "%s", error);
     return VKR_EDITOR_OP_DONE;
   }
-  ctx->call->result = vkr_editor_depot_status_json(depot, ops_arena(ctx));
+  ctx->call->result = ops_depot_status(ctx);
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -15099,6 +15113,11 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
      "\"string\"}},\"required\":[\"address\"]}",
      ops_run_depot_find, NULL, OPS_NO_SCENE},
+    {"depot.trust",
+     "Lets the open shared project's scripts, which another computer "
+     "wrote, build and run here.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_trust, NULL,
+     OPS_NO_SCENE},
     {"depot.cancel", "Stops the running sharing step.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_cancel, NULL,
      OPS_NO_SCENE},

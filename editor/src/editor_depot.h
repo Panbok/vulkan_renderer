@@ -52,6 +52,14 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame, float32_t x,
                                      float32_t y, float32_t width);
 
+/* Whether the scripts of the workspace at `folder` may build and run: true
+   unless it is a copy of another computer's project whose user has not
+   trusted its scripts, or a pull brought script changes since. */
+bool8_t vkr_editor_depot_scripts_trusted(VkrEditorDepot *depot,
+                                         const char *folder);
+/* The user trusts the open shared project's scripts: they build and load. */
+void vkr_editor_depot_trust_scripts(VkrEditorDepot *depot, VkrEditorUi *editor);
+
 /* Whether the hub's Get dialog is open, so the hub leaves the pointer to
    it. */
 bool8_t vkr_editor_depot_dialog_open(const VkrEditorDepot *depot);
