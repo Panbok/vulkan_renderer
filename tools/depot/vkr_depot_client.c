@@ -150,6 +150,9 @@ struct VkrDepotClient {
   IdSet seen;
   WantList want;
   bool8_t fetch_failed;
+  /* Trees being walked below the commit: a present tree's children are
+     walked at once, so a deep tree would recurse without this bound. */
+  uint32_t depth;
   uint64_t last_progress_us;
   VkrDepotTransferStats stats;
   char error[256];
@@ -231,8 +234,16 @@ static bool8_t client_children(VkrDepotClient *client, uint8_t kind,
            client_process(client, &commit.tree, VKR_DEPOT_KIND_TREE, 0u);
   }
   if (kind == VKR_DEPOT_KIND_TREE) {
-    return vkr_depot_tree_parse(bytes, size, client_entry_child, &child) &&
-           child.ok;
+    if (client->depth > VKR_DEPOT_TREE_DEPTH_MAX) {
+      client_fail(client, "a tree nests deeper than the depot allows%s", "");
+      return false_v;
+    }
+    client->depth += 1u;
+    const bool8_t ok =
+        vkr_depot_tree_parse(bytes, size, client_entry_child, &child) &&
+        child.ok;
+    client->depth -= 1u;
+    return ok;
   }
   return vkr_depot_blob_parse(bytes, size, NULL, client_chunk_child, &child) &&
          child.ok;
@@ -737,10 +748,12 @@ static bool8_t upload_blob(const VkrDepotStore *store, UploadSet *set,
   return ok;
 }
 
-/* Adds `tree` and everything below it that `base` (NULL for none) lacks. */
+/* Adds `tree` and everything below it that `base` (NULL for none) lacks,
+   refusing trees deeper than VKR_DEPOT_TREE_DEPTH_MAX. */
 static bool8_t upload_tree(const VkrDepotStore *store, UploadSet *set,
-                           const VkrDepotId *tree, const VkrDepotId *base) {
-  if (!upload_add(set, tree)) {
+                           const VkrDepotId *tree, const VkrDepotId *base,
+                           uint32_t depth) {
+  if (depth > VKR_DEPOT_TREE_DEPTH_MAX || !upload_add(set, tree)) {
     return false_v;
   }
   UploadEntries current;
@@ -768,7 +781,8 @@ static bool8_t upload_tree(const VkrDepotStore *store, UploadSet *set,
     }
     if (entry->kind == VKR_DEPOT_ENTRY_TREE) {
       const bool8_t was_tree = before && before->kind == VKR_DEPOT_ENTRY_TREE;
-      ok = upload_tree(store, set, &entry->id, was_tree ? &before->id : NULL);
+      ok = upload_tree(store, set, &entry->id, was_tree ? &before->id : NULL,
+                       depth + 1u);
     } else {
       ok = upload_blob(store, set, &entry->id);
     }
@@ -838,7 +852,7 @@ bool8_t vkr_depot_client_upload(VkrDepotClient *client,
     free(base_bytes);
   }
   ok = ok && upload_tree(client->store, &set, &parsed.tree,
-                         has_base_tree ? &base_tree : NULL);
+                         has_base_tree ? &base_tree : NULL, 0u);
   free(bytes);
   if (!ok) {
     client_fail(client, "the commit's objects are not all in the store%s", "");

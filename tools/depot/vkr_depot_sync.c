@@ -70,9 +70,9 @@ bool8_t vkr_depot_identity(VkrNetKeyPair *out, bool8_t create) {
   }
   char directory[VKR_DEPOT_PATH_CAPACITY];
   vkr_bakery_path_parent(directory, sizeof(directory), path);
-  const bool8_t written =
-      vkr_bakery_make_directories(directory) &&
-      vkr_bakery_write_file_atomic(path, out->secret_key, VKR_NET_KEY_SIZE);
+  const bool8_t written = vkr_bakery_make_directories(directory) &&
+                          vkr_bakery_write_private_file_atomic(
+                              path, out->secret_key, VKR_NET_KEY_SIZE);
   /* A migrated key is valid even where the copy failed; the old file stays
      and the next run tries again. A new key must persist. */
   return written || migrated;
@@ -783,6 +783,12 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
     snprintf(error, capacity, "%s moved to %.12s; pull first", branch, hex);
     return false_v;
   }
+  if (status == VKR_DEPOT_REF_INVALID) {
+    snprintf(error, capacity,
+             "the server refused the commit: a name no tree may hold, or a "
+             "tree past the depot's limits");
+    return false_v;
+  }
   if (status == VKR_DEPOT_REF_LOCKED) {
     snprintf(error, capacity, "the commit changes a file another user locked");
     return false_v;
@@ -897,7 +903,7 @@ bool8_t vkr_depot_fetch_checkout(
     goto cleanup;
   }
   vkr_depot_file_list_sort(&keep);
-  if (!vkr_depot_workspace_checkout(workspace, &commit_tree, &keep)) {
+  if (!vkr_depot_workspace_checkout(workspace, &commit_tree, &keep, NULL)) {
     depot_step_error(workspace, error, capacity, "checkout failed", NULL);
     goto cleanup;
   }

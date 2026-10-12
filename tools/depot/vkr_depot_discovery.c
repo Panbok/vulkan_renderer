@@ -308,6 +308,14 @@ uint32_t vkr_depot_browser_update(VkrDepotBrowser *browser) {
       added += 1u;
     }
   }
+  const float64_t now = vkr_platform_get_absolute_time();
+  uint32_t kept = 0u;
+  for (uint32_t i = 0u; i < browser->found_count; ++i) {
+    if (now - browser->found[i].last_seen <= VKR_DEPOT_BROWSE_EXPIRY_SECONDS) {
+      browser->found[kept++] = browser->found[i];
+    }
+  }
+  browser->found_count = kept;
   return added;
 }
 

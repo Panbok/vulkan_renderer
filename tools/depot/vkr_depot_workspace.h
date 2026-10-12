@@ -17,8 +17,11 @@
  * `.vkrdepotignore` at the root lists paths a snapshot leaves out, one
  * pattern per line ('#' starts a comment): '*' and '?' match within a name,
  * '**' across folders, a trailing '/' matches a folder and all it holds,
- * and a pattern without '/' matches a name at any depth. An ignored file
- * is never tracked, so a checkout leaves it alone. */
+ * and a pattern without '/' matches a name at any depth. As in git, the
+ * rules apply to untracked paths only: a tracked file stays in snapshots
+ * whatever a pulled `.vkrdepotignore` says. A checkout never writes or
+ * removes an ignored path, so another machine's tree cannot plant files
+ * this machine keeps for itself (such as scripts it builds and loads). */
 
 #define VKR_DEPOT_META_DIR ".vkrdepot"
 #define VKR_DEPOT_IGNORE_FILE ".vkrdepotignore"
@@ -108,10 +111,17 @@ bool8_t vkr_depot_file_list_diff(const VkrDepotFileList *from,
    flushed; their index entries carry -1, so the next snapshot hashes them.
    A cancel stops it with false and the index unchanged: files written so far
    show as local changes that equal the tree, which a later checkout of the
-   same tree takes over. */
+   same tree takes over.
+   Paths are compared as macOS and Windows do (vkr_depot_name_fold_compare):
+   a local change kept under one case keeps every case of the path, and
+   removals come before writes, so a case-only rename keeps the file. A path
+   the working copy's ignore rules match, as they stand before the
+   checkout, is never written or removed and stays untracked; `out_skipped`
+   (may be NULL) counts the tree's paths skipped so. */
 bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
                                      const VkrDepotId *tree,
-                                     const VkrDepotFileList *keep);
+                                     const VkrDepotFileList *keep,
+                                     uint32_t *out_skipped);
 
 /* Records, for each index entry still marked -1 whose file `files` (a
    snapshot) found holding the same blob, the size and time it hashed, so

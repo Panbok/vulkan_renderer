@@ -70,6 +70,103 @@ static void depot_header(uint8_t *out, uint32_t kind) {
   out[5] = out[6] = out[7] = 0u;
 }
 
+// =============================================================================
+// Names
+// =============================================================================
+
+/* Decodes the code point at `*offset` of well-formed UTF-8; a byte that
+   starts no valid sequence decodes as itself. */
+static uint32_t depot_utf8_next(const char *text, uint32_t size,
+                                uint32_t *offset) {
+  const uint8_t c = (uint8_t)text[*offset];
+  uint32_t extra = c >= 0xf0u ? 3u : c >= 0xe0u ? 2u : c >= 0xc0u ? 1u : 0u;
+  if (*offset + extra >= size) {
+    extra = 0u;
+  }
+  if (extra == 0u) {
+    *offset += 1u;
+    return c;
+  }
+  uint32_t point = c & (0x3fu >> extra);
+  for (uint32_t k = 1u; k <= extra; ++k) {
+    point = (point << 6) | ((uint8_t)text[*offset + k] & 0x3fu);
+  }
+  *offset += extra + 1u;
+  return point;
+}
+
+/* The case folding macOS and Windows apply, for the scripts a project
+   names files in: ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic.
+   Other letters compare exactly. */
+static uint32_t depot_fold(uint32_t c) {
+  if ((c >= 'A' && c <= 'Z') || (c >= 0xc0u && c <= 0xdeu && c != 0xd7u) ||
+      (c >= 0x391u && c <= 0x3abu && c != 0x3a2u) ||
+      (c >= 0x410u && c <= 0x42fu)) {
+    return c + 0x20u;
+  }
+  if (c >= 0x400u && c <= 0x40fu) {
+    return c + 0x50u;
+  }
+  if (c == 0x178u) {
+    return 0xffu;
+  }
+  /* Latin Extended-A pairs an upper and a lower case letter; the pairs
+     start on even code points except in 0x139-0x148 and 0x179-0x17e. */
+  const bool8_t odd_pairs =
+      (c >= 0x139u && c <= 0x148u) || (c >= 0x179u && c <= 0x17eu);
+  const bool8_t even_pairs = (c >= 0x100u && c <= 0x12fu) ||
+                             (c >= 0x132u && c <= 0x137u) ||
+                             (c >= 0x14au && c <= 0x177u);
+  if ((even_pairs && (c & 1u) == 0u) || (odd_pairs && (c & 1u) == 1u)) {
+    return c + 1u;
+  }
+  return c;
+}
+
+int vkr_depot_name_fold_compare(const char *a, uint32_t a_size, const char *b,
+                                uint32_t b_size) {
+  uint32_t i = 0u;
+  uint32_t j = 0u;
+  while (i < a_size && j < b_size) {
+    const uint32_t x = depot_fold(depot_utf8_next(a, a_size, &i));
+    const uint32_t y = depot_fold(depot_utf8_next(b, b_size, &j));
+    if (x != y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  const bool8_t a_more = i < a_size;
+  const bool8_t b_more = j < b_size;
+  return a_more == b_more ? 0 : a_more ? 1 : -1;
+}
+
+/* Whether `name` equals `word` without case. */
+static bool8_t depot_name_is(const char *name, uint32_t size,
+                             const char *word) {
+  return vkr_depot_name_fold_compare(name, size, word,
+                                     (uint32_t)strlen(word)) == 0;
+}
+
+/* Windows opens a device for these, with any extension and case. */
+static bool8_t depot_name_reserved(const char *name, uint32_t size) {
+  uint32_t base = 0u;
+  while (base < size && name[base] != '.') {
+    ++base;
+  }
+  while (base > 0u && name[base - 1u] == ' ') {
+    --base;
+  }
+  static const char *const devices[] = {"CON", "PRN", "AUX", "NUL"};
+  for (uint32_t i = 0u; i < ArrayCount(devices); ++i) {
+    if (depot_name_is(name, base, devices[i])) {
+      return true_v;
+    }
+  }
+  if (base == 4u && name[3] >= '1' && name[3] <= '9') {
+    return depot_name_is(name, 3u, "COM") || depot_name_is(name, 3u, "LPT");
+  }
+  return false_v;
+}
+
 bool8_t vkr_depot_name_valid(const char *name, uint32_t size) {
   if (size == 0u || size > VKR_DEPOT_NAME_MAX) {
     return false_v;
@@ -82,13 +179,20 @@ bool8_t vkr_depot_name_valid(const char *name, uint32_t size) {
   if (name[size - 1u] == ' ' || name[size - 1u] == '.') {
     return false_v;
   }
+  /* A tree that carried the depot's or git's own state would overwrite it
+     in every working copy that checks it out. */
+  if (depot_name_is(name, size, VKR_DEPOT_RESERVED_META) ||
+      depot_name_is(name, size, ".git") || depot_name_reserved(name, size)) {
+    return false_v;
+  }
   for (uint32_t i = 0u; i < size; ++i) {
     const uint8_t c = (uint8_t)name[i];
-    if (c < 0x20u || c == '/' || c == '\\' || c == 0x7fu) {
+    if (c < 0x20u || c == 0x7fu || strchr("/\\:<>\"|?*", c)) {
       return false_v;
     }
   }
-  /* UTF-8 well-formedness: lead bytes, continuations, no overlong pairs. */
+  /* UTF-8 well-formedness: lead bytes, continuations, no overlong forms,
+     surrogates or code points past U+10FFFF. */
   uint32_t i = 0u;
   while (i < size) {
     const uint8_t c = (uint8_t)name[i];
@@ -114,9 +218,47 @@ bool8_t vkr_depot_name_valid(const char *name, uint32_t size) {
         return false_v;
       }
     }
+    const uint8_t next = (uint8_t)name[i + 1u];
+    if ((c == 0xe0u && next < 0xa0u) || (c == 0xedu && next >= 0xa0u) ||
+        (c == 0xf0u && next < 0x90u) || (c == 0xf4u && next >= 0x90u)) {
+      return false_v;
+    }
+    uint32_t offset = i;
+    const uint32_t point = depot_utf8_next(name, size, &offset);
+    /* Combining marks: a decomposed name (NFD) and its composed form (NFC)
+       are one file on macOS, so only composed letters pass. */
+    if ((point >= 0x300u && point <= 0x36fu) ||
+        (point >= 0x1ab0u && point <= 0x1affu) ||
+        (point >= 0x1dc0u && point <= 0x1dffu) ||
+        (point >= 0x20d0u && point <= 0x20ffu) ||
+        (point >= 0xfe20u && point <= 0xfe2fu)) {
+      return false_v;
+    }
     i += extra + 1u;
   }
   return true_v;
+}
+
+bool8_t vkr_depot_path_valid(const char *path) {
+  const size_t length = strlen(path);
+  if (length == 0u || length >= VKR_DEPOT_PATH_MAX) {
+    return false_v;
+  }
+  uint32_t depth = 0u;
+  const char *component = path;
+  for (;;) {
+    const char *slash = strchr(component, '/');
+    const uint32_t size =
+        (uint32_t)(slash ? (size_t)(slash - component) : strlen(component));
+    if (++depth > VKR_DEPOT_TREE_DEPTH_MAX + 1u ||
+        !vkr_depot_name_valid(component, size)) {
+      return false_v;
+    }
+    if (!slash) {
+      return true_v;
+    }
+    component = slash + 1;
+  }
 }
 
 // =============================================================================
@@ -156,7 +298,9 @@ bool8_t vkr_depot_blob_parse(const uint8_t *bytes, uint64_t size,
   }
   const uint64_t file_size = vkr_load_le_u64(bytes + VKR_DEPOT_HEADER_SIZE);
   const uint32_t count = vkr_load_le_u32(bytes + VKR_DEPOT_HEADER_SIZE + 8u);
-  if (size != VKR_DEPOT_HEADER_SIZE + 12u +
+  /* One chunk repeated many times would expand far past its size. */
+  if (file_size > VKR_DEPOT_FILE_MAX ||
+      size != VKR_DEPOT_HEADER_SIZE + 12u +
                   (uint64_t)count * (VKR_DEPOT_ID_SIZE + 4u)) {
     return false_v;
   }
@@ -212,21 +356,6 @@ static int depot_entry_compare(const void *lhs, const void *rhs) {
   const VkrDepotTreeEntry *a = lhs;
   const VkrDepotTreeEntry *b = rhs;
   return depot_name_compare(a->name, a->name_size, b->name, b->name_size);
-}
-
-int vkr_depot_name_fold_compare(const char *a, uint32_t a_size, const char *b,
-                                uint32_t b_size) {
-  const uint32_t common = Min(a_size, b_size);
-  for (uint32_t i = 0u; i < common; ++i) {
-    uint8_t x = (uint8_t)a[i];
-    uint8_t y = (uint8_t)b[i];
-    x = (x >= 'A' && x <= 'Z') ? (uint8_t)(x - 'A' + 'a') : x;
-    y = (y >= 'A' && y <= 'Z') ? (uint8_t)(y - 'A' + 'a') : y;
-    if (x != y) {
-      return x < y ? -1 : 1;
-    }
-  }
-  return a_size < b_size ? -1 : a_size > b_size ? 1 : 0;
 }
 
 static int depot_entry_fold_compare(const void *lhs, const void *rhs) {
@@ -343,7 +472,8 @@ bool8_t vkr_depot_tree_parse(const uint8_t *bytes, uint64_t size,
         if (!vkr_depot_name_valid(entry.name, entry.name_size) ||
             (entry.kind != VKR_DEPOT_ENTRY_FILE &&
              entry.kind != VKR_DEPOT_ENTRY_TREE) ||
-            (entry.kind == VKR_DEPOT_ENTRY_TREE && entry.size != 0u)) {
+            (entry.kind == VKR_DEPOT_ENTRY_TREE && entry.size != 0u) ||
+            entry.size > VKR_DEPOT_FILE_MAX) {
           goto cleanup;
         }
         if (i > 0u && depot_name_compare(previous.name, previous.name_size,

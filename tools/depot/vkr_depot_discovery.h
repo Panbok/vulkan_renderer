@@ -26,6 +26,8 @@
 
 #define VKR_DEPOT_BROWSE_TARGETS 16u
 #define VKR_DEPOT_BROWSE_MAX 32u
+/* A server a browser has not heard from for this long leaves `found`. */
+#define VKR_DEPOT_BROWSE_EXPIRY_SECONDS 30.0
 
 typedef struct VkrDepotDiscovered {
   /* The answering address with the service port. */
@@ -93,8 +95,9 @@ bool8_t vkr_depot_browser_add_target(VkrDepotBrowser *browser,
    address of each IPv4 subnet this machine is on. */
 void vkr_depot_browser_probe(VkrDepotBrowser *browser, bool8_t broadcast);
 
-/* Reads every answer waiting on the socket into `found`; never blocks.
-   Returns how many servers it saw for the first time. */
+/* Reads every answer waiting on the socket into `found` and drops servers
+   silent for VKR_DEPOT_BROWSE_EXPIRY_SECONDS; never blocks. Returns how
+   many servers it saw for the first time. */
 uint32_t vkr_depot_browser_update(VkrDepotBrowser *browser);
 
 /* Probes `discovery_port` on the IPv4 subnets this machine is on, or only

@@ -10,8 +10,6 @@
 
 #define WORKSPACE_STATE_MAGIC 0x57444b56u /* "VKDW" */
 #define WORKSPACE_STATE_VERSION 1u
-/* Files are read whole while they are chunked. */
-#define WORKSPACE_FILE_MAX (4ull * 1024ull * 1024ull * 1024ull)
 
 // =============================================================================
 // File lists
@@ -233,6 +231,13 @@ static bool8_t workspace_load_state(VkrDepotWorkspace *workspace) {
     cursor += 16u;
     memcpy(blob.bytes, cursor, VKR_DEPOT_ID_SIZE);
     cursor += VKR_DEPOT_ID_SIZE;
+    /* A checkout removes tracked files, so a path that leaves the working
+       copy (`..`, absolute) or names its state must never be tracked. Such
+       an entry, from a planted or older state, drops out: untracked. */
+    if (!vkr_depot_path_valid(entry_path)) {
+      fprintf(stderr, "depot: not tracking an invalid path: %s\n", entry_path);
+      continue;
+    }
     if (!vkr_depot_file_list_add(&workspace->index, entry_path, file_size,
                                  mtime, &blob)) {
       goto cleanup;
@@ -327,37 +332,36 @@ void vkr_depot_workspace_close(VkrDepotWorkspace *workspace) {
 // Snapshot
 // =============================================================================
 
-typedef struct WalkState {
-  VkrDepotWorkspace *workspace;
-  VkrDepotFileList *files;
-  char relative[VKR_DEPOT_PATH_CAPACITY];
-  bool8_t failed;
-  /* Entries of `files` whose size or time differ from the index: hashed
-     after the walk, so progress knows their count and bytes. */
-  uint32_t *pending;
-  uint32_t pending_count;
-  uint32_t pending_capacity;
-  uint64_t pending_bytes;
-  /* The patterns of `.vkrdepotignore`, pointing into `ignore_text`. */
-  char *ignore_text;
-  const char *ignore[VKR_DEPOT_IGNORE_MAX];
-  uint32_t ignore_count;
-} WalkState;
+/* The patterns of `.vkrdepotignore`, pointing into `text`. */
+typedef struct DepotIgnore {
+  char *text;
+  const char *patterns[VKR_DEPOT_IGNORE_MAX];
+  uint32_t count;
+} DepotIgnore;
+
+/* Steps one pattern may take against one path: a pattern of many stars
+   backtracks exponentially, and a pulled `.vkrdepotignore` is another
+   machine's text. Past the budget the pattern does not match. */
+#define IGNORE_GLOB_STEPS 100000u
 
 /* Glob match of `text` against `pattern`: '*' within a name, '**' across
    names, '?' one byte other than '/'. */
-static bool8_t ignore_glob(const char *pattern, const char *text) {
+static bool8_t ignore_glob(const char *pattern, const char *text,
+                           uint32_t *steps) {
   while (*pattern) {
+    if (++*steps > IGNORE_GLOB_STEPS) {
+      return false_v;
+    }
     if (pattern[0] == '*' && pattern[1] == '*') {
       pattern += 2;
       if (*pattern == '/') {
         ++pattern;
       }
       for (const char *rest = text;; ++rest) {
-        if (ignore_glob(pattern, rest)) {
+        if (ignore_glob(pattern, rest, steps)) {
           return true_v;
         }
-        if (!*rest) {
+        if (!*rest || *steps > IGNORE_GLOB_STEPS) {
           return false_v;
         }
       }
@@ -365,10 +369,10 @@ static bool8_t ignore_glob(const char *pattern, const char *text) {
     if (*pattern == '*') {
       ++pattern;
       for (const char *rest = text;; ++rest) {
-        if (ignore_glob(pattern, rest)) {
+        if (ignore_glob(pattern, rest, steps)) {
           return true_v;
         }
-        if (!*rest || *rest == '/') {
+        if (!*rest || *rest == '/' || *steps > IGNORE_GLOB_STEPS) {
           return false_v;
         }
       }
@@ -394,18 +398,20 @@ bool8_t vkr_depot_ignore_match(const char *pattern, const char *path,
   if (!length || (folder && !is_directory)) {
     return false_v;
   }
+  uint32_t steps = 0u;
   if (!strchr(body, '/')) {
     const char *slash = strrchr(path, '/');
-    return ignore_glob(body, slash ? slash + 1 : path);
+    return ignore_glob(body, slash ? slash + 1 : path, &steps);
   }
-  return ignore_glob(body[0] == '/' ? body + 1 : body, path);
+  return ignore_glob(body[0] == '/' ? body + 1 : body, path, &steps);
 }
 
-/* Reads `.vkrdepotignore`: a missing file ignores nothing. */
-static bool8_t walk_load_ignore(WalkState *state) {
+/* Reads the working copy's `.vkrdepotignore`: a missing file ignores
+   nothing. */
+static bool8_t ignore_load(const char *root, DepotIgnore *out) {
+  MemZero(out, sizeof(*out));
   char path[VKR_DEPOT_PATH_CAPACITY];
-  if (!vkr_bakery_path_join(path, sizeof(path), state->workspace->root,
-                            VKR_DEPOT_IGNORE_FILE)) {
+  if (!vkr_bakery_path_join(path, sizeof(path), root, VKR_DEPOT_IGNORE_FILE)) {
     return false_v;
   }
   if (!vkr_bakery_is_file(path)) {
@@ -424,7 +430,7 @@ static bool8_t walk_load_ignore(WalkState *state) {
   MemCopy(text, bytes, size);
   text[size] = '\0';
   free(bytes);
-  state->ignore_text = text;
+  out->text = text;
   for (char *line = text; line && *line;) {
     char *next = strchr(line, '\n');
     if (next) {
@@ -438,22 +444,101 @@ static bool8_t walk_load_ignore(WalkState *state) {
     while (*line == ' ' || *line == '\t') {
       ++line;
     }
-    if (*line && *line != '#' && state->ignore_count < VKR_DEPOT_IGNORE_MAX) {
-      state->ignore[state->ignore_count++] = line;
+    if (*line && *line != '#' && out->count < VKR_DEPOT_IGNORE_MAX) {
+      out->patterns[out->count++] = line;
     }
     line = next;
   }
   return true_v;
 }
 
-static bool8_t walk_ignored(const WalkState *state, const char *relative,
-                            bool8_t is_directory) {
-  for (uint32_t i = 0u; i < state->ignore_count; ++i) {
-    if (vkr_depot_ignore_match(state->ignore[i], relative, is_directory)) {
+static void ignore_free(DepotIgnore *ignore) {
+  free(ignore->text);
+  MemZero(ignore, sizeof(*ignore));
+}
+
+static bool8_t ignore_matches(const DepotIgnore *ignore, const char *relative,
+                              bool8_t is_directory) {
+  for (uint32_t i = 0u; i < ignore->count; ++i) {
+    if (vkr_depot_ignore_match(ignore->patterns[i], relative, is_directory)) {
       return true_v;
     }
   }
   return false_v;
+}
+
+/* Whether the rules match the file `path` or one of its folders. */
+static bool8_t ignore_matches_path(const DepotIgnore *ignore,
+                                   const char *path) {
+  if (ignore->count == 0u) {
+    return false_v;
+  }
+  char folder[VKR_DEPOT_PATH_CAPACITY];
+  for (const char *slash = strchr(path, '/'); slash;
+       slash = strchr(slash + 1, '/')) {
+    const size_t length = (size_t)(slash - path);
+    if (length >= sizeof(folder)) {
+      return false_v;
+    }
+    MemCopy(folder, path, length);
+    folder[length] = '\0';
+    if (ignore_matches(ignore, folder, true_v)) {
+      return true_v;
+    }
+  }
+  return ignore_matches(ignore, path, false_v);
+}
+
+/* Whether the index tracks `path` or, for a folder, any file below it. */
+static bool8_t index_tracks(const VkrDepotFileList *index, const char *path,
+                            bool8_t is_directory) {
+  if (!is_directory) {
+    return vkr_depot_file_list_find(index, path) != NULL;
+  }
+  /* The first entry not before "<path>/" in byte order. */
+  const size_t length = strlen(path);
+  uint32_t low = 0u;
+  uint32_t high = index->count;
+  while (low < high) {
+    const uint32_t middle = low + (high - low) / 2u;
+    const char *other = index->entries[middle].path;
+    const int order = strncmp(other, path, length);
+    if (order < 0 || (order == 0 && other[length] < '/')) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return low < index->count &&
+         strncmp(index->entries[low].path, path, length) == 0 &&
+         index->entries[low].path[length] == '/';
+}
+
+typedef struct WalkState {
+  VkrDepotWorkspace *workspace;
+  VkrDepotFileList *files;
+  /* The folder being listed, relative to the root; empty at the root. */
+  char relative[VKR_DEPOT_PATH_CAPACITY];
+  uint32_t depth;
+  /* Scratch for one file's absolute path. */
+  char absolute[VKR_DEPOT_PATH_CAPACITY];
+  bool8_t failed;
+  /* Entries of `files` whose size or time differ from the index: hashed
+     after the walk, so progress knows their count and bytes. */
+  uint32_t *pending;
+  uint32_t pending_count;
+  uint32_t pending_capacity;
+  uint64_t pending_bytes;
+  DepotIgnore ignore;
+} WalkState;
+
+/* Ignore rules apply to untracked paths only, as in git: a pulled
+   `.vkrdepotignore` cannot hide a tracked file's local edits, which the
+   next checkout would then overwrite. */
+static bool8_t walk_ignored(const WalkState *state, const char *relative,
+                            bool8_t is_directory) {
+  return ignore_matches(&state->ignore, relative, is_directory) &&
+         !index_tracks(&state->workspace->index, relative, is_directory);
 }
 
 /* Chunks a file's bytes into the store and stores its blob manifest. */
@@ -500,61 +585,62 @@ static bool8_t workspace_store_file(const VkrDepotStore *store,
 static bool8_t walk_visit(void *context, const char *name,
                           bool8_t is_directory) {
   WalkState *state = context;
-  if (state->relative[0] == '\0' && strcmp(name, VKR_DEPOT_META_DIR) == 0) {
+  if (state->depth == 0u && strcmp(name, VKR_DEPOT_META_DIR) == 0) {
     return true_v;
   }
-  if (!vkr_depot_name_valid(name, (uint32_t)strlen(name))) {
+  if (!vkr_depot_name_valid(name, (uint32_t)strlen(name)) ||
+      (is_directory && state->depth + 1u > VKR_DEPOT_TREE_DEPTH_MAX)) {
     fprintf(stderr, "depot: skipping a name no tree may hold: %s/%s\n",
             state->relative, name);
     return true_v;
   }
+  /* The child's path extends `relative` in place and is cut back after. */
   const size_t saved = strlen(state->relative);
-  char relative[VKR_DEPOT_PATH_CAPACITY];
-  if (saved > 0u) {
-    if (!vkr_bakery_path_join(relative, sizeof(relative), state->relative,
-                              name)) {
-      state->failed = true_v;
-      return false_v;
-    }
-  } else {
-    snprintf(relative, sizeof(relative), "%s", name);
-  }
-  if (walk_ignored(state, relative, is_directory)) {
-    return true_v;
-  }
-  char absolute[VKR_DEPOT_PATH_CAPACITY];
-  if (!vkr_bakery_path_join(absolute, sizeof(absolute), state->workspace->root,
-                            relative)) {
+  const int written =
+      snprintf(state->relative + saved, sizeof(state->relative) - saved,
+               saved ? "/%s" : "%s", name);
+  if (written < 0 || (size_t)written >= sizeof(state->relative) - saved) {
+    state->relative[saved] = '\0';
     state->failed = true_v;
     return false_v;
   }
-
+  const char *relative = state->relative;
+  bool8_t ok = true_v;
+  if (walk_ignored(state, relative, is_directory)) {
+    goto done;
+  }
   if (is_directory) {
-    char previous[VKR_DEPOT_PATH_CAPACITY];
-    snprintf(previous, sizeof(previous), "%s", state->relative);
-    snprintf(state->relative, sizeof(state->relative), "%s", relative);
-    const bool8_t listed =
-        vkr_bakery_list_directory(absolute, walk_visit, state);
-    snprintf(state->relative, sizeof(state->relative), "%s", previous);
-    if (!listed) {
-      state->failed = true_v;
+    /* On the heap: a listing may hold its path while children recurse. */
+    char *absolute = malloc(VKR_DEPOT_PATH_CAPACITY);
+    ok = absolute && vkr_bakery_path_join(absolute, VKR_DEPOT_PATH_CAPACITY,
+                                          state->workspace->root, relative);
+    if (ok) {
+      state->depth += 1u;
+      ok = vkr_bakery_list_directory(absolute, walk_visit, state);
+      state->depth -= 1u;
     }
-    return listed;
+    free(absolute);
+    state->failed = state->failed || !ok;
+    goto done;
   }
 
   VkrBakeryStat stat;
-  if (!vkr_bakery_stat(absolute, &stat) || !stat.exists) {
+  if (!vkr_bakery_path_join(state->absolute, sizeof(state->absolute),
+                            state->workspace->root, relative) ||
+      !vkr_bakery_stat(state->absolute, &stat) || !stat.exists) {
     state->failed = true_v;
-    return false_v;
+    ok = false_v;
+    goto done;
   }
   /* An unchanged file keeps the blob the index recorded. */
   const VkrDepotIndexEntry *known =
       vkr_depot_file_list_find(&state->workspace->index, relative);
   if (known && known->size == stat.size && known->mtime_ns == stat.mtime_ns &&
       vkr_depot_store_has(&state->workspace->store, &known->blob)) {
-    return vkr_depot_file_list_add(state->files, relative, stat.size,
-                                   stat.mtime_ns, &known->blob) ||
-           (state->failed = true_v, false_v);
+    ok = vkr_depot_file_list_add(state->files, relative, stat.size,
+                                 stat.mtime_ns, &known->blob);
+    state->failed = state->failed || !ok;
+    goto done;
   }
   if (state->pending_count == state->pending_capacity) {
     const uint32_t capacity =
@@ -563,20 +649,24 @@ static bool8_t walk_visit(void *context, const char *name,
         realloc(state->pending, (size_t)capacity * sizeof(uint32_t));
     if (!pending) {
       state->failed = true_v;
-      return false_v;
+      ok = false_v;
+      goto done;
     }
     state->pending = pending;
     state->pending_capacity = capacity;
   }
   const VkrDepotId unhashed = {0};
-  if (!vkr_depot_file_list_add(state->files, relative, stat.size, stat.mtime_ns,
-                               &unhashed)) {
+  ok = vkr_depot_file_list_add(state->files, relative, stat.size, stat.mtime_ns,
+                               &unhashed);
+  if (!ok) {
     state->failed = true_v;
-    return false_v;
+    goto done;
   }
   state->pending[state->pending_count++] = state->files->count - 1u;
   state->pending_bytes += stat.size;
-  return true_v;
+done:
+  state->relative[saved] = '\0';
+  return ok;
 }
 
 /* Hashes the files the walk found changed into the store. */
@@ -594,7 +684,7 @@ static bool8_t walk_hash_pending(WalkState *state) {
     uint64_t size = 0u;
     if (!vkr_bakery_path_join(absolute, sizeof(absolute), workspace->root,
                               entry->path) ||
-        !vkr_bakery_read_file(absolute, WORKSPACE_FILE_MAX, &data, &size)) {
+        !vkr_bakery_read_file(absolute, VKR_DEPOT_FILE_MAX, &data, &size)) {
       return false_v;
     }
     const bool8_t stored =
@@ -670,13 +760,19 @@ bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
                                      VkrDepotId *out_tree,
                                      VkrDepotFileList *out_files) {
   MemZero(out_files, sizeof(*out_files));
-  WalkState state = {.workspace = workspace, .files = out_files};
+  WalkState *state = calloc(1u, sizeof(WalkState));
+  if (!state) {
+    return false_v;
+  }
+  state->workspace = workspace;
+  state->files = out_files;
   const bool8_t walked =
-      walk_load_ignore(&state) &&
-      vkr_bakery_list_directory(workspace->root, walk_visit, &state) &&
-      !state.failed && walk_hash_pending(&state);
-  free(state.ignore_text);
-  free(state.pending);
+      ignore_load(workspace->root, &state->ignore) &&
+      vkr_bakery_list_directory(workspace->root, walk_visit, state) &&
+      !state->failed && walk_hash_pending(state);
+  ignore_free(&state->ignore);
+  free(state->pending);
+  free(state);
   if (!walked) {
     vkr_depot_file_list_free(out_files);
     return false_v;
@@ -697,32 +793,40 @@ bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
 typedef struct FlattenState {
   const VkrDepotStore *store;
   VkrDepotFileList *files;
+  /* The folder being read; extended in place and cut back. */
   char prefix[VKR_DEPOT_PATH_CAPACITY];
-  bool8_t failed;
+  uint32_t depth;
+  uint64_t bytes;
 } FlattenState;
 
 static bool8_t flatten_tree(FlattenState *state, const VkrDepotId *tree);
 
+/* Enforces the tree limits of vkr_depot_object.h: a hostile tree that nests
+   past them, or names one subtree at many paths until the files or bytes
+   pass them, is refused instead of exhausting a stack, memory or disk. */
 static bool8_t flatten_visit(void *context, const VkrDepotTreeEntry *entry) {
   FlattenState *state = context;
-  char path[VKR_DEPOT_PATH_CAPACITY];
+  const size_t saved = strlen(state->prefix);
+  const size_t room = VKR_DEPOT_PATH_MAX - saved;
   const int written =
-      state->prefix[0] ? snprintf(path, sizeof(path), "%s/%.*s", state->prefix,
-                                  (int)entry->name_size, entry->name)
-                       : snprintf(path, sizeof(path), "%.*s",
-                                  (int)entry->name_size, entry->name);
-  if (written < 0 || written >= (int)sizeof(path)) {
-    return false_v;
+      snprintf(state->prefix + saved, room, saved ? "/%.*s" : "%.*s",
+               (int)entry->name_size, entry->name);
+  bool8_t ok = written >= 0 && (size_t)written < room;
+  if (ok && entry->kind == VKR_DEPOT_ENTRY_FILE) {
+    state->bytes += entry->size;
+    ok = state->files->count < VKR_DEPOT_TREE_FILES_MAX &&
+         state->bytes <= VKR_DEPOT_TREE_BYTES_MAX &&
+         vkr_depot_file_list_add(state->files, state->prefix, entry->size, -1,
+                                 &entry->id);
+  } else if (ok) {
+    ok = state->depth < VKR_DEPOT_TREE_DEPTH_MAX;
+    if (ok) {
+      state->depth += 1u;
+      ok = flatten_tree(state, &entry->id);
+      state->depth -= 1u;
+    }
   }
-  if (entry->kind == VKR_DEPOT_ENTRY_FILE) {
-    return vkr_depot_file_list_add(state->files, path, entry->size, -1,
-                                   &entry->id);
-  }
-  char previous[VKR_DEPOT_PATH_CAPACITY];
-  snprintf(previous, sizeof(previous), "%s", state->prefix);
-  snprintf(state->prefix, sizeof(state->prefix), "%s", path);
-  const bool8_t ok = flatten_tree(state, &entry->id);
-  snprintf(state->prefix, sizeof(state->prefix), "%s", previous);
+  state->prefix[saved] = '\0';
   return ok;
 }
 
@@ -740,8 +844,15 @@ static bool8_t flatten_tree(FlattenState *state, const VkrDepotId *tree) {
 bool8_t vkr_depot_tree_files(const VkrDepotStore *store, const VkrDepotId *tree,
                              VkrDepotFileList *out_files) {
   MemZero(out_files, sizeof(*out_files));
-  FlattenState state = {.store = store, .files = out_files};
-  if (!flatten_tree(&state, tree)) {
+  FlattenState *state = calloc(1u, sizeof(FlattenState));
+  if (!state) {
+    return false_v;
+  }
+  state->store = store;
+  state->files = out_files;
+  const bool8_t ok = flatten_tree(state, tree);
+  free(state);
+  if (!ok) {
     vkr_depot_file_list_free(out_files);
     return false_v;
   }
@@ -818,18 +929,64 @@ uint32_t vkr_depot_workspace_settle(VkrDepotWorkspace *workspace,
   return settled;
 }
 
+/* Paths of a list in folded order (vkr_depot_name_fold_compare), for
+   lookups that treat `Foo.png` and `foo.png` as the one file macOS and
+   Windows make of them. */
+typedef struct FoldIndex {
+  const char **paths;
+  uint32_t count;
+} FoldIndex;
+
+static int fold_path_compare(const void *lhs, const void *rhs) {
+  const char *a = *(const char *const *)lhs;
+  const char *b = *(const char *const *)rhs;
+  return vkr_depot_name_fold_compare(a, (uint32_t)strlen(a), b,
+                                     (uint32_t)strlen(b));
+}
+
+static bool8_t fold_index_build(const VkrDepotFileList *list, FoldIndex *out) {
+  MemZero(out, sizeof(*out));
+  if (!list || list->count == 0u) {
+    return true_v;
+  }
+  out->paths = malloc((size_t)list->count * sizeof(const char *));
+  if (!out->paths) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < list->count; ++i) {
+    out->paths[i] = list->entries[i].path;
+  }
+  out->count = list->count;
+  qsort(out->paths, out->count, sizeof(const char *), fold_path_compare);
+  return true_v;
+}
+
+static bool8_t fold_index_has(const FoldIndex *index, const char *path) {
+  return index->count &&
+         bsearch(&path, index->paths, index->count, sizeof(const char *),
+                 fold_path_compare) != NULL;
+}
+
 bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
                                      const VkrDepotId *tree,
-                                     const VkrDepotFileList *keep) {
+                                     const VkrDepotFileList *keep,
+                                     uint32_t *out_skipped) {
+  if (out_skipped) {
+    *out_skipped = 0u;
+  }
   VkrDepotFileList target;
   if (!vkr_depot_tree_files(&workspace->store, tree, &target)) {
     return false_v;
   }
   VkrDepotFileList index = {0};
+  DepotIgnore ignore = {0};
+  FoldIndex kept = {0};
   uint32_t *writes = malloc((size_t)Max(target.count, 1u) * sizeof(uint32_t));
   uint32_t write_count = 0u;
   uint64_t write_bytes = 0u;
-  bool8_t ok = writes != NULL;
+  /* The rules as they stand before the checkout, which may bring others. */
+  bool8_t ok = writes != NULL && ignore_load(workspace->root, &ignore) &&
+               fold_index_build(keep, &kept);
   for (uint32_t i = 0u; i < target.count && ok; ++i) {
     VkrDepotIndexEntry *entry = &target.entries[i];
     char absolute[VKR_DEPOT_PATH_CAPACITY];
@@ -838,7 +995,17 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
     if (!ok) {
       break;
     }
-    if (keep && vkr_depot_file_list_find(keep, entry->path)) {
+    /* Paths this machine ignores are its own (scripts it builds, caches):
+       a tree never writes them. They stay untracked. */
+    if (ignore_matches_path(&ignore, entry->path)) {
+      fprintf(stderr, "depot: not checking out an ignored path: %s\n",
+              entry->path);
+      if (out_skipped) {
+        *out_skipped += 1u;
+      }
+      continue;
+    }
+    if (fold_index_has(&kept, entry->path)) {
       /* A local change stays; -1 forces a hash on the next snapshot. */
       ok = vkr_depot_file_list_add(&index, entry->path, entry->size, -1,
                                    &entry->blob);
@@ -861,10 +1028,28 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
     write_bytes += entry->size;
   }
 
+  /* Tracked files the target lacks leave first, unless they are local
+     changes or ignored: a case-only rename (Foo.png to foo.png) removes the
+     old name before writing the new one, which is the same file on macOS
+     and Windows. */
+  for (uint32_t i = 0u; i < workspace->index.count && ok; ++i) {
+    const char *path = workspace->index.entries[i].path;
+    if (vkr_depot_file_list_find(&target, path) ||
+        fold_index_has(&kept, path) || ignore_matches_path(&ignore, path)) {
+      continue;
+    }
+    char absolute[VKR_DEPOT_PATH_CAPACITY];
+    ok = vkr_bakery_path_join(absolute, sizeof(absolute), workspace->root,
+                              path) &&
+         vkr_bakery_remove_file(absolute);
+  }
+
   /* Written without a flush: -1 makes the next snapshot hash it, so a file a
      crash tore shows as a change instead of passing as current. */
-  vkr_depot_progress_phase(workspace->progress, VKR_DEPOT_PHASE_CHECKOUT,
-                           write_count, write_bytes);
+  if (ok) {
+    vkr_depot_progress_phase(workspace->progress, VKR_DEPOT_PHASE_CHECKOUT,
+                             write_count, write_bytes);
+  }
   for (uint32_t i = 0u; i < write_count && ok; ++i) {
     if (vkr_depot_progress_canceled(workspace->progress)) {
       ok = false_v;
@@ -879,20 +1064,9 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
                                  &entry->blob);
     vkr_depot_progress_add(workspace->progress, 1u, entry->size);
   }
-
-  /* Tracked files the target lacks leave, unless they are local changes. */
-  for (uint32_t i = 0u; i < workspace->index.count && ok; ++i) {
-    const char *path = workspace->index.entries[i].path;
-    if (vkr_depot_file_list_find(&target, path) ||
-        (keep && vkr_depot_file_list_find(keep, path))) {
-      continue;
-    }
-    char absolute[VKR_DEPOT_PATH_CAPACITY];
-    ok = vkr_bakery_path_join(absolute, sizeof(absolute), workspace->root,
-                              path) &&
-         vkr_bakery_remove_file(absolute);
-  }
   free(writes);
+  free(kept.paths);
+  ignore_free(&ignore);
   vkr_depot_file_list_free(&target);
   if (!ok) {
     vkr_depot_file_list_free(&index);

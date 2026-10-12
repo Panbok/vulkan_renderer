@@ -12,7 +12,19 @@
 #define SERVER_PUT_SLOTS 16u
 /* Object bytes that arrived before their PUT. */
 #define SERVER_ORPHAN_MAX 1024u
+/* Their bytes: about two data-channel receive windows. A peer past it is
+   closed. */
+#define SERVER_ORPHAN_BYTES_MAX (128u * 1024u * 1024u)
+/* Objects queued to send to one peer: twice what a client's pipelined GETs
+   ask for at once. GET_REPLY reports the rest as missing. */
+#define SERVER_QUEUE_MAX 8192u
 #define SERVER_ACCESS_MAX 4096u
+/* Keys the owner refused, kept until the server stops; the oldest leaves
+   when it is full. */
+#define SERVER_DENIED_MAX 256u
+/* Pending requests one network address may hold, so one machine cannot
+   push everyone else's out of the list with many keys. */
+#define SERVER_REQUESTS_PER_ADDRESS 2u
 /* How often the server looks for a changed access file. */
 #define SERVER_ACCESS_POLL_US 1000000u
 
@@ -51,6 +63,7 @@ typedef struct ServerPeer {
   ServerPut puts[SERVER_PUT_SLOTS];
   ServerOrphan *orphans;
   uint32_t orphan_count;
+  uint64_t orphan_bytes;
 } ServerPeer;
 
 typedef struct ServerLock {
@@ -66,8 +79,6 @@ typedef struct ServerAccess {
 
 typedef struct ServerRequest {
   bool8_t live;
-  /* Set to NONE by the owner: further tries stay out of the list. */
-  bool8_t denied;
   VkrDepotAccessRequest request;
 } ServerRequest;
 
@@ -94,6 +105,9 @@ struct VkrDepotServer {
   uint64_t access_size;
   uint64_t access_checked_us;
   ServerRequest requests[VKR_DEPOT_REQUESTS_MAX];
+  uint8_t denied[SERVER_DENIED_MAX][32];
+  uint32_t denied_count;
+  uint32_t denied_next;
   VkrDepotServerStats stats;
   RefNames ref_names;
   VkrDepotMessage message;
@@ -175,8 +189,8 @@ bool8_t vkr_depot_server_key(const char *store_root, VkrNetKeyPair *out_keys) {
     return ok;
   }
   vkr_net_keypair_generate(out_keys);
-  return vkr_bakery_write_file_atomic(path, out_keys->secret_key,
-                                      VKR_NET_KEY_SIZE);
+  return vkr_bakery_write_private_file_atomic(path, out_keys->secret_key,
+                                              VKR_NET_KEY_SIZE);
 }
 
 /* The access file's existence, time and size, as the poll compares them. */
@@ -415,9 +429,11 @@ static bool8_t tree_entries_visit(void *context,
   return true_v;
 }
 
-/* Parses a tree; names borrow `list->bytes`. */
+/* Parses a tree; names borrow `list->bytes`. `*out_invalid` (may be NULL)
+   tells a tree that does not parse from one that is missing. */
 static bool8_t tree_entries_load(const VkrDepotStore *store,
-                                 const VkrDepotId *tree, TreeEntries *list) {
+                                 const VkrDepotId *tree, TreeEntries *list,
+                                 bool8_t *out_invalid) {
   MemZero(list, sizeof(*list));
   uint64_t size = 0u;
   if (!vkr_depot_store_get(store, tree, &list->bytes, &size)) {
@@ -427,6 +443,9 @@ static bool8_t tree_entries_load(const VkrDepotStore *store,
     free(list->entries);
     free(list->bytes);
     MemZero(list, sizeof(*list));
+    if (out_invalid) {
+      *out_invalid = true_v;
+    }
     return false_v;
   }
   return true_v;
@@ -438,22 +457,36 @@ static void tree_entries_free(TreeEntries *list) {
   MemZero(list, sizeof(*list));
 }
 
+/* Byte order of names, the order a parsed tree holds them in. */
+static int tree_entry_compare(const void *lhs, const void *rhs) {
+  const VkrDepotTreeEntry *a = lhs;
+  const VkrDepotTreeEntry *b = rhs;
+  const int order = memcmp(a->name, b->name, Min(a->name_size, b->name_size));
+  if (order != 0) {
+    return order;
+  }
+  return a->name_size < b->name_size ? -1 : a->name_size > b->name_size;
+}
+
 static const VkrDepotTreeEntry *
 tree_entries_find(const TreeEntries *list, const VkrDepotTreeEntry *key) {
-  for (uint32_t i = 0u; i < list->count; ++i) {
-    const VkrDepotTreeEntry *entry = &list->entries[i];
-    if (entry->name_size == key->name_size &&
-        memcmp(entry->name, key->name, key->name_size) == 0) {
-      return entry;
-    }
+  if (!list->count) {
+    return NULL;
   }
-  return NULL;
+  return bsearch(key, list->entries, list->count, sizeof(VkrDepotTreeEntry),
+                 tree_entry_compare);
 }
 
 typedef struct ClosureCheck {
   const VkrDepotStore *store;
   VkrDepotFileList changed;
   bool8_t incomplete;
+  /* A tree that does not parse or passes the limits of vkr_depot_object.h:
+     the push is refused as invalid. */
+  bool8_t invalid;
+  /* The folder being checked; extended in place and cut back, so a deep
+     tree costs no stack per level. */
+  char path[VKR_DEPOT_PATH_CAPACITY];
 } ClosureCheck;
 
 static bool8_t closure_chunk(void *context, const VkrDepotChunkRef *chunk) {
@@ -481,45 +514,72 @@ static bool8_t closure_blob(ClosureCheck *check, const VkrDepotId *blob) {
   return ok;
 }
 
-static bool8_t closure_path(char *out, uint32_t capacity, const char *prefix,
+/* Appends `entry`'s name to the check's path; returns the length to cut
+   back to, or SIZE_MAX when the path is too long. */
+static size_t closure_enter(ClosureCheck *check,
                             const VkrDepotTreeEntry *entry) {
-  const int written = prefix[0] ? snprintf(out, capacity, "%s/%.*s", prefix,
-                                           (int)entry->name_size, entry->name)
-                                : snprintf(out, capacity, "%.*s",
-                                           (int)entry->name_size, entry->name);
-  return written >= 0 && written < (int)capacity;
+  const size_t saved = strlen(check->path);
+  const size_t room = VKR_DEPOT_PATH_MAX - saved;
+  const int written =
+      snprintf(check->path + saved, room, saved ? "/%.*s" : "%.*s",
+               (int)entry->name_size, entry->name);
+  if (written < 0 || (size_t)written >= room) {
+    check->path[saved] = '\0';
+    check->invalid = true_v;
+    return SIZE_MAX;
+  }
+  return saved;
 }
 
-/* Records every file of a removed subtree as changed. */
-static bool8_t closure_removed(ClosureCheck *check, const VkrDepotId *tree,
-                               const char *prefix) {
+static bool8_t closure_change(ClosureCheck *check, const VkrDepotId *id) {
+  if (check->changed.count >= VKR_DEPOT_TREE_FILES_MAX) {
+    check->invalid = true_v;
+    return false_v;
+  }
+  return vkr_depot_file_list_add(&check->changed, check->path, 0u, 0, id);
+}
+
+/* Records every file of a removed subtree, at the check's path, as
+   changed. */
+static bool8_t closure_removed(ClosureCheck *check, const VkrDepotId *tree) {
   VkrDepotFileList files;
   if (!vkr_depot_tree_files(check->store, tree, &files)) {
+    check->invalid = true_v;
     return false_v;
   }
   bool8_t ok = true_v;
+  const size_t saved = strlen(check->path);
   for (uint32_t i = 0u; i < files.count && ok; ++i) {
-    char path[VKR_DEPOT_PATH_CAPACITY];
-    snprintf(path, sizeof(path), "%s/%s", prefix, files.entries[i].path);
-    ok = vkr_depot_file_list_add(&check->changed, path, 0u, 0,
-                                 &files.entries[i].blob);
+    const size_t room = VKR_DEPOT_PATH_MAX - saved;
+    const int written =
+        snprintf(check->path + saved, room, "/%s", files.entries[i].path);
+    ok = written >= 0 && (size_t)written < room &&
+         closure_change(check, &files.entries[i].blob);
+    check->path[saved] = '\0';
   }
   vkr_depot_file_list_free(&files);
   return ok;
 }
 
 /* Checks that `tree` and everything below it that differs from `old` is in
-   the store, and lists the file paths that differ. */
+   the store, and lists the file paths that differ. Refuses trees deeper
+   than VKR_DEPOT_TREE_DEPTH_MAX or with more changed files than
+   VKR_DEPOT_TREE_FILES_MAX, counting each path a shared subtree appears
+   at, so lock checks see every path. */
 static bool8_t closure_tree(ClosureCheck *check, const VkrDepotId *tree,
-                            const VkrDepotId *old, const char *prefix) {
+                            const VkrDepotId *old, uint32_t depth) {
+  if (depth > VKR_DEPOT_TREE_DEPTH_MAX) {
+    check->invalid = true_v;
+    return false_v;
+  }
   TreeEntries current;
-  if (!tree_entries_load(check->store, tree, &current)) {
-    check->incomplete = true_v;
+  if (!tree_entries_load(check->store, tree, &current, &check->invalid)) {
+    check->incomplete = !check->invalid;
     return false_v;
   }
   TreeEntries previous = {0};
   const bool8_t has_previous =
-      old && tree_entries_load(check->store, old, &previous);
+      old && tree_entries_load(check->store, old, &previous, NULL);
   bool8_t ok = true_v;
   for (uint32_t i = 0u; i < current.count && ok; ++i) {
     const VkrDepotTreeEntry *entry = &current.entries[i];
@@ -529,37 +589,40 @@ static bool8_t closure_tree(ClosureCheck *check, const VkrDepotId *tree,
         vkr_depot_id_equal(&before->id, &entry->id)) {
       continue;
     }
-    char path[VKR_DEPOT_PATH_CAPACITY];
-    if (!closure_path(path, sizeof(path), prefix, entry)) {
+    const size_t saved = closure_enter(check, entry);
+    if (saved == SIZE_MAX) {
       ok = false_v;
       break;
     }
     if (entry->kind == VKR_DEPOT_ENTRY_TREE) {
       const bool8_t was_tree = before && before->kind == VKR_DEPOT_ENTRY_TREE;
-      ok = closure_tree(check, &entry->id, was_tree ? &before->id : NULL, path);
+      ok = closure_tree(check, &entry->id, was_tree ? &before->id : NULL,
+                        depth + 1u);
       if (ok && before && !was_tree) {
-        ok = vkr_depot_file_list_add(&check->changed, path, 0u, 0, &before->id);
+        ok = closure_change(check, &before->id);
       }
     } else {
-      ok = closure_blob(check, &entry->id) &&
-           vkr_depot_file_list_add(&check->changed, path, 0u, 0, &entry->id);
+      ok = closure_blob(check, &entry->id) && closure_change(check, &entry->id);
       if (ok && before && before->kind == VKR_DEPOT_ENTRY_TREE) {
-        ok = closure_removed(check, &before->id, path);
+        ok = closure_removed(check, &before->id);
       }
     }
+    check->path[saved] = '\0';
   }
   for (uint32_t i = 0u; has_previous && i < previous.count && ok; ++i) {
     const VkrDepotTreeEntry *entry = &previous.entries[i];
     if (tree_entries_find(&current, entry)) {
       continue;
     }
-    char path[VKR_DEPOT_PATH_CAPACITY];
-    ok = closure_path(path, sizeof(path), prefix, entry);
-    if (ok && entry->kind == VKR_DEPOT_ENTRY_TREE) {
-      ok = closure_removed(check, &entry->id, path);
-    } else if (ok) {
-      ok = vkr_depot_file_list_add(&check->changed, path, 0u, 0, &entry->id);
+    const size_t saved = closure_enter(check, entry);
+    if (saved == SIZE_MAX) {
+      ok = false_v;
+      break;
     }
+    ok = entry->kind == VKR_DEPOT_ENTRY_TREE
+             ? closure_removed(check, &entry->id)
+             : closure_change(check, &entry->id);
+    check->path[saved] = '\0';
   }
   tree_entries_free(&current);
   if (has_previous) {
@@ -591,7 +654,20 @@ static void server_peer_release(ServerPeer *peer) {
   MemZero(peer, sizeof(*peer));
 }
 
+/* Forgets the uploads a peer started and the bytes that overtook them. */
+static void server_peer_drop_uploads(ServerPeer *peer) {
+  for (uint32_t i = 0u; i < peer->orphan_count; ++i) {
+    free(peer->orphans[i].bytes);
+  }
+  peer->orphan_count = 0u;
+  peer->orphan_bytes = 0u;
+  MemZero(peer->puts, sizeof(peer->puts));
+}
+
 static bool8_t server_queue_push(ServerPeer *peer, ServerSendItem item) {
+  if (peer->queue_count >= SERVER_QUEUE_MAX) {
+    return false_v;
+  }
   if (peer->queue_count == peer->queue_capacity) {
     const uint32_t capacity =
         peer->queue_capacity ? peer->queue_capacity * 2u : 256u;
@@ -619,11 +695,18 @@ void vkr_depot_server_on_event(VkrDepotServer *server,
     for (uint32_t i = 0u; i < SERVER_PEER_MAX; ++i) {
       ServerPeer *peer = &server->peers[i];
       if (!peer->live) {
+        /* The role as the access list stands now, which may have changed
+           since the handshake was accepted. */
+        const uint32_t role = server_role(server, event->peer_key);
+        if (role == VKR_DEPOT_ROLE_NONE) {
+          vkr_net_core_close(server->core, event->connection,
+                             VKR_NET_CLOSE_ACCESS_DENIED, 0u);
+          return;
+        }
         peer->live = true_v;
         peer->connection = event->connection;
         memcpy(peer->key, event->peer_key, 32u);
-        peer->role =
-            (uint32_t)vkr_net_core_user(server->core, event->connection);
+        peer->role = role;
         return;
       }
     }
@@ -648,37 +731,76 @@ static ServerRequest *server_request_find(VkrDepotServer *server,
   return NULL;
 }
 
-/* The request slot of `key`; a new key takes a free slot or the oldest. */
-static ServerRequest *server_request_slot(VkrDepotServer *server,
-                                          const uint8_t key[32]) {
-  ServerRequest *slot = server_request_find(server, key);
-  if (slot) {
-    return slot;
-  }
-  for (uint32_t i = 0u; !slot && i < VKR_DEPOT_REQUESTS_MAX; ++i) {
-    if (!server->requests[i].live) {
-      slot = &server->requests[i];
-    }
-  }
-  if (!slot) {
-    slot = &server->requests[0];
-    for (uint32_t i = 1u; i < VKR_DEPOT_REQUESTS_MAX; ++i) {
-      if (server->requests[i].request.time_us < slot->request.time_us) {
-        slot = &server->requests[i];
-      }
-    }
-  }
-  MemZero(slot, sizeof(*slot));
-  slot->live = true_v;
-  MemCopy(slot->request.key, key, 32u);
-  return slot;
+static bool8_t server_same_host(const VkrNetAddress *a,
+                                const VkrNetAddress *b) {
+  VkrNetAddress x = *a;
+  VkrNetAddress y = *b;
+  x.port = 0u;
+  y.port = 0u;
+  return vkr_net_address_equal(&x, &y);
 }
 
-/* Records a refused key's try. */
+static int32_t server_denied_find(const VkrDepotServer *server,
+                                  const uint8_t key[32]) {
+  for (uint32_t i = 0u; i < server->denied_count; ++i) {
+    if (MemCompare(server->denied[i], key, 32u) == 0) {
+      return (int32_t)i;
+    }
+  }
+  return -1;
+}
+
+static void server_denied_set(VkrDepotServer *server, const uint8_t key[32],
+                              bool8_t denied) {
+  const int32_t at = server_denied_find(server, key);
+  if (denied && at < 0) {
+    const uint32_t slot = server->denied_count < SERVER_DENIED_MAX
+                              ? server->denied_count++
+                              : server->denied_next++ % SERVER_DENIED_MAX;
+    MemCopy(server->denied[slot], key, 32u);
+  } else if (!denied && at >= 0) {
+    server->denied_count -= 1u;
+    MemCopy(server->denied[at], server->denied[server->denied_count], 32u);
+  }
+}
+
+/* Records a refused key's try. A new key takes a free slot or the oldest
+   one, the oldest of its own address once that address holds
+   SERVER_REQUESTS_PER_ADDRESS. */
 static void server_request_note(VkrDepotServer *server, const uint8_t key[32],
                                 const char *name,
                                 const VkrNetAddress *address) {
-  ServerRequest *slot = server_request_slot(server, key);
+  ServerRequest *slot = server_request_find(server, key);
+  if (!slot) {
+    ServerRequest *oldest = NULL;
+    ServerRequest *oldest_here = NULL;
+    uint32_t here = 0u;
+    for (uint32_t i = 0u; i < VKR_DEPOT_REQUESTS_MAX; ++i) {
+      ServerRequest *candidate = &server->requests[i];
+      if (!candidate->live) {
+        slot = slot ? slot : candidate;
+        continue;
+      }
+      if (!oldest || candidate->request.time_us < oldest->request.time_us) {
+        oldest = candidate;
+      }
+      if (server_same_host(&candidate->request.address, address)) {
+        here += 1u;
+        if (!oldest_here ||
+            candidate->request.time_us < oldest_here->request.time_us) {
+          oldest_here = candidate;
+        }
+      }
+    }
+    if (here >= SERVER_REQUESTS_PER_ADDRESS) {
+      slot = oldest_here;
+    } else if (!slot) {
+      slot = oldest;
+    }
+    MemZero(slot, sizeof(*slot));
+    slot->live = true_v;
+    MemCopy(slot->request.key, key, 32u);
+  }
   snprintf(slot->request.name, sizeof(slot->request.name), "%s", name);
   slot->request.address = *address;
   slot->request.time_us = server_unix_us();
@@ -693,9 +815,12 @@ void vkr_depot_server_accept(void *context, const VkrNetAddress *address,
   VkrDepotServer *server = context;
   const uint32_t role = server_role(server, peer_key);
   if (role == VKR_DEPOT_ROLE_NONE) {
-    char name[VKR_DEPOT_DISPLAY_NAME];
-    (void)vkr_depot_display_name_clean(credential, credential_size, name);
-    server_request_note(server, peer_key, name, address);
+    /* A key its owner refused asks no more until the server restarts. */
+    if (server_denied_find(server, peer_key) < 0) {
+      char name[VKR_DEPOT_DISPLAY_NAME];
+      (void)vkr_depot_display_name_clean(credential, credential_size, name);
+      server_request_note(server, peer_key, name, address);
+    }
     out_result->code = VKR_NET_CLOSE_ACCESS_DENIED;
     return;
   }
@@ -708,7 +833,7 @@ uint32_t vkr_depot_server_requests(const VkrDepotServer *server,
   uint32_t count = 0u;
   for (uint32_t i = 0u; i < VKR_DEPOT_REQUESTS_MAX && count < capacity; ++i) {
     const ServerRequest *slot = &server->requests[i];
-    if (!slot->live || slot->denied) {
+    if (!slot->live) {
       continue;
     }
     /* Insertion by time, newest first. */
@@ -725,11 +850,12 @@ uint32_t vkr_depot_server_requests(const VkrDepotServer *server,
 
 uint32_t vkr_depot_server_access(const VkrDepotServer *server,
                                  VkrDepotAccessEntry *out, uint32_t capacity) {
-  for (uint32_t i = 0u; i < server->access_count && i < capacity; ++i) {
+  const uint32_t count = Min(server->access_count, capacity);
+  for (uint32_t i = 0u; i < count; ++i) {
     MemCopy(out[i].key, server->access[i].key, 32u);
     out[i].role = (VkrDepotRole)server->access[i].role;
   }
-  return server->access_count;
+  return count;
 }
 
 /* Gives every live connection its key's current role and closes the ones
@@ -744,6 +870,10 @@ static void server_apply_access(VkrDepotServer *server, uint64_t now_us) {
     if (role == VKR_DEPOT_ROLE_NONE && peer->role != VKR_DEPOT_ROLE_NONE) {
       vkr_net_core_close(server->core, peer->connection,
                          VKR_NET_CLOSE_ACCESS_DENIED, now_us);
+    }
+    /* A key that may no longer write finishes no upload it started. */
+    if (role < VKR_DEPOT_ROLE_WRITE) {
+      server_peer_drop_uploads(peer);
     }
     peer->role = role;
   }
@@ -763,14 +893,10 @@ bool8_t vkr_depot_server_set_role(VkrDepotServer *server, const uint8_t key[32],
       !server_access_load(server)) {
     return false_v;
   }
-  /* A denied key keeps a hidden slot, so its retries stay out of the list;
-     a key allowed earlier has none yet. */
-  if (role == VKR_DEPOT_ROLE_NONE) {
-    ServerRequest *slot = server_request_slot(server, key);
-    slot->denied = true_v;
-    if (!slot->request.time_us) {
-      slot->request.time_us = server_unix_us();
-    }
+  server_denied_set(server, key, role == VKR_DEPOT_ROLE_NONE);
+  ServerRequest *slot = server_request_find(server, key);
+  if (slot) {
+    MemZero(slot, sizeof(*slot));
   }
   server_apply_access(server, now_us);
   return true_v;
@@ -948,6 +1074,7 @@ static void server_on_put(VkrDepotServer *server, ServerPeer *peer,
     if ((orphan->tag >> 8) == put->request && put->live) {
       server_put_bytes(server, peer, put, (uint32_t)(orphan->tag & 0xffu),
                        orphan->bytes, orphan->size, now);
+      peer->orphan_bytes -= orphan->size;
       free(orphan->bytes);
     } else {
       peer->orphans[kept++] = *orphan;
@@ -1013,18 +1140,24 @@ static void server_on_update_ref(VkrDepotServer *server, ServerPeer *peer,
         !vkr_depot_commit_parse(bytes, size, &commit)) {
       reply->status = VKR_DEPOT_REF_INCOMPLETE;
     } else {
-      ClosureCheck check = {.store = &server->store};
+      /* On the heap: the check holds a path buffer. */
+      ClosureCheck *check = calloc(1u, sizeof(ClosureCheck));
+      if (check) {
+        check->store = &server->store;
+      }
       const bool8_t complete =
-          closure_tree(&check, &commit.tree,
-                       have_previous ? &previous.tree : NULL, "") &&
-          !check.incomplete;
+          check &&
+          closure_tree(check, &commit.tree,
+                       have_previous ? &previous.tree : NULL, 0u) &&
+          !check->incomplete && !check->invalid;
       if (!complete) {
-        reply->status = VKR_DEPOT_REF_INCOMPLETE;
+        reply->status = check && check->invalid ? VKR_DEPOT_REF_INVALID
+                                                : VKR_DEPOT_REF_INCOMPLETE;
       } else {
         reply->status = VKR_DEPOT_REF_OK;
-        for (uint32_t i = 0u; i < check.changed.count; ++i) {
+        for (uint32_t i = 0u; i < check->changed.count; ++i) {
           const ServerLock *lock =
-              server_lock_find(server, check.changed.entries[i].path);
+              server_lock_find(server, check->changed.entries[i].path);
           if (lock && memcmp(lock->owner, peer->key, 32u) != 0) {
             reply->status = VKR_DEPOT_REF_LOCKED;
             memcpy(reply->current, current.bytes, VKR_DEPOT_ID_SIZE);
@@ -1039,7 +1172,10 @@ static void server_on_update_ref(VkrDepotServer *server, ServerPeer *peer,
           }
         }
       }
-      vkr_depot_file_list_free(&check.changed);
+      if (check) {
+        vkr_depot_file_list_free(&check->changed);
+      }
+      free(check);
     }
     free(bytes);
     free(previous_bytes);
@@ -1133,6 +1269,7 @@ static void server_on_data(VkrDepotServer *server, ServerPeer *peer,
   }
   /* The PUT has not arrived yet: keep a copy until it does. */
   if (peer->orphan_count == SERVER_ORPHAN_MAX ||
+      peer->orphan_bytes + event->size > SERVER_ORPHAN_BYTES_MAX ||
       peer->role < VKR_DEPOT_ROLE_WRITE) {
     vkr_net_core_close(server->core, peer->connection,
                        VKR_NET_CLOSE_PROTOCOL_VIOLATION, now);
@@ -1151,6 +1288,7 @@ static void server_on_data(VkrDepotServer *server, ServerPeer *peer,
   memcpy(copy, event->data, event->size);
   peer->orphans[peer->orphan_count++] =
       (ServerOrphan){.tag = event->tag, .bytes = copy, .size = event->size};
+  peer->orphan_bytes += event->size;
 }
 
 static void server_service_event(void *context, VkrNetConnectionId connection,

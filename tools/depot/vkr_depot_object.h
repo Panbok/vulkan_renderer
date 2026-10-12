@@ -25,6 +25,22 @@
 #define VKR_DEPOT_HEADER_SIZE 8u
 /* A branch name with its terminator. */
 #define VKR_DEPOT_BRANCH_NAME 64u
+/* A working copy's own state folder, a name no tree may hold. */
+#define VKR_DEPOT_RESERVED_META ".vkrdepot"
+
+/* Limits every reader enforces, so a hostile tree cannot exhaust a stack,
+   memory or a disk: */
+/* The largest file; snapshots read a file whole, and a blob manifest that
+   repeats one chunk cannot claim more. */
+#define VKR_DEPOT_FILE_MAX (4ull * 1024ull * 1024ull * 1024ull)
+/* Folders below a tree's root. */
+#define VKR_DEPOT_TREE_DEPTH_MAX 64u
+/* Files of one tree, counting each path a shared subtree appears at. */
+#define VKR_DEPOT_TREE_FILES_MAX 1000000u
+/* The sum of a tree's file sizes. */
+#define VKR_DEPOT_TREE_BYTES_MAX (512ull * 1024ull * 1024ull * 1024ull)
+/* A relative path with its terminator. */
+#define VKR_DEPOT_PATH_MAX 4096u
 
 typedef struct VkrDepotId {
   uint8_t bytes[VKR_DEPOT_ID_SIZE];
@@ -78,12 +94,23 @@ bool8_t vkr_depot_id_parse(const char *hex, VkrDepotId *out_id);
    object. Chunks have no header. */
 uint32_t vkr_depot_object_kind(const uint8_t *bytes, uint64_t size);
 
-/* True for a name a tree may hold: UTF-8, 1 to 255 bytes, no '/', '\\',
-   NUL or control bytes, not "." or "..", no trailing space or dot. */
+/* True for a name a tree may hold on every host: well-formed UTF-8 (no
+   overlong forms or surrogates) of 1 to 255 bytes; no control bytes or any
+   of / \\ : < > " | ? *; not "." or ".."; no trailing space or dot; not
+   `.vkrdepot` or `.git` or a Windows device name (CON, PRN, AUX, NUL,
+   COM1-9, LPT1-9, with any extension), in any case; and no combining marks
+   (U+0300-U+036F and the other combining blocks), so names are composed
+   (NFC) and cannot alias each other through normalization. */
 bool8_t vkr_depot_name_valid(const char *name, uint32_t size);
 
-/* Orders names with ASCII letters folded to lower case, then by length;
-   zero for names macOS and Windows take for one file. */
+/* True for a relative path of valid names joined by '/', in at most
+   VKR_DEPOT_TREE_DEPTH_MAX folders and shorter than VKR_DEPOT_PATH_MAX. */
+bool8_t vkr_depot_path_valid(const char *path);
+
+/* Orders names with letters folded to lower case (ASCII, Latin-1, Latin
+   Extended-A, Greek and Cyrillic; other letters compare exactly); zero for
+   names macOS and Windows take for one file. Trees, checkouts and locks
+   all compare paths by this one key. */
 int vkr_depot_name_fold_compare(const char *a, uint32_t a_size, const char *b,
                                 uint32_t b_size);
 

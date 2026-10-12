@@ -85,12 +85,13 @@ typedef struct VkrDepotServerStats {
 
 /* Pending access requests, newest first; returns how many it stored. A key
    given a role leaves the list. A key set to NONE leaves it too and stays
-   out of it when it tries again, until the server restarts. */
+   out of it when it tries again, until the server restarts (the last 256
+   such keys). One network address holds at most two requests. */
 uint32_t vkr_depot_server_requests(const VkrDepotServer *server,
                                    VkrDepotAccessRequest *out,
                                    uint32_t capacity);
 
-/* The access list; returns how many keys it holds, storing at most
+/* The access list; returns how many entries it stored, at most
    `capacity`. */
 uint32_t vkr_depot_server_access(const VkrDepotServer *server,
                                  VkrDepotAccessEntry *out, uint32_t capacity);

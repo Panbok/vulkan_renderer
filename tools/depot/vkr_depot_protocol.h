@@ -46,6 +46,9 @@ typedef enum VkrDepotRefStatus {
   /* The commit changes a file another key holds a lock on. */
   VKR_DEPOT_REF_LOCKED,
   VKR_DEPOT_REF_DENIED,
+  /* The commit's tree holds a name no tree may hold or passes the limits
+     of vkr_depot_object.h. */
+  VKR_DEPOT_REF_INVALID,
   VKR_DEPOT_REF_STATUS_COUNT
 } VkrDepotRefStatus;
 

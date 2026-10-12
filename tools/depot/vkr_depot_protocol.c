@@ -3,7 +3,15 @@
 #include <stddef.h>
 #include <string.h>
 
-#define DEPOT_ENCODE_MAX (VKR_DEPOT_BATCH * VKR_DEPOT_ID_SIZE + 64u)
+/* The largest encoded message: a batch of IDs, or a page of locks whose
+   paths are all as long as allowed (length prefix, owner and time each
+   under 64 bytes). */
+#define DEPOT_IDS_ENCODED (VKR_DEPOT_BATCH * VKR_DEPOT_ID_SIZE + 64u)
+#define DEPOT_LOCKS_ENCODED                                                    \
+  (VKR_DEPOT_LOCKS_PAGE * (VKR_DEPOT_LOCK_PATH_MAX + 64u) + 64u)
+#define DEPOT_ENCODE_MAX                                                       \
+  (DEPOT_IDS_ENCODED > DEPOT_LOCKS_ENCODED ? DEPOT_IDS_ENCODED                 \
+                                           : DEPOT_LOCKS_ENCODED)
 
 static const VkrWireField depot_request_fields[] = {
     {.name = "request",

@@ -122,13 +122,66 @@ static void test_depot_objects(void) {
       {.name = "texture.png", .name_size = 11, .kind = VKR_DEPOT_ENTRY_FILE},
   };
   assert(!vkr_depot_tree_encode(collide, 2u, &bytes, &size));
-  const char *invalid[] = {".",      "..",   "a/b",      "a\\b",     "trail.",
-                           "trail ", "\xff", "\xc0\xaf", "tab\there"};
+  /* Names a checkout must never write: the depot's and git's state in any
+     case, names Windows cannot hold or turns into devices, malformed or
+     overlong UTF-8, surrogates, and decomposed letters that alias their
+     composed form on macOS. */
+  const char *invalid[] = {".",
+                           "..",
+                           "a/b",
+                           "a\\b",
+                           "trail.",
+                           "trail ",
+                           "\xff",
+                           "\xc0\xaf",
+                           "tab\there",
+                           ".vkrdepot",
+                           ".VkrDepot",
+                           ".git",
+                           ".GIT",
+                           "a:b",
+                           "a<b",
+                           "a>b",
+                           "a\"b",
+                           "a|b",
+                           "a?b",
+                           "a*b",
+                           "CON",
+                           "con.txt",
+                           "Com1.log",
+                           "lpt9",
+                           "nul .txt",
+                           "\xe0\x80\xaf",
+                           "\xf0\x80\x80\xaf",
+                           "\xed\xa0\x80",
+                           "\xf4\x90\x80\x80",
+                           "e\xcc\x81"};
   for (uint32_t i = 0u; i < ArrayCount(invalid); ++i) {
     assert(!vkr_depot_name_valid(invalid[i], (uint32_t)strlen(invalid[i])));
   }
   assert(!vkr_depot_name_valid("", 0u));
-  assert(vkr_depot_name_valid("Bistro_Exterior.vkb", 19u));
+  const char *valid[] = {"Bistro_Exterior.vkb", "com10.txt",
+                         "console.log",         ".vkrdepotignore",
+                         "\xc3\xa9t\xc3\xa9",   "\xd0\x9f\xd1\x80\xd0\xb8"};
+  for (uint32_t i = 0u; i < ArrayCount(valid); ++i) {
+    assert(vkr_depot_name_valid(valid[i], (uint32_t)strlen(valid[i])));
+  }
+  assert(vkr_depot_path_valid("a/b/c.txt"));
+  assert(!vkr_depot_path_valid("a/../b"));
+  assert(!vkr_depot_path_valid("/abs"));
+  assert(!vkr_depot_path_valid("a/.vkrdepot/state"));
+  /* Letters macOS folds beyond ASCII: \u00c4/\u00e4 and Cyrillic
+     \u041f/\u043f. */
+  VkrDepotTreeEntry folded_latin[2] = {
+      {.name = "\xc3\x84.png", .name_size = 6, .kind = VKR_DEPOT_ENTRY_FILE},
+      {.name = "\xc3\xa4.png", .name_size = 6, .kind = VKR_DEPOT_ENTRY_FILE},
+  };
+  assert(!vkr_depot_tree_encode(folded_latin, 2u, &bytes, &size));
+  VkrDepotTreeEntry folded_cyrillic[2] = {
+      {.name = "\xd0\x9f", .name_size = 2, .kind = VKR_DEPOT_ENTRY_FILE},
+      {.name = "\xd0\xbf", .name_size = 2, .kind = VKR_DEPOT_ENTRY_FILE},
+  };
+  assert(!vkr_depot_tree_encode(folded_cyrillic, 2u, &bytes, &size));
 
   VkrDepotChunkRef chunks[2] = {{.size = 5u}, {.size = 7u}};
   chunks[0].id.bytes[0] = 1u;
@@ -141,6 +194,19 @@ static void test_depot_objects(void) {
   bytes[VKR_DEPOT_HEADER_SIZE] = 13u;
   assert(!vkr_depot_blob_parse(bytes, size, NULL, NULL, NULL));
   free(bytes);
+
+  /* One 1 MiB chunk repeated past VKR_DEPOT_FILE_MAX: a manifest a few
+     hundred KiB long that would write a huge file. */
+  const uint32_t repeats =
+      (uint32_t)(VKR_DEPOT_FILE_MAX / VKR_DEPOT_CHUNK_MAX) + 1u;
+  VkrDepotChunkRef *repeated = calloc(repeats, sizeof(VkrDepotChunkRef));
+  for (uint32_t i = 0u; i < repeats; ++i) {
+    repeated[i].size = VKR_DEPOT_CHUNK_MAX;
+  }
+  assert(vkr_depot_blob_encode(repeated, repeats, &bytes, &size));
+  assert(!vkr_depot_blob_parse(bytes, size, NULL, NULL, NULL));
+  free(bytes);
+  free(repeated);
 
   VkrDepotCommit commit = {.parent_count = 1u,
                            .time_us = 42u,
@@ -339,7 +405,7 @@ static void test_depot_workspace(void) {
   VkrDepotWorkspace copy;
   assert(vkr_depot_workspace_create(&copy, copy_root, workspace.store.root,
                                     vkr_depot_zstd_codec()));
-  assert(vkr_depot_workspace_checkout(&copy, &tree, NULL));
+  assert(vkr_depot_workspace_checkout(&copy, &tree, NULL, NULL));
   const char *paths[] = {"textures/big.bin", "scene.json", "deep/a/b/c.txt",
                          "empty.dat"};
   for (uint32_t i = 0u; i < ArrayCount(paths); ++i) {
@@ -394,7 +460,7 @@ static void test_depot_workspace(void) {
   /* Checking the old tree out again restores the files. */
   vkr_depot_file_list_free(&workspace.index);
   workspace.index = edited;
-  assert(vkr_depot_workspace_checkout(&workspace, &tree, NULL));
+  assert(vkr_depot_workspace_checkout(&workspace, &tree, NULL, NULL));
   assert(vkr_bakery_is_file(removed));
   char added[VKR_DEPOT_PATH_CAPACITY];
   assert(vkr_bakery_path_join(added, sizeof(added), root, "new.txt"));
@@ -576,6 +642,16 @@ static VkrDepotClient *depot_world_client(DepotWorld *world,
   return vkr_depot_client_create(&link, store, 60000u);
 }
 
+static bool8_t depot_test_count_lock(void *context, const char *path,
+                                     const uint8_t owner[32],
+                                     uint64_t time_us) {
+  (void)path;
+  (void)owner;
+  (void)time_us;
+  *(uint32_t *)context += 1u;
+  return true_v;
+}
+
 /* A commit of the working copy at `root` into its store. */
 static void depot_test_commit(VkrDepotWorkspace *workspace, const char *text,
                               const VkrDepotId *parent, VkrDepotId *out_commit,
@@ -738,7 +814,7 @@ static void test_depot_transfer(void) {
   VkrDepotCommit parsed;
   assert(vkr_depot_store_get(&bob.store, &first, &commit_bytes, &commit_size));
   assert(vkr_depot_commit_parse(commit_bytes, commit_size, &parsed));
-  assert(vkr_depot_workspace_checkout(&bob, &parsed.tree, NULL));
+  assert(vkr_depot_workspace_checkout(&bob, &parsed.tree, NULL, NULL));
   free(commit_bytes);
   char a[VKR_DEPOT_PATH_CAPACITY];
   char b[VKR_DEPOT_PATH_CAPACITY];
@@ -1160,7 +1236,8 @@ static void depot_test_setenv(const char *name, const char *value) {
 
 /* Fails when a key in the old cache folder is not carried to the user data
    folder, when the carried key differs (access lists naming it would stop
-   matching), or when a later run without the old file makes another key.
+   matching), when the copy is readable by other users, or when a later run
+   without the old file makes another key.
    Runs under a temporary home, so the user's real keys stay untouched. */
 static void test_depot_identity_migration(void) {
   printf("  Running test_depot_identity_migration...\n");
@@ -1199,6 +1276,11 @@ static void test_depot_identity_migration(void) {
   assert(vkr_depot_identity(&keys, false_v));
   assert(memcmp(keys.public_key, old_keys.public_key, 32u) == 0);
   assert(vkr_bakery_is_file(path) && vkr_bakery_is_file(legacy));
+#if !defined(_WIN32)
+  /* The copy is the user's alone. */
+  struct stat key_stat;
+  assert(stat(path, &key_stat) == 0 && (key_stat.st_mode & 077) == 0);
+#endif
   /* Cache cleanup removes the old file; the key stays the same. */
   assert(vkr_bakery_remove_file(legacy));
   assert(vkr_depot_identity(&keys, true_v));
@@ -1340,6 +1422,276 @@ static void test_depot_service(void) {
   printf("  test_depot_service PASSED\n");
 }
 
+/* Stores a tree of `count` entries into `store`. */
+static void depot_test_tree(const VkrDepotStore *store,
+                            VkrDepotTreeEntry *entries, uint32_t count,
+                            VkrDepotId *out_tree) {
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  assert(vkr_depot_tree_encode(entries, count, &bytes, &size));
+  vkr_depot_id_of(bytes, size, out_tree);
+  assert(vkr_depot_store_put(store, out_tree, bytes, size));
+  free(bytes);
+}
+
+/* Fails when a tree nested past VKR_DEPOT_TREE_DEPTH_MAX, or one subtree
+   named at so many paths that its files pass VKR_DEPOT_TREE_BYTES_MAX, is
+   read instead of refused: either would exhaust a thread's stack or a
+   disk on checkout. */
+static void test_depot_tree_limits(void) {
+  printf("  Running test_depot_tree_limits...\n");
+  char root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("limits", root, sizeof(root));
+  VkrDepotStore store;
+  assert(vkr_depot_store_open(&store, root, NULL));
+  VkrDepotTreeEntry leaf = {.name = "f.bin",
+                            .name_size = 5,
+                            .kind = VKR_DEPOT_ENTRY_FILE,
+                            .size = 1u};
+  VkrDepotId tree;
+  depot_test_tree(&store, &leaf, 1u, &tree);
+  VkrDepotId at_limit = {0};
+  for (uint32_t depth = 1u; depth <= VKR_DEPOT_TREE_DEPTH_MAX + 1u; ++depth) {
+    VkrDepotTreeEntry folder = {
+        .name = "d", .name_size = 1, .kind = VKR_DEPOT_ENTRY_TREE, .id = tree};
+    depot_test_tree(&store, &folder, 1u, &tree);
+    if (depth == VKR_DEPOT_TREE_DEPTH_MAX) {
+      at_limit = tree;
+    }
+  }
+  VkrDepotFileList files;
+  assert(vkr_depot_tree_files(&store, &at_limit, &files) && files.count == 1u);
+  vkr_depot_file_list_free(&files);
+  assert(!vkr_depot_tree_files(&store, &tree, &files));
+
+  /* Each level names the level below twice: 2^8 files of 4 GiB. */
+  leaf.size = VKR_DEPOT_FILE_MAX;
+  depot_test_tree(&store, &leaf, 1u, &tree);
+  for (uint32_t level = 0u; level < 8u; ++level) {
+    VkrDepotTreeEntry twice[2] = {
+        {.name = "a", .name_size = 1, .kind = VKR_DEPOT_ENTRY_TREE, .id = tree},
+        {.name = "b", .name_size = 1, .kind = VKR_DEPOT_ENTRY_TREE, .id = tree},
+    };
+    depot_test_tree(&store, twice, 2u, &tree);
+  }
+  assert(!vkr_depot_tree_files(&store, &tree, &files));
+  assert(vkr_bakery_remove_tree(root));
+  printf("  test_depot_tree_limits PASSED\n");
+}
+
+/* Fails when a checkout deletes a file outside the working copy that a
+   planted state names, writes a path its ignore rules match or removes an
+   ignored local file, lets a pulled `.vkrdepotignore` hide a tracked file's
+   edit from the next snapshot, or loses a file renamed only in case. */
+static void test_depot_checkout_safety(void) {
+  printf("  Running test_depot_checkout_safety...\n");
+  char source_root[VKR_DEPOT_PATH_CAPACITY];
+  char root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("safety_source", source_root, sizeof(source_root));
+  depot_test_dir("safety_copy", root, sizeof(root));
+  VkrDepotWorkspace source;
+  assert(vkr_depot_workspace_create(&source, source_root, NULL, NULL));
+  VkrDepotWorkspace copy;
+  assert(vkr_depot_workspace_create(&copy, root, source.store.root, NULL));
+
+  /* A state that tracks a path outside the working copy. */
+  char victim[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(victim, sizeof(victim), root,
+                              "../safety_victim.txt"));
+  assert(vkr_bakery_write_file_atomic(victim, "keep", 4u));
+  const VkrDepotId zero = {0};
+  assert(vkr_depot_file_list_add(&copy.index, "../safety_victim.txt", 4u, 0,
+                                 &zero));
+  vkr_depot_file_list_sort(&copy.index);
+  assert(vkr_depot_workspace_save(&copy));
+  vkr_depot_workspace_close(&copy);
+  assert(vkr_depot_workspace_open(&copy, root, NULL));
+  assert(copy.index.count == 0u);
+
+  /* The source's tree carries a path the copy ignores. */
+  depot_test_write(source_root, "Foo.png", "image", 5u);
+  depot_test_write(source_root, "notes.txt", "notes", 5u);
+  depot_test_write(source_root, "secret/lib.dylib", "native", 6u);
+  VkrDepotId first;
+  VkrDepotFileList files;
+  assert(vkr_depot_workspace_snapshot(&source, &first, &files));
+  vkr_depot_file_list_free(&files);
+  depot_test_write(root, ".vkrdepotignore", "secret/\n", 8u);
+  depot_test_write(root, "secret/keep.bin", "mine", 4u);
+  uint32_t skipped = 0u;
+  assert(vkr_depot_workspace_checkout(&copy, &first, NULL, &skipped));
+  assert(skipped == 1u);
+  assert(depot_test_file_is(root, "secret/keep.bin", "mine"));
+  char planted[VKR_DEPOT_PATH_CAPACITY];
+  assert(
+      vkr_bakery_path_join(planted, sizeof(planted), root, "secret/lib.dylib"));
+  assert(!vkr_bakery_is_file(planted));
+  assert(vkr_bakery_is_file(victim));
+  assert(depot_test_file_is(root, "Foo.png", "image"));
+
+  /* A rule that matches a tracked file does not hide its edit. */
+  depot_test_write(root, ".vkrdepotignore", "secret/\nnotes.txt\n", 18u);
+  depot_test_write(root, "notes.txt", "edited", 6u);
+  assert(depot_test_status_of(&copy, "notes.txt") == VKR_DEPOT_CHANGE_MODIFIED);
+  depot_test_write(root, "notes.txt", "notes", 5u);
+
+  /* Foo.png becomes foo.png: one file on macOS and Windows. */
+  char old_name[VKR_DEPOT_PATH_CAPACITY];
+  assert(
+      vkr_bakery_path_join(old_name, sizeof(old_name), source_root, "Foo.png"));
+  assert(vkr_bakery_remove_file(old_name));
+  depot_test_write(source_root, "foo.png", "image", 5u);
+  VkrDepotId second;
+  assert(vkr_depot_workspace_snapshot(&source, &second, &files));
+  vkr_depot_file_list_free(&files);
+  assert(vkr_depot_workspace_checkout(&copy, &second, NULL, NULL));
+  assert(depot_test_file_is(root, "foo.png", "image"));
+
+  vkr_depot_workspace_close(&copy);
+  vkr_depot_workspace_close(&source);
+  assert(vkr_bakery_remove_file(victim));
+  assert(vkr_bakery_remove_tree(root));
+  assert(vkr_bakery_remove_tree(source_root));
+  printf("  test_depot_checkout_safety PASSED\n");
+}
+
+/* Fails when the server moves a branch to a commit whose tree names the
+   depot's state folder, which every working copy that pulls it would let
+   overwrite its access list, or when a page of locks with long paths does
+   not reach the client. */
+static void test_depot_server_refusals(void) {
+  printf("  Running test_depot_server_refusals...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("refusals", store_root, sizeof(store_root));
+  VkrNetKeyPair keys;
+  vkr_net_keypair_generate(&keys);
+  assert(
+      vkr_depot_access_set(store_root, keys.public_key, VKR_DEPOT_ROLE_WRITE));
+  VkrDepotStore store;
+  assert(vkr_depot_store_open(&store, store_root, vkr_depot_zstd_codec()));
+  /* A tree with `.vkrdepoX`, patched to `.vkrdepot` after encoding. */
+  VkrDepotTreeEntry entry = {.name = ".vkrdepoX",
+                             .name_size = 9,
+                             .kind = VKR_DEPOT_ENTRY_FILE,
+                             .size = 0u};
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  assert(vkr_depot_tree_encode(&entry, 1u, &bytes, &size));
+  uint8_t *letter = memchr(bytes, 'X', size);
+  assert(letter);
+  *letter = 't';
+  VkrDepotId tree;
+  vkr_depot_id_of(bytes, size, &tree);
+  assert(vkr_depot_store_put(&store, &tree, bytes, size));
+  free(bytes);
+  VkrDepotCommit commit = {.tree = tree, .message = "x", .message_size = 1u};
+  assert(vkr_depot_commit_encode(&commit, &bytes, &size));
+  VkrDepotId commit_id;
+  vkr_depot_id_of(bytes, size, &commit_id);
+  assert(vkr_depot_store_put(&store, &commit_id, bytes, size));
+  free(bytes);
+
+  const VkrNetSimLink link = {.latency_us = 2000u,
+                              .bandwidth = 100u * 1000u * 1000u};
+  DepotWorld world;
+  depot_world_init(&world, store_root, &link, &keys);
+  VkrDepotClient *client = depot_world_client(&world, &store);
+  assert(client);
+  const VkrDepotId zero = {0};
+  VkrDepotId current;
+  assert(vkr_depot_client_update_ref(client, "main", &zero, &commit_id,
+                                     &current) == VKR_DEPOT_REF_INVALID);
+
+  /* A full page of locks whose paths are as long as allowed. */
+  char path[VKR_DEPOT_LOCK_PATH_MAX];
+  for (uint32_t i = 0u; i < VKR_DEPOT_LOCKS_PAGE + 2u; ++i) {
+    memset(path, 'a', 250u);
+    path[250] = '/';
+    snprintf(path + 251, sizeof(path) - 251u, "%03u", i);
+    memset(path + 254, 'b', 250u);
+    path[504] = '\0';
+    uint8_t owner[32];
+    assert(vkr_depot_client_lock(client, path, false_v, false_v, owner) ==
+           VKR_DEPOT_LOCK_OK);
+  }
+  uint32_t listed = 0u;
+  assert(vkr_depot_client_locks(client, depot_test_count_lock, &listed));
+  assert(listed == VKR_DEPOT_LOCKS_PAGE + 2u);
+  vkr_depot_client_destroy(client);
+  depot_world_destroy(&world);
+  assert(vkr_bakery_remove_tree(store_root));
+  printf("  test_depot_server_refusals PASSED\n");
+}
+
+/* Fails when one network address can hold more than two pending requests
+   and push other machines' requests out, or when a key its owner refused
+   comes back into the list after enough other keys asked. */
+static void test_depot_access_requests(void) {
+  printf("  Running test_depot_access_requests...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("requests", store_root, sizeof(store_root));
+  VkrNetKeyPair keys;
+  vkr_net_keypair_generate(&keys);
+  const VkrNetSimLink link = {.latency_us = 2000u};
+  DepotWorld world;
+  depot_world_init(&world, store_root, &link, &keys);
+  VkrNetAddress flooder;
+  VkrNetAddress other;
+  assert(vkr_net_address_parse("10.9.0.1:4000", 0u, &flooder));
+  assert(vkr_net_address_parse("10.9.0.2:4000", 0u, &other));
+  uint8_t key[32] = {0};
+  VkrNetAcceptResult result;
+  key[0] = 200u;
+  MemZero(&result, sizeof(result));
+  vkr_depot_server_accept(world.server, &other, key, (const uint8_t *)"o", 1u,
+                          &result);
+  assert(result.code == VKR_NET_CLOSE_ACCESS_DENIED);
+  for (uint32_t i = 0u; i < 20u; ++i) {
+    key[0] = (uint8_t)i;
+    flooder.port = (uint16_t)(4000u + i);
+    MemZero(&result, sizeof(result));
+    vkr_depot_server_accept(world.server, &flooder, key, (const uint8_t *)"f",
+                            1u, &result);
+  }
+  VkrDepotAccessRequest requests[VKR_DEPOT_REQUESTS_MAX];
+  uint32_t count =
+      vkr_depot_server_requests(world.server, requests, VKR_DEPOT_REQUESTS_MAX);
+  assert(count == 3u);
+  bool8_t other_kept = false_v;
+  for (uint32_t i = 0u; i < count; ++i) {
+    other_kept = other_kept || requests[i].key[0] == 200u;
+  }
+  assert(other_kept);
+
+  /* Refused, then more keys than the list holds ask: it stays out. */
+  key[0] = 200u;
+  assert(vkr_depot_server_set_role(world.server, key, VKR_DEPOT_ROLE_NONE,
+                                   world.now));
+  for (uint32_t i = 0u; i < 2u * VKR_DEPOT_REQUESTS_MAX; ++i) {
+    uint8_t asker[32] = {0};
+    asker[0] = (uint8_t)(100u + i);
+    VkrNetAddress address;
+    char text[32];
+    snprintf(text, sizeof(text), "10.8.0.%u:4000", i + 1u);
+    assert(vkr_net_address_parse(text, 0u, &address));
+    MemZero(&result, sizeof(result));
+    vkr_depot_server_accept(world.server, &address, asker, (const uint8_t *)"n",
+                            1u, &result);
+  }
+  MemZero(&result, sizeof(result));
+  vkr_depot_server_accept(world.server, &other, key, (const uint8_t *)"o", 1u,
+                          &result);
+  assert(result.code == VKR_NET_CLOSE_ACCESS_DENIED);
+  count =
+      vkr_depot_server_requests(world.server, requests, VKR_DEPOT_REQUESTS_MAX);
+  for (uint32_t i = 0u; i < count; ++i) {
+    assert(requests[i].key[0] != 200u);
+  }
+  depot_world_destroy(&world);
+  assert(vkr_bakery_remove_tree(store_root));
+  printf("  test_depot_access_requests PASSED\n");
+}
+
 bool32_t run_depot_tests(void) {
   /* Unbuffered, so a stopped run shows the test it stopped in. */
   setvbuf(stdout, NULL, _IONBF, 0);
@@ -1356,6 +1708,10 @@ bool32_t run_depot_tests(void) {
   test_depot_cancel();
   test_depot_identity_migration();
   test_depot_service();
+  test_depot_tree_limits();
+  test_depot_checkout_safety();
+  test_depot_server_refusals();
+  test_depot_access_requests();
   printf("--- Asset depot tests completed ---\n");
   return true;
 }
