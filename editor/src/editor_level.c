@@ -869,8 +869,8 @@ static void level_lint_lights(LevelGrid *grid, LevelIssues *issues) {
     if (!vkr_scene_entity_alive(scene, entity)) {
       continue;
     }
-    const ScenePointLight *light = vkr_entity_get_component(
-        scene->world, entity, scene->comp_point_light);
+    const ScenePointLight *light =
+        vkr_entity_get_component(scene->world, entity, scene->comp_point_light);
     const SceneTransform *transform =
         light ? vkr_entity_get_component(scene->world, entity,
                                          scene->comp_transform)
