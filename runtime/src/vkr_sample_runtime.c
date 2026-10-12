@@ -383,6 +383,9 @@ typedef struct State {
   uint64_t hud_last_publication_serial;
   float64_t hud_frametime_sum;
   uint64_t hud_frame_samples;
+  /* Scene and presentation-only frames counted at the window's start. */
+  uint64_t hud_scene_frames;
+  uint64_t hud_present_frames;
 
   // Runtime IBL validation controls.
   uint32_t ibl_validation_mode;
@@ -3123,6 +3126,20 @@ vkr_standard_scene_runtime_update_fps_text(VkrStandardSceneRuntime *application,
     }
     state->hud_frametime_sum = 0.0;
     state->hud_frame_samples = 0;
+    /* With the presenter the frame loop runs at the display's rate while the
+       Scene renders slower (ADR-111); the HUD reports the Scene. */
+    const uint64_t scene_frames =
+        application->scene_frames_submitted - state->hud_scene_frames;
+    const uint64_t present_frames =
+        application->present_frames_submitted - state->hud_present_frames;
+    state->hud_scene_frames = application->scene_frames_submitted;
+    state->hud_present_frames = application->present_frames_submitted;
+    if (present_frames > 0u && scene_frames > 0u &&
+        state->fps_accumulated_time > VKR_FPS_DELTA_MIN) {
+      state->current_fps =
+          (float64_t)scene_frames / state->fps_accumulated_time;
+      state->current_frametime = 1.0 / state->current_fps;
+    }
 
     VkrCamera *camera = vkr_camera_registry_get_by_handle(
         &application->camera_system, application->active_camera);
@@ -5225,6 +5242,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .grid_status = string8_create_from_cstr(
           (const uint8_t *)state->grid_status, strlen(state->grid_status)),
       .scene_generation = application->scene_generation,
+      .scene_frames = application->scene_frames_submitted,
+      .present_frames = application->present_frames_submitted,
       .edits = &state->edits,
       .scene_edit = &requests->scene_edit,
       .edit_batch = &requests->edit_batch,

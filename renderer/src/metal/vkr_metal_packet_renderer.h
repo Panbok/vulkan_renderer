@@ -387,6 +387,27 @@ void vkr_metal_packet_renderer_retained_shadow_token(
 void vkr_metal_packet_renderer_retained_local_shadow_token(
     VkrMetalPacketRenderer *renderer, VkrRetainedLocalShadowToken *out_token);
 
+/** True when a window target has the editor's presenter (ADR-111). */
+bool8_t vkr_metal_packet_renderer_presenter_supported(
+    const VkrMetalPacketRenderer *renderer);
+/**
+ * Acquires only the drawable for a frame that carries no Scene; the presenter
+ * composites the newest finished Scene image with the UI (ADR-111).
+ */
+bool8_t vkr_metal_packet_renderer_prepare_present(
+    VkrMetalPacketRenderer *renderer,
+    const VkrRenderGraphFrameInfo *frame_info);
+/** Presents a frame prepared by vkr_metal_packet_renderer_prepare_present. */
+bool8_t vkr_metal_packet_renderer_present(VkrMetalPacketRenderer *renderer,
+                                          const VkrFrameInput *input);
+/**
+ * Scene frames the frame queue has finished, and when the last one finished
+ * in vkr_platform_get_absolute_time() nanoseconds. Lock-free: callable while
+ * another thread renders.
+ */
+uint64_t vkr_metal_packet_renderer_scene_frames_completed(
+    const VkrMetalPacketRenderer *renderer, uint64_t *out_completed_ns);
+
 /** Releases a prepared drawable and command slot that were not submitted. */
 bool8_t
 vkr_metal_packet_renderer_cancel_frame(VkrMetalPacketRenderer *renderer);

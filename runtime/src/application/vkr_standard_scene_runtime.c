@@ -115,6 +115,14 @@ struct VkrStandardSceneRuntimeFrame {
   VkrAllocatorScope scratch_scope;
   /* Built from cached target values; the render thread acquires it. */
   bool8_t decoupled;
+  /* The presenter composites this frame (ADR-111); with `present_only` it
+     carries no Scene, and with `present_wait_scene` its presentation waits
+     for its own Scene. */
+  bool8_t presenter;
+  bool8_t present_only;
+  bool8_t present_wait_scene;
+  /* Submitted with an editor Scene the renderer counts on completion. */
+  bool8_t counts_scene;
 };
 
 vkr_internal bool8_t vkr_standard_scene_runtime_register_duration_metric(
@@ -569,6 +577,13 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       local_shadow_fade ? strtof(local_shadow_fade, NULL) : 0.0f;
   application->local_shadow_fade_distance_override =
       isfinite(fade_distance) && fade_distance > 0.0f ? fade_distance : 0.0f;
+  /* The editor presents through the presenter where the renderer has one
+     (ADR-111); VKR_EDITOR_PRESENTER=0 keeps one presentation per Scene. */
+  const char *presenter = getenv("VKR_EDITOR_PRESENTER");
+  application->presenter_enabled =
+      vkr_renderer_presenter_supported(&application->renderer) &&
+      !(presenter && strcmp(presenter, "0") == 0);
+  application->refresh_interval = 1.0 / 60.0;
   vkr_atomic_uint64_store(&application->pending_resize_mailbox, 0u,
                           VKR_MEMORY_ORDER_RELAXED);
   if (windowed && !event_manager_subscribe(
@@ -906,6 +921,8 @@ vkr_standard_scene_runtime_frame_config(const VkrStandardSceneRuntime *app) {
           shadows ? Min(config->local_shadow_face_budget,
                         VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX)
                   : VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
+      .presenter = app->frame && app->frame->presenter,
+      .present_only = app->frame && app->frame->present_only,
   };
 }
 
@@ -1243,9 +1260,14 @@ vkr_internal void vkr_standard_scene_runtime_prepare_editor_viewport(
             &draw->editor_mapping) &&
         vkr_editor_viewport_build_payload(&draw->editor_mapping,
                                           &draw->editor_payload)) {
-      draw->editor_payload.scene_rendering_stopped = draw->scene_stopped;
+      const VkrStandardSceneRuntimeFrame *frame = application->frame;
+      draw->editor_payload.scene_rendering_stopped =
+          draw->scene_stopped && !frame->present_only;
       draw->editor_payload.scene_backdrop_blur =
           application->editor_viewport.scene_backdrop_blur;
+      draw->editor_payload.presenter = frame->presenter;
+      draw->editor_payload.present_only = frame->present_only;
+      draw->editor_payload.present_wait_scene = frame->present_wait_scene;
       draw->editor_payload.grid = application->editor_viewport.grid;
       draw->viewport_width = draw->editor_mapping.target_width;
       draw->viewport_height = draw->editor_mapping.target_height;
@@ -2250,6 +2272,11 @@ vkr_standard_scene_runtime_finish_frame(VkrStandardSceneRuntime *application,
                                         VkrRendererFrameResult *result) {
   const VkrStandardSceneRuntimeDrawContext *draw = &frame->draw;
   vkr_standard_scene_runtime_sync_renderer_state(application);
+  /* A Scene frame that never ran will not complete; it is the newest one. */
+  if (frame->counts_scene && result->error != VKR_RENDERER_ERROR_NONE &&
+      application->scene_submit_count > 0u)
+    application->scene_submit_count--;
+  frame->counts_scene = false_v;
 
   /* A decoupled frame the render thread could not acquire, or acquired for
      another target extent, never ran: report it like an acquisition here and
@@ -2453,10 +2480,12 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       .setup = setup,
       .scratch = application->frame_allocator,
       .target_changed = target_changed,
+      /* A presentation-only frame builds no Scene either (ADR-111). */
       .scene_stopped =
           vkr_standard_scene_runtime_editor_scene_rendering_stopped(
               application) ||
-          application->editor_viewport.scene_backdrop_blur,
+          application->editor_viewport.scene_backdrop_blur ||
+          frame->present_only,
   };
   const VkrRendererError world_error =
       vkr_standard_scene_runtime_build_world_payload(application, draw);
@@ -2467,6 +2496,12 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
 
   vkr_standard_scene_runtime_prepare_picking_payload(application, draw);
   vkr_standard_scene_runtime_prepare_editor_viewport(application, draw);
+  /* Without a Scene panel to present into, the frame renders as usual. */
+  if (frame->presenter && !draw->has_editor) {
+    frame->presenter = false_v;
+    frame->present_only = false_v;
+    frame->present_wait_scene = false_v;
+  }
   vkr_standard_scene_runtime_prepare_picking_source(application, draw);
   draw->active_scene = vkr_standard_scene_runtime_render_scene(application);
   vkr_standard_scene_runtime_prepare_environment(application, draw);
@@ -2551,6 +2586,24 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     vkr_standard_scene_runtime_finish_frame(application, frame, &result);
     return;
   }
+  /* The renderer counts each editor Scene frame when the GPU finishes it;
+     the next frames pace themselves by that (ADR-111). */
+  frame->counts_scene = draw->has_editor && !draw->scene_stopped;
+  if (frame->counts_scene) {
+    const uint32_t capacity = ArrayCount(application->scene_submit_times);
+    if (application->scene_submit_count == capacity) {
+      application->scene_submit_first =
+          (application->scene_submit_first + 1u) % capacity;
+      application->scene_submit_count--;
+    }
+    application->scene_submit_times[(application->scene_submit_first +
+                                     application->scene_submit_count) %
+                                    capacity] =
+        vkr_platform_get_absolute_time();
+    application->scene_submit_count++;
+    application->scene_frames_submitted++;
+  }
+  application->present_frames_submitted += frame->present_only ? 1u : 0u;
   application->frame_in_flight = frame;
   application->frame = frame == application->frames[0] ? application->frames[1]
                                                        : application->frames[0];
@@ -2572,6 +2625,90 @@ vkr_internal bool8_t
 vkr_standard_scene_runtime_static_lights_baked(const VkrScene *scene) {
   return scene->lightmaps && scene->lightmaps->texture.id != 0u &&
          scene->lightmaps->lamps_baked;
+}
+
+/* Takes the Scene frames the GPU finished since the last frame. The last one
+   finished gives a sample of a Scene's time on the GPU: from its submission,
+   or from the previous Scene's completion when it queued behind that one. */
+vkr_internal void vkr_standard_scene_runtime_observe_scene_frames(
+    VkrStandardSceneRuntime *application) {
+  uint64_t completed_ns = 0u;
+  const uint64_t completed = vkr_renderer_scene_frames_completed(
+      &application->renderer, &completed_ns);
+  if (completed <= application->scene_frames_seen)
+    return;
+  const uint32_t capacity = ArrayCount(application->scene_submit_times);
+  uint64_t finished = completed - application->scene_frames_seen;
+  application->scene_frames_seen = completed;
+  float64_t submitted = -1.0;
+  while (finished > 0u && application->scene_submit_count > 0u) {
+    submitted =
+        application->scene_submit_times[application->scene_submit_first];
+    application->scene_submit_first =
+        (application->scene_submit_first + 1u) % capacity;
+    application->scene_submit_count--;
+    --finished;
+  }
+  const float64_t completed_at = (float64_t)completed_ns * 1e-9;
+  if (submitted >= 0.0 && finished == 0u) {
+    const float64_t sample = Max(
+        0.0, completed_at - Max(submitted, application->scene_completed_at));
+    application->scene_duration =
+        application->scene_duration > 0.0
+            ? application->scene_duration +
+                  (sample - application->scene_duration) * 0.25
+            : sample;
+  }
+  application->scene_completed_at = completed_at;
+}
+
+/* Chooses how the editor presents this frame (ADR-111). With the presenter,
+   a frame renders a Scene when the GPU should be ready for it: the frame
+   commits about one display interval after it is built, behind the frame
+   rendering now, and its Scene may wait one more interval for the GPU, so the
+   next Scene is always queued without queueing Scenes deep. Any other frame
+   only presents the UI over the newest finished Scene image, so the UI keeps
+   the display's rate while the Scene takes longer. A Scene expected to finish
+   well within the interval is shown in its own frame. Captures, the
+   animation preview and a stopped Scene keep one presentation per frame. */
+vkr_internal void vkr_standard_scene_runtime_choose_presentation(
+    VkrStandardSceneRuntime *application) {
+  VkrStandardSceneRuntimeFrame *frame = application->frame;
+  frame->presenter = false_v;
+  frame->present_only = false_v;
+  frame->present_wait_scene = false_v;
+  vkr_standard_scene_runtime_observe_scene_frames(application);
+  const float32_t refresh = vkr_window_refresh_rate(&application->host.window);
+  application->refresh_interval =
+      refresh >= 24.0f ? 1.0 / (float64_t)refresh : 1.0 / 60.0;
+  if (!application->presenter_enabled ||
+      !application->editor_viewport.enabled ||
+      vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) ||
+      application->editor_viewport.scene_backdrop_blur ||
+      application->capture_request || application->animation_preview.player)
+    return;
+  frame->presenter = true_v;
+  const float64_t interval = application->refresh_interval;
+  const float64_t commit = vkr_platform_get_absolute_time() + interval;
+  /* When each unfinished Scene should finish; the GPU runs them in order.
+     Those still running at this frame's commit hold presenter images. */
+  const uint32_t capacity = ArrayCount(application->scene_submit_times);
+  float64_t queue_free = application->scene_completed_at;
+  uint32_t running_at_commit = 0u;
+  for (uint32_t i = 0u; i < application->scene_submit_count; ++i) {
+    const float64_t submitted =
+        application->scene_submit_times[(application->scene_submit_first + i) %
+                                        capacity];
+    queue_free = Max(submitted, queue_free) + application->scene_duration;
+    running_at_commit += queue_free > commit ? 1u : 0u;
+  }
+  const bool8_t scene_due =
+      running_at_commit <= 1u && queue_free <= commit + interval;
+  frame->present_only = !scene_due;
+  frame->present_wait_scene =
+      scene_due &&
+      Max(queue_free, commit) + application->scene_duration - commit <=
+          0.75 * interval;
 }
 
 vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
@@ -2687,6 +2824,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
           VKR_STANDARD_SCENE_TILED_SHADOWED_LIGHT_MAX);
   }
 
+  vkr_standard_scene_runtime_choose_presentation(application);
+
   /* The frame fits and resolves shadows once acquired, on the thread that
      renders it; capture what it needs from this frame's state now. */
   VkrStandardSceneRuntimeShadowInput *shadow = &application->frame->shadow;
@@ -2705,7 +2844,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
       .delta = delta,
   };
   if (camera &&
-      !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application)) {
+      !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) &&
+      !application->frame->present_only) {
     const float64_t measure_start = vkr_platform_get_absolute_time();
     vkr_scene_measure_caster_bounds(&application->assets.mesh_manager,
                                     &shadow->caster_bounds);

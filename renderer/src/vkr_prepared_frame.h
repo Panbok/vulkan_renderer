@@ -16,6 +16,9 @@ typedef struct VkrPreparedFrame {
   bool8_t fxaa_enabled;
   bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
+  /** The presenter composites this frame's Scene image with the UI on its
+      own queue (ADR-111); the graph stops at the Scene image. */
+  bool8_t editor_presenter;
   uint32_t editor_image_width;
   uint32_t editor_image_height;
   Vec4 editor_image_rect_px;

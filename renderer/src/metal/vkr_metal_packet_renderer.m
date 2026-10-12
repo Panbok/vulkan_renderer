@@ -265,6 +265,9 @@ typedef struct VkrMetalPacketTexture {
   uint64_t sampler_resource_id;
   uint32_t generation;
   uint64_t last_use_submit_value;
+  /** Frame-queue value of the submission that uploaded its contents. The
+      presenter waits for it before sampling (ADR-111). */
+  uint64_t upload_submit_value;
   /** Published L2 coefficient slot projected from this source cubemap, or
       VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). */
   uint32_t ibl_sh_slot;
@@ -620,6 +623,78 @@ typedef struct VkrMetalCustomGraph {
   uint32_t references;
 } VkrMetalCustomGraph;
 
+/* The editor's presenter (ADR-111) composites the newest finished Scene image
+   with the UI on its own queue, so the UI presents at the display's rate while
+   the frame queue renders slower Scenes. Three images let one Scene frame run
+   and one wait while the presenter shows a third. */
+#define VKR_METAL_PACKET_PRESENT_IMAGE_COUNT 3u
+#define VKR_METAL_PACKET_PRESENT_SLOT_COUNT 3u
+#define VKR_METAL_PACKET_PRESENT_RETIRED_MAX 8u
+
+typedef struct VkrMetalPacketPresentImage {
+  id<MTLTexture> texture;
+  /** Frame-queue value of the Scene frame that last copied into it; zero
+      until written. The copy has finished once the frame queue reaches it. */
+  uint64_t scene_value;
+  /** Presenter value of the last frame that sampled it. */
+  uint64_t present_value;
+} VkrMetalPacketPresentImage;
+
+typedef struct VkrMetalPacketPresentSlot {
+  id<MTL4CommandAllocator> allocator;
+  id<MTL4CommandBuffer> buffer;
+  /** Shared upload bytes: UI geometry, draw roots and the composite records.
+      Grows only while this slot's last frame is complete. */
+  id<MTLBuffer> upload;
+  /** Presenter value of the frame recorded here; zero before the first. */
+  uint64_t present_value;
+  /** The frame queue's submit value when this frame was recorded. Textures it
+      samples carry the value after it, and completion stays below it until
+      this frame finishes (vkr_metal_packet_completed). */
+  uint64_t frame_mark;
+} VkrMetalPacketPresentSlot;
+
+/* A replaced image or upload buffer, released once neither queue uses it. */
+typedef struct VkrMetalPacketPresentRetired {
+  id<MTLTexture> texture;
+  id<MTLBuffer> buffer;
+  uint64_t scene_value;
+  uint64_t present_value;
+} VkrMetalPacketPresentRetired;
+
+typedef struct VkrMetalPacketPresenter {
+  id<MTL4CommandQueue> queue;
+  id<MTLSharedEvent> completion;
+  /** The images and upload buffers; Scene frames that copy into an image use
+      it too. */
+  id<MTLResidencySet> residency;
+  /** Counts finished Scene frames off the render thread. */
+  MTLSharedEventListener *listener;
+  dispatch_queue_t listener_queue;
+  MTL4RenderPassDescriptor *render_pass;
+  VkrMetalPacketPresentSlot slots[VKR_METAL_PACKET_PRESENT_SLOT_COUNT];
+  VkrMetalPacketPresentImage images[VKR_METAL_PACKET_PRESENT_IMAGE_COUNT];
+  VkrMetalPacketPresentRetired retired[VKR_METAL_PACKET_PRESENT_RETIRED_MAX];
+  uint32_t retired_count;
+  uint32_t next_slot;
+  /** Image the current Scene frame's Editor.Present copies into. */
+  uint32_t write_image;
+  /** Presenter value the current Scene frame waits for before its copy
+      overwrites an image presenter frames still sample; zero for none. */
+  uint64_t frame_present_wait;
+  uint64_t submit_value;
+  /** Scene value of the newest image a presenter frame sampled. Later frames
+      never show an older one, so every older image is free to rewrite. */
+  uint64_t shown_scene_value;
+  /** The last frame-queue value a committed presenter frame tagged its
+      textures with; discarded uses never fall below it. */
+  uint64_t texture_floor;
+  /** Scene frames committed and finished, by the listener's queue. */
+  VkrAtomicUint64 scene_frames_completed;
+  VkrAtomicUint64 scene_completed_ns;
+  bool8_t ready;
+} VkrMetalPacketPresenter;
+
 /* The depth fade scale of a decal without depth fade: every point inside its
    box keeps full weight. */
 #define VKR_METAL_DECAL_HARD_EDGE_SCALE 1.0e6f
@@ -685,6 +760,7 @@ struct VkrMetalPacketRenderer {
   MTL4CompilerTaskOptions *compiler_options;
   id<MTL4CommandQueue> queue;
   id<MTLSharedEvent> completion;
+  VkrMetalPacketPresenter presenter;
   VkrMetalPacketCommandSlot *command_slots;
   VkrMetalPacketResult *completed_timing_results;
   VkrMetalPacketCommitFeedbackRecord *commit_feedback_records;
@@ -887,6 +963,10 @@ struct VkrMetalPacketRenderer {
   bool8_t hzb_enabled;
   bool8_t frustum_enabled;
   bool8_t frame_prepared;
+  /* A presentation-only frame holds the drawable (ADR-111). Unlike a
+     prepared frame it records nothing until it presents, so publications
+     may run meanwhile. */
+  bool8_t present_prepared;
   bool8_t pipeline_archive_warm;
   bool8_t pipeline_archive_written;
   /* Immutable black cubemap for frames with local probes but no global IBL.
@@ -1060,13 +1140,54 @@ vkr_internal void vkr_metal_packet_collect_picking_results(
   }
 }
 
+/* The newest frame-queue value whose resources are free. A presenter frame
+   samples textures tagged with the frame-queue value after its mark, so
+   completion stays at that mark until the presenter frame finishes
+   (ADR-111). */
+vkr_internal uint64_t
+vkr_metal_packet_completed(const VkrMetalPacketRenderer *renderer) {
+  uint64_t completed = renderer->completion.signaledValue;
+  const VkrMetalPacketPresenter *presenter = &renderer->presenter;
+  if (!presenter->ready || presenter->submit_value == 0u)
+    return completed;
+  const uint64_t presented = presenter->completion.signaledValue;
+  for (uint32_t i = 0u; i < ArrayCount(presenter->slots); ++i) {
+    const VkrMetalPacketPresentSlot *slot = &presenter->slots[i];
+    if (slot->present_value > presented)
+      completed = Min(completed, slot->frame_mark);
+  }
+  return completed;
+}
+
 #include "metal/internal/vkr_metal_packet_graph.inc"
+/* The presenter (vkr_metal_packet_present.inc) records with the frame's
+   helpers, so it follows them; setup and pass preparation call into it. */
+vkr_internal bool8_t
+vkr_metal_packet_presenter_create(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0));
+vkr_internal bool8_t vkr_metal_packet_prepare_editor_present(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared) API_AVAILABLE(macos(26.0));
+vkr_internal void
+vkr_metal_packet_order_frame_commit(VkrMetalPacketRenderer *renderer,
+                                    const VkrPreparedFrame *packet)
+    API_AVAILABLE(macos(26.0));
+vkr_internal void
+vkr_metal_packet_presenter_frame_committed(VkrMetalPacketRenderer *renderer,
+                                           const VkrPreparedFrame *packet,
+                                           uint64_t submit_value);
+vkr_internal void
+vkr_metal_packet_present_committed_frame(VkrMetalPacketRenderer *renderer,
+                                         const VkrPreparedFrame *packet,
+                                         uint64_t submit_value)
+    API_AVAILABLE(macos(26.0));
 #include "metal/internal/vkr_metal_packet_commands.inc"
 #include "metal/internal/vkr_metal_packet_setup.inc"
 #include "metal/internal/vkr_metal_packet_custom.inc"
 #include "metal/internal/vkr_metal_packet_resources.inc"
 #include "metal/internal/vkr_metal_packet_animation_preview.inc"
 #include "metal/internal/vkr_metal_packet_frame.inc"
+#include "metal/internal/vkr_metal_packet_present.inc"
 #include "metal/internal/vkr_metal_packet_lifecycle.inc"
 // clang-format on
 

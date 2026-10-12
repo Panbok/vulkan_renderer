@@ -446,6 +446,10 @@ typedef struct VkrSampleUiFrame {
   /* The last grid fit's outcome, or empty. */
   String8 grid_status;
   uint64_t scene_generation;
+  /** Frames submitted with a Scene and frames that only presented the UI
+      over the newest finished Scene (ADR-111), counted since start. */
+  uint64_t scene_frames;
+  uint64_t present_frames;
   const VkrSceneEditState *edits;
   VkrSceneEditRequest *scene_edit;
   /** One batch or group revert, consumed after build; and the latest

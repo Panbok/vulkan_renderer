@@ -726,6 +726,18 @@ typedef struct VkrEditorPassPayload {
   bool8_t scene_rendering_stopped;
   /** Blur only the retained Scene composite; UI is drawn afterward. */
   bool8_t scene_backdrop_blur;
+  /** The presenter composites the Scene image with the UI on its own queue,
+      so the UI presents while the frame queue renders a slower Scene
+      (ADR-111). Requires vkr_renderer_presenter_supported(). */
+  bool8_t presenter;
+  /** With `presenter`: the frame carries no Scene and shows the UI over the
+      newest finished Scene image. Acquire it with VkrFrameConfig.present_only;
+      world, lighting, sky, shadow and picking payloads are ignored. */
+  bool8_t present_only;
+  /** With `presenter`: this frame's presentation waits on the GPU for its own
+      Scene instead of showing the newest finished one, for Scenes that fit
+      the display interval. */
+  bool8_t present_wait_scene;
   const VkrEditorOverlayDraw *overlay_draws;
   uint32_t overlay_draw_count;
   /** Submeshes whose mask edge is outlined over the Scene image, drawn with

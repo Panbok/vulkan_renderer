@@ -236,6 +236,10 @@ struct VkrRenderer {
   uint32_t last_window_height;
 
   bool32_t frame_active;
+  /* The active frame presents through the presenter, or acquired only a
+     presentation target (ADR-111). */
+  bool8_t frame_presenter;
+  bool8_t frame_present_only;
   uint64_t frame_number;
   uint64_t target_generation;
 

@@ -1305,6 +1305,20 @@ void vkr_window_request_close(VkrWindow *window) {
     PostMessage(state->window, WM_CLOSE, 0, 0);
 }
 
+float32_t vkr_window_refresh_rate(const VkrWindow *window) {
+  const PlatformState *state =
+      window ? (const PlatformState *)window->platform_state : NULL;
+  if (!state || !state->window)
+    return 0.0f;
+  HDC dc = GetDC(state->window);
+  if (!dc)
+    return 0.0f;
+  /* 0 and 1 mean the hardware default rate. */
+  const int32_t hertz = GetDeviceCaps(dc, VREFRESH);
+  ReleaseDC(state->window, dc);
+  return hertz > 1 ? (float32_t)hertz : 0.0f;
+}
+
 /* Both covering modes are a borderless popup over the window's monitor; the
    renderer requests no exclusive fullscreen, so they differ only on macOS.
    WM_SIZE reports the new client extent. */

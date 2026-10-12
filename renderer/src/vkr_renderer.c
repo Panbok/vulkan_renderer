@@ -2197,16 +2197,24 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
       .local_shadow_map_layer_count = config->local_shadow_face_budget,
       .shadow_map_layer_count = config->shadow_cascade_count,
       .shadow_cascade_count = config->shadow_cascade_count,
+      .editor_presenter = config->presenter,
   };
-  if (!vkr_metal_packet_renderer_prepare_frame(renderer->metal_renderer,
-                                               &frame)) {
+  /* A presentation-only frame acquires just the drawable (ADR-111). */
+  const bool8_t prepared = config->present_only
+                               ? vkr_metal_packet_renderer_prepare_present(
+                                     renderer->metal_renderer, &frame)
+                               : vkr_metal_packet_renderer_prepare_frame(
+                                     renderer->metal_renderer, &frame);
+  if (!prepared) {
     renderer->frame_active = false_v;
     return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
   }
   frame.image_index =
       vkr_metal_packet_renderer_frame_image_index(renderer->metal_renderer);
   renderer->frame_number++;
-  MemZero(&renderer->frame_metrics, sizeof(renderer->frame_metrics));
+  /* A presentation-only frame reports the last Scene frame's metrics. */
+  if (!config->present_only)
+    MemZero(&renderer->frame_metrics, sizeof(renderer->frame_metrics));
   *out_setup = (VkrFrame){
       .image_index = frame.image_index,
       .window_width = renderer->last_window_width,
@@ -2284,6 +2292,8 @@ vkr_internal VkrRendererError vkr_renderer_acquire_frame(
   const VkrRendererError error =
       vkr_renderer_backend_prepare_frame(renderer, config, out_frame);
   if (error == VKR_RENDERER_ERROR_NONE) {
+    renderer->frame_presenter = config->presenter || config->present_only;
+    renderer->frame_present_only = config->present_only;
     out_frame->renderer = renderer;
     out_frame->number = renderer->frame_number;
     out_frame->target_generation = renderer->target_generation;
@@ -2339,8 +2349,22 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
     VkrRendererFrameMetrics *out_metrics,
     VkrValidationError *out_validation_error) {
 #if defined(PLATFORM_APPLE)
+  /* A presentation-only frame has no Scene, graph or histories (ADR-111). */
+  if (packet->editor && packet->editor->present_only) {
+    const bool8_t presented =
+        vkr_metal_packet_renderer_present(renderer->metal_renderer, packet);
+    renderer->frame_active = false_v;
+    return presented
+               ? VKR_RENDERER_ERROR_NONE
+               : vkr_renderer_validation_fail(
+                     out_validation_error, VKR_RENDERER_ERROR_SUBMISSION_FAILED,
+                     "metal", "Metal presenter frame failed");
+  }
   VkrFramePreparation prepared;
   vkr_renderer_prepare_frame_data(renderer, packet, &prepared);
+  prepared.frame.editor_presenter = packet->editor &&
+                                    packet->editor->presenter &&
+                                    prepared.frame.scene_rendering;
   VkrMetalPacketResult result = {0};
   const bool8_t submitted = vkr_metal_packet_renderer_submit_packet(
       renderer->metal_renderer, &prepared.frame, &result);
@@ -2661,6 +2685,19 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
   if (error == VKR_RENDERER_ERROR_NONE) {
     error = vkr_frame_input_validate(packet, &result->validation);
   }
+  /* Only a backend with the presenter takes its frames (ADR-111), and a
+     presentation-only frame needs a presentation-only acquisition. */
+  const bool8_t presenter = packet->editor && packet->editor->presenter;
+  const bool8_t present_only = packet->editor && packet->editor->present_only;
+  if (error == VKR_RENDERER_ERROR_NONE &&
+      ((presenter && !vkr_renderer_presenter_supported(renderer)) ||
+       presenter != renderer->frame_presenter ||
+       present_only != renderer->frame_present_only)) {
+    error = vkr_renderer_validation_fail(
+        &result->validation, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+        "packet.editor.presenter",
+        "requires the presenter and a matching acquisition");
+  }
   if (error == VKR_RENDERER_ERROR_NONE &&
       (packet->frame.window_width != work->frame.window_width ||
        packet->frame.window_height != work->frame.window_height)) {
@@ -2786,6 +2823,31 @@ void vkr_renderer_flush_publications(VkrRenderer *renderer) {
 
 bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer) {
   return renderer && renderer->worker;
+}
+
+bool8_t vkr_renderer_presenter_supported(const VkrRenderer *renderer) {
+#if defined(PLATFORM_APPLE)
+  return renderer && renderer->metal_renderer &&
+         vkr_metal_packet_renderer_presenter_supported(
+             renderer->metal_renderer);
+#else
+  (void)renderer;
+  return false_v;
+#endif
+}
+
+uint64_t vkr_renderer_scene_frames_completed(const VkrRenderer *renderer,
+                                             uint64_t *out_completed_ns) {
+#if defined(PLATFORM_APPLE)
+  if (renderer && renderer->metal_renderer)
+    return vkr_metal_packet_renderer_scene_frames_completed(
+        renderer->metal_renderer, out_completed_ns);
+#else
+  (void)renderer;
+#endif
+  if (out_completed_ns)
+    *out_completed_ns = 0u;
+  return 0u;
 }
 
 VkrRendererError

@@ -63,6 +63,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                    frame->sheen_enabled ||
                                    frame->anisotropy_enabled;
   frame->editor_image_available = packet->editor_image_available;
+  frame->editor_presenter = packet->editor_presenter;
   frame->editor_overlay_enabled = packet->scene_rendering &&
                                   packet->input.editor &&
                                   packet->input.editor->overlay_draw_count > 0u;
@@ -504,6 +505,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                        VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_TILED_BLEND] = {"pass.tiled.blend",
                                      VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_EDITOR_PRESENT] = {"pass.editor.present",
+                                        VKR_RG_PASS_TYPE_COMPUTE},
 };
 
 bool8_t vkr_render_graph_register_executors(VkrRgExecutorRegistry *registry) {

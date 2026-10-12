@@ -356,6 +356,10 @@ void vkr_window_toggle_maximize(VkrWindow *window);
 bool8_t vkr_window_is_maximized(const VkrWindow *window);
 void vkr_window_request_close(VkrWindow *window);
 
+/** The highest refresh rate in hertz of the display showing the window, or
+ * zero when unknown. Call on the thread that pumps window events. */
+float32_t vkr_window_refresh_rate(const VkrWindow *window);
+
 /** Switches the window's display mode; leaving a covering mode restores the
  * window's previous frame. Resize events report the new extent, and macOS
  * fullscreen settles asynchronously. False for a window never created. */

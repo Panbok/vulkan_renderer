@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -180,7 +180,7 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 | `ui` | `zoom`, `reduce_motion`, `workbench` (read-only id), `selected` (read-only count), `maximized` (read-only), `icons` (object icons the last build made), `icons_shown` (those the last projection placed on the Scene), `icons_occluded` (those collision hides) | `zoom`, `reduce_motion` |
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |
-| `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures`, `render_width`, `render_height` (the Scene's current internal extent), `texture_mb` (resident material textures in MiB), `frame_ms_max` (the longest of the last 120 frame intervals), `pending_pipelines` (Custom material graphs whose pipelines are being created), `pipelines_late` (camera draws that took a Custom material's fallback since start; [ADR-096](096-custom-material-graphs.md)) | none |
+| `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures`, `render_width`, `render_height` (the Scene's current internal extent), `texture_mb` (resident material textures in MiB), `frame_ms_max` (the longest of the last 120 frame intervals), `pending_pipelines` (Custom material graphs whose pipelines are being created), `pipelines_late` (camera draws that took a Custom material's fallback since start; [ADR-096](096-custom-material-graphs.md)), `scene_frames` and `present_frames` (frames that rendered a Scene and frames that only presented the UI since start; [ADR-111](111-editor-presenter.md)) | none |
 | `gfx` | `render_scale`, `dynamic`, `vsync`, `preset` (`low`, `medium`, `high`, `epic`, `custom`), `restart` (read-only: a change waits for a restart), `invert_mouse_y`, `high_dpi`, `texture_resolution` (texels: 1024, 2048 or 0 for full; ADR-012) | `render_scale`, `dynamic`, `vsync`, `preset` (applied as the Scalability menu does), `invert_mouse_y`, `high_dpi` (macOS only; ADR-043), `texture_resolution` |
 
 Scene writes read the entity with `vkr_scene_edit_read`, change one component,

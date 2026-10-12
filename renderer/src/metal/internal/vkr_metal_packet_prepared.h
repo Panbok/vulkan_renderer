@@ -169,5 +169,10 @@ typedef struct VkrMetalPacketPreparedPass {
       uint64_t destination_offset;
       MTLOrigin origin;
     } picking_readback;
+    /* Editor.Present: the Scene image and the presenter image it fills. */
+    struct {
+      id<MTLTexture> source;
+      id<MTLTexture> destination;
+    } editor_present;
   };
 } VkrMetalPacketPreparedPass;

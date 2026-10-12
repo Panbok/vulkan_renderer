@@ -12,7 +12,7 @@ vkr_metal_packet_renderer_capture_poll(VkrMetalPacketRenderer *renderer,
     if (@available(macOS 26.0, *)) {
       vkr_metal_packet_collect_completed_results(renderer);
       return vkr_capture_ring_poll(&renderer->capture_ring, request_id,
-                                   renderer->completion.signaledValue,
+                                   vkr_metal_packet_completed(renderer),
                                    out_result);
     }
     MemZero(out_result, sizeof(*out_result));
@@ -101,9 +101,10 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
       VKR_METAL_DIAGNOSTIC(renderer, "idle_begin", "slots=%u",
                            renderer->command_slot_count);
       VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
-      if (renderer->submit_value > renderer->completion.signaledValue &&
+      if (renderer->submit_value > vkr_metal_packet_completed(renderer) &&
           !vkr_metal_packet_wait(renderer, renderer->submit_value))
         return false_v;
+      vkr_metal_packet_presenter_wait_idle(renderer);
       for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
         if (!vkr_metal_packet_complete_command_slot(
                 renderer, &renderer->command_slots[i], false_v))
@@ -140,14 +141,14 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
       }
       vkr_metal_packet_harvest_commit_feedback(renderer);
       vkr_capture_ring_collect(&renderer->capture_ring,
-                               renderer->completion.signaledValue);
+                               vkr_metal_packet_completed(renderer));
       const bool8_t collected =
           vkr_metal_packet_collect_memory(renderer,
-                                          renderer->completion.signaledValue,
+                                          vkr_metal_packet_completed(renderer),
                                           NULL) == VKR_METAL_MEMORY_STATUS_OK &&
           vkr_metal_material_table_device_collect(
-              renderer->materials, renderer->completion.signaledValue, NULL) ==
-              VKR_METAL_MATERIAL_STATUS_OK;
+              renderer->materials, vkr_metal_packet_completed(renderer),
+              NULL) == VKR_METAL_MATERIAL_STATUS_OK;
       VKR_METAL_DIAGNOSTIC(renderer, "idle_end", "success=%u", collected);
       VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
       return collected;
@@ -247,7 +248,7 @@ uint64_t vkr_metal_packet_renderer_completed_value(
   if (!renderer)
     return 0;
   if (@available(macOS 26.0, *))
-    return renderer->completion.signaledValue;
+    return vkr_metal_packet_completed(renderer);
   return 0;
 }
 
@@ -312,7 +313,7 @@ bool8_t vkr_metal_packet_renderer_drain(
     if (!vkr_metal_packet_renderer_wait_idle(renderer))
       return false_v;
     vkr_capture_ring_collect(&renderer->capture_ring,
-                             renderer->completion.signaledValue);
+                             vkr_metal_packet_completed(renderer));
 
     for (uint32_t i = 0u; i < renderer->ltc_lut_live_count; ++i) {
       if (vkr_metal_memory_device_retire(renderer->memory,
@@ -825,10 +826,12 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
     if (@available(macOS 26.0, *)) {
       vkr_metal_packet_discard_texture_upload_batch(renderer);
-      if (renderer->frame_prepared)
+      if (renderer->frame_prepared || renderer->present_prepared)
         vkr_metal_packet_finish_frame(renderer, false_v, false_v);
       if (renderer->memory && renderer->materials && renderer->images)
         (void)vkr_metal_packet_renderer_drain(renderer, NULL, NULL);
+      vkr_metal_packet_presenter_wait_idle(renderer);
+      vkr_metal_packet_presenter_destroy(renderer);
       vkr_metal_packet_release_pass_descriptors(renderer);
       vkr_metal_packet_release_command_slots(renderer);
       vkr_metal_packet_release_commit_feedback_records(renderer);

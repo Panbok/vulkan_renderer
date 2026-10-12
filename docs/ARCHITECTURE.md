@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-11
+updated: 2026-10-12
 authority: architecture
 ---
 
@@ -461,6 +461,15 @@ next frame runs before preparing it; their completions return to the asset
 systems, which let frames name a mesh, loaded texture or baked environment only
 once its publication is confirmed. Every other renderer call waits for the
 frame being rendered. See [ADR-082](adr/082-renderer-owned-render-thread.md).
+
+On Metal the editor presents through a presenter, a second queue that
+composites the newest finished Scene image with the UI. Scene frames render on
+the frame queue at the GPU's rate and copy their Scene image to it
+(`Editor.Present`); frames between them carry no Scene and only present
+(`VkrEditorPassPayload.present_only`). The runtime chooses each frame from the
+Scene's measured GPU time and the display interval, so the UI presents at the
+display's rate. Captures, the animation preview and Render Stop present once per
+frame; Vulkan always does. See [ADR-111](adr/111-editor-presenter.md).
 
 `VkrFrame` identifies one acquisition and supplies resolved target facts. It must
 not be copied or modified; its renderer must outlive it. Consumed or stale frame

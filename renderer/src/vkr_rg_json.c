@@ -52,6 +52,13 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_EDITOR_IMAGE_AVAILABLE},
     {"editor_enabled && !editor_image_available",
      VKR_RG_JSON_CONDITION_EDITOR_IMAGE_UNAVAILABLE},
+    {"editor_enabled && editor_image_available && !editor_presenter",
+     VKR_RG_JSON_CONDITION_EDITOR_COMPOSITE},
+    {"editor_enabled && !editor_image_available && !editor_presenter",
+     VKR_RG_JSON_CONDITION_EDITOR_CLEAR},
+    {"editor_enabled && !editor_presenter",
+     VKR_RG_JSON_CONDITION_EDITOR_SWAPCHAIN_UI},
+    {"editor_presenter", VKR_RG_JSON_CONDITION_EDITOR_PRESENTER},
     {"!editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_DISABLED},
     {"hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID},
     {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
@@ -2056,6 +2063,17 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->editor_enabled && frame->editor_image_available;
   case VKR_RG_JSON_CONDITION_EDITOR_IMAGE_UNAVAILABLE:
     return frame->editor_enabled && !frame->editor_image_available;
+  case VKR_RG_JSON_CONDITION_EDITOR_COMPOSITE:
+    return frame->editor_enabled && frame->editor_image_available &&
+           !frame->editor_presenter;
+  case VKR_RG_JSON_CONDITION_EDITOR_CLEAR:
+    return frame->editor_enabled && !frame->editor_image_available &&
+           !frame->editor_presenter;
+  case VKR_RG_JSON_CONDITION_EDITOR_SWAPCHAIN_UI:
+    return frame->editor_enabled && !frame->editor_presenter;
+  case VKR_RG_JSON_CONDITION_EDITOR_PRESENTER:
+    return frame->editor_enabled && frame->editor_image_available &&
+           frame->editor_presenter;
   case VKR_RG_JSON_CONDITION_EDITOR_ENABLED:
     return frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_DISABLED:

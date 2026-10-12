@@ -248,6 +248,10 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
           destinationBytesPerImage:sizeof(float32_t)
                            options:MTLBlitOptionNone];
     break;
+  case VKR_RG_EXECUTOR_EDITOR_PRESENT:
+    [encoder copyFromTexture:pass->editor_present.source
+                   toTexture:pass->editor_present.destination];
+    break;
   default:
     vkr_metal_packet_record_dispatch(renderer, encoder, &pass->dispatch);
     break;

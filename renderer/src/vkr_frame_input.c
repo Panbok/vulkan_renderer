@@ -1174,6 +1174,23 @@ vkr_internal VkrRendererError vkr_frame_input_validate_editor(
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.editor.scene_rendering_stopped",
                         "must be zero or one");
+    if (editor->presenter > true_v || editor->present_only > true_v ||
+        editor->present_wait_scene > true_v)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.editor.presenter", "must be zero or one");
+    if ((editor->present_only || editor->present_wait_scene) &&
+        !editor->presenter)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.editor.present_only", "requires the presenter");
+    /* Captures, the animation preview and a stopped Scene keep their passes
+       in the frame's own graph (ADR-111). */
+    if (editor->presenter &&
+        (editor->scene_rendering_stopped || packet->animation_preview ||
+         (packet->debug && packet->debug->capture)))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.editor.presenter",
+                        "excludes captures, the animation preview and a "
+                        "stopped Scene");
     if (editor->scene_rendering_stopped && packet->debug &&
         packet->debug->capture) {
       const VkrCaptureBatchRequest *capture = packet->debug->capture;

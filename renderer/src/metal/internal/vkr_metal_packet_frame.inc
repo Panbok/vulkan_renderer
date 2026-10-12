@@ -502,11 +502,14 @@ vkr_internal void vkr_metal_packet_record_prepared_ui_draws(
   }
 }
 
+/* `preview` names the frame's animation preview image, whose batches carry
+   texture id UINT32_MAX; NULL drops them. */
 vkr_internal bool8_t vkr_metal_packet_prepare_ui_draw_list(
     VkrMetalPacketRenderer *renderer, VkrMetalPacketUiPass *prepared_pass,
     const VkrPreparedUiDrawList *draw_list, uint32_t target_width,
-    uint32_t target_height, VkrMetalPacketFrameUpload *upload,
-    VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
+    uint32_t target_height, const VkrMetalPacketImageInstance *preview,
+    VkrMetalPacketFrameUpload *upload, VkrMetalPacketResult *result)
+    API_AVAILABLE(macos(26.0)) {
   if (draw_list->batch_count == 0u)
     return true_v;
   if (upload->ui_vertices_gpu == 0u || upload->ui_indices_gpu == 0u ||
@@ -518,14 +521,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ui_draw_list(
   uint8_t *root_cpu = upload->root_cpu + root_offset;
   const uint64_t root_gpu = upload->root_gpu + root_offset;
   VkrMetalPacketTexture preview_texture = {0};
-  if (renderer->graph->packet->input.animation_preview) {
-    VkrRgImageHandle handle = vkr_rg_find_image(
-        renderer->graph, string8_lit("animation_preview_color"));
-    VkrMetalPacketImageInstance *image =
-        vkr_metal_packet_image_instance(renderer, handle);
-    if (image) {
-      preview_texture.resource = image->resource;
-    }
+  if (preview) {
+    preview_texture.resource = preview->resource;
   }
   uint32_t prepared_count = 0u;
   for (uint32_t i = 0u; i < draw_list->batch_count; ++i) {
@@ -1954,7 +1951,7 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
     VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height)
     API_AVAILABLE(macos(26.0)) {
   if (renderer->tiled_retired_color &&
-      renderer->completion.signaledValue >=
+      vkr_metal_packet_completed(renderer) >=
           renderer->tiled_retired_submit_value) {
     [renderer->tiled_retired_color release];
     [renderer->tiled_retired_depth release];
@@ -2417,9 +2414,17 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     prepared->active = true_v;
     if (!packet->input.ui)
       return true_v;
+    const VkrMetalPacketImageInstance *preview =
+        packet->input.animation_preview
+            ? vkr_metal_packet_image_instance(
+                  renderer,
+                  vkr_rg_find_image(renderer->graph,
+                                    string8_lit("animation_preview_color")))
+            : NULL;
     return vkr_metal_packet_prepare_ui_draw_list(
         renderer, &prepared->ui, &packet->input.ui->draw_list,
-        (uint32_t)target.width, (uint32_t)target.height, upload, result);
+        (uint32_t)target.width, (uint32_t)target.height, preview, upload,
+        result);
   }
   /* The graph's executor check admits no other graphics executor. */
   return false_v;
@@ -2487,6 +2492,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_PICKING_READBACK:
     return vkr_metal_packet_prepare_picking_readback(
         renderer, pass, packet, prepared, readback, readback_offset);
+  case VKR_RG_EXECUTOR_EDITOR_PRESENT:
+    return vkr_metal_packet_prepare_editor_present(renderer, pass, prepared);
   default:
     return false_v;
   }
@@ -2494,11 +2501,35 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
 
 #include "metal/internal/vkr_metal_packet_record.inc"
 
+/* Takes the layer's next drawable at the requested extent. A render thread
+   acquires frames too: layer properties change only with the size, inside an
+   explicit transaction, because a thread without a run loop never commits an
+   implicit one. */
+vkr_internal bool8_t vkr_metal_packet_acquire_drawable(
+    VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height) {
+  const CGSize drawable_size = CGSizeMake(width, height);
+  if (!CGSizeEqualToSize(renderer->layer.drawableSize, drawable_size)) {
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    renderer->layer.drawableSize = drawable_size;
+    [CATransaction commit];
+  }
+  [renderer->drawable release];
+  renderer->drawable = [[renderer->layer nextDrawable] retain];
+  if (renderer->drawable && renderer->drawable.texture.width == width &&
+      renderer->drawable.texture.height == height)
+    return true_v;
+  [renderer->drawable release];
+  renderer->drawable = nil;
+  return false_v;
+}
+
 bool8_t vkr_metal_packet_renderer_prepare_frame(
     VkrMetalPacketRenderer *renderer,
     const VkrRenderGraphFrameInfo *frame_info) {
   @autoreleasepool {
-    if (renderer->frame_prepared || renderer->reserved_frame_slot)
+    if (renderer->frame_prepared || renderer->present_prepared ||
+        renderer->reserved_frame_slot)
       return false_v;
     /* A requested reload of the Custom library runs before the frame
        records anything (ADR-096). */
@@ -2537,35 +2568,22 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
       log_error("Metal frame preparation could not acquire a command slot "
                 "(next=%u completed=%llu submitted=%llu)",
                 renderer->next_command_slot,
-                (unsigned long long)renderer->completion.signaledValue,
+                (unsigned long long)vkr_metal_packet_completed(renderer),
                 (unsigned long long)renderer->submit_value);
       return false_v;
     }
     renderer->prepared_frame.image_index =
         (uint32_t)(renderer->active_command_slot - renderer->command_slots);
-    if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
-      /* A render thread acquires frames too. Layer properties change only
-         with the size, inside an explicit transaction, because a thread
-         without a run loop never commits an implicit one. */
-      const CGSize drawable_size =
-          CGSizeMake(frame_info->target_width, frame_info->target_height);
-      if (!CGSizeEqualToSize(renderer->layer.drawableSize, drawable_size)) {
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        renderer->layer.drawableSize = drawable_size;
-        [CATransaction commit];
-      }
-      renderer->drawable = [[renderer->layer nextDrawable] retain];
-      if (!renderer->drawable ||
-          renderer->drawable.texture.width != frame_info->target_width ||
-          renderer->drawable.texture.height != frame_info->target_height) {
-        [renderer->drawable release];
-        renderer->drawable = nil;
-        vkr_metal_packet_release_unsubmitted_command_slot(renderer);
-        log_error("Metal frame preparation could not acquire the requested "
-                  "drawable extent");
-        return false_v;
-      }
+    /* The presenter takes its drawable once the Scene is submitted, so the
+       Scene never waits for the display (ADR-111). */
+    if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
+        !frame_info->editor_presenter &&
+        !vkr_metal_packet_acquire_drawable(renderer, frame_info->target_width,
+                                           frame_info->target_height)) {
+      vkr_metal_packet_release_unsubmitted_command_slot(renderer);
+      log_error("Metal frame preparation could not acquire the requested "
+                "drawable extent");
+      return false_v;
     }
     renderer->reserved_frame_slot = renderer->active_command_slot;
     vkr_metal_packet_detach_active_command_slot(renderer);
@@ -2919,7 +2937,7 @@ vkr_internal VkrRendererError vkr_metal_packet_acquire_frame_readback(
     VkrMetalPacketFrameSubmission *submission) {
   /* Ring acquisition reclaims completed slices. Use the same completion
      observation when preserving pixels so it cannot reclaim a newer slice. */
-  uint64_t readback_completed = renderer->completion.signaledValue;
+  uint64_t readback_completed = vkr_metal_packet_completed(renderer);
   vkr_metal_packet_collect_picking_results(renderer, readback_completed);
   const VkrMetalMemoryStatus readback_capacity_status =
       vkr_metal_packet_ensure_ring_capacity(
@@ -2929,7 +2947,7 @@ vkr_internal VkrRendererError vkr_metal_packet_acquire_frame_readback(
                ? VKR_RENDERER_ERROR_CAPTURE_BUSY
                : vkr_metal_packet_allocation_error(readback_capacity_status);
   }
-  readback_completed = renderer->completion.signaledValue;
+  readback_completed = vkr_metal_packet_completed(renderer);
   const VkrMetalMemoryStatus readback_status =
       vkr_metal_memory_device_acquire_ring(
           renderer->memory, VKR_METAL_RING_KIND_READBACK,
@@ -3071,7 +3089,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
       packet->scene_rendering
           ? vkr_metal_packet_named_texture(renderer, "shadow_map")
           : nil;
-  passed = passed && submission->present &&
+  /* A presenter frame draws the drawable after its Scene (ADR-111). */
+  passed = passed && (submission->present || packet->editor_presenter) &&
            (!packet->scene_rendering || submission->shadow) &&
            (!submission->deferred_diagnostics || submission->deferred_state) &&
            (!submission->readback_layout.exposure_size ||
@@ -3346,16 +3365,18 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_readback(
                                          &submission->batch_capture_barrier);
     out_result->dependency_count++;
   }
-  [capture_encoder copyFromTexture:submission->present
-                       sourceSlice:0
-                       sourceLevel:0
-                      sourceOrigin:MTLOriginMake(0, 0, 0)
-                        sourceSize:MTLSizeMake(1, 1, 1)
-                          toBuffer:(id<MTLBuffer>)submission->readback_object
-                 destinationOffset:submission->readback_slice.offset
-            destinationBytesPerRow:8
-          destinationBytesPerImage:8
-                           options:MTLBlitOptionNone];
+  /* A presenter frame has no drawable yet (ADR-111). */
+  if (submission->present)
+    [capture_encoder copyFromTexture:submission->present
+                         sourceSlice:0
+                         sourceLevel:0
+                        sourceOrigin:MTLOriginMake(0, 0, 0)
+                          sourceSize:MTLSizeMake(1, 1, 1)
+                            toBuffer:(id<MTLBuffer>)submission->readback_object
+                   destinationOffset:submission->readback_slice.offset
+              destinationBytesPerRow:8
+            destinationBytesPerImage:8
+                             options:MTLBlitOptionNone];
   if (packet->scene_rendering) {
     [capture_encoder copyFromTexture:submission->shadow
                          sourceSlice:0
@@ -3448,13 +3469,16 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
   [renderer->command_buffer
       beginCommandBufferWithAllocator:renderer->command_allocator];
   id<MTLResidencySet>
-      residency_sets[2u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
+      residency_sets[3u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
           (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
               renderer->memory),
           (id<MTLResidencySet>)vkr_metal_material_table_device_residency_set(
               renderer->materials),
       };
   NSUInteger residency_set_count = 2u;
+  /* Editor.Present copies into a presenter image (ADR-111). */
+  if (packet->editor_presenter)
+    residency_sets[residency_set_count++] = renderer->presenter.residency;
   for (uint32_t group = 0u;
        group < renderer->active_command_slot->gpu_draw_icb_residency_count;
        ++group)
@@ -3582,7 +3606,7 @@ vkr_internal void vkr_metal_packet_read_synchronous_results(
         &renderer->capture_ring, submit_value, state.exposure_multiplier);
   }
   vkr_capture_ring_collect(&renderer->capture_ring,
-                           renderer->completion.signaledValue);
+                           vkr_metal_packet_completed(renderer));
 
   MemCopy(out_result->color, submission->readback.cpu_address, 4);
   if (packet->scene_rendering) {
@@ -3631,7 +3655,7 @@ vkr_internal void vkr_metal_packet_fill_frame_result(
   if (submission->capture_count > 0) {
     (void)vkr_capture_ring_poll(
         &renderer->capture_ring, submission->capture_request->request_id,
-        renderer->completion.signaledValue, &out_result->capture);
+        vkr_metal_packet_completed(renderer), &out_result->capture);
   }
   out_result->packet_build = renderer->packet_build;
   out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
@@ -3664,7 +3688,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
 
     vkr_metal_packet_prepare_frame_state(renderer, packet, out_result);
-    const uint64_t completed_submit_value = renderer->completion.signaledValue;
+    /* Editor.Present names the presenter image it fills (ADR-111). */
+    renderer->presenter.write_image = UINT32_MAX;
+    renderer->presenter.frame_present_wait = 0u;
+    const uint64_t completed_submit_value =
+        vkr_metal_packet_completed(renderer);
     vkr_capture_ring_collect(&renderer->capture_ring, completed_submit_value);
     uint32_t collected = 0;
     if (vkr_metal_packet_collect_memory(renderer, completed_submit_value,
@@ -3801,8 +3829,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                          (uint32_t)(command_slot - renderer->command_slots),
                          renderer->drawable != nil);
     VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
-    if (renderer->drawable)
-      [renderer->queue waitForDrawable:renderer->drawable];
+    vkr_metal_packet_order_frame_commit(renderer, packet);
     out_result->submit_value = submit_value;
     out_result->source_frame_index = packet->input.frame.frame_index;
     command_slot->pending_result = *out_result;
@@ -3820,6 +3847,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     else
       [renderer->queue commit:submissions count:1];
     [renderer->queue signalEvent:renderer->completion value:submit_value];
+    vkr_metal_packet_presenter_frame_committed(renderer, packet, submit_value);
     if (submission.picking) {
       command_slot->picking_readback =
           (const uint8_t *)submission.readback.cpu_address +
@@ -3856,12 +3884,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
     if (submission.frame_upload.ibl_bake_recorded)
       vkr_metal_packet_publish_ibl_bakes(renderer, submit_value);
-    if (renderer->drawable) {
-      [renderer->queue signalDrawable:renderer->drawable];
-      [renderer->drawable present];
-      VKR_METAL_DIAGNOSTIC(renderer, "drawable_present", "frame=%llu",
-                           (unsigned long long)packet->input.frame.frame_index);
-    }
+    vkr_metal_packet_present_committed_frame(renderer, packet, submit_value);
     const bool8_t capture_submitted =
         submission.capture_count == 0 ||
         vkr_capture_ring_submit(

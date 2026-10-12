@@ -224,6 +224,25 @@ typedef struct VkrStandardSceneRuntime {
   /* Frames submitted and how many of them the render thread acquired. */
   uint64_t frames_submitted;
   uint64_t frames_decoupled;
+  /* The editor's presenter (ADR-111): Scene frames render at their own rate
+     while every frame presents the UI over the newest finished Scene image.
+     Off without renderer support or with VKR_EDITOR_PRESENTER=0. */
+  bool8_t presenter_enabled;
+  /* Submit times of editor Scene frames the GPU has not finished, oldest
+     first, and the renderer's count of finished ones last observed. */
+  float64_t scene_submit_times[4];
+  uint32_t scene_submit_first;
+  uint32_t scene_submit_count;
+  uint64_t scene_frames_seen;
+  /* When the last observed Scene frame finished, and the smoothed seconds a
+     Scene frame takes once the GPU starts it. */
+  float64_t scene_completed_at;
+  float64_t scene_duration;
+  /* Display refresh interval in seconds, sampled each frame. */
+  float64_t refresh_interval;
+  /* Frames that rendered a Scene and frames that only presented the UI. */
+  uint64_t scene_frames_submitted;
+  uint64_t present_frames_submitted;
   float32_t display_exposure;
   VkrShadowDepthRangeSample shadow_depth_range;
   /* With a render thread, decoupled frames are built from these values and

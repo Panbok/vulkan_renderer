@@ -1097,6 +1097,12 @@ typedef struct VkrFrameConfig {
   uint32_t shadow_cascade_count;
   uint32_t local_shadow_map_size;
   uint32_t local_shadow_face_budget;
+  /** The editor payload uses the presenter (ADR-111): the drawable is taken
+      after the Scene is submitted. */
+  bool8_t presenter;
+  /** Acquire only a presentation target for a frame whose editor payload is
+      `present_only` (ADR-111). */
+  bool8_t present_only;
 } VkrFrameConfig;
 
 typedef struct VkrFrame {
@@ -1362,6 +1368,17 @@ bool8_t vkr_renderer_complete_frame(VkrRenderer *renderer,
 void vkr_renderer_flush_publications(VkrRenderer *renderer);
 /** True when submitted frames render on the renderer's own thread. */
 bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer);
+/** True when the editor payload may use the presenter (ADR-111): Metal
+ * window targets. Fixed once the renderer is created; never waits. */
+bool8_t vkr_renderer_presenter_supported(const VkrRenderer *renderer);
+/**
+ * Frames carrying a Scene that the GPU has finished, counted since creation,
+ * and when the last one finished (vkr_platform_get_absolute_time()
+ * nanoseconds). Zero without the presenter. Never waits, so the frame loop
+ * may poll it while the render thread renders.
+ */
+uint64_t vkr_renderer_scene_frames_completed(const VkrRenderer *renderer,
+                                             uint64_t *out_completed_ns);
 
 uint32_t vkr_renderer_capture_channel_count(void);
 const VkrCaptureChannelDescription *

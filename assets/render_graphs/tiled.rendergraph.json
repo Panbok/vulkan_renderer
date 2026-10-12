@@ -2034,10 +2034,27 @@
       "reads": []
     },
     {
+      "name": "Editor.Present",
+      "type": "compute",
+      "domain": "UI",
+      "condition": "scene_rendering && editor_presenter",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "editor_scene_image",
+          "access": "TRANSFER_SRC",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.editor.present"
+    },
+    {
       "name": "Editor.Composite",
       "type": "graphics",
       "domain": "UI",
-      "condition": "editor_enabled && editor_image_available",
+      "condition": "editor_enabled && editor_image_available && !editor_presenter",
       "reads": [
         {
           "image": "editor_scene_image",
@@ -2068,7 +2085,7 @@
       "name": "Editor.Clear",
       "type": "graphics",
       "domain": "UI",
-      "condition": "editor_enabled && !editor_image_available",
+      "condition": "editor_enabled && !editor_image_available && !editor_presenter",
       "attachments": {
         "color": [
           {
@@ -2157,7 +2174,7 @@
       "name": "UI.Editor",
       "type": "graphics",
       "domain": "UI",
-      "condition": "editor_enabled",
+      "condition": "editor_enabled && !editor_presenter",
       "attachments": {
         "color": [
           {

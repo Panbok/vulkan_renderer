@@ -133,6 +133,8 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_TILED_PICKING,
   /** The tiled pipeline's glass, blended surfaces and world text. */
   VKR_RG_EXECUTOR_TILED_BLEND,
+  /** Copies the finished Scene image to the presenter (ADR-111). */
+  VKR_RG_EXECUTOR_EDITOR_PRESENT,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

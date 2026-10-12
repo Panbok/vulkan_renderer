@@ -1338,6 +1338,14 @@ void vkr_window_request_close(VkrWindow *window) {
     [state->window performClose:nil];
 }
 
+float32_t vkr_window_refresh_rate(const VkrWindow *window) {
+  const PlatformState *state =
+      window ? (const PlatformState *)window->platform_state : NULL;
+  NSScreen *screen = state && state->window ? [state->window screen] : nil;
+  /* ProMotion screens report their highest adaptive rate. */
+  return screen ? (float32_t)[screen maximumFramesPerSecond] : 0.0f;
+}
+
 /* A borderless window over the whole screen, above the hidden menu bar and
    Dock; the windowed style and frame return on leaving. */
 static void vkr_window_enter_borderless(PlatformState *state) {

@@ -1,33 +1,57 @@
 /* Bounded command-slot acquisition, completion, timing retention, and uploads.
  */
+vkr_internal void
+vkr_metal_packet_wait_timeout_exit(VkrMetalPacketRenderer *renderer,
+                                   const char *queue, uint64_t value) {
+  VKR_METAL_DIAGNOSTIC(renderer, "completion_timeout_exit",
+                       "queue=%s wait=%llu timeout_ms=%u", queue,
+                       (unsigned long long)value, VKR_METAL_PACKET_TIMEOUT_MS);
+  VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+  fprintf(stderr,
+          "[FATAL]: Metal GPU completion timed out after %u ms "
+          "(%s wait=%llu completed=%llu submitted=%llu). "
+          "Exiting without GPU teardown; unsaved edits are lost.\n",
+          VKR_METAL_PACKET_TIMEOUT_MS, queue, (unsigned long long)value,
+          (unsigned long long)renderer->completion.signaledValue,
+          (unsigned long long)renderer->submit_value);
+  fflush(stderr);
+  /* Completion is unproven. Neither another wait nor normal teardown may
+     recycle resources still referenced by the GPU. Skip exit handlers too. */
+  _Exit(EXIT_FAILURE);
+}
+
+/* Waits until resources used up to frame-queue value `value` are free: the
+   frame queue reaches it, and so does every presenter frame that sampled
+   textures tagged with it (ADR-111). */
 vkr_internal bool8_t vkr_metal_packet_wait(VkrMetalPacketRenderer *renderer,
                                            uint64_t value) {
   VKR_METAL_DIAGNOSTIC(renderer, "wait_begin", "wait=%llu",
                        (unsigned long long)value);
   VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+  /* A presenter tag runs one value ahead of the frame queue's submissions;
+     only presenter frames hold it. */
+  const uint64_t frame_value = Min(value, renderer->submit_value);
   const bool8_t completed =
-      [renderer->completion waitUntilSignaledValue:value
+      [renderer->completion waitUntilSignaledValue:frame_value
                                          timeoutMS:VKR_METAL_PACKET_TIMEOUT_MS]
           ? true_v
           : false_v;
   VKR_METAL_DIAGNOSTIC(renderer, "wait_end", "wait=%llu success=%u",
                        (unsigned long long)value, completed);
-  if (!completed) {
-    VKR_METAL_DIAGNOSTIC(renderer, "completion_timeout_exit",
-                         "wait=%llu timeout_ms=%u", (unsigned long long)value,
-                         VKR_METAL_PACKET_TIMEOUT_MS);
-    VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
-    fprintf(stderr,
-            "[FATAL]: Metal GPU completion timed out after %u ms "
-            "(wait=%llu completed=%llu submitted=%llu). "
-            "Exiting without GPU teardown; unsaved edits are lost.\n",
-            VKR_METAL_PACKET_TIMEOUT_MS, (unsigned long long)value,
-            (unsigned long long)renderer->completion.signaledValue,
-            (unsigned long long)renderer->submit_value);
-    fflush(stderr);
-    /* Completion is unproven. Neither another wait nor normal teardown may
-       recycle resources still referenced by the GPU. Skip exit handlers too. */
-    _Exit(EXIT_FAILURE);
+  if (!completed)
+    vkr_metal_packet_wait_timeout_exit(renderer, "frame", frame_value);
+  VkrMetalPacketPresenter *presenter = &renderer->presenter;
+  for (uint32_t i = 0u; presenter->ready && i < ArrayCount(presenter->slots);
+       ++i) {
+    const VkrMetalPacketPresentSlot *slot = &presenter->slots[i];
+    if (slot->frame_mark >= value ||
+        presenter->completion.signaledValue >= slot->present_value)
+      continue;
+    if (![presenter->completion
+            waitUntilSignaledValue:slot->present_value
+                         timeoutMS:VKR_METAL_PACKET_TIMEOUT_MS])
+      vkr_metal_packet_wait_timeout_exit(renderer, "present",
+                                         slot->present_value);
   }
   VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
   return completed;
@@ -187,7 +211,7 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
 vkr_internal void
 vkr_metal_packet_collect_completed_results(VkrMetalPacketRenderer *renderer)
     API_AVAILABLE(macos(26.0)) {
-  const uint64_t completed = renderer->completion.signaledValue;
+  const uint64_t completed = vkr_metal_packet_completed(renderer);
   for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
     VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
     if (slot->submit_value != 0 && slot->submit_value <= completed)
@@ -239,20 +263,20 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   VKR_METAL_DIAGNOSTIC(renderer, "slot_reuse", "slot=%u wait=%llu upload=%u",
                        (uint32_t)(slot - renderer->command_slots),
                        (unsigned long long)wait_value, upload_path);
-  if (renderer->completion.signaledValue < wait_value) {
+  if (vkr_metal_packet_completed(renderer) < wait_value) {
     vkr_metal_packet_wait_counters_record(&renderer->wait_counters,
                                           upload_path);
     if (!vkr_metal_packet_wait(renderer, wait_value))
       return false_v;
   }
-  vkr_metal_packet_collect_picking_results(renderer,
-                                           renderer->completion.signaledValue);
+  vkr_metal_packet_collect_picking_results(
+      renderer, vkr_metal_packet_completed(renderer));
   if (slot->commit_feedback && slot->pass_timing_requested &&
       slot->result_pending && !slot->result_collected)
     vkr_metal_packet_wait_commit_feedback(slot->commit_feedback);
   vkr_metal_packet_cache_slot_result(renderer, slot);
   vkr_capture_ring_collect(&renderer->capture_ring,
-                           renderer->completion.signaledValue);
+                           vkr_metal_packet_completed(renderer));
   [slot->allocator reset];
   VKR_METAL_DIAGNOSTIC(renderer, "slot_reset", "slot=%u",
                        (uint32_t)(slot - renderer->command_slots));
@@ -338,9 +362,13 @@ vkr_metal_packet_discard_unsubmitted_uses(VkrMetalPacketRenderer *renderer) {
     if (renderer->packet_materials[i].last_use_submit_value > submitted)
       renderer->packet_materials[i].last_use_submit_value = submitted;
   }
+  /* A committed presenter frame's texture tags run one value ahead of the
+     frame queue (ADR-111); they are submitted uses. */
+  const uint64_t texture_floor =
+      Max(submitted, renderer->presenter.texture_floor);
   for (uint32_t i = 0; i < renderer->max_textures; ++i) {
-    if (renderer->textures[i].last_use_submit_value > submitted)
-      renderer->textures[i].last_use_submit_value = submitted;
+    if (renderer->textures[i].last_use_submit_value > texture_floor)
+      renderer->textures[i].last_use_submit_value = texture_floor;
   }
   if (renderer->ibl_black_last_use_submit_value > submitted)
     renderer->ibl_black_last_use_submit_value = submitted;
@@ -360,18 +388,22 @@ vkr_metal_packet_finish_frame(VkrMetalPacketRenderer *renderer,
   VKR_METAL_DIAGNOSTIC(renderer, "frame_finish", "graph=%u committed=%u",
                        graph_active, submitted);
   /* A reserved frame has no speculative draw uses. Independent publication
-   * may already have submitted uploads, or still own an open upload batch. */
-  if (!submitted && !renderer->reserved_frame_slot)
+   * may already have submitted uploads, or still own an open upload batch.
+   * A presentation-only frame owns no command slot and tags only textures it
+   * presents with (ADR-111). */
+  const bool8_t present_only = renderer->present_prepared;
+  if (!submitted && !renderer->reserved_frame_slot && !present_only)
     vkr_metal_packet_discard_unsubmitted_uses(renderer);
   if (graph_active)
     vkr_rg_end_frame(renderer->graph);
   [renderer->drawable release];
   renderer->drawable = nil;
   renderer->frame_prepared = false_v;
+  renderer->present_prepared = false_v;
   if (renderer->reserved_frame_slot) {
     [renderer->reserved_frame_slot->allocator reset];
     renderer->reserved_frame_slot = NULL;
-  } else if (!submitted && renderer->active_command_slot) {
+  } else if (!submitted && !present_only && renderer->active_command_slot) {
     vkr_metal_packet_release_unsubmitted_command_slot(renderer);
   }
 }
@@ -400,10 +432,10 @@ vkr_internal VkrMetalMemoryStatus vkr_metal_packet_ensure_ring_capacity(
   }
   vkr_metal_packet_collect_completed_results(renderer);
   vkr_capture_ring_collect(&renderer->capture_ring,
-                           renderer->completion.signaledValue);
-  return vkr_metal_memory_device_grow_ring(renderer->memory, ring_kind,
-                                           requested_size,
-                                           renderer->completion.signaledValue);
+                           vkr_metal_packet_completed(renderer));
+  return vkr_metal_memory_device_grow_ring(
+      renderer->memory, ring_kind, requested_size,
+      vkr_metal_packet_completed(renderer));
 }
 
 vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_start(
@@ -424,7 +456,7 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_start(
   void *upload_buffer = NULL;
   if (vkr_metal_memory_device_acquire_ring(
           renderer->memory, VKR_METAL_RING_KIND_PUBLICATION, capacity,
-          renderer->completion.signaledValue, &batch->slice, &batch->upload,
+          vkr_metal_packet_completed(renderer), &batch->slice, &batch->upload,
           &upload_buffer) != VKR_METAL_MEMORY_STATUS_OK) {
     vkr_metal_packet_release_unsubmitted_command_slot(renderer);
     return false_v;
@@ -551,7 +583,7 @@ vkr_internal bool8_t vkr_metal_packet_begin_upload(
   void *buffer = NULL;
   if (vkr_metal_memory_device_acquire_ring(
           renderer->memory, VKR_METAL_RING_KIND_PUBLICATION, size,
-          renderer->completion.signaledValue, out_slice, out_upload,
+          vkr_metal_packet_completed(renderer), out_slice, out_upload,
           &buffer) != VKR_METAL_MEMORY_STATUS_OK) {
     vkr_metal_packet_release_unsubmitted_command_slot(renderer);
     return false_v;

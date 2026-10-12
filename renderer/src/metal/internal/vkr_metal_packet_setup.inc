@@ -2835,6 +2835,10 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
             [renderer->queue addResidencySet:drawable_residency];
             VKR_METAL_DIAGNOSTIC(renderer, "drawable_residency",
                                  "registered=1");
+            /* Without the presenter the editor presents with each frame. */
+            if (!vkr_metal_packet_presenter_create(renderer))
+              log_warn("Metal presenter unavailable; the editor UI presents "
+                       "with each Scene frame");
           } else {
             log_error("Metal window layer has no drawable residency set");
           }

@@ -181,7 +181,7 @@ vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
       (void)vkr_metal_memory_device_retire(renderer->memory, indices.handle,
                                            renderer->submit_value);
     (void)vkr_metal_packet_collect_memory(
-        renderer, renderer->completion.signaledValue, NULL);
+        renderer, vkr_metal_packet_completed(renderer), NULL);
     return false_v;
   }
 
@@ -357,7 +357,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
         (uint64_t)create_info->index_count * sizeof(uint32_t);
     VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
     if (!vkr_geometry_ranges_collect(&renderer->geometry_ranges,
-                                     renderer->completion.signaledValue)) {
+                                     vkr_metal_packet_completed(renderer))) {
       vkr_allocator_free(renderer->allocator, submeshes, submesh_bytes,
                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
       return false_v;
@@ -401,7 +401,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
                                         renderer->submit_value))
           log_fatal("Metal failed to retire unpublished geometry ranges");
         (void)vkr_geometry_ranges_collect(&renderer->geometry_ranges,
-                                          renderer->completion.signaledValue);
+                                          vkr_metal_packet_completed(renderer));
       }
       vkr_allocator_free(renderer->allocator, submeshes, submesh_bytes,
                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -762,7 +762,7 @@ bool8_t vkr_metal_packet_renderer_create_material(
               renderer->submit_value);
         }
         (void)vkr_metal_packet_collect_memory(
-            renderer, renderer->completion.signaledValue, NULL);
+            renderer, vkr_metal_packet_completed(renderer), NULL);
         *slot = (VkrMetalPacketMaterial){.generation = generation};
         return false_v;
       }
@@ -856,7 +856,7 @@ bool8_t vkr_metal_packet_renderer_create_material(
               renderer->submit_value);
         }
         (void)vkr_metal_packet_collect_memory(
-            renderer, renderer->completion.signaledValue, NULL);
+            renderer, vkr_metal_packet_completed(renderer), NULL);
         *slot = (VkrMetalPacketMaterial){.generation = generation};
         return false_v;
       }
@@ -1267,7 +1267,7 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
           (void)vkr_metal_memory_device_retire(
               renderer->memory, slot->resource.handle, renderer->submit_value);
           (void)vkr_metal_packet_collect_memory(
-              renderer, renderer->completion.signaledValue, NULL);
+              renderer, vkr_metal_packet_completed(renderer), NULL);
         }
         *slot = (VkrMetalPacketTexture){.generation = generation};
         return false_v;
@@ -1278,6 +1278,7 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
         slot->generation = 1;
       slot->sampler_resource_id = sampler.gpuResourceID._impl;
       slot->last_use_submit_value = renderer->submit_value;
+      slot->upload_submit_value = renderer->submit_value;
       slot->live = true_v;
       *out_handle =
           (VkrTextureHandle){.id = i + 1, .generation = slot->generation};
@@ -1433,7 +1434,7 @@ VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
         (void)vkr_metal_memory_device_retire(
             renderer->memory, slot->resource.handle, renderer->submit_value);
         (void)vkr_metal_packet_collect_memory(
-            renderer, renderer->completion.signaledValue, NULL);
+            renderer, vkr_metal_packet_completed(renderer), NULL);
       }
       *slot = (VkrMetalPacketTexture){.generation = prior_generation};
       return created ? VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED
@@ -1443,6 +1444,7 @@ VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
     slot->generation = handle.generation;
     slot->last_use_submit_value =
         batched ? renderer->submit_value + 1u : renderer->submit_value;
+    slot->upload_submit_value = slot->last_use_submit_value;
     slot->live = true_v;
     VKR_METAL_DIAGNOSTIC(
         renderer, "texture_publish",
@@ -1513,7 +1515,7 @@ bool8_t vkr_metal_packet_renderer_publish_writable_texture(
         (void)vkr_metal_memory_device_retire(
             renderer->memory, slot->resource.handle, renderer->submit_value);
         (void)vkr_metal_packet_collect_memory(
-            renderer, renderer->completion.signaledValue, NULL);
+            renderer, vkr_metal_packet_completed(renderer), NULL);
       }
       *slot = (VkrMetalPacketTexture){.generation = prior_generation};
       return false_v;
@@ -1522,6 +1524,7 @@ bool8_t vkr_metal_packet_renderer_publish_writable_texture(
     slot->sampler_resource_id = sampler.gpuResourceID._impl;
     slot->generation = handle.generation;
     slot->last_use_submit_value = renderer->submit_value;
+    slot->upload_submit_value = renderer->submit_value;
     slot->live = true_v;
     return true_v;
   }
@@ -1760,7 +1763,7 @@ VkrAtmosphereBakeStatus vkr_metal_packet_renderer_atmosphere_bake_status(
   if (!source || !source->atmosphere_bake_active)
     return VKR_ATMOSPHERE_BAKE_FAILED;
   if (source->atmosphere_status == VKR_ATMOSPHERE_BAKE_PENDING &&
-      renderer->completion.signaledValue >=
+      vkr_metal_packet_completed(renderer) >=
           source->atmosphere_completion_submit_value) {
     source->atmosphere_status = !source->atmosphere_ibl_failed &&
                                         source->ibl_sh_slot != VKR_SH_SLOT_BLACK
@@ -3387,7 +3390,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   const VkrMetalMemoryStatus upload_status =
       vkr_metal_memory_device_acquire_ring(
           renderer->memory, VKR_METAL_RING_KIND_UPLOAD, plan.required,
-          renderer->completion.signaledValue, &upload->slice,
+          vkr_metal_packet_completed(renderer), &upload->slice,
           &upload->addresses, &buffer);
   if (upload_status != VKR_METAL_MEMORY_STATUS_OK) {
     *out_error = vkr_metal_packet_allocation_error(upload_status);
