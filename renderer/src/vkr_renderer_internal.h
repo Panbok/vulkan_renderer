@@ -221,7 +221,10 @@ struct VkrRenderer {
   /* False only for the analytic reference path; a frame uses the display-linear
      target when its final pass filters (vkr_renderer_prepare_frame_data). */
   bool8_t post_transform_cache_enabled;
+  /* Screen-space effects the latest scene submission ran; both sample the
+     256-phase SSGI sequence, which harness replays align to. */
   bool8_t submitted_ssgi_enabled;
+  bool8_t submitted_ssr_enabled;
 
   // Per-frame render statistics for UI/debug use.
   VkrRendererFrameMetrics frame_metrics;

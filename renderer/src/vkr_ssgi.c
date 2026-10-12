@@ -97,6 +97,14 @@ VkrSsgiGpuParams vkr_ssgi_gpu_params(
   const VkrSsgiConfig prepared = config ? *config : vkr_ssgi_config_default();
   const uint32_t trace_width = vkr_ssgi_reduced_extent(source_width);
   const uint32_t trace_height = vkr_ssgi_reduced_extent(source_height);
+  /* Row 1 scales view y by cot(fov_y / 2), so one of `source_height` pixels
+     spans 2 / (m11 * height) view units at unit depth. SSGI runs only with
+     perspective projections; a degenerate one widens nothing. */
+  const float32_t vertical_scale = fabsf(projection.m11);
+  const float32_t pixel_footprint =
+      isfinite(vertical_scale) && vertical_scale > 0.0f
+          ? 2.0f / (vertical_scale * (float32_t)source_height)
+          : 0.0f;
   return (VkrSsgiGpuParams){
       .projection = projection,
       .inverse_projection = inverse_projection,
@@ -116,6 +124,7 @@ VkrSsgiGpuParams vkr_ssgi_gpu_params(
       .temporal_weight = prepared.temporal_weight,
       .temporal_depth_relative = prepared.temporal_depth_relative,
       .temporal_depth_absolute = prepared.temporal_depth_absolute,
+      .pixel_footprint = pixel_footprint,
       .previous_projection_m22 = previous_projection.m22,
       .previous_projection_m23 = previous_projection.m23,
       .previous_projection_m32 = previous_projection.m32,

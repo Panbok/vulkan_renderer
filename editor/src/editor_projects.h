@@ -20,6 +20,38 @@ bool8_t vkr_editor_projects_dialog_contains(const VkrEditorProjects *projects,
  * shows a compact launcher instead of the editor shell. */
 bool8_t vkr_editor_projects_launcher(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_loading(const VkrEditorProjects *projects);
+
+/* A project scene opening as the primary scene, from the request that
+   unloads the open one until the opened scene is usable: Bakery prepares
+   it, the runtime reads and activates it, then its brushes, terrain and
+   scatter copies build over the next frames. Texture streaming after that
+   is not part of it. */
+typedef enum VkrEditorSceneOpenPhase {
+  VKR_EDITOR_SCENE_OPEN_NONE,
+  VKR_EDITOR_SCENE_OPEN_PREPARING,
+  VKR_EDITOR_SCENE_OPEN_LOADING,
+  VKR_EDITOR_SCENE_OPEN_BUILDING,
+} VkrEditorSceneOpenPhase;
+
+typedef struct VkrEditorSceneOpening {
+  VkrEditorSceneOpenPhase phase;
+  /* The project scene's id and name; borrowed until the project changes. */
+  const char *scene_id;
+  String8 name;
+  /* What runs now, such as "Reading scene files"; borrowed for the build. */
+  String8 step;
+  /* Seconds since the request. */
+  float64_t seconds;
+  /* The step's countable work, such as brushes built of all that build;
+     `total` is zero when the step has no count. */
+  uint32_t done;
+  uint32_t total;
+} VkrEditorSceneOpening;
+
+/* The scene opening this build, as the last update found it; false and
+   VKR_EDITOR_SCENE_OPEN_NONE when no scene opens. */
+bool8_t vkr_editor_projects_opening(const VkrEditorProjects *projects,
+                                    VkrEditorSceneOpening *out);
 /* A scene job, its activation or a Set primary swap is still in progress.
    A failed or cancelled job waiting for Retry or Back is not. */
 bool8_t vkr_editor_projects_busy(const VkrEditorProjects *projects,

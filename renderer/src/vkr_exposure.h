@@ -159,6 +159,12 @@ typedef struct VkrExposureFrame {
   /** Radiance scale every HDR producer applies, 2^pre_exposure_stops. */
   float32_t pre_exposure;
   int32_t pre_exposure_stops;
+  /** Display exposure known on the CPU: the manual multiplier, or in
+      automatic mode the newest completed adapted exposure (the manual
+      multiplier until one completes). It selects the pre-exposure and lags
+      the GPU's adapted value by the readback latency, which is enough for
+      display-relative shader thresholds. */
+  float32_t display_exposure;
   bool8_t history_valid;
 } VkrExposureFrame;
 

@@ -12,6 +12,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 /* A native publisher table: every publication succeeds at once. */
 typedef struct OverrideTestContext {
@@ -452,12 +453,102 @@ static void test_clone_keeps_overrides(void) {
   override_test_shutdown(&ctx);
 }
 
+/* Whether `handle` resolves to the live geometry named `name`. */
+static bool8_t override_test_geometry_live(VkrGeometrySystem *system,
+                                           VkrGeometryHandle handle,
+                                           const char *name) {
+  const VkrGeometry *geometry =
+      vkr_geometry_system_get_by_handle(system, handle);
+  return geometry && strcmp(geometry->name, name) == 0;
+}
+
+/* Geometry slots: a create takes a released slot first, else one never
+   served, and fails once every slot is live. Eight slots hold the three
+   default geometries and five more; a released slot serves the next create
+   under a new generation, and its old handle stops resolving. */
+static void test_geometry_slots_reuse_released(void) {
+  const VkrAssetPublisher publisher = {
+      .publish_geometry = override_test_publish_geometry,
+      .unpublish_geometry = override_test_unpublish_geometry,
+  };
+  const VkrGeometrySystemConfig config = {
+      .max_geometries = 8u,
+      .asset_publisher = &publisher,
+  };
+  VkrGeometrySystem geometry;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_geometry_system_init(&geometry, &config, &error));
+
+  VkrVertex3d vertices[3] = {0};
+  vertices[1].position = (VkrPackedVec3){1.0f, 0.0f, 0.0f};
+  vertices[2].position = (VkrPackedVec3){0.0f, 1.0f, 0.0f};
+  for (uint32_t i = 0u; i < ArrayCount(vertices); ++i) {
+    vertices[i].normal = (VkrPackedVec3){0.0f, 0.0f, 1.0f};
+    vertices[i].colour = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
+    vertices[i].tangent = (Vec4){1.0f, 0.0f, 0.0f, 1.0f};
+  }
+  const uint32_t indices[3] = {0u, 1u, 2u};
+  VkrGeometryConfig triangle = {
+      .vertex_size = sizeof(VkrVertex3d),
+      .vertex_count = 3u,
+      .vertices = vertices,
+      .index_size = sizeof(uint32_t),
+      .index_count = 3u,
+      .indices = indices,
+      .center = vec3_new(0.5f, 0.5f, 0.0f),
+      .min_extents = vec3_new(0.0f, 0.0f, 0.0f),
+      .max_extents = vec3_new(1.0f, 1.0f, 0.0f),
+  };
+
+  /* The defaults hold ids 1 to 3; the five free slots serve ids 4 to 8. */
+  char names[5][GEOMETRY_NAME_MAX_LENGTH];
+  VkrGeometryHandle handles[5];
+  for (uint32_t i = 0u; i < ArrayCount(handles); ++i) {
+    snprintf(names[i], sizeof(names[i]), "slot_test_%u", i);
+    snprintf(triangle.name, sizeof(triangle.name), "%s", names[i]);
+    handles[i] =
+        vkr_geometry_system_create(&geometry, &triangle, true_v, &error);
+    assert(error == VKR_RENDERER_ERROR_NONE && handles[i].id == 4u + i);
+  }
+  snprintf(triangle.name, sizeof(triangle.name), "slot_test_full");
+  VkrGeometryHandle full =
+      vkr_geometry_system_create(&geometry, &triangle, true_v, &error);
+  assert(full.id == 0u && error == VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+  for (uint32_t i = 0u; i < ArrayCount(handles); ++i) {
+    assert(override_test_geometry_live(&geometry, handles[i], names[i]));
+  }
+
+  /* Releasing id 6 frees its slot, which serves the next create under a new
+     generation; the table is then full again. */
+  const VkrGeometryHandle released = handles[2];
+  vkr_geometry_system_release(&geometry, released);
+  assert(vkr_geometry_system_get_by_handle(&geometry, released) == NULL);
+  snprintf(triangle.name, sizeof(triangle.name), "slot_test_again");
+  const VkrGeometryHandle again =
+      vkr_geometry_system_create(&geometry, &triangle, true_v, &error);
+  assert(error == VKR_RENDERER_ERROR_NONE && again.id == released.id &&
+         again.generation != released.generation);
+  assert(vkr_geometry_system_get_by_handle(&geometry, released) == NULL);
+  snprintf(triangle.name, sizeof(triangle.name), "slot_test_full");
+  full = vkr_geometry_system_create(&geometry, &triangle, true_v, &error);
+  assert(full.id == 0u && error == VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+  assert(override_test_geometry_live(&geometry, again, "slot_test_again"));
+  for (uint32_t i = 0u; i < ArrayCount(handles); ++i) {
+    if (i != 2u) {
+      assert(override_test_geometry_live(&geometry, handles[i], names[i]));
+    }
+  }
+
+  vkr_geometry_system_shutdown(&geometry);
+}
+
 bool32_t run_mesh_material_override_tests(void) {
   printf("--- Starting Mesh Material Override Tests ---\n");
   test_override_is_per_instance();
   test_clone_keeps_overrides();
   test_override_invalidates_by_mobility();
   test_caster_bounds_follow_box();
+  test_geometry_slots_reuse_released();
   printf("--- Mesh Material Override Tests Completed ---\n");
   return true_v;
 }

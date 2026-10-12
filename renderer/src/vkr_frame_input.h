@@ -519,6 +519,11 @@ typedef struct VkrLocalShadowPassPayload {
   /** Faces that wanted a dynamic square this frame; those past
    * VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX show their static square. */
   uint32_t dynamic_faces_wanted;
+  /** Faces whose receiver view names a dynamic square that an earlier
+   * submission drew and that still holds this frame's content: no companion
+   * view, copy or render slot. With `dynamic_render_count` at most
+   * VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX. */
+  uint32_t dynamic_reused_count;
   /** Baked lamps whose moving-caster shadows this frame shows, and the baked
    * lamps whose range held a moving caster in view (the selection's
    * candidates). */

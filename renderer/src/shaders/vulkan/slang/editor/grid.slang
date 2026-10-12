@@ -73,6 +73,18 @@ float4 editor_grid_fragment(VkrVulkanEditorGridOutput input) : SV_Target0
     float t_footprint = fwidth(t);
     if (t <= 0.0f || t >= 1.0f)
         discard;
+    float fade = 1.0f;
+    if (root.camera_position.w > 0.0f)
+    {
+        float distance = length(hit - root.camera_position.xyz);
+        fade = 1.0f - smoothstep(root.params.y, root.params.z, distance);
+    }
+    // The line alpha is scaled by fade * visibility, so a pixel at or past the
+    // fade end would be discarded below: skip the depth read and the shading.
+    if (fade <= 0.0f)
+    {
+        discard;
+    }
     float visibility = 1.0f;
     if (root.params.w == 0.0f)
     {
@@ -96,11 +108,10 @@ float4 editor_grid_fragment(VkrVulkanEditorGridOutput input) : SV_Target0
                 vkr_editor_grid_depth_visibility(t, s, t_footprint, texels);
         }
     }
-    float fade = 1.0f;
-    if (root.camera_position.w > 0.0f)
+    // Fully hidden behind nearer geometry: the line alpha would be 0.
+    if (visibility <= 0.0f)
     {
-        float distance = length(hit - root.camera_position.xyz);
-        fade = 1.0f - smoothstep(root.params.y, root.params.z, distance);
+        discard;
     }
     float3 x_color = float3(1.0f, 0.24f, 0.24f);
     float3 y_color = float3(0.35f, 0.85f, 0.35f);

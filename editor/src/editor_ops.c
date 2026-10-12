@@ -5803,6 +5803,29 @@ static VkrEditorOpStatus ops_run_status(OpsContext *ctx) {
           vkr_bakery_json_bool(arena, frame->scene_loading ||
                                           frame->additive_loading ||
                                           frame->world_loading));
+  /* A project scene opening until it is usable, as the Scene, Outliner and
+     Content show it (ADR-069); null when none opens. */
+  static const char *const opening_phases[] = {"none", "preparing", "loading",
+                                               "building"};
+  VkrEditorSceneOpening opening = {0};
+  VkrBakeryJson *opening_json = vkr_bakery_json_null(arena);
+  if (vkr_editor_projects_opening(ctx->editor ? ctx->editor->projects : NULL,
+                                  &opening) &&
+      (uint32_t)opening.phase < ArrayCount(opening_phases)) {
+    opening_json = vkr_bakery_json_object(arena);
+    ops_set(ctx, opening_json, "phase",
+            vkr_bakery_json_cstr(arena, opening_phases[opening.phase]));
+    ops_set(ctx, opening_json, "scene", ops_string(ctx, opening.name));
+    ops_set(ctx, opening_json, "step", ops_string(ctx, opening.step));
+    ops_set(ctx, opening_json, "seconds", ops_number(ctx, opening.seconds));
+    if (opening.total) {
+      ops_set(ctx, opening_json, "done",
+              vkr_bakery_json_int(arena, opening.done));
+      ops_set(ctx, opening_json, "total",
+              vkr_bakery_json_int(arena, opening.total));
+    }
+  }
+  ops_set(ctx, result, "opening", opening_json);
   VkrBakeryJson *additive = vkr_bakery_json_array(arena);
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
     if (frame->additive[i]) {
@@ -14723,7 +14746,10 @@ static const OpsDef s_ops[] = {
      "with no stay, a door its arrival opens that is still open when it "
      "leaves, or for a vehicle that departs on request (use, ride or a "
      "delay) a door its arrival opens that closes by itself or one its "
-     "on_depart closes that outlasts its delay ('value' the seconds). "
+     "on_depart closes that outlasts its delay ('value' the seconds), "
+     "and light_overflow: the scene has more enabled point lights than "
+     "the renderer's 128-light table, which keeps those nearest the "
+     "camera ('value' the count, 'position' their centroid). "
      "'kinds' reports only the named kinds; "
      "'found' above the issues returned means 'limit' cut the list.",
      "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"

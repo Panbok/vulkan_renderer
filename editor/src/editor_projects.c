@@ -27,6 +27,9 @@
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/systems/vkr_scene_brush.h"
+#include "renderer/systems/vkr_scene_population.h"
+#include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -386,6 +389,21 @@ struct VkrEditorProjects {
    * first scene. Project settings stay unrestored until that job completes. */
   bool8_t creating_project;
   bool8_t waiting_activation;
+  /* The primary scene opening (vkr_editor_projects_opening): this build's
+     state; when the request unloaded the open scene, when the runtime took
+     the prepared scene and when it activated it; whether the activated
+     scene still builds; and the most brushes and scatter rules seen
+     waiting since then, which its counts run to. */
+  VkrEditorSceneOpening opening;
+  /* The Bakery stage `opening.step` names while the job prepares; the
+     progress read rewrites `progress_stage` later in the same update. */
+  char opening_step[128];
+  float64_t opening_started;
+  float64_t opening_loading;
+  float64_t opening_activated;
+  bool8_t opening_building;
+  uint32_t opening_brushes;
+  uint32_t opening_rules;
   /* The running scene job activates its result beside the active scene
      instead of replacing it (ADR-076). */
   bool8_t additive_job;
@@ -2675,6 +2693,11 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
   if (!projects->additive_job && !projects->job_project_assets) {
     *frame->scene_request = (VkrSampleSceneRequest){
         .unload = true_v, .discard_edits = projects->discard_edits};
+    /* The open scene goes now; its successor opens from here. */
+    projects->opening_started = vkr_platform_get_absolute_time();
+    projects->opening_loading = 0.0;
+    projects->opening_activated = 0.0;
+    projects->opening_building = false_v;
   }
   if (!projects->job_creates_project && !projects->job_project_assets &&
       frame->scene_backdrop_blur) {
@@ -4398,6 +4421,154 @@ static bool8_t project_job_failed(VkrEditorProjects *projects,
   return false_v;
 }
 
+/* Whether the running job prepares a scene that opens as the primary one:
+   not a project creation, import preflight, added scene, asset import or
+   scene deletion, and not stopped for Retry or Back. A job that succeeded
+   still prepares until this update completes it and the scene starts
+   loading, so the opening keeps its phase and clock across that frame. */
+static bool8_t project_opening_job(const VkrEditorProjects *projects,
+                                   VkrEditorUi *editor) {
+  if (!projects->job_id || projects->job_creates_project ||
+      projects->job_inspect || projects->additive_job ||
+      projects->job_project_assets ||
+      !strcmp(projects->operation, "delete_scene")) {
+    return false_v;
+  }
+  const VkrEditorProjectJobStatus status =
+      vkr_editor_bakery_project_status(editor->bakery, projects->job_id, NULL);
+  return status == VKR_EDITOR_PROJECT_JOB_QUEUED ||
+         status == VKR_EDITOR_PROJECT_JOB_RUNNING ||
+         status == VKR_EDITOR_PROJECT_JOB_SUCCEEDED;
+}
+
+/* The opened scene while it is still the primary one and rebuilds; NULL
+   once another scene replaced it or the simulation, which stops rebuilds,
+   runs. */
+static const VkrScene *project_opening_scene(const VkrEditorProjects *projects,
+                                             const VkrSampleUiFrame *frame) {
+  const String8 runtime_path = project_string(projects->runtime_path);
+  if (!frame->scene || frame->simulation_running ||
+      !string8_equals(&frame->scene_path, &runtime_path)) {
+    return NULL;
+  }
+  return frame->scene;
+}
+
+/* What the activated scene still builds over the next frames: its brushes,
+   then its terrain, then the scatter copies that rest on the terrain. The
+   counts run to the most seen waiting since activation. False once nothing
+   waits. */
+static bool8_t project_opening_rebuilds(VkrEditorProjects *projects,
+                                        const VkrScene *scene,
+                                        VkrEditorSceneOpening *opening) {
+  const uint32_t brushes = vkr_scene_brush_pending(scene);
+  const bool8_t terrain = !vkr_scene_terrain_settled(scene);
+  const uint32_t rules = vkr_scene_population_pending(scene);
+  projects->opening_brushes = Max(projects->opening_brushes, brushes);
+  projects->opening_rules = Max(projects->opening_rules, rules);
+  if (brushes) {
+    opening->step = string8_lit("Building brushes");
+    opening->total = projects->opening_brushes;
+    opening->done = projects->opening_brushes - brushes;
+    return true_v;
+  }
+  if (terrain) {
+    opening->step = string8_lit("Building terrain");
+    return true_v;
+  }
+  if (rules) {
+    opening->step = string8_lit("Placing scatter copies");
+    opening->total = projects->opening_rules;
+    opening->done = projects->opening_rules - rules;
+    return true_v;
+  }
+  return false_v;
+}
+
+/* This build's scene opening (vkr_editor_projects_opening). Once the
+   opened scene is usable, the log records how long each part took: the
+   Bakery job, the runtime's load and activation, and the rebuilds. */
+static void project_opening_update(VkrEditorProjects *projects,
+                                   VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame) {
+  const float64_t now = vkr_platform_get_absolute_time();
+  VkrEditorSceneOpening opening = {0};
+  if (projects->waiting_activation) {
+    opening.phase = VKR_EDITOR_SCENE_OPEN_LOADING;
+    /* A large overlay applies over several frames before the scene
+       activates. */
+    if (frame->scene_edits_total) {
+      opening.step = string8_lit("Applying edits");
+      opening.done = frame->scene_edits_applied;
+      opening.total = frame->scene_edits_total;
+    } else {
+      opening.step = string8_lit("Reading scene files");
+    }
+    if (projects->opening_loading <= 0.0) {
+      projects->opening_loading = now;
+    }
+  } else if (project_opening_job(projects, editor)) {
+    opening.phase = VKR_EDITOR_SCENE_OPEN_PREPARING;
+    snprintf(projects->opening_step, sizeof(projects->opening_step), "%s",
+             projects->progress_stage);
+    opening.step = projects->opening_step[0]
+                       ? project_string(projects->opening_step)
+                       : string8_lit("Preparing scene");
+  } else if (projects->opening_building) {
+    const VkrScene *scene = project_opening_scene(projects, frame);
+    if (scene && project_opening_rebuilds(projects, scene, &opening)) {
+      opening.phase = VKR_EDITOR_SCENE_OPEN_BUILDING;
+    } else {
+      projects->opening_building = false_v;
+      if (scene && projects->opening_started > 0.0 &&
+          projects->opening_activated > 0.0) {
+        const String8 name = vkr_editor_projects_scene_name(projects);
+        const float64_t loading = projects->opening_loading > 0.0
+                                      ? projects->opening_loading
+                                      : projects->opening_activated;
+        log_info("SCENE_OPEN_TIME scene='%.*s' seconds=%.3f prepare=%.3f "
+                 "load=%.3f build=%.3f",
+                 (int)name.length, name.length ? (const char *)name.str : "",
+                 now - projects->opening_started,
+                 loading - projects->opening_started,
+                 projects->opening_activated - loading,
+                 now - projects->opening_activated);
+      }
+    }
+  }
+  if (opening.phase == VKR_EDITOR_SCENE_OPEN_NONE) {
+    /* Nothing opens; the next request starts the clock again. */
+    projects->opening = opening;
+    projects->opening_started = 0.0;
+    projects->opening_loading = 0.0;
+    projects->opening_activated = 0.0;
+    return;
+  }
+  if (projects->opening_started <= 0.0) {
+    projects->opening_started = now;
+  }
+  opening.seconds = now - projects->opening_started;
+  /* A new scene's job names it before the project lists it. */
+  const uint32_t index = opening.phase == VKR_EDITOR_SCENE_OPEN_BUILDING
+                             ? projects->active_scene
+                             : projects->pending_scene;
+  if (opening.phase == VKR_EDITOR_SCENE_OPEN_PREPARING &&
+      projects->job_creates_scene) {
+    opening.scene_id = projects->scene_id;
+    opening.name = project_string(projects->scene_name);
+  } else if (projects->project && index < projects->project->scene_count) {
+    opening.scene_id = projects->project->scenes[index].id;
+    opening.name = project_string(projects->project->scenes[index].name);
+  }
+  projects->opening = opening;
+}
+
+bool8_t vkr_editor_projects_opening(const VkrEditorProjects *projects,
+                                    VkrEditorSceneOpening *out) {
+  *out = projects ? projects->opening : (VkrEditorSceneOpening){0};
+  return out->phase != VKR_EDITOR_SCENE_OPEN_NONE;
+}
+
 void vkr_editor_projects_update(VkrEditorProjects *projects,
                                 VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
@@ -4459,17 +4630,21 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
         frame->world_loading ? 1u : projects->world_wait - 1u;
   }
   project_update_finalize(projects, editor, frame);
-  /* Models of the World or scene streaming in show as loading (ADR-076). */
+  project_opening_update(projects, editor, frame);
+  /* Models of the World or scene streaming in show as loading (ADR-076);
+     an opening scene shows as loading until it is usable. */
   const bool8_t world_loading = frame->world_loading || projects->world_wait;
   const bool8_t scene_loading =
       (frame->scene_loading || projects->waiting_activation) &&
       projects->project &&
       projects->pending_scene < projects->project->scene_count;
+  const char *loading_scene =
+      projects->opening.scene_id ? projects->opening.scene_id
+      : scene_loading ? projects->project->scenes[projects->pending_scene].id
+                      : "";
   vkr_editor_content_set_loading(
       editor->content, projects->world_meshes,
-      world_loading ? projects->world_mesh_count : 0u,
-      scene_loading ? projects->project->scenes[projects->pending_scene].id
-                    : "");
+      world_loading ? projects->world_mesh_count : 0u, loading_scene);
   /* What the background finalize rebuilds shows as cooking (ADR-077). */
   vkr_editor_content_set_cooking(
       editor->content,
@@ -4616,6 +4791,12 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
       }
       projects->waiting_activation = false_v;
       projects->view = PROJECT_VIEW_EDITOR;
+      /* Its brushes, terrain and scatter copies build from the next frame
+         on; the opening lasts until they settle. */
+      projects->opening_activated = vkr_platform_get_absolute_time();
+      projects->opening_building = true_v;
+      projects->opening_brushes = 0u;
+      projects->opening_rules = 0u;
     } else if (!frame->scene_loading && frame->scene_status.length &&
                string8_equals(
                    &frame->scene_path,
@@ -6580,11 +6761,163 @@ static void project_leave_failed_job(VkrEditorProjects *projects,
   projects->view = view;
 }
 
+/* Past the Bakery job's loader (ADR-069), a compact card in the Scene names
+   the opening scene, what runs, how long the opening has taken and, for
+   counted work, how much is done. It neither blurs nor darkens the Scene,
+   so the World and streamed content stay visible; while the scene builds
+   it sits at the bottom edge, out of the way of what appears. */
+static void project_build_opening_card(const VkrEditorProjects *projects,
+                                       const VkrSampleUiFrame *frame) {
+  const VkrEditorSceneOpening *opening = &projects->opening;
+  if (opening->phase == VKR_EDITOR_SCENE_OPEN_NONE) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const float32_t scale = ui->content_scale;
+  const Vec4 viewport = frame->mapping.panel_rect_px;
+  const float32_t width = viewport.z / scale;
+  const float32_t height = viewport.w / scale;
+  if (width < 160.0f || height < 100.0f) {
+    return;
+  }
+
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t card_width = Min(320.0f, width - 32.0f);
+  const float32_t card_height = 70.0f;
+  const float32_t inner_width = card_width - 28.0f;
+  const bool8_t building = opening->phase == VKR_EDITOR_SCENE_OPEN_BUILDING;
+  const float32_t left = viewport.x / scale + (width - card_width) * 0.5f;
+  const float32_t top =
+      viewport.y / scale +
+      (building ? height - card_height - 44.0f : (height - card_height) * 0.5f);
+  /* The card holds the pointer, so a click on it picks nothing behind. */
+  (void)vkr_ui_input_layer_register(ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER,
+                                    (VkrUiRect){left * scale, top * scale,
+                                                card_width * scale,
+                                                card_height * scale});
+  (void)vkr_ui_input_layer_set(ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER);
+
+  const VkrUiTrack column = {.value = 1, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {{.value = 22, .unit = VKR_UI_TRACK_PX},
+                             {.value = 18, .unit = VKR_UI_TRACK_PX},
+                             {.value = 4, .unit = VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig card = vkr_ui_panel_config_default();
+  card.placement.column = 0;
+  card.placement.row = 0;
+  card.placement.justify = VKR_UI_ALIGN_START;
+  card.placement.align = VKR_UI_ALIGN_START;
+  card.placement.margin_pt.left = left;
+  card.placement.margin_pt.top = top;
+  card.columns = &column;
+  card.column_count = 1;
+  card.rows = rows;
+  card.row_count = ArrayCount(rows);
+  card.style = vkr_editor_overlay_style();
+  card.style.padding_pt = (VkrUiEdges){10, 14, 10, 14};
+  card.style.gap_pt = 3;
+  card.style.min_size_pt = (Vec2){card_width, card_height};
+  card.style.max_size_pt = card.style.min_size_pt;
+  card.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("scene.opening"), &card)) {
+    return;
+  }
+
+  /* The spinner pulses, as Content's and the Outliner's loading marks do,
+     unless motion is reduced. */
+  const float64_t now = vkr_platform_get_absolute_time();
+  const float32_t pulse =
+      ui->reduce_motion ? 1.0f : 0.55f + 0.45f * sinf((float32_t)now * 4.0f);
+  VkrUiWidgetConfig title = vkr_ui_widget_config_default();
+  title.placement.column = 0;
+  title.placement.row = 0;
+  title.placement.justify = VKR_UI_ALIGN_START;
+  title.placement.align = VKR_UI_ALIGN_CENTER;
+  title.style.font_size_pt = 13;
+  title.style.text_color = theme->text;
+  title.style.max_size_pt.x = inner_width;
+  title.icon = VKR_UI_ICON_SPINNER;
+  title.icon_size_pt = 13.0f;
+  title.icon_color = vkr_ui_color_alpha(theme->accent_hover, pulse);
+  vkr_ui_label(ui, string8_lit("scene.opening.title"),
+               opening->name.length ? string8_create_formatted(
+                                          ui->frame_allocator, "Loading %.*s",
+                                          (int)opening->name.length,
+                                          (const char *)opening->name.str)
+                                    : string8_lit("Loading scene"),
+               &title);
+
+  const uint32_t seconds = (uint32_t)Max(0.0, opening->seconds);
+  VkrUiWidgetConfig step = title;
+  step.placement.row = 1;
+  step.style.font_size_pt = theme->font_caption;
+  step.style.text_color = theme->text_secondary;
+  step.icon = VKR_UI_ICON_NONE;
+  step.tooltip = string8_lit(
+      "The scene opens in steps: Bakery prepares it, the runtime reads its "
+      "files (lightmaps and volumes can be large) and applies its edits, "
+      "then its brushes, terrain and scatter copies build. Textures stream "
+      "in after that.");
+  vkr_ui_label(
+      ui, string8_lit("scene.opening.step"),
+      opening->total
+          ? string8_create_formatted(
+                ui->frame_allocator, "%.*s %u of %u  \xc2\xb7  %u s",
+                (int)opening->step.length, (const char *)opening->step.str,
+                opening->done, opening->total, seconds)
+          : string8_create_formatted(ui->frame_allocator,
+                                     "%.*s  \xc2\xb7  %u s",
+                                     (int)opening->step.length,
+                                     (const char *)opening->step.str, seconds),
+      &step);
+
+  /* Counted work fills the bar; other steps keep an activity mark moving
+     through it, as the Bakery job's loader does. */
+  VkrUiPanelConfig bar = vkr_ui_panel_config_default();
+  bar.placement.column = 0;
+  bar.placement.row = 2;
+  bar.placement.justify = VKR_UI_ALIGN_START;
+  bar.placement.align = VKR_UI_ALIGN_START;
+  bar.style.min_size_pt = (Vec2){inner_width, 4};
+  bar.style.max_size_pt = bar.style.min_size_pt;
+  bar.style.background_color = theme->raised;
+  bar.style.corner_radius_pt = (Vec4){2, 2, 2, 2};
+  bar.columns = &column;
+  bar.column_count = 1;
+  bar.rows = &column;
+  bar.row_count = 1;
+  bar.clip_children = true_v;
+  if (vkr_ui_panel_begin(ui, string8_lit("scene.opening.bar"), &bar)) {
+    VkrUiPanelConfig fill = bar;
+    fill.placement.row = 0;
+    if (opening->total) {
+      fill.style.min_size_pt.x =
+          Max(2.0f, inner_width * (float32_t)opening->done /
+                        (float32_t)opening->total);
+    } else {
+      fill.style.min_size_pt.x = inner_width * .25f;
+      const float32_t travel =
+          ui->reduce_motion ? .5f : (float32_t)(.5 - .5 * cos(now * 3));
+      fill.placement.margin_pt.left =
+          (inner_width - fill.style.min_size_pt.x) * travel;
+    }
+    fill.style.max_size_pt = fill.style.min_size_pt;
+    fill.style.background_color = theme->accent;
+    if (vkr_ui_panel_begin(ui, string8_lit("scene.opening.fill"), &fill)) {
+      (void)vkr_ui_panel_end(ui);
+    }
+    (void)vkr_ui_panel_end(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
 void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
                                               VkrEditorUi *editor,
                                               const VkrSampleUiFrame *frame) {
-  if (!projects || projects->view != PROJECT_VIEW_PROGRESS ||
-      !frame->mapping_valid) {
+  if (!projects || !frame->mapping_valid) {
+    return;
+  }
+  if (projects->view != PROJECT_VIEW_PROGRESS) {
+    project_build_opening_card(projects, frame);
     return;
   }
   VkrUiSystem *ui = frame->ui;

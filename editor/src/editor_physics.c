@@ -218,35 +218,108 @@ static void physics_player_start(VkrEditorUi *editor,
                vec3_add(tip, vec3_new(-0.18f, 0.0f, 0.18f)), color, capacity);
 }
 
-/* Player Starts of every loaded container, while not playing. */
+/* The entities of one container that carry one component type, in entity
+   index order as vkr_scene_find_typed lists them. Creating or destroying an
+   entity and adding or removing a typed component each advance the
+   container's structure revision, so a list stands while its container, the
+   scene generation and that revision match. Builds read values and
+   transforms through it live, so value edits still show. */
+typedef struct PhysicsTypedList {
+  const VkrScene *scene;
+  uint64_t generation;
+  uint64_t revision;
+  VkrEntityId *entities;
+  uint32_t count;
+  uint32_t capacity;
+} PhysicsTypedList;
+
+/* Lists the overlay walks every build, found again only after a structural
+   change, so a build does not visit every entity. */
+typedef struct VkrEditorPhysicsCache {
+  /* Splines of the primary scene. */
+  PhysicsTypedList splines;
+  /* IO connections of the selection's container. */
+  PhysicsTypedList connections;
+  /* Player Starts of the primary scene, then of the World. */
+  PhysicsTypedList starts[2];
+} VkrEditorPhysicsCache;
+
+/* At most this many Player Starts of a container draw. */
+#define PHYSICS_PLAYER_START_MAX 16u
+
+/* `list` for the entities of `scene` carrying `type`, found again when its
+   key changed. A list that cannot grow keeps the entities that fit and is
+   found again next build. */
+static const PhysicsTypedList *physics_typed_list(PhysicsTypedList *list,
+                                                  const VkrSampleUiFrame *frame,
+                                                  const VkrScene *scene,
+                                                  const VkrTypeDesc *type) {
+  if (!scene) {
+    list->scene = NULL;
+    list->count = 0u;
+    return list;
+  }
+  if (list->scene == scene && list->generation == frame->scene_generation &&
+      list->revision == scene->structure_revision) {
+    return list;
+  }
+  uint32_t count =
+      vkr_scene_find_typed(scene, type, list->entities, list->capacity);
+  if (count > list->capacity) {
+    VkrEntityId *grown =
+        realloc(list->entities, (size_t)count * sizeof(*grown));
+    if (grown) {
+      list->entities = grown;
+      list->capacity = count;
+      count = vkr_scene_find_typed(scene, type, list->entities, list->capacity);
+    }
+  }
+  list->count = Min(count, list->capacity);
+  list->scene = count <= list->capacity ? scene : NULL;
+  list->generation = frame->scene_generation;
+  list->revision = scene->structure_revision;
+  return list;
+}
+
+void vkr_editor_physics_destroy(VkrEditorUi *editor) {
+  VkrEditorPhysicsCache *cache = editor->physics_cache;
+  if (cache) {
+    free(cache->splines.entities);
+    free(cache->connections.entities);
+    for (uint32_t c = 0; c < ArrayCount(cache->starts); ++c) {
+      free(cache->starts[c].entities);
+    }
+  }
+  free(cache);
+  editor->physics_cache = NULL;
+}
+
+/* Player Starts of every loaded container, while not playing, from the
+   lists physics_player_start_count found this build. */
 static void physics_player_starts(VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame,
                                   uint32_t capacity) {
   const VkrScene *scenes[2] = {frame->scene, frame->world};
   for (uint32_t c = 0; c < ArrayCount(scenes); ++c) {
-    VkrEntityId starts[16];
-    const uint32_t count =
-        scenes[c]
-            ? vkr_scene_find_typed(scenes[c], &vkr_scene_player_start_type,
-                                   starts, ArrayCount(starts))
-            : 0u;
-    for (uint32_t i = 0; i < Min(count, (uint32_t)ArrayCount(starts)); ++i) {
-      if (vkr_scene_entity_visible(scenes[c], starts[i])) {
-        physics_player_start(editor, frame, starts[i], capacity);
+    const PhysicsTypedList *starts = &editor->physics_cache->starts[c];
+    const uint32_t count = Min(starts->count, PHYSICS_PLAYER_START_MAX);
+    for (uint32_t i = 0; i < count; ++i) {
+      if (vkr_scene_entity_visible(scenes[c], starts->entities[i])) {
+        physics_player_start(editor, frame, starts->entities[i], capacity);
       }
     }
   }
 }
 
-static uint32_t physics_player_start_count(const VkrSampleUiFrame *frame) {
-  return (frame->scene
-              ? vkr_scene_find_typed(frame->scene, &vkr_scene_player_start_type,
-                                     NULL, 0u)
-              : 0u) +
-         (frame->world
-              ? vkr_scene_find_typed(frame->world, &vkr_scene_player_start_type,
-                                     NULL, 0u)
-              : 0u);
+static uint32_t physics_player_start_count(VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame) {
+  VkrEditorPhysicsCache *cache = editor->physics_cache;
+  return physics_typed_list(&cache->starts[0], frame, frame->scene,
+                            &vkr_scene_player_start_type)
+             ->count +
+         physics_typed_list(&cache->starts[1], frame, frame->world,
+                            &vkr_scene_player_start_type)
+             ->count;
 }
 
 /* Box outlines of the entities in pending agent changes, in each entity's
@@ -386,9 +459,12 @@ static uint32_t physics_io_lines(VkrEditorUi *editor,
   const bool8_t connection_selected =
       vkr_scene_get_typed(scene, selected, &vkr_scene_io_connection_type) !=
       NULL;
+  const PhysicsTypedList *connections =
+      physics_typed_list(&editor->physics_cache->connections, frame, scene,
+                         &vkr_scene_io_connection_type);
   uint32_t count = 0u;
-  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
-    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+  for (uint32_t i = 0; i < connections->count; ++i) {
+    const VkrEntityId entity = connections->entities[i];
     const SceneIoConnection *value =
         vkr_scene_entity_alive(scene, entity)
             ? vkr_scene_get_typed(scene, entity, &vkr_scene_io_connection_type)
@@ -526,8 +602,10 @@ static uint32_t physics_population_lines(VkrEditorUi *editor,
   }
   uint32_t count = 0u;
   Vec3 points[VKR_SPLINE_POINT_MAX];
-  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
-    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+  const PhysicsTypedList *splines = physics_typed_list(
+      &editor->physics_cache->splines, frame, scene, &vkr_scene_spline_type);
+  for (uint32_t i = 0; i < splines->count; ++i) {
+    const VkrEntityId entity = splines->entities[i];
     if (!vkr_scene_entity_alive(scene, entity) ||
         !vkr_scene_get_typed(scene, entity, &vkr_scene_spline_type)) {
       continue;
@@ -538,6 +616,10 @@ static uint32_t physics_population_lines(VkrEditorUi *editor,
     const uint32_t segments = vkr_spline_segment_count(point_count, closed);
     const bool8_t selected = entity.u64 == selected_spline.u64;
     const uint32_t chords = selected ? 12u : 4u;
+    if (!draw) {
+      count += segments * chords;
+      continue;
+    }
     const Vec4 color = selected ? (Vec4){1.0f, 0.72f, 0.2f, 1.0f}
                                 : (Vec4){0.7f, 0.75f, 0.85f, 1.0f};
     for (uint32_t s = 0; s < segments; ++s) {
@@ -547,10 +629,8 @@ static uint32_t physics_population_lines(VkrEditorUi *editor,
         const Vec3 to =
             vkr_spline_evaluate(points, point_count, closed, s,
                                 (float32_t)c / (float32_t)chords, NULL);
-        if (draw) {
-          physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from, to, color,
-                       capacity);
-        }
+        physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from, to, color,
+                     capacity);
         count++;
         from = to;
       }
@@ -1400,10 +1480,18 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   /* The Model view's stage shows none of the level's overlay, only the
      decal and scatter tools' previews over its subject. */
   const bool8_t model = editor->view_shown == VKR_EDITOR_VIEW_MODEL;
+  if (!editor->physics_cache) {
+    editor->physics_cache = calloc(1u, sizeof(*editor->physics_cache));
+    if (!editor->physics_cache) {
+      editor->physics_lines_truncated = true_v;
+      return;
+    }
+  }
   const uint32_t bodies =
       frame->scene && !model ? vkr_scene_physics_body_count(frame->scene) : 0u;
   const uint32_t starts =
-      frame->scripts_running || model ? 0u : physics_player_start_count(frame);
+      frame->scripts_running || model ? 0u
+                                      : physics_player_start_count(editor, frame);
   /* Pending agent changes and a brush being drawn draw in this overlay too
      (ADR-084). */
   const VkrEditorLevelReport *report = editor->level_report;

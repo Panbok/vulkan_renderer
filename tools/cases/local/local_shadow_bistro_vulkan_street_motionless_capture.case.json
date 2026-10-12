@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.bistro.vulkan.local_shadow_street_motionless_capture",
   "suite": "local",
-  "description": "Vulkan Bistro street view final color with a motionless dynamic mannequin under a street lamp: a dynamic square must match a full redraw; the Ultra budget redraws every reached light each frame without the split, so captures compare before and after it.",
+  "description": "Vulkan Bistro street view with a motionless dynamic mannequin under a street lamp: its dynamic square must match a full redraw, and after warmup it is reused and drawn by no frame because the mannequin has not moved.",
   "scene": "assets/scenes/fixtures/bistro_motionless_caster_local.scene.json",
   "seed": 1,
   "resolution": [
@@ -80,9 +80,14 @@
       "max": 0
     },
     {
-      "metric": "draw.local_shadow.faces_dynamic",
+      "metric": "draw.local_shadow.dynamic_faces_wanted",
       "stat": "min",
       "min": 1
+    },
+    {
+      "metric": "draw.local_shadow.faces_dynamic",
+      "stat": "max",
+      "max": 0
     }
   ],
   "target_image_count": 3,

@@ -29,8 +29,13 @@
 
 /* Edge of the world cells that group brush collision, in meters. */
 #define VKR_SCENE_BRUSH_CELL_SIZE 32.0f
-/* Brushes rebuilt per update; the rest wait for the next one. */
+/* Brushes rebuilt per update at most; the rest wait for the next one. */
 #define VKR_SCENE_BRUSH_REBUILD_BUDGET 256u
+/* Milliseconds of brush rebuilds one update spends, checked after each
+   rebuild; the brushes left wait for the next update. An update rebuilds
+   at least one brush, and finishes the collision bodies and first meshes of
+   the brushes it rebuilt. */
+#define VKR_SCENE_BRUSH_REBUILD_BUDGET_MS 6.0
 
 /* A `brush`, `brush_face` or `blockout` component of `entity` changed,
    appeared or left. */
@@ -41,8 +46,9 @@ void vkr_scene_brush_parent_changed(VkrScene *scene, VkrEntityId entity,
                                     VkrEntityId old_parent,
                                     VkrEntityId new_parent);
 void vkr_scene_brush_entity_destroying(VkrScene *scene, VkrEntityId entity);
-/* Rebuilds settled dirty brushes and the collision cells and mover bodies
-   they touch. */
+/* Rebuilds settled dirty brushes within the count and time budgets, then
+   attaches the meshes of those that had none and rebuilds the collision
+   cells and mover bodies they touch. */
 void vkr_scene_brush_update(VkrScene *scene);
 /* Moves the kinematic body of `mover`'s brushes from their rest from the
    next physics step, turned by `rotation` about the world point `pivot` and

@@ -19,7 +19,9 @@
     "wind_mps": [10, 0]
   },
   "lightmaps": {
-    "path": "assets/scenes/bistro_tiled.vklm"
+    "tiled": {
+      "path": "assets/scenes/bistro_tiled.vklm"
+    }
   },
   "reflection_probes": [
     {

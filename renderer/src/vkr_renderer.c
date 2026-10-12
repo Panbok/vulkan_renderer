@@ -403,9 +403,13 @@ vkr_renderer_record_local_shadow_metrics(VkrRenderer *renderer,
   shadow->local_faces_dynamic = local->dynamic_render_count;
   shadow->local_faces_copied = local->dynamic_render_count;
   shadow->local_dynamic_faces_wanted = local->dynamic_faces_wanted;
+  /* A face that keeps a dynamic square an earlier frame drew shows it
+     without a draw; it is not dropped. */
+  const uint32_t dynamic_shown =
+      local->dynamic_render_count + local->dynamic_reused_count;
   shadow->local_dynamic_faces_dropped =
-      local->dynamic_faces_wanted > local->dynamic_render_count
-          ? local->dynamic_faces_wanted - local->dynamic_render_count
+      local->dynamic_faces_wanted > dynamic_shown
+          ? local->dynamic_faces_wanted - dynamic_shown
           : 0u;
   shadow->local_dynamic_layers = local->dynamic_layer_count;
 }
@@ -640,7 +644,13 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .requested_present_mode = backend_config->requested_present_mode,
       .width = width,
       .height = height,
-      .image_count = renderer->present_target.image_count,
+      /* A window without a requested count takes the count its resizes
+         recreate it with, so the first swapchain is not the driver's
+         minimum (often two images, which halves a FIFO rate whenever
+         recording plus GPU time misses one refresh). */
+      .image_count = renderer->present_target.image_count
+                         ? renderer->present_target.image_count
+                         : renderer->impl.caps.present_target_image_count,
       .sampled_image_capacity =
           16384u + VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS,
       .storage_image_capacity = 1024u,
@@ -2327,6 +2337,7 @@ vkr_renderer_commit_submitted_frame(VkrRenderer *renderer,
   if (prepared->frame.scene_rendering) {
     vkr_temporal_commit(&renderer->temporal_state, &prepared->temporal_input);
     renderer->submitted_ssgi_enabled = prepared->frame.ssgi_enabled;
+    renderer->submitted_ssr_enabled = prepared->frame.ssr_enabled;
     renderer->submitted_fog = prepared->frame.fog;
     renderer->submitted_froxel_fog = prepared->frame.froxel_fog;
     renderer->temporal_reset_reasons = 0u;

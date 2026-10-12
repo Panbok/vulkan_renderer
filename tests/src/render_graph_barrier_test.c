@@ -341,7 +341,6 @@ vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
     assert(frame.gpu_draw_candidate_capacity == candidates[i]);
     assert(frame.transmission_gpu_draw_candidate_capacity == candidates[i]);
     assert(frame.gpu_draw_visible_capacity == visible[i]);
-    assert(frame.transmission_gpu_draw_visible_capacity == visible[i]);
     const uint32_t one_bucket_count = Min(counts[i], 65536u);
     assert(frame.gpu_draw_visible_capacity / 8u >= one_bucket_count);
   }
@@ -366,9 +365,9 @@ vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
       "\"transmission_gpu_draw_candidate_capacity\",\"bytes_per_element\":128},"
       "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\","
       "\"GROW_ONLY\"]},"
-      "{\"name\":\"transmission_arguments\",\"type\":\"buffer\",\"size\":{"
+      "{\"name\":\"view_arguments\",\"type\":\"buffer\",\"size\":{"
       "\"mode\":\"draw_elements\",\"count_source\":"
-      "\"transmission_gpu_draw_visible_capacity\",\"bytes_per_element\":20},"
+      "\"gpu_draw_view_candidates\",\"bytes_per_element\":20},"
       "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\","
       "\"GROW_ONLY\"]}],"
       "\"passes\":[]}";
@@ -379,9 +378,11 @@ vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
   world.gpu_candidate_count = 3u;
   world.transmission_gpu_candidate_count = 1u;
   vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  /* The camera and two cascades: per-view rows are four candidates each. */
+  frame.shadow_cascade_count = 2u;
   assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
-  const uint64_t bytes[] = {192u, 5120u, 128u, 160u};
+  const uint64_t bytes[] = {192u, 5120u, 128u, 240u};
   for (uint32_t i = 0u; i < ArrayCount(bytes); ++i) {
     assert(graph->buffers.data[i].desc.size == bytes[i]);
     assert(graph->buffers.data[i].desc.flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY);
@@ -435,6 +436,83 @@ vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
   vkr_rg_json_destroy(&json);
   arena_destroy(arena);
   printf("  test_draw_table_capacity_and_json_sizes PASSED\n");
+}
+
+/* Shadow.LocalMask runs for the shadowed lights whose range reaches the
+   camera frustum, and for selected baked lamps. The camera stands at the
+   origin and looks down -Z through a 90 degree lens. */
+vkr_internal void test_local_shadow_mask_gate(void) {
+  printf("  Running test_local_shadow_mask_gate...\n");
+  static VkrLocalShadowPassPayload local_shadow;
+  MemZero(&local_shadow, sizeof(local_shadow));
+  local_shadow.view_count = 6u;
+  local_shadow.map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT;
+  local_shadow.face_budget = 1u;
+  const VkrPointLight lights[] = {
+      /* 10 m ahead. */
+      {.position = vec3_new(0.0f, 0.0f, -10.0f),
+       .range = 5.0f,
+       .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT},
+      /* 20 m behind, out of reach. */
+      {.position = vec3_new(0.0f, 0.0f, 20.0f),
+       .range = 5.0f,
+       .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT},
+      /* Behind, but its range crosses the near plane. */
+      {.position = vec3_new(0.0f, 0.0f, 4.0f),
+       .range = 5.0f,
+       .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT},
+      /* Ahead, without a shadow view. */
+      {.position = vec3_new(0.0f, 0.0f, -10.0f),
+       .range = 5.0f,
+       .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT},
+      /* Behind, but a polynomial light has no finite range. */
+      {.position = vec3_new(0.0f, 0.0f, 20.0f),
+       .kind = VKR_POINT_LIGHT_KIND_POLYNOMIAL},
+      /* Ahead, but 90 m right of the 10 m half-width of the view there. */
+      {.position = vec3_new(100.0f, 0.0f, -10.0f),
+       .range = 5.0f,
+       .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT},
+  };
+  const uint32_t first_views[] = {1u, 2u, 3u, 0u, 4u, 5u};
+  MemCopy(local_shadow.light_first_view, first_views, sizeof(first_views));
+  VkrFrameLighting lighting = {
+      .point_lights = lights,
+      .point_light_count = ArrayCount(lights),
+  };
+  VkrPreparedFrame packet = {
+      .input = {.lighting = &lighting, .local_shadow = &local_shadow},
+  };
+  packet.input.globals.view = mat4_look_at(
+      vec3_zero(), vec3_new(0.0f, 0.0f, -1.0f), vec3_new(0.0f, 1.0f, 0.0f));
+  packet.input.globals.projection =
+      mat4_perspective_reversed(vkr_to_radians(90.0f), 1.0f, 0.1f, 1000.0f);
+  packet.temporal.jittered_projection = packet.input.globals.projection;
+  VkrRenderGraphFrameInfo frame = {.target_width = 16u, .target_height = 16u};
+  VkrGtaoGpuParams gtao = {0};
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(frame.local_shadow_mask_lights.words[0] == 0x15u);
+  assert(frame.local_shadow_mask_lights.words[1] == 0u);
+  assert(frame.local_shadow_mask_active);
+
+  /* Only the light behind the camera is shadowed: no pixel needs the mask. */
+  const uint32_t behind_only[] = {0u, 2u, 0u, 0u, 0u, 0u};
+  MemCopy(local_shadow.light_first_view, behind_only, sizeof(behind_only));
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(frame.local_shadow_mask_lights.words[0] == 0u);
+  assert(!frame.local_shadow_mask_active);
+
+  /* A selected baked lamp still needs the pass for its hidden light. */
+  local_shadow.baked_lamp_count = 1u;
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(frame.local_shadow_mask_active);
+
+  /* The tiled pipeline has no mask pass. */
+  MemCopy(local_shadow.light_first_view, first_views, sizeof(first_views));
+  packet.tiled_pipeline = true_v;
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(frame.local_shadow_mask_lights.words[0] == 0u);
+  assert(!frame.local_shadow_mask_active);
+  printf("  test_local_shadow_mask_gate PASSED\n");
 }
 
 vkr_internal void
@@ -1681,7 +1759,6 @@ vkr_internal void test_cascade_static_layer_copy_barriers(void) {
         .gpu_draw_candidate_capacity = 1u,
         .gpu_draw_visible_capacity = 8u,
         .transmission_gpu_draw_candidate_capacity = 1u,
-        .transmission_gpu_draw_visible_capacity = 8u,
         .target_width = 1000u,
         .target_height = 800u,
         .window_width = 1000u,
@@ -2068,7 +2145,6 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .gpu_draw_candidate_capacity = 1u,
       .gpu_draw_visible_capacity = 8u,
       .transmission_gpu_draw_candidate_capacity = 1u,
-      .transmission_gpu_draw_visible_capacity = 8u,
       .target_width = VKR_TEXTURE_MAX_DIMENSION,
       .target_height = VKR_TEXTURE_MAX_DIMENSION,
       .window_width = VKR_TEXTURE_MAX_DIMENSION,
@@ -2094,6 +2170,7 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .anisotropy_enabled = true_v,
       .lighting_layers_enabled = true_v,
       .local_shadow_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      .local_shadow_mask_active = true_v,
       .local_shadow_transmission_layer_count =
           VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
       .local_shadow_refractive_casters = true_v,
@@ -2267,7 +2344,6 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .gpu_draw_candidate_capacity = 1u,
       .gpu_draw_visible_capacity = 8u,
       .transmission_gpu_draw_candidate_capacity = 1u,
-      .transmission_gpu_draw_visible_capacity = 8u,
       .target_width = 960u,
       .target_height = 540u,
       .window_width = 960u,
@@ -2297,7 +2373,6 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .gpu_draw_candidate_capacity = 1u,
       .gpu_draw_visible_capacity = 8u,
       .transmission_gpu_draw_candidate_capacity = 1u,
-      .transmission_gpu_draw_visible_capacity = 8u,
       .target_width = 3840u,
       .target_height = 2160u,
       .window_width = 3840u,
@@ -2900,6 +2975,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_transmission_condition();
   test_transmission_compact_conditions_and_viewport_buffer();
   test_draw_table_capacity_and_json_sizes();
+  test_local_shadow_mask_gate();
   test_shadow_map_capacity_is_independent_of_active_cascades();
   test_shadow_reads_follow_active_cascades();
   test_repeat_condition_mask_filters_iterations();

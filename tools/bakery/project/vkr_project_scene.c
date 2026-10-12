@@ -1189,6 +1189,35 @@ bool8_t vkr_project_validate_semantics(VkrProjectJob *job,
       }
     }
   }
+  /* One lightmap set per pipeline class (ADR-088), each baked and replaced
+     on its own platform: `tiled` and `desktop`, each null or a reference
+     to its lightmap asset. */
+  const VkrBakeryJson *lightmaps = vkr_bakery_json_get(scene, "lightmaps");
+  if (lightmaps && lightmaps->type != VKR_BAKERY_JSON_NULL &&
+      lightmaps->type != VKR_BAKERY_JSON_OBJECT) {
+    return vkr_project_fail(job, "Scene lightmaps must be an object");
+  }
+  for (const VkrBakeryJson *member =
+           lightmaps && lightmaps->type == VKR_BAKERY_JSON_OBJECT
+               ? lightmaps->first
+               : NULL;
+       member; member = member->next) {
+    const char *name = (const char *)member->key.str;
+    if (strcmp(name, "tiled") != 0 && strcmp(name, "desktop") != 0) {
+      return vkr_project_fail(
+          job,
+          "Scene lightmaps name one set per pipeline class, as "
+          "lightmaps.tiled and lightmaps.desktop; '%s' is not a class. Port "
+          "a scene that names one set for every class",
+          name);
+    }
+    if (member->type != VKR_BAKERY_JSON_NULL &&
+        (member->type != VKR_BAKERY_JSON_OBJECT ||
+         !vkr_bakery_json_get(member, "asset"))) {
+      return vkr_project_fail(
+          job, "Scene lightmaps.%s must reference a lightmap asset", name);
+    }
+  }
   return true_v;
 }
 

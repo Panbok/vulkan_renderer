@@ -1,5 +1,8 @@
 #include "vkr_project_internal.h"
 
+#include "assets/vkr_lightmap_set.h"
+#include "filesystem/filesystem.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1097,8 +1100,10 @@ vkr_internal bool8_t vkr_project_bake_probes(VkrProjectJob *job,
   return true_v;
 }
 
-/* A published scene-bake artifact and the scene block that references it. */
+/* A published scene-bake artifact and the scene block that references it:
+   member `scene_key` of `owner`, the scene or one of its objects. */
 typedef struct VkrProjectBakeArtifact {
+  VkrBakeryJson *owner;
   const char *scene_key;
   const char *kind;
   const char *name;
@@ -1114,9 +1119,9 @@ typedef struct VkrProjectBakeArtifact {
 
 /* Records a published bake artifact in the scene's assets and points the
    scene block at it. */
-vkr_internal bool8_t vkr_project_record_bake_artifact(
-    VkrProjectJob *job, VkrBakeryJson *scene, const char *asset_root,
-    const VkrProjectBakeArtifact *artifact) {
+vkr_internal bool8_t
+vkr_project_record_bake_artifact(VkrProjectJob *job, const char *asset_root,
+                                 const VkrProjectBakeArtifact *artifact) {
   Arena *arena = job->arena;
   const char *path_reference = NULL;
   char hash[VKR_BAKERY_SHA256_HEX];
@@ -1165,7 +1170,7 @@ vkr_internal bool8_t vkr_project_record_bake_artifact(
                       vkr_project_reference(job, "scene",
                                             vkr_project_json_text(record, "id"),
                                             artifact->role));
-  vkr_bakery_json_set(arena, scene, artifact->scene_key, block);
+  vkr_bakery_json_set(arena, artifact->owner, artifact->scene_key, block);
   return true_v;
 }
 
@@ -1286,6 +1291,7 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
                               "Diffuse baker did not publish its artifact");
     }
     const VkrProjectBakeArtifact artifact = {
+        .owner = scene,
         .scene_key = "diffuse_volume",
         .kind = "volume",
         .name = "Diffuse volume",
@@ -1297,15 +1303,52 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
         .previous = previous,
     };
     VKR_PROJECT_TRY(
-        vkr_project_record_bake_artifact(job, scene, asset_root, &artifact));
+        vkr_project_record_bake_artifact(job, asset_root, &artifact));
   }
   vkr_bakery_json_set(arena, scene, "assets", job->assets);
   return true_v;
 }
 
-/* Bakes the scene's lightmap set (ADR-087) from the effective runtime scene
-   into a new build revision and points the scene's `lightmaps` block at it.
-   A scene whose models carry no lightmap UVs drops any previous set. */
+/* Checks from its header and plane table alone that the set a bake
+   published holds the planes of this host's pipeline class, the class whose
+   reference it replaces. */
+vkr_internal bool8_t vkr_project_check_lightmap_class(VkrProjectJob *job,
+                                                      const char *path) {
+  VkrBakeryStat stat = {0};
+  if (!vkr_bakery_stat(path, &stat) || !stat.exists || stat.is_directory) {
+    return vkr_project_fail(job, "Lightmap baker did not publish its artifact");
+  }
+  FILE *file = file_fopen(path, "rb");
+  if (!file) {
+    return vkr_project_fail(job, "Cannot read the published lightmaps: %s",
+                            path);
+  }
+  uint8_t prefix[VKR_LIGHTMAP_SET_PLANES_PREFIX_BYTES];
+  const uint64_t wanted = Min(stat.size, (uint64_t)sizeof(prefix));
+  const uint64_t read = (uint64_t)fread(prefix, 1u, (size_t)wanted, file);
+  fclose(file);
+  VkrLightmapSet set = {0};
+  VkrLightmapClassPlanes planes;
+  if (read != wanted || !vkr_lightmap_set_decode_planes(
+                            prefix, wanted, stat.size, job->arena, &set)) {
+    return vkr_project_fail(job, "Lightmap baker published an invalid set: %s",
+                            path);
+  }
+  if (!vkr_lightmap_set_class_planes(&set, VKR_PROJECT_LIGHTMAP_DESKTOP,
+                                     &planes)) {
+    return vkr_project_fail(job,
+                            "Lightmap baker published a set without the %s "
+                            "pipeline's planes: %s",
+                            VKR_PROJECT_LIGHTMAP_CLASS, path);
+  }
+  return true_v;
+}
+
+/* Bakes the lightmap set of this host's pipeline class (ADR-088) from the
+   effective runtime scene into a new build revision and points the scene's
+   `lightmaps.<class>` reference at it. The other class's reference and set
+   stay, so each platform's bake replaces only its own. A scene with nothing
+   to bake for this class drops this class's set alone. */
 vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
                                                 VkrBakeryJson *scene,
                                                 const char *asset_root) {
@@ -1378,33 +1421,56 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
   VKR_PROJECT_TRY(vkr_project_run_bakery(
       job, arguments.items, arguments.count, "Baking lightmaps", "lightmap",
       VKR_PROJECT_LIGHTMAP_NO_INSTANCES, &code));
-  const VkrBakeryJson *previous_reference =
-      vkr_bakery_json_get(vkr_bakery_json_get(scene, "lightmaps"), "asset");
+  /* Validation admits only null or an object here. */
+  VkrBakeryJson *lightmaps = vkr_bakery_json_get(scene, "lightmaps");
+  const VkrBakeryJson *previous_reference = vkr_bakery_json_get(
+      vkr_bakery_json_get(lightmaps, VKR_PROJECT_LIGHTMAP_CLASS), "asset");
   VkrBakeryJson *previous = vkr_project_record_by_id(
       job->assets, vkr_project_json_text(previous_reference, "id"));
+  /* Both classes name one record when one set holds both classes' planes
+     (VKLM v4); the record then stays for the other class, and this bake
+     records its own. */
+  const char *other_id = vkr_project_json_text(
+      vkr_bakery_json_get(
+          vkr_bakery_json_get(lightmaps, VKR_PROJECT_LIGHTMAP_OTHER_CLASS),
+          "asset"),
+      "id");
+  if (previous && other_id &&
+      strcmp(vkr_project_json_text(previous, "id"), other_id) == 0) {
+    previous = NULL;
+  }
   if (code == VKR_PROJECT_LIGHTMAP_NO_INSTANCES) {
     (void)vkr_project_remove_tree(directory);
     if (previous) {
       vkr_project_remove_record(job->assets, previous);
     }
-    vkr_bakery_json_remove(scene, "lightmaps");
-    const char *warning =
-        "Lightmaps skipped: nothing to bake on this platform. Either no "
-        "scene model carries lightmap UVs (turn on Lightmap UVs in Bakery "
-        "and rebuild the scene's models), or the scene has no static lamps "
-        "or emission, the only light a desktop bake holds";
+    vkr_bakery_json_remove(lightmaps, VKR_PROJECT_LIGHTMAP_CLASS);
+    if (!vkr_project_truthy(lightmaps)) {
+      vkr_bakery_json_remove(scene, "lightmaps");
+    }
+    const char *warning = vkr_project_printf(
+        job,
+        "Lightmaps skipped: nothing to bake for this platform's %s pipeline, "
+        "so the scene drops only its %s set. Either no scene model carries "
+        "lightmap UVs (turn on Lightmap UVs in Bakery and rebuild the scene's "
+        "models), or the scene has no static lamps or emission, the only "
+        "light a desktop bake holds",
+        VKR_PROJECT_LIGHTMAP_CLASS, VKR_PROJECT_LIGHTMAP_CLASS);
     vkr_bakery_json_append(job->warnings, vkr_bakery_json_cstr(arena, warning));
     printf("Warning: %s\n", warning);
     fflush(stdout);
   } else {
-    if (!vkr_bakery_is_file(destination)) {
-      return vkr_project_fail(job,
-                              "Lightmap baker did not publish its artifact");
+    VKR_PROJECT_TRY(vkr_project_check_lightmap_class(job, destination));
+    if (!lightmaps || lightmaps->type != VKR_BAKERY_JSON_OBJECT) {
+      lightmaps = vkr_bakery_json_object(arena);
+      vkr_bakery_json_set(arena, scene, "lightmaps", lightmaps);
     }
     const VkrProjectBakeArtifact artifact = {
-        .scene_key = "lightmaps",
+        .owner = lightmaps,
+        .scene_key = VKR_PROJECT_LIGHTMAP_CLASS,
         .kind = "lightmap",
-        .name = "Lightmaps",
+        .name = VKR_PROJECT_LIGHTMAP_DESKTOP ? "Desktop lightmaps"
+                                             : "Tiled lightmaps",
         .role = "lightmap",
         .tool = "lightmap",
         .destination = destination,
@@ -1413,7 +1479,9 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
         .previous = previous,
     };
     VKR_PROJECT_TRY(
-        vkr_project_record_bake_artifact(job, scene, asset_root, &artifact));
+        vkr_project_record_bake_artifact(job, asset_root, &artifact));
+    printf("Lightmaps baked for the %s pipeline\n", VKR_PROJECT_LIGHTMAP_CLASS);
+    fflush(stdout);
   }
   vkr_bakery_json_set(arena, scene, "assets", job->assets);
   return true_v;

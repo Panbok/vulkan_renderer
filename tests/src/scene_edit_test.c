@@ -1,11 +1,15 @@
 #include "scene_edit_test.h"
 
 #include "filesystem/filesystem.h"
+#include "level/vkr_brush.h"
+#include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
+#include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_edit.h"
+#include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <assert.h>
 #include <math.h>
@@ -469,6 +473,279 @@ static void edit_test_brush_faces(void) {
   vkr_dmemory_destroy(&memory);
 }
 
+/* Brush records are found by entity through an index kept with the record
+   list: marking a brush again keeps its one record, and removing a record
+   moves the last into its place, where it must still be found. Without
+   render assets no record builds, so every record stays pending. */
+static void edit_test_brush_records(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(64), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 0, 8, &error));
+  SceneBrushSettings brush;
+  vkr_type_defaults(&vkr_scene_brush_type, &brush);
+  VkrEntityId brushes[5];
+  for (uint32_t i = 0; i < ArrayCount(brushes); ++i) {
+    brushes[i] = vkr_scene_create_entity(&scene, &error);
+    assert(
+        vkr_scene_set_typed(&scene, brushes[i], &vkr_scene_brush_type, &brush));
+  }
+  assert(vkr_scene_brush_pending(&scene) == 5u);
+  for (uint32_t i = 0; i < ArrayCount(brushes); ++i) {
+    assert(
+        vkr_scene_set_typed(&scene, brushes[i], &vkr_scene_brush_type, &brush));
+  }
+  assert(vkr_scene_brush_pending(&scene) == 5u);
+
+  /* The first record goes and the last takes its place. */
+  vkr_scene_destroy_entity(&scene, brushes[0]);
+  assert(vkr_scene_brush_pending(&scene) == 4u);
+  vkr_scene_destroy_entity(&scene, brushes[4]);
+  assert(vkr_scene_brush_pending(&scene) == 3u);
+  for (uint32_t i = 1; i < 4u; ++i) {
+    assert(
+        vkr_scene_set_typed(&scene, brushes[i], &vkr_scene_brush_type, &brush));
+  }
+  assert(vkr_scene_brush_pending(&scene) == 3u);
+
+  /* A brush on a reused entity slot has a record of its own; a brush that
+     stops being one loses its record. */
+  const VkrEntityId again = vkr_scene_create_entity(&scene, &error);
+  assert(vkr_scene_set_typed(&scene, again, &vkr_scene_brush_type, &brush));
+  assert(vkr_scene_brush_pending(&scene) == 4u);
+  assert(vkr_scene_remove_typed(&scene, brushes[2], &vkr_scene_brush_type));
+  assert(vkr_scene_brush_pending(&scene) == 3u);
+
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+}
+
+/* A publisher table like the renderer's: it records each publication and
+   reports no completion, so every upload stays in flight. */
+static bool8_t edit_test_no_completion(void *state,
+                                       VkrPublicationCompletion *out) {
+  (void)state;
+  (void)out;
+  return false_v;
+}
+
+static VkrRendererError
+edit_test_publish_texture(void *state, VkrTextureHandle handle,
+                          const struct VkrTexturePreparedLoad *texture) {
+  (void)state;
+  (void)handle;
+  (void)texture;
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+static bool8_t edit_test_unpublish_texture(void *state,
+                                           VkrTextureHandle handle) {
+  (void)state;
+  (void)handle;
+  return true_v;
+}
+
+static bool8_t edit_test_publish_material(void *state, VkrMaterialHandle handle,
+                                          const struct VkrMaterial *material) {
+  (void)state;
+  (void)handle;
+  (void)material;
+  return true_v;
+}
+
+static bool8_t edit_test_unpublish_material(void *state,
+                                            VkrMaterialHandle handle) {
+  (void)state;
+  (void)handle;
+  return true_v;
+}
+
+static bool8_t
+edit_test_publish_geometry(void *state, VkrGeometryHandle handle,
+                           const struct VkrGeometryConfig *geometry) {
+  (void)state;
+  (void)handle;
+  (void)geometry;
+  return true_v;
+}
+
+static bool8_t edit_test_unpublish_geometry(void *state,
+                                            VkrGeometryHandle handle) {
+  (void)state;
+  (void)handle;
+  return true_v;
+}
+
+/* A solid box brush 2 m wide, 1 m high and 2 m deep at `center`; its faces
+   show their greybox looks. */
+static VkrEntityId edit_test_box_brush(VkrScene *scene, Vec3 center) {
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  const VkrEntityId brush = vkr_scene_create_entity(scene, &error);
+  assert(brush.u64 && error == VKR_SCENE_ERROR_NONE);
+  assert(vkr_scene_set_transform(scene, brush, center, vkr_quat_identity(),
+                                 vec3_one()));
+  SceneBrushSettings settings;
+  vkr_type_defaults(&vkr_scene_brush_type, &settings);
+  settings.role = SCENE_BRUSH_ROLE_SOLID;
+  assert(vkr_scene_set_typed(scene, brush, &vkr_scene_brush_type, &settings));
+
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  const uint32_t plane_count = vkr_brush_box_planes(
+      vec3_new(-1.0f, -0.5f, -1.0f), vec3_new(1.0f, 0.5f, 1.0f), planes);
+  for (uint32_t i = 0; i < plane_count; ++i) {
+    const VkrEntityId face = vkr_scene_create_entity(scene, &error);
+    assert(face.u64 && error == VKR_SCENE_ERROR_NONE);
+    assert(vkr_scene_set_transform(scene, face, vec3_zero(),
+                                   vkr_quat_identity(), vec3_one()));
+    SceneBrushFace values;
+    vkr_type_defaults(&vkr_scene_brush_face_type, &values);
+    values.normal = planes[i].normal;
+    values.distance = planes[i].distance;
+    assert(
+        vkr_scene_set_typed(scene, face, &vkr_scene_brush_face_type, &values));
+    vkr_scene_set_parent(scene, face, brush);
+  }
+  return brush;
+}
+
+/* Whether `brush` draws: it has a shape whose mesh the mesh manager holds. */
+static bool8_t edit_test_brush_drawn(VkrScene *scene, VkrEntityId brush) {
+  const SceneShape *shape =
+      vkr_entity_get_component(scene->world, brush, scene->comp_shape);
+  return shape && shape->mesh_index != VKR_INVALID_ID &&
+         vkr_mesh_manager_get(&scene->assets->mesh_manager,
+                              shape->mesh_index) != NULL;
+}
+
+/* Whether a ray down onto `center`, the middle of `brush`, meets that
+   brush's hull. */
+static bool8_t edit_test_brush_collides(VkrScene *scene, VkrEntityId brush,
+                                        Vec3 center) {
+  VkrPhysicsRayHit hit;
+  return vkr_scene_physics_raycast(
+             scene, vec3_new(center.x, center.y + 5.0f, center.z),
+             vec3_new(0.0f, -10.0f, 0.0f), &hit) &&
+         hit.collider_entity_id == brush.u64;
+}
+
+/* Three new solid boxes in one 32 m collision cell build while their
+   uploads are in flight, and the mesh manager has room for two meshes. A
+   brush without a mesh shows its first one in the update that built it,
+   without waiting for its uploads or for another update. The brush whose
+   mesh does not fit reports why, and its hull leaves the cell in that same
+   update. The time budget may spread the builds over updates, so each
+   update is checked. */
+static void edit_test_brush_first_meshes(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), MB(256), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  Arena *system_arena = arena_create(MB(8), MB(8));
+  Arena *scratch_arena = arena_create(MB(8), MB(8));
+  assert(system_arena && scratch_arena);
+  /* No loader reads the faces' greybox materials: they draw the default. */
+  assert(vkr_resource_system_init(&allocator, NULL, NULL));
+
+  const VkrAssetPublisher publisher = {
+      .poll_completion = edit_test_no_completion,
+      .publish_geometry = edit_test_publish_geometry,
+      .unpublish_geometry = edit_test_unpublish_geometry,
+      .publish_texture = edit_test_publish_texture,
+      .unpublish_texture = edit_test_unpublish_texture,
+      .publish_material = edit_test_publish_material,
+      .unpublish_material = edit_test_unpublish_material,
+  };
+  VkrRenderAssets assets;
+  MemZero(&assets, sizeof(assets));
+  assets.asset_publisher = &publisher;
+  assets.scratch_arena = scratch_arena;
+  assets.scratch_allocator = (VkrAllocator){.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&assets.scratch_allocator));
+  const VkrDeviceInformation device_info = {0};
+  const VkrTextureSystemConfig texture_config = {
+      .max_texture_count = 64,
+      .asset_publisher = &publisher,
+  };
+  assert(vkr_texture_system_init(&device_info, &texture_config, NULL,
+                                 &assets.texture_system));
+  const VkrMaterialSystemConfig material_config = {
+      .max_material_count = 64,
+      .asset_publisher = &publisher,
+  };
+  assert(vkr_material_system_init(&assets.material_system, system_arena,
+                                  &assets.texture_system, &material_config));
+  const VkrGeometrySystemConfig geometry_config = {
+      .max_geometries = 64,
+      .asset_publisher = &publisher,
+  };
+  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_geometry_system_init(&assets.geometry_system, &geometry_config,
+                                  &renderer_error));
+  const VkrMeshManagerConfig mesh_config = {.max_mesh_count = 2u};
+  assert(vkr_mesh_manager_init(&assets.mesh_manager, &assets.geometry_system,
+                               &assets.material_system, &mesh_config));
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 0, 64, &error));
+  scene.assets = &assets;
+  const Vec3 centers[] = {
+      vec3_new(2.0f, 0.5f, 2.0f),
+      vec3_new(6.0f, 0.5f, 2.0f),
+      vec3_new(10.0f, 0.5f, 2.0f),
+  };
+  VkrEntityId brushes[ArrayCount(centers)];
+  for (uint32_t i = 0; i < ArrayCount(brushes); ++i) {
+    brushes[i] = edit_test_box_brush(&scene, centers[i]);
+  }
+  assert(vkr_scene_brush_pending(&scene) == ArrayCount(brushes));
+
+  /* Each update rebuilds at least one brush. A built brush draws and
+     collides; one that failed does neither; only unbuilt ones wait. */
+  uint32_t built = 0u;
+  uint32_t failed = 0u;
+  for (uint32_t update = 0;
+       update < ArrayCount(brushes) && vkr_scene_brush_pending(&scene) > 0u;
+       ++update) {
+    vkr_scene_update(&scene, 0.0);
+    built = 0u;
+    failed = 0u;
+    uint32_t waiting = 0u;
+    for (uint32_t i = 0; i < ArrayCount(brushes); ++i) {
+      const char *status = vkr_scene_brush_status(&scene, brushes[i]);
+      const bool8_t drawn = edit_test_brush_drawn(&scene, brushes[i]);
+      const bool8_t collides =
+          edit_test_brush_collides(&scene, brushes[i], centers[i]);
+      if (!status) {
+        assert(drawn && collides);
+        built++;
+      } else if (strcmp(status, "pending") == 0) {
+        assert(!drawn && !collides);
+        waiting++;
+      } else {
+        assert(!drawn && !collides);
+        failed++;
+      }
+    }
+    assert(vkr_scene_brush_pending(&scene) == waiting);
+  }
+  assert(vkr_scene_brush_pending(&scene) == 0u);
+  assert(built == 2u && failed == 1u);
+
+  vkr_scene_shutdown(&scene, &assets);
+  vkr_mesh_manager_shutdown(&assets.mesh_manager);
+  vkr_geometry_system_shutdown(&assets.geometry_system);
+  vkr_material_system_shutdown(&assets.material_system);
+  vkr_texture_system_shutdown(&assets.texture_system);
+  vkr_resource_system_shutdown();
+  arena_destroy(scratch_arena);
+  arena_destroy(system_arena);
+  vkr_dmemory_destroy(&memory);
+}
+
 /* The editor's Hide and Isolate: a hidden parent hides what is under it,
    isolate draws only the isolated objects and what is under them, and the
    runtime's per-frame apply of an unchanged set, in any order, resyncs
@@ -534,6 +811,95 @@ static void edit_test_file_end(FILE *file) {
         "\"membership\":2,\"mask\":65535,\"sensor\":true},{\"name\":"
         "\"No collision\",\"membership\":1,\"mask\":0,\"sensor\":false}]}}",
         file);
+}
+
+/* An overlay's saved collision layers apply when its scene owns the layers
+   of its physics set. The primary scene's overlay begins in one frame and
+   commits frames later, so the owner at the commit decides: a World that
+   joined in between keeps its layers and gives them to the scene, and a
+   World that left in between leaves the scene its saved ones. Oracle: the
+   layer names the file and the World state. */
+static void edit_test_overlay_layers_owner(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(64), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  FilePath directory = {.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp"),
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory(&directory));
+  char path[1024];
+  snprintf(path, sizeof(path),
+           PROJECT_SOURCE_DIR "tests/tmp/scene_layers_%u.json",
+           vkr_platform_get_process_id());
+  FILE *file = file_fopen(path, "wb");
+  assert(file);
+  fputs("{\"version\":5,\"overrides\":[],\"created\":[],"
+        "\"collision_settings\":{\"version\":1,\"names\":[",
+        file);
+  for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    fprintf(file, "%s\"Saved %u\"", i ? "," : "", i + 1u);
+  }
+  fputs("],\"matrix\":[", file);
+  for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    fprintf(file, "%s65535", i ? "," : "");
+  }
+  fputs("],\"presets\":[]}}", file);
+  fclose(file);
+  const String8 file_path = string8_create((uint8_t *)path, strlen(path));
+  VkrSceneCollisionLayers world_layers = vkr_scene_collision_layers_default();
+  for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
+    snprintf(world_layers.names[i], sizeof(world_layers.names[i]), "World %u",
+             i + 1u);
+  }
+
+  /* Pass 0: the World joins while the overlay applies; pass 1: it leaves. */
+  for (uint32_t pass = 0; pass < 2u; ++pass) {
+    VkrScenePhysicsSet *set = vkr_scene_physics_set_create(&allocator);
+    assert(set);
+    VkrScene primary;
+    VkrScene world;
+    assert(vkr_scene_init(&primary, &allocator, 1, 8, NULL));
+    assert(
+        vkr_scene_init(&world, &allocator, VKR_SCENE_WORLD_ROOT_ID, 8, NULL));
+    const char *error = NULL;
+    if (pass == 1u) {
+      assert(vkr_scene_physics_attach(&world, set, false_v, &error));
+      assert(vkr_scene_collision_layers_adopt(&world, &world_layers));
+    }
+    assert(vkr_scene_physics_attach(&primary, set, true_v, &error));
+    VkrSceneEditState state = {0};
+    vkr_scene_edit_reset(&state, &allocator, 1);
+    VkrSceneEditOverlay *overlay = vkr_scene_edit_overlay_create(&allocator);
+    assert(overlay);
+    vkr_scene_edit_overlay_read(overlay, file_path, NULL);
+    assert(vkr_scene_edit_overlay_begin(&state, &primary, overlay));
+    if (pass == 0u) {
+      assert(vkr_scene_physics_attach(&world, set, false_v, &error));
+      assert(vkr_scene_collision_layers_adopt(&world, &world_layers));
+      /* The World's activation cannot reach the scene while its saved
+         settings are staged. */
+      assert(!vkr_scene_collision_layers_share(&world, &error));
+    } else {
+      vkr_scene_shutdown(&world, NULL);
+    }
+    assert(vkr_scene_edit_overlay_step(&state, &primary, overlay, 0.0));
+    vkr_scene_edit_overlay_destroy(overlay);
+
+    VkrSceneCollisionLayers read;
+    vkr_scene_collision_layers_read(&primary, &read);
+    assert(!strcmp(read.names[0], pass == 0u ? "World 1" : "Saved 1"));
+    if (pass == 0u) {
+      vkr_scene_collision_layers_read(&world, &read);
+      assert(!strcmp(read.names[0], "World 1"));
+      vkr_scene_shutdown(&world, NULL);
+    }
+    vkr_scene_edit_reset(&state, &allocator, 0);
+    vkr_scene_shutdown(&primary, NULL);
+    vkr_scene_physics_set_destroy(set);
+  }
+  FilePath saved_path = {.path = file_path, .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_remove(&saved_path) == FILE_ERROR_NONE);
+  vkr_dmemory_destroy(&memory);
 }
 
 static void edit_test_created_file(const char *path, uint32_t count) {
@@ -1701,9 +2067,12 @@ bool32_t run_scene_edit_tests(void) {
   edit_test_structure();
   edit_test_groups();
   edit_test_brush_faces();
+  edit_test_brush_records();
+  edit_test_brush_first_meshes();
   edit_test_editor_hidden();
   edit_test_large();
   edit_test_created_order();
+  edit_test_overlay_layers_owner();
   edit_test_cell_order();
   VkrDMemory partition_memory;
   assert(vkr_dmemory_create(MB(16), MB(64), &partition_memory));

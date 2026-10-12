@@ -611,6 +611,125 @@ void test_lightmap_set_lamp_direct_round_trip_and_rejects() {
   printf("  test_lightmap_set_lamp_direct_round_trip_and_rejects PASSED\n");
 }
 
+/* A scene names one set per pipeline class, and a runtime tells what a set
+   holds from its header and plane table before it reads the pages: a Mac
+   bake (every layer's ASTC irradiance) serves only the tiled pipeline, a
+   Windows bake (the lamp groups' BC6H and BC7) only the desktop pipeline, a
+   set with both encodings both. Decoding the first
+   VKR_LIGHTMAP_SET_PLANES_PREFIX_BYTES reads nothing past them and refuses a
+   file size the header does not state, a prefix that ends inside the plane
+   table and a damaged header. */
+void test_lightmap_set_class_planes_from_prefix() {
+  const VkrLightLayer layers[] = {
+      {VKR_LIGHT_LAYER_SUN_KEY, 0u, vec3_new(0.0f, 0.6f, 0.8f), ""},
+      {VKR_LIGHT_LAYER_LAMP_GROUP, 0u, vec3_zero(), "default"},
+      {VKR_LIGHT_LAYER_LAMP_GROUP, 1u, vec3_zero(), "street_lamps"}};
+  const VkrLightmapInstance instances[] = {{{0u}, 0u, 0u, 0u, 0u, 0u, 8u, 8u}};
+  const VkrLightmapPlane tiled[] = {
+      {0u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
+      {1u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
+      {2u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR}};
+  const VkrLightmapPlane desktop[] = {
+      {1u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_BC6H},
+      {1u, VKR_LIGHTMAP_PLANE_DIRECTION, VKR_LIGHTMAP_FORMAT_BC7},
+      {2u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_BC6H},
+      {2u, VKR_LIGHTMAP_PLANE_DIRECTION, VKR_LIGHTMAP_FORMAT_BC7}};
+  /* The second lamp group has no desktop plane, so its lamps stay
+     runtime lights. */
+  const VkrLightmapPlane partial[] = {
+      {1u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_RGB9E5}};
+  const VkrLightmapPlane both[] = {
+      {0u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
+      {1u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
+      {1u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_RGB9E5},
+      {2u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR},
+      {2u, VKR_LIGHTMAP_PLANE_IRRADIANCE, VKR_LIGHTMAP_FORMAT_RGB9E5}};
+  struct ClassCase {
+    const VkrLightmapPlane *planes;
+    uint32_t plane_count;
+    bool8_t serves_tiled;
+    uint32_t desktop_slices;
+    bool8_t every_lamp_group;
+  };
+  const ClassCase cases[] = {
+      {tiled, 3u, true_v, 0u, false_v},
+      {desktop, 4u, false_v, 2u, true_v},
+      {partial, 1u, false_v, 1u, false_v},
+      {both, 5u, true_v, 2u, true_v},
+  };
+
+  Arena *arena = arena_create(KB(256), KB(64));
+  assert(arena);
+  std::vector<uint8_t> desktop_file;
+  for (const ClassCase &item : cases) {
+    VkrLightmapSet set = {};
+    set.page_size = 64u;
+    set.page_count = 1u;
+    set.layer_count = 3u;
+    set.plane_count = item.plane_count;
+    set.instance_count = 1u;
+    set.texels_per_unit = 8.0f;
+    set.layers = layers;
+    set.planes = item.planes;
+    set.instances = instances;
+    const std::vector<uint8_t> file = write_lightmap_set(set);
+    assert(file.size() > VKR_LIGHTMAP_SET_PLANES_PREFIX_BYTES);
+    const std::vector<uint8_t> prefix(
+        file.begin(), file.begin() + VKR_LIGHTMAP_SET_PLANES_PREFIX_BYTES);
+    VkrLightmapSet decoded = {};
+    assert(vkr_lightmap_set_decode_planes(prefix.data(), prefix.size(),
+                                          file.size(), arena, &decoded));
+    assert(decoded.layer_count == 3u &&
+           decoded.plane_count == item.plane_count);
+    assert(decoded.layers[2].kind == VKR_LIGHT_LAYER_LAMP_GROUP &&
+           strcmp(decoded.layers[2].name, "street_lamps") == 0);
+    assert(!decoded.instances && !decoded.payload);
+
+    VkrLightmapClassPlanes selected = {};
+    assert(vkr_lightmap_set_class_planes(&decoded, false_v, &selected) ==
+           item.serves_tiled);
+    if (item.serves_tiled) {
+      assert(selected.count == 3u &&
+             selected.format == VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR);
+      assert(selected.layers[0] == 0u && selected.layers[2] == 2u);
+      assert(decoded.planes[selected.planes[1]].layer == 1u);
+    }
+    assert(vkr_lightmap_set_class_planes(&decoded, true_v, &selected) ==
+           (item.desktop_slices != 0u));
+    if (item.desktop_slices != 0u) {
+      /* Sun keys never take a desktop slice. */
+      assert(selected.count == item.desktop_slices && selected.layers[0] == 1u);
+      assert(vkr_lightmap_format_desktop(selected.format));
+      assert(decoded.planes[selected.planes[0]].kind ==
+             VKR_LIGHTMAP_PLANE_IRRADIANCE);
+      assert(selected.every_lamp_group == item.every_lamp_group);
+    }
+    if (item.planes == desktop) {
+      desktop_file = file;
+    }
+  }
+
+  const std::vector<uint8_t> prefix(desktop_file.begin(),
+                                    desktop_file.begin() +
+                                        VKR_LIGHTMAP_SET_PLANES_PREFIX_BYTES);
+  VkrLightmapSet decoded = {};
+  assert(!vkr_lightmap_set_decode_planes(
+      prefix.data(), prefix.size(), desktop_file.size() + 1u, arena, &decoded));
+  const uint64_t plane_table_end = VKR_LIGHTMAP_SET_HEADER_BYTES +
+                                   3u * VKR_LIGHT_LAYER_RECORD_BYTES +
+                                   4u * VKR_LIGHTMAP_SET_PLANE_BYTES;
+  assert(vkr_lightmap_set_decode_planes(prefix.data(), plane_table_end,
+                                        desktop_file.size(), arena, &decoded));
+  assert(!vkr_lightmap_set_decode_planes(prefix.data(), plane_table_end - 1u,
+                                         desktop_file.size(), arena, &decoded));
+  std::vector<uint8_t> damaged = prefix;
+  damaged[28] ^= 1u;
+  assert(!vkr_lightmap_set_decode_planes(damaged.data(), damaged.size(),
+                                         desktop_file.size(), arena, &decoded));
+  arena_destroy(arena);
+  printf("  test_lightmap_set_class_planes_from_prefix PASSED\n");
+}
+
 /* RGB9E5 keeps exact powers of two and values on its mantissa grid, rounds
    others to within half a step of the brightest channel's exponent, clamps
    past 65408 and stores negatives and NaN as zero. */
@@ -1681,6 +1800,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_astc_hdr_round_trip_keeps_range();
   test_lightmap_set_round_trip_and_rejects();
   test_lightmap_set_lamp_direct_round_trip_and_rejects();
+  test_lightmap_set_class_planes_from_prefix();
   test_rgb9e5_round_trip();
   test_light_layer_sun_weights();
   test_diffuse_volume_v3_round_trip_and_rejects();

@@ -353,6 +353,7 @@ static bool8_t editor_application_shutdown(void *state,
   vkr_editor_magnet_destroy(&editor->ui);
   vkr_editor_blockout_destroy(&editor->ui);
   vkr_editor_lighting_handles_destroy(&editor->ui);
+  vkr_editor_physics_destroy(&editor->ui);
   /* A running game stops with the editor; Bakery cancels a package job. */
   vkr_editor_build_destroy(editor->ui.build);
   editor->ui.build = NULL;

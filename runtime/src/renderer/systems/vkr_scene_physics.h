@@ -290,6 +290,10 @@ bool8_t vkr_scene_physics_entity_destroying(VkrScene *scene,
                                             VkrEntityId entity);
 bool8_t vkr_scene_physics_world_matrix(VkrScene *scene, VkrEntityId entity,
                                        Mat4 *matrix);
+/* The ECS component that marks a character's entity, or
+   VKR_COMPONENT_TYPE_INVALID while the scene has no physics. Only entities
+   carrying it or `comp_physics_body` have a world matrix above. */
+VkrComponentTypeId vkr_scene_physics_character_component(const VkrScene *scene);
 bool8_t vkr_scene_physics_transform_allowed(const VkrScene *scene,
                                             VkrEntityId entity, Vec3 scale,
                                             VkrEntityId parent);

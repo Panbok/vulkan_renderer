@@ -7,8 +7,9 @@
 
 #include "vkr_lighting.h"
 
-/** One light's state across calls of the tiled pipeline's dynamic-light
- * limit (ADR-087), matched by render id. */
+/** One light's state across frames of a ranked point-light selection: the
+ * scene table's (ADR-019) or the tiled pipeline's dynamic-light limit
+ * (ADR-087), matched by render id. */
 typedef struct VkrPointLightLimitEntry {
   uint32_t render_id;
   /** Intensity scale in [0, 1]: rises toward one while the light is selected
@@ -20,6 +21,59 @@ typedef struct VkrPointLightLimitEntry {
   /** The light held a shadow; it ranks for shadows with the bonus. */
   bool8_t shadowed;
 } VkrPointLightLimitEntry;
+
+/** Lights a selection's state records: the selected lights and the drawn
+ * lights still fading out, at most two tables' worth. */
+#define VKR_POINT_LIGHT_SELECTION_ENTRY_MAX (2u * VKR_MAX_SCENE_POINT_LIGHTS)
+
+/** A ranked selection's state from its previous frame. */
+typedef struct VkrPointLightSelection {
+  /** Identified lights that were selected or drawn, sorted by render id. */
+  VkrPointLightLimitEntry entries[VKR_POINT_LIGHT_SELECTION_ENTRY_MAX];
+  uint32_t entry_count;
+  Vec3 camera;
+  /** Lights competed for the selection: one offered was not drawn or one
+   * drawn was still fading. Only then does a newly selected light fade in;
+   * otherwise it is new content and shows at once. */
+  bool8_t contended;
+  bool8_t valid;
+} VkrPointLightSelection;
+
+/** Rank of a point light for a camera: the camera's distance to the light's
+ * range, zero inside it and for an unbounded light, then its distance to the
+ * light's centre. An incumbent ranks as if the camera were
+ * VKR_POINT_LIGHT_LIMIT_INCUMBENT_BONUS times closer. */
+typedef struct VkrPointLightRankKey {
+  float32_t range_distance;
+  float32_t center_distance;
+} VkrPointLightRankKey;
+
+/** Point lights the scene syncs keep while they rank: a table's worth of the
+ * best and the lights that still show from the previous frame. */
+#define VKR_POINT_LIGHT_CANDIDATE_MAX (2u * VKR_MAX_SCENE_POINT_LIGHTS)
+
+/** The frame's point-light candidates, gathered by the scene syncs in
+ * bounded storage however many lights the scenes hold. */
+typedef struct VkrPointLightCandidates {
+  VkrPointLight lights[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  VkrPointLightRankKey keys[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  /** The light was drawn in the previous frame, so it keeps a candidate
+   * place while it fades out, whatever its rank. */
+  bool8_t showing[VKR_POINT_LIGHT_CANDIDATE_MAX];
+  uint32_t count;
+  /** Candidate indices of the best-ranked lights offered so far, best
+   * first. */
+  uint32_t best[VKR_MAX_SCENE_POINT_LIGHTS];
+  uint32_t best_count;
+  /** Lights offered this frame, kept or not. */
+  uint32_t offered;
+  Vec3 camera;
+  /** Fade step of this frame in [0, 1]; one snaps. */
+  float32_t step;
+  /** A first frame, a camera cut or an unusable step: no fade state is
+   * followed and every selected light shows at once. */
+  bool8_t snap;
+} VkrPointLightCandidates;
 
 /**
  * @brief Lighting system for managing lighting data and applying to shaders.
@@ -37,7 +91,12 @@ typedef struct VkrLightingSystem {
     float32_t sun_angular_diameter_degrees;
   } directional;
 
+  /* The scene table: the point lights nearest the camera, in render id
+     order, each scaled by its selection fade (ADR-019). */
   VkrPointLight point_lights[VKR_MAX_SCENE_POINT_LIGHTS];
+  /* Each table light's intensity before its fades, which sizes its local
+     shadow: a light fading out keeps its shadow's size while it shows. */
+  float32_t point_light_unfaded_intensity[VKR_MAX_SCENE_POINT_LIGHTS];
   uint32_t point_light_count;
   uint32_t point_light_dropped_count;
   /* Static lights light only through baked data, the lightmaps and diffuse
@@ -46,21 +105,27 @@ typedef struct VkrLightingSystem {
   bool8_t static_lights_baked;
   /* The shadow-casting static lamps the table leaves out for being baked:
      the desktop pipeline shadows its moving casters under the nearest of
-     them (ADR-104). */
+     them (ADR-104). Past VKR_MAX_SCENE_POINT_LIGHTS the syncs keep those
+     nearest the camera. */
   VkrPointLight baked_lamps[VKR_MAX_SCENE_POINT_LIGHTS];
+  VkrPointLightRankKey baked_lamp_keys[VKR_MAX_SCENE_POINT_LIGHTS];
   uint32_t baked_lamp_count;
   VkrPointLightGrid point_light_grid;
 
   VkrRectangleLight rectangle_lights[VKR_MAX_SCENE_RECTANGLE_LIGHTS];
   uint32_t rectangle_light_count;
 
-  /* State of vkr_lighting_system_limit_point_lights from its last call, the
-     table's identified lights that were selected or still showing, sorted
-     by render id. The scene syncs leave it alone. */
-  VkrPointLightLimitEntry point_light_limit[VKR_MAX_SCENE_POINT_LIGHTS];
-  uint32_t point_light_limit_count;
-  Vec3 point_light_limit_camera;
-  bool8_t point_light_limit_valid;
+  /* The frame's ranked point lights, which the table is selected from. */
+  VkrPointLightCandidates point_light_candidates;
+  /* The table selection's state from the previous frame, which this frame
+     ranks and fades from, and this frame's, which the next frame's sync
+     adopts; an appended scene selects again from the same state. */
+  VkrPointLightSelection point_light_selection;
+  VkrPointLightSelection point_light_selection_next;
+
+  /* State of vkr_lighting_system_limit_point_lights from its last call. The
+     scene syncs leave it alone. */
+  VkrPointLightSelection point_light_limit;
 
   // Dirty tracking
   bool8_t dirty;
@@ -81,25 +146,60 @@ bool8_t vkr_lighting_system_init(VkrLightingSystem *system);
 void vkr_lighting_system_shutdown(VkrLightingSystem *system);
 
 /**
- * @brief Syncs from the ECS.
+ * @brief Syncs a frame's lights from the ECS.
  * The directional light comes from the sun that vkr_scene_sync_sun resolved.
+ * The point lights begin the frame's selection for `camera_position` (see
+ * vkr_lighting_system_begin_point_lights) and end it, so the table is
+ * complete when the sync returns.
  * @param system The lighting system to sync from the ECS.
  * @param scene The scene to sync from.
+ * @param camera_position Camera the table keeps the nearest lights of.
+ * @param delta_seconds Seconds since the previous sync, for the fades.
  */
 void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
-                                         const VkrScene *scene);
+                                         const VkrScene *scene,
+                                         Vec3 camera_position,
+                                         float32_t delta_seconds);
 
 /** Append an additive scene's point and rectangle lights after a sync; its
- * directional light and sun do not replace the rendered scene's (ADR-076). */
+ * directional light and sun do not replace the rendered scene's (ADR-076).
+ * Its point lights rank with the synced ones for the same camera. */
 void vkr_lighting_system_append_scene(VkrLightingSystem *system,
                                       const VkrScene *scene);
 
-/** A light that the dynamic-light limit selected or shadowed keeps its
- * place until a competitor is this factor nearer (ADR-087). */
+/** A light that a ranked selection selected or shadowed keeps its place
+ * until a competitor is this factor nearer (ADR-019, ADR-087). */
 #define VKR_POINT_LIGHT_LIMIT_INCUMBENT_BONUS 1.15f
-/** Seconds for a light the limit selects or drops to fade in or out, as long
- * as a local shadow takes to fade in. */
+/** Seconds for a light a selection selects or drops to fade in or out, as
+ * long as a local shadow takes to fade in. */
 #define VKR_POINT_LIGHT_LIMIT_FADE_SECONDS 0.25f
+
+/** Begins a frame's point-light selection for `camera_position`: adopts the
+ * previous frame's selection state and forgets the candidates. The first
+ * frame, a camera cut (the TAA rule, position only) and an invalid
+ * `delta_seconds` snap: every selected light shows at once. */
+void vkr_lighting_system_begin_point_lights(VkrLightingSystem *system,
+                                            Vec3 camera_position,
+                                            float32_t delta_seconds);
+
+/** Offers one point light to the frame's selection. It stays a candidate
+ * while it ranks among the VKR_MAX_SCENE_POINT_LIGHTS best offered so far,
+ * or while it still shows from the previous frame, so the candidates stay
+ * bounded however many lights are offered. */
+void vkr_lighting_system_offer_point_light(VkrLightingSystem *system,
+                                           const VkrPointLight *light);
+
+/** Selects the scene table from the candidates and rebuilds the grid. The
+ * VKR_MAX_SCENE_POINT_LIGHTS nearest the camera by the distance to their
+ * range are selected, ties by the distance to their centre and then by
+ * render id; a light selected in the previous frame ranks with the incumbent
+ * bonus. While lights compete for the table, a newly selected light fades in
+ * over VKR_POINT_LIGHT_LIMIT_FADE_SECONDS once a slot is free and a light no
+ * longer selected fades out in its slot, keeping its shadow; without
+ * competition every offered light shows at full intensity, as new content
+ * does. The table keeps render id order. Calling it again in the same frame
+ * selects again from the same previous state. */
+void vkr_lighting_system_select_point_lights(VkrLightingSystem *system);
 
 /** A white Lambertian surface lit head-on by a directional light of
  * irradiance E shows E * exposure / pi. Below this fraction of display white,

@@ -67,7 +67,9 @@ typedef struct VkrSsgiGpuParams {
   float32_t temporal_weight;
   float32_t temporal_depth_relative;
   float32_t temporal_depth_absolute;
-  float32_t reserved_float_0;
+  /** View-space size of one source pixel at unit positive depth; scales the
+   * hit slab and receiver tolerances with distance. */
+  float32_t pixel_footprint;
 
   float32_t previous_projection_m22;
   float32_t previous_projection_m23;
@@ -101,9 +103,10 @@ uint32_t vkr_ssgi_depth_mip_count(uint32_t source_width,
 
 /**
  * Builds one GPU record from an already normalized configuration. `projection`
- * is the current jittered projection used by the opaque raster;
+ * is the current jittered perspective projection used by the opaque raster;
  * `previous_projection` belongs to the previous submitted raster and is used
- * only to linearize motion validity.y.
+ * only to linearize motion validity.y. `sample_phase` selects the ray of the
+ * 256-phase Halton(2, 3) sequence.
  * A zero source extent returns a zero record so the caller can reject it at
  * its frame boundary without dividing by zero in a shader.
  */

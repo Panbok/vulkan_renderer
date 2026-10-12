@@ -2413,7 +2413,7 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
   const VkrCaptureChannelDescription *ssr_reflection_description =
       vkr_renderer_capture_channel_get(ssr_reflection);
   assert(ssr_reflection_description &&
-         ssr_reflection_description->version == 5u);
+         ssr_reflection_description->version == 6u);
   assert(strcmp(ssr_reflection_description->canonical_encoding,
                 "RGBA16_FLOAT_LE") == 0);
   const VkrCaptureChannelId rgba16f_channels[] = {
@@ -2431,9 +2431,12 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
        channel_index < ArrayCount(rgba16f_channels); ++channel_index) {
     const VkrCaptureChannelDescription *description =
         vkr_renderer_capture_channel_get(rgba16f_channels[channel_index]);
-    assert(description &&
-           description->version ==
-               (rgba16f_channels[channel_index] == hdr_pre_bloom ? 3u : 2u));
+    /* hdr_pre_bloom and ssr_raw (GGX lobe rays, ADR-055) moved to
+       version 3. */
+    const bool8_t version_three =
+        rgba16f_channels[channel_index] == hdr_pre_bloom ||
+        rgba16f_channels[channel_index] == ssr_raw;
+    assert(description && description->version == (version_three ? 3u : 2u));
     assert(strcmp(description->canonical_encoding, "RGBA16_FLOAT_LE") == 0);
   }
 

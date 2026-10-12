@@ -21,12 +21,14 @@
 
 #define VKR_HARNESS_SCHEMA_VERSION 1u
 /**
- * Version 6 also forgets the local-shadow cache where warmup starts. Version 3
+ * Version 7 starts warmup at the 256-phase SSGI sequence's zero whenever SSR
+ * runs, not only SSGI, so SSR lobe samples repeat across replays. Version 6
+ * also forgets the local-shadow cache where warmup starts. Version 3
  * starts authored warmup at jitter phase zero with invalid history. Version 2
  * first held warmup at the initial pose. This value participates in the
  * workload fingerprint, preventing comparisons across replay behavior.
  */
-#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 6u
+#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 7u
 #define VKR_HARNESS_PATH_MAX 1024u
 /**
  * Paths recorded inside a report are relative to its run root, never absolute.

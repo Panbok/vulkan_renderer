@@ -34,6 +34,20 @@
    lightmap UVs (ADR-087) or a desktop host's scene has no static lamps
    (ADR-104). */
 #define VKR_PROJECT_LIGHTMAP_NO_INSTANCES 4
+/* The pipeline class whose lightmap set this host bakes, lowers and packages
+   (ADR-087, ADR-088): the tiled class on Apple hosts, which render with
+   Metal, and the desktop class elsewhere, which render with Vulkan, as the
+   lightmap baker picks its class. A scene's `lightmaps` block names one set
+   per class, and a bake replaces only its host's. */
+#if defined(__APPLE__)
+#define VKR_PROJECT_LIGHTMAP_CLASS "tiled"
+#define VKR_PROJECT_LIGHTMAP_OTHER_CLASS "desktop"
+#define VKR_PROJECT_LIGHTMAP_DESKTOP false_v
+#else
+#define VKR_PROJECT_LIGHTMAP_CLASS "desktop"
+#define VKR_PROJECT_LIGHTMAP_OTHER_CLASS "tiled"
+#define VKR_PROJECT_LIGHTMAP_DESKTOP true_v
+#endif
 #define VKR_PROJECT_UNREFERENCED_GRACE_SECONDS (24 * 60 * 60)
 #define VKR_PROJECT_ORPHAN_GRACE_SECONDS (60 * 60)
 #define VKR_PROJECT_JOB_RETENTION_SECONDS (7 * 24 * 60 * 60)

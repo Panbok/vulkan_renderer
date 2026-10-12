@@ -219,6 +219,32 @@ typedef enum VkrHzbHistoryRejection {
   VKR_HZB_HISTORY_REJECTION_COUNT,
 } VkrHzbHistoryRejection;
 
+/**
+ * Screen-space history selection of one frame, published packed as the
+ * `post.screen_history.state` gauge: SSR in bits 0-7, SSGI in bits 8-15
+ * (VKR_SCREEN_HISTORY_SSGI_SHIFT). A feature that did not run leaves its
+ * byte zero; one that ran sets SELECTED or at least one reason. Both selected
+ * reads 257.
+ */
+typedef enum VkrScreenHistoryState {
+  VKR_SCREEN_HISTORY_SELECTED = 1u << 0u,
+  /** The frame carries a temporal reset (cut, extent, scene or mode change,
+      first frame, frame gap, explicit). */
+  VKR_SCREEN_HISTORY_TEMPORAL_RESET = 1u << 1u,
+  /** The predecessor's content signature, scene generation or graph revision
+      differs. */
+  VKR_SCREEN_HISTORY_SIGNATURE = 1u << 2u,
+  /** The predecessor's image size differs. */
+  VKR_SCREEN_HISTORY_SIZE = 1u << 3u,
+  /** No complete tuple from the immediate transform predecessor. */
+  VKR_SCREEN_HISTORY_PRODUCER = 1u << 4u,
+  /** SSGI only: retained shadow-map generations or valid layers differ. */
+  VKR_SCREEN_HISTORY_SHADOW = 1u << 5u,
+} VkrScreenHistoryState;
+
+#define VKR_SCREEN_HISTORY_SSR_SHIFT 0u
+#define VKR_SCREEN_HISTORY_SSGI_SHIFT 8u
+
 typedef struct VkrPacketBuildMetrics {
   uint64_t candidate_hash_ns;
   uint64_t candidate_pack_ns;
@@ -228,6 +254,8 @@ typedef struct VkrPacketBuildMetrics {
   bool8_t graph_timing_valid;
   uint32_t hzb_history_rejections[VKR_HZB_HISTORY_REJECTION_COUNT];
   bool8_t hzb_history_checks_valid;
+  /** VkrScreenHistoryState bits of SSR and SSGI. */
+  uint32_t screen_history_state;
   uint64_t candidate_row_bytes;
   uint64_t instance_row_bytes;
   uint64_t static_candidate_row_bytes;

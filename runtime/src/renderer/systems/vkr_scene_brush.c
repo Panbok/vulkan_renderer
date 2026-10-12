@@ -5,6 +5,7 @@
 #include "filesystem/vkr_asset_path.h"
 #include "level/vkr_brush.h"
 #include "level/vkr_surface.h"
+#include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
@@ -79,20 +80,35 @@ typedef struct BrushCell {
   uint32_t chunks;
 } BrushCell;
 
-/* A rebuilt mesh waiting for its uploads. The brush draws its old mesh until
-   every geometry and material settles, so a rebuild never leaves a frame
-   without the brush (level toolkit audit A1). Holds one reference to each
-   geometry. */
+/* A rebuilt mesh waiting to attach. A brush with a mesh draws its old one
+   until every geometry and material of the new one settles, so a rebuild
+   never leaves a frame without the brush (level toolkit audit A1). A brush
+   without a mesh takes its new one once the update's rebuilds end
+   (brush_pending_attach). Holds one reference to each geometry. */
 typedef struct BrushPending {
   VkrEntityId entity;
   VkrSubMeshDesc submeshes[BRUSH_MATERIAL_GROUPS];
   uint32_t submesh_count;
+  /* The brush had no mesh: it attaches in the update that built it, without
+     waiting for its uploads. */
+  bool8_t first;
 } BrushPending;
 
 struct s_VkrSceneBrushes {
   BrushRecord *records;
   uint32_t record_count;
   uint32_t record_capacity;
+  /* A record index plus one by entity index, zero where none: brush_find
+     answers from it instead of visiting every record. A record is added
+     and removed only through brush_mark and brush_forget, which keep it in
+     step; a slot counts only while its record's entity matches. */
+  uint32_t *record_slots;
+  uint32_t record_slot_capacity;
+  /* Records whose `dirty` is set (brush_set_dirty). */
+  uint32_t dirty_count;
+  /* The scene's transform_revision when the update last visited every
+     record. */
+  uint64_t visited_transform_revision;
   uint64_t *dirty_cells;
   uint32_t dirty_cell_count;
   uint32_t dirty_cell_capacity;
@@ -172,13 +188,34 @@ static VkrSceneBrushes *brush_state(VkrScene *scene, bool8_t create) {
   return state;
 }
 
-static int32_t brush_find(const VkrSceneBrushes *state, VkrEntityId entity) {
-  for (uint32_t i = 0; state && i < state->record_count; ++i) {
-    if (state->records[i].entity.u64 == entity.u64) {
-      return (int32_t)i;
-    }
+/* Every write of a record's `dirty` goes through here, so `dirty_count`
+   counts the dirty records. */
+static void brush_set_dirty(VkrSceneBrushes *state, BrushRecord *record,
+                            bool8_t dirty) {
+  if (record->dirty == dirty) {
+    return;
   }
-  return -1;
+  record->dirty = dirty;
+  if (dirty) {
+    state->dirty_count++;
+  } else {
+    state->dirty_count--;
+  }
+}
+
+/* The record of `entity`, or -1. An entity has at most one record
+   (brush_mark finds before it adds). */
+static int32_t brush_find(const VkrSceneBrushes *state, VkrEntityId entity) {
+  if (!state || !entity.u64 ||
+      entity.parts.index >= state->record_slot_capacity) {
+    return -1;
+  }
+  const uint32_t slot = state->record_slots[entity.parts.index];
+  if (!slot || slot > state->record_count ||
+      state->records[slot - 1u].entity.u64 != entity.u64) {
+    return -1;
+  }
+  return (int32_t)(slot - 1u);
 }
 
 static void brush_mark_cell(VkrScene *scene, VkrSceneBrushes *state,
@@ -233,21 +270,31 @@ static void brush_mark(VkrScene *scene, VkrEntityId entity) {
   }
   int32_t index = brush_find(state, entity);
   if (index < 0) {
+    const uint32_t slots = state->record_slot_capacity;
     if (!brush_grow(scene->alloc, (void **)&state->records,
                     &state->record_capacity, state->record_count + 1u,
-                    sizeof(*state->records))) {
+                    sizeof(*state->records)) ||
+        !brush_grow(scene->alloc, (void **)&state->record_slots,
+                    &state->record_slot_capacity, entity.parts.index + 1u,
+                    sizeof(*state->record_slots))) {
       log_error("Scene: no memory to track brush %u",
                 (unsigned)entity.parts.index);
       return;
+    }
+    if (state->record_slot_capacity > slots) {
+      MemZero(state->record_slots + slots,
+              (uint64_t)(state->record_slot_capacity - slots) *
+                  sizeof(*state->record_slots));
     }
     index = (int32_t)state->record_count++;
     BrushRecord *record = &state->records[index];
     MemZero(record, sizeof(*record));
     record->entity = entity;
     snprintf(record->status, sizeof(record->status), "pending");
+    state->record_slots[entity.parts.index] = (uint32_t)index + 1u;
   }
   BrushRecord *record = &state->records[index];
-  record->dirty = true_v;
+  brush_set_dirty(state, record, true_v);
   record->settle = BRUSH_SETTLE_UPDATES;
 }
 
@@ -338,7 +385,14 @@ static void brush_forget(VkrScene *scene, VkrSceneBrushes *state,
   BrushRecord *record = &state->records[index];
   brush_clear(scene, state, record);
   brush_record_free(scene, record);
-  state->records[index] = state->records[--state->record_count];
+  brush_set_dirty(state, record, false_v);
+  /* The last record fills the hole, and its slot follows it. */
+  state->record_slots[record->entity.parts.index] = 0u;
+  const uint32_t last = --state->record_count;
+  if (index != last) {
+    *record = state->records[last];
+    state->record_slots[record->entity.parts.index] = index + 1u;
+  }
 }
 
 // =============================================================================
@@ -823,43 +877,29 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
   return brush_publish_mesh(scene, state, record, submeshes, submesh_count, ok);
 }
 
-/* Shows the record's new mesh, from `submesh_count` submeshes holding one
-   geometry reference each, which this releases. A record without a mesh
-   takes it at once; one with a mesh keeps drawing the old one until every
-   upload settles. False when `ok` is false or the mesh does not attach. */
+/* Queues the record's new mesh, from `submesh_count` submeshes holding one
+   geometry reference each, which the queue takes. A record without a mesh
+   takes it when the update's rebuilds end; one with a mesh keeps drawing the
+   old one until every upload settles. False, with the references released,
+   when `ok` is false or the queue cannot grow. */
 static bool8_t brush_publish_mesh(VkrScene *scene, VkrSceneBrushes *state,
                                   BrushRecord *record,
                                   const VkrSubMeshDesc *submeshes,
                                   uint32_t submesh_count, bool8_t ok) {
   struct VkrRenderAssets *assets = scene->assets;
   brush_pending_drop(scene, state, record->entity);
-  /* A brush with no mesh has nothing to keep drawing, so it takes the new
-     one at once and shows it as the uploads finish. */
-  if (!record->built) {
-    vkr_scene_detach_generated_mesh(scene, record->entity);
-    VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
-    if (ok) {
-      ok = vkr_scene_attach_generated_mesh(scene, record->entity, submeshes,
-                                           submesh_count, &scene_error);
-    }
-    if (ok) {
-      brush_set_mobility(scene, record->entity);
-    }
-    /* The mesh holds its own references now, or none after a failure. */
-    for (uint32_t i = 0; i < submesh_count; ++i) {
-      vkr_geometry_system_release(&assets->geometry_system,
-                                  submeshes[i].geometry);
-    }
-    return ok;
-  }
-  /* The new mesh waits beside the old one for its uploads; an older waiting
-     mesh is superseded. */
+  /* An older waiting mesh is superseded. A brush with no mesh has nothing
+     to keep drawing, but attaching invalidates the scene's child index
+     (scene_invalidate_queries), and every later brush in this update would
+     then find its faces by scanning the world (vkr_scene_brush_faces). So
+     its mesh waits for the end of the update's rebuilds, not for uploads. */
   if (ok && brush_grow(scene->alloc, (void **)&state->pending,
                        &state->pending_capacity, state->pending_count + 1u,
                        sizeof(*state->pending))) {
     BrushPending *pending = &state->pending[state->pending_count++];
     pending->entity = record->entity;
     pending->submesh_count = submesh_count;
+    pending->first = !record->built;
     MemCopy(pending->submeshes, submeshes, submesh_count * sizeof(*submeshes));
     return true_v;
   }
@@ -893,19 +933,25 @@ static bool8_t brush_pending_settled(VkrScene *scene,
   return true_v;
 }
 
-/* Swaps in each waiting mesh whose uploads settled. */
+/* Attaches each first mesh, and swaps in each other waiting mesh whose
+   uploads settled. A first mesh attaches as the uploads go and shows as they
+   finish. A mesh that does not attach clears its brush, collision too, and
+   marks the cell or mover body it left for this update's rebuild of them. */
 static void brush_pending_attach(VkrScene *scene, VkrSceneBrushes *state) {
   for (uint32_t i = 0; i < state->pending_count;) {
     BrushPending *pending = &state->pending[i];
-    if (!brush_pending_settled(scene, pending)) {
+    if (!pending->first && !brush_pending_settled(scene, pending)) {
       ++i;
       continue;
     }
     const VkrEntityId entity = pending->entity;
     VkrSceneError error = VKR_SCENE_ERROR_NONE;
-    bool8_t ok = vkr_scene_replace_generated_mesh(
-        scene, entity, pending->submeshes, pending->submesh_count, NULL, NULL,
-        0u, &error);
+    bool8_t ok = false_v;
+    if (!pending->first) {
+      ok = vkr_scene_replace_generated_mesh(scene, entity, pending->submeshes,
+                                            pending->submesh_count, NULL, NULL,
+                                            0u, &error);
+    }
     if (!ok) {
       vkr_scene_detach_generated_mesh(scene, entity);
       ok = vkr_scene_attach_generated_mesh(scene, entity, pending->submeshes,
@@ -1197,7 +1243,7 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
 
 static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
                           BrushRecord *record) {
-  record->dirty = false_v;
+  brush_set_dirty(state, record, false_v);
   /* A brush that left its mover leaves that mover's body. */
   const VkrEntityId mover = brush_mover_of(scene, record->entity);
   if (mover.u64 != record->mover.u64) {
@@ -1210,10 +1256,11 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
       shape ? vkr_entity_get_component(scene->world, record->entity,
                                        scene->comp_transform)
             : NULL;
-  /* A first build attaches the entity's mesh, which moves it to another
-     archetype: the swap-remove then fills its old row with another entity.
-     Values the build needs afterwards are copied before, never read through
-     component pointers. */
+  /* A component added or removed during the update moves the entity to
+     another archetype (a first mesh attaches in brush_pending_attach): the
+     swap-remove then fills its old row with another entity. Values the build
+     needs afterwards are copied before, never read through component
+     pointers. */
   if (shape_transform) {
     const Mat4 shape_world = shape_transform->world;
     brush_rebuild_shape(scene, state, record, shape, &shape_world);
@@ -1490,7 +1537,7 @@ static void brush_dirty_all(VkrScene *scene, VkrSceneBrushes *state) {
   for (uint32_t i = 0; i < state->record_count; ++i) {
     BrushRecord *record = &state->records[i];
     if (vkr_scene_get_typed(scene, record->entity, &vkr_scene_brush_type)) {
-      record->dirty = true_v;
+      brush_set_dirty(state, record, true_v);
       record->settle = BRUSH_SETTLE_UPDATES;
     }
   }
@@ -1582,7 +1629,20 @@ void vkr_scene_brush_update(VkrScene *scene) {
   brush_themes_sync(scene, state);
   brush_sizes_sync(scene, state);
   uint32_t budget = VKR_SCENE_BRUSH_REBUILD_BUDGET;
-  for (uint32_t i = 0; i < state->record_count; ++i) {
+  const float64_t start = vkr_platform_get_absolute_time();
+  const float64_t seconds = VKR_SCENE_BRUSH_REBUILD_BUDGET_MS / 1000.0;
+  /* The loop below changes a record only when its world matrix moved,
+     which advances the scene's transform_revision, or while the record is
+     dirty. A clean record has settled and built where it stands: a move
+     resets `settle` and marks the record dirty together, and only a rebuild
+     clears it. So with no record dirty and no world matrix moved, a visit
+     would only count `settle` further past BRUSH_SETTLE_UPDATES, the one
+     value it is compared with, and the loop is skipped. */
+  const bool8_t visit =
+      state->dirty_count ||
+      state->visited_transform_revision != scene->transform_revision;
+  state->visited_transform_revision = scene->transform_revision;
+  for (uint32_t i = 0; visit && i < state->record_count; ++i) {
     BrushRecord *record = &state->records[i];
     /* While the game plays its mover, a brush keeps what it built at rest:
        the evaluated pose moves its mesh and the mover's body moves its
@@ -1604,14 +1664,22 @@ void vkr_scene_brush_update(VkrScene *scene) {
         record->settle++;
       }
       if (!brush_matrix_equal(&transform->world, &record->built_world)) {
-        record->dirty = true_v;
+        brush_set_dirty(state, record, true_v);
       }
     }
     if (record->dirty && record->settle >= BRUSH_SETTLE_UPDATES && budget) {
       brush_rebuild(scene, state, record);
       budget--;
+      /* Past the time budget the rest wait for the next update, as past
+         the count; the first rebuild always runs. */
+      if (vkr_platform_get_absolute_time() - start >= seconds) {
+        budget = 0u;
+      }
     }
   }
+  /* Before the collision rebuilds, so a mesh that does not attach leaves
+     its cell or mover body in this update. */
+  brush_pending_attach(scene, state);
   for (uint32_t i = 0; i < state->dirty_cell_count; ++i) {
     brush_rebuild_cell(scene, state, state->dirty_cells[i]);
   }
@@ -1620,7 +1688,6 @@ void vkr_scene_brush_update(VkrScene *scene) {
     brush_rebuild_mover(scene, state, state->dirty_movers[i]);
   }
   state->dirty_mover_count = 0u;
-  brush_pending_attach(scene, state);
 }
 
 void vkr_scene_brush_shutdown(VkrScene *scene) {
@@ -1649,6 +1716,11 @@ void vkr_scene_brush_shutdown(VkrScene *scene) {
     vkr_allocator_free(scene->alloc, state->records,
                        state->record_capacity * sizeof(*state->records),
                        BRUSH_TAG);
+  }
+  if (state->record_slots) {
+    vkr_allocator_free(
+        scene->alloc, state->record_slots,
+        state->record_slot_capacity * sizeof(*state->record_slots), BRUSH_TAG);
   }
   if (state->dirty_cells) {
     vkr_allocator_free(scene->alloc, state->dirty_cells,
@@ -1719,9 +1791,5 @@ uint32_t vkr_scene_brush_pending(const VkrScene *scene) {
   if (!state) {
     return 0u;
   }
-  uint32_t pending = state->pending_count;
-  for (uint32_t i = 0; i < state->record_count; ++i) {
-    pending += state->records[i].dirty;
-  }
-  return pending;
+  return state->pending_count + state->dirty_count;
 }

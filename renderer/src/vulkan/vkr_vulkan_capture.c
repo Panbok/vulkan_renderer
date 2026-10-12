@@ -237,6 +237,23 @@ void vkr_vk_record_capture(VkrVulkanRenderer *renderer, VkCommandBuffer command,
         .pRegions = &prepared->region,
     };
     vkCmdCopyImageToBuffer2(command, &copy);
+    if (prepared->transition) {
+      /* Retained and history images are read next frame from the graph's
+         terminal layout; return the copied subresource to it. */
+      VkImageMemoryBarrier2 restore = prepared->barrier;
+      restore.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+      restore.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+      restore.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      restore.dstAccessMask =
+          VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+      restore.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      restore.newLayout = prepared->barrier.oldLayout;
+      const VkDependencyInfo restore_dependency = {
+          .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+          .imageMemoryBarrierCount = 1u,
+          .pImageMemoryBarriers = &restore};
+      vkCmdPipelineBarrier2(command, &restore_dependency);
+    }
   }
   const VkBufferMemoryBarrier2 barrier = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,

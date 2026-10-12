@@ -1212,6 +1212,10 @@ typedef struct VkrSceneWorldState {
 
 /** Largest number of descriptor-typed component types a scene registers. */
 #define VKR_SCENE_TYPE_MAX 64u
+/** Slots of a scene's type index: twice VKR_SCENE_TYPE_MAX, so a lookup
+    probes few slots and always meets an empty one. */
+#define VKR_SCENE_TYPE_SLOT_BITS 7u
+#define VKR_SCENE_TYPE_SLOTS (1u << VKR_SCENE_TYPE_SLOT_BITS)
 
 typedef struct VkrSceneComponentType {
   const struct VkrTypeDesc *type;
@@ -1289,6 +1293,11 @@ typedef struct VkrScene {
   VkrAllocator *alloc;            // Scene-owned allocator
   struct VkrRenderAssets *assets; // Borrowed owner of published scene assets
   uint64_t structure_revision;
+  /** Advances when vkr_scene_update_transforms recomputes any world matrix.
+      Every write of a transform marks it SCENE_TRANSFORM_DIRTY_WORLD, so
+      after a transform update an unchanged value means no world matrix
+      changed since the reader last looked. */
+  uint64_t transform_revision;
   uint16_t world_id; // Copied into entity IDs
 
   // Component type IDs (cached after registration)
@@ -1339,6 +1348,9 @@ typedef struct VkrScene {
   SceneChildIndexSlot *child_index_slots;
   uint32_t child_index_capacity; // Slot count (>= world->dir.capacity)
   bool8_t child_index_valid;     // False until rebuilt or incrementally updated
+  /** Advances with each full rebuild of the child index, which can list a
+      parent's children in another order. */
+  uint64_t child_index_revision;
 
   // Owned mesh indices (mesh-slot path; used by shapes)
   uint32_t *owned_meshes;
@@ -1371,6 +1383,9 @@ typedef struct VkrScene {
   uint32_t editor_hidden_count;
   uint32_t editor_hidden_capacity;
   bool8_t editor_isolate;
+  /** Advances whenever the Hide set or Isolate changes, so a reader that
+      caches what is shown (the population update) looks again. */
+  uint64_t editor_hidden_revision;
   /** Brush rebuild state, created with the first brush. */
   VkrSceneBrushes *brushes;
   /** Terrain state, created with the first terrain (vkr_scene_terrain.h). */
@@ -1420,6 +1435,10 @@ typedef struct VkrScene {
   /** Descriptor-typed component types registered with the ECS (ADR-076). */
   VkrSceneComponentType types[VKR_SCENE_TYPE_MAX];
   uint32_t type_count;
+  /** `types` by descriptor address, open-addressed with linear probing: a
+      slot holds a `types` index plus one, or zero when empty. Entries are
+      only ever added, so a lookup ends at the first empty slot. */
+  uint8_t type_slots[VKR_SCENE_TYPE_SLOTS];
   /** Bumped by every world component change; resolution compares it. */
   uint64_t world_revision;
   /** Told about each entity before vkr_scene_destroy_entity tears it down;

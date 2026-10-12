@@ -5,6 +5,7 @@
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 #include "vkr_gpu_abi.h"
+#include "vkr_lighting.h"
 #include "vkr_renderer.h"
 
 // Forward declarations for stateless render packet access.
@@ -591,11 +592,12 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t transmission_rough_mip_pass_count;
   /** True when the packet contains transmissive world work. */
   bool8_t transmission_pending;
-  /** Current draw-table strides; native GROW_ONLY backing may be larger. */
+  /** Current draw-table strides; native GROW_ONLY backing may be larger.
+   * The desktop pipeline strides each culling view's rows by the candidate
+   * capacity; the tiled pipeline by the visible capacity. */
   uint32_t gpu_draw_candidate_capacity;
   uint32_t gpu_draw_visible_capacity;
   uint32_t transmission_gpu_draw_candidate_capacity;
-  uint32_t transmission_gpu_draw_visible_capacity;
   /** True only when a focused capture requests the post-layer-3 peel. */
   bool8_t transmission_depth_diagnostic_enabled;
   /** True only when capture requests the resolve emissive diagnostic. */
@@ -711,6 +713,13 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t local_shadow_refractive_casters;
   /** Shadow.LocalMask runs its contact-shadow variant. */
   bool8_t local_shadow_contact;
+  /** Shadowed lights of the table whose range reaches the camera frustum, a
+   * bit per light. Only these can be in range of a visible pixel, so
+   * Shadow.LocalMask traverses only them; the desktop pipeline only. */
+  VkrPointLightMask local_shadow_mask_lights;
+  /** Shadow.LocalMask runs: a light of `local_shadow_mask_lights` or a
+   * baked lamp of `local_shadow_baked_lamp_count` needs it. */
+  bool8_t local_shadow_mask_active;
   /** Faces drawn this frame, one opaque culling view and pass each. */
   uint32_t local_shadow_render_count;
   /** The first render slots also draw transmission layers, with one

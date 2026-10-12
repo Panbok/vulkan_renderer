@@ -39,12 +39,34 @@ typedef struct PopulationRule {
   char status[160];
 } PopulationRule;
 
+/* The revisions a population update saw before every rule's signature
+   matched. A signature reads typed values and visibility (world revision),
+   children (structure revision, and the child index revision, since a
+   rebuild can list them in another order), world matrices and local
+   positions (transform revision, after the transform update) and terrain
+   marks (terrain revision); `rules` covers rules added, reset or removed,
+   and `hidden` the editor's Hide and Isolate, which only show or hide
+   copies. While all are the same, no rule needs a look. */
+typedef struct PopulationMatched {
+  bool8_t valid;
+  uint64_t world;
+  uint64_t structure;
+  uint64_t children;
+  uint64_t transform;
+  uint64_t terrain;
+  uint64_t rules;
+  uint64_t hidden;
+} PopulationMatched;
+
 struct s_VkrScenePopulation {
   PopulationRule rules[VKR_SCENE_POPULATION_RULE_MAX];
   uint32_t rule_count;
   uint32_t instance_total;
   /* Counts builds, which may replace any rule's copies. */
   uint64_t revision;
+  /* Advances when a rule is added, reset or removed. */
+  uint64_t rule_revision;
+  PopulationMatched matched;
 };
 
 // =============================================================================
@@ -88,6 +110,7 @@ static void population_release_instances(VkrScene *scene,
 
 static void population_remove(VkrScene *scene, PopulationRule *rule) {
   VkrScenePopulation *state = scene->population;
+  state->rule_revision++;
   population_release_instances(scene, rule);
   if (rule->instances) {
     vkr_allocator_free(scene->alloc, rule->instances,
@@ -115,6 +138,7 @@ void vkr_scene_population_changed(VkrScene *scene, VkrEntityId entity,
   }
   if (rule) {
     rule->signature = 0u;
+    scene->population->rule_revision++;
     return;
   }
   VkrScenePopulation *state = population_state(scene, true_v);
@@ -123,6 +147,7 @@ void vkr_scene_population_changed(VkrScene *scene, VkrEntityId entity,
              VKR_SCENE_POPULATION_RULE_MAX);
     return;
   }
+  state->rule_revision++;
   rule = &state->rules[state->rule_count++];
   MemZero(rule, sizeof(*rule));
   rule->entity = entity;
@@ -899,8 +924,36 @@ void vkr_scene_population_update(VkrScene *scene) {
   if (!state || !scene->assets) {
     return;
   }
+  /* Taken before any build, so a build that moves a revision leaves the
+     next update to look again. */
+  const PopulationMatched seen = {
+      .valid = true_v,
+      .world = scene->world_revision,
+      .structure = scene->structure_revision,
+      .children = scene->child_index_revision,
+      .transform = scene->transform_revision,
+      .terrain = vkr_scene_terrain_revision(scene),
+      .rules = state->rule_revision,
+      .hidden = scene->editor_hidden_revision,
+  };
+  const PopulationMatched *last = &state->matched;
+  if (last->valid && last->world == seen.world &&
+      last->structure == seen.structure && last->children == seen.children &&
+      last->transform == seen.transform && last->terrain == seen.terrain &&
+      last->rules == seen.rules && last->hidden == seen.hidden) {
+    return;
+  }
+  bool8_t matched = true_v;
   for (uint32_t i = 0; i < state->rule_count; ++i) {
     PopulationRule *rule = &state->rules[i];
+    /* Spline points and painted areas are children. While the child index
+       is invalid (a brush build or this loop's first copies of a rule
+       invalidated it) a signature would see none, so the rule waits for
+       the update after the index rebuilds. */
+    if (!scene->child_index_valid) {
+      matched = false_v;
+      continue;
+    }
     const uint64_t signature = population_signature(scene, rule);
     if (signature == rule->signature) {
       /* Hide and Isolate only change what draws, not where. */
@@ -912,10 +965,14 @@ void vkr_scene_population_update(VkrScene *scene) {
     }
     /* A scatter rests on collision, so it waits for terrain to settle. */
     if (rule->kind == POPULATION_SCATTER && !vkr_scene_terrain_settled(scene)) {
+      matched = false_v;
       continue;
     }
     population_build(scene, rule, signature);
   }
+  /* A rule waiting for terrain or the child index keeps the next update
+     looking. */
+  state->matched = matched ? seen : (PopulationMatched){0};
 }
 
 uint32_t vkr_scene_population_pending(const VkrScene *scene) {

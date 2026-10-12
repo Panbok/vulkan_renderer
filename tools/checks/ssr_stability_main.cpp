@@ -3,7 +3,7 @@
 #include <limits>
 int main()
 {
-    float results[328];
+    float results[416];
     for (float &value : results) value = std::numeric_limits<float>::quiet_NaN();
     GlobalParams_0 globals = {};
     globals.g_results_0.data = results;

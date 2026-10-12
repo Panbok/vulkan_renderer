@@ -112,16 +112,18 @@ typedef struct VkrLightmapBinding {
  * layers, then the lamp groups' direct light at the probes, which their
  * layers leave out. `sh` has 2 * rows rows: the renderer writes the active
  * layers' weighted sum into the first `rows` whenever `composition`
- * changes, except on frames that sample baked lamps, which take the active
- * lamp groups (bits of `active_lamp_mask`) with their direct bands
- * (`active_direct_bands`) into the second `rows` apart, because a
- * lightmapped surface already holds their light and only a surface without
- * a lightmap reads them (ADR-104). That is the desktop pipeline; the tiled
- * pipeline writes the lamp groups into the single sum and the luminance of
- * the sun-key layers' sum into the first texel of each probe in the second
- * `rows` (ADR-054). SH is stored divided by `sh_scale`. `indirection` is
- * R32_UINT, dimensions[0] wide and dimensions[1] * dimensions[2] high, with
- * one entry per level-0 brick span of 3 * spacing from `origin`. */
+ * changes. The desktop pipeline writes the active lamp groups (bits of
+ * `active_lamp_mask`) into the second `rows` apart, so the first holds the
+ * sun keys only and a lookup can tell sky light from lamp light (ADR-054);
+ * on frames that sample baked lamps their direct bands
+ * (`active_direct_bands`) join them, and a lightmapped surface, which
+ * already holds the lamps' light, leaves the second part out (ADR-104).
+ * The tiled pipeline writes the lamp groups into the single sum and the
+ * luminance of the sun-key layers' sum into the first texel of each probe
+ * in the second `rows` (ADR-054). SH is stored divided by `sh_scale`.
+ * `indirection` is R32_UINT, dimensions[0] wide and dimensions[1] *
+ * dimensions[2] high, with one entry per level-0 brick span of 3 * spacing
+ * from `origin`. */
 typedef struct VkrDiffuseVolumeBinding {
   VkrTextureHandle indirection;
   VkrTextureHandle probes;

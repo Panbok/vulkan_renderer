@@ -1,12 +1,53 @@
 #include "vkr_render_graph_frame.h"
+#include "math/vkr_frustum.h"
 #include "vkr_ssgi.h"
 #include "vkr_ssr.h"
+
+/* Metres added to a light's range before the frustum test. It covers float
+   error in the planes and in the world position that the mask and lighting
+   reconstruct from depth: a few millimetres ten kilometres from the origin. */
+#define VKR_LOCAL_SHADOW_MASK_FRUSTUM_SLACK 0.05f
 
 vkr_internal uint32_t vkr_render_graph_draw_capacity(uint32_t count) {
   uint32_t capacity = 1u;
   while (capacity < count)
     capacity *= 2u;
   return capacity;
+}
+
+/* Shadowed lights whose range sphere meets the camera frustum of the jittered
+   projection that drew the visibility buffer. Every visible pixel lies in
+   that frustum, so a light outside it is in range of no pixel: its mask slot
+   and its deferred lighting term never exist. A light without a finite range
+   (the polynomial kind, or no positive range) reaches every pixel, as in
+   vkr_punctual_light_term. */
+vkr_internal VkrPointLightMask
+vkr_render_graph_local_shadow_mask_lights(const VkrPreparedFrame *packet) {
+  VkrPointLightMask mask = {0};
+  const VkrFrameLighting *lighting = packet->input.lighting;
+  const VkrLocalShadowPassPayload *local_shadow = packet->input.local_shadow;
+  if (!lighting || !local_shadow) {
+    return mask;
+  }
+  const VkrFrustum camera = vkr_frustum_from_matrix(mat4_mul(
+      packet->temporal.jittered_projection, packet->input.globals.view));
+  const uint32_t count =
+      Min(lighting->point_light_count, VKR_MAX_SCENE_POINT_LIGHTS);
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (local_shadow->light_first_view[i] == 0u) {
+      continue;
+    }
+    const VkrPointLight *light = &lighting->point_lights[i];
+    const bool8_t bounded =
+        light->kind != VKR_POINT_LIGHT_KIND_POLYNOMIAL && light->range > 0.0f;
+    if (bounded && !vkr_frustum_test_sphere(
+                       &camera, light->position,
+                       light->range + VKR_LOCAL_SHADOW_MASK_FRUSTUM_SLACK)) {
+      continue;
+    }
+    mask.words[i / 32u] |= UINT32_C(1) << (i % 32u);
+  }
+  return mask;
 }
 
 void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
@@ -112,14 +153,13 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
           packet->input.world
               ? packet->input.world->transmission_gpu_candidate_count
               : 0u);
-  /* Parity-aware buckets retain the accepted 65536-draw bucket ceiling.
-     A smaller scene must still fit when every candidate uses one bucket. */
+  /* The tiled pipeline's parity-aware buckets retain the accepted
+     65536-draw bucket ceiling. A smaller scene must still fit when every
+     candidate uses one bucket. The desktop pipeline sizes each bucket from
+     its packed candidates instead. */
   frame->gpu_draw_visible_capacity =
       VKR_WORLD_DRAW_STATE_BUCKET_COUNT *
       Min(frame->gpu_draw_candidate_capacity, 65536u);
-  frame->transmission_gpu_draw_visible_capacity =
-      VKR_WORLD_DRAW_STATE_BUCKET_COUNT *
-      Min(frame->transmission_gpu_draw_candidate_capacity, 65536u);
   frame->transmission_depth_diagnostic_enabled =
       frame->transmission_pending && packet->input.debug &&
       (packet->input.debug->transmission_depth_diagnostic_enabled ||
@@ -168,6 +208,20 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->local_shadow_baked_lamp_count = local_shadow && !packet->tiled_pipeline
                                              ? local_shadow->baked_lamp_count
                                              : 0u;
+  /* The tiled pipeline has no mask pass. */
+  frame->local_shadow_mask_lights =
+      !packet->tiled_pipeline && frame->local_shadow_view_count > 0u
+          ? vkr_render_graph_local_shadow_mask_lights(packet)
+          : (VkrPointLightMask){0};
+  bool8_t mask_lights = false_v;
+  for (uint32_t word = 0u; word < VKR_POINT_LIGHT_GRID_MASK_WORDS; ++word) {
+    if (frame->local_shadow_mask_lights.words[word] != 0u) {
+      mask_lights = true_v;
+    }
+  }
+  frame->local_shadow_mask_active =
+      frame->local_shadow_view_count > 0u &&
+      (mask_lights || frame->local_shadow_baked_lamp_count > 0u);
   frame->local_shadow_static_render_count =
       frame->local_shadow_render_count -
       frame->local_shadow_dynamic_render_count;

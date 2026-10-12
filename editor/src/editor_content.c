@@ -1065,6 +1065,25 @@ static bool8_t content_loading(const VkrEditorContent *content,
          !strcmp(entry->home + 1, content->loading_scene);
 }
 
+/* The folder of the scene opening now, until it is usable (ADR-069). */
+static bool8_t content_folder_loading(const VkrEditorContent *content,
+                                      const char *path) {
+  return content->loading_scene[0] && content_scene_folder(path) &&
+         !strcmp(path + 1, content->loading_scene);
+}
+
+/* The name of the scene opening now, from its folder, or NULL. */
+static const char *
+content_loading_scene_label(const VkrEditorContent *content) {
+  for (uint32_t i = 0; content->loading_scene[0] && i < content->tree_count;
+       ++i) {
+    if (content_folder_loading(content, content->tree[i].path)) {
+      return content->tree[i].label;
+    }
+  }
+  return NULL;
+}
+
 /* Loading or cooking: the item is locked until the work ends. */
 static bool8_t content_locked(const VkrEditorContent *content,
                               const ContentAsset *entry) {
@@ -1936,11 +1955,25 @@ static void content_mark_cooking_objects(VkrEditorContent *content,
   for (uint32_t i = content->asset_count; i < content->count; ++i) {
     content->entries[i].cooking_object = false_v;
   }
+  /* The scan of a container marks every listed object of it at once, so it
+     runs once per container that lists an object, not once per object. */
+  const VkrScene *scanned[2u + VKR_SCENE_ADDITIVE_MAX];
+  uint32_t scanned_count = 0u;
   for (uint32_t i = content->asset_count; count && i < content->count; ++i) {
     ContentAsset *object = &content->entries[i];
     const VkrScene *scene = vkr_editor_entity_scene(frame, object->entity);
-    if (object->kind != CONTENT_ENTITY || object->cooking_object || !scene) {
+    if (object->kind != CONTENT_ENTITY || !scene) {
       continue;
+    }
+    bool8_t seen = false_v;
+    for (uint32_t s = 0u; s < scanned_count && !seen; ++s) {
+      seen = scanned[s] == scene;
+    }
+    if (seen) {
+      continue;
+    }
+    if (scanned_count < ArrayCount(scanned)) {
+      scanned[scanned_count++] = scene;
     }
     for (uint32_t slot = 0u; slot < scene->world->dir.capacity; ++slot) {
       if (!scene->world->dir.records[slot].chunk) {
@@ -3343,6 +3376,21 @@ static void content_tree_panel(VkrEditorContent *content, VkrUiSystem *ui,
                                             : (Vec4){0};
     name.style.hover_background_color = theme->row_hover;
     name.tooltip = content_folder_tooltip(folder);
+    if (content_folder_loading(content, folder->path)) {
+      /* The scene opening now pulses, as loading marks do, until it is
+         usable. */
+      const float32_t pulse =
+          ui->reduce_motion
+              ? 1.0f
+              : 0.55f +
+                    0.45f * sinf((float32_t)vkr_platform_get_absolute_time() *
+                                 4.0f);
+      name.icon = VKR_UI_ICON_SPINNER;
+      name.icon_color = vkr_ui_color_alpha(theme->accent_hover, pulse);
+      name.tooltip = string8_create_formatted(
+          ui->frame_allocator, "%.*s\nLoading into the editor",
+          (int)name.tooltip.length, (const char *)name.tooltip.str);
+    }
     if (content_start_button(ui, string8_lit("folder"),
                              content_string(folder->label), &name)) {
       content_open_folder(content, folder->path);
@@ -3926,9 +3974,10 @@ static void content_build_folder_card(VkrEditorContent *content,
   vkr_ui_label(ui, string8_lit("picture"), (String8){0}, &picture);
   VkrUiWidgetConfig label = content_widget(0, 2);
   content_build_name(content, ui, shown, name, &label);
-  /* A folder holding a loading or cooking item says so. */
-  bool8_t loading = false_v;
-  bool8_t busy = false_v;
+  /* A folder holding a loading or cooking item says so, and so does the
+     folder of the scene opening now. */
+  bool8_t loading = content_folder_loading(content, folder->path);
+  bool8_t busy = loading;
   for (uint32_t i = 0; i < content->count && !loading; ++i) {
     const ContentAsset *entry = &content->entries[i];
     if (content_locked(content, entry) &&
@@ -4149,14 +4198,18 @@ static void content_build_row(VkrEditorContent *content, VkrUiSystem *ui,
   const bool8_t loading = !folder && content_loading(content, entry);
   const bool8_t cooking =
       loading || (!folder && content_cooking(content, entry));
+  const bool8_t opening = folder && content_folder_loading(content, tree->path);
   String8 texts[] = {
       cooking ? string8_create_formatted(ui->frame_allocator, "%s \xc2\xb7 %s",
                                          content_kinds[entry->kind],
                                          content_cooking_status(loading))
-              : content_string(scene ? "Scene"
-                               : folder
-                                   ? (tree->system ? "System folder" : "Folder")
-                                   : content_kinds[entry->kind]),
+      : opening
+          ? string8_create_formatted(ui->frame_allocator, "Scene \xc2\xb7 %s",
+                                     content_cooking_status(true_v))
+          : content_string(scene ? "Scene"
+                           : folder
+                               ? (tree->system ? "System folder" : "Folder")
+                               : content_kinds[entry->kind]),
       content_string(content_folder_label(content, location)),
       content_string(label ? label->tags : "")};
   for (uint32_t i = 0; i < ArrayCount(texts); ++i) {
@@ -5010,9 +5063,12 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
   }
   content_build_inspector(content, ui, inspector_height, show_details);
   (void)vkr_ui_panel_end(ui);
+  /* The scene opening now is named whichever folder shows (ADR-069). */
+  const char *opening = content_loading_scene_label(content);
   VkrUiWidgetConfig footer = content_widget(0, 2);
   footer.style.font_size_pt = vkr_ui_theme()->font_caption;
-  footer.style.text_color = vkr_ui_theme()->text_secondary;
+  footer.style.text_color =
+      opening ? vkr_ui_theme()->accent_hover : vkr_ui_theme()->text_secondary;
   const char *selection =
       content->selected_folder[0]
           ? content_folder_label(content, content->selected_folder)
@@ -5020,8 +5076,11 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
           ? content->entries[content->selected].name
           : "";
   String8 count = string8_create_formatted(
-      ui->frame_allocator, "%u items%s%s", content->filtered_count,
-      selection[0] ? "  \xc2\xb7  Selected: " : "", selection);
+      ui->frame_allocator, "%u items%s%s%s%s%s%s", content->filtered_count,
+      selection[0] ? "  \xc2\xb7  Selected: " : "", selection,
+      opening ? "  \xc2\xb7  " : "", opening ? opening : "",
+      opening ? " \xc2\xb7 " : "",
+      opening ? content_cooking_status(true_v) : "");
   vkr_ui_label(ui, string8_lit("asset-count"), count, &footer);
   (void)vkr_ui_panel_end(ui);
   content_start_preview(content);

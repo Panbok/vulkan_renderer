@@ -274,6 +274,219 @@ static bool32_t test_point_light_limit_holds_and_fades(void) {
   return true_v;
 }
 
+/* One frame of the scene table's selection over `count` lights, offered as
+   a scene sync offers them. */
+static void table_test_frame(VkrLightingSystem *system,
+                             const VkrPointLight *lights, uint32_t count,
+                             Vec3 camera) {
+  vkr_lighting_system_begin_point_lights(system, camera, 1.0f / 60.0f);
+  for (uint32_t i = 0u; i < count; ++i) {
+    vkr_lighting_system_offer_point_light(system, &lights[i]);
+  }
+  vkr_lighting_system_select_point_lights(system);
+}
+
+static const VkrPointLight *table_test_find(const VkrLightingSystem *system,
+                                            uint32_t render_id) {
+  for (uint32_t i = 0u; i < system->point_light_count; ++i) {
+    if (system->point_lights[i].render_id == render_id) {
+      return &system->point_lights[i];
+    }
+  }
+  return NULL;
+}
+
+/* Past VKR_MAX_SCENE_POINT_LIGHTS the table keeps the lights nearest the
+   camera, not the lowest render ids (ADR-019 rejects a first-N list), in
+   render id order, however the lights are offered, and its candidates stay
+   bounded. */
+static bool32_t test_point_light_table_keeps_nearest_past_capacity(void) {
+  printf("  Running test_point_light_table_keeps_nearest_past_capacity...\n");
+  static VkrLightingSystem system;
+  MemZero(&system, sizeof(system));
+  /* Light k sits 10 * k + 5 m from the camera; the farthest has the lowest
+     render id, so a first-N rule would keep the 128 farthest. */
+  const uint32_t count = 200u;
+  static VkrPointLight lights[200];
+  for (uint32_t i = 0u; i < count; ++i) {
+    const uint32_t k = (i * 7u) % count;
+    lights[i] = make_gltf_point(
+        count - k, vec3_new(10.0f * (float32_t)k + 5.0f, 0, 0), 2.0f);
+  }
+  table_test_frame(&system, lights, count, vec3_zero());
+
+  assert(system.point_light_count == VKR_MAX_SCENE_POINT_LIGHTS);
+  assert(system.point_light_dropped_count == count - 128u);
+  /* With nothing showing yet, only the best stay candidates. */
+  assert(system.point_light_candidates.count == VKR_MAX_SCENE_POINT_LIGHTS);
+  /* k = 0..127 have render ids 200..73, kept in render id order at full
+     intensity: the first frame snaps. */
+  for (uint32_t i = 0u; i < VKR_MAX_SCENE_POINT_LIGHTS; ++i) {
+    assert(system.point_lights[i].render_id == 73u + i);
+    assert(system.point_lights[i].intensity == 10.0f);
+  }
+  /* The grid follows the table: the light at x = 5 is in the cell there. */
+  const VkrPointLightMask mask = vkr_lighting_system_point_light_mask_at(
+      &system, vec3_new(5.0f, 0.0f, 0.0f));
+  assert(vkr_lighting_system_point_light_mask_contains(&mask, 127u));
+  printf("  test_point_light_table_keeps_nearest_past_capacity PASSED\n");
+  return true_v;
+}
+
+/* One frame of a full table: 127 lights at the camera always rank first, so
+   light 1 at x = 10 and light 2 at x = -10, whose ranges both hold the
+   camera, compete for the last slot. */
+static void table_contest_frame(VkrLightingSystem *system, float32_t camera_x) {
+  static VkrPointLight lights[VKR_MAX_SCENE_POINT_LIGHTS + 1u];
+  const Vec3 camera = vec3_new(camera_x, 0.0f, 0.0f);
+  for (uint32_t i = 0u; i < VKR_MAX_SCENE_POINT_LIGHTS - 1u; ++i) {
+    lights[i] = make_gltf_point(
+        1000u + i, vec3_new(camera_x, 0.001f * (float32_t)i, 0), 1000.0f);
+  }
+  lights[127] = make_gltf_point(1u, vec3_new(10.0f, 0.0f, 0.0f), 100.0f);
+  lights[128] = make_gltf_point(2u, vec3_new(-10.0f, 0.0f, 0.0f), 100.0f);
+  lights[127].casts_shadow = true_v;
+  lights[128].casts_shadow = true_v;
+  table_test_frame(system, lights, ArrayCount(lights), camera);
+  assert(system->point_light_count <= VKR_MAX_SCENE_POINT_LIGHTS);
+}
+
+/* While lights compete for the table, the kept light stays until a rival is
+   more than the incumbent bonus nearer, then fades out in its slot keeping
+   its shadow, before the rival fades in; a camera cut snaps. */
+static bool32_t test_point_light_table_holds_and_fades(void) {
+  printf("  Running test_point_light_table_holds_and_fades...\n");
+  static VkrLightingSystem system;
+  MemZero(&system, sizeof(system));
+  const float32_t step = 10.0f * (1.0f / 60.0f) / 0.25f;
+
+  table_contest_frame(&system, -1.0f);
+  assert(system.point_light_count == VKR_MAX_SCENE_POINT_LIGHTS);
+  assert(system.point_light_dropped_count == 1u);
+  assert(!table_test_find(&system, 1u));
+  assert(table_test_find(&system, 2u)->intensity == 10.0f);
+
+  /* Small moves past the midpoint keep light 2 at full intensity. */
+  for (int32_t tenth = -9; tenth <= 5; ++tenth) {
+    table_contest_frame(&system, 0.1f * (float32_t)tenth);
+    assert(!table_test_find(&system, 1u));
+    assert(table_test_find(&system, 2u)->intensity == 10.0f);
+  }
+
+  /* At x = 1.5 light 1 is 8.5 m away and light 2 11.5 m: light 2 fades out
+     in its slot, still shadowed, then light 1 fades in. */
+  float32_t previous = 10.0f;
+  uint32_t frames = 0u;
+  for (;;) {
+    assert(frames < 20u);
+    table_contest_frame(&system, 1.5f);
+    assert(system.point_light_count == VKR_MAX_SCENE_POINT_LIGHTS);
+    const VkrPointLight *leaving = table_test_find(&system, 2u);
+    if (!leaving) {
+      break;
+    }
+    assert(!table_test_find(&system, 1u));
+    assert(fabsf(leaving->intensity - (previous - step)) < 1e-3f);
+    assert(leaving->casts_shadow);
+    previous = leaving->intensity;
+    frames++;
+  }
+  assert(frames >= 14u);
+  previous = 0.0f;
+  while (previous < 10.0f) {
+    const VkrPointLight *entering = table_test_find(&system, 1u);
+    assert(entering && entering->casts_shadow);
+    assert(fabsf(entering->intensity - Min(previous + step, 10.0f)) < 1e-3f);
+    previous = entering->intensity;
+    table_contest_frame(&system, 1.5f);
+  }
+
+  /* A cut to light 2's side shows light 2 at once. */
+  table_contest_frame(&system, -30.0f);
+  assert(!table_test_find(&system, 1u));
+  assert(table_test_find(&system, 2u)->intensity == 10.0f);
+  printf("  test_point_light_table_holds_and_fades PASSED\n");
+  return true_v;
+}
+
+/* Without competition every light shows at full intensity: a light added
+   after the first frame is new content and does not fade in. */
+static bool32_t test_point_light_table_without_competition_snaps(void) {
+  printf("  Running test_point_light_table_without_competition_snaps...\n");
+  static VkrLightingSystem system;
+  MemZero(&system, sizeof(system));
+  VkrPointLight lights[4];
+  for (uint32_t i = 0u; i < ArrayCount(lights); ++i) {
+    lights[i] = make_gltf_point(4u - i, vec3_new((float32_t)i, 0, 0), 5.0f);
+  }
+  table_test_frame(&system, lights, 3u, vec3_zero());
+  assert(system.point_light_count == 3u);
+  table_test_frame(&system, lights, 4u, vec3_new(0.1f, 0.0f, 0.0f));
+  assert(system.point_light_count == 4u);
+  assert(system.point_light_dropped_count == 0u);
+  for (uint32_t i = 0u; i < 4u; ++i) {
+    assert(system.point_lights[i].render_id == i + 1u);
+    assert(system.point_lights[i].intensity == 10.0f);
+  }
+  table_test_frame(&system, &lights[1], 3u, vec3_new(0.2f, 0.0f, 0.0f));
+  assert(system.point_light_count == 3u && !table_test_find(&system, 4u));
+  printf("  test_point_light_table_without_competition_snaps PASSED\n");
+  return true_v;
+}
+
+/* Baked static lamps leave the table but stay candidates for their moving
+   casters' shadows (ADR-104); past VKR_MAX_SCENE_POINT_LIGHTS the sync keeps
+   those nearest the camera, not the first it meets. */
+static bool32_t test_baked_lamps_past_capacity_keep_nearest(void) {
+  printf("  Running test_baked_lamps_past_capacity_keep_nearest...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(8), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(
+      vkr_scene_init(&scene, &allocator, VKR_SCENE_WORLD_ROOT_ID, 8u, &error));
+  static VkrLightingSystem system;
+  assert(vkr_lighting_system_init(&system));
+
+  /* Lamps are created farthest first, 10 m apart from x = 1300 down. */
+  const uint32_t count = VKR_MAX_SCENE_POINT_LIGHTS + 2u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    VkrEntityId lamp = vkr_scene_create_entity(&scene, &error);
+    assert(lamp.u64 != VKR_ENTITY_ID_INVALID.u64);
+    assert(vkr_scene_set_transform(
+        &scene, lamp, vec3_new(10.0f * (float32_t)(count - i), 1.0f, 0.0f),
+        vkr_quat_identity(), vec3_one()));
+    const ScenePointLight light = {
+        .color = vec3_one(),
+        .intensity = 1.0f,
+        .range = 2.0f,
+        .outer_cone_angle = 0.785398163f,
+        .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT,
+        .enabled = true_v,
+        .casts_shadow = true_v,
+        .mobility = VKR_LIGHT_MOBILITY_STATIC,
+    };
+    assert(vkr_scene_set_point_light(&scene, lamp, &light));
+  }
+  vkr_scene_update(&scene, 0.0);
+  system.static_lights_baked = true_v;
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
+  assert(system.point_light_count == 0u);
+  assert(system.baked_lamp_count == VKR_MAX_SCENE_POINT_LIGHTS);
+  for (uint32_t i = 0u; i < system.baked_lamp_count; ++i) {
+    assert(system.baked_lamps[i].position.x <= 1280.0f + 0.001f);
+  }
+
+  vkr_lighting_system_shutdown(&system);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_baked_lamps_past_capacity_keep_nearest PASSED\n");
+  return true_v;
+}
+
 static bool32_t test_point_light_gpu_row_packing(void) {
   printf("  Running test_point_light_gpu_row_packing...\n");
   VkrPointLight light = {
@@ -342,7 +555,8 @@ static bool32_t test_rectangle_light_uses_rigid_parent_rotation(void) {
                                            .enabled = true_v,
                                        }));
   vkr_scene_update(&scene, 0.0);
-  vkr_lighting_system_sync_from_scene(&system, &scene);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
 
   assert(system.rectangle_light_count == 1u);
   const VkrRectangleLight *light = &system.rectangle_lights[0];
@@ -388,7 +602,8 @@ static bool32_t test_atmosphere_replaces_direct_sun_light(void) {
       }));
   vkr_scene_update(&scene, 0.0);
   vkr_scene_sync_sun(&scene, 0.0);
-  vkr_lighting_system_sync_from_scene(&system, &scene);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
   assert(system.directional.enabled == true_v);
 
   VkrAtmosphereSettings atmosphere = vkr_atmosphere_settings_defaults();
@@ -396,7 +611,8 @@ static bool32_t test_atmosphere_replaces_direct_sun_light(void) {
   const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
   assert(vkr_scene_request_atmosphere(&scene, &atmosphere, &clouds, 0.0f));
   vkr_scene_sync_sun(&scene, 0.0);
-  vkr_lighting_system_sync_from_scene(&system, &scene);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
   assert(system.directional.enabled == false_v);
 
   vkr_lighting_system_shutdown(&system);
@@ -901,7 +1117,8 @@ static bool32_t test_time_of_day_turns_sun_and_switches_night_groups(void) {
   vkr_scene_update(&scene, 0.0);
   (void)vkr_scene_resolve_world(&scene);
   vkr_scene_sync_sun(&scene, 0.0);
-  vkr_lighting_system_sync_from_scene(&system, &scene);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
   /* Noon keeps the authored sun; the night groups are off. */
   assert(lighting_test_vec3_near(system.directional.direction,
                                  vec3_new(0.0f, -h, h)));
@@ -914,7 +1131,8 @@ static bool32_t test_time_of_day_turns_sun_and_switches_night_groups(void) {
       vkr_scene_set_typed(&scene, clock, &vkr_scene_time_of_day_type, &time));
   (void)vkr_scene_resolve_world(&scene);
   vkr_scene_sync_sun(&scene, 0.0);
-  vkr_lighting_system_sync_from_scene(&system, &scene);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
   assert(lighting_test_vec3_near(system.directional.direction,
                                  vec3_new(-1.0f, 0.0f, 0.0f)));
   assert(system.point_light_count == 3u && time_test_point(&system, 2.0f));
@@ -924,7 +1142,8 @@ static bool32_t test_time_of_day_turns_sun_and_switches_night_groups(void) {
   /* A pipeline that bakes static light keeps the dynamic lights alone
      (ADR-087). */
   system.static_lights_baked = true_v;
-  vkr_lighting_system_sync_from_scene(&system, &scene);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
   assert(system.point_light_count == 1u && time_test_point(&system, 5.0f));
   assert(system.rectangle_light_count == 0u);
   system.static_lights_baked = false_v;
@@ -934,7 +1153,8 @@ static bool32_t test_time_of_day_turns_sun_and_switches_night_groups(void) {
   assert(vkr_scene_set_light_group_intensity(&scene, "", 0.0f));
   assert(!vkr_scene_set_light_group_intensity(&scene, "street", -1.0f));
   vkr_scene_sync_sun(&scene, 0.0);
-  vkr_lighting_system_sync_from_scene(&system, &scene);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
   assert(system.point_light_count == 2u && time_test_point(&system, 1.0f) &&
          time_test_point(&system, 5.0f));
 
@@ -942,7 +1162,8 @@ static bool32_t test_time_of_day_turns_sun_and_switches_night_groups(void) {
      then advances it an hour per 3,600 ticks. */
   assert(vkr_scene_set_time_of_day_hour(&scene, 6.0));
   vkr_scene_sync_sun(&scene, 0.0);
-  vkr_lighting_system_sync_from_scene(&system, &scene);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
   assert(lighting_test_vec3_near(system.directional.direction,
                                  vec3_new(1.0f, 0.0f, 0.0f)));
   time.day_minutes = 24.0f;
@@ -956,7 +1177,8 @@ static bool32_t test_time_of_day_turns_sun_and_switches_night_groups(void) {
   /* A reset returns to the authored hour and full group intensities. */
   vkr_scene_simulation_reset_state(&scene);
   vkr_scene_sync_sun(&scene, 0.0);
-  vkr_lighting_system_sync_from_scene(&system, &scene);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
   assert(fabs(scene.clock.hour - 18.0) < 1.0e-6);
   assert(system.point_light_count == 3u && time_test_point(&system, 2.0f) &&
          time_test_point(&system, 3.0f));
@@ -990,6 +1212,10 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_limit_keeps_nearest();
   passed &= test_point_light_limit_holds_and_fades();
+  passed &= test_point_light_table_keeps_nearest_past_capacity();
+  passed &= test_point_light_table_holds_and_fades();
+  passed &= test_point_light_table_without_competition_snaps();
+  passed &= test_baked_lamps_past_capacity_keep_nearest();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();
   passed &= test_time_of_day_turns_sun_and_switches_night_groups();

@@ -146,8 +146,8 @@ typedef struct VkrShadowCasterDepthBounds {
  * | Field | Consumer |
  * |---|---|
  * | local_shadow_face_budget, local_shadow_map_size,
- *   local_shadow_fade_distance, local_shadow_full_filter_all |
- *   vkr_local_shadow_cache_resolve() |
+ *   local_shadow_fade_distance, local_shadow_full_filter_all,
+ *   local_shadow_atlas_layer_budget | vkr_local_shadow_cache_resolve() |
  * | cascade_count | split/matrix loop; packet cascade count |
  * | shadow_map_size | texel size and snapping in the cascade fit |
  * | cascade_split_lambda | vkr_shadow_compute_cascade_splits() |
@@ -183,6 +183,12 @@ typedef struct VkrShadowConfig {
   uint32_t local_shadow_face_budget;
   /** Largest local shadow face; a light's faces follow its range. */
   uint32_t local_shadow_map_size;
+  /** Local-shadow atlas layers, 32 MiB each, the baked layer and the
+   * dynamic band included; zero allows VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX.
+   * Lights whose faces fit keep every light resident at the face size of its
+   * range; past it, lights out of the camera's reach leave the atlas and the
+   * least important shrink (ADR-019). */
+  uint32_t local_shadow_atlas_layer_budget;
   /** Camera distance in metres at which a light's local shadow has faded out,
    * over the last VKR_LOCAL_SHADOW_FADE_BAND_METRES; lights past it are not
    * filtered. Bounds the shadowed lights a pixel filters. */
@@ -276,6 +282,13 @@ typedef struct VkrShadowConfig {
 #define VKR_LOCAL_SHADOW_FADE_BAND_METRES 5.0f
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH 30u
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED 12u
+/* Local-shadow atlas layers per preset, the baked layer and the dynamic band
+ * included: 512, 384 and 256 MiB of D16. Bistro's 72 lamps take eight static
+ * layers under High and Ultra and seven under Balanced's 512-squared faces,
+ * plus the band, so every preset keeps all of them resident at full size. */
+#define VKR_LOCAL_SHADOW_ATLAS_LAYER_BUDGET_ULTRA 16u
+#define VKR_LOCAL_SHADOW_ATLAS_LAYER_BUDGET_HIGH 12u
+#define VKR_LOCAL_SHADOW_ATLAS_LAYER_BUDGET_BALANCED 8u
 
 /**
  * @brief High-quality CSM preset (recommended on modern GPUs).
@@ -304,6 +317,8 @@ typedef struct VkrShadowConfig {
   ((VkrShadowConfig){                                                          \
       .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH,           \
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,              \
+      .local_shadow_atlas_layer_budget =                                       \
+          VKR_LOCAL_SHADOW_ATLAS_LAYER_BUDGET_HIGH,                            \
       .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
       .local_shadow_soft = true_v,                                             \
       .far_cascade_evsm = true_v,                                              \
@@ -355,6 +370,8 @@ typedef struct VkrShadowConfig {
   ((VkrShadowConfig){                                                          \
       .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED,       \
       .local_shadow_map_size = 512u,                                           \
+      .local_shadow_atlas_layer_budget =                                       \
+          VKR_LOCAL_SHADOW_ATLAS_LAYER_BUDGET_BALANCED,                        \
       .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
       .local_shadow_soft = true_v,                                             \
       .cascade_count = 3,                                                      \
@@ -394,6 +411,8 @@ typedef struct VkrShadowConfig {
 static inline VkrShadowConfig vkr_shadow_config_ultra(void) {
   VkrShadowConfig config = VKR_SHADOW_CONFIG_HIGH;
   config.local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_ULTRA;
+  config.local_shadow_atlas_layer_budget =
+      VKR_LOCAL_SHADOW_ATLAS_LAYER_BUDGET_ULTRA;
   config.local_shadow_contact = true_v;
   return config;
 }
@@ -430,8 +449,10 @@ vkr_shadow_config_get_max_map_size(const VkrShadowConfig *config) {
  * While the world has dynamic casters `static_active` is set, and a cascade
  * a dynamic caster can reach, or whose layer is stale, is composed instead
  * of drawn whole: its static layer, drawn when invalid, is copied into the
- * shadow map and the dynamic casters draw over the copy. `cascade_render_mask`
- * keeps the cascades drawn whole and is disjoint from `copy_mask`.
+ * shadow map and the dynamic casters draw over the copy. A layer that holds
+ * the dynamic casters of the current dynamic generation is reused instead,
+ * so idle movers cost no copy and no draw. `cascade_render_mask` keeps the
+ * cascades drawn whole and is disjoint from `copy_mask`.
  */
 typedef struct VkrShadowFrameData {
   bool8_t enabled;
@@ -471,6 +492,12 @@ typedef struct VkrShadowCascadeHistory {
   /** The layer was copied from the static layer drawn with this descriptor;
    * without static_only_contents dynamic casters were drawn over it. */
   bool8_t composite;
+  /** The layer holds every dynamic caster of `dynamic_generation` that
+   * reaches it, drawn whole or over the copy while no publication was
+   * pending. While that generation is current, idle movers leave the layer
+   * as this frame would draw it, so it is reused like static content. */
+  bool8_t dynamic_contents;
+  uint64_t dynamic_generation;
   VkrShadowFit rendered_fit;
   Mat4 rendered_light_view;
   Mat4 rendered_view_projection;
@@ -522,9 +549,27 @@ typedef struct VkrLocalShadowFaceHistory {
   uint32_t transmission_layer;
   /** The content holds no dynamic caster: it was drawn with the static
    * casters only, or with every caster while none dynamic could reach it,
-   * and no publication was pending. Dynamic squares are never committed. */
+   * and no publication was pending. A face's dynamic square commits its own
+   * VkrLocalShadowDynamicHistory. */
   bool8_t static_only_contents;
 } VkrLocalShadowFaceHistory;
+
+/** Committed content of one face's dynamic square: a copy of its static
+ * square with the dynamic casters drawn over it. While the static square
+ * has not drawn again and no dynamic caster, publication or pool changed,
+ * the square holds what the frame would draw, so it is reused without a
+ * copy or a draw; idle movers then cost nothing. */
+typedef struct VkrLocalShadowDynamicHistory {
+  /** Band square: cell x | cell y << 8 | layer << 16. */
+  uint32_t cell;
+  /** Submission that drew the static square the content copied. */
+  uint64_t static_submit_value;
+  uint64_t dynamic_generation;
+  uint64_t publication_generation;
+  uint64_t resource_generation;
+  /** Nonzero once a successful submission drew the content. */
+  uint64_t last_submit_value;
+} VkrLocalShadowDynamicHistory;
 
 /* Lights the local-shadow cache holds: the scene table's and the baked
    lamps a frame shadows with its moving casters. */
@@ -551,12 +596,17 @@ typedef struct VkrLocalShadowCacheLight {
   /** The light takes one filtered tap and no contact shadows. */
   bool8_t reduced;
   VkrLocalShadowFaceHistory faces[6];
+  /** Each face's dynamic square from the last resolve that showed one; a
+   * face without one there keeps none. */
+  VkrLocalShadowDynamicHistory dynamic[6];
 } VkrLocalShadowCacheLight;
 
 /**
  * CPU state of the persistent local-shadow cache. Every shadow-casting light
  * of the scene table is resident with fixed atlas squares in one atlas that
- * all frames in flight share; a face draws when its content is invalid or
+ * all frames in flight share while their faces fit the atlas layer budget;
+ * past it the lights within the camera's reach are, at sizes set by their
+ * importance with hysteresis. A face draws when its content is invalid or
  * stale, in priority order, within the face budget per frame. The view table
  * a frame publishes is rebuilt from it each frame.
  */
@@ -583,11 +633,23 @@ typedef struct VkrLocalShadowPendingFace {
   VkrLocalShadowFaceHistory history;
 } VkrLocalShadowPendingFace;
 
+typedef struct VkrLocalShadowPendingDynamicFace {
+  uint32_t light;
+  uint32_t face;
+  /** The frame also draws the static square it copies, so the copy holds
+   * that submission's content. */
+  bool8_t static_drawn;
+  VkrLocalShadowDynamicHistory history;
+} VkrLocalShadowPendingDynamicFace;
+
 /** Faces drawn and atlas layers cleared by the frame in flight, committed to
  * the cache only after its submission succeeds. */
 typedef struct VkrLocalShadowPendingHistory {
   VkrLocalShadowPendingFace faces[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
   uint32_t face_count;
+  VkrLocalShadowPendingDynamicFace
+      dynamic_faces[VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX];
+  uint32_t dynamic_face_count;
   uint32_t cleared_layer_mask;
   uint32_t transmission_layer_count;
   bool8_t active;
@@ -690,11 +752,15 @@ void vkr_shadow_system_set_light_contribution_sample(
     VkrShadowSystem *system, const VkrLocalLightContributionSample *sample);
 
 /**
- * Resolves the local-shadow cache for the frame: keeps every shadow-casting
- * light resident, schedules the faces whose content is invalid or stale in
- * priority order within the face budget, and fills the frame's payload. The
- * drawn faces commit with vkr_shadow_system_commit_frame().
+ * Resolves the local-shadow cache for the frame: keeps the shadow-casting
+ * lights resident within the atlas layer budget, schedules the faces whose
+ * content is invalid or stale in priority order within the face budget,
+ * reuses the dynamic squares idle movers leave unchanged, and fills the
+ * frame's payload. The drawn faces commit with
+ * vkr_shadow_system_commit_frame().
  *
+ * `unfaded_intensity` holds each light's intensity before the light table
+ * faded it, which sizes its faces, or is NULL to size by `intensity`.
  * `baked_lamps` are the static lamps the desktop pipeline lights through
  * its lightmap (ADR-104), or NULL. The resolve shadows
  * the moving casters of at most VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX of
@@ -705,8 +771,8 @@ void vkr_shadow_system_resolve_local_shadows(
     VkrShadowSystem *system, VkrRetainedLocalShadowToken retained_token,
     const struct VkrWorldPassPayload *candidates,
     const struct VkrPointLight *lights, uint32_t light_count,
-    const struct VkrPointLight *baked_lamps, uint32_t baked_lamp_count,
-    const VkrLocalShadowCamera *camera,
+    const float32_t *unfaded_intensity, const struct VkrPointLight *baked_lamps,
+    uint32_t baked_lamp_count, const VkrLocalShadowCamera *camera,
     struct VkrLocalShadowPassPayload *out_payload);
 
 /**

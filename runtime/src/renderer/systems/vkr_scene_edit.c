@@ -9,6 +9,9 @@
 #include "core/vkr_hash.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
+#include "platform/vkr_platform.h"
 #include <errno.h>
 #include <math.h>
 #include <stddef.h>
@@ -3009,6 +3012,9 @@ typedef struct EditJson {
      document ids; NULL binds saved indices directly. */
   const uint32_t *remap;
   uint32_t remap_count;
+  /* Source identities read so far: a read without the scene keeps their
+     saved indices, which begin maps (edit_overlay_remap_created). */
+  uint32_t source_count;
 } EditJson;
 
 /* The current index of a saved document entity index; UINT32_MAX when the
@@ -3298,6 +3304,7 @@ static bool8_t edit_json_source(EditJson *j, SceneSourceIdentity *source) {
     return false_v;
   }
   source->scene_entity_index = edit_json_document_index(j, value);
+  j->source_count++;
   if (!edit_json_key(j, "gltf_node", true_v) ||
       !edit_json_int(j, -1, INT32_MAX, &value)) {
     return false_v;
@@ -4178,16 +4185,16 @@ edit_load_bind_source(const VkrScene *scene, EditSourceIndex *source,
 
 /* One directory walk and sort serve all records. Seen flags reject repeated
    overrides; touched flags merge an existing journal without quadratic scans.
-   The index holds `capacity` entries; the caller frees it. */
-static bool8_t edit_source_index_build(const VkrSceneEditState *s,
+   The index holds `capacity` entries of `allocator`; the caller frees it. */
+static bool8_t edit_source_index_build(VkrAllocator *allocator,
+                                       const VkrSceneEditState *s,
                                        const VkrScene *scene, uint32_t capacity,
                                        EditSourceIndex **out_index,
                                        uint32_t *out_count) {
   EditSourceIndex *index = NULL;
   uint32_t count = 0u;
   if (capacity) {
-    index =
-        vkr_allocator_alloc(s->allocator, capacity * sizeof(*index), EDIT_TAG);
+    index = vkr_allocator_alloc(allocator, capacity * sizeof(*index), EDIT_TAG);
     if (!index) {
       return false_v;
     }
@@ -4266,6 +4273,9 @@ typedef struct EditParentLink {
    exist. */
 typedef struct EditCreatedBody {
   uint32_t created_id;
+  /* The snapshot names source identities (physics version 2 on): its
+     attachment and joint targets. */
+  bool8_t sources;
   VkrScenePhysicsSnapshot physics;
 } EditCreatedBody;
 
@@ -4299,34 +4309,47 @@ typedef struct EditStructureLoad {
   bool8_t version4;
 } EditStructureLoad;
 
-static void edit_structure_load_free(VkrSceneEditState *s,
-                                     EditStructureLoad *load) {
+/* Frees the staged objects once they exist; the links and bodies stay. */
+static void edit_structure_objects_free(VkrAllocator *allocator,
+                                        EditStructureLoad *load) {
   if (load->objects) {
-    vkr_allocator_free(s->allocator, load->objects,
+    vkr_allocator_free(allocator, load->objects,
                        load->object_capacity * sizeof(*load->objects),
                        EDIT_TAG);
   }
   if (load->packed) {
-    vkr_allocator_free(s->allocator, load->packed, load->packed_capacity,
+    vkr_allocator_free(allocator, load->packed, load->packed_capacity,
                        EDIT_TAG);
   }
   if (load->scratch) {
-    vkr_allocator_free(s->allocator, load->scratch, sizeof(*load->scratch),
+    vkr_allocator_free(allocator, load->scratch, sizeof(*load->scratch),
                        EDIT_TAG);
   }
+  load->objects = NULL;
+  load->object_count = 0u;
+  load->object_capacity = 0u;
+  load->packed = NULL;
+  load->packed_size = 0u;
+  load->packed_capacity = 0u;
+  load->scratch = NULL;
+}
+
+static void edit_structure_load_free(VkrAllocator *allocator,
+                                     EditStructureLoad *load) {
+  edit_structure_objects_free(allocator, load);
   if (load->links) {
-    vkr_allocator_free(s->allocator, load->links,
+    vkr_allocator_free(allocator, load->links,
                        load->link_capacity * sizeof(*load->links), EDIT_TAG);
   }
   if (load->bodies) {
-    vkr_allocator_free(s->allocator, load->bodies,
+    vkr_allocator_free(allocator, load->bodies,
                        load->body_capacity * sizeof(*load->bodies), EDIT_TAG);
   }
   MemZero(load, sizeof(*load));
 }
 
 /* Packs `object` into the load's byte store as its next staged object. */
-static bool8_t edit_staged_add(VkrSceneEditState *s, EditStructureLoad *load,
+static bool8_t edit_staged_add(VkrAllocator *allocator, EditStructureLoad *load,
                                const EditObject *object) {
   uint64_t size = EDIT_OBJECT_HEAD_SIZE;
   for (uint32_t c = 0; c < object->component_count; ++c) {
@@ -4335,7 +4358,7 @@ static bool8_t edit_staged_add(VkrSceneEditState *s, EditStructureLoad *load,
   if (load->object_count == load->object_capacity) {
     const uint32_t capacity = Max(64u, load->object_capacity * 2u);
     EditStagedObject *objects = vkr_allocator_realloc(
-        s->allocator, load->objects, load->object_capacity * sizeof(*objects),
+        allocator, load->objects, load->object_capacity * sizeof(*objects),
         capacity * sizeof(*objects), EDIT_TAG);
     if (!objects) {
       return false_v;
@@ -4349,7 +4372,7 @@ static bool8_t edit_staged_add(VkrSceneEditState *s, EditStructureLoad *load,
       capacity *= 2u;
     }
     uint8_t *packed = vkr_allocator_realloc(
-        s->allocator, load->packed, load->packed_capacity, capacity, EDIT_TAG);
+        allocator, load->packed, load->packed_capacity, capacity, EDIT_TAG);
     if (!packed) {
       return false_v;
     }
@@ -4372,8 +4395,8 @@ static bool8_t edit_staged_add(VkrSceneEditState *s, EditStructureLoad *load,
 
 /* Staged object `index` unpacked into the load's scratch object, valid until
    the next unpack. */
-static const EditObject *edit_staged_object(const EditStructureLoad *load,
-                                            uint32_t index) {
+static EditObject *edit_staged_object(const EditStructureLoad *load,
+                                      uint32_t index) {
   const EditStagedObject *staged = &load->objects[index];
   EditObject *object = load->scratch;
   const uint8_t *at = load->packed + staged->offset;
@@ -4387,13 +4410,14 @@ static const EditObject *edit_staged_object(const EditStructureLoad *load,
   return object;
 }
 
-static bool8_t edit_structure_body(VkrSceneEditState *s,
+static bool8_t edit_structure_body(VkrAllocator *allocator,
                                    EditStructureLoad *load, uint32_t created_id,
+                                   bool8_t sources,
                                    const VkrScenePhysicsSnapshot *physics) {
   if (load->body_count == load->body_capacity) {
     const uint32_t capacity = Max(4u, load->body_capacity * 2u);
     EditCreatedBody *bodies = vkr_allocator_realloc(
-        s->allocator, load->bodies, load->body_capacity * sizeof(*bodies),
+        allocator, load->bodies, load->body_capacity * sizeof(*bodies),
         capacity * sizeof(*bodies), EDIT_TAG);
     if (!bodies) {
       return false_v;
@@ -4401,18 +4425,18 @@ static bool8_t edit_structure_body(VkrSceneEditState *s,
     load->bodies = bodies;
     load->body_capacity = capacity;
   }
-  load->bodies[load->body_count++] =
-      (EditCreatedBody){.created_id = created_id, .physics = *physics};
+  load->bodies[load->body_count++] = (EditCreatedBody){
+      .created_id = created_id, .sources = sources, .physics = *physics};
   return true_v;
 }
 
-static bool8_t edit_structure_link(VkrSceneEditState *s,
+static bool8_t edit_structure_link(VkrAllocator *allocator,
                                    EditStructureLoad *load,
                                    EditParentLink link) {
   if (load->link_count == load->link_capacity) {
     const uint32_t capacity = Max(16u, load->link_capacity * 2u);
     EditParentLink *next = vkr_allocator_realloc(
-        s->allocator, load->links, load->link_capacity * sizeof(*next),
+        allocator, load->links, load->link_capacity * sizeof(*next),
         capacity * sizeof(*next), EDIT_TAG);
     if (!next) {
       return false_v;
@@ -4435,87 +4459,97 @@ static int edit_document_key_compare(const void *left, const void *right) {
   return MemCompare(left, right, sizeof(VkrEntityRef));
 }
 
-/* A version 5 overlay's document ids: the saved index of each becomes the
-   index of the entity with that id in the loaded document, or UINT32_MAX
-   when the document no longer has it. A document without ids binds saved
-   indices directly. Installs the map in `j`; the caller frees `out` with
-   `out_capacity` entries. */
-static bool8_t edit_json_document_remap(EditJson *j, VkrSceneEditState *s,
-                                        const VkrScene *scene, uint32_t **out,
-                                        uint32_t *out_capacity,
-                                        EditSidecarFailure *failure) {
-  const uint32_t current = scene->document_id_count;
-  EditDocumentKey *keys = NULL;
-  uint32_t *remap = NULL;
-  uint32_t count = 0u, capacity = 0u;
-  bool8_t ok = false_v;
-  if (current) {
-    keys = vkr_allocator_alloc(s->allocator, current * sizeof(*keys), EDIT_TAG);
-    if (!keys) {
-      *failure = EDIT_SIDECAR_FAILURE_ALLOC;
-      return false_v;
-    }
-    for (uint32_t i = 0; i < current; ++i) {
-      keys[i] = (EditDocumentKey){.id = scene->document_ids[i], .index = i};
-    }
-    qsort(keys, current, sizeof(*keys), edit_document_key_compare);
-  }
-  if (!edit_json_take(j, '[')) {
-    goto done;
-  }
-  if (!edit_json_take(j, ']')) {
+/* A version 5 overlay's document ids, `["<uuid>", ...]`, in saved order. The
+   caller frees `out`, `out_capacity` entries of `allocator`. */
+static bool8_t edit_json_document_ids(EditJson *j, VkrAllocator *allocator,
+                                      VkrEntityRef **out, uint32_t *out_count,
+                                      uint32_t *out_capacity,
+                                      EditSidecarFailure *failure) {
+  VkrEntityRef *ids = NULL;
+  uint32_t count = 0u;
+  uint32_t capacity = 0u;
+  bool8_t ok = edit_json_take(j, '[');
+  if (ok && !edit_json_take(j, ']')) {
     for (;;) {
       char text[40];
       VkrEntityRef id;
       if (!edit_json_string(j, text, sizeof(text)) ||
           !vkr_entity_ref_parse(text, strlen(text), &id)) {
-        goto done;
+        ok = false_v;
+        break;
       }
-      if (current) {
-        if (count == capacity) {
-          const uint32_t next = Max(64u, capacity * 2u);
-          uint32_t *grown = vkr_allocator_realloc(
-              s->allocator, remap, capacity * sizeof(*remap),
-              next * sizeof(*remap), EDIT_TAG);
-          if (!grown) {
-            *failure = EDIT_SIDECAR_FAILURE_ALLOC;
-            goto done;
-          }
-          remap = grown;
-          capacity = next;
+      if (count == capacity) {
+        const uint32_t next = Max(64u, capacity * 2u);
+        VkrEntityRef *grown =
+            vkr_allocator_realloc(allocator, ids, capacity * sizeof(*ids),
+                                  next * sizeof(*ids), EDIT_TAG);
+        if (!grown) {
+          *failure = EDIT_SIDECAR_FAILURE_ALLOC;
+          ok = false_v;
+          break;
         }
-        const EditDocumentKey *match = bsearch(
-            &id, keys, current, sizeof(*keys), edit_document_key_compare);
-        remap[count] = match ? match->index : UINT32_MAX;
+        ids = grown;
+        capacity = next;
       }
-      count++;
+      ids[count++] = id;
       if (edit_json_take(j, ']')) {
         break;
       }
       if (!edit_json_take(j, ',')) {
-        goto done;
+        ok = false_v;
+        break;
       }
     }
   }
-  ok = true_v;
-
-done:
-  if (keys) {
-    vkr_allocator_free(s->allocator, keys, current * sizeof(*keys), EDIT_TAG);
+  if (!ok && ids) {
+    vkr_allocator_free(allocator, ids, capacity * sizeof(*ids), EDIT_TAG);
+    ids = NULL;
+    count = 0u;
+    capacity = 0u;
   }
-  if (!ok || !current) {
-    if (remap) {
-      vkr_allocator_free(s->allocator, remap, capacity * sizeof(*remap),
-                         EDIT_TAG);
-    }
-    *out = NULL;
-    *out_capacity = 0u;
-    return ok;
-  }
-  *out = remap;
+  *out = ids;
+  *out_count = count;
   *out_capacity = capacity;
-  j->remap = remap;
-  j->remap_count = count;
+  return ok;
+}
+
+/* The saved index of each of `count` document ids becomes the index of the
+   entity with that id in `scene`'s document, or UINT32_MAX when the document
+   no longer has it. A document without ids binds saved indices directly, so
+   `out` stays NULL. The caller frees `out`, `count` entries of `allocator`. */
+static bool8_t edit_document_remap(VkrAllocator *allocator,
+                                   const VkrScene *scene,
+                                   const VkrEntityRef *ids, uint32_t count,
+                                   uint32_t **out) {
+  *out = NULL;
+  const uint32_t current = scene->document_id_count;
+  if (!current || !count) {
+    return true_v;
+  }
+  EditDocumentKey *keys =
+      vkr_allocator_alloc(allocator, current * sizeof(*keys), EDIT_TAG);
+  uint32_t *remap =
+      vkr_allocator_alloc(allocator, count * sizeof(*remap), EDIT_TAG);
+  if (!keys || !remap) {
+    if (keys) {
+      vkr_allocator_free(allocator, keys, current * sizeof(*keys), EDIT_TAG);
+    }
+    if (remap) {
+      vkr_allocator_free(allocator, remap, count * sizeof(*remap), EDIT_TAG);
+    }
+    return false_v;
+  }
+  for (uint32_t i = 0; i < current; ++i) {
+    keys[i] = (EditDocumentKey){.id = scene->document_ids[i], .index = i};
+  }
+  qsort(keys, current, sizeof(*keys), edit_document_key_compare);
+  for (uint32_t i = 0; i < count; ++i) {
+    const EditDocumentKey *match = bsearch(
+        &ids[i], keys, current, sizeof(*keys), edit_document_key_compare);
+    remap[i] = match ? match->index : UINT32_MAX;
+  }
+  vkr_allocator_free(allocator, keys, current * sizeof(*keys), EDIT_TAG);
+  *out = remap;
   return true_v;
 }
 
@@ -4528,14 +4562,14 @@ static int edit_u32_compare(const void *a, const void *b) {
 /* A document repeating a created id is malformed. Sorting a copy of the ids
    keeps the check linearithmic, where comparing objects pairwise walked
    kilobyte-strided snapshots quadratically. */
-static bool8_t edit_created_ids_unique(VkrSceneEditState *s,
+static bool8_t edit_created_ids_unique(VkrAllocator *allocator,
                                        const EditStructureLoad *load,
                                        EditSidecarFailure *failure) {
   if (load->object_count < 2u) {
     return true_v;
   }
   const uint64_t size = load->object_count * sizeof(uint32_t);
-  uint32_t *ids = vkr_allocator_alloc(s->allocator, size, EDIT_TAG);
+  uint32_t *ids = vkr_allocator_alloc(allocator, size, EDIT_TAG);
   if (!ids) {
     *failure = EDIT_SIDECAR_FAILURE_ALLOC;
     return false_v;
@@ -4548,13 +4582,22 @@ static bool8_t edit_created_ids_unique(VkrSceneEditState *s,
   for (uint32_t i = 1; i < load->object_count && unique; ++i) {
     unique = ids[i] != ids[i - 1u];
   }
-  vkr_allocator_free(s->allocator, ids, size, EDIT_TAG);
+  vkr_allocator_free(allocator, ids, size, EDIT_TAG);
   return unique;
 }
 
-static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
+/* Whether a read off the frame thread was asked to stop. */
+static bool8_t edit_overlay_cancelled(const VkrAtomicBool *cancel) {
+  return cancel && vkr_atomic_bool_load(cancel, VKR_MEMORY_ORDER_RELAXED);
+}
+
+/* Stages the created records into `load`, from `allocator`. It does not
+   touch a scene, so it may run off the frame thread; a set `cancel` stops it
+   as a failed read. */
+static bool8_t edit_json_created(EditJson *j, VkrAllocator *allocator,
                                  EditStructureLoad *load,
                                  EditRecordComponents *components,
+                                 const VkrAtomicBool *cancel,
                                  EditSidecarFailure *failure) {
   *failure = EDIT_SIDECAR_FAILURE_SCHEMA;
   load->version4 = true_v;
@@ -4568,26 +4611,34 @@ static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
     uint32_t wrapper = 0;
     uint32_t node = 0;
     uint64_t fingerprint = 0;
+    if (edit_overlay_cancelled(cancel)) {
+      *failure = EDIT_SIDECAR_FAILURE_READ;
+      return false_v;
+    }
     if (load->object_count == VKR_SCENE_EDIT_CREATED_MAX) {
       *failure = EDIT_SIDECAR_FAILURE_CREATED_LIMIT;
       return false_v;
     }
-    if (!edit_json_record(j, &values, &wrapper, &node, &fingerprint,
-                          s->allocator, components, &extra, true_v))
+    const uint32_t sources_before = j->source_count;
+    if (!edit_json_record(j, &values, &wrapper, &node, &fingerprint, allocator,
+                          components, &extra, true_v)) {
       return false_v;
+    }
     if (!load->scratch) {
       load->scratch =
-          vkr_allocator_alloc(s->allocator, sizeof(*load->scratch), EDIT_TAG);
+          vkr_allocator_alloc(allocator, sizeof(*load->scratch), EDIT_TAG);
       if (!load->scratch) {
         *failure = EDIT_SIDECAR_FAILURE_ALLOC;
         return false_v;
       }
     }
     EditObject *object = load->scratch;
-    /* edit_structure_load_commit builds the body once the object exists. */
+    /* edit_structure_build_body builds the body once the object exists. */
     if (values.fields & VKR_SCENE_EDIT_PHYSICS) {
       if (values.physics.present &&
-          !edit_structure_body(s, load, extra.id, &values.physics)) {
+          !edit_structure_body(allocator, load, extra.id,
+                               j->source_count != sources_before,
+                               &values.physics)) {
         *failure = EDIT_SIDECAR_FAILURE_ALLOC;
         return false_v;
       }
@@ -4605,27 +4656,29 @@ static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
     }
     object->component_count = components->count;
     object->created_id = extra.id;
+    /* An object saved before entity references gets a fresh id where it is
+       created (edit_structure_create), on the frame thread. */
     if (extra.has_ref) {
       object->ref = extra.ref;
-    } else {
-      vkr_scene_entity_ref_generate(&object->ref);
+      object->parts |= EDIT_OBJECT_REF;
     }
-    object->parts |= EDIT_OBJECT_REF;
-    if (!edit_staged_add(s, load, object)) {
+    if (!edit_staged_add(allocator, load, object)) {
       *failure = EDIT_SIDECAR_FAILURE_ALLOC;
       return false_v;
     }
     if (extra.parent.kind != EDIT_PARENT_NONE &&
-        !edit_structure_link(s, load,
+        !edit_structure_link(allocator, load,
                              (EditParentLink){.created_child = extra.id,
                                               .parent = extra.parent})) {
       *failure = EDIT_SIDECAR_FAILURE_ALLOC;
       return false_v;
     }
-    if (edit_json_take(j, ']'))
-      return edit_created_ids_unique(s, load, failure);
-    if (!edit_json_take(j, ','))
+    if (edit_json_take(j, ']')) {
+      return edit_created_ids_unique(allocator, load, failure);
+    }
+    if (!edit_json_take(j, ',')) {
       return false_v;
+    }
   }
 }
 
@@ -4645,277 +4698,628 @@ static int edit_created_compare(const void *a, const void *b) {
   return x < y ? -1 : x > y ? 1 : 0;
 }
 
-/* The entity of created id `id`, searched in `sorted`, the state's created
-   records ordered by id, else scanned for when it is NULL. */
+/* The entity of created id `id`, searched in `sorted`, `sorted_count` of the
+   state's created records ordered by id, else scanned for when it is NULL. */
 static VkrEntityId edit_created_lookup(const VkrSceneEditState *s,
                                        const VkrSceneEditCreated *sorted,
-                                       uint32_t id) {
+                                       uint32_t sorted_count, uint32_t id) {
   if (!sorted) {
     return edit_created_entity(s, id);
   }
   const VkrSceneEditCreated key = {.id = id};
   const VkrSceneEditCreated *found = bsearch(
-      &key, sorted, s->created_count, sizeof(*sorted), edit_created_compare);
+      &key, sorted, sorted_count, sizeof(*sorted), edit_created_compare);
   return found ? found->entity : VKR_ENTITY_ID_INVALID;
 }
 
-/* Create the staged entities, then link parents. Runs after every override
-   committed; a failure here leaves that entity out and is logged. */
+/* The state's created records ordered by id, `s->created_count` of
+   `allocator`: links and bodies find created ids in it, since a level links
+   tens of thousands of objects, which a scan per link visits quadratically.
+   NULL, which falls back to the scan, when there are none or the copy
+   fails. */
+static VkrSceneEditCreated *edit_created_sorted(const VkrSceneEditState *s,
+                                                VkrAllocator *allocator) {
+  const uint64_t size =
+      (uint64_t)s->created_count * sizeof(VkrSceneEditCreated);
+  VkrSceneEditCreated *sorted =
+      size ? vkr_allocator_alloc(allocator, size, EDIT_TAG) : NULL;
+  if (sorted) {
+    MemCopy(sorted, s->created, size);
+    qsort(sorted, s->created_count, sizeof(*sorted), edit_created_compare);
+  }
+  return sorted;
+}
+
+/* Creates staged object `index` at the root and records its overlay id. An
+   object saved without an entity reference gets a fresh one here, on the
+   frame thread that owns the id counter. A failure leaves the object out and
+   is logged. */
+static void edit_structure_create(VkrSceneEditState *s, VkrScene *scene,
+                                  const EditStructureLoad *load,
+                                  uint32_t index) {
+  EditObject *object = edit_staged_object(load, index);
+  if (!(object->parts & EDIT_OBJECT_REF)) {
+    vkr_scene_entity_ref_generate(&object->ref);
+    object->parts |= EDIT_OBJECT_REF;
+  }
+  const VkrEntityId entity =
+      edit_object_restore(scene, object, VKR_ENTITY_ID_INVALID);
+  const uint32_t id = load->objects[index].created_id;
+  if (!entity.u64 || !edit_created_add(s, entity, id)) {
+    log_warn("Overlay object %u could not be created", id);
+  }
+}
+
+/* Gives one linked object its parent. A missing child is skipped; a missing
+   parent leaves the child at the root. */
+static void edit_structure_parent(const VkrSceneEditState *s, VkrScene *scene,
+                                  const VkrSceneEditCreated *sorted,
+                                  uint32_t sorted_count,
+                                  const EditParentLink *link,
+                                  EditSourceIndex *index,
+                                  uint32_t index_count) {
+  const VkrEntityId child =
+      link->created_child
+          ? edit_created_lookup(s, sorted, sorted_count, link->created_child)
+          : link->child;
+  VkrEntityId parent = VKR_ENTITY_ID_INVALID;
+  if (link->parent.kind == EDIT_PARENT_CREATED) {
+    parent = edit_created_lookup(s, sorted, sorted_count, link->parent.created);
+  } else if (link->parent.kind == EDIT_PARENT_DOCUMENT) {
+    const EditSourceIndex *source = edit_source_find(
+        index, index_count, link->parent.wrapper, link->parent.node);
+    parent = source ? source->entity : VKR_ENTITY_ID_INVALID;
+  }
+  if (!vkr_scene_entity_alive(scene, child)) {
+    return;
+  }
+  if (link->parent.kind != EDIT_PARENT_ROOT &&
+      !vkr_scene_entity_alive(scene, parent)) {
+    log_warn("Overlay parent of an object is missing; it stays at the root");
+    parent = VKR_ENTITY_ID_INVALID;
+  }
+  vkr_scene_set_parent(scene, child, parent);
+}
+
+/* Builds a created object's body. Bodies follow parenting so they start at
+   the object's final pose. A body that cannot be built leaves its object
+   loaded without it. */
+static void edit_structure_build_body(const VkrSceneEditState *s,
+                                      VkrScene *scene,
+                                      const VkrSceneEditCreated *sorted,
+                                      uint32_t sorted_count,
+                                      const EditCreatedBody *body) {
+  const VkrEntityId entity =
+      edit_created_lookup(s, sorted, sorted_count, body->created_id);
+  VkrSceneEditValues values;
+  MemZero(&values, sizeof(values));
+  values.fields = VKR_SCENE_EDIT_PHYSICS;
+  values.physics = body->physics;
+  if (!vkr_scene_entity_alive(scene, entity) ||
+      !edit_write(scene, entity, &values)) {
+    log_warn("Overlay object %u loaded without its physics body",
+             body->created_id);
+  }
+}
+
+/* Create the staged entities, then link parents, then build bodies, all at
+   once. Runs after every override committed; a failure here leaves that
+   entity out and is logged. */
 static void edit_structure_load_commit(VkrSceneEditState *s, VkrScene *scene,
                                        const EditStructureLoad *load,
                                        EditSourceIndex *index,
                                        uint32_t index_count) {
   for (uint32_t i = 0; i < load->object_count; ++i) {
-    const VkrEntityId entity = edit_object_restore(
-        scene, edit_staged_object(load, i), VKR_ENTITY_ID_INVALID);
-    const uint32_t id = load->objects[i].created_id;
-    if (!entity.u64 || !edit_created_add(s, entity, id)) {
-      log_warn("Overlay object %u could not be created", id);
-    }
+    edit_structure_create(s, scene, load, i);
   }
-  /* Links and bodies find created ids in a sorted copy: a level links tens
-     of thousands of objects, which a scan per link visits quadratically. A
-     failed copy falls back to the scan. */
-  const uint64_t sorted_size =
-      (uint64_t)s->created_count * sizeof(VkrSceneEditCreated);
-  VkrSceneEditCreated *sorted =
-      sorted_size ? vkr_allocator_alloc(s->allocator, sorted_size, EDIT_TAG)
-                  : NULL;
-  if (sorted) {
-    MemCopy(sorted, s->created, sorted_size);
-    qsort(sorted, s->created_count, sizeof(*sorted), edit_created_compare);
-  }
+  const uint32_t sorted_count = s->created_count;
+  VkrSceneEditCreated *sorted = edit_created_sorted(s, s->allocator);
 
   for (uint32_t i = 0; i < load->link_count; ++i) {
-    const EditParentLink *link = &load->links[i];
-    const VkrEntityId child =
-        link->created_child
-            ? edit_created_lookup(s, sorted, link->created_child)
-            : link->child;
-    VkrEntityId parent = VKR_ENTITY_ID_INVALID;
-    if (link->parent.kind == EDIT_PARENT_CREATED) {
-      parent = edit_created_lookup(s, sorted, link->parent.created);
-    } else if (link->parent.kind == EDIT_PARENT_DOCUMENT) {
-      const EditSourceIndex *source = edit_source_find(
-          index, index_count, link->parent.wrapper, link->parent.node);
-      parent = source ? source->entity : VKR_ENTITY_ID_INVALID;
-    }
-    if (!vkr_scene_entity_alive(scene, child)) {
-      continue;
-    }
-    if (link->parent.kind != EDIT_PARENT_ROOT &&
-        !vkr_scene_entity_alive(scene, parent)) {
-      log_warn("Overlay parent of an object is missing; it stays at the root");
-      parent = VKR_ENTITY_ID_INVALID;
-    }
-    vkr_scene_set_parent(scene, child, parent);
+    edit_structure_parent(s, scene, sorted, sorted_count, &load->links[i],
+                          index, index_count);
   }
-  /* Bodies follow parenting so they start at the object's final pose. A body
-     that cannot be built leaves its object loaded without it. */
   for (uint32_t i = 0; i < load->body_count; ++i) {
-    const EditCreatedBody *body = &load->bodies[i];
-    const VkrEntityId entity = edit_created_lookup(s, sorted, body->created_id);
-    VkrSceneEditValues values;
-    MemZero(&values, sizeof(values));
-    values.fields = VKR_SCENE_EDIT_PHYSICS;
-    values.physics = body->physics;
-    if (!vkr_scene_entity_alive(scene, entity) ||
-        !edit_write(scene, entity, &values)) {
-      log_warn("Overlay object %u loaded without its physics body",
-               body->created_id);
-    }
+    edit_structure_build_body(s, scene, sorted, sorted_count, &load->bodies[i]);
   }
   if (sorted) {
-    vkr_allocator_free(s->allocator, sorted, sorted_size, EDIT_TAG);
+    vkr_allocator_free(s->allocator, sorted, sorted_count * sizeof(*sorted),
+                       EDIT_TAG);
   }
 }
 
-bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
-                            String8 path) {
-  char cpath[1024];
-  EditRecordComponents *components = NULL;
+// =============================================================================
+// Overlay loads in parts (vkr_scene_edit_overlay_*)
+// =============================================================================
+
+/* The overlay's pool: address space for the largest document a load
+   accepts, staged (VKR_SCENE_EDIT_CREATED_MAX objects with their components
+   and bodies); pages commit as the read grows it. */
+#define EDIT_OVERLAY_MEMORY_INITIAL MB(1)
+#define EDIT_OVERLAY_MEMORY_RESERVE GB(2)
+/* Bytes one read call takes, so a cancel waits for at most one part. */
+#define EDIT_OVERLAY_READ_PART MB(4)
+
+typedef enum EditOverlayStage {
+  EDIT_OVERLAY_UNREAD,
+  /* Read; begin binds it. */
+  EDIT_OVERLAY_READ,
+  /* Begun: steps create the objects, then link parents, then build bodies,
+     then commit the settings. */
+  EDIT_OVERLAY_OBJECTS,
+  EDIT_OVERLAY_LINKS,
+  EDIT_OVERLAY_BODIES,
+  EDIT_OVERLAY_DONE,
+} EditOverlayStage;
+
+struct s_VkrSceneEditOverlay {
+  /* The frame thread's allocator holding this handle. */
+  VkrAllocator *owner;
+  /* Every allocation below. The reading thread uses it until the read
+     returns; the caller's completion flag then hands it to the frame
+     thread, which alone uses it until destroy. */
+  VkrDMemory memory;
+  VkrAllocator allocator;
+  EditOverlayStage stage;
+  /* The file, for messages. */
+  char path[1024];
+  /* The read found no file: nothing applies. */
+  bool8_t missing;
+  /* The read rejected the file for `diagnostic`. */
+  bool8_t rejected;
+  EditSidecarDiagnostic diagnostic;
+  int64_t version;
+  /* The version read before the overrides, which binds them: from 4 on, a
+     record's component list is whole. */
+  int64_t overrides_version;
+  /* Root members read, as vkr_scene_edit_load's checks number them. */
+  uint32_t root_seen;
+  /* The `overrides` array's bytes: its records name document entities, so
+     they are parsed again and bound when the overlay begins. */
+  uint8_t *overrides;
+  uint64_t overrides_length;
+  /* A version 5 overlay's document ids, in saved order. */
+  VkrEntityRef *document_ids;
+  uint32_t document_id_count;
+  uint32_t document_id_capacity;
+  VkrSceneSettings scene_settings;
+  VkrSceneCollisionLayers collision_settings;
+  /* Created objects and their bodies; their parent links, which begin puts
+     behind the overrides' links. */
+  EditStructureLoad structure;
+  /* From begin on: the scene's source index, which document parents
+     resolve through, and the collision settings committed at the end. */
+  EditSourceIndex *index;
+  uint32_t index_count;
+  uint32_t index_capacity;
+  VkrSceneCollisionLayersPrepared *pending_settings;
+  /* From the links on: the created records ordered by id. */
+  VkrSceneEditCreated *sorted;
+  uint32_t sorted_count;
+  /* The next object, link or body of the current stage. */
+  uint32_t cursor;
+  /* Prepared override entries, which the load's status counts. */
+  uint32_t prepared_count;
+  uint32_t done;
+  uint32_t total;
+};
+
+VkrSceneEditOverlay *vkr_scene_edit_overlay_create(VkrAllocator *allocator) {
+  VkrSceneEditOverlay *overlay =
+      vkr_allocator_alloc(allocator, sizeof(*overlay), EDIT_TAG);
+  if (!overlay) {
+    return NULL;
+  }
+  MemZero(overlay, sizeof(*overlay));
+  if (!vkr_dmemory_create(EDIT_OVERLAY_MEMORY_INITIAL,
+                          EDIT_OVERLAY_MEMORY_RESERVE, &overlay->memory)) {
+    vkr_allocator_free(allocator, overlay, sizeof(*overlay), EDIT_TAG);
+    return NULL;
+  }
+  overlay->owner = allocator;
+  overlay->allocator = (VkrAllocator){.ctx = &overlay->memory};
+  vkr_dmemory_allocator_create(&overlay->allocator);
+  overlay->stage = EDIT_OVERLAY_UNREAD;
+  overlay->diagnostic.failure = EDIT_SIDECAR_FAILURE_READ;
+  overlay->scene_settings = (VkrSceneSettings){.inherit_world = true_v};
+  return overlay;
+}
+
+/* Frees what a read staged, once it will not apply. */
+static void edit_overlay_release(VkrSceneEditOverlay *o) {
+  VkrAllocator *allocator = &o->allocator;
+  edit_structure_load_free(allocator, &o->structure);
+  if (o->overrides) {
+    vkr_allocator_free(allocator, o->overrides, o->overrides_length, EDIT_TAG);
+  }
+  if (o->document_ids) {
+    vkr_allocator_free(allocator, o->document_ids,
+                       o->document_id_capacity * sizeof(*o->document_ids),
+                       EDIT_TAG);
+  }
+  if (o->index) {
+    vkr_allocator_free(allocator, o->index,
+                       o->index_capacity * sizeof(*o->index), EDIT_TAG);
+  }
+  if (o->sorted) {
+    vkr_allocator_free(allocator, o->sorted,
+                       o->sorted_count * sizeof(*o->sorted), EDIT_TAG);
+  }
+  o->overrides = NULL;
+  o->overrides_length = 0u;
+  o->document_ids = NULL;
+  o->document_id_count = 0u;
+  o->document_id_capacity = 0u;
+  o->index = NULL;
+  o->index_count = 0u;
+  o->index_capacity = 0u;
+  o->sorted = NULL;
+  o->sorted_count = 0u;
+}
+
+void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *o, String8 path,
+                                 const VkrAtomicBool *cancel) {
+  VkrAllocator *allocator = &o->allocator;
   FILE *file = NULL;
   uint8_t *bytes = NULL;
-  EditPrepared *pending = NULL;
-  VkrSceneCollisionLayers settings = {0};
-  VkrSceneCollisionLayersPrepared *pending_settings = NULL;
-  VkrScenePhysicsPrepared *matrix_bodies[VKR_SCENE_PHYSICS_MAX_BODIES] = {0};
-  uint32_t matrix_body_count = 0;
-  uint32_t count = 0, capacity = 0;
-  EditSourceIndex *index = NULL;
-  uint32_t *remap = NULL;
-  uint32_t remap_capacity = 0u;
-  uint32_t index_count = 0, additional_touched = 0;
-  uint32_t rebound = 0u;
-  uint32_t index_capacity = scene->world->dir.capacity;
-  uint32_t touched_before = s->touched_count;
-  const uint32_t deleted_before = s->deleted_count;
-  EditStructureLoad structure = {0};
-  VkrSceneSettings scene_settings = {.inherit_world = true_v};
-  bool8_t success = false_v;
-  EditSidecarDiagnostic diagnostic = {
-      .failure = EDIT_SIDECAR_FAILURE_READ,
-  };
+  EditRecordComponents *components = NULL;
   long length = 0;
-  if (path.length >= sizeof(cpath))
-    goto cleanup;
-  MemCopy(cpath, path.str, path.length);
-  cpath[path.length] = 0;
-  file = file_fopen(cpath, "rb");
+  const uint8_t *overrides_at = NULL;
+  const uint8_t *overrides_end = NULL;
+  uint32_t records = 0u;
+  bool8_t override_physics = false_v;
+  bool8_t ok = false_v;
+  EditSidecarDiagnostic diagnostic = {.failure = EDIT_SIDECAR_FAILURE_READ};
+  if (o->stage != EDIT_OVERLAY_UNREAD) {
+    return;
+  }
+  o->stage = EDIT_OVERLAY_READ;
+  const uint64_t path_length = Min(path.length, sizeof(o->path) - 1u);
+  if (path_length) {
+    MemCopy(o->path, path.str, path_length);
+  }
+  o->path[path_length] = '\0';
+  if (path.length >= sizeof(o->path)) {
+    goto done;
+  }
+  file = file_fopen(o->path, "rb");
   if (!file && errno == ENOENT) {
-    s->sidecar_conflict = false_v;
-    return true_v;
+    o->missing = true_v;
+    return;
   }
   if (!file || fseek(file, 0, SEEK_END) != 0 || (length = ftell(file)) <= 0 ||
       (uint64_t)length > VKR_SCENE_EDIT_OVERLAY_BYTES ||
-      fseek(file, 0, SEEK_SET) != 0)
-    goto cleanup;
-  bytes = vkr_allocator_alloc(s->allocator, (uint64_t)length, EDIT_TAG);
-  if (!bytes) {
-    diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
-    goto cleanup;
+      fseek(file, 0, SEEK_SET) != 0) {
+    goto done;
   }
-  components = vkr_allocator_alloc(s->allocator, sizeof(*components), EDIT_TAG);
-  if (!components) {
+  bytes = vkr_allocator_alloc(allocator, (uint64_t)length, EDIT_TAG);
+  components = vkr_allocator_alloc(allocator, sizeof(*components), EDIT_TAG);
+  if (!bytes || !components) {
     diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
-    goto cleanup;
+    goto done;
   }
-  if (fread(bytes, 1, (size_t)length, file) != (size_t)length)
-    goto cleanup;
-  if (!edit_source_index_build(s, scene, index_capacity, &index,
-                               &index_count)) {
-    diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
-    goto cleanup;
+  for (uint64_t at = 0u; at < (uint64_t)length;) {
+    const uint64_t part = Min((uint64_t)length - at, EDIT_OVERLAY_READ_PART);
+    if (edit_overlay_cancelled(cancel) ||
+        fread(bytes + at, 1, (size_t)part, file) != (size_t)part) {
+      goto done;
+    }
+    at += part;
   }
+  fclose(file);
+  file = NULL;
+
+  /* Every member parses and is checked here. The overrides are only
+     checked: binding them needs the scene, so begin parses them again. */
   EditJson json = {.at = bytes, .end = bytes + length};
-  uint32_t root_seen = 0;
-  int64_t version = 0;
   if (!edit_json_take(&json, '{')) {
     diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-    goto cleanup;
+    goto done;
   }
   for (;;) {
     char key[32];
     if (!edit_json_string(&json, key, sizeof(key)) ||
         !edit_json_take(&json, ':')) {
       diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-      goto cleanup;
+      goto done;
     }
     if (strcmp(key, "version") == 0) {
-      if ((root_seen & 1u) || !edit_json_int(&json, 1, 5, &version)) {
+      if ((o->root_seen & 1u) || !edit_json_int(&json, 1, 5, &o->version)) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-        goto cleanup;
+        goto done;
       }
-      root_seen |= 1u;
+      o->root_seen |= 1u;
     } else if (strcmp(key, "overrides") == 0) {
-      if ((root_seen & 2u) || !edit_json_take(&json, '[')) {
+      o->overrides_version = o->version;
+      edit_json_space(&json);
+      overrides_at = json.at;
+      if ((o->root_seen & 2u) || !edit_json_take(&json, '[')) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-        goto cleanup;
+        goto done;
       }
-      root_seen |= 2u;
-      if (!edit_json_take(&json, ']'))
+      o->root_seen |= 2u;
+      if (!edit_json_take(&json, ']')) {
         for (;;) {
           VkrSceneEditValues values;
           EditRecordExtra extra;
-          uint32_t wrapper, node;
+          uint32_t wrapper;
+          uint32_t node;
           uint64_t fingerprint;
+          if (edit_overlay_cancelled(cancel)) {
+            goto done;
+          }
           if (!edit_json_record(&json, &values, &wrapper, &node, &fingerprint,
-                                s->allocator, components, &extra, false_v)) {
+                                allocator, components, &extra, false_v)) {
             diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-            diagnostic.record = count + 1u;
-            goto cleanup;
+            diagnostic.record = records + 1u;
+            goto done;
           }
-          EditSourceIndex *source =
-              edit_source_find(index, index_count, wrapper, node);
-          diagnostic = (EditSidecarDiagnostic){
-              .record = count + 1u,
-              .wrapper = wrapper,
-              .node = node,
-              .saved_fingerprint = fingerprint,
-              .current_fingerprint = source ? source->fingerprint : 0u,
-          };
-          if (!edit_load_bind_source(scene, source, fingerprint, &values,
-                                     &rebound, &diagnostic.failure))
-            goto cleanup;
-          structure.version4 |= extra.deleted;
-          if (!edit_load_prepare_record(s, scene, source, &values, components,
-                                        &extra, version >= 4, &pending, &count,
-                                        &capacity, &additional_touched,
-                                        &diagnostic.failure))
-            goto cleanup;
-          if (extra.parent.kind != EDIT_PARENT_NONE &&
-              !edit_structure_link(s, &structure,
-                                   (EditParentLink){.child = source->entity,
-                                                    .parent = extra.parent})) {
-            diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
-            goto cleanup;
-          }
-          if (edit_json_take(&json, ']'))
+          records++;
+          /* A deletion or a parent is a version 4 member. */
+          o->structure.version4 |=
+              extra.deleted || extra.parent.kind != EDIT_PARENT_NONE;
+          override_physics |= (values.fields & VKR_SCENE_EDIT_PHYSICS) != 0u;
+          if (edit_json_take(&json, ']')) {
             break;
+          }
           if (!edit_json_take(&json, ',')) {
             diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-            goto cleanup;
+            goto done;
           }
         }
+      }
+      overrides_end = json.at;
     } else if (!strcmp(key, "document_ids")) {
       /* Records bind through the map, so it precedes every record. */
-      if ((root_seen & (32u | 2u | 8u)) ||
-          !edit_json_document_remap(&json, s, scene, &remap, &remap_capacity,
-                                    &diagnostic.failure)) {
-        if (diagnostic.failure == EDIT_SIDECAR_FAILURE_READ)
+      if ((o->root_seen & (32u | 2u | 8u)) ||
+          !edit_json_document_ids(
+              &json, allocator, &o->document_ids, &o->document_id_count,
+              &o->document_id_capacity, &diagnostic.failure)) {
+        if (diagnostic.failure == EDIT_SIDECAR_FAILURE_READ) {
           diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-        goto cleanup;
+        }
+        goto done;
       }
-      root_seen |= 32u;
+      o->root_seen |= 32u;
     } else if (!strcmp(key, "scene_settings")) {
-      if ((root_seen & 16u) ||
-          !edit_json_scene_settings(&json, &scene_settings)) {
+      if ((o->root_seen & 16u) ||
+          !edit_json_scene_settings(&json, &o->scene_settings)) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-        goto cleanup;
+        goto done;
       }
-      root_seen |= 16u;
-      structure.version4 = true_v;
+      o->root_seen |= 16u;
+      o->structure.version4 = true_v;
     } else if (!strcmp(key, "created")) {
-      if ((root_seen & 8u) ||
-          !edit_json_created(&json, s, &structure, components,
-                             &diagnostic.failure)) {
-        diagnostic.record = count + 1u;
-        goto cleanup;
+      if ((o->root_seen & 8u) ||
+          !edit_json_created(&json, allocator, &o->structure, components,
+                             cancel, &diagnostic.failure)) {
+        diagnostic.record = records + 1u;
+        goto done;
       }
-      root_seen |= 8u;
+      o->root_seen |= 8u;
     } else if (!strcmp(key, "collision_settings")) {
-      if ((root_seen & 4u) || !edit_json_collision_layers(&json, &settings)) {
+      if ((o->root_seen & 4u) ||
+          !edit_json_collision_layers(&json, &o->collision_settings)) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-        goto cleanup;
+        goto done;
       }
-      root_seen |= 4u;
+      o->root_seen |= 4u;
     } else {
       diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-      goto cleanup;
+      goto done;
     }
-    if (edit_json_take(&json, '}'))
+    if (edit_json_take(&json, '}')) {
       break;
+    }
     if (!edit_json_take(&json, ',')) {
       diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-      goto cleanup;
+      goto done;
     }
   }
   edit_json_space(&json);
-  if ((root_seen & ~56u) != (version >= 3 ? 7u : 3u) ||
-      ((root_seen & 32u) && version < 5) || json.at != json.end ||
-      (structure.version4 && version < 4)) {
+  if ((o->root_seen & ~56u) != (o->version >= 3 ? 7u : 3u) ||
+      ((o->root_seen & 32u) && o->version < 5) || json.at != json.end ||
+      (o->structure.version4 && o->version < 4) ||
+      (o->version == 1 && override_physics)) {
     diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
+    goto done;
+  }
+  /* The file is no longer needed; only the overrides' bytes stay. */
+  o->overrides_length = (uint64_t)(overrides_end - overrides_at);
+  o->overrides = vkr_allocator_alloc(allocator, o->overrides_length, EDIT_TAG);
+  if (!o->overrides) {
+    o->overrides_length = 0u;
+    diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
+    goto done;
+  }
+  MemCopy(o->overrides, overrides_at, o->overrides_length);
+  ok = true_v;
+
+done:
+  if (file) {
+    fclose(file);
+  }
+  if (bytes) {
+    vkr_allocator_free(allocator, bytes, (uint64_t)length, EDIT_TAG);
+  }
+  if (components) {
+    vkr_allocator_free(allocator, components, sizeof(*components), EDIT_TAG);
+  }
+  if (!ok) {
+    o->rejected = true_v;
+    o->diagnostic = diagnostic;
+    edit_overlay_release(o);
+  }
+}
+
+/* The created objects' references to document entities, which the read
+   kept as saved indices, through `j`'s map of the scene's document ids:
+   their links' document parents, and their bodies' attachment and joint
+   targets. */
+static void edit_overlay_remap_created(VkrSceneEditOverlay *o,
+                                       const EditJson *j) {
+  if (!j->remap) {
+    return;
+  }
+  EditStructureLoad *load = &o->structure;
+  for (uint32_t i = 0; i < load->link_count; ++i) {
+    EditParentRef *parent = &load->links[i].parent;
+    if (parent->kind == EDIT_PARENT_DOCUMENT) {
+      parent->wrapper = edit_json_document_index(j, parent->wrapper);
+    }
+  }
+  for (uint32_t i = 0; i < load->body_count; ++i) {
+    EditCreatedBody *body = &load->bodies[i];
+    if (!body->sources) {
+      continue;
+    }
+    SceneSourceIdentity *source = &body->physics.attachment.animation_source;
+    source->scene_entity_index =
+        edit_json_document_index(j, source->scene_entity_index);
+    for (uint32_t k = 0; k < body->physics.joint_count; ++k) {
+      source = &body->physics.joints[k].target_source;
+      source->scene_entity_index =
+          edit_json_document_index(j, source->scene_entity_index);
+    }
+  }
+}
+
+/* Puts `head`'s links, the overrides', ahead of the created objects' in
+   `load`, the order the file lists them in. */
+static bool8_t edit_structure_links_ahead(VkrAllocator *allocator,
+                                          EditStructureLoad *load,
+                                          const EditStructureLoad *head) {
+  if (!head->link_count) {
+    return true_v;
+  }
+  const uint32_t count = head->link_count + load->link_count;
+  EditParentLink *links =
+      vkr_allocator_alloc(allocator, count * sizeof(*links), EDIT_TAG);
+  if (!links) {
+    return false_v;
+  }
+  MemCopy(links, head->links, head->link_count * sizeof(*links));
+  if (load->link_count) {
+    MemCopy(links + head->link_count, load->links,
+            load->link_count * sizeof(*links));
+  }
+  if (load->links) {
+    vkr_allocator_free(allocator, load->links,
+                       load->link_capacity * sizeof(*load->links), EDIT_TAG);
+  }
+  load->links = links;
+  load->link_count = count;
+  load->link_capacity = count;
+  return true_v;
+}
+
+/* All prepared strings belong to the scene; pending records belong to the
+   editor allocator and die at this input boundary. No scene mutation occurs
+   until the overrides bind, their identities resolve and every allocation
+   passes. */
+bool8_t vkr_scene_edit_overlay_begin(VkrSceneEditState *s, VkrScene *scene,
+                                     VkrSceneEditOverlay *o) {
+  EditRecordComponents *components = NULL;
+  EditPrepared *pending = NULL;
+  VkrScenePhysicsPrepared *matrix_bodies[VKR_SCENE_PHYSICS_MAX_BODIES] = {0};
+  uint32_t matrix_body_count = 0;
+  uint32_t count = 0;
+  uint32_t capacity = 0;
+  uint32_t *remap = NULL;
+  uint32_t additional_touched = 0;
+  uint32_t rebound = 0u;
+  const uint32_t touched_before = s->touched_count;
+  const uint32_t deleted_before = s->deleted_count;
+  /* The overrides' parent links, which go ahead of the created objects'. */
+  EditStructureLoad head = {0};
+  bool8_t success = false_v;
+  EditSidecarDiagnostic diagnostic = o->diagnostic;
+  /* Only a read overlay begins, once. */
+  if (o->stage != EDIT_OVERLAY_READ) {
+    return false_v;
+  }
+  o->stage = EDIT_OVERLAY_DONE;
+  if (o->missing) {
+    s->sidecar_conflict = false_v;
+    return true_v;
+  }
+  if (o->rejected) {
     goto cleanup;
   }
-  if (version == 1) {
-    for (uint32_t i = 0; i < count; ++i) {
-      if (pending[i].values.fields & VKR_SCENE_EDIT_PHYSICS) {
+  diagnostic = (EditSidecarDiagnostic){.failure = EDIT_SIDECAR_FAILURE_ALLOC};
+  components = vkr_allocator_alloc(s->allocator, sizeof(*components), EDIT_TAG);
+  o->index_capacity = scene->world->dir.capacity;
+  if (!components ||
+      !edit_source_index_build(&o->allocator, s, scene, o->index_capacity,
+                               &o->index, &o->index_count) ||
+      !edit_document_remap(s->allocator, scene, o->document_ids,
+                           o->document_id_count, &remap)) {
+    goto cleanup;
+  }
+  EditJson json = {.at = o->overrides,
+                   .end = o->overrides + o->overrides_length,
+                   .remap = remap,
+                   .remap_count = remap ? o->document_id_count : 0u};
+  edit_overlay_remap_created(o, &json);
+  diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
+  if (!edit_json_take(&json, '[')) {
+    goto cleanup;
+  }
+  if (!edit_json_take(&json, ']')) {
+    for (;;) {
+      VkrSceneEditValues values;
+      EditRecordExtra extra;
+      uint32_t wrapper;
+      uint32_t node;
+      uint64_t fingerprint;
+      if (!edit_json_record(&json, &values, &wrapper, &node, &fingerprint,
+                            s->allocator, components, &extra, false_v)) {
+        diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
+        diagnostic.record = count + 1u;
+        goto cleanup;
+      }
+      EditSourceIndex *source =
+          edit_source_find(o->index, o->index_count, wrapper, node);
+      diagnostic = (EditSidecarDiagnostic){
+          .record = count + 1u,
+          .wrapper = wrapper,
+          .node = node,
+          .saved_fingerprint = fingerprint,
+          .current_fingerprint = source ? source->fingerprint : 0u,
+      };
+      if (!edit_load_bind_source(scene, source, fingerprint, &values, &rebound,
+                                 &diagnostic.failure)) {
+        goto cleanup;
+      }
+      if (!edit_load_prepare_record(s, scene, source, &values, components,
+                                    &extra, o->overrides_version >= 4, &pending,
+                                    &count, &capacity, &additional_touched,
+                                    &diagnostic.failure)) {
+        goto cleanup;
+      }
+      if (extra.parent.kind != EDIT_PARENT_NONE &&
+          !edit_structure_link(&o->allocator, &head,
+                               (EditParentLink){.child = source->entity,
+                                                .parent = extra.parent})) {
+        diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
+        goto cleanup;
+      }
+      if (edit_json_take(&json, ']')) {
+        break;
+      }
+      if (!edit_json_take(&json, ',')) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
         goto cleanup;
       }
     }
   }
-  if (additional_touched > UINT32_MAX - touched_before) {
+  edit_json_space(&json);
+  if (json.at != json.end) {
+    diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
+    goto cleanup;
+  }
+  if (!edit_structure_links_ahead(&o->allocator, &o->structure, &head) ||
+      additional_touched > UINT32_MAX - touched_before) {
     diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
     goto cleanup;
   }
@@ -4935,13 +5339,13 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
   bool8_t rebuild_matrix = false_v;
   /* In a physics set only the layers owner (the World, else the primary
      scene) applies its saved collision settings; members share them. */
-  if ((root_seen & 4u) && vkr_scene_physics_layers_owner(scene)) {
+  if ((o->root_seen & 4u) && vkr_scene_physics_layers_owner(scene)) {
     VkrSceneCollisionLayers before;
     vkr_scene_collision_layers_read(scene, &before);
-    rebuild_matrix =
-        MemCompare(before.matrix, settings.matrix, sizeof(before.matrix)) != 0;
-    if (!vkr_scene_collision_layers_prepare(scene, &settings, &pending_settings,
-                                            NULL)) {
+    rebuild_matrix = MemCompare(before.matrix, o->collision_settings.matrix,
+                                sizeof(before.matrix)) != 0;
+    if (!vkr_scene_collision_layers_prepare(scene, &o->collision_settings,
+                                            &o->pending_settings, NULL)) {
       diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
       goto cleanup;
     }
@@ -4977,59 +5381,251 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
     }
     edit_commit(scene, &pending[i]);
   }
-  edit_structure_load_commit(s, scene, &structure, index, index_count);
-  if (root_seen & 16u) {
-    scene->settings = scene_settings;
-    scene->world_revision++;
-  }
-  vkr_scene_collision_layers_commit(pending_settings);
-  if (pending_settings) {
-    const char *share_error = NULL;
-    if (!vkr_scene_collision_layers_share(scene, &share_error))
-      log_warn("Collision settings could not reach every loaded scene: %s",
-               share_error ? share_error : "unknown error");
-  }
-  pending_settings = NULL;
-  snprintf(s->status, sizeof(s->status), "Loaded %u node overrides.", count);
   if (rebound) {
     log_warn("%u overrides of '%s' bound by node name: their source changed "
              "since they were saved",
-             rebound, cpath);
+             rebound, o->path);
   }
+  o->prepared_count = count;
+  o->total = o->structure.object_count + o->structure.link_count +
+             o->structure.body_count;
+  o->cursor = 0u;
+  o->stage = EDIT_OVERLAY_OBJECTS;
   success = true_v;
-  s->sidecar_conflict = false_v;
 cleanup:
   for (uint32_t i = 0; i < matrix_body_count; ++i) {
     vkr_scene_physics_discard(matrix_bodies[i]);
   }
-  if (remap)
-    vkr_allocator_free(s->allocator, remap, remap_capacity * sizeof(*remap),
-                       EDIT_TAG);
-  vkr_scene_collision_layers_discard(pending_settings);
-  if (index)
-    vkr_allocator_free(s->allocator, index, index_capacity * sizeof(*index),
-                       EDIT_TAG);
-  if (file)
-    fclose(file);
-  if (bytes)
-    vkr_allocator_free(s->allocator, bytes, (uint64_t)length, EDIT_TAG);
-  if (components)
+  if (remap) {
+    vkr_allocator_free(s->allocator, remap,
+                       o->document_id_count * sizeof(*remap), EDIT_TAG);
+  }
+  if (components) {
     vkr_allocator_free(s->allocator, components, sizeof(*components), EDIT_TAG);
-  edit_structure_load_free(s, &structure);
-  for (uint32_t i = 0; i < count; ++i)
+  }
+  edit_structure_load_free(&o->allocator, &head);
+  for (uint32_t i = 0; i < count; ++i) {
     edit_discard(scene, &pending[i]);
-  if (pending)
+  }
+  if (pending) {
     vkr_allocator_free(s->allocator, pending, capacity * sizeof(*pending),
                        EDIT_TAG);
+  }
   if (!success) {
+    vkr_scene_collision_layers_discard(o->pending_settings);
+    o->pending_settings = NULL;
+    o->stage = EDIT_OVERLAY_DONE;
+    edit_overlay_release(o);
     s->touched_count = touched_before;
     s->deleted_count = deleted_before;
     s->sidecar_conflict = true_v;
     edit_sidecar_reject_status(s, &diagnostic);
-    log_error("Editor overrides rejected: %.*s: %s", (int)path.length, path.str,
-              s->status);
+    log_error("Editor overrides rejected: %s: %s", o->path, s->status);
   }
   return success;
+}
+
+/* The member of `scene`'s physics set whose collision layers the set
+   shares, or NULL. */
+static VkrScene *edit_layers_owner(VkrScene *scene) {
+  VkrScene *members[VKR_SCENE_PHYSICS_SET_MAX];
+  const uint32_t count =
+      vkr_scene_physics_set_members(scene, members, ArrayCount(members));
+  for (uint32_t i = 0; i < count; ++i) {
+    if (vkr_scene_physics_layers_owner(members[i])) {
+      return members[i];
+    }
+  }
+  return NULL;
+}
+
+/* The last step: the scene settings and collision settings the overlay
+   saved, after every object exists, as a load in one call commits them.
+   Begin decided whether the saved collision settings apply, frames ago:
+   since then the World can have joined the physics set and taken the
+   layers, or left it to this scene. The owner at this commit decides. */
+static void edit_overlay_finish(VkrSceneEditState *s, VkrScene *scene,
+                                VkrSceneEditOverlay *o) {
+  if (o->root_seen & 16u) {
+    scene->settings = o->scene_settings;
+    scene->world_revision++;
+  }
+  VkrSceneCollisionLayersPrepared *pending_settings = o->pending_settings;
+  o->pending_settings = NULL;
+  const char *share_error = NULL;
+  bool8_t shared = true_v;
+  if (pending_settings) {
+    /* Bodies built since begin follow the staged matrix, so it commits
+       first; an owner that joined since then shares its layers over it,
+       rebuilding those bodies, as its activation could not while this
+       transaction was pending. */
+    vkr_scene_collision_layers_commit(pending_settings);
+    VkrScene *owner = vkr_scene_physics_layers_owner(scene)
+                          ? scene
+                          : edit_layers_owner(scene);
+    shared = !owner || vkr_scene_collision_layers_share(owner, &share_error);
+  } else if ((o->root_seen & 4u) && vkr_scene_physics_layers_owner(scene)) {
+    /* Begin skipped the saved settings for another owner, which has left. */
+    shared = vkr_scene_collision_layers_apply(scene, &o->collision_settings,
+                                              &share_error);
+  }
+  if (!shared) {
+    log_warn("Collision settings could not reach every loaded scene: %s",
+             share_error ? share_error : "unknown error");
+  }
+  snprintf(s->status, sizeof(s->status), "Loaded %u node overrides.",
+           o->prepared_count);
+  s->sidecar_conflict = false_v;
+}
+
+bool8_t vkr_scene_edit_overlay_step(VkrSceneEditState *s, VkrScene *scene,
+                                    VkrSceneEditOverlay *o,
+                                    float64_t budget_seconds) {
+  const float64_t deadline =
+      budget_seconds > 0.0 ? vkr_platform_get_absolute_time() + budget_seconds
+                           : 0.0;
+  EditStructureLoad *load = &o->structure;
+  bool8_t worked = false_v;
+  while (o->stage >= EDIT_OVERLAY_OBJECTS && o->stage < EDIT_OVERLAY_DONE) {
+    /* Each call makes progress, so a slow object cannot stall the load. */
+    if (worked && deadline > 0.0 &&
+        vkr_platform_get_absolute_time() >= deadline) {
+      return false_v;
+    }
+    worked = true_v;
+    if (o->stage == EDIT_OVERLAY_OBJECTS) {
+      if (o->cursor < load->object_count) {
+        edit_structure_create(s, scene, load, o->cursor++);
+        o->done++;
+        continue;
+      }
+      /* Every object exists: the staged bytes go, and links and bodies find
+         created ids in a sorted copy. */
+      edit_structure_objects_free(&o->allocator, load);
+      o->sorted = edit_created_sorted(s, &o->allocator);
+      o->sorted_count = o->sorted ? s->created_count : 0u;
+      o->cursor = 0u;
+      o->stage = EDIT_OVERLAY_LINKS;
+    } else if (o->stage == EDIT_OVERLAY_LINKS) {
+      if (o->cursor < load->link_count) {
+        edit_structure_parent(s, scene, o->sorted, o->sorted_count,
+                              &load->links[o->cursor++], o->index,
+                              o->index_count);
+        o->done++;
+        continue;
+      }
+      o->cursor = 0u;
+      o->stage = EDIT_OVERLAY_BODIES;
+    } else {
+      if (o->cursor < load->body_count) {
+        edit_structure_build_body(s, scene, o->sorted, o->sorted_count,
+                                  &load->bodies[o->cursor++]);
+        o->done++;
+        continue;
+      }
+      edit_overlay_finish(s, scene, o);
+      edit_overlay_release(o);
+      o->stage = EDIT_OVERLAY_DONE;
+    }
+  }
+  return true_v;
+}
+
+void vkr_scene_edit_overlay_progress(const VkrSceneEditOverlay *overlay,
+                                     uint32_t *out_done, uint32_t *out_total) {
+  *out_done = overlay ? overlay->done : 0u;
+  *out_total = overlay ? overlay->total : 0u;
+}
+
+void vkr_scene_edit_overlay_destroy(VkrSceneEditOverlay *overlay) {
+  if (!overlay) {
+    return;
+  }
+  vkr_scene_collision_layers_discard(overlay->pending_settings);
+  edit_overlay_release(overlay);
+  /* Individual frees reconcile the tags; the bulk release covers a read
+     that stopped between an allocation and its free. */
+  vkr_allocator_release_global_accounting(&overlay->allocator);
+  vkr_dmemory_allocator_destroy(&overlay->allocator);
+  vkr_allocator_free(overlay->owner, overlay, sizeof(*overlay), EDIT_TAG);
+}
+
+bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
+                            String8 path) {
+  VkrSceneEditOverlay *overlay = vkr_scene_edit_overlay_create(s->allocator);
+  if (!overlay) {
+    const EditSidecarDiagnostic diagnostic = {
+        .failure = EDIT_SIDECAR_FAILURE_ALLOC,
+    };
+    s->sidecar_conflict = true_v;
+    edit_sidecar_reject_status(s, &diagnostic);
+    log_error("Editor overrides rejected: %.*s: %s", (int)path.length, path.str,
+              s->status);
+    return false_v;
+  }
+  vkr_scene_edit_overlay_read(overlay, path, NULL);
+  const bool8_t loaded = vkr_scene_edit_overlay_begin(s, scene, overlay);
+  if (loaded) {
+    (void)vkr_scene_edit_overlay_step(s, scene, overlay, 0.0);
+  }
+  vkr_scene_edit_overlay_destroy(overlay);
+  return loaded;
+}
+
+/* Bytes from an overlay's end the settings peek reads first:
+   vkr_scene_edit_save ends every overlay with its scene settings and its
+   collision settings, a few kilobytes. */
+#define EDIT_PEEK_TAIL_BYTES KB(64)
+
+/* `scene_settings` from an overlay's last `length` bytes, when they hold the
+   root's last members as vkr_scene_edit_save writes them: the key, which in
+   valid JSON follows `{` or `,`, its object, optionally
+   `collision_settings`, and the root's closing brace. False for any other
+   layout, which the whole-file read then covers. */
+static bool8_t edit_peek_tail(const uint8_t *bytes, uint64_t length,
+                              VkrSceneSettings *out) {
+  static const char key[] = "\"scene_settings\"";
+  const uint64_t key_length = sizeof(key) - 1u;
+  if (length < key_length) {
+    return false_v;
+  }
+  for (uint64_t at = length - key_length + 1u; at-- > 0u;) {
+    if (MemCompare(bytes + at, key, key_length) != 0) {
+      continue;
+    }
+    uint64_t before = at;
+    while (before > 0u &&
+           (bytes[before - 1u] == ' ' || bytes[before - 1u] == '\t' ||
+            bytes[before - 1u] == '\r' || bytes[before - 1u] == '\n')) {
+      before--;
+    }
+    /* A string value, such as a layer named so, is not the key. */
+    if (before == 0u ||
+        (bytes[before - 1u] != ',' && bytes[before - 1u] != '{')) {
+      continue;
+    }
+    EditJson j = {.at = bytes + at + key_length, .end = bytes + length};
+    VkrSceneSettings settings = {.inherit_world = true_v};
+    VkrSceneCollisionLayers layers;
+    if (!edit_json_take(&j, ':') || !edit_json_scene_settings(&j, &settings)) {
+      return false_v;
+    }
+    if (edit_json_take(&j, ',') &&
+        (!edit_json_key(&j, "collision_settings", false_v) ||
+         !edit_json_collision_layers(&j, &layers))) {
+      return false_v;
+    }
+    if (!edit_json_take(&j, '}')) {
+      return false_v;
+    }
+    edit_json_space(&j);
+    if (j.at != j.end) {
+      return false_v;
+    }
+    *out = settings;
+    return true_v;
+  }
+  return false_v;
 }
 
 bool8_t vkr_scene_edit_peek_settings(VkrAllocator *allocator, String8 path,
@@ -5048,15 +5644,38 @@ bool8_t vkr_scene_edit_peek_settings(VkrAllocator *allocator, String8 path,
 
   bool8_t success = false_v;
   uint8_t *bytes = NULL;
+  uint64_t capacity = 0u;
   long length = 0;
   if (fseek(file, 0, SEEK_END) != 0 || (length = ftell(file)) <= 0 ||
-      (uint64_t)length > VKR_SCENE_EDIT_OVERLAY_BYTES ||
-      fseek(file, 0, SEEK_SET) != 0) {
+      (uint64_t)length > VKR_SCENE_EDIT_OVERLAY_BYTES) {
     goto cleanup;
   }
-  bytes = vkr_allocator_alloc(allocator, (uint64_t)length, EDIT_TAG);
-  if (!bytes || fread(bytes, 1, (size_t)length, file) != (size_t)length) {
+  /* The last bytes first: a saved overlay ends with its settings, so a
+     large level's overlay is not read whole on the frame thread. */
+  const uint64_t tail = Min((uint64_t)length, EDIT_PEEK_TAIL_BYTES);
+  bytes = vkr_allocator_alloc(allocator, tail, EDIT_TAG);
+  capacity = bytes ? tail : 0u;
+  if (!bytes || fseek(file, length - (long)tail, SEEK_SET) != 0 ||
+      fread(bytes, 1, (size_t)tail, file) != (size_t)tail) {
     goto cleanup;
+  }
+  if (edit_peek_tail(bytes, tail, out_settings)) {
+    success = true_v;
+    goto cleanup;
+  }
+  *out_settings = (VkrSceneSettings){.inherit_world = true_v};
+  if (tail < (uint64_t)length) {
+    uint8_t *whole = vkr_allocator_realloc(allocator, bytes, capacity,
+                                           (uint64_t)length, EDIT_TAG);
+    if (!whole) {
+      goto cleanup;
+    }
+    bytes = whole;
+    capacity = (uint64_t)length;
+    if (fseek(file, 0, SEEK_SET) != 0 ||
+        fread(bytes, 1, (size_t)length, file) != (size_t)length) {
+      goto cleanup;
+    }
   }
 
   /* vkr_scene_edit_load validates the whole file; this reads one object. */
@@ -5080,7 +5699,7 @@ bool8_t vkr_scene_edit_peek_settings(VkrAllocator *allocator, String8 path,
 
 cleanup:
   if (bytes) {
-    vkr_allocator_free(allocator, bytes, (uint64_t)length, EDIT_TAG);
+    vkr_allocator_free(allocator, bytes, capacity, EDIT_TAG);
   }
   fclose(file);
   return success;
@@ -5491,7 +6110,7 @@ bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *s, VkrScene *scene,
       edit_json_take(&j, ',') && edit_json_int(&j, INT32_MIN, INT32_MAX, &z) &&
       edit_json_take(&j, ']') && x == cell.x && z == cell.z &&
       edit_json_key(&j, "created", true_v) &&
-      edit_json_created(&j, s, &load, components, &failure) &&
+      edit_json_created(&j, s->allocator, &load, components, NULL, &failure) &&
       edit_json_take(&j, '}');
   edit_json_space(&j);
   ok = ok && j.at == j.end;
@@ -5508,7 +6127,7 @@ bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *s, VkrScene *scene,
              cell.z);
     log_error("World partition: %s is not a cell document", path);
   }
-  edit_structure_load_free(s, &load);
+  edit_structure_load_free(s->allocator, &load);
   if (components) {
     vkr_allocator_free(s->allocator, components, sizeof(*components), EDIT_TAG);
   }

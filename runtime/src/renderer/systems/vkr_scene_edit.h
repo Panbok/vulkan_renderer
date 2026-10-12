@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/vkr_atomic.h"
 #include "level/vkr_heightfield.h"
 #include "renderer/systems/vkr_scene_collision_layers.h"
 #include "renderer/systems/vkr_scene_partition.h"
@@ -280,14 +281,59 @@ uint64_t vkr_scene_edit_take_sequence(void);
 uint64_t vkr_scene_edit_take_group(void);
 bool8_t vkr_scene_edit_save(VkrSceneEditState *state, VkrScene *scene,
                             String8 path);
+/** Reads, binds and applies the overlay at `path` in one call, as
+    vkr_scene_edit_overlay_read, _begin and an unbounded _step do. */
 bool8_t vkr_scene_edit_load(VkrSceneEditState *state, VkrScene *scene,
                             String8 path);
 /** Reads only `scene_settings` from the sidecar at `path`, before its scene
-    loads; vkr_scene_edit_load applies the validated settings later. A
-    missing file or object leaves the defaults. Returns false when the file
-    exists but cannot be read. */
+    loads; vkr_scene_edit_load applies the validated settings later. A file
+    vkr_scene_edit_save wrote holds them in its last bytes, so only those are
+    read; another layout is read whole. A missing file or object leaves the
+    defaults. Returns false when the file exists but cannot be read. */
 bool8_t vkr_scene_edit_peek_settings(VkrAllocator *allocator, String8 path,
                                      VkrSceneSettings *out_settings);
+
+/* An overlay loaded in parts (ADR-076), so a large one neither reads nor
+   applies inside one frame. Create it on the frame thread. Read it on any
+   thread: the file and every record that does not depend on the scene,
+   which is all of them except the overrides of document entities. Then, on
+   the frame thread, begin binds those overrides to the scene and commits
+   them, as the whole file still fails together, and each step creates the
+   overlay's objects, parent links and physics bodies within a time budget.
+   The overlay owns all its memory, a private pool that only the thread
+   holding it uses, and is freed by destroy after the last step, or earlier
+   to cancel. A read borrows the world type registry, so no script reload
+   may change a component layout from the read until the last step. */
+typedef struct s_VkrSceneEditOverlay VkrSceneEditOverlay;
+
+/** An empty overlay; `allocator` holds the handle and frees it at destroy.
+    NULL when its memory cannot be reserved. */
+VkrSceneEditOverlay *vkr_scene_edit_overlay_create(VkrAllocator *allocator);
+/** Reads and parses the file at `path` once, on any thread. A missing file
+    leaves nothing to apply; a rejected one is reported by begin. A set
+    `cancel` stops the read early, leaving it rejected. */
+void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *overlay, String8 path,
+                                 const VkrAtomicBool *cancel);
+/** Binds the read overlay to `scene` and commits its overrides. False when
+    the overlay is rejected, which sets the state's status and leaves the
+    scene unchanged; nothing remains to apply then. */
+bool8_t vkr_scene_edit_overlay_begin(VkrSceneEditState *state, VkrScene *scene,
+                                     VkrSceneEditOverlay *overlay);
+/** Creates the begun overlay's objects, then its parent links and bodies,
+    and last commits its scene and collision settings. Works until
+    `budget_seconds` pass, checked after each object, link or body, or to the
+    end when the budget is zero or less. True once nothing remains. Nothing
+    else may change `scene` or `state` between steps. */
+bool8_t vkr_scene_edit_overlay_step(VkrSceneEditState *state, VkrScene *scene,
+                                    VkrSceneEditOverlay *overlay,
+                                    float64_t budget_seconds);
+/** Objects, links and bodies the begun overlay has applied, of `total`;
+    zero of zero before begin and when it has none. */
+void vkr_scene_edit_overlay_progress(const VkrSceneEditOverlay *overlay,
+                                     uint32_t *out_done, uint32_t *out_total);
+/** Frees the overlay. One begun and not finished drops its staged
+    collision settings, so it is destroyed before the scene it began on. */
+void vkr_scene_edit_overlay_destroy(VkrSceneEditOverlay *overlay);
 
 /** Add a world component with `value`, or the type's defaults when NULL. */
 bool8_t vkr_scene_edit_add_component(VkrSceneEditState *state, VkrScene *scene,

@@ -138,6 +138,41 @@ uint32_t vkr_lightmap_set_find_plane(const VkrLightmapSet *set, uint32_t layer,
   return UINT32_MAX;
 }
 
+bool8_t vkr_lightmap_set_class_planes(const VkrLightmapSet *set,
+                                      bool8_t desktop,
+                                      VkrLightmapClassPlanes *out_planes) {
+  MemZero(out_planes, sizeof(*out_planes));
+  out_planes->every_lamp_group = true_v;
+  for (uint32_t layer = 0u; layer < set->layer_count; ++layer) {
+    const bool8_t lamp_group =
+        set->layers[layer].kind == VKR_LIGHT_LAYER_LAMP_GROUP;
+    /* The desktop pipeline takes sun bounce from the diffuse volume. */
+    if (desktop && !lamp_group) {
+      continue;
+    }
+    const uint32_t plane = vkr_lightmap_set_find_plane(
+        set, layer, VKR_LIGHTMAP_PLANE_IRRADIANCE, desktop);
+    if (plane == UINT32_MAX) {
+      if (!desktop) {
+        return false_v;
+      }
+      out_planes->every_lamp_group = false_v;
+      continue;
+    }
+    const VkrLightmapPlaneFormat format = set->planes[plane].format;
+    /* The tiled pipeline samples only ASTC HDR irradiance. */
+    if ((!desktop && format != VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR) ||
+        (out_planes->count != 0u && format != out_planes->format)) {
+      return false_v;
+    }
+    out_planes->format = format;
+    out_planes->layers[out_planes->count] = layer;
+    out_planes->planes[out_planes->count] = plane;
+    out_planes->count += 1u;
+  }
+  return out_planes->count != 0u;
+}
+
 /* Sizes and offsets that follow from the counts and plane encodings; false
    when out of range. `planes` is validated by the caller. */
 static bool8_t vkr_lightmap_set_compute_layout(const VkrLightmapSet *set,
@@ -421,10 +456,16 @@ bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
   return true_v;
 }
 
-bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
-                                Arena *arena, VkrLightmapSet *out_set) {
-  if (!bytes || !arena || !out_set || !vkr_f32_is_binary32() ||
-      size < VKR_LIGHTMAP_SET_HEADER_BYTES) {
+/* Checks the header of a file of `file_size` bytes, of which `bytes` holds
+   the first `size`, and decodes its counts, layer table and plane table into
+   `out_set` with the layout they imply. The tables must lie within `size`;
+   checksums other than the header's, instances and payload are the
+   caller's. */
+static bool8_t vkr_lightmap_set_decode_tables(
+    const uint8_t *bytes, uint64_t size, uint64_t file_size, Arena *arena,
+    VkrLightmapSet *out_set, VkrLightmapSetLayout *out_layout) {
+  if (!bytes || !arena || !vkr_f32_is_binary32() ||
+      size < VKR_LIGHTMAP_SET_HEADER_BYTES || size > file_size) {
     return false_v;
   }
   const uint8_t *header = bytes;
@@ -500,8 +541,8 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
   set.planes = planes;
   VkrLightmapSetLayout layout;
   if (!vkr_lightmap_set_compute_layout(&set, &layout) ||
-      vkr_load_le_u64(header + VKR_LIGHTMAP_SET_H_FILE_SIZE) != size ||
-      layout.file_size != size ||
+      vkr_load_le_u64(header + VKR_LIGHTMAP_SET_H_FILE_SIZE) != file_size ||
+      layout.file_size != file_size ||
       vkr_load_le_u64(header + VKR_LIGHTMAP_SET_H_LAYER_OFFSET) !=
           VKR_LIGHTMAP_SET_HEADER_BYTES ||
       vkr_load_le_u64(header + VKR_LIGHTMAP_SET_H_INSTANCE_OFFSET) !=
@@ -516,6 +557,36 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
     return false_v;
   }
 
+  /* The layer table precedes the plane table, so it lies within `size`. */
+  VkrLightLayer *layers = (VkrLightLayer *)arena_alloc(
+      arena, (uint64_t)set.layer_count * sizeof(VkrLightLayer),
+      ARENA_MEMORY_TAG_ARRAY);
+  if (!layers) {
+    return false_v;
+  }
+  const uint8_t *tables = bytes + VKR_LIGHTMAP_SET_HEADER_BYTES;
+  for (uint32_t i = 0u; i < set.layer_count; ++i) {
+    if (!vkr_light_layer_read(
+            tables + (uint64_t)i * VKR_LIGHT_LAYER_RECORD_BYTES, &layers[i])) {
+      return false_v;
+    }
+  }
+  set.layers = layers;
+  *out_set = set;
+  *out_layout = layout;
+  return true_v;
+}
+
+bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
+                                Arena *arena, VkrLightmapSet *out_set) {
+  VkrLightmapSet set = {0};
+  VkrLightmapSetLayout layout;
+  if (!out_set || !vkr_lightmap_set_decode_tables(bytes, size, size, arena,
+                                                  &set, &layout)) {
+    return false_v;
+  }
+
+  const uint8_t *header = bytes;
   const uint8_t *tables = bytes + VKR_LIGHTMAP_SET_HEADER_BYTES;
   const uint64_t tables_bytes =
       layout.tables_end - VKR_LIGHTMAP_SET_HEADER_BYTES;
@@ -535,9 +606,6 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
     return false_v;
   }
 
-  VkrLightLayer *layers = (VkrLightLayer *)arena_alloc(
-      arena, (uint64_t)set.layer_count * sizeof(VkrLightLayer),
-      ARENA_MEMORY_TAG_ARRAY);
   VkrLightmapInstance *instances = NULL;
   if (set.instance_count != 0u) {
     instances = (VkrLightmapInstance *)arena_alloc(
@@ -550,16 +618,10 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
         arena, (uint64_t)set.instance_count * sizeof(VkrLightmapDirectRect),
         ARENA_MEMORY_TAG_ARRAY);
   }
-  if (!layers || (set.instance_count != 0u && !instances) ||
+  if ((set.instance_count != 0u && !instances) ||
       (set.direct_page_count != 0u && set.instance_count != 0u &&
        !direct_rects)) {
     return false_v;
-  }
-  for (uint32_t i = 0u; i < set.layer_count; ++i) {
-    if (!vkr_light_layer_read(
-            tables + (uint64_t)i * VKR_LIGHT_LAYER_RECORD_BYTES, &layers[i])) {
-      return false_v;
-    }
   }
   const uint8_t *instance_table = bytes + layout.instance_offset;
   for (uint32_t i = 0u; i < set.instance_count; ++i) {
@@ -587,11 +649,26 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
         .height = vkr_load_le_u32(src + 16u),
     };
   }
-  set.layers = layers;
   set.instances = instances;
   set.direct_rects = direct_rects;
   set.payload = payload;
   if (!vkr_lightmap_set_tables_valid(&set)) {
+    return false_v;
+  }
+  *out_set = set;
+  return true_v;
+}
+
+bool8_t vkr_lightmap_set_decode_planes(const uint8_t *prefix,
+                                       uint64_t prefix_size, uint64_t file_size,
+                                       Arena *arena, VkrLightmapSet *out_set) {
+  VkrLightmapSet set = {0};
+  VkrLightmapSetLayout layout;
+  if (!out_set ||
+      !vkr_lightmap_set_decode_tables(prefix, prefix_size, file_size, arena,
+                                      &set, &layout) ||
+      !vkr_light_layers_valid(set.layers, set.layer_count) ||
+      !vkr_lightmap_set_planes_valid(&set)) {
     return false_v;
   }
   *out_set = set;

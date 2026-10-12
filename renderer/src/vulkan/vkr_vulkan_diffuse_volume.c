@@ -56,10 +56,21 @@ vkr_vk_diffuse_volume_ready(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-/* Whether this frame samples baked lamps, so the volume's lamp groups
-   compose apart from the rest (VkrDiffuseVolumeBinding). */
-vkr_internal bool8_t vkr_vk_diffuse_volume_split(const VkrVulkanFrameSlot *slot) {
+/* Whether this frame samples baked lamps, so the volume's lamp groups take
+   their direct bands: their lamps then leave runtime lighting (ADR-104). */
+vkr_internal bool8_t
+vkr_vk_diffuse_volume_lamps_baked(const VkrVulkanFrameSlot *slot) {
   return slot->lightmap_rects != 0u;
+}
+
+/* Row offset of the composed texture's lamp part, zero when no lamp group
+   is active. The active lamp groups always compose apart from the sun keys,
+   so a lookup can tell baked sky light from lamp light (ADR-054). The
+   active layers change only with the composition, so a cached composition
+   keeps this offset. */
+vkr_internal uint32_t vkr_vk_diffuse_volume_lamp_rows(
+    const VkrDiffuseVolumeBinding *volume, uint32_t rows) {
+  return volume->active_lamp_mask != 0u ? rows : 0u;
 }
 
 bool8_t vkr_vk_resolve_diffuse_volume(VkrVulkanRenderer *renderer,
@@ -97,11 +108,11 @@ bool8_t vkr_vk_resolve_diffuse_volume(VkrVulkanRenderer *renderer,
   }
   slot->diffuse_volume_origin = (Vec4){volume->origin.x, volume->origin.y,
                                        volume->origin.z, volume->spacing};
-  /* A frame that samples baked lamps keeps the volume's lamp groups apart,
-     for surfaces without a lightmap only. */
+  /* A surface whose lightmap holds the baked lamps leaves the lamp part out;
+     every other one adds it and takes its sky share from it. */
   slot->diffuse_volume_params =
       (Vec4){volume->sh_scale, (float32_t)tile_rows,
-             vkr_vk_diffuse_volume_split(slot) ? (float32_t)rows : 0.0f, 0.0f};
+             (float32_t)vkr_vk_diffuse_volume_lamp_rows(volume, rows), 0.0f};
   slot->diffuse_volume_dimensions[0] = volume->dimensions[0];
   slot->diffuse_volume_dimensions[1] = volume->dimensions[1];
   slot->diffuse_volume_dimensions[2] = volume->dimensions[2];
@@ -125,12 +136,12 @@ bool8_t vkr_vk_prepare_diffuse_volume_compose(
   const VkrDiffuseVolumeBinding *volume = &lighting->diffuse_volume;
   if (!vkr_vk_diffuse_volume_ready(renderer, volume))
     return true_v;
-  const bool8_t split = vkr_vk_diffuse_volume_split(slot);
+  const bool8_t lamps_baked = vkr_vk_diffuse_volume_lamps_baked(slot);
   if (renderer->diffuse_volume_composed_sh.id == volume->sh.id &&
       renderer->diffuse_volume_composed_sh.generation ==
           volume->sh.generation &&
       renderer->diffuse_volume_composition == volume->composition &&
-      renderer->diffuse_volume_composed_split == split)
+      renderer->diffuse_volume_composed_split == lamps_baked)
     return true_v;
 
   /* The binding names only confirmed publications, so a texture that does
@@ -157,16 +168,20 @@ bool8_t vkr_vk_prepare_diffuse_volume_compose(
       .probe_count = volume->probe_count,
       .rows = rows,
       .active_layer_count = volume->active_layer_count,
-      .lamp_rows = split ? rows : 0u,
+      .lamp_rows = vkr_vk_diffuse_volume_lamp_rows(volume, rows),
       .lamp_mask = volume->active_lamp_mask,
   };
   for (uint32_t i = 0u; i < ArrayCount(root->active_direct); ++i) {
     root->active_direct[i] = VKR_DIFFUSE_VOLUME_NO_BAND;
   }
+  /* Without baked lamps the frame lights the static lamps at runtime, so
+     their direct bands stay out. */
   for (uint32_t i = 0u; i < volume->active_layer_count; ++i) {
     root->active_layers[i] = volume->active_layers[i];
     root->active_weights[i] = volume->active_weights[i];
-    root->active_direct[i] = volume->active_direct_bands[i];
+    if (lamps_baked) {
+      root->active_direct[i] = volume->active_direct_bands[i];
+    }
   }
 
   /* Earlier frames read the texture before this write in queue order; the
@@ -205,7 +220,7 @@ bool8_t vkr_vk_prepare_diffuse_volume_compose(
   slot->diffuse_volume_compose_pending = true_v;
   slot->diffuse_volume_compose_sh = volume->sh;
   slot->diffuse_volume_compose_revision = volume->composition;
-  slot->diffuse_volume_compose_split = split;
+  slot->diffuse_volume_compose_split = lamps_baked;
   slot->diffuse_volume_compose_image = sh->image.handle;
   return true_v;
 }

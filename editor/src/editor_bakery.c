@@ -1771,9 +1771,10 @@ static void editor_bakery_managed_setup(VkrEditorBakery *bakery,
                         string8_lit("Scene diffuse volume"), &bakery->diffuse,
                         &widget);
   widget.placement.row = 4;
-  (void)vkr_ui_checkbox(ui, string8_lit("lightmap"),
-                        string8_lit("Scene lightmaps (Metal ray tracing)"),
-                        &bakery->lightmap, &widget);
+  (void)vkr_ui_checkbox(
+      ui, string8_lit("lightmap"),
+      string8_lit("Scene lightmaps for this machine's pipeline"),
+      &bakery->lightmap, &widget);
   widget.placement.row = 5;
   (void)vkr_ui_checkbox(ui, string8_lit("lightmap_uvs"),
                         string8_lit("Lightmap UVs on model import and rebuild"),

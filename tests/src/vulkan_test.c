@@ -808,7 +808,6 @@ static bool8_t vulkan_test_graph_validates(const char *graph_path) {
       .gpu_draw_candidate_capacity = 1u,
       .gpu_draw_visible_capacity = 8u,
       .transmission_gpu_draw_candidate_capacity = 1u,
-      .transmission_gpu_draw_visible_capacity = 8u,
       .editor_image_available = true_v,
       .editor_image_width = 640u,
       .editor_image_height = 480u,

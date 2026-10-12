@@ -46,6 +46,9 @@ typedef struct VkrGeometrySystem {
   Array_VkrGeometry geometries;
   Array_uint32_t free_ids; // stack of free indices
   uint32_t free_count;
+  // Slots ever served, from slot 0 up: a create takes a freed slot first,
+  // else the next one, so it never searches the table.
+  uint32_t used_slots;
   uint32_t max_geometries;
 
   // Monotonic generation for geometry handles

@@ -63,6 +63,16 @@ fragment float4 vkr_metal_packet_editor_grid_fragment(
   const float t_footprint = fwidth(t);
   if (t <= 0.0 || t >= 1.0)
     discard_fragment();
+  float fade = 1.0;
+  if (root->camera_position.w > 0.0) {
+    const float distance = length(hit - root->camera_position.xyz);
+    fade = 1.0 - smoothstep(root->params.y, root->params.z, distance);
+  }
+  /* The line alpha is scaled by fade * visibility, so a pixel at or past the
+   * fade end would be discarded below: skip the depth read and the shading. */
+  if (fade <= 0.0) {
+    discard_fragment();
+  }
   float visibility = 1.0;
   if (root->params.w == 0.0) {
     const uint2 depth_extent =
@@ -84,10 +94,9 @@ fragment float4 vkr_metal_packet_editor_grid_fragment(
           vkr_editor_grid_depth_visibility(t, s, t_footprint, texels);
     }
   }
-  float fade = 1.0;
-  if (root->camera_position.w > 0.0) {
-    const float distance = length(hit - root->camera_position.xyz);
-    fade = 1.0 - smoothstep(root->params.y, root->params.z, distance);
+  /* Fully hidden behind nearer geometry: the line alpha would be 0. */
+  if (visibility <= 0.0) {
+    discard_fragment();
   }
   const float3 x_color = float3(1.0, 0.24, 0.24);
   const float3 y_color = float3(0.35, 0.85, 0.35);

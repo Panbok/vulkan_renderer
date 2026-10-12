@@ -1,8 +1,29 @@
 // Execute production SSR filtering and cell traversal with analytic inputs.
 #include "ssr_kernel.slangh"
+#include "temporal_filter_kernel.slangh"
+#include "exposure_kernel.slangh"
 #include "ssgi_kernel.slangh"
 #include "normal_map_kernel.slangh"
 RWStructuredBuffer<float> g_results;
+
+// The temporal pass prepares the transported receiver plane once per receiver
+// and passes it to both candidates; each row names that plane's point and
+// normal.
+VkrSsrReflectedHit check_reproject_hit(
+    VkrSsrParams params, float2 current_uv,
+    float3 traced_receiver, float3 traced_normal, float3 hit,
+    float3 previous_traced_receiver, float3 previous_traced_normal,
+    float3 previous_hit, float3 previous_receiver,
+    float3 previous_receiver_normal, float parallax)
+{
+    return vkr_ssr_reproject_hit(
+        params, current_uv, traced_receiver, traced_normal, hit,
+        previous_traced_receiver, previous_traced_normal, previous_hit,
+        vkr_ssr_plane_depth_prepare(params, previous_receiver,
+                                    previous_receiver_normal),
+        parallax);
+}
+
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
@@ -18,18 +39,22 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     VkrSsrHistoryDecision decision = (VkrSsrHistoryDecision)0;
     decision.weight = 0.8f;
     decision.accepted = 1u;
+    decision.support = 1.0f;
     float4 stable = vkr_ssr_temporal_filter(0.25f, 3u,
-        float4(8, 4, 2, 0.5), float4(4, 2, 1, 0.5), 0, 16, decision);
+        float4(8, 4, 2, 0.5), 1, 9u, float4(4, 2, 1, 0.5), 0, 16, decision);
+    // Without a current hit, rays of unknown outcome keep half the history
+    // coverage; nine known misses at coverage .5 expected 4.5 hits and refute
+    // it at once.
     float4 intermittent = vkr_ssr_temporal_filter(0.25f, 0u,
-        0, float4(8, 4, 2, 0.5), 0, 16, decision);
+        0, 0, 0u, float4(8, 4, 2, 0.5), 0, 16, decision);
     float4 unsupported = vkr_ssr_temporal_filter(0.25f, 0u,
-        0, float4(8, 4, 2, 0.5), 1, -1, decision);
+        0, 1, 9u, float4(8, 4, 2, 0.5), 1, -1, decision);
     float4 black = vkr_ssr_temporal_filter(VKR_SSR_MIRROR_ROUGHNESS, 3u,
-        float4(0, 0, 0, 0.5), float4(8, 4, 2, 0.5), 0, 0, decision);
+        float4(0, 0, 0, 0.5), 1, 9u, float4(8, 4, 2, 0.5), 0, 0, decision);
     decision.weight = 0.0f;
     decision.accepted = 0u;
     float4 rejected = vkr_ssr_temporal_filter(0.25f, 3u,
-        float4(8, 4, 2, 0.5), float4(4, 2, 1, 0.5), 0, 16, decision);
+        float4(8, 4, 2, 0.5), 1, 9u, float4(4, 2, 1, 0.5), 0, 16, decision);
     params.history_jitter_uv_x = 0.0025f;
     params.history_jitter_uv_y = -0.005f;
     float2 previous_uv = vkr_ssr_previous_uv(params, float2(0.4, 0.6), float2(0.1, -0.2));
@@ -78,30 +103,32 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     decision.weight = 0.85f;
     decision.accepted = 1u;
     float4 partial_filtered = vkr_ssr_temporal_filter(0.25f, 3u,
-        float4(10, 10, 10, 1), partial, 0, 10, decision);
+        float4(10, 10, 10, 1), 1, 9u, partial, 0, 10, decision);
     g_results[48] = partial_filtered.x;
     // Sparse neighborhoods must accumulate despite collapsed current bounds.
     decision.weight = 0.85f;
     decision.accepted = 1u;
     float4 one_hit = vkr_ssr_temporal_filter(0.25f, 1u,
-        float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
+        float4(10, 10, 10, 1), 1, 9u, float4(2, 2, 2, 1), 10, 10, decision);
     float4 two_hits = vkr_ssr_temporal_filter(0.25f, 2u,
-        float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
+        float4(10, 10, 10, 1), 1, 9u, float4(2, 2, 2, 1), 10, 10, decision);
     float4 three_hits = vkr_ssr_temporal_filter(0.25f, 3u,
-        float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
+        float4(10, 10, 10, 1), 1, 9u, float4(2, 2, 2, 1), 10, 10, decision);
     float4 sparse_coverage = vkr_ssr_temporal_filter(0.25f, 1u,
-        float4(10, 10, 10, 0.25), float4(2, 2, 2, 1), 10, 10, decision);
+        float4(10, 10, 10, 0.25), 1, 9u, float4(2, 2, 2, 1), 10, 10, decision);
+    // Half the ray weight unknown and one known miss at full coverage: one
+    // expected hit refutes nothing, so the history keeps half its coverage.
     float4 empty_support = vkr_ssr_temporal_filter(0.25f, 0u,
-        0, float4(2, 2, 2, 1), 1, -1, decision);
+        0, .5f, 1u, float4(2, 2, 2, 1), 1, -1, decision);
     float4 in_bounds_history = vkr_ssr_temporal_filter(0.25f, 1u,
-        float4(6, 6, 6, 1), float4(4, 4, 4, 1), 2, 10, decision);
+        float4(6, 6, 6, 1), 1, 9u, float4(4, 4, 4, 1), 2, 10, decision);
     decision.weight = 0.25f;
     float4 lower_weight = vkr_ssr_temporal_filter(0.25f, 1u,
-        float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
+        float4(10, 10, 10, 1), 1, 9u, float4(2, 2, 2, 1), 10, 10, decision);
     decision.weight = 0.0f;
     decision.accepted = 0u;
     float4 sparse_rejected = vkr_ssr_temporal_filter(0.25f, 1u,
-        float4(10, 10, 10, 1), float4(2, 2, 2, 1), 10, 10, decision);
+        float4(10, 10, 10, 1), 1, 9u, float4(2, 2, 2, 1), 10, 10, decision);
     g_results[49] = one_hit.x;
     g_results[50] = two_hits.x;
     g_results[51] = three_hits.x;
@@ -111,15 +138,17 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     g_results[55] = lower_weight.x;
     g_results[56] = sparse_rejected.x;
     g_results[57] = in_bounds_history.x;
-    // Empty support must decay coverage while preserving radiance; invalid
-    // receiver history must disappear immediately, independent of raw bounds.
+    // An all-unknown hold halves coverage per frame and ends at the floor
+    // well before sixteen frames; rejected history must disappear
+    // immediately, even where the outcome is unknown, independent of raw
+    // bounds.
     float4 invalid_empty = vkr_ssr_temporal_filter(0.25f, 0u,
-        0, float4(8, 4, 2, 1), 1, -1, decision);
+        0, 0, 0u, float4(8, 4, 2, 1), 1, -1, decision);
     decision.weight = 0.85f;
     decision.accepted = 1u;
     float4 faded = float4(8, 4, 2, 1);
     for (uint frame = 0u; frame < 16u; ++frame)
-        faded = vkr_ssr_temporal_filter(0.25f, 0u, 0, faded, 1, -1, decision);
+        faded = vkr_ssr_temporal_filter(0.25f, 0u, 0, 0, 0u, faded, 1, -1, decision);
     for (uint component = 0u; component < 4u; ++component) {
         g_results[98u + component] = faded[component];
         g_results[102u + component] = invalid_empty[component];
@@ -131,23 +160,27 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     g_results[109] = vkr_ssr_temporal_weight(.85f, VKR_SSR_MIRROR_ROUGHNESS, float2(0));
     g_results[110] = vkr_ssr_temporal_weight(0, .36f, float2(0));
     g_results[111] = vkr_ssr_temporal_stability((.25f + VKR_SSR_MIRROR_ROUGHNESS) * .5f);
-    // Chrome and trim separated by 8cm must not cross the SSR surface filter.
-    // SSGI retains its previous 10 cm minimum, independently of SSR ray thickness.
+    // Chrome and trim separated by 8cm must not cross the SSR receiver-plane
+    // test. A grazing floor keeps full weight 4 m deeper on its own plane.
+    // SSGI retains its previous 10 cm minimum, independently of SSR ray thickness:
+    // an 8 cm step off a camera-facing plane keeps one fifth of its weight.
     float3 up = float3(0, 1, 0);
-    g_results[112] = vkr_ssr_receiver_bilateral_weight(float2(1, 0), .82f, .74f,
-        up, up, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
-    g_results[113] = vkr_ssr_receiver_bilateral_weight(float2(1, 0), .82f, .83f,
-        up, up, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
+    float3 facing = float3(0, 0, 1);
+    g_results[112] = vkr_ssr_receiver_plane_weight(float3(0, 0, -.82f), facing,
+        float3(.01f, 0, -.74f), facing);
+    g_results[113] = vkr_ssr_receiver_plane_weight(float3(0, -1, -5), up,
+        float3(0, -1, -9), up);
     params.thickness = .1f;
-    g_results[114] = vkr_ssgi_spatial_weight(float2(1, 0), .82f, .74f, up, up, params);
-    g_results[115] = vkr_ssr_receiver_bilateral_weight(float2(0), .01f, .02f,
-        up, up, VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
+    g_results[114] = vkr_ssgi_plane_weight(float2(1, 0), float3(0, 0, -.82f),
+        facing, float3(.01f, 0, -.74f), facing, params.thickness);
+    g_results[115] = vkr_ssr_receiver_plane_weight(float3(0, 0, -.01f), facing,
+        float3(0, 0, -.02f), facing);
     // Reflection history follows a feature across receiver points. Constant
     // incoming light stays 10; only the current receiver's response shades it.
     decision.weight = .5f;
     decision.accepted = 1u;
     float4 incoming_history = vkr_ssr_temporal_filter(.3f, 3u,
-        float4(10, 10, 10, .6f), float4(10, 10, 10, .6f), 10, 10, decision);
+        float4(10, 10, 10, .6f), 1, 9u, float4(10, 10, 10, .6f), 10, 10, decision);
     float4 shaded_history = vkr_ssr_shade_reflection(incoming_history, float3(.8f));
     for (uint component = 0u; component < 4u; ++component)
         g_results[116u + component] = incoming_history[component];
@@ -200,9 +233,11 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     trace.start_depth = 9.95f;
     trace.end_depth = 9.9f;
     trace.mip = 2u;
-    VkrSsrTraceResolve diffuse_coarse = vkr_ssgi_trace_resolve(trace, 10, 1, params);
+    VkrSsrTraceResolve diffuse_coarse =
+        vkr_ssgi_trace_resolve(trace, 10, 1, params.thickness);
     trace.mip = 0u;
-    VkrSsrTraceResolve diffuse_leaf = vkr_ssgi_trace_resolve(trace, 10, 1, params);
+    VkrSsrTraceResolve diffuse_leaf =
+        vkr_ssgi_trace_resolve(trace, 10, 1, params.thickness);
     g_results[71] = float(diffuse_coarse.descend);
     g_results[72] = float(diffuse_leaf.hit);
     g_results[73] = diffuse_leaf.hit_t;
@@ -276,61 +311,70 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         0.5f, 0.5f, float2(.025f), 1.0f, uint2(20u)).accepted);
     g_results[125] = float(vkr_ssr_temporal_accept(params, identity, identity,
         0.5f, 0.5f, float2(.025f), 1.0f, uint2(10u)).accepted);
-    g_results[126] = vkr_ssr_reconstruction_grid_weight(float2(1.5f, 0), .3f);
-    g_results[127] = vkr_ssr_reconstruction_grid_weight(float2(.5f), .04f);
-    params.source_width = 100u;
-    params.source_height = 50u;
+    // A reuse tap at the footprint radius keeps half the centre's weight.
+    // Every rotated spiral tap lies one or more pixels from the receiver and
+    // within its radius plus rounding, for each radius the roughness span uses.
+    g_results[126] = vkr_ssr_reuse_spatial_weight(float2(3, 0), 3);
+    bool footprint_valid = true;
+    for (uint rotation_step = 0u; rotation_step < 16u; ++rotation_step)
+        for (uint radius_step = 0u; radius_step <= 4u; ++radius_step) {
+            float radius = 1.0f + .5f * float(radius_step);
+            for (uint tap = 0u; tap < VKR_SSR_REUSE_TAP_COUNT; ++tap) {
+                float2 offset = float2(vkr_ssr_reuse_offset(
+                    tap, radius, float(rotation_step) / 16.0f));
+                footprint_valid = footprint_valid && dot(offset, offset) >= 1.0f &&
+                    length(offset) <= radius + .7072f;
+            }
+        }
+    g_results[127] = footprint_valid ? 1.0f : 0.0f;
+    // Coverage keeps full weight to .45 and fades to zero at the .6 cutoff.
     params.roughness_cutoff = .6f;
-    float2 fractional_hit = float2(.40625f, .3125f);
-    float2 cone_right = vkr_ssr_hit_filter_uv(fractional_hit, .6f, 1u, params);
-    float2 cone_up = vkr_ssr_hit_filter_uv(fractional_hit, .6f, 4u, params);
-    g_results[128] = cone_right.x;
-    g_results[129] = cone_up.y;
-    float2 mirror_hit = vkr_ssr_hit_filter_uv(fractional_hit, .04f, 0u, params);
-    g_results[130] = mirror_hit.x * 100.0f - .5f;
-    float2 moved_hit = vkr_ssr_hit_filter_uv(fractional_hit + float2(.001953125f, 0),
-                                           .04f, 0u, params);
-    g_results[131] = (moved_hit.x - mirror_hit.x) * 100.0f;
+    g_results[128] = vkr_ssr_roughness_confidence(.3f, params);
+    g_results[129] = vkr_ssr_roughness_confidence(.45f, params);
+    g_results[130] = vkr_ssr_roughness_confidence(.525f, params);
+    g_results[131] = vkr_ssr_roughness_confidence(.6f, params);
     // A vanished bright reflection must lose half its unsupported residual per
     // frame even on a stationary rough receiver; current geometry still exists.
+    // Nine known misses at full coverage without a current hit refute it and
+    // drop it to the environment term at once.
     decision.weight = .95f;
     decision.accepted = 1u;
     float4 step_history = float4(10, 10, 10, 1);
     for (uint frame = 0u; frame < 5u; ++frame) {
         step_history = vkr_ssr_temporal_filter(.3f, 3u,
-            float4(2, 2, 2, 1), step_history, 2, 2, decision);
+            float4(2, 2, 2, 1), 1, 9u, step_history, 2, 2, decision);
         g_results[132u + frame] = step_history.x;
     }
     float4 empty_history = float4(8, 4, 2, 1);
     for (uint frame = 0u; frame < 5u; ++frame)
-        empty_history = vkr_ssr_temporal_filter(.3f, 0u, 0,
+        empty_history = vkr_ssr_temporal_filter(.3f, 0u, 0, 1, 9u,
             empty_history, 1, -1, decision);
     g_results[137] = empty_history.w;
     g_results[138] = empty_history.x;
     g_results[139] = vkr_ssr_temporal_filter(VKR_SSR_MIRROR_ROUGHNESS, 3u,
-        float4(2, 2, 2, 1), float4(10, 10, 10, 1), 2, 2, decision).x;
+        float4(2, 2, 2, 1), 1, 9u, float4(10, 10, 10, 1), 2, 2, decision).x;
     // Broad bounds admit the old image, but sparse fresh coverage must still
     // replace at least 15% of its conditional radiance on every supported frame.
     decision.weight = .85f;
     float4 sparse_step = float4(8, 8, 8, 1);
     for (uint frame = 0u; frame < 5u; ++frame) {
         sparse_step = vkr_ssr_temporal_filter(.3f, 1u,
-            float4(2, 2, 2, .05f), sparse_step, 0, 10, decision);
+            float4(2, 2, 2, .05f), 1, 9u, sparse_step, 0, 10, decision);
         g_results[140u + frame] = sparse_step.x;
         if (frame == 0u) g_results[145] = sparse_step.w;
     }
     float4 constant_sparse = vkr_ssr_temporal_filter(.3f, 1u,
-        float4(8, 4, 2, .05f), float4(8, 4, 2, 1), 0, 10, decision);
+        float4(8, 4, 2, .05f), 1, 9u, float4(8, 4, 2, 1), 0, 10, decision);
     for (uint i = 0u; i < 4u; ++i) g_results[146u + i] = constant_sparse[i];
     // Weak old coverage must keep its lower contribution; the cap cannot
     // promote it to the configured temporal weight.
     float4 weak_history = vkr_ssr_temporal_filter(.3f, 1u,
-        float4(2, 2, 2, 1), float4(8, 8, 8, .05f), 0, 10, decision);
+        float4(2, 2, 2, 1), 1, 9u, float4(8, 8, 8, .05f), 0, 10, decision);
     g_results[150] = weak_history.x;
     g_results[151] = weak_history.w;
     decision.weight = 0.0f;
     float4 no_coverage = vkr_ssr_temporal_filter(.3f, 0u,
-        0, 0, 1, -1, decision);
+        0, 0, 0u, 0, 1, -1, decision);
     for (uint i = 0u; i < 4u; ++i) g_results[152u + i] = no_coverage[i];
 
     // Unit-focal perspective: u=.5+.5*x/-z, v=.5-.5*y/-z.
@@ -356,10 +400,10 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     float3 receiver_normal = float3(0, 0, 1);
     float3 hit_view = float3(.6f, 0, -1);
     float3 camera_delta = float3(.2f, 0, 0);
-    VkrSsrReflectedHit translated = vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+    VkrSsrReflectedHit translated = check_reproject_hit(reflected, float2(.6f, .5f),
         receiver_view, receiver_normal, hit_view,
         receiver_view + camera_delta, receiver_normal, hit_view + camera_delta,
-        receiver_view + camera_delta, receiver_normal);
+        receiver_view + camera_delta, receiver_normal, 1);
     g_results[156] = translated.previous_uv.x;
     g_results[157] = translated.previous_uv.y;
     g_results[158] = translated.expected_receiver_depth;
@@ -375,13 +419,13 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     // motion must preserve the latter's offset from the half-resolution ray.
     float2 full_uv = float2(.6078125f, .49375f);
     float3 full_receiver = float3(.43125f, .025f, -2);
-    VkrSsrReflectedHit fixed_offset = vkr_ssr_reproject_hit(reflected, full_uv,
+    VkrSsrReflectedHit fixed_offset = check_reproject_hit(reflected, full_uv,
         receiver_view, receiver_normal, hit_view,
-        receiver_view, receiver_normal, hit_view, full_receiver, receiver_normal);
-    VkrSsrReflectedHit translated_offset = vkr_ssr_reproject_hit(reflected, full_uv,
+        receiver_view, receiver_normal, hit_view, full_receiver, receiver_normal, 1);
+    VkrSsrReflectedHit translated_offset = check_reproject_hit(reflected, full_uv,
         receiver_view, receiver_normal, hit_view,
         receiver_view + camera_delta, receiver_normal, hit_view + camera_delta,
-        full_receiver + camera_delta, receiver_normal);
+        full_receiver + camera_delta, receiver_normal, 1);
     g_results[164] = fixed_offset.previous_uv.x;
     g_results[165] = fixed_offset.previous_uv.y;
     g_results[166] = fixed_offset.expected_receiver_depth;
@@ -402,9 +446,9 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     float3 tilted_receiver = float3(0, 0, -2);
     float3 tilted_normal = normalize(float3(0, 1, 1));
     float3 tilted_hit = float3(0, 1, -2);
-    VkrSsrReflectedHit jittered = vkr_ssr_reproject_hit(reflected, float2(.5f),
+    VkrSsrReflectedHit jittered = check_reproject_hit(reflected, float2(.5f),
         tilted_receiver, tilted_normal, tilted_hit,
-        tilted_receiver, tilted_normal, tilted_hit, tilted_receiver, tilted_normal);
+        tilted_receiver, tilted_normal, tilted_hit, tilted_receiver, tilted_normal, 1);
     g_results[176] = jittered.previous_uv.x;
     g_results[177] = jittered.previous_uv.y;
     g_results[178] = jittered.expected_receiver_depth;
@@ -420,9 +464,9 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         1, 0, 0, -.2f, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
     float4 transported_hit = vkr_ssr_transport_point(
         hit_view, identity_model, previous_hit_model);
-    VkrSsrReflectedHit moving_hit = vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+    VkrSsrReflectedHit moving_hit = check_reproject_hit(reflected, float2(.6f, .5f),
         receiver_view, receiver_normal, hit_view,
-        receiver_view, receiver_normal, transported_hit.xyz, receiver_view, receiver_normal);
+        receiver_view, receiver_normal, transported_hit.xyz, receiver_view, receiver_normal, 1);
     g_results[182] = moving_hit.previous_uv.x;
     g_results[183] = moving_hit.previous_uv.y;
     g_results[184] = moving_hit.expected_receiver_depth;
@@ -436,10 +480,10 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -.5f, 0, 0, 0, 1);
     VkrSsrSurface transported_receiver = vkr_ssr_transport_surface(
         receiver_view, receiver_normal, identity_model, previous_receiver_model);
-    VkrSsrReflectedHit moving_receiver = vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+    VkrSsrReflectedHit moving_receiver = check_reproject_hit(reflected, float2(.6f, .5f),
         receiver_view, receiver_normal, hit_view,
         transported_receiver.position, transported_receiver.normal, hit_view,
-        transported_receiver.position, transported_receiver.normal);
+        transported_receiver.position, transported_receiver.normal, 1);
     g_results[188] = moving_receiver.previous_uv.x;
     g_results[189] = moving_receiver.previous_uv.y;
     g_results[190] = moving_receiver.expected_receiver_depth;
@@ -475,69 +519,72 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         float3(asfloat(0x7fc00000u), 0, 0), identity_model, identity_model).w;
     g_results[209] = float(vkr_ssr_transport_surface(
         receiver_view, 0, identity_model, identity_model).valid);
-    g_results[210] = float(vkr_ssr_reproject_hit(reflected, float2(.5f),
+    g_results[210] = float(check_reproject_hit(reflected, float2(.5f),
         receiver_view, receiver_normal, hit_view,
         receiver_view, receiver_normal, hit_view,
-        float3(0, 0, -2), float3(1, 0, 0)).valid);
-    g_results[211] = float(vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+        float3(0, 0, -2), float3(1, 0, 0), 1).valid);
+    g_results[211] = float(check_reproject_hit(reflected, float2(.6f, .5f),
         receiver_view, receiver_normal, hit_view,
         float3(.4f, 0, 2), receiver_normal, hit_view,
-        receiver_view, receiver_normal).valid);
-    g_results[212] = float(vkr_ssr_reproject_hit(reflected, float2(.6f, .5f),
+        receiver_view, receiver_normal, 1).valid);
+    g_results[212] = float(check_reproject_hit(reflected, float2(.6f, .5f),
         receiver_view, receiver_normal, hit_view,
         receiver_view, receiver_normal, hit_view,
-        float3(.4f, 0, 2), receiver_normal).valid);
+        float3(.4f, 0, 2), receiver_normal, 1).valid);
 
     uint4 reflected_identity = uint4(1u, 2u, 3u, 4u);
     float4 geometry = float4(2, 3, 0, 0); // Front-facing +Z encodes to (0,0).
     uint2 history_extent = uint2(1280, 720);
+    uint full_match = VKR_SSR_MATCH_RECEIVER_IDENTITY | VKR_SSR_MATCH_HIT_IDENTITY |
+                      VKR_SSR_MATCH_VIRTUAL_DEPTH;
+    float plane_depth = translated.expected_receiver_depth;
     VkrSsrHistoryDecision reflected_matching = vkr_ssr_reflected_history_accept(
-        reflected, translated, reflected_identity, reflected_identity,
-        geometry, receiver_normal, history_extent);
+        reflected, translated, full_match, reflected_identity, reflected_identity,
+        geometry, plane_depth, receiver_normal, history_extent);
     g_results[213] = reflected_matching.weight;
     g_results[214] = float(reflected_matching.accepted);
     for (uint i = 0u; i < 4u; ++i) {
         uint4 foreign_identity = reflected_identity;
         foreign_identity[i] += 1u;
         g_results[215u + i] = float(vkr_ssr_reflected_history_accept(
-            reflected, translated, reflected_identity, foreign_identity,
-            geometry, receiver_normal, history_extent).accepted);
+            reflected, translated, full_match, reflected_identity, foreign_identity,
+            geometry, plane_depth, receiver_normal, history_extent).accepted);
     }
     g_results[219] = float(vkr_ssr_reflected_history_accept(
-        reflected, translated, reflected_identity, reflected_identity,
-        float4(3, 3, 0, 0), receiver_normal, history_extent).accepted);
+        reflected, translated, full_match, reflected_identity, reflected_identity,
+        float4(3, 3, 0, 0), plane_depth, receiver_normal, history_extent).accepted);
     g_results[220] = float(vkr_ssr_reflected_history_accept(
-        reflected, translated, reflected_identity, reflected_identity,
-        float4(2, 4, 0, 0), receiver_normal, history_extent).accepted);
+        reflected, translated, full_match, reflected_identity, reflected_identity,
+        float4(2, 4, 0, 0), plane_depth, receiver_normal, history_extent).accepted);
     g_results[221] = float(vkr_ssr_reflected_history_accept(
-        reflected, translated, reflected_identity, reflected_identity,
-        float4(2, 3, 1, 1), receiver_normal, history_extent).accepted);
+        reflected, translated, full_match, reflected_identity, reflected_identity,
+        float4(2, 3, 1, 1), plane_depth, receiver_normal, history_extent).accepted);
     reflected.history_valid = 0u;
     g_results[222] = float(vkr_ssr_reflected_history_accept(
-        reflected, translated, reflected_identity, reflected_identity,
-        geometry, receiver_normal, history_extent).accepted);
+        reflected, translated, full_match, reflected_identity, reflected_identity,
+        geometry, plane_depth, receiver_normal, history_extent).accepted);
     reflected.history_valid = 1u;
     VkrSsrReflectedHit invalid_hit = translated;
     invalid_hit.valid = 0u;
     g_results[223] = float(vkr_ssr_reflected_history_accept(
-        reflected, invalid_hit, reflected_identity, reflected_identity,
-        geometry, receiver_normal, history_extent).accepted);
+        reflected, invalid_hit, full_match, reflected_identity, reflected_identity,
+        geometry, plane_depth, receiver_normal, history_extent).accepted);
     invalid_hit = translated;
     invalid_hit.previous_uv = float2(1.5f, .5f);
     g_results[224] = float(vkr_ssr_reflected_history_accept(
-        reflected, invalid_hit, reflected_identity, reflected_identity,
-        geometry, receiver_normal, history_extent).accepted);
+        reflected, invalid_hit, full_match, reflected_identity, reflected_identity,
+        geometry, plane_depth, receiver_normal, history_extent).accepted);
     uint4 no_hit_identity = uint4(1u, 2u, 0u, 0u);
     g_results[225] = float(vkr_ssr_reflected_history_accept(
-        reflected, translated, no_hit_identity, no_hit_identity,
-        geometry, receiver_normal, history_extent).accepted);
+        reflected, translated, full_match, no_hit_identity, no_hit_identity,
+        geometry, plane_depth, receiver_normal, history_extent).accepted);
     g_results[226] = float(vkr_ssr_reflected_history_accept(
-        reflected, translated, reflected_identity, reflected_identity,
-        float4(2, 0, 0, 0), receiver_normal, history_extent).accepted);
+        reflected, translated, full_match, reflected_identity, reflected_identity,
+        float4(2, 0, 0, 0), plane_depth, receiver_normal, history_extent).accepted);
     uint4 no_receiver_identity = uint4(0u, 0u, 3u, 4u);
     g_results[227] = float(vkr_ssr_reflected_history_accept(
-        reflected, translated, no_receiver_identity, no_receiver_identity,
-        geometry, receiver_normal, history_extent).accepted);
+        reflected, translated, full_match, no_receiver_identity, no_receiver_identity,
+        geometry, plane_depth, receiver_normal, history_extent).accepted);
 
     float2 encoded_front = vkr_ssr_encode_normal(normalize(float3(6, 4, 3)));
     float3 decoded_front = vkr_ssr_decode_normal(float2(6.0f / 13.0f, 4.0f / 13.0f));
@@ -564,10 +611,10 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
         g_results[238u + i] = perspective_position[i];
         g_results[241u + i] = orthographic_position[i];
     }
-    VkrSsrReflectedHit orthographic_hit = vkr_ssr_reproject_hit(
+    VkrSsrReflectedHit orthographic_hit = check_reproject_hit(
         orthographic, float2(.8f, .5f), float3(.6f, 0, -2), receiver_normal, hit_view,
         float3(.8f, 0, -2), receiver_normal, hit_view + camera_delta,
-        float3(.8f, 0, -2), receiver_normal);
+        float3(.8f, 0, -2), receiver_normal, 1);
     g_results[244] = orthographic_hit.previous_uv.x;
     g_results[245] = orthographic_hit.previous_uv.y;
     g_results[246] = orthographic_hit.expected_receiver_depth;
@@ -595,10 +642,10 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     reflected.inverse_projection[1][3] = -.01f;
     reflected.history_jitter_uv_x = -.00125f;
     reflected.history_jitter_uv_y = .0075f;
-    VkrSsrReflectedHit both_jittered = vkr_ssr_reproject_hit(
+    VkrSsrReflectedHit both_jittered = check_reproject_hit(
         reflected, full_uv + float2(.0025f, -.005f),
         receiver_view, receiver_normal, hit_view,
-        receiver_view, receiver_normal, hit_view, full_receiver, receiver_normal);
+        receiver_view, receiver_normal, hit_view, full_receiver, receiver_normal, 1);
     g_results[262] = both_jittered.previous_uv.x;
     g_results[263] = both_jittered.previous_uv.y;
     g_results[264] = both_jittered.expected_receiver_depth;
@@ -802,4 +849,327 @@ void ssr_stability_execute(uint3 id : SV_DispatchThreadID)
     trace.t = 0.651f;
     VkrSsrCellExit rounded_exit = vkr_ssr_trace_cell_exit(trace, full_extent, params);
     g_results[327] = rounded_exit.restart_t - rounded_exit.t;
+    // History correspondence (ADR-055): static instances prove only geometry;
+    // a moved receiver also proves its identity, a moved receiver or
+    // reflected instance the reflected identity. A surface-motion candidate
+    // skips the virtual depth.
+    uint4 foreign_ids = reflected_identity + 1u;
+    g_results[328] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, VKR_SSR_MATCH_VIRTUAL_DEPTH, reflected_identity,
+        foreign_ids, geometry, plane_depth, receiver_normal, history_extent).accepted);
+    g_results[329] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, 0u, reflected_identity, reflected_identity,
+        float4(2, 4, 0, 0), plane_depth, receiver_normal, history_extent).accepted);
+    g_results[330] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, VKR_SSR_MATCH_HIT_IDENTITY, reflected_identity,
+        uint4(foreign_ids.xy, reflected_identity.zw), geometry, plane_depth,
+        receiver_normal, history_extent).accepted);
+    g_results[331] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, VKR_SSR_MATCH_HIT_IDENTITY, reflected_identity,
+        uint4(reflected_identity.xy, foreign_ids.zw), geometry, plane_depth,
+        receiver_normal, history_extent).accepted);
+    g_results[332] = float(vkr_ssr_reflected_history_accept(
+        reflected, translated, VKR_SSR_MATCH_RECEIVER_IDENTITY, reflected_identity,
+        uint4(reflected_identity.xy, foreign_ids.zw), geometry, plane_depth,
+        receiver_normal, history_extent).accepted);
+
+    // Parallax zero follows the receiver P=(.4,0,-2) to u=.65. Half parallax
+    // tracks (P+Q)/2=(.5,0,-2.5), seen from x=-.2 at u=.5+.5*.7/2.5=.64.
+    // The camera below is unjittered again.
+    reflected.projection[0][2] = 0;
+    reflected.projection[1][2] = 0;
+    reflected.inverse_projection[0][3] = 0;
+    reflected.inverse_projection[1][3] = 0;
+    reflected.history_jitter_uv_x = 0;
+    reflected.history_jitter_uv_y = 0;
+    VkrSsrReflectedHit surface_motion = check_reproject_hit(reflected, float2(.6f, .5f),
+        receiver_view, receiver_normal, hit_view,
+        receiver_view + camera_delta, receiver_normal, hit_view + camera_delta,
+        receiver_view + camera_delta, receiver_normal, 0);
+    VkrSsrReflectedHit half_parallax = check_reproject_hit(reflected, float2(.6f, .5f),
+        receiver_view, receiver_normal, hit_view,
+        receiver_view + camera_delta, receiver_normal, hit_view + camera_delta,
+        receiver_view + camera_delta, receiver_normal, .5f);
+    g_results[333] = surface_motion.previous_uv.x;
+    g_results[334] = half_parallax.previous_uv.x;
+    g_results[335] = half_parallax.current_virtual_depth;
+    g_results[336] = half_parallax.expected_virtual_depth;
+    g_results[337] = vkr_ssr_reflection_parallax(.1f);
+    g_results[338] = vkr_ssr_reflection_parallax(.275f);
+    g_results[339] = vkr_ssr_reflection_parallax(.4f);
+
+    // The plane y+z=-2 meets the unit-focal ray (x t,-y t,-t) of NDC (x,y)
+    // at depth t=2/(1+y): 4/3 at v=.75, 4 at v=.25, 2 on the horizon row.
+    // A plane containing the view ray has no intersection.
+    VkrSsrPlaneDepth tilted_plane = vkr_ssr_plane_depth_prepare(
+        reflected, float3(0, 0, -2), float3(0, 1, 1));
+    g_results[340] = vkr_ssr_plane_depth_at(tilted_plane, float2(.5f, .75f));
+    g_results[341] = vkr_ssr_plane_depth_at(tilted_plane, float2(.5f, .25f));
+    g_results[342] = vkr_ssr_plane_depth_at(tilted_plane, float2(.9f, .5f));
+    g_results[343] = vkr_ssr_plane_depth_at(vkr_ssr_plane_depth_prepare(
+        reflected, float3(0, 0, -2), float3(1, 0, 0)), float2(.5f));
+
+    // Reversed depth (ADR-109), near .1 m and far 20 km: device depth
+    // d = B/t - A for positive depth t. The same mirror geometry and planes
+    // must keep their convention-free answers; unprojecting the far plane
+    // instead loses the ray direction in float32.
+    VkrSsrParams reversed = reflected;
+    float near_distance = .1f;
+    float far_distance = 20000.0f;
+    float range_a = near_distance / (far_distance - near_distance);
+    float range_b = near_distance * far_distance / (far_distance - near_distance);
+    reversed.projection = float4x4(
+        1, 0, 0, 0,
+        0, -1, 0, 0,
+        0, 0, range_a, range_b,
+        0, 0, -1, 0);
+    reversed.inverse_projection = float4x4(
+        1, 0, 0, 0,
+        0, -1, 0, 0,
+        0, 0, 0, -1,
+        0, 0, 1.0f / range_b, range_a / range_b);
+    VkrSsrReflectedHit reversed_hit = check_reproject_hit(reversed, float2(.6f, .5f),
+        receiver_view, receiver_normal, hit_view,
+        receiver_view + camera_delta, receiver_normal, hit_view + camera_delta,
+        receiver_view + camera_delta, receiver_normal, 1);
+    g_results[344] = reversed_hit.previous_uv.x * 1280.0f;
+    g_results[345] = reversed_hit.expected_receiver_depth;
+    g_results[346] = reversed_hit.expected_virtual_depth;
+    g_results[347] = float(reversed_hit.valid);
+    float3 far_point = vkr_ssr_view_from_positive_depth(reversed, float2(.6f, .45f), 100);
+    for (uint i = 0u; i < 3u; ++i) g_results[348u + i] = far_point[i];
+    g_results[351] = vkr_ssr_plane_depth_at(vkr_ssr_plane_depth_prepare(
+        reversed, float3(0, 0, -2), float3(0, 1, 1)), float2(.5f, .75f));
+    // A floor 1.5 m below the eye seen 1/64 NDC below the horizon: 96 m.
+    g_results[352] = vkr_ssr_plane_depth_at(vkr_ssr_plane_depth_prepare(
+        reversed, float3(0, -1.5f, 0), float3(0, 1, 0)), float2(.5f, .5078125f));
+
+    // GGX visible-normal sampling. At normal incidence with alpha .5 and
+    // u=(.5,0), tan(theta_h)=alpha: h=(.5,0,1)/|.|, l=(.8,0,.6). Its pdf is
+    // D/4 with D=1/(pi*.25*1.6^2); its own ratio weight is G2/G1(v), with
+    // G1(v)=1 and G2=1.2/(.6+sqrt(.52)).
+    float3 straight = float3(0, 0, 1);
+    VkrSsrLobe isotropic = vkr_ssr_lobe(straight, straight, float3(1, 0, 0), float2(.5f));
+    float3 isotropic_light = vkr_ssr_lobe_sample(isotropic, float2(.5f, 0));
+    for (uint i = 0u; i < 3u; ++i) g_results[353u + i] = isotropic_light[i];
+    float isotropic_pdf = vkr_ssr_lobe_pdf(isotropic, isotropic_light);
+    g_results[356] = isotropic_pdf;
+    g_results[357] = vkr_ssr_lobe_value(isotropic, isotropic_light) / isotropic_pdf;
+    // Widths (.5,.25) along tangent x and bitangent y; u=(.5,.25) samples the
+    // bitangent: h=(0,.25,1)/|.|, l=(0,8/17,15/17).
+    VkrSsrLobe anisotropic = vkr_ssr_lobe(straight, straight, float3(1, 0, 0),
+                                          float2(.5f, .25f));
+    float3 anisotropic_light = vkr_ssr_lobe_sample(anisotropic, float2(.5f, .25f));
+    for (uint i = 0u; i < 3u; ++i) g_results[358u + i] = anisotropic_light[i];
+    // The pdf of a grazing anisotropic lobe integrates to one over the sphere.
+    VkrSsrLobe grazing = vkr_ssr_lobe(straight, float3(.8660254f, 0, .5f),
+                                      float3(1, 0, 0), float2(.5f, .3f));
+    float pdf_integral = 0.0f;
+    uint theta_steps = 512u;
+    uint phi_steps = 1024u;
+    for (uint t = 0u; t < theta_steps; ++t) {
+        float theta = (float(t) + .5f) * VKR_SSR_PI / float(theta_steps);
+        float row = 0.0f;
+        for (uint p = 0u; p < phi_steps; ++p) {
+            float phi = (float(p) + .5f) * 2.0f * VKR_SSR_PI / float(phi_steps);
+            row += vkr_ssr_lobe_pdf(grazing, float3(sin(theta) * cos(phi),
+                                                    sin(theta) * sin(phi), cos(theta)));
+        }
+        pdf_integral += row * sin(theta);
+    }
+    g_results[361] = pdf_integral * (VKR_SSR_PI / float(theta_steps)) *
+                     (2.0f * VKR_SSR_PI / float(phi_steps));
+    // Below the surface the lobe is zero; a reused ray from a neighbour's
+    // lobe tail is capped at four.
+    g_results[362] = vkr_ssr_lobe_value(isotropic, float3(.6f, 0, -.8f));
+    g_results[363] = vkr_ssr_reuse_weight(isotropic, straight, .01f);
+
+    // Ray records keep hit UV to half a 16-bit step, depth, pdf and the
+    // visible row; a miss or unknown ray keeps its direction and pdf.
+    VkrSsrRay hit_ray = vkr_ssr_unpack_ray(vkr_ssr_pack_hit(float2(.25f, .75f), 3.5f, 2, 7u));
+    g_results[364] = float(hit_ray.state);
+    g_results[365] = all(abs(hit_ray.hit_uv - float2(.25f, .75f)) * 65535.0f <= .5f) ? 1.0f : 0.0f;
+    g_results[366] = hit_ray.hit_depth;
+    g_results[367] = hit_ray.pdf;
+    g_results[368] = float(hit_ray.hit_visible);
+    VkrSsrRay unknown_ray = vkr_ssr_unpack_ray(
+        vkr_ssr_pack_ray(VKR_SSR_RAY_UNKNOWN, float3(.6f, 0, .8f), .5f));
+    g_results[369] = float(unknown_ray.state);
+    g_results[370] = dot(unknown_ray.direction, float3(.6f, 0, .8f));
+    g_results[371] = unknown_ray.pdf;
+    g_results[372] = float(vkr_ssr_unpack_ray(
+        vkr_ssr_pack_ray(VKR_SSR_RAY_MISS, float3(0, -.6f, -.8f), 1)).state);
+    g_results[373] = float(vkr_ssr_unpack_ray(uint4(0u)).state);
+
+    // A hit (4,2,1) with coverage .5, a miss and two unknown weights: radiance
+    // stays (4,2,1), coverage is .5 over the known weight 2, and half the
+    // weight is known. A receiver without a ray adds nothing.
+    VkrSsrResolve resolve = vkr_ssr_resolve_empty();
+    resolve = vkr_ssr_resolve_add(resolve, VKR_SSR_RAY_HIT, float4(4, 2, 1, .5f), 1);
+    resolve = vkr_ssr_resolve_add(resolve, VKR_SSR_RAY_MISS, float4(9), 1);
+    resolve = vkr_ssr_resolve_add(resolve, VKR_SSR_RAY_UNKNOWN, float4(9), 2);
+    resolve = vkr_ssr_resolve_add(resolve, VKR_SSR_RAY_NONE, float4(9), 5);
+    float4 resolved = vkr_ssr_resolve_reflection(resolve);
+    for (uint i = 0u; i < 4u; ++i) g_results[374u + i] = resolved[i];
+    g_results[378] = vkr_ssr_resolve_known_share(resolve);
+
+    // Half the current weight unknown: history fills it, retention
+    // .85+.15*.5=.925, so 2 moves to 2+.925*8=9.4 at full coverage.
+    decision.accepted = 1u;
+    decision.weight = .85f;
+    decision.support = 1.0f;
+    decision.tight = 0u;
+    float4 unknown_fill = vkr_ssr_temporal_filter(.25f, 1u, float4(2, 2, 2, 1), .5f, 9u,
+        float4(10, 10, 10, 1), 0, 10, decision);
+    g_results[379] = unknown_fill.x;
+    g_results[380] = unknown_fill.w;
+    // A surface-motion fallback keeps no residual outside the bounds [0,4]:
+    // 2+.85*2=3.7; the reflected-hit rule adds .5*(10-4).
+    decision.tight = 1u;
+    g_results[381] = vkr_ssr_temporal_filter(.3f, 1u, float4(2, 2, 2, 1), 1, 9u,
+        float4(10, 10, 10, 1), 0, 4, decision).x;
+    decision.tight = 0u;
+    g_results[382] = vkr_ssr_temporal_filter(.3f, 1u, float4(2, 2, 2, 1), 1, 9u,
+        float4(10, 10, 10, 1), 0, 4, decision).x;
+    // Mean 2 with deviation 1 inside [0,10] clips to [1,3].
+    float3 tight_min = 0.0f;
+    float3 tight_max = 10.0f;
+    vkr_ssr_tight_bounds(2.0f, 5.0f, tight_min, tight_max);
+    g_results[383] = tight_min.x;
+    g_results[384] = tight_max.x;
+    // A sample with a non-finite channel stores zero in every channel; finite
+    // radiance saturates at the half-float maximum.
+    g_results[385] = vkr_ssr_storable(float3(asfloat(0x7fc00000u), 1, 3)).y;
+    float3 storable = vkr_ssr_storable(float3(1e6f, 2, 3));
+    g_results[386] = storable.x;
+    g_results[387] = storable.z;
+
+    // TAA's ordinary resolve seeds the static integral with its effective
+    // sample count: a running mean gives n+1, a constant .9 converges to 19,
+    // .99 stops one below the 128-sample integral, and no history is one.
+    g_results[388] = vkr_temporal_effective_samples(9, .9f);
+    g_results[389] = vkr_temporal_effective_samples(4, .8f);
+    float settled = 1.0f;
+    float stationary = 1.0f;
+    for (uint frame = 0u; frame < 400u; ++frame) {
+        settled = vkr_temporal_effective_samples(settled, .9f);
+        stationary = vkr_temporal_effective_samples(stationary, .99f);
+    }
+    g_results[390] = settled;
+    g_results[391] = stationary;
+    g_results[392] = vkr_temporal_effective_samples(5, 0);
+
+    // No current hit. A small lamp covering .2 of a glossy lobe: nine misses
+    // expected 1.8 hits, so the frame halves its coverage instead of dropping
+    // it. At coverage .5 they expected 4.5 hits and refute it; at .4 (3.6
+    // expected) the hold shrinks by exp(-.6). A mirror's known miss drops; its
+    // unknown ray holds half. An all-unknown hold of full coverage keeps .125
+    // after three frames and ends on the fourth.
+    decision.accepted = 1u;
+    decision.weight = .85f;
+    decision.support = 1.0f;
+    decision.tight = 0u;
+    float4 lamp = vkr_ssr_temporal_filter(.3f, 0u, 0, 1, 9u,
+        float4(8, 4, 2, .2f), 1, -1, decision);
+    g_results[393] = lamp.x;
+    g_results[394] = lamp.w;
+    g_results[395] = vkr_ssr_temporal_filter(.3f, 0u, 0, 1, 9u,
+        float4(8, 4, 2, .5f), 1, -1, decision).w;
+    g_results[396] = vkr_ssr_temporal_filter(.3f, 0u, 0, 1, 9u,
+        float4(8, 4, 2, .4f), 1, -1, decision).w;
+    g_results[397] = vkr_ssr_temporal_filter(VKR_SSR_MIRROR_ROUGHNESS, 0u, 0, 1,
+        1u, float4(8, 4, 2, 1), 1, -1, decision).w;
+    g_results[398] = vkr_ssr_temporal_filter(VKR_SSR_MIRROR_ROUGHNESS, 0u, 0, 0,
+        0u, float4(8, 4, 2, 1), 1, -1, decision).w;
+    float4 held = float4(8, 4, 2, 1);
+    for (uint frame = 0u; frame < 3u; ++frame)
+        held = vkr_ssr_temporal_filter(.3f, 0u, 0, 0, 0u, held, 1, -1, decision);
+    g_results[399] = held.x;
+    g_results[400] = held.w;
+    g_results[401] = vkr_ssr_temporal_filter(.3f, 0u, 0, 0, 0u, held, 1, -1,
+                                             decision).w;
+
+    // Catmull-Rom history at fraction (.5, .5): inner taps weigh .5625^2,
+    // edge taps -.0625 * .5625 and corners .0625^2. Inner coverage .3 under
+    // a covered black ring keeps .114 coverage, under half the bilinear .3,
+    // and would divide into radiance 3.33: the bilinear resolve stands in.
+    // A covered black ring around covered radiance 1 rings to 1.27, and
+    // uncovered outer taps lift inner coverage .5 to .63: both stay inside
+    // the inner taps' range.
+    float4 cubic_weights = vkr_temporal_cubic_weights(.5f);
+    float4 edge_cubic = 0.0f;
+    float4 ring_cubic = 0.0f;
+    float4 thin_cubic = 0.0f;
+    float4 edge_bilinear = 0.0f;
+    float4 ring_bilinear = 0.0f;
+    float4 thin_bilinear = 0.0f;
+    for (int y = -1; y <= 2; ++y)
+    {
+        for (int x = -1; x <= 2; ++x)
+        {
+            bool inner_tap = x >= 0 && x <= 1 && y >= 0 && y <= 1;
+            float weight = cubic_weights[x + 1] * cubic_weights[y + 1];
+            edge_cubic += vkr_ssr_spatial_sample(
+                inner_tap ? float4(1, 1, 1, .3f) : float4(0, 0, 0, 1), weight);
+            ring_cubic += vkr_ssr_spatial_sample(
+                inner_tap ? float4(1, 1, 1, 1) : float4(0, 0, 0, 1), weight);
+            thin_cubic += vkr_ssr_spatial_sample(
+                inner_tap ? float4(1, 1, 1, .5f) : float4(0, 0, 0, 0), weight);
+            if (inner_tap)
+            {
+                edge_bilinear += vkr_ssr_spatial_sample(float4(1, 1, 1, .3f), .25f);
+                ring_bilinear += vkr_ssr_spatial_sample(float4(1, 1, 1, 1), .25f);
+                thin_bilinear += vkr_ssr_spatial_sample(float4(1, 1, 1, .5f), .25f);
+            }
+        }
+    }
+    g_results[402] = vkr_ssr_history_cubic(edge_cubic, edge_bilinear,
+        float4(1, 1, 1, .3f), float4(1, 1, 1, .3f)).w;
+    float4 ring = vkr_ssr_history_cubic(ring_cubic, ring_bilinear,
+        float4(1, 1, 1, 1), float4(1, 1, 1, 1));
+    g_results[403] = ring.x;
+    g_results[404] = ring.w;
+    float4 thin = vkr_ssr_history_cubic(thin_cubic, thin_bilinear,
+        float4(1, 1, 1, .5f), float4(1, 1, 1, .5f));
+    g_results[405] = thin.x;
+    g_results[406] = thin.w;
+
+    // Plane tolerance from the plane's own prediction: a floor 1 m below a
+    // counter top, seen 8.6 m past its edge from .7 m above it, is another
+    // surface (the measured separation gave .54). A grazing-floor point .3 m
+    // off the plane and 5.4 m along it keeps the slope of its own separation.
+    g_results[407] = vkr_ssr_receiver_plane_weight(float3(0, -.7f, -6), up,
+        float3(0, -1.7f, -14.6f), up);
+    g_results[408] = vkr_ssr_receiver_plane_weight(float3(0, -1.7f, -50), up,
+        float3(.05f, -1.4f, -55.4f), up);
+
+    // A rough lobe (roughness .5, no reflection parallax) treats a frame
+    // without hits as a zero-coverage sample at the retention .85: full
+    // all-unknown coverage keeps .85^3 after three frames and .85^4 after
+    // four; the .2 lamp keeps .17; nine misses at coverage .5 (4.5 expected
+    // hits) keep .5 * .85 * exp(-1.5); at full coverage (9 expected) they
+    // refute it below the floor. Roughness .39 still has parallax and halves
+    // the lamp to .1. A sparse lobe hit of coverage .07 (.63 expected hits)
+    // keeps .07 * .85, below the 1/16 floor that ends a glossy hold.
+    decision.accepted = 1u;
+    decision.weight = .85f;
+    decision.support = 1.0f;
+    decision.tight = 0u;
+    float4 rough_held = float4(8, 4, 2, 1);
+    for (uint frame = 0u; frame < 3u; ++frame)
+        rough_held = vkr_ssr_temporal_filter(.5f, 0u, 0, 0, 0u, rough_held, 1,
+                                             -1, decision);
+    g_results[409] = rough_held.w;
+    g_results[410] = vkr_ssr_temporal_filter(.5f, 0u, 0, 0, 0u, rough_held, 1,
+                                             -1, decision).w;
+    g_results[411] = vkr_ssr_temporal_filter(.5f, 0u, 0, 1, 9u,
+        float4(8, 4, 2, .2f), 1, -1, decision).w;
+    g_results[412] = vkr_ssr_temporal_filter(.5f, 0u, 0, 1, 9u,
+        float4(8, 4, 2, .5f), 1, -1, decision).w;
+    g_results[413] = vkr_ssr_temporal_filter(.5f, 0u, 0, 1, 9u,
+        float4(8, 4, 2, 1), 1, -1, decision).w;
+    g_results[414] = vkr_ssr_temporal_filter(.39f, 0u, 0, 1, 9u,
+        float4(8, 4, 2, .2f), 1, -1, decision).w;
+    g_results[415] = vkr_ssr_temporal_filter(.5f, 0u, 0, 1, 9u,
+        float4(8, 4, 2, .07f), 1, -1, decision).w;
 }

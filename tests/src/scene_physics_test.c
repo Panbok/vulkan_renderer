@@ -573,6 +573,36 @@ static void physics_test_moves(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+/* Transform edits that would leave a body with a mirrored or flat world
+   scale are refused, at the body and at a group above it, also while the
+   child index is valid and lets an entity without children skip the walk
+   up from every body. An entity off every body's chain stays editable. */
+static void physics_test_transform_checks(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 13, 16, NULL));
+  const char *error = NULL;
+  const VkrEntityId group = physics_test_entity(&scene, vec3_zero());
+  const VkrEntityId crate = physics_test_entity(&scene, vec3_new(0, 1, 0));
+  const VkrEntityId plain = physics_test_entity(&scene, vec3_new(4, 0, 0));
+  vkr_scene_set_parent(&scene, crate, group);
+  const VkrScenePhysicsSnapshot config = vkr_scene_physics_default();
+  assert(vkr_scene_physics_apply(&scene, crate, &config, &error));
+  vkr_scene_update(&scene, 0.0);
+  assert(scene.child_index_valid);
+  assert(!vkr_scene_set_transform(&scene, group, vec3_zero(),
+                                  vkr_quat_identity(), vec3_new(-1, 1, 1)));
+  assert(!vkr_scene_set_transform(&scene, group, vec3_zero(),
+                                  vkr_quat_identity(), vec3_new(0, 1, 1)));
+  assert(!vkr_scene_set_transform(&scene, crate, vec3_new(0, 1, 0),
+                                  vkr_quat_identity(), vec3_new(0, 1, 1)));
+  assert(scene.child_index_valid);
+  assert(vkr_scene_set_transform(&scene, plain, vec3_new(5, 0, 0),
+                                 vkr_quat_identity(), vec3_new(2, 2, 2)));
+  assert(vkr_scene_set_transform(&scene, group, vec3_new(1, 0, 0),
+                                 vkr_quat_identity(), vec3_one()));
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_scene_physics_tests(void) {
   printf("--- Starting Scene Physics Tests ---\n");
   physics_test_descriptors();
@@ -587,6 +617,7 @@ bool32_t run_scene_physics_tests(void) {
   physics_test_generated_turn(&allocator);
   physics_test_rebase(&allocator);
   physics_test_moves(&allocator);
+  physics_test_transform_checks(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 31, 16, NULL));
   VkrEntityId owner = physics_test_entity(&scene, vec3_new(0, 10, 0));

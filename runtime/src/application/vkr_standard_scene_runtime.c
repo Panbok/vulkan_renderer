@@ -64,6 +64,9 @@ typedef struct VkrStandardSceneRuntimeDrawContext {
   /* Source cubemap of each probe; its SH slot resolves after acquisition. */
   VkrTextureHandle frame_ibl_probe_sources[VKR_FRAME_IBL_PROBE_MAX];
   VkrFrameLighting frame_lighting;
+  /* Per frame_lighting point light, its intensity before the light table's
+     fades, which sizes its local shadow. */
+  const float32_t *point_light_unfaded_intensity;
   /* The desktop pipeline's baked lamps, candidates for their moving
      casters' shadows; none on the tiled pipeline. */
   const VkrPointLight *baked_lamps;
@@ -577,6 +580,13 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       local_shadow_fade ? strtof(local_shadow_fade, NULL) : 0.0f;
   application->local_shadow_fade_distance_override =
       isfinite(fade_distance) && fade_distance > 0.0f ? fade_distance : 0.0f;
+  const char *local_shadow_layers = getenv("VKR_LOCAL_SHADOW_ATLAS_LAYERS");
+  const long atlas_layers =
+      local_shadow_layers ? strtol(local_shadow_layers, NULL, 10) : 0;
+  application->local_shadow_atlas_layer_override =
+      atlas_layers > 0 && atlas_layers <= VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX
+          ? (uint32_t)atlas_layers
+          : 0u;
   /* The editor presents through the presenter where the renderer has one
      (ADR-111); VKR_EDITOR_PRESENTER=0 keeps one presentation per Scene. */
   const char *presenter = getenv("VKR_EDITOR_PRESENTER");
@@ -1132,13 +1142,17 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     if (application->local_shadow_fade_distance_override > 0.0f)
       application->shadow_system.config.local_shadow_fade_distance =
           application->local_shadow_fade_distance_override;
+    if (application->local_shadow_atlas_layer_override != 0u)
+      application->shadow_system.config.local_shadow_atlas_layer_budget =
+          application->local_shadow_atlas_layer_override;
     vkr_shadow_system_set_light_contribution_sample(
         &application->shadow_system,
         &application->renderer.timing_result.local_light_contribution);
     vkr_shadow_system_resolve_local_shadows(
         &application->shadow_system, setup->retained_local_shadow,
         &draw->world_payload, draw->frame_lighting.point_lights,
-        draw->frame_lighting.point_light_count, draw->baked_lamps,
+        draw->frame_lighting.point_light_count,
+        draw->point_light_unfaded_intensity, draw->baked_lamps,
         draw->baked_lamp_count, &camera, &draw->local_shadow_payload);
   }
 
@@ -1734,6 +1748,8 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
   /* Both pipeline classes shade moving casters' shadows of the baked lamps
      (ADR-104, ADR-108). */
   (void)desktop;
+  draw->point_light_unfaded_intensity =
+      application->lighting_system.point_light_unfaded_intensity;
   draw->baked_lamps = application->lighting_system.baked_lamps;
   draw->baked_lamp_count = application->lighting_system.baked_lamp_count;
   if (active_scene && active_scene->world_state.diffuse_volume.enabled) {
@@ -2131,7 +2147,12 @@ vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
         scratch, lighting->point_lights,
         (uint64_t)lighting->point_light_count *
             sizeof(*lighting->point_lights));
-    if (!lighting->point_lights) {
+    draw->point_light_unfaded_intensity =
+        vkr_standard_scene_runtime_scratch_copy(
+            scratch, draw->point_light_unfaded_intensity,
+            (uint64_t)lighting->point_light_count *
+                sizeof(*draw->point_light_unfaded_intensity));
+    if (!lighting->point_lights || !draw->point_light_unfaded_intensity) {
       return false_v;
     }
   }
@@ -2802,8 +2823,11 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
         application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
     application->lighting_system.static_lights_baked =
         vkr_standard_scene_runtime_static_lights_baked(render_scene);
-    vkr_lighting_system_sync_from_scene(&application->lighting_system,
-                                        render_scene);
+    /* The scene table keeps the point lights nearest the camera (ADR-019);
+       without a camera they rank from the origin. */
+    vkr_lighting_system_sync_from_scene(
+        &application->lighting_system, render_scene,
+        camera ? camera->position : vec3_zero(), (float32_t)delta);
     /* Additive scenes' light groups follow the rendered scene's sun and
        time of day (ADR-090); the model stage lights only itself. */
     for (uint32_t i = 0;

@@ -2,8 +2,8 @@
   "schema_version": 1,
   "id": "local.ssr.reflected_hit_motion",
   "suite": "local",
-  "description": "Move the reflected emitter over a fixed anisotropic/sheen receiver; exercise retained hit transforms without final TAA.",
-  "scene": "assets/scenes/fixtures/ssr_shaded_layers.scene.json",
+  "description": "Move the reflected emitter over a fixed mirror receiver; exercise retained hit transforms without final TAA.",
+  "scene": "assets/scenes/fixtures/ssr_reflected_hit_mirror.scene.json",
   "seed": 1,
   "resolution": [
     512,

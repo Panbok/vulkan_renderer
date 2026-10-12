@@ -1,12 +1,20 @@
 // Portable current-frame screen-space reflection math.
 //
 // Native roots own texture access, bindings, and dispatch. This header owns
-// coordinate/depth conventions, hierarchy decisions, confidence, temporal
-// acceptance and the algebra that replaces environment/probe specular.
+// coordinate/depth conventions, hierarchy decisions, GGX lobe sampling, ray
+// reuse, confidence, temporal acceptance and the algebra that replaces
+// environment/probe specular.
 // Canonical UV is top-left. The renderer is right handed with forward -Z, and
 // every hierarchy/history depth is positive view depth (`-view.z`); zero marks
 // no covered opaque surface. `params.view` transforms world-space G-buffer
 // normals before reflection. The independent SSR pyramid is current-frame only.
+//
+// Each rough receiver traces one GGX visible-normal sample of its lobe; a
+// mirror receiver traces its exact mirror ray. The temporal pass reuses the
+// rays of neighbouring receivers with BRDF/pdf ratio weights, so its incoming
+// radiance converges to the normalized lobe integral that the environment
+// prefilter also represents, and the composite applies the same receiver
+// response to both.
 
 #ifndef VKR_SHADER_SSR_KERNEL_SLANGH
 #define VKR_SHADER_SSR_KERNEL_SLANGH
@@ -14,15 +22,78 @@
 #define VKR_SSR_MAX_STEPS 48u
 #define VKR_SSR_EPSILON 1e-6f
 #define VKR_SSR_NEAR_EPSILON 1e-4f
+#define VKR_SSR_PI 3.14159265358979323846f
 // View-space normal offset only for reconstructed-receiver self separation.
 // It is deliberately independent of the depth-hit slab (`params.thickness`).
 #define VKR_SSR_RAY_ORIGIN_BIAS 1e-3f
-// RGBA16F stores authored 0.04 as this value; keep that minimum roughness a
-// single exact mirror tap instead of entering the rough bilateral filter.
+// RGBA16F stores authored 0.04 as this value. At or below it a receiver
+// traces its exact mirror ray and reuses no neighbouring ray.
 #define VKR_SSR_MIRROR_ROUGHNESS 0.040008544921875f
+// Coverage fades to zero over this roughness span below the cutoff, so a
+// valid hit on any rougher receiver fully replaces the environment term and
+// the eligibility boundary itself is continuous.
+#define VKR_SSR_ROUGHNESS_FADE_SPAN 0.15f
+// Receiver-plane tolerance for ray reuse: the 2 cm floor, and a neighbour
+// further off the centre's tangent plane than this fraction of the separation
+// the plane predicts at its pixel, about 14 degrees of tilt, is another
+// surface.
 #define VKR_SSR_RECEIVER_DEPTH_ABSOLUTE 0.02f
-#define VKR_SSR_HIT_FILTER_TAP_COUNT 5u
-#define VKR_SSR_HIT_FILTER_RADIUS_PIXELS 4.0f
+#define VKR_SSR_PLANE_SLOPE 0.25f
+// Neighbouring rays a rough receiver reuses besides its own, on a rotated
+// Vogel spiral whose radius grows with roughness. The radius keeps the former
+// rough filter's physical width; the per-pixel, per-frame rotation covers a
+// contiguous footprint instead of fixed parity lattices.
+#define VKR_SSR_REUSE_TAP_COUNT 8u
+#define VKR_SSR_REUSE_RADIUS_MIN_PIXELS 1.0f
+#define VKR_SSR_REUSE_RADIUS_MAX_PIXELS 3.0f
+#define VKR_SSR_GOLDEN_ANGLE 2.39996322972865332f
+// Bound on one reused ray's BRDF/pdf ratio. A ray of a neighbouring lobe's
+// tail that lands in this lobe's peak would otherwise dominate the ratio
+// estimator; the own sample's ratio G2/G1 never exceeds one.
+#define VKR_SSR_REUSE_WEIGHT_MAX 4.0f
+// Reflected-hit reprojection follows the virtual image below this roughness
+// and blends to surface motion at the end of the span: a wide lobe blurs the
+// image over more than its parallax.
+#define VKR_SSR_PARALLAX_ROUGHNESS_BEGIN 0.15f
+#define VKR_SSR_PARALLAX_ROUGHNESS_END 0.4f
+// A frame whose reused rays found no hit briefly holds an image-like
+// reflection whose absence those rays cannot prove: a mirror's ray that ran
+// out of hierarchy decisions, and a glossy lobe (reflection parallax above
+// zero) whose rays could still miss a real reflection. The held coverage
+// halves on every such frame and returns to the environment term at or below
+// the floor, so a run of these frames ends within four frames. A rough lobe's
+// plausible all-miss frame is an ordinary sample of zero coverage instead,
+// and known misses that refute part of its coverage also end at the floor.
+#define VKR_SSR_HOLD_RETENTION 0.5f
+#define VKR_SSR_HOLD_COVERAGE_MIN 0.0625f
+// Known misses refute a rough receiver's history once its rays expected more
+// than this many hits: n known rays at history coverage c expect n * c hits
+// and all miss with Poisson probability exp(-n * c), here below 5 %.
+#define VKR_SSR_DECISIVE_EXPECTED_HITS 3.0f
+// Largest finite RGBA16F value; raw and history radiance are half floats.
+#define VKR_SSR_HALF_MAX 65504.0f
+// Device depths of the two points that span a camera ray. Both lie on the
+// near side under forward and under reversed depth (ADR-109), so neither is
+// the far plane, where float32 loses the ray's direction.
+#define VKR_SSR_RAY_DEVICE_DEPTH_A 0.75f
+#define VKR_SSR_RAY_DEVICE_DEPTH_B 0.5f
+
+// Ray record states in the trace's RGBA32UI image (vkr_ssr_pack_hit,
+// vkr_ssr_pack_ray). NONE: the receiver traced no lobe ray. MISS: the ray
+// left the screen or its distance without a hit. UNKNOWN: the ray ran out of
+// hierarchy decisions, so neither a hit nor a miss is known.
+#define VKR_SSR_RAY_NONE 0u
+#define VKR_SSR_RAY_MISS 1u
+#define VKR_SSR_RAY_UNKNOWN 2u
+#define VKR_SSR_RAY_HIT 3u
+
+// What a history tap must match besides its transported receiver plane and
+// normal: a moved receiver its receiver instance, a moved receiver or
+// reflected instance the reflected instance, and the reflected-hit candidate
+// its virtual depth.
+#define VKR_SSR_MATCH_RECEIVER_IDENTITY 1u
+#define VKR_SSR_MATCH_HIT_IDENTITY 2u
+#define VKR_SSR_MATCH_VIRTUAL_DEPTH 4u
 // Interpolated FP32 UV can land exactly on a stored cell boundary whose floor()
 // selects the exited cell. An epsilon restart then moves UV by less than one
 // ulp on short segments, and nearly axis-aligned rays stall for more than the
@@ -83,6 +154,25 @@ struct VkrSsrSurface
     uint valid;
 };
 
+// Positive depth at which the camera rays of one projection meet a view-space
+// plane. Perspective and orthographic projections never weigh x or y into the
+// homogeneous w, so a ray's two points are affine in projection UV and one
+// preparation serves every history tap. Each lane holds (value at the image
+// centre, d/du, d/dv): expanding about the centre keeps the small lateral
+// offsets of near-axis rays free of cancellation.
+struct VkrSsrPlaneDepth
+{
+    float3 numerator;
+    float3 denominator;
+    float3 first_depth;
+    float3 depth_span;
+    float grazing;
+    uint valid;
+};
+
+// Every candidate of one receiver shares its transported receiver plane
+// (VkrSsrPlaneDepth), which the caller prepares once and passes to each
+// history tap.
 struct VkrSsrReflectedHit
 {
     float2 previous_uv;
@@ -90,6 +180,46 @@ struct VkrSsrReflectedHit
     float expected_virtual_depth;
     float current_virtual_depth;
     uint valid;
+};
+
+// One trace ray as its RGBA32UI record stores it.
+struct VkrSsrRay
+{
+    uint state;
+    // Solid-angle pdf of the traced direction; zero for a mirror ray.
+    float pdf;
+    float2 hit_uv;
+    float hit_depth;
+    uint hit_visible;
+    // View-space direction of a miss or unknown ray.
+    float3 direction;
+};
+
+// A receiver's GGX reflection lobe in view space, prepared once per pixel.
+struct VkrSsrLobe
+{
+    float3 normal;
+    float3 tangent;
+    float3 bitangent;
+    float3 view;
+    // GGX widths along tangent and bitangent (alpha = roughness^2).
+    float2 alpha;
+    float no_v;
+    // sqrt(alpha_t^2 v_t^2 + alpha_b^2 v_b^2 + v_n^2): Smith's view term.
+    float view_root;
+    uint valid;
+};
+
+// Ratio-estimator sums over reused rays. `covered` and `radiance` weigh hit
+// coverage; `known` adds misses; `total` adds rays of unknown outcome.
+// `known_rays` counts the rays of known outcome.
+struct VkrSsrResolve
+{
+    float3 radiance;
+    float covered;
+    float known;
+    float total;
+    uint known_rays;
 };
 
 struct VkrSsrTrace
@@ -142,9 +272,14 @@ struct VkrSsrTraceResolve
 struct VkrSsrHistoryDecision
 {
     uint accepted;
+    // Retention after motion, roughness and history support.
     float weight;
     float expected_previous_depth;
-    float reserved_float_0;
+    // Accepted share of the history footprint, in [0, 1].
+    float support;
+    // Surface-motion fallback for a reflection that had a reflected-hit
+    // candidate: clamp without the rough residual.
+    uint tight;
 };
 
 VkrSsrTrace vkr_ssr_empty_trace()
@@ -218,6 +353,23 @@ float4 vkr_ssr_lerp(float4 a, float4 b, float t)
 bool vkr_ssr_finite(float value)
 {
     return value == value && abs(value) < 3.402823466e+38f;
+}
+
+bool vkr_ssr_finite3(float3 value)
+{
+    return vkr_ssr_finite(value.x) && vkr_ssr_finite(value.y) &&
+           vkr_ssr_finite(value.z);
+}
+
+// Radiance a half-float image can hold: a non-finite value, such as an
+// emissive past the RGBA16F range, becomes zero so one texel cannot spread
+// through the gather and history; finite values saturate at the format
+// maximum instead of rounding to infinity on store.
+float3 vkr_ssr_storable(float3 radiance)
+{
+    return vkr_ssr_finite3(radiance)
+               ? clamp(radiance, float3(0.0f), float3(VKR_SSR_HALF_MAX))
+               : float3(0.0f);
 }
 
 bool vkr_ssr_valid_depth(float positive_view_depth)
@@ -699,90 +851,285 @@ float vkr_ssr_edge_confidence(float2 hit_uv, VkrSsrParams params)
     return vkr_ssr_saturate(edge_pixels / params.edge_fade_pixels);
 }
 
-float vkr_ssr_roughness_confidence(float roughness, VkrSsrParams params)
+// Receiver roughness across [mirror, cutoff], zero at or below the mirror.
+float vkr_ssr_normalized_roughness(float roughness, VkrSsrParams params)
 {
-    // The exact RGBA16F mirror threshold receives full confidence. The linear
-    // fade then reaches one half at the accepted roughness cutoff.
     float span = max(params.roughness_cutoff - VKR_SSR_MIRROR_ROUGHNESS,
                      VKR_SSR_EPSILON);
-    float normalized = vkr_ssr_saturate(
-        (roughness - VKR_SSR_MIRROR_ROUGHNESS) / span);
-    return 1.0f - normalized * 0.5f;
+    return vkr_ssr_saturate((roughness - VKR_SSR_MIRROR_ROUGHNESS) / span);
 }
 
-float vkr_ssr_trace_confidence(float roughness, float2 hit_uv,
-                                float depth_confidence, VkrSsrParams params)
+// Composite coverage scale of the receiver's packed roughness. A valid hit
+// replaces the environment term fully up to VKR_SSR_ROUGHNESS_FADE_SPAN below
+// the cutoff; the scale then falls linearly to zero at the cutoff, matching
+// the ineligible receivers beyond it.
+float vkr_ssr_roughness_confidence(float roughness, VkrSsrParams params)
 {
-    return vkr_ssr_roughness_confidence(roughness, params) *
-           vkr_ssr_edge_confidence(hit_uv, params) *
+    float begin = max(params.roughness_cutoff - VKR_SSR_ROUGHNESS_FADE_SPAN,
+                      VKR_SSR_MIRROR_ROUGHNESS);
+    float span = max(params.roughness_cutoff - begin, VKR_SSR_EPSILON);
+    return vkr_ssr_saturate((params.roughness_cutoff - roughness) / span);
+}
+
+// Coverage of one valid hit: the screen-edge fade at the hit and the
+// hierarchy's depth confidence. Roughness fades at the receiver (composite).
+float vkr_ssr_trace_confidence(float2 hit_uv, float depth_confidence,
+                               VkrSsrParams params)
+{
+    return vkr_ssr_edge_confidence(hit_uv, params) *
            vkr_ssr_saturate(depth_confidence);
 }
 
-// Roughness is not a one-sample GGX estimator here. Mirror surfaces retain one
-// exact hit tap; rougher accepted surfaces use the five fixed offsets below to
-// approximate a finite reflection cone without allocating an HDR mip chain.
-uint vkr_ssr_hit_filter_tap_count(float roughness)
+// Share of reflected-hit parallax in the reprojected point: one follows the
+// virtual image of a glossy reflection, zero the receiver surface of a rough
+// one, whose lobe blurs the image over more than its parallax.
+float vkr_ssr_reflection_parallax(float roughness)
 {
-    return roughness <= VKR_SSR_MIRROR_ROUGHNESS
-               ? 1u
-               : VKR_SSR_HIT_FILTER_TAP_COUNT;
+    float blend = vkr_ssr_saturate(
+        (roughness - VKR_SSR_PARALLAX_ROUGHNESS_BEGIN) /
+        (VKR_SSR_PARALLAX_ROUGHNESS_END - VKR_SSR_PARALLAX_ROUGHNESS_BEGIN));
+    return 1.0f - blend * blend * (3.0f - 2.0f * blend);
 }
 
-float2 vkr_ssr_hit_filter_offset(uint tap)
+float vkr_ssr_reuse_radius(float roughness, VkrSsrParams params)
 {
-    if (tap == 1u) return float2(1.0f, 0.0f);
-    if (tap == 2u) return float2(-1.0f, 0.0f);
-    if (tap == 3u) return float2(0.0f, 1.0f);
-    if (tap == 4u) return float2(0.0f, -1.0f);
-    return 0.0f;
+    return vkr_ssr_lerp(VKR_SSR_REUSE_RADIUS_MIN_PIXELS,
+                        VKR_SSR_REUSE_RADIUS_MAX_PIXELS,
+                        vkr_ssr_normalized_roughness(roughness, params));
 }
 
-float vkr_ssr_hit_filter_radius_pixels(float roughness, VkrSsrParams params)
+// Source-pixel offset of reuse tap `tap` below VKR_SSR_REUSE_TAP_COUNT: a
+// Vogel spiral of `radius` turned by `rotation` turns. Every tap lies at least
+// one pixel from the centre, so none rounds back onto the receiver's own ray.
+int2 vkr_ssr_reuse_offset(uint tap, float radius, float rotation)
 {
-    float span = max(params.roughness_cutoff - VKR_SSR_MIRROR_ROUGHNESS,
-                     VKR_SSR_EPSILON);
-    float normalized = vkr_ssr_saturate(
-        (roughness - VKR_SSR_MIRROR_ROUGHNESS) / span);
-    return VKR_SSR_HIT_FILTER_RADIUS_PIXELS * normalized * normalized;
+    float distance = max(
+        radius * sqrt((float(tap) + 0.5f) / float(VKR_SSR_REUSE_TAP_COUNT)),
+        1.0f);
+    float angle = rotation * (2.0f * VKR_SSR_PI) +
+                  float(tap) * VKR_SSR_GOLDEN_ANGLE;
+    return int2(round(distance * float2(cos(angle), sin(angle))));
 }
 
-// Preserve fractional intersections and cone offsets on both backends. Native
-// samplers supply linear clamp-to-edge filtering, including mirror hit samples.
-float2 vkr_ssr_hit_filter_uv(float2 hit_uv, float roughness, uint tap,
-                            VkrSsrParams params)
+float vkr_ssr_reuse_spatial_weight(float2 offset, float radius)
 {
-    float2 texel = float2(1.0f / float(params.source_width),
-                         1.0f / float(params.source_height));
-    return hit_uv + vkr_ssr_hit_filter_offset(tap) *
-                        vkr_ssr_hit_filter_radius_pixels(roughness, params) * texel;
+    float2 scaled = offset / max(radius, 1.0f);
+    return 1.0f / (1.0f + dot(scaled, scaled));
 }
 
-// A continuous footprint on the trace grid reaches zero at entering/leaving
-// taps. Mirrors retain the former four-tap reconstruction; rough receivers use
-// nine taps, sharing those loads with the temporal clamp bounds.
-float vkr_ssr_reconstruction_grid_weight(float2 offset, float roughness)
+// Separation from `center_position` that the centre's tangent plane predicts
+// at the neighbour's pixel: the distance to where the camera ray through
+// `neighbor_position` meets that plane, which is the centre's own pixel
+// footprint on the plane times the pixel offset. View-space positions with the
+// camera at the origin; SSR and SSGI run only with perspective projections.
+// The measured separation caps it, so a neighbour on the plane, including a
+// far one on a grazing floor, keeps its own separation. A neighbour on another
+// surface behind or in front gets the plane's short prediction instead: its
+// distance from the plane can no longer widen its own tolerance. A ray that
+// meets the plane behind the camera or not at all keeps the measured value.
+float vkr_ssr_plane_separation(float3 center_position, float3 center_normal,
+                               float3 neighbor_position)
 {
-    float radius = roughness <= VKR_SSR_MIRROR_ROUGHNESS ? 1.0f : 1.5f;
-    float2 tent = max(1.0f - abs(offset) / radius, 0.0f);
-    return tent.x * tent.y;
+    float measured = length(neighbor_position - center_position);
+    float scale = dot(center_normal, center_position) /
+                  dot(center_normal, neighbor_position);
+    if (!(scale > 0.0f) || !vkr_ssr_finite(scale))
+        return measured;
+    return min(length(neighbor_position * scale - center_position), measured);
 }
 
-float vkr_ssr_receiver_bilateral_weight(float2 offset, float center_depth,
-                                        float neighbor_depth,
-                                        float3 center_normal,
-                                        float3 neighbor_normal,
-                                        float minimum_depth_tolerance)
+// Whether a neighbouring receiver lies on the centre's surface; positions and
+// normals share one space. A neighbour on the centre's tangent plane keeps its
+// weight at any depth difference, so grazing floors and water still reuse
+// rays and history. One further off that plane than the tolerance, or facing
+// more than 60 degrees away, is another surface. The slope tolerance scales
+// the plane's predicted separation (vkr_ssr_plane_separation), never the
+// measured one.
+float vkr_ssr_receiver_plane_weight(float3 center_position,
+                                    float3 center_normal,
+                                    float3 neighbor_position,
+                                    float3 neighbor_normal)
 {
-    if (!vkr_ssr_valid_depth(center_depth) ||
-        !vkr_ssr_valid_depth(neighbor_depth))
-        return 0.0f;
-    float depth_tolerance = max(minimum_depth_tolerance, center_depth * 0.05f);
-    float depth_weight = vkr_ssr_saturate(
-        1.0f - abs(neighbor_depth - center_depth) / depth_tolerance);
+    float3 separation = neighbor_position - center_position;
+    float plane_distance = abs(dot(center_normal, separation));
+    float tolerance = max(VKR_SSR_RECEIVER_DEPTH_ABSOLUTE,
+                          VKR_SSR_PLANE_SLOPE *
+                              vkr_ssr_plane_separation(center_position,
+                                                       center_normal,
+                                                       neighbor_position));
+    float plane_weight = vkr_ssr_saturate(1.0f - plane_distance / tolerance);
     float normal_weight = vkr_ssr_saturate(
         (dot(center_normal, neighbor_normal) - 0.5f) * 2.0f);
-    float spatial_weight = 1.0f / (1.0f + dot(offset, offset));
-    return depth_weight * normal_weight * spatial_weight;
+    float weight = plane_weight * normal_weight;
+    return vkr_ssr_finite(weight) ? weight : 0.0f;
+}
+
+// `normal` and `view` are unit view-space vectors, `view` toward the camera.
+// `axis` is the anisotropy direction, or zero for an isotropic lobe, whose
+// tangent frame is then arbitrary. Widths follow the renderer's GGX: alpha is
+// the squared perceptual roughness, stretched along `axis` by anisotropy.
+VkrSsrLobe vkr_ssr_lobe(float3 normal, float3 view, float3 axis, float2 alpha)
+{
+    VkrSsrLobe lobe;
+    lobe.normal = normal;
+    lobe.view = view;
+    lobe.alpha = max(alpha, float2(1e-4f));
+    float3 tangent = axis - normal * dot(normal, axis);
+    float length_squared = dot(tangent, tangent);
+    if (!(length_squared > 1e-12f))
+    {
+        float3 up = abs(normal.z) < 0.999f ? float3(0.0f, 0.0f, 1.0f)
+                                           : float3(1.0f, 0.0f, 0.0f);
+        tangent = cross(up, normal);
+        length_squared = dot(tangent, tangent);
+    }
+    lobe.tangent = tangent * rsqrt(length_squared);
+    lobe.bitangent = cross(normal, lobe.tangent);
+    lobe.no_v = dot(normal, view);
+    float2 projected = float2(dot(view, lobe.tangent),
+                              dot(view, lobe.bitangent)) * lobe.alpha;
+    lobe.view_root = sqrt(dot(projected, projected) + lobe.no_v * lobe.no_v);
+    lobe.valid = lobe.no_v > 0.0f && vkr_ssr_finite(lobe.view_root) &&
+                         vkr_ssr_finite3(lobe.tangent)
+                     ? 1u
+                     : 0u;
+    return lobe;
+}
+
+// Anisotropic GGX normal distribution D(h) in the lobe's tangent frame.
+float vkr_ssr_lobe_distribution(VkrSsrLobe lobe, float3 half_vector)
+{
+    float no_h = dot(lobe.normal, half_vector);
+    if (!(no_h > 0.0f))
+        return 0.0f;
+    float3 stretched = float3(dot(lobe.tangent, half_vector) / lobe.alpha.x,
+                              dot(lobe.bitangent, half_vector) / lobe.alpha.y,
+                              no_h);
+    float denominator = dot(stretched, stretched);
+    return 1.0f / (VKR_SSR_PI * lobe.alpha.x * lobe.alpha.y * denominator *
+                   denominator);
+}
+
+float3 vkr_ssr_half_vector(float3 view, float3 light)
+{
+    float3 half_vector = view + light;
+    float length_squared = dot(half_vector, half_vector);
+    return length_squared > 1e-12f ? half_vector * rsqrt(length_squared)
+                                   : float3(0.0f);
+}
+
+// Reflected direction of one GGX visible-normal sample (Heitz 2018,
+// "Sampling the GGX Distribution of Visible Normals"); `u` is uniform in
+// [0, 1)^2. A rough lobe at a grazing view can return a direction below the
+// surface; its lobe value is zero.
+float3 vkr_ssr_lobe_sample(VkrSsrLobe lobe, float2 u)
+{
+    float3 view_local = float3(dot(lobe.view, lobe.tangent),
+                               dot(lobe.view, lobe.bitangent), lobe.no_v);
+    float3 stretched = normalize(float3(lobe.alpha.x * view_local.x,
+                                        lobe.alpha.y * view_local.y,
+                                        view_local.z));
+    float length_squared = stretched.x * stretched.x + stretched.y * stretched.y;
+    float3 first_axis = length_squared > 1e-12f
+                            ? float3(-stretched.y, stretched.x, 0.0f) *
+                                  rsqrt(length_squared)
+                            : float3(1.0f, 0.0f, 0.0f);
+    float3 second_axis = cross(stretched, first_axis);
+    float radius = sqrt(u.x);
+    float angle = 2.0f * VKR_SSR_PI * u.y;
+    float p1 = radius * cos(angle);
+    float p2 = radius * sin(angle);
+    float visible = 0.5f * (1.0f + stretched.z);
+    p2 = (1.0f - visible) * sqrt(max(1.0f - p1 * p1, 0.0f)) + visible * p2;
+    float3 hemisphere = p1 * first_axis + p2 * second_axis +
+                        sqrt(max(1.0f - p1 * p1 - p2 * p2, 0.0f)) * stretched;
+    float3 local = normalize(float3(lobe.alpha.x * hemisphere.x,
+                                    lobe.alpha.y * hemisphere.y,
+                                    max(hemisphere.z, 0.0f)));
+    float3 half_vector = local.x * lobe.tangent + local.y * lobe.bitangent +
+                         local.z * lobe.normal;
+    return 2.0f * dot(lobe.view, half_vector) * half_vector - lobe.view;
+}
+
+// Solid-angle pdf of vkr_ssr_lobe_sample's direction `light`:
+// D(h) G1(v) / (4 N.V) = D(h) / (2 (N.V + view_root)).
+float vkr_ssr_lobe_pdf(VkrSsrLobe lobe, float3 light)
+{
+    if (lobe.valid == 0u)
+        return 0.0f;
+    float pdf = vkr_ssr_lobe_distribution(
+                    lobe, vkr_ssr_half_vector(lobe.view, light)) /
+                (2.0f * (lobe.no_v + lobe.view_root));
+    return vkr_ssr_finite(pdf) ? pdf : 0.0f;
+}
+
+// The lobe times N.L, D G2 / (4 N.V) with the renderer's height-correlated
+// Smith G2, without the Fresnel and energy terms that the composite's
+// receiver weight applies once to SSR and environment light alike.
+float vkr_ssr_lobe_value(VkrSsrLobe lobe, float3 light)
+{
+    float no_l = dot(lobe.normal, light);
+    if (lobe.valid == 0u || !(no_l > 0.0f))
+        return 0.0f;
+    float2 projected = float2(dot(light, lobe.tangent),
+                              dot(light, lobe.bitangent)) * lobe.alpha;
+    float light_root = sqrt(dot(projected, projected) + no_l * no_l);
+    float value = vkr_ssr_lobe_distribution(
+                      lobe, vkr_ssr_half_vector(lobe.view, light)) *
+                  no_l /
+                  (2.0f * (no_l * lobe.view_root + lobe.no_v * light_root));
+    return vkr_ssr_finite(value) ? value : 0.0f;
+}
+
+// Ratio-estimator weight of a ray traced with `pdf` toward `light` from this
+// receiver: its own sample weighs G2/G1(v), a neighbour's sample weighs this
+// lobe against the neighbour's pdf. Zero pdf marks a deterministic mirror
+// ray, which samples no lobe.
+float vkr_ssr_reuse_weight(VkrSsrLobe lobe, float3 light, float pdf)
+{
+    if (!(pdf > 0.0f))
+        return 0.0f;
+    float weight = vkr_ssr_lobe_value(lobe, light) / pdf;
+    return vkr_ssr_finite(weight) ? min(weight, VKR_SSR_REUSE_WEIGHT_MAX)
+                                  : 0.0f;
+}
+
+VkrSsrResolve vkr_ssr_resolve_empty()
+{
+    VkrSsrResolve result;
+    result.radiance = 0.0f;
+    result.covered = 0.0f;
+    result.known = 0.0f;
+    result.total = 0.0f;
+    result.known_rays = 0u;
+    return result;
+}
+
+// RGB is incoming radiance and alpha coverage of one hit sample; misses carry
+// no radiance and unknown rays neither radiance nor coverage.
+VkrSsrResolve vkr_ssr_resolve_add(VkrSsrResolve sum, uint state,
+                                  float4 hit_sample, float weight)
+{
+    if (state == VKR_SSR_RAY_NONE || !(weight > 0.0f))
+        return sum;
+    sum.total += weight;
+    if (state == VKR_SSR_RAY_UNKNOWN)
+        return sum;
+    sum.known += weight;
+    ++sum.known_rays;
+    if (state == VKR_SSR_RAY_HIT)
+    {
+        float covered = weight * vkr_ssr_saturate(hit_sample.w);
+        sum.radiance += hit_sample.xyz * covered;
+        sum.covered += covered;
+    }
+    return sum;
+}
+
+// Share of the reused ray weight whose outcome is known; zero without rays.
+float vkr_ssr_resolve_known_share(VkrSsrResolve sum)
+{
+    return sum.total > 0.0f ? vkr_ssr_saturate(sum.known / sum.total) : 0.0f;
 }
 
 // RGB is incoming radiance in both raw and reflection history,
@@ -817,6 +1164,45 @@ float4 vkr_ssr_spatial_resolve(float4 weighted_reflection, float support_weight)
                   vkr_ssr_saturate(weighted_reflection.w / support_weight));
 }
 
+// Incoming radiance over covered weight; coverage over the known weight, so
+// rays of unknown outcome neither darken nor thin the current estimate.
+float4 vkr_ssr_resolve_reflection(VkrSsrResolve sum)
+{
+    return vkr_ssr_spatial_resolve(float4(sum.radiance, sum.covered),
+                                   sum.known);
+}
+
+// Coverage-weighted Catmull-Rom history over a 4x4 footprint whose inner 2x2
+// taps were all accepted. `cubic` and `bilinear` are the coverage-weighted
+// sums (vkr_ssr_spatial_sample) over the 4x4 and the inner 2x2 footprints;
+// `inner_min` and `inner_max` bound the inner taps' radiance (taps with
+// coverage only) in xyz and their coverage in w. Negative outer lobes can
+// cancel coverage at a coverage edge and divide the small remainder into
+// radiance far above every tap. Below half the bilinear coverage the result
+// is zero, and the bilinear resolve stands in; otherwise it stays inside the
+// inner taps' range, as a bilinear result does, so ringing cannot brighten
+// the rough residual or a held reflection.
+float4 vkr_ssr_history_cubic(float4 cubic, float4 bilinear, float4 inner_min,
+                             float4 inner_max)
+{
+    if (!(cubic.w > 1e-3f) || cubic.w < 0.5f * bilinear.w ||
+        !(inner_max.w > 0.0f))
+        return float4(0.0f);
+    return float4(clamp(cubic.xyz / cubic.w, inner_min.xyz, inner_max.xyz),
+                  clamp(cubic.w, inner_min.w, inner_max.w));
+}
+
+// Variance clip of current hit radiance for a fallback history: the mean plus
+// or minus one standard deviation, inside the min/max box.
+void vkr_ssr_tight_bounds(float3 mean, float3 mean_squared,
+                          inout float3 neighborhood_min,
+                          inout float3 neighborhood_max)
+{
+    float3 deviation = sqrt(max(mean_squared - mean * mean, float3(0.0f)));
+    neighborhood_min = max(neighborhood_min, mean - deviation);
+    neighborhood_max = min(neighborhood_max, mean + deviation);
+}
+
 // Motion excludes raster jitter, while SSR history remains on the raster grid.
 float2 vkr_ssr_previous_uv(VkrSsrParams params, float2 current_uv, float2 motion)
 {
@@ -839,7 +1225,8 @@ VkrSsrHistoryDecision vkr_ssr_temporal_accept(
     result.accepted = 0u;
     result.weight = 0.0f;
     result.expected_previous_depth = 0.0f;
-    result.reserved_float_0 = 0.0f;
+    result.support = 0.0f;
+    result.tight = 0u;
     result.expected_previous_depth =
         vkr_ssr_linearize_previous_depth(params, previous_device_depth);
     float2 half_texel = 0.5f / float2(history_extent);
@@ -858,17 +1245,73 @@ VkrSsrHistoryDecision vkr_ssr_temporal_accept(
                           ? 1u
                           : 0u;
     result.weight = result.accepted != 0u ? params.temporal_weight : 0.0f;
+    result.support = float(result.accepted);
     return result;
 }
 
 // A hit stores positive view depth rather than device depth. Interpolate the
-// inverse-projected line so this also preserves orthographic projection.
+// inverse-projected line so this also preserves orthographic projection. Both
+// line points lie on the near side of the depth range (forward or reversed).
 float3 vkr_ssr_view_from_positive_depth(VkrSsrParams params, float2 uv,
                                          float positive_depth)
 {
-    float3 a = vkr_ssr_reconstruct_view_position(params, uv, 0.0f);
-    float3 b = vkr_ssr_reconstruct_view_position(params, uv, 0.5f);
+    float3 a = vkr_ssr_reconstruct_view_position(
+        params, uv, VKR_SSR_RAY_DEVICE_DEPTH_A);
+    float3 b = vkr_ssr_reconstruct_view_position(
+        params, uv, VKR_SSR_RAY_DEVICE_DEPTH_B);
     return a + (b - a) * ((-positive_depth - a.z) / (b.z - a.z));
+}
+
+// `point` and `normal` define the plane in view space; `normal` need not be
+// unit length. Rays parallel to the plane within one part in 10^4 of their
+// span, and intersections behind the camera, give depth zero.
+VkrSsrPlaneDepth vkr_ssr_plane_depth_prepare(VkrSsrParams params, float3 point,
+                                             float3 normal)
+{
+    float3 first_origin = vkr_ssr_reconstruct_view_position(
+        params, float2(0.5f, 0.5f), VKR_SSR_RAY_DEVICE_DEPTH_A);
+    float3 first_u = vkr_ssr_reconstruct_view_position(
+        params, float2(1.5f, 0.5f), VKR_SSR_RAY_DEVICE_DEPTH_A) - first_origin;
+    float3 first_v = vkr_ssr_reconstruct_view_position(
+        params, float2(0.5f, 1.5f), VKR_SSR_RAY_DEVICE_DEPTH_A) - first_origin;
+    float3 second_origin = vkr_ssr_reconstruct_view_position(
+        params, float2(0.5f, 0.5f), VKR_SSR_RAY_DEVICE_DEPTH_B);
+    float3 second_u = vkr_ssr_reconstruct_view_position(
+        params, float2(1.5f, 0.5f), VKR_SSR_RAY_DEVICE_DEPTH_B) - second_origin;
+    float3 second_v = vkr_ssr_reconstruct_view_position(
+        params, float2(0.5f, 1.5f), VKR_SSR_RAY_DEVICE_DEPTH_B) - second_origin;
+    float3 span_origin = second_origin - first_origin;
+    float3 span_u = second_u - first_u;
+    float3 span_v = second_v - first_v;
+    VkrSsrPlaneDepth result;
+    result.numerator = float3(dot(normal, point - first_origin),
+                              -dot(normal, first_u), -dot(normal, first_v));
+    result.denominator = float3(dot(normal, span_origin), dot(normal, span_u),
+                                dot(normal, span_v));
+    result.first_depth = float3(-first_origin.z, -first_u.z, -first_v.z);
+    result.depth_span = float3(-span_origin.z, -span_u.z, -span_v.z);
+    result.grazing = 1e-4f * length(span_origin) * length(normal);
+    result.valid = vkr_ssr_finite3(result.numerator) &&
+                           vkr_ssr_finite3(result.denominator) &&
+                           vkr_ssr_finite3(result.first_depth) &&
+                           vkr_ssr_finite3(result.depth_span) &&
+                           result.grazing > 0.0f
+                       ? 1u
+                       : 0u;
+    return result;
+}
+
+// Positive depth of the plane on the camera ray through projection `uv`.
+float vkr_ssr_plane_depth_at(VkrSsrPlaneDepth plane, float2 uv)
+{
+    float3 basis = float3(1.0f, uv - 0.5f);
+    float denominator = dot(plane.denominator, basis);
+    if (plane.valid == 0u || !(abs(denominator) > plane.grazing))
+        return 0.0f;
+    float distance = dot(plane.numerator, basis) / denominator;
+    float depth = dot(plane.first_depth, basis) +
+                  dot(plane.depth_span, basis) * distance;
+    return vkr_ssr_valid_depth(depth) ? depth : 0.0f;
 }
 
 // Current and retained models are affine. Cofactors avoid a general 4x4 inverse
@@ -943,17 +1386,93 @@ float3 vkr_ssr_decode_normal(float2 encoded)
     return normalize(normal);
 }
 
-float vkr_ssr_virtual_hit_depth(float3 receiver, float3 normal, float3 hit)
+uint vkr_ssr_pack_unorm2(float2 value)
 {
-    float depth = -(hit - 2.0f * normal * dot(normal, hit - receiver)).z;
-    return vkr_ssr_valid_depth(depth) ? depth : 0.0f;
+    uint2 bits = uint2(round(clamp(value, 0.0f, 1.0f) * 65535.0f));
+    return bits.x | (bits.y << 16u);
 }
 
-VkrSsrReflectedHit vkr_ssr_reproject_hit(
-    VkrSsrParams params, float2 current_uv,
-    float3 traced_receiver, float3 traced_normal, float3 hit,
-    float3 previous_traced_receiver, float3 previous_traced_normal,
-    float3 previous_hit, float3 previous_receiver, float3 previous_receiver_normal)
+float2 vkr_ssr_unpack_unorm2(uint bits)
+{
+    return float2(float(bits & 0xffffu), float(bits >> 16u)) / 65535.0f;
+}
+
+uint vkr_ssr_pack_snorm2(float2 value)
+{
+    int2 bits = int2(round(clamp(value, -1.0f, 1.0f) * 32767.0f));
+    return (uint(bits.x) & 0xffffu) | (uint(bits.y) << 16u);
+}
+
+float2 vkr_ssr_unpack_snorm2(uint bits)
+{
+    int2 signed_bits = int2(int(bits << 16u) >> 16, int(bits) >> 16);
+    return max(float2(signed_bits) / 32767.0f, -1.0f);
+}
+
+// A hit record: hit UV as two 16-bit unorms (1/65535 of the image), the hit's
+// positive view depth, the ray's pdf and the hit's visible row (never zero).
+uint4 vkr_ssr_pack_hit(float2 hit_uv, float hit_depth, float pdf,
+                       uint hit_visible)
+{
+    return uint4(vkr_ssr_pack_unorm2(hit_uv), asuint(hit_depth), asuint(pdf),
+                 hit_visible);
+}
+
+// A miss or unknown record: the view-space direction, octahedral in two
+// 16-bit snorms, the state and the ray's pdf; the visible row stays zero.
+uint4 vkr_ssr_pack_ray(uint state, float3 direction, float pdf)
+{
+    return uint4(vkr_ssr_pack_snorm2(vkr_ssr_encode_normal(direction)), state,
+                 asuint(pdf), 0u);
+}
+
+VkrSsrRay vkr_ssr_unpack_ray(uint4 record)
+{
+    VkrSsrRay ray;
+    ray.state = VKR_SSR_RAY_NONE;
+    ray.pdf = asfloat(record.z);
+    ray.hit_uv = 0.0f;
+    ray.hit_depth = 0.0f;
+    ray.hit_visible = 0u;
+    ray.direction = 0.0f;
+    if (!vkr_ssr_finite(ray.pdf) || ray.pdf < 0.0f)
+        ray.pdf = 0.0f;
+    if (record.w != 0u)
+    {
+        ray.hit_depth = asfloat(record.y);
+        if (!vkr_ssr_valid_depth(ray.hit_depth))
+            return ray;
+        ray.state = VKR_SSR_RAY_HIT;
+        ray.hit_uv = vkr_ssr_unpack_unorm2(record.x);
+        ray.hit_visible = record.w;
+        return ray;
+    }
+    if (record.y == VKR_SSR_RAY_MISS || record.y == VKR_SSR_RAY_UNKNOWN)
+    {
+        ray.state = record.y;
+        ray.direction = vkr_ssr_decode_normal(vkr_ssr_unpack_snorm2(record.x));
+    }
+    return ray;
+}
+
+// The reflected image of `hit` in the plane through `receiver` with unit
+// `normal`, moved toward the receiver by 1 - parallax.
+float3 vkr_ssr_virtual_point(float3 receiver, float3 normal, float3 hit,
+                             float parallax)
+{
+    float3 virtual_hit = hit - 2.0f * normal * dot(normal, hit - receiver);
+    return receiver + (virtual_hit - receiver) * parallax;
+}
+
+// History location of the current pixel when a point it shows moves from
+// `point` to `previous_point` (both view space of their frames). The pixel
+// keeps its offset from the point's projection, so raster jitter alone does
+// not move it. `previous_receiver_plane`, the transported receiver plane
+// (vkr_ssr_plane_depth_prepare), gives the expected receiver depth there, the
+// plane intersection rather than the surface-motion depth.
+VkrSsrReflectedHit vkr_ssr_reproject_point(
+    VkrSsrParams params, float2 current_uv, float3 point, float3 previous_point,
+    VkrSsrPlaneDepth previous_receiver_plane)
 {
     VkrSsrReflectedHit result;
     result.previous_uv = current_uv;
@@ -961,68 +1480,85 @@ VkrSsrReflectedHit vkr_ssr_reproject_hit(
     result.expected_virtual_depth = 0.0f;
     result.current_virtual_depth = 0.0f;
     result.valid = 0u;
-    float3 virtual_hit = hit - 2.0f * traced_normal *
-                                 dot(traced_normal, hit - traced_receiver);
-    float3 previous_virtual_hit = previous_hit - 2.0f * previous_traced_normal *
-        dot(previous_traced_normal, previous_hit - previous_traced_receiver);
-    VkrSsrProjectedPoint current = vkr_ssr_project_view_position(params, virtual_hit);
+    VkrSsrProjectedPoint current = vkr_ssr_project_view_position(params, point);
     VkrSsrProjectedPoint previous =
-        vkr_ssr_project_view_position(params, previous_virtual_hit);
+        vkr_ssr_project_view_position(params, previous_point);
     result.current_virtual_depth = current.positive_depth;
     result.expected_virtual_depth = previous.positive_depth;
     if (current.valid == 0u || previous.valid == 0u)
         return result;
-    // A gathered hit belongs to its traced receiver. Applying its motion delta
-    // keeps the output pixel fixed when only raster jitter moves.
     float2 previous_projection_uv = current_uv + previous.uv - current.uv;
     result.previous_uv = previous_projection_uv +
         float2(params.history_jitter_uv_x, params.history_jitter_uv_y);
-    // Projecting the virtual hit places us at a different receiver point. Its
-    // retained depth must match this plane intersection, not surface-motion depth.
-    float3 a = vkr_ssr_reconstruct_view_position(params, previous_projection_uv, 0.0f);
-    float3 b = vkr_ssr_reconstruct_view_position(params, previous_projection_uv, 0.5f);
-    float3 ray = b - a;
-    float denominator = dot(previous_receiver_normal, ray);
-    if (!vkr_ssr_finite(denominator) ||
-        abs(denominator) <= 1e-4f * length(ray))
-        return result;
-    float distance = dot(previous_receiver_normal, previous_receiver - a) / denominator;
-    float receiver_depth = -(a + ray * distance).z;
-    if (!vkr_ssr_valid_depth(receiver_depth) || !vkr_ssr_finite(distance) || distance < 0.0f)
-        return result;
-    result.expected_receiver_depth = receiver_depth;
-    result.valid = 1u;
+    result.expected_receiver_depth = vkr_ssr_plane_depth_at(
+        previous_receiver_plane, previous_projection_uv);
+    result.valid = vkr_ssr_valid_depth(result.expected_receiver_depth) ? 1u : 0u;
     return result;
 }
 
+// Reflected-hit reprojection. The gathered hit belongs to its traced receiver;
+// its virtual point's motion, scaled toward the receiver's by 1 - parallax,
+// moves the output pixel.
+VkrSsrReflectedHit vkr_ssr_reproject_hit(
+    VkrSsrParams params, float2 current_uv,
+    float3 traced_receiver, float3 traced_normal, float3 hit,
+    float3 previous_traced_receiver, float3 previous_traced_normal,
+    float3 previous_hit, VkrSsrPlaneDepth previous_receiver_plane,
+    float parallax)
+{
+    return vkr_ssr_reproject_point(
+        params, current_uv,
+        vkr_ssr_virtual_point(traced_receiver, traced_normal, hit, parallax),
+        vkr_ssr_virtual_point(previous_traced_receiver, previous_traced_normal,
+                              previous_hit, parallax),
+        previous_receiver_plane);
+}
+
+// One history tap of a reprojected candidate. `expected_receiver_depth` is the
+// transported receiver plane's depth at this tap's centre, so a grazing
+// surface compares each tap with its own depth. `match` names what the tap
+// must also prove (VKR_SSR_MATCH_*): static instances need only geometry.
 VkrSsrHistoryDecision vkr_ssr_reflected_history_accept(
-    VkrSsrParams params, VkrSsrReflectedHit hit, uint4 current_identity,
-    uint4 history_identity, float4 history_geometry,
-    float3 previous_receiver_normal, uint2 history_extent)
+    VkrSsrParams params, VkrSsrReflectedHit hit, uint match,
+    uint4 current_identity, uint4 history_identity, float4 history_geometry,
+    float expected_receiver_depth, float3 previous_receiver_normal,
+    uint2 history_extent)
 {
     VkrSsrHistoryDecision result;
     result.accepted = 0u;
     result.weight = 0.0f;
-    result.expected_previous_depth = hit.expected_receiver_depth;
-    result.reserved_float_0 = 0.0f;
+    result.expected_previous_depth = expected_receiver_depth;
+    result.support = 0.0f;
+    result.tight = 0u;
     float2 half_texel = 0.5f / float2(history_extent);
     bool in_bounds = all(hit.previous_uv >= half_texel) &&
                      all(hit.previous_uv <= 1.0f - half_texel);
     float receiver_error = max(params.temporal_depth_absolute,
-        params.temporal_depth_relative * hit.expected_receiver_depth);
-    float virtual_error = max(params.temporal_depth_absolute,
-        params.temporal_depth_relative * hit.expected_virtual_depth);
+        params.temporal_depth_relative * expected_receiver_depth);
     bool depth_matches = vkr_ssr_valid_depth(history_geometry.x) &&
-        vkr_ssr_valid_depth(history_geometry.y) &&
-        abs(history_geometry.x - hit.expected_receiver_depth) <= receiver_error &&
-        abs(history_geometry.y - hit.expected_virtual_depth) <= virtual_error;
+        vkr_ssr_valid_depth(expected_receiver_depth) &&
+        abs(history_geometry.x - expected_receiver_depth) <= receiver_error;
+    if ((match & VKR_SSR_MATCH_VIRTUAL_DEPTH) != 0u)
+    {
+        float virtual_error = max(params.temporal_depth_absolute,
+            params.temporal_depth_relative * hit.expected_virtual_depth);
+        depth_matches = depth_matches && vkr_ssr_valid_depth(history_geometry.y) &&
+            abs(history_geometry.y - hit.expected_virtual_depth) <= virtual_error;
+    }
     bool normal_matches = dot(vkr_ssr_decode_normal(history_geometry.zw),
                                 previous_receiver_normal) >= 0.9f;
+    bool identity_matches = true;
+    if ((match & VKR_SSR_MATCH_RECEIVER_IDENTITY) != 0u)
+        identity_matches = current_identity.x != 0u &&
+                           all(current_identity.xy == history_identity.xy);
+    if ((match & VKR_SSR_MATCH_HIT_IDENTITY) != 0u)
+        identity_matches = identity_matches && current_identity.z != 0u &&
+                           all(current_identity.zw == history_identity.zw);
     result.accepted = params.history_valid != 0u && hit.valid != 0u &&
-        current_identity.x != 0u && current_identity.z != 0u &&
-        all(current_identity == history_identity) && in_bounds &&
-        depth_matches && normal_matches ? 1u : 0u;
+        in_bounds && depth_matches && normal_matches && identity_matches
+            ? 1u : 0u;
     result.weight = result.accepted != 0u ? params.temporal_weight : 0.0f;
+    result.support = float(result.accepted);
     return result;
 }
 
@@ -1049,28 +1585,93 @@ float vkr_ssr_temporal_weight(float configured_weight, float roughness,
                                    vkr_ssr_temporal_stability(roughness) * stationary;
 }
 
+// Whether `known_rays` rough-lobe rays that all missed still fit a history of
+// `coverage`: one up to VKR_SSR_DECISIVE_EXPECTED_HITS expected hits, then
+// exp(threshold - expected), the Poisson probability that every ray misses
+// relative to its value at the threshold. A sparse lobe hit, such as a small
+// lamp, misses with all rays on some frames; a reflection that covered the
+// lobe cannot.
+float vkr_ssr_miss_plausibility(float coverage, uint known_rays)
+{
+    float expected_hits = float(known_rays) * vkr_ssr_saturate(coverage);
+    return exp(min(VKR_SSR_DECISIVE_EXPECTED_HITS - expected_hits, 0.0f));
+}
+
+// `known_share` is the current resolve's share of ray weight whose outcome is
+// known (vkr_ssr_resolve_known_share), from `known_rays` rays. Accepted
+// history fills the unknown rest in proportion to its support instead of the
+// estimate dropping toward the environment term.
 float4 vkr_ssr_temporal_filter(float roughness, uint neighborhood_hits, float4 raw,
-                               float4 history, float3 neighborhood_min,
-                               float3 neighborhood_max,
+                               float known_share, uint known_rays, float4 history,
+                               float3 neighborhood_min, float3 neighborhood_max,
                                VkrSsrHistoryDecision decision)
 {
-    // Receiver identity cannot distinguish a jitter miss from disappearing
-    // reflected geometry. Halve unsupported coverage on every empty frame.
+    float unknown = decision.accepted != 0u
+                        ? (1.0f - vkr_ssr_saturate(known_share)) *
+                              vkr_ssr_saturate(decision.support)
+                        : 0.0f;
+    // No current hit bounds the old reflection. A mirror's own ray is exact,
+    // so its known miss refutes the history and only an unknown outcome holds
+    // it, briefly. A glossy lobe's rays cluster around the mirror direction
+    // and see an image of the scene, so all of them missing is evidence that
+    // the reflected object left (ADR-055's moving-emitter rule): the brief
+    // hold. A rough lobe's rays scatter, and a sparse hit, such as a small
+    // lamp or a rough wall's scattered surroundings, misses with every ray on
+    // some frames: that frame is one more sample of zero coverage at the
+    // ordinary retention, so coverage converges to the lobe's hit share
+    // instead of collapsing between hits. All rays missing refutes the
+    // history only when its coverage made hits likely; refuted coverage also
+    // ends at the floor. Rays that ran out of hierarchy decisions refute
+    // nothing.
     if (neighborhood_hits == 0u)
-        return vkr_ssr_spatial_resolve(
-            vkr_ssr_spatial_sample(history, min(decision.weight, 0.5f)), 1.0f);
+    {
+        float coverage = vkr_ssr_saturate(history.w);
+        bool brief = true;
+        if (roughness <= VKR_SSR_MIRROR_ROUGHNESS)
+        {
+            coverage *= unknown * VKR_SSR_HOLD_RETENTION;
+        }
+        else if (decision.accepted == 0u)
+        {
+            coverage = 0.0f;
+        }
+        else
+        {
+            float plausibility = vkr_ssr_miss_plausibility(coverage, known_rays);
+            if (vkr_ssr_reflection_parallax(roughness) > 0.0f)
+            {
+                coverage *= vkr_ssr_saturate(decision.support) * plausibility *
+                            VKR_SSR_HOLD_RETENTION;
+            }
+            else
+            {
+                brief = plausibility < 1.0f;
+                coverage *= plausibility * decision.weight;
+            }
+        }
+        float minimum = brief ? VKR_SSR_HOLD_COVERAGE_MIN : 0.0f;
+        return coverage > minimum ? float4(history.xyz, coverage)
+                                  : float4(0.0f);
+    }
+    // History keeps its retention and also stands in for the unknown share
+    // of the current estimate; with every outcome known this is the weight.
+    float retained = decision.weight + (1.0f - decision.weight) * unknown;
     float3 clamped_history =
         vkr_ssr_history_clamp(history.xyz, neighborhood_min, neighborhood_max);
-    float history_coverage = decision.weight * vkr_ssr_saturate(history.w);
-    float coverage = (1.0f - decision.weight) * vkr_ssr_saturate(raw.w) +
+    float history_coverage = retained * vkr_ssr_saturate(history.w);
+    float coverage = (1.0f - retained) * vkr_ssr_saturate(raw.w) +
                      history_coverage;
     if (coverage <= 0.0f)
         return float4(0.0f);
     // Sparse current coverage must not normalize old radiance retention above
     // the temporal weight. Coverage still follows the original weighted mean.
-    float history_weight = min(history_coverage / coverage, decision.weight);
-    float residual_weight = min(
-        history_weight * vkr_ssr_temporal_stability(roughness), 0.5f);
+    float history_weight = min(history_coverage / coverage, retained);
+    // A surface-motion fallback for a glossy reflection is not the same
+    // reflected feature; it keeps nothing outside the current bounds.
+    float residual_weight =
+        decision.tight != 0u
+            ? 0.0f
+            : min(history_weight * vkr_ssr_temporal_stability(roughness), 0.5f);
     float3 color = vkr_ssr_lerp(raw.xyz, clamped_history, history_weight) +
                    residual_weight * (history.xyz - clamped_history);
     return float4(color, coverage);

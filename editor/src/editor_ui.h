@@ -484,6 +484,8 @@ typedef struct VkrEditorUi {
   uint64_t physics_scene_generation;
   VkrUiId physics_panel;
   bool8_t physics_lines_truncated;
+  /* The overlay's entity lists, kept across builds (editor_physics.c). */
+  struct VkrEditorPhysicsCache *physics_cache;
   VkrEditorProjects *projects;
   VkrEditorConsole console;
   VkrEditorBakery *bakery;

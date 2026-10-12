@@ -311,6 +311,10 @@ typedef struct VkrStandardSceneRuntime {
   /** Diagnostic local-shadow fade distance from
    * VKR_LOCAL_SHADOW_FADE_DISTANCE; zero keeps the configured one. */
   float32_t local_shadow_fade_distance_override;
+  /** Diagnostic local-shadow atlas layer budget from
+   * VKR_LOCAL_SHADOW_ATLAS_LAYERS, at most
+   * VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX; zero keeps the preset's. */
+  uint32_t local_shadow_atlas_layer_override;
   bool8_t disable_soft_shadows;
   bool8_t disable_fog;
   bool8_t disable_volumetric_fog;

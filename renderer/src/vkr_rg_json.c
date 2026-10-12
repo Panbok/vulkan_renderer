@@ -64,6 +64,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
     {"hzb_build_enabled", VKR_RG_JSON_CONDITION_HZB_BUILD_ENABLED},
     {"local_shadows_active", VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE},
+    {"local_shadow_mask_active",
+     VKR_RG_JSON_CONDITION_LOCAL_SHADOW_MASK_ACTIVE},
     {"local_shadow_transmission_active",
      VKR_RG_JSON_CONDITION_LOCAL_SHADOW_TRANSMISSION_ACTIVE},
     {"local_shadow_atlas_clear",
@@ -940,6 +942,8 @@ vkr_internal bool8_t vkr_rg_json_parse_buffer_desc(
         out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_CANDIDATES;
       else if (vkr_string8_equals_cstr_i(&source, "gpu_draw_view_rows"))
         out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS;
+      else if (vkr_string8_equals_cstr_i(&source, "gpu_draw_view_candidates"))
+        out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_VIEW_CANDIDATES;
       else if (vkr_string8_equals_cstr_i(&source, "gpu_draw_view_count"))
         out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_VIEWS;
       else if (vkr_string8_equals_cstr_i(&source, "gpu_draw_visible_capacity"))
@@ -948,10 +952,6 @@ vkr_internal bool8_t vkr_rg_json_parse_buffer_desc(
                    &source, "transmission_gpu_draw_candidate_capacity"))
         out_desc->draw_count_source =
             VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_CANDIDATES;
-      else if (vkr_string8_equals_cstr_i(
-                   &source, "transmission_gpu_draw_visible_capacity"))
-        out_desc->draw_count_source =
-            VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_VISIBLE;
       else if (vkr_string8_equals_cstr_i(&source, "skinning_vertex_capacity"))
         out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_SKINNING_VERTICES;
       else
@@ -2086,6 +2086,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->hzb_build_enabled;
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE:
     return frame->local_shadow_view_count > 0u;
+  case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_MASK_ACTIVE:
+    return frame->local_shadow_mask_active;
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_TRANSMISSION_ACTIVE:
     return frame->local_shadow_transmission_layer_count > 0u;
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_ATLAS_CLEAR:
@@ -2888,6 +2890,7 @@ vkr_internal bool8_t vkr_rg_json_create_buffer(
       max_count = VKR_SKINNING_VERTEX_CAPACITY;
       break;
     case VKR_RG_JSON_DRAW_COUNT_CANDIDATES:
+    case VKR_RG_JSON_DRAW_COUNT_VIEW_CANDIDATES:
       count = frame->gpu_draw_candidate_capacity;
       break;
     case VKR_RG_JSON_DRAW_COUNT_VIEWS:
@@ -2901,10 +2904,6 @@ vkr_internal bool8_t vkr_rg_json_create_buffer(
     case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_CANDIDATES:
       count = frame->transmission_gpu_draw_candidate_capacity;
       break;
-    case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_VISIBLE:
-      count = frame->transmission_gpu_draw_visible_capacity;
-      max_count = VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 65536u;
-      break;
     }
     if (!count || count > max_count) {
       log_error("RenderGraph buffer '%.*s': invalid draw capacity %u",
@@ -2912,7 +2911,10 @@ vkr_internal bool8_t vkr_rg_json_create_buffer(
       return false_v;
     }
     desc.size = (uint64_t)count * resource->buffer.bytes_per_element;
-    if (resource->buffer.draw_count_source == VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS)
+    if (resource->buffer.draw_count_source ==
+            VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS ||
+        resource->buffer.draw_count_source ==
+            VKR_RG_JSON_DRAW_COUNT_VIEW_CANDIDATES)
       desc.size *= vkr_render_graph_gpu_draw_view_count(frame);
   } else {
     desc.size = resource->buffer.size;

@@ -141,7 +141,10 @@ typedef struct SceneDiffuseVolumePrepared {
   VkrSceneDiffuseVolume volume;
 } SceneDiffuseVolumePrepared;
 
-/* The scene's `lightmaps` block (ADR-088): the VKLM set the bake published. */
+/* The scene's `lightmaps` block (ADR-088): one VKLM set per pipeline class,
+   `tiled` and `desktop`, each baked on its own platform. The import holds
+   the set of the renderer's class; `has_block` is false when the scene names
+   none for it. */
 typedef struct SceneLightmapImport {
   bool8_t has_block;
   bool8_t valid;
@@ -1666,61 +1669,127 @@ vkr_internal void scene_loader_apply_diffuse_volume_import(
   volume->composition = 1u;
 }
 
-/* Parses the `lightmaps` block; null or absent is no set. */
+/* Warns about each member of the `lightmaps` block that names no pipeline
+   class, such as a misspelt class or a managed `asset` reference left over:
+   it loads no lightmaps for any class. */
+vkr_internal void scene_loader_warn_lightmap_members(VkrJsonReader block) {
+  block.pos = 0u;
+  vkr_json_skip_whitespace(&block);
+  if (block.pos >= block.length || block.data[block.pos++] != '{') {
+    return;
+  }
+  vkr_json_skip_whitespace(&block);
+  if (block.pos < block.length && block.data[block.pos] == '}') {
+    return;
+  }
+  for (;;) {
+    String8 key = {0};
+    if (!vkr_json_parse_string(&block, &key)) {
+      return;
+    }
+    const String8 tiled = string8_lit("tiled");
+    const String8 desktop = string8_lit("desktop");
+    if (!string8_equals(&key, &tiled) && !string8_equals(&key, &desktop)) {
+      log_warn("Scene loader: $.lightmaps.%.*s is not a pipeline class "
+               "(tiled or desktop) and loads no lightmaps",
+               (int)Min(key.length, 64u), key.str);
+    }
+    vkr_json_skip_whitespace(&block);
+    if (block.pos >= block.length || block.data[block.pos++] != ':') {
+      return;
+    }
+    vkr_json_skip_whitespace(&block);
+    if (block.pos >= block.length) {
+      return;
+    }
+    const uint8_t c = block.data[block.pos];
+    String8 skipped = {0};
+    if (c == '{' || c == '[') {
+      if (!vkr_json_capture_composite(&block, &skipped)) {
+        return;
+      }
+    } else if (c == '"') {
+      if (!vkr_json_parse_string(&block, &skipped)) {
+        return;
+      }
+    } else {
+      while (block.pos < block.length && block.data[block.pos] != ',' &&
+             block.data[block.pos] != '}') {
+        ++block.pos;
+      }
+    }
+    vkr_json_skip_whitespace(&block);
+    if (block.pos >= block.length || block.data[block.pos++] != ',') {
+      return;
+    }
+    vkr_json_skip_whitespace(&block);
+  }
+}
+
+/* Parses the set of one pipeline class (`desktop`) from the `lightmaps`
+   block, `{"tiled": {"path": ...}, "desktop": {"path": ...}}`; an absent or
+   null block or class member is no set. The other class's member is never
+   resolved, so its file is never opened. A block with a `path` of its own,
+   one set for every class, is invalid. */
 vkr_internal SceneLightmapImport
-scene_loader_parse_lightmap_import(String8 json) {
+scene_loader_parse_lightmap_import(String8 json, bool8_t desktop) {
   SceneLightmapImport result = {.valid = true_v};
   VkrJsonReader reader = vkr_json_reader_from_string(json);
   if (!vkr_json_find_root_field(&reader, "lightmaps") ||
-      scene_json_parse_null(&reader))
+      scene_json_parse_null(&reader)) {
     return result;
+  }
+
+  VkrJsonReader block = {0};
+  if (!vkr_json_enter_object(&reader, &block)) {
+    result.has_block = true_v;
+    result.valid = false_v;
+    log_error("Scene loader: $.lightmaps must be an object");
+    return result;
+  }
+  VkrJsonReader single = block;
+  if (vkr_json_find_root_field(&single, "path")) {
+    result.has_block = true_v;
+    result.valid = false_v;
+    log_error("Scene loader: $.lightmaps names one set for every pipeline "
+              "class; name one per class as $.lightmaps.tiled.path and "
+              "$.lightmaps.desktop.path");
+    return result;
+  }
+  scene_loader_warn_lightmap_members(block);
+  const char *class_name = desktop ? "desktop" : "tiled";
+  VkrJsonReader member = block;
+  if (!vkr_json_find_root_field(&member, class_name) ||
+      scene_json_parse_null(&member)) {
+    return result;
+  }
 
   result.has_block = true_v;
   VkrJsonReader object = {0};
-  if (!vkr_json_enter_object(&reader, &object) ||
+  if (!vkr_json_enter_object(&member, &object) ||
       !scene_json_read_string_field(&object, "path", &result.path) ||
       result.path.length == 0u ||
       !scene_string8_ends_with_cstr_i(result.path, ".vklm")) {
     result.valid = false_v;
-    log_error("Scene loader: $.lightmaps.path must name a .vklm asset");
+    log_error("Scene loader: $.lightmaps.%s.path must name a .vklm asset",
+              class_name);
   }
   return result;
 }
 
-/* The irradiance planes a pipeline class samples, in slice order within a
-   page: on the tiled pipeline every layer's ASTC plane, which each layer
-   must have; on the desktop pipeline each lamp group's desktop plane, all
-   of one encoding. False when the set lacks what the class needs. */
+/* The irradiance planes a pipeline class samples (`desktop`), in slice
+   order within a page (vkr_lightmap_set_class_planes), and their texture
+   format. False when the set lacks what the class needs. */
 vkr_internal bool8_t scene_loader_lightmap_slices(const VkrLightmapSet *set,
                                                   bool8_t desktop,
                                                   VkrSceneLightmaps *lightmaps,
                                                   uint32_t *out_planes) {
   lightmaps->slice_layer_count = 0u;
-  lightmaps->lamps_baked = true_v;
-  VkrLightmapPlaneFormat format = 0;
-  for (uint32_t layer = 0u; layer < set->layer_count; ++layer) {
-    const bool8_t lamp_group =
-        set->layers[layer].kind == VKR_LIGHT_LAYER_LAMP_GROUP;
-    if (desktop && !lamp_group) {
-      continue;
-    }
-    const uint32_t plane = vkr_lightmap_set_find_plane(
-        set, layer, VKR_LIGHTMAP_PLANE_IRRADIANCE, desktop);
-    if (plane == UINT32_MAX) {
-      if (!desktop) {
-        return false_v;
-      }
-      lightmaps->lamps_baked = false_v;
-      continue;
-    }
-    if (format != 0 && set->planes[plane].format != format) {
-      return false_v;
-    }
-    format = set->planes[plane].format;
-    out_planes[lightmaps->slice_layer_count] = plane;
-    lightmaps->slice_layers[lightmaps->slice_layer_count++] = layer;
+  VkrLightmapClassPlanes selected;
+  if (!vkr_lightmap_set_class_planes(set, desktop, &selected)) {
+    return false_v;
   }
-  switch (format) {
+  switch (selected.format) {
   case VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR:
     lightmaps->format = VKR_TEXTURE_FORMAT_ASTC_4x4_HDR;
     break;
@@ -1733,7 +1802,13 @@ vkr_internal bool8_t scene_loader_lightmap_slices(const VkrLightmapSet *set,
   default:
     return false_v;
   }
-  return lightmaps->slice_layer_count > 0u;
+  MemCopy(lightmaps->slice_layers, selected.layers,
+          selected.count * sizeof(selected.layers[0]));
+  MemCopy(out_planes, selected.planes,
+          selected.count * sizeof(selected.planes[0]));
+  lightmaps->slice_layer_count = selected.count;
+  lightmaps->lamps_baked = selected.every_lamp_group;
+  return true_v;
 }
 
 /* The upload of the desktop direction planes of `lightmaps`' slices into a
@@ -1950,17 +2025,81 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
     file_error = file_open(&file_path, mode, &handle);
   }
   if (file_error != FILE_ERROR_NONE || stats.size == 0u) {
+    if (file_error == FILE_ERROR_NONE) {
+      file_close(&handle);
+    }
     log_error("Scene loader: lightmap set open failed for '%.*s': %.*s",
               (int)path.length, path.str,
               (int)file_get_error_string(file_error).length,
               file_get_error_string(file_error).str);
     return false_v;
   }
+
+  /* The header and plane table tell whether the set holds the planes this
+     pipeline class samples; a set without them is not read further, so a
+     scene never reads its pages only to discard them. */
+  uint8_t prefix[VKR_LIGHTMAP_SET_PLANES_PREFIX_BYTES];
+  const uint64_t prefix_size = Min(stats.size, (uint64_t)sizeof(prefix));
+  uint64_t byte_count = 0u;
+  while (file_error == FILE_ERROR_NONE && byte_count < prefix_size) {
+    uint64_t read = 0u;
+    file_error = file_read_into(&handle, prefix + byte_count,
+                                prefix_size - byte_count, &read);
+    if (read == 0u) {
+      break;
+    }
+    byte_count += read;
+  }
+  Arena *decode_arena = arena_create(MB(1), KB(64));
+  VkrLightmapSet set = {0};
+  VkrLightmapClassPlanes selected;
+  if (!decode_arena || byte_count != prefix_size ||
+      !vkr_lightmap_set_decode_planes(prefix, prefix_size, stats.size,
+                                      decode_arena, &set) ||
+      set.instance_count >= VKR_SCENE_LIGHTMAP_MAX_INSTANCES) {
+    file_close(&handle);
+    if (decode_arena) {
+      arena_destroy(decode_arena);
+    }
+    uint32_t version = 0u;
+    if (byte_count >= 8u) {
+      MemCopy(&version, prefix + 4u, sizeof(version));
+    }
+    if (!decode_arena) {
+      log_error("Scene loader: lightmap set decode allocation failed for "
+                "'%.*s'",
+                (int)path.length, path.str);
+    } else if (byte_count != prefix_size) {
+      log_error("Scene loader: lightmap set read failed for '%.*s'",
+                (int)path.length, path.str);
+    } else if (version > 0u && version < VKR_LIGHTMAP_SET_VERSION_V4) {
+      log_error("Scene loader: lightmap set '%.*s' is version %u, from "
+                "before per-pipeline planes; bake lighting again",
+                (int)path.length, path.str, version);
+    } else {
+      log_error("Scene loader: lightmap set validation failed for '%.*s'",
+                (int)path.length, path.str);
+    }
+    return false_v;
+  }
+  if (!vkr_lightmap_set_class_planes(&set, desktop, &selected) ||
+      (uint64_t)set.page_count * selected.count >
+          VKR_TEXTURE_MAX_ARRAY_LAYERS) {
+    file_close(&handle);
+    arena_destroy(decode_arena);
+    log_warn("Scene loader: lightmap set '%.*s' has no irradiance planes the "
+             "%s pipeline samples; it stays off",
+             (int)path.length, path.str, desktop ? "desktop" : "tiled");
+    return false_v;
+  }
+
   /* The prepared upload owns the file bytes (malloc, see
      VkrTexturePreparedLoad) until scene_loader_apply_lightmaps() hands them
      to the publication queue or the payload releases them. */
   uint8_t *bytes = (uint8_t *)malloc((size_t)stats.size);
-  uint64_t byte_count = 0u;
+  if (bytes) {
+    MemCopy(bytes, prefix, prefix_size);
+  }
   while (bytes && file_error == FILE_ERROR_NONE && byte_count < stats.size) {
     uint64_t read = 0u;
     file_error = file_read_into(&handle, bytes + byte_count,
@@ -1973,32 +2112,18 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
   file_close(&handle);
   if (!bytes || byte_count != stats.size) {
     free(bytes);
+    arena_destroy(decode_arena);
     log_error("Scene loader: lightmap set read failed for '%.*s'",
               (int)path.length, path.str);
     return false_v;
   }
 
-  Arena *decode_arena = arena_create(MB(1), KB(64));
-  VkrLightmapSet set = {0};
-  if (!decode_arena ||
-      !vkr_lightmap_set_decode(bytes, byte_count, decode_arena, &set) ||
+  if (!vkr_lightmap_set_decode(bytes, byte_count, decode_arena, &set) ||
       set.instance_count >= VKR_SCENE_LIGHTMAP_MAX_INSTANCES) {
-    if (decode_arena) {
-      arena_destroy(decode_arena);
-    }
-    uint32_t version = 0u;
-    if (byte_count >= 8u) {
-      MemCopy(&version, bytes + 4u, sizeof(version));
-    }
+    arena_destroy(decode_arena);
     free(bytes);
-    if (version > 0u && version < VKR_LIGHTMAP_SET_VERSION_V4) {
-      log_error("Scene loader: lightmap set '%.*s' is version %u, from "
-                "before per-pipeline planes; bake lighting again",
-                (int)path.length, path.str, version);
-    } else {
-      log_error("Scene loader: lightmap set validation failed for '%.*s'",
-                (int)path.length, path.str);
-    }
+    log_error("Scene loader: lightmap set validation failed for '%.*s'",
+              (int)path.length, path.str);
     return false_v;
   }
 
@@ -4985,7 +5110,12 @@ vkr_internal bool8_t scene_loader_prepare_payload(
           scene_loader_component_atmosphere(payload));
   payload->diffuse_volume_import =
       scene_loader_parse_diffuse_volume_import(json_copy);
-  payload->lightmap_import = scene_loader_parse_lightmap_import(json_copy);
+  /* Each pipeline class samples its own lightmap set (ADR-088). */
+  const bool8_t desktop_lightmaps =
+      assets &&
+      assets->texture_system.graphics_pipeline == VKR_GRAPHICS_PIPELINE_DESKTOP;
+  payload->lightmap_import =
+      scene_loader_parse_lightmap_import(json_copy, desktop_lightmaps);
   payload->reflection_probe_import_count =
       scene_loader_parse_reflection_probe_imports(
           json_copy, payload->reflection_probe_imports);
@@ -5005,9 +5135,7 @@ vkr_internal bool8_t scene_loader_prepare_payload(
   }
   if (payload->lightmap_import.has_block && payload->lightmap_import.valid) {
     payload->lightmap_prepared_ready = scene_loader_prepare_lightmaps(
-        payload->lightmap_import.path, temp_alloc,
-        payload->assets->texture_system.graphics_pipeline ==
-            VKR_GRAPHICS_PIPELINE_DESKTOP,
+        payload->lightmap_import.path, temp_alloc, desktop_lightmaps,
         payload->lightmap_prepared, &payload->lightmaps);
     if (!payload->lightmap_prepared_ready)
       payload->lightmap_import.valid = false_v;

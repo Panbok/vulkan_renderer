@@ -31,35 +31,29 @@ vkr_internal VkrGeometry *geometry_acquire_slot(VkrGeometrySystem *system,
   assert_log(system != NULL, "System is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
 
+  uint32_t slot = 0;
   if (system->free_count > 0) {
-    uint32_t slot = system->free_ids.data[system->free_count - 1];
+    slot = system->free_ids.data[system->free_count - 1];
     system->free_count--;
-    VkrGeometry *geometry_slot =
-        array_get_VkrGeometry(&system->geometries, slot);
-    MemZero(geometry_slot, sizeof(*geometry_slot));
-    geometry_slot->id = slot + 1;
-    geometry_slot->generation = system->generation_counter++;
-    geometry_slot->pipeline_id = VKR_INVALID_ID;
-    *out_handle = (VkrGeometryHandle){.id = geometry_slot->id,
-                                      .generation = geometry_slot->generation};
-    return geometry_slot;
+  } else if (system->used_slots < system->max_geometries) {
+    /* Every slot below `used_slots` is live, kept after a failed retirement,
+       or on the free list, which is empty here, so the first slot never
+       served is the one to take. */
+    slot = system->used_slots++;
+  } else {
+    return NULL;
   }
 
-  for (uint32_t geometry = 0; geometry < system->max_geometries; geometry++) {
-    VkrGeometry *geometry_slot =
-        array_get_VkrGeometry(&system->geometries, geometry);
-    if (geometry_slot->id == 0 && geometry_slot->generation == 0) {
-      MemZero(geometry_slot, sizeof(*geometry_slot));
-      geometry_slot->id = geometry + 1;
-      geometry_slot->generation = system->generation_counter++;
-      geometry_slot->pipeline_id = VKR_INVALID_ID;
-      *out_handle = (VkrGeometryHandle){
-          .id = geometry_slot->id, .generation = geometry_slot->generation};
-      return geometry_slot;
-    }
-  }
-
-  return NULL;
+  VkrGeometry *geometry_slot = array_get_VkrGeometry(&system->geometries, slot);
+  assert_log(geometry_slot->id == 0 && geometry_slot->generation == 0,
+             "Geometry slot handed out while in use");
+  MemZero(geometry_slot, sizeof(*geometry_slot));
+  geometry_slot->id = slot + 1;
+  geometry_slot->generation = system->generation_counter++;
+  geometry_slot->pipeline_id = VKR_INVALID_ID;
+  *out_handle = (VkrGeometryHandle){.id = geometry_slot->id,
+                                    .generation = geometry_slot->generation};
+  return geometry_slot;
 }
 
 vkr_internal INLINE void vkr_write_vertex(VkrVertex3d *vertices, uint32_t index,

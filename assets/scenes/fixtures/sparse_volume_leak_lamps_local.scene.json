@@ -1191,6 +1191,11 @@
   "path": "assets/textures/sparse_volume_leak_local.vkdv"
  },
  "lightmaps": {
-  "path": "assets/textures/sparse_volume_leak_local.vklm"
+  "tiled": {
+   "path": "assets/textures/sparse_volume_leak_local.vklm"
+  },
+  "desktop": {
+   "path": "assets/textures/sparse_volume_leak_local.vklm"
+  }
  }
 }

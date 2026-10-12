@@ -7,12 +7,26 @@ backend, with expected radiance values independent of spatial loop layout.
 Independent pixel boundaries expose path-dependent crossing times and incorrect
 odd-extent coverage; SSGI must retain its existing half-resolution leaf.
 An in-bounds old reflection must lose at least 15% of its RGB error per supported
-frame at weight .85, even when fresh coverage is only .05.
+frame at weight .85, even when fresh coverage is only .05. Without a current hit,
+a mirror's known miss and glossy-lobe misses that the history's coverage made
+unlikely drop history at once; unknown rays and plausible sparse misses halve
+a glossy lobe's coverage, and the hold ends at the 1/16 floor within four
+frames. A rough lobe (no reflection parallax) instead counts a frame without
+hits as a zero-coverage sample at the ordinary retention, so sparse hits do
+not collapse its coverage, even below the floor; refuting misses still end it
+at the floor.
 Planar mirror geometry independently distinguishes reflected-feature motion from
 receiver motion. Known affine point/normal transforms, jittered projections and
 history rejection cases exercise the production reprojection helpers directly.
 Weighted RGB contributions independently identify the reflected object that
 dominates incoming light, including dark coverage, black ties and disappearance.
+Closed-form GGX visible-normal samples, a numerically integrated pdf, ray-record
+round trips, ratio-estimator sums and reversed-depth (0.1 m / 20 km) planes and
+reprojection check the lobe-sampling rework and the near-side unprojection.
+The TAA effective sample count seeds the static integral. A Catmull-Rom
+history stays inside its inner taps' range or yields to bilinear, and the
+receiver-plane tolerance follows the plane's predicted separation, so a floor
+seen past a counter's edge cannot widen its own tolerance.
 """
 import math
 import pathlib
@@ -33,7 +47,8 @@ with tempfile.TemporaryDirectory(prefix='vkr-ssr-check-') as directory:
     actual = list(map(float, subprocess.check_output(
         [str(output / 'check')], text=True).split()))
 expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
-            4.8, 2.4, 1.2, 0.5, 8, 4, 2, 0.25, 8, 4, 2, 0.25,
+            # Unknown outcome halves .5 coverage; decisive known misses drop it.
+            4.8, 2.4, 1.2, 0.5, 8, 4, 2, .5 * .5, 0, 0, 0, 0,
             0, 0, 0, 0.5, 8, 4, 2, 0.5,
             .5025, .395, 1, 0, 0, 1, 6.5, 6.5, 6.5, .5, 100, 120, 3.2,
             # Rough reflection accumulation is continuous across support counts.
@@ -57,11 +72,15 @@ expected = [8, 4, 2, 1/9, 8, 4, 2, 1, 0, 0, 0, 0, 5, 2.5, 5, 2/3,
             (.9-388/641)/.8, (.9-388/641)/.8,
             # The old SSGI leaf and SSR level one instead cross at 254/641.
             (254/641-.1)/.8, (254/641-.1)/.8,
-            8, 4, 2, .5**16, 0, 0, 0, 0,
+            # An all-unknown hold ended within sixteen frames; rejected empty.
+            0, 0, 0, 0, 0, 0, 0, 0,
             .95, .85, .90, .85, 0, .5,
-            0, (1-.01/.041)/2, .1, .5,
+            # Plane test: 8 cm off the plane rejects, 4 m along it keeps one.
+            0, 1, .1, .5,
             10, 10, 10, .6, 23, 20, 25, .6,
-            1, 0, 0, .25, .44625, .2325, 40.125, .1953125, 6, 4, 3, 2.5, 2.25, 1/32, 8, 2,
+            # Reuse footprint; roughness coverage fade from .45 to the .6 cutoff;
+            # a decisive miss after a vanished reflection drops it at once.
+            1, 0, .5, 1, 1, 1, .5, 0, 6, 4, 3, 2.5, 2.25, 0, 0, 2,
             # A 15% fresh RGB share gives this independent geometric error bound.
             *[2 + 6 * .85**frame for frame in range(1, 6)], .8575,
             8, 4, 2, .8575, 3.324675324675325, .1925, 0, 0, 0, 0,
@@ -127,9 +146,60 @@ expected.extend([0, 4, 88244, 1, 0])
 # A well-rounded boundary keeps the exact epsilon restart; boundary 963 of 1920
 # restarts 1/64 pixel along the 3.84-pixel major axis.
 expected.extend([1, 0.015625 / 3.84])
-assert len(actual) == len(expected), actual
+# Correspondence rules: static, surface candidate, hit identity only (receiver
+# foreign / hit foreign), receiver identity only with a foreign hit.
+expected.extend([1, 1, 1, 0, 1])
+# Parallax: surface motion .65, half parallax .64 with virtual depth 2.5 now
+# and before; the roughness blend's ends and midpoint.
+expected.extend([.65, .64, 2.5, 2.5, 1, .5, 0])
+# Plane y+z=-2 at v=.75, .25, the horizon row; a plane containing the ray.
+expected.extend([4/3, 4, 2, 0])
+# Reversed depth: previous u in 1280-pixel units, receiver and virtual
+# depth, validity, the point at 100 m, the tilted plane and a 96 m floor.
+expected.extend([19/30 * 1280, 2, 3, 1, 20, 10, -100, 4/3, 96])
+# GGX lobe: isotropic sample, pdf, own ratio weight G2/G1; anisotropic sample;
+# pdf integral; zero below the surface; capped reuse weight.
+d_peak = 1 / (math.pi * .25 * 1.6**2)
+expected.extend([.8, 0, .6, d_peak / 4, 1.2 / (.6 + math.sqrt(.52)),
+                 0, 8/17, 15/17, 1, 0, 4])
+# Ray records: hit state, UV within half a step, depth, pdf, visible row;
+# unknown state, direction, pdf; miss state; empty record.
+expected.extend([3, 1, 3.5, 2, 7, 2, 1, .5, 1, 0])
+# Ratio-estimator sums: radiance, coverage over known weight, known share.
+expected.extend([4, 2, 1, .25, .5])
+# Unknown fill 9.4 at coverage 1; tight 3.7 and residual 6.7; clip [1, 3];
+# storable NaN, overflow, finite.
+expected.extend([9.4, 1, 3.7, 6.7, 1, 3, 0, 65504, 3])
+# TAA effective samples: running mean n+1, constant .9 -> 19, .99 -> 127, none.
+expected.extend([10, 5, 19, 127, 1])
+# No current hit: a .2 lamp coverage halves (1.8 expected hits); coverage .5
+# (4.5 expected) is refuted; .4 (3.6 expected) holds .4 * .5 * exp(-.6); a
+# mirror's known miss drops and its unknown ray holds .5; an all-unknown full
+# hold keeps RGB 8 at .125 after three frames and ends on the fourth.
+expected.extend([8, .1, 0, .4 * .5 * math.exp(-.6), 0, .5, 8, .125, 0])
+# Catmull-Rom history: the coverage-edge cubic yields to bilinear; ringing to
+# 1.27 clamps to the inner radiance 1; coverage .63 clamps to the inner .5.
+expected.extend([0, 1, 1, 1, .5])
+# Plane test: the floor past a counter edge weighs nothing; a grazing-floor
+# point .3 m off its plane keeps 1 - .3 / (.25 * its separation).
+expected.extend([0, 1 - .3 / (.25 * math.sqrt(.05**2 + .3**2 + 5.4**2))])
+# Rough lobe without hits, retention .85: all-unknown .85^3 and .85^4, the .2
+# lamp .17, coverage .5 refuted to .5 * .85 * exp(-1.5), full coverage refuted
+# below the floor (.85 * exp(-6) < 1/16); roughness .39 halves the lamp; a
+# .07 sparse hit keeps .07 * .85 below the floor.
+expected.extend([.85**3, .85**4, .17, .5 * .85 * math.exp(-1.5), 0, .1,
+                 .07 * .85])
+# Reversed-depth outputs are float32 extrapolations from points near the
+# camera; their tolerances are 1e-3 pixel and 0.1 mm. Unprojecting the far
+# plane instead misses them by 0.24 mm at 100 m and 1.3 mm on the tilted
+# plane. The pdf integral is a 512x1024 midpoint sum; the iterated .9
+# fixed point keeps float32 rounding.
+tolerance = {344: 1e-3, 345: 1e-4, 346: 1e-4, 348: 1e-4, 349: 1e-4, 350: 1e-4,
+             351: 1e-4, 352: 1e-4, 361: 2e-3, 390: 1e-4}
+assert len(actual) == len(expected), (len(actual), len(expected))
 for i, (got, want) in enumerate(zip(actual, expected)):
-    assert math.isfinite(got) and abs(got - want) < 1e-6, (i, got, want)
+    assert math.isfinite(got) and abs(got - want) < tolerance.get(i, 1e-6), \
+        (i, got, want)
 assert actual[92] == actual[93], ('positive path-dependent exit', actual[92:94])
 assert actual[94] == actual[95], ('negative path-dependent exit', actual[94:96])
 previous_error = 6.0
@@ -161,15 +231,15 @@ print('16-frame empty fade / rejected empty:', actual[98:106])
 
 print('motion-adaptive rough history, mirror, disabled, midpoint:', actual[106:112])
 
-print('SSR separated/near receivers, preserved SSGI, 2cm floor:', actual[112:116])
+print('SSR plane test separated/grazing, preserved SSGI, 2cm floor:', actual[112:116])
 
 print("Incoming history, current shading, exact probe removal:", actual[116:124])
 
-print("Full/half history bounds and entering reconstruction taps:", actual[124:128])
+print("Full/half history bounds, reuse edge weight and footprint:", actual[124:128])
 
-print("Fractional cone offsets and subpixel mirror movement:", actual[128:132])
+print("Roughness coverage fade at .3/.45/.525/.6:", actual[128:132])
 
-print("Unsupported RGB step, empty five-frame fade, mirror clamp:", actual[132:140])
+print("Unsupported RGB step, decisive-miss drop, mirror clamp:", actual[132:140])
 print("Sparse in-bounds old-image step / coverage:", actual[140:146])
 print("Constant sparse radiance / weak history / rejected miss:", actual[146:156])
 print("Planar reflection reprojection / receiver-motion error:", actual[156:164])
@@ -189,6 +259,21 @@ print("Radiance contribution, coverage ties and missing samples:", actual[268:28
 print("Representative identity/tap across lamp movement and disappearance:", actual[280:290])
 print("Short-segment repeats/cells, minor-axis start/crossed/skipped:", actual[321:326])
 print("Exact epsilon restart kept / rounded-boundary restart step:", actual[326:328])
+print("Correspondence match rules:", actual[328:333])
+print("Parallax reprojection and blend:", actual[333:340])
+print("Receiver plane depth:", actual[340:344])
+print("Reversed 0.1 m / 20 km depth:", actual[344:353])
+print("GGX lobe samples, pdf, ratio, integral, horizon, cap:", actual[353:364])
+print("Ray records:", actual[364:374])
+print("Ratio-estimator sums:", actual[374:379])
+print("Unknown fill, tight/residual, clip, storable:", actual[379:388])
+print("TAA effective samples:", actual[388:393])
+print("No-hit hold: lamp, refuted, partial, mirror miss/unknown, 3/4 frames:",
+      actual[393:402])
+print("Catmull-Rom edge fallback, ringing clamp, coverage clamp:", actual[402:407])
+print("Plane test counter/floor, grazing tilt:", actual[407:409])
+print("Rough hold three/four frames, lamp, refuted .5/1, glossy .39 lamp, sparse .07:",
+      actual[409:416])
 print(f"SSR production shared math: {len(actual)} outputs PASS")
 
 print("Normal-RG strength 0/.5/1/2, disk overflow, zero fallback and ignored blue: PASS")

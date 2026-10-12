@@ -51,6 +51,13 @@ typedef enum VkrEditorLevelIssueKind {
      arrival opens that is not closed again when the looping one sets off;
      the value is the seconds it overruns the stay. */
   VKR_EDITOR_LEVEL_MOVER_TIMING,
+  /* More enabled point lights than the renderer's light table holds
+     (VKR_MAX_SCENE_POINT_LIGHTS, ADR-019): it keeps those nearest the
+     camera, so the others switch off past the edge of the set. Static
+     lights whose lamps the scene's lightmaps hold do not count. One
+     issue for the scene, at the lights' centroid; the value is the
+     count. */
+  VKR_EDITOR_LEVEL_LIGHT_OVERFLOW,
   VKR_EDITOR_LEVEL_ISSUE_COUNT,
 } VkrEditorLevelIssueKind;
 

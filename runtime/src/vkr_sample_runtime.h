@@ -500,6 +500,11 @@ typedef struct VkrSampleUiFrame {
   String8 scene_path;
   String8 scene_status;
   bool8_t scene_loading;
+  /** While the loaded primary scene's edit overlay applies before it
+   * activates: its objects, parent links and bodies applied, of all; both
+   * zero otherwise. */
+  uint32_t scene_edits_applied;
+  uint32_t scene_edits_total;
   /** An added scene's load is still pending in some additive slot. */
   bool8_t additive_loading;
   /** The World document's load is still pending. */

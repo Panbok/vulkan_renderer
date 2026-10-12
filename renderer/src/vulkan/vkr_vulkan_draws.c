@@ -61,7 +61,8 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrWorldDrawCandidate *source, uint32_t count,
     uint32_t destination_first, VkrVulkanCandidateCopyRange *out_range,
-    uint32_t *out_packed_count, uint32_t *out_omitted_count);
+    uint32_t *out_packed_count, uint32_t *out_omitted_count,
+    uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT]);
 
 vkr_internal VkrVulkanPublishedMaterial *
 vkr_vk_resolve_material(VkrVulkanRenderer *renderer, VkrMaterialHandle handle);
@@ -805,6 +806,38 @@ vkr_internal bool8_t vkr_vk_candidate_graph_buffers(
          *out_resource_generation != 0u;
 }
 
+/* Whether the slot's static bucket counts describe its resident static rows:
+   the residency they were taken for is the committed one. A frame that
+   stages a static pack but is never submitted leaves another residency
+   committed, and the next frame packs the static rows again. */
+vkr_internal bool8_t
+vkr_vk_static_bucket_counts_current(const VkrVulkanFrameSlot *slot) {
+  const VkrCandidateResidencyState *counted =
+      &slot->gpu_static_bucket_residency;
+  const VkrCandidateResidencyState *resident = &slot->candidate_residency;
+  return counted->valid && resident->valid &&
+         counted->static_generation == resident->static_generation &&
+         counted->publication_generation == resident->publication_generation &&
+         counted->resource_generation == resident->resource_generation &&
+         counted->packed_static_count == resident->packed_static_count &&
+         counted->omitted_static_count == resident->omitted_static_count;
+}
+
+/* Gives each state bucket a command partition as large as its packed
+   candidates, in bucket order. */
+vkr_internal VkrVulkanCommandPartitions vkr_vk_command_partitions(
+    const uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT]) {
+  VkrVulkanCommandPartitions partitions = {0};
+  uint32_t first = 0u;
+  for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+       ++bucket) {
+    partitions.first[bucket] = first;
+    partitions.capacity[bucket] = bucket_counts[bucket];
+    first += bucket_counts[bucket];
+  }
+  return partitions;
+}
+
 bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                                       VkrVulkanFrameSlot *slot,
                                       const VkrPreparedFrame *packet) {
@@ -904,6 +937,8 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->gpu_candidate_count = 0u;
   slot->gpu_static_candidate_count = 0u;
   slot->transmission_gpu_candidate_count = 0u;
+  slot->gpu_command_partitions = (VkrVulkanCommandPartitions){0};
+  slot->transmission_gpu_command_partitions = (VkrVulkanCommandPartitions){0};
   slot->gpu_world_epoch = 0u;
   slot->hzb_history_valid = false_v;
   slot->indexed_draw_count = 0u;
@@ -987,9 +1022,11 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       const uint32_t source_static_count = world->static_candidate_count;
       const uint32_t source_dynamic_count =
           world->gpu_candidate_count - source_static_count;
-      const bool8_t repack_static = vkr_candidate_residency_needs_static_repack(
-          &slot->candidate_residency, world->static_generation,
-          world->publication_generation, resource_generation);
+      const bool8_t repack_static =
+          vkr_candidate_residency_needs_static_repack(
+              &slot->candidate_residency, world->static_generation,
+              world->publication_generation, resource_generation) ||
+          !vkr_vk_static_bucket_counts_current(slot);
       uint32_t packed_static_count =
           repack_static ? 0u : slot->candidate_residency.packed_static_count;
       uint32_t omitted_static_count =
@@ -997,9 +1034,12 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       if (repack_static) {
         VkrVulkanCandidateCopyRange *range =
             &slot->gpu_candidate_copies[slot->gpu_candidate_copy_count];
+        MemZero(slot->gpu_static_bucket_counts,
+                sizeof(slot->gpu_static_bucket_counts));
         packed = vkr_vk_pack_gpu_candidate_range(
             renderer, slot, world->gpu_candidates, source_static_count, 0u,
-            range, &packed_static_count, &omitted_static_count);
+            range, &packed_static_count, &omitted_static_count,
+            slot->gpu_static_bucket_counts);
         if (packed && range->count > 0u) {
           slot->gpu_candidate_copy_count++;
           static_rows_written += range->count;
@@ -1007,8 +1047,14 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
         slot->pending_candidate_residency = vkr_candidate_residency_stage(
             world->static_generation, world->publication_generation,
             resource_generation, packed_static_count, omitted_static_count);
+        slot->gpu_static_bucket_residency = slot->pending_candidate_residency;
         slot->candidate_residency_pending = packed;
       }
+      /* Resident static rows keep their bucket counts; the dynamic rows add
+         theirs every frame. */
+      uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+      MemCopy(bucket_counts, slot->gpu_static_bucket_counts,
+              sizeof(bucket_counts));
       if (packed && source_dynamic_count > 0u) {
         VkrVulkanCandidateCopyRange *range =
             &slot->gpu_candidate_copies[slot->gpu_candidate_copy_count];
@@ -1017,7 +1063,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
         packed = vkr_vk_pack_gpu_candidate_range(
             renderer, slot, world->gpu_candidates + source_static_count,
             source_dynamic_count, packed_static_count, range,
-            &packed_dynamic_count, &omitted_dynamic_count);
+            &packed_dynamic_count, &omitted_dynamic_count, bucket_counts);
         if (packed && range->count > 0u) {
           slot->gpu_candidate_copy_count++;
           dynamic_rows_written += range->count;
@@ -1029,19 +1075,24 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
         omitted_count = omitted_static_count;
       }
       slot->gpu_static_candidate_count = packed_static_count;
+      slot->gpu_command_partitions = vkr_vk_command_partitions(bucket_counts);
     }
 
     if (packed && world->transmission_gpu_candidate_count > 0u) {
       VkrVulkanCandidateCopyRange range = {0};
       uint32_t omitted_transmission_count = 0u;
+      uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT] = {0};
       packed = vkr_vk_pack_gpu_candidate_range(
           renderer, slot, world->transmission_gpu_candidates,
           world->transmission_gpu_candidate_count, 0u, &range,
-          &slot->transmission_gpu_candidate_count, &omitted_transmission_count);
+          &slot->transmission_gpu_candidate_count, &omitted_transmission_count,
+          bucket_counts);
       slot->transmission_gpu_candidate_upload_offset =
           range.candidate_source_offset;
       slot->transmission_gpu_instance_upload_offset =
           range.instance_source_offset;
+      slot->transmission_gpu_command_partitions =
+          vkr_vk_command_partitions(bucket_counts);
       dynamic_rows_written += range.count;
       omitted_count += omitted_transmission_count;
     }
@@ -1146,11 +1197,14 @@ bool8_t vkr_vk_prepare_direct_draws(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Packs the published candidates of `source` and adds each packed row to its
+   state bucket's count in `bucket_counts`. */
 vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrWorldDrawCandidate *source, uint32_t count,
     uint32_t destination_first, VkrVulkanCandidateCopyRange *out_range,
-    uint32_t *out_packed_count, uint32_t *out_omitted_count) {
+    uint32_t *out_packed_count, uint32_t *out_omitted_count,
+    uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT]) {
   *out_range = (VkrVulkanCandidateCopyRange){0};
   *out_packed_count = 0u;
   *out_omitted_count = 0u;
@@ -1208,6 +1262,7 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
         (instances[packed_count].normal_column0.w < 0.0f
              ? VKR_GPU_DRAW_STATE_MIRRORED_BIT
              : 0u);
+    bucket_counts[state_bucket & VKR_GPU_DRAW_STATE_BUCKET_MASK]++;
     candidates[packed_count] = (VkrGpuCandidateDrawRow){
         .geometry_index = candidate->geometry.id - 1u,
         .material_index = material->slot.index,

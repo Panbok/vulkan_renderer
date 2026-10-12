@@ -1287,7 +1287,6 @@ vkr_global const VkrVulkanReflectedField s_vk_cull_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, candidate_count),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, view_count),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, candidate_capacity),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, command_partition_capacity),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, hzb_textures),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, hzb_mip_count),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, hzb_extent),
@@ -1303,6 +1302,7 @@ vkr_global const VkrVulkanReflectedField s_vk_cull_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, static_candidate_count),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, lod_views),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, geometry_rows),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, command_partitions),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_local_transmission_fields[] = {
@@ -1475,6 +1475,7 @@ vkr_global const VkrVulkanReflectedField s_vk_local_shadow_mask_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot,
                                baked_lamps_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, baked_reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, mask_lights),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
@@ -1596,7 +1597,8 @@ vkr_global const VkrVulkanReflectedField s_vk_ssr_trace_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, clearcoat_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, source_sampler),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, hit_texture),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, anisotropy_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTraceRoot, sample_phase),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_ssr_temporal_fields[] = {
@@ -1623,6 +1625,8 @@ vkr_global const VkrVulkanReflectedField s_vk_ssr_temporal_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, clearcoat_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot,
                                history_pre_exposure_scale),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, anisotropy_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, sample_phase),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrTemporalRoot, reserved),
 };
 
@@ -1649,6 +1653,9 @@ vkr_global const VkrVulkanReflectedField s_vk_ssr_composite_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot,
                                diffuse_volume_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot, baked_lamps_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsrCompositeRoot,
+                               baked_lamp_shadow_texture),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_ssgi_depth_base_fields[] = {
@@ -1704,7 +1711,8 @@ vkr_global const VkrVulkanReflectedField s_vk_ssgi_temporal_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTemporalRoot, linear_sampler),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTemporalRoot,
                                history_pre_exposure_scale),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTemporalRoot, reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTemporalRoot,
+                               display_exposure_scale),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiTemporalRoot, receiver_texture),
 };
 
@@ -1734,6 +1742,8 @@ vkr_global const VkrVulkanReflectedField s_vk_ssgi_composite_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot,
                                subsurface_profile_count),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, receiver_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot,
+                               diffuse_volume_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSsgiCompositeRoot, reserved),
 };
 

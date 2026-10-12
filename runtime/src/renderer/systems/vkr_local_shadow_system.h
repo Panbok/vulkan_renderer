@@ -11,6 +11,10 @@ struct VkrLocalShadowPendingHistory;
 typedef struct VkrLocalShadowCacheInput {
   const VkrPointLight *lights;
   uint32_t light_count;
+  /** Per light index below the baked lamps: the intensity before the light
+   * table faded it in or out, which sizes the light's faces so a fading
+   * light keeps its shadow. May be NULL, which sizes by `intensity`. */
+  const float32_t *unfaded_intensity;
   const struct VkrLocalShadowCamera *camera;
   /** When valid, fresh and newer than the last snap, ranks lights by measured
    * visible contribution instead of distance. May be NULL. */
@@ -34,6 +38,9 @@ typedef struct VkrLocalShadowCacheInput {
   uint32_t baked_lamp_candidates;
   VkrRetainedLocalShadowToken token;
   uint64_t static_generation;
+  /** VkrWorldPassPayload.dynamic_generation: a dynamic square drawn under it
+   * holds the frame's dynamic casters while it stays current. */
+  uint64_t dynamic_generation;
   /** VkrWorldPassPayload.static_changes: content of an older static
    * generation stays valid for a light no later change reaches. */
   const VkrStaticChange *static_changes;
@@ -58,6 +65,10 @@ typedef struct VkrLocalShadowCacheInput {
   uint32_t map_size;
   /** Camera distance at which shadows have faded out; positive. */
   float32_t fade_distance;
+  /** Atlas layers the cache may take, the baked layer and the dynamic band
+   * included; zero allows VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX. Past it,
+   * lights out of reach leave the atlas and the least important shrink. */
+  uint32_t atlas_layer_budget;
 } VkrLocalShadowCacheInput;
 
 /* `scratch` holds the next cache state while the previous one is read. */

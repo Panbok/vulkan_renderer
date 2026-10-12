@@ -735,8 +735,11 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
       local->atlas_layer_count - local->dynamic_layer_count;
   const uint32_t view_total = local->view_count + local->companion_view_count;
   if (local->dynamic_render_count > VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX ||
+      local->dynamic_reused_count > VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX -
+                                        local->dynamic_render_count ||
       local->dynamic_render_count != local->companion_view_count ||
-      (local->dynamic_render_count != 0u && local->dynamic_layer_count == 0u) ||
+      (local->dynamic_render_count + local->dynamic_reused_count != 0u &&
+       local->dynamic_layer_count == 0u) ||
       local->transmission_render_count > dynamic_first ||
       (dynamic_first < 64u &&
        (local->static_render_mask >> dynamic_first) != 0u))
@@ -920,17 +923,28 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
                         "packet.local_shadow.dynamic_source_views",
                         "requires the static square of the same face");
   }
+  /* The other band views are receiver views of dynamic squares an earlier
+     submission drew, which this one keeps. */
+  uint32_t reused_views = 0u;
   for (uint32_t i = 0; i < view_total; ++i) {
     const bool8_t in_band =
         (uint32_t)local->views[i].atlas_rect.w >= band_first;
     const bool8_t dynamic =
         (dynamic_views[i / 64u] & (UINT64_C(1) << (i % 64u))) != 0u;
+    if (in_band && !dynamic && i < local->view_count) {
+      reused_views++;
+      continue;
+    }
     if (in_band != dynamic)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.local_shadow.views",
                         "places a static square in the dynamic band or a "
                         "dynamic square outside it");
   }
+  if (reused_views != local->dynamic_reused_count)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.local_shadow.dynamic_reused_count",
+                      "must count the receiver views of kept dynamic squares");
 
   /* A baked lamp's static view of a face names the square its composite
      view names, or the static square a dynamic slot copies into it; neither
@@ -948,6 +962,12 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
         if (local->render_views[slot] == composite)
           square = local->views[local->dynamic_source_views[slot]].atlas_rect;
       }
+      /* A kept dynamic square copied the face's static square earlier: the
+         static view names a static square of the same size. */
+      if ((uint32_t)square.w >= band_first &&
+          (uint32_t)static_view->atlas_rect.w < band_first &&
+          static_view->atlas_rect.z == square.z)
+        square = static_view->atlas_rect;
       if (MemCompare(&static_view->atlas_rect, &square, sizeof(square)) != 0 ||
           MemCompare(&static_view->light_view_projection,
                      &local->views[composite].light_view_projection,

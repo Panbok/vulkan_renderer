@@ -46,9 +46,12 @@ vkr_harness_temporal_alignment(const VkrRenderer *renderer) {
   _Static_assert(VKR_SSGI_SEQUENCE_LENGTH % VKR_GTAO_NOISE_SEQUENCE_LENGTH ==
                      0u,
                  "SSGI phase alignment must cover the GTAO sequence");
-  const uint32_t noise_sequence = renderer->submitted_ssgi_enabled
-                                      ? VKR_SSGI_SEQUENCE_LENGTH
-                                      : VKR_GTAO_NOISE_SEQUENCE_LENGTH;
+  /* SSR samples its lobes from the SSGI sequence too, indexed by the absolute
+     frame, so either effect needs the 256-phase zero at warmup. */
+  const uint32_t noise_sequence =
+      renderer->submitted_ssgi_enabled || renderer->submitted_ssr_enabled
+          ? VKR_SSGI_SEQUENCE_LENGTH
+          : VKR_GTAO_NOISE_SEQUENCE_LENGTH;
   // Stopped editor scenes and non-temporal diagnostic modes have no raster
   // sequence to align. In particular, no submitted Scene may exist yet.
   if (!renderer->temporal_state.valid || !renderer->temporal_state.enabled)
@@ -1281,9 +1284,9 @@ vkr_internal void vkr_harness_child_update(void *state,
                  0u) {
     const uint64_t next_frame = vkr_harness_child_next_frame(application);
     /* Bootstrap duration must not choose the animation clock, cloud wind
-       offset, raster jitter, GTAO or SSGI phase consumed by authored warmup,
-       including zero-warmup cases. Reset players and the wind after asset
-       readiness and temporal alignment. */
+       offset, raster jitter, GTAO, SSGI or SSR phase consumed by authored
+       warmup, including zero-warmup cases. Reset players and the wind after
+       asset readiness and temporal alignment. */
     VkrScene *scene = application->active_scene;
     application->cloud_wind_offset_m[0] = 0.0;
     application->cloud_wind_offset_m[1] = 0.0;

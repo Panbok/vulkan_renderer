@@ -1,6 +1,9 @@
 // Sparse diffuse volume composition (DVOL v3): the active light layers'
 // weighted SH, written in place into the volume's SH texture whenever the
-// sun turns or a light group factor changes (ADR-090).
+// sun turns or a light group factor changes (ADR-090). The sun-key layers
+// fill the first band and the active lamp groups the second, so a lookup can
+// tell baked sky light from lamp light (ADR-054); a lamp group's direct band
+// joins its light only on frames that sample baked lamps (ADR-104).
 
 struct VkrVulkanDiffuseVolumeComposeRoot
 {
@@ -9,15 +12,16 @@ struct VkrVulkanDiffuseVolumeComposeRoot
     uint probe_count;
     uint rows;
     uint active_layer_count;
-    // Row offset of the lamp groups' part, zero when they join the sum; bit
-    // i of lamp_mask marks active layer i a lamp group.
+    // Row offset of the lamp groups' part, zero when no lamp group is
+    // active; bit i of lamp_mask marks active layer i a lamp group.
     uint lamp_rows;
     uint lamp_mask;
     uint reserved;
     uint4 active_layers[2];
     float4 active_weights[2];
-    // Band of an active lamp group's direct light, 0xffffffff without; it
-    // joins only the part kept apart.
+    // Band of an active lamp group's direct light, 0xffffffff without one or
+    // on a frame that samples no baked lamps; it joins only the part kept
+    // apart.
     uint4 active_direct[2];
 };
 

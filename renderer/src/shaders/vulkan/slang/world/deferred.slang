@@ -42,6 +42,16 @@ struct VkrVkGeometryRow
     VkrGpuGeometryDecodeRecord *decode;
 };
 
+// Each state bucket's slice of a culling view's indirect commands: its first
+// command row and its row count, the frame's packed candidates of that
+// bucket. A bucket belongs to the candidate and a view classifies each
+// candidate at most once, so no view's bucket outgrows its slice.
+struct VkrVkCommandPartitions
+{
+    uint first[VKR_VK_DRAW_BUCKET_COUNT];
+    uint capacity[VKR_VK_DRAW_BUCKET_COUNT];
+};
+
 struct VkrVkCullRoot
 {
     VkrGpuCandidateDrawRow *candidates;
@@ -54,8 +64,9 @@ struct VkrVkCullRoot
     float4 *frustum_planes;
     uint candidate_count;
     uint view_count;
+    // Rows of each view in the classification, visible and command tables:
+    // a view writes at most one row per candidate.
     uint candidate_capacity;
-    uint command_partition_capacity;
     uint hzb_textures[VKR_VK_HZB_MIP_MAX];
     uint hzb_mip_count;
     uint2 hzb_extent;
@@ -74,6 +85,7 @@ struct VkrVkCullRoot
     uint static_candidate_count;
     VkrGpuLodView *lod_views;
     VkrVkGeometryRow *geometry_rows;
+    VkrVkCommandPartitions command_partitions;
 };
 
 struct VkrVkRasterRoot
@@ -83,6 +95,7 @@ struct VkrVkRasterRoot
     VkrVkDrawState *states;
     VkrVulkanPacketFrameRoot *frame;
     uint view_index;
+    // Visible rows of each culling view: the stream's candidate capacity.
     uint visible_capacity;
     uint previous_depth_texture;
     uint previous_depth_layer;
@@ -285,8 +298,9 @@ struct VkrVkDiffuseVolumeSampleRoot
     uint baked_lamps_texture;
     uint2 extent;
     uint2 half_extent;
-    // RGBA16F: the volume's response (E/pi) and one where it is valid, at
-    // half resolution from the sample pass and full from the upsample.
+    // RGBA16F: the volume's response (E/pi) and its sky share, zero where
+    // the volume does not cover the pixel, at half resolution from the
+    // sample pass and full from the upsample.
     uint output_texture;
     // RGBA16F half resolution: the representative pixel's normal and camera
     // distance, negative where its lightmap holds the baked lamps.
@@ -342,6 +356,9 @@ struct VkrVkLocalShadowMaskRoot
     // lightmapped pixels, the only ones deferred lighting subtracts from.
     uint baked_lamps_texture;
     uint baked_reserved;
+    // Bit i: light i is shadowed and its range reaches the camera frustum.
+    // No other light is in range of a visible pixel with a shadow view.
+    uint4 mask_lights;
 };
 
 // One far cascade's EVSM moments layer, built from its depth layer.
@@ -395,7 +412,11 @@ struct VkrVkSsrTraceRoot
     uint clearcoat_texture;
     uint source_sampler;
     uint hit_texture;
-    uint reserved[2];
+    // G-buffer anisotropy (axis, strength), zero without anisotropic
+    // materials: an uncoated receiver samples its anisotropic lobe.
+    uint anisotropy_texture;
+    // Frame index selecting the 256-phase lobe sequence.
+    uint sample_phase;
 };
 
 struct VkrVkSsrTemporalRoot
@@ -420,7 +441,11 @@ struct VkrVkSsrTemporalRoot
     uint specular_texture;
     uint clearcoat_texture;
     float history_pre_exposure_scale;
-    uint reserved[3];
+    // As in the trace root: the receiver lobe that weighs reused rays, and
+    // the frame index that turns the reuse pattern.
+    uint anisotropy_texture;
+    uint sample_phase;
+    uint reserved;
 };
 
 struct VkrVkSsrCompositeRoot
@@ -444,7 +469,13 @@ struct VkrVkSsrCompositeRoot
     // DiffuseVolume's full-resolution image, zero without the volume: the
     // baked light that scaled the environment reflection SSR replaces.
     uint diffuse_volume_texture;
-    uint3 reserved;
+    uint reserved;
+    // The G-buffer resolve's baked lamp irradiance and Shadow.LocalMask's
+    // hidden baked-lamp light, as deferred lighting reads them, zero
+    // without baked lamps or a selected lamp: a lightmapped pixel's
+    // reflected surroundings hold its lamps' light.
+    uint baked_lamps_texture;
+    uint baked_lamp_shadow_texture;
 };
 
 struct VkrVkSdsmState
@@ -879,10 +910,13 @@ void vk_gpu_draw_prefix(uint3 thread_id : SV_DispatchThreadID)
         return;
     uint cursor = 0u;
     uint overflow = 0u;
+    // The partition holds every packed candidate of its bucket, so overflow
+    // stays zero unless a count and its partition disagree.
     [unroll] for (uint bucket = 0u; bucket < VKR_VK_DRAW_BUCKET_COUNT; ++bucket)
     {
         uint count = root.states[view_index].bucket_counts[bucket];
-        uint written_count = min(count, root.command_partition_capacity);
+        uint written_count =
+            min(count, root.command_partitions.capacity[bucket]);
         root.states[view_index].execution_ranges[bucket] =
             uint2(cursor, written_count);
         root.states[view_index].bucket_cursors[bucket] = 0u;
@@ -915,7 +949,7 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     uint local_index;
     InterlockedAdd(root.states[view_index].bucket_cursors[bucket], 1u,
                    local_index);
-    if (local_index >= root.command_partition_capacity)
+    if (local_index >= root.command_partitions.capacity[bucket])
         return;
     uint visible_index =
         root.states[view_index].execution_ranges[bucket].x + local_index;
@@ -945,9 +979,8 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     visible.state_flags = candidate.state_flags | lod_state;
     root.visible[view_index * root.candidate_capacity + visible_index] =
         visible;
-    uint argument_index = (view_index * VKR_VK_DRAW_BUCKET_COUNT + bucket) *
-                              root.command_partition_capacity +
-                          local_index;
+    uint argument_index = view_index * root.candidate_capacity +
+                          root.command_partitions.first[bucket] + local_index;
     VkrVkIndirectCommand command;
     command.index_count = index_count;
     command.instance_count = 1u;
@@ -2255,13 +2288,20 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
     if (encoded.x == 0u)
         return;
     VkrVulkanPacketFrameRoot *frame = root.frame;
-    float3 normal = vkr_vk_octahedral_decode(
-        g_storage_float2_2d[root.normal_texture][thread_id.xy]);
     float depth =
         g_depth_textures[root.depth_texture].Load(int3(thread_id.xy, 0));
     float2 ndc_xy =
         (float2(thread_id.xy) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
     float3 world = vk_local_shadow_mask_world(root, ndc_xy, depth);
+    // Only the shadowed lights that reach the view can take a slot. A pixel
+    // in none of their grid cells stores nothing, so it skips the surface
+    // work unless the baked-lamp part below needs it.
+    uint4 point_mask = packet_point_light_mask(frame, world) & root.mask_lights;
+    bool point_lights = any(point_mask != 0u);
+    if (!BakedLamps && !point_lights)
+        return;
+    float3 normal = vkr_vk_octahedral_decode(
+        g_storage_float2_2d[root.normal_texture][thread_id.xy]);
     float camera_distance = distance(world, frame.view_position.xyz);
     float contact_noise =
         vkr_local_shadow_contact_noise(thread_id.xy, root.contact_noise_index);
@@ -2276,12 +2316,13 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
         tap_count = VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT;
         blocker_count = VKR_LOCAL_SHADOW_PCSS_TEMPORAL_BLOCKER_COUNT;
     }
-    float diffuse_transmission =
-        vkr_editor_neutral_lighting(frame.render_mode)
-            ? 0.0f
-            : frame.materials[root.visible_rows[encoded.x - 1u].material_index]
-                  .material_diffuse_transmission.w;
-    uint4 point_mask = packet_point_light_mask(frame, world);
+    float diffuse_transmission = 0.0f;
+    if (point_lights && !vkr_editor_neutral_lighting(frame.render_mode))
+    {
+        diffuse_transmission =
+            frame.materials[root.visible_rows[encoded.x - 1u].material_index]
+                .material_diffuse_transmission.w;
+    }
     uint point_count = min(frame.point_light_count, 128u);
     // Slot of the next shadowed light this pixel stores; lighting counts the
     // same lights in the same order.
@@ -2421,8 +2462,8 @@ void vk_local_shadow_mask_contact_baked(uint3 thread_id : SV_DispatchThreadID)
 }
 
 // A G-buffer surface pixel as the volume lookup takes it. A lightmapped
-// pixel whose lightmap holds the baked lamps leaves out the lamp part the
-// frame keeps apart.
+// pixel whose lightmap holds the baked lamps leaves out the volume's lamp
+// part.
 struct VkDiffuseVolumePixel
 {
     float3 world;
@@ -2483,6 +2524,22 @@ VkrVulkanBakedLight vk_diffuse_volume_baked_light(
     // The baked volume stores physical E/pi; lighting is pre-exposed.
     return packet_volume_baked_light(sampled.rgb * frame.pre_exposure,
                                      sampled.a);
+}
+
+// The pre-exposed irradiance of the baked lamps the G-buffer resolve wrote
+// for a pixel (`baked`, ADR-104), less the light Shadow.LocalMask found
+// their moving casters hide there (`shadow_texture`, zero without a
+// selected lamp). Zero at a pixel without a lightmap.
+float3 vk_baked_lamp_irradiance(VkrVulkanPacketFrameRoot *frame, float4 baked,
+                                uint shadow_texture, uint2 pixel)
+{
+    float3 irradiance = baked.rgb * frame.pre_exposure;
+    if (baked.a > 0.0f && shadow_texture != 0u)
+    {
+        irradiance = max(irradiance - g_storage_2d[shadow_texture][pixel].rgb,
+                         0.0f);
+    }
+    return irradiance;
 }
 
 // The volume at half resolution: each texel looks it up at the first
@@ -2845,21 +2902,18 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     // their direct light, shadows and bounce as irradiance, so it shades as
     // diffuse light without GTAO, as on the tiled pipeline. SSGI does not
     // bounce it again; the bake holds that bounce.
-    bool lamps_baked = false;
+    // The lamps' irradiance also joins the surroundings a covered pixel's
+    // environment reflection takes (ADR-054).
+    float3 baked_lamp_irradiance = 0.0f;
     if (root.baked_lamps_texture != 0u)
     {
         float4 baked = g_storage_2d[root.baked_lamps_texture][thread_id.xy];
         float4 dominant = g_storage_2d[root.baked_direction_texture][thread_id.xy];
-        lamps_baked = baked.a > 0.0f;
-        float3 irradiance = baked.rgb * frame.pre_exposure;
         // The selected baked lamps' moving casters hide part of their baked
         // light (Shadow.LocalMask); it leaves before the split.
-        if (lamps_baked && root.baked_lamp_shadow_texture != 0u)
-            irradiance = max(
-                irradiance -
-                    g_storage_2d[root.baked_lamp_shadow_texture][thread_id.xy]
-                        .rgb,
-                0.0f);
+        float3 irradiance = vk_baked_lamp_irradiance(
+            frame, baked, root.baked_lamp_shadow_texture, thread_id.xy);
+        baked_lamp_irradiance = irradiance;
         // The undirected share shades as diffuse light; the directed share
         // as a light from the dominant direction, at the irradiance a
         // surface facing it would take, so normal maps modulate it and the
@@ -2911,7 +2965,8 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     float3 volume_irradiance = 0.0f;
     float3 volume_diffuse = 0.0f;
     bool volume_valid = false;
-    // The volume light also scales the environment reflections (ADR-054).
+    // The volume light, with a lightmapped pixel's baked lamps, also scales
+    // the environment reflections (ADR-054).
     VkrVulkanBakedLight baked = packet_no_baked_light();
     if (root.diffuse_volume_texture != 0u)
     {
@@ -2921,6 +2976,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         volume_irradiance = baked.response * ao;
         volume_diffuse =
             energy.diffuse_weight * diffuse_albedo * ao * baked.response;
+        baked = packet_baked_light_with_lamps(baked, baked_lamp_irradiance);
     }
     float3 indirect_irradiance;
     float3 indirect_diffuse;
@@ -3286,6 +3342,10 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         (identity.x == 0u || surface_token != 0u);
     if (checked_static)
     {
+        // The ordinary resolve stored its result's effective sample count, so
+        // after a camera stop or SSR settling the integral continues from the
+        // settled ordinary history. A still pixel whose content changed
+        // stored zero, and the integral restarts from the current frame.
         float previous_age = g_storage_float2_2d[root.history_depth_texture][pixel].y;
         float age = min(previous_age + 1.0f, VKR_TEMPORAL_STATIC_SAMPLE_COUNT);
         float authored_reactive = validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;
@@ -3293,8 +3353,9 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         float4 history = g_textures[root.history_color_texture].Load(int3(pixel, 0));
         history.rgb *= root.history_pre_exposure_scale;
         // A capped EMA still oscillates with thin-coverage jitter forever.
-        // Copy the completed static integral exactly; any scene change resets
-        // its age through the ordinary resolve before this path can resume.
+        // Copy the completed static integral exactly. Only this path reaches
+        // the full count: the ordinary resolve stores at most one below it,
+        // and zero for a still pixel whose content changed.
         float4 resolved = previous_age >= VKR_TEMPORAL_STATIC_SAMPLE_COUNT && authored_reactive == 0.0f
                               ? history
                               : float4(lerp(current.rgb, history.rgb, history_weight), current.a);
@@ -3346,13 +3407,12 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         validity.x > 0.5f && (identity.x == 0u || surface_token != 0u) &&
         all(history_uv >= 0.0f) && all(history_uv <= 1.0f);
     // The output slot is distinct from accepted history inputs. Publish raw
-    // metadata now so depth need not stay live through history reconstruction.
-    g_storage_float2_2d[root.output_depth_texture][pixel] =
-        float2(surface_depth, 0.0f);
+    // identity now; depth is written with the sample count below.
     g_storage_uint2_2d[root.output_identity_texture][pixel] = identity;
     g_storage_uint_2d[root.output_surface_texture][pixel] = surface_token;
     float4 history = current;
     float history_confidence = 0.0f;
+    float history_samples = 1.0f;
     if (accepted)
     {
         VkrVkTemporalHistorySample sample = vkr_vk_temporal_history_sample(
@@ -3364,6 +3424,11 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
                                         root.history_pre_exposure_scale,
                                     sample.color.a)
                            : current;
+        // Sample count of the history texel the lookup lands in, written by
+        // either path; zero from before this rule counts as one sample.
+        uint2 history_pixel = uint2(clamp(int2(floor(history_uv * float2(root.extent))),
+                                          int2(0), int2(root.extent) - 1));
+        history_samples = g_storage_float2_2d[root.history_depth_texture][history_pixel].y;
     }
 
     if (accepted)
@@ -3403,6 +3468,24 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
                             : float4(1.0f, 0.0f, 0.0f, 1.0f);
 
     g_storage_2d[root.output_color_texture][pixel] = resolved;
+    // The second channel carries the result's effective sample count, the
+    // seed of the static integral when the scene next stops changing. With
+    // SSR off, an unchanged scene matches its signature on the camera's first
+    // still frame and takes the static path, so a still pixel in an ordinary
+    // frame saw a content change. Its 0.99 history still holds the old
+    // content: it seeds nothing, and the static integral restarts from the
+    // current frame. Moving pixels keep the camera-stop seed, and SSR's
+    // settling frames (retention 0.9) keep theirs.
+    bool content_changed =
+        stationary_surface &&
+        root.scene_history_mode == VKR_TEMPORAL_HISTORY_ORDINARY;
+    float sample_count =
+        content_changed
+            ? 0.0f
+            : vkr_temporal_effective_samples(accepted ? history_samples : 1.0f,
+                                             history_weight);
+    g_storage_float2_2d[root.output_depth_texture][pixel] =
+        float2(surface_depth, sample_count);
 }
 
 // Each moments texel takes the 4x4 depth texels around its 2x2 footprint with
@@ -3483,15 +3566,6 @@ float vkr_vk_ssr_positive_depth(VkrSsrParams params, uint2 pixel,
     return vkr_ssr_valid_depth(result) ? result : 0.0f;
 }
 
-uint2 vkr_vk_ssr_identity(VkrVkSsrTemporalRoot root, uint visible_index)
-{
-    if (visible_index == 0u)
-        return uint2(0u, 0u);
-    VkrGpuVisibleDrawRow visible = root.visible_rows[visible_index - 1u];
-    VkrVulkanInstance instance = root.instances[visible.instance_index];
-    return uint2(instance.temporal_index + 1u, instance.temporal_generation);
-}
-
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_ssr_depth_base(uint3 thread_id : SV_DispatchThreadID)
@@ -3559,18 +3633,6 @@ float3 vkr_vk_ssr_selected_normal(uint normal_texture, uint clearcoat_texture,
         : vkr_vk_octahedral_decode(g_textures[normal_texture].Load(int3(pixel, 0)).xy);
 }
 
-float vkr_vk_ssr_selected_roughness(uint specular_texture, uint clearcoat_texture,
-                                    uint2 pixel)
-{
-    float4 packed = 0.0f;
-    if (clearcoat_texture != 0u)
-    {
-        packed = g_textures[clearcoat_texture].Load(int3(pixel, 0));
-    }
-    return vkr_clearcoat_active(packed.x) ? clamp(packed.y, 0.04f, 1.0f)
-        : clamp(g_textures[specular_texture].Load(int3(pixel, 0)).a, 0.04f, 1.0f);
-}
-
 float vkr_vk_ssr_filter_roughness(uint normal_texture, uint clearcoat_texture,
                                    uint vbuffer_texture, uint2 extent,
                                    uint2 pixel, uint visible, float3 normal,
@@ -3620,16 +3682,100 @@ float vkr_vk_ssr_base_filter_roughness(uint normal_texture,
         base_roughness, 0.25f * (dot(dx, dx) + dot(dy, dy)));
 }
 
-float3 vkr_vk_ssr_trace_color(VkrVkSsrTraceRoot root, float2 hit_uv,
-                               float roughness)
+// SSR draws its lobe and reuse rotations from SSGI's 256-phase Halton(2,3)
+// generator with a per-pixel Cranley-Patterson rotation. Distinct pixel seeds
+// decorrelate SSR's two rotations from each other and from SSGI's.
+static const uint2 VKR_VK_SSR_LOBE_SEED = uint2(0x68e31da4u, 0xb5297a4du);
+static const uint2 VKR_VK_SSR_REUSE_SEED = uint2(0x1b56c4e9u, 0x7f4a7c15u);
+// Accepted reflected-hit history below this support also tries the receiver's
+// own surface motion and keeps whichever candidate the history supports more.
+static const float VKR_VK_SSR_SURFACE_CANDIDATE_SUPPORT = 0.5f;
+
+float2 vkr_vk_ssr_sample_2d(uint2 pixel, uint sample_phase, uint2 seed)
 {
-    uint count = vkr_ssr_hit_filter_tap_count(roughness);
-    float3 result = 0.0f;
-    for (uint i = 0u; i < count; ++i)
-        result += g_textures[root.source_texture].SampleLevel(
-            g_samplers[root.source_sampler],
-            vkr_ssr_hit_filter_uv(hit_uv, roughness, i, root.params), 0.0f).rgb;
-    return result / float(count);
+    return vkr_ssgi_sample_2d(pixel ^ seed, sample_phase);
+}
+
+// The lobe SSR reflects at a receiver: the coat when it is active (ADR-062),
+// otherwise the base. Eligibility and the mirror ray use the packed roughness.
+struct VkrVkSsrMaterial
+{
+    float3 world_normal;
+    float roughness;
+    bool coat;
+};
+
+VkrVkSsrMaterial vkr_vk_ssr_material(uint normal_texture, uint clearcoat_texture,
+                                     uint specular_texture, uint2 pixel)
+{
+    float4 coat = 0.0f;
+    if (clearcoat_texture != 0u)
+    {
+        coat = g_textures[clearcoat_texture].Load(int3(pixel, 0));
+    }
+    VkrVkSsrMaterial result;
+    result.coat = vkr_clearcoat_active(coat.x);
+    if (result.coat)
+    {
+        result.world_normal = vkr_vk_octahedral_decode(coat.zw);
+        result.roughness = clamp(coat.y, 0.04f, 1.0f);
+    }
+    else
+    {
+        result.world_normal = vkr_vk_octahedral_decode(
+            g_textures[normal_texture].Load(int3(pixel, 0)).xy);
+        result.roughness = clamp(
+            g_textures[specular_texture].Load(int3(pixel, 0)).a, 0.04f, 1.0f);
+    }
+    return result;
+}
+
+// The roughness the composite's receiver weight and the environment lookup
+// use: the selected lobe's packed roughness broadened by the variance of its
+// normal over the pixel, so SSR converges to the lobe it replaces.
+float vkr_vk_ssr_lobe_roughness(VkrVkSsrMaterial material, uint normal_texture,
+                                uint clearcoat_texture, uint vbuffer_texture,
+                                uint2 extent, uint2 pixel, uint visible)
+{
+    return material.coat
+               ? vkr_vk_ssr_filter_roughness(normal_texture, clearcoat_texture,
+                                             vbuffer_texture, extent, pixel,
+                                             visible, material.world_normal,
+                                             material.roughness)
+               : vkr_vk_ssr_base_filter_roughness(normal_texture, vbuffer_texture,
+                                                  extent, pixel, visible,
+                                                  material.world_normal,
+                                                  material.roughness);
+}
+
+// `normal` faces the camera in view space and `view` points toward it. An
+// uncoated receiver with authored anisotropy stretches its lobe along the
+// decoded axis (ADR-064); the coat stays isotropic.
+VkrSsrLobe vkr_vk_ssr_lobe(VkrSsrParams params, VkrVkSsrMaterial material,
+                           float roughness, float3 normal, float3 view,
+                           uint anisotropy_texture, uint2 pixel)
+{
+    float alpha = roughness * roughness;
+    float2 widths = float2(alpha, alpha);
+    float3 axis = 0.0f;
+    if (!material.coat && anisotropy_texture != 0u)
+    {
+        float4 anisotropy = g_textures[anisotropy_texture].Load(int3(pixel, 0));
+        if (anisotropy.b != 0.0f)
+        {
+            widths = vkr_anisotropy_widths(roughness, anisotropy.b);
+            axis = mul(params.view,
+                       float4(vkr_anisotropy_decode_axis(anisotropy.rg,
+                                                         material.world_normal),
+                              0.0f)).xyz;
+        }
+    }
+    return vkr_ssr_lobe(normal, view, axis, widths);
+}
+
+float3 vkr_vk_ssr_view_normal(VkrSsrParams params, float3 world_normal)
+{
+    return normalize(mul(params.view, float4(world_normal, 0.0f)).xyz);
 }
 
 [shader("compute")]
@@ -3642,36 +3788,64 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
     uint2 source_extent = uint2(root.params.source_width, root.params.source_height);
     if (any(cell >= trace_extent)) return;
     uint2 receiver = cell;
+    // An ineligible receiver writes zero radiance and a NONE ray record.
     float4 raw = 0.0f;
     uint4 hit = 0u;
     uint visible = g_uint2_textures[root.vbuffer_texture].Load(int3(receiver, 0)).x;
-    float roughness = vkr_vk_ssr_selected_roughness(
-        root.specular_texture, root.clearcoat_texture, receiver);
-    if (visible == 0u || !vkr_ssr_eligible(roughness, true, root.params)) {
+    if (visible == 0u)
+    {
         g_storage_2d[root.destination_texture][cell] = raw;
         g_storage_uint4_2d[root.hit_texture][cell] = hit;
         return;
     }
+    VkrVkSsrMaterial material = vkr_vk_ssr_material(
+        root.normal_texture, root.clearcoat_texture, root.specular_texture,
+        receiver);
     float depth = g_depth_textures[root.depth_texture].Load(int3(receiver, 0));
     float3 position = vkr_ssr_reconstruct_view_position(
         root.params, vkr_ssr_uv_from_pixel(receiver, source_extent), depth);
-    if (!vkr_ssr_valid_depth(-position.z)) {
+    if (!vkr_ssr_eligible(material.roughness, true, root.params) ||
+        !vkr_ssr_valid_depth(-position.z))
+    {
         g_storage_2d[root.destination_texture][cell] = raw;
         g_storage_uint4_2d[root.hit_texture][cell] = hit;
         return;
     }
-    float3 world_normal = vkr_vk_ssr_selected_normal(
-        root.normal_texture, root.clearcoat_texture, receiver);
-    float3 normal = normalize(mul(root.params.view, float4(world_normal, 0.0f)).xyz);
+    float3 normal = vkr_vk_ssr_view_normal(root.params, material.world_normal);
     if (dot(normal, -position) < 0.0f)
         normal = -normal;
     float3 view = normalize(-position);
+    // A mirror receiver traces its exact mirror ray (pdf zero: no lobe
+    // sample, so no other receiver reuses it). A rough receiver traces one
+    // visible-normal sample of its lobe.
     float3 ray = reflect(-view, normal);
+    float pdf = 0.0f;
+    if (material.roughness > VKR_SSR_MIRROR_ROUGHNESS)
+    {
+        float roughness = vkr_vk_ssr_lobe_roughness(
+            material, root.normal_texture, root.clearcoat_texture,
+            root.vbuffer_texture, source_extent, receiver, visible);
+        VkrSsrLobe lobe = vkr_vk_ssr_lobe(root.params, material, roughness,
+                                          normal, view, root.anisotropy_texture,
+                                          receiver);
+        ray = vkr_ssr_lobe_sample(
+            lobe, vkr_vk_ssr_sample_2d(receiver, root.sample_phase,
+                                       VKR_VK_SSR_LOBE_SEED));
+        pdf = vkr_ssr_lobe_pdf(lobe, ray);
+        // A sample below the receiver has no lobe value and traces nothing.
+        if (!(pdf > 0.0f) || !(dot(normal, ray) > 0.0f))
+        {
+            g_storage_2d[root.destination_texture][cell] = raw;
+            g_storage_uint4_2d[root.hit_texture][cell] = hit;
+            return;
+        }
+    }
     VkrSsrTrace trace = vkr_ssr_trace_begin(root.params,
         position + normal * VKR_SSR_RAY_ORIGIN_BIAS, ray, root.params.depth_mip_count);
     // Logical level zero reuses full-resolution depth. Level one is the
     // existing pyramid base; starting at the receiver avoids an initial descent.
     trace.mip = 0u;
+    bool found = false;
     for (uint step = 0u; step < root.params.max_steps && trace.active != 0u; ++step)
     {
         uint2 mip_extent = max(source_extent >> trace.mip, uint2(1u, 1u));
@@ -3719,17 +3893,195 @@ void vk_ssr_trace(uint3 thread_id : SV_DispatchThreadID)
         hit_normal = normalize(mul(root.params.view, float4(hit_normal, 0.0f)).xyz);
         if (dot(hit_normal, -ray) > 1e-4f)
         {
+            // One linear sample at the fractional hit: the lobe sample, not a
+            // fixed cone around a mirror hit, carries the receiver's roughness.
             float2 hit_uv = vkr_ssr_lerp(trace.start_uv, trace.end_uv, resolve.hit_t);
-            raw = float4(vkr_vk_ssr_trace_color(root, hit_uv, roughness),
-                         vkr_ssr_trace_confidence(roughness, hit_uv,
-                                                  resolve.depth_confidence, root.params));
-            hit = uint4(asuint(float3(hit_uv, ray_depth)), hit_visible);
+            float3 radiance = g_textures[root.source_texture].SampleLevel(
+                g_samplers[root.source_sampler], hit_uv, 0.0f).rgb;
+            raw = float4(vkr_ssr_storable(radiance),
+                         vkr_ssr_trace_confidence(hit_uv, resolve.depth_confidence,
+                                                  root.params));
+            hit = vkr_ssr_pack_hit(hit_uv, ray_depth, pdf, hit_visible);
+            found = true;
             break;
         }
         trace = vkr_ssr_trace_advance(trace, cell_exit.restart_t);
     }
+    // A ray still active after its hierarchy decisions has an unknown
+    // outcome; the temporal pass keeps history for it instead of a miss.
+    if (!found)
+        hit = vkr_ssr_pack_ray(trace.active != 0u ? VKR_SSR_RAY_UNKNOWN
+                                                  : VKR_SSR_RAY_MISS,
+                               ray, pdf);
     g_storage_2d[root.destination_texture][cell] = raw;
     g_storage_uint4_2d[root.hit_texture][cell] = hit;
+}
+
+struct VkrVkSsrHistory
+{
+    float4 color;
+    float support;
+};
+
+// One history tap of a reprojected candidate: the transported receiver plane
+// gives the depth expected at this tap's centre, unjittered into the
+// projection that `candidate` used.
+bool vkr_vk_ssr_history_tap(VkrVkSsrTemporalRoot root,
+                            VkrSsrReflectedHit candidate,
+                            VkrSsrPlaneDepth receiver_plane, uint match,
+                            uint4 identity, float3 previous_receiver_normal,
+                            uint2 extent, int2 pixel)
+{
+    if (any(pixel < 0) || any(pixel >= int2(extent)))
+        return false;
+    float2 jitter = float2(root.params.history_jitter_uv_x,
+                           root.params.history_jitter_uv_y);
+    float expected_depth = vkr_ssr_plane_depth_at(
+        receiver_plane, (float2(pixel) + 0.5f) / float2(extent) - jitter);
+    uint4 history_identity = 0u;
+    if ((match & (VKR_SSR_MATCH_RECEIVER_IDENTITY | VKR_SSR_MATCH_HIT_IDENTITY)) != 0u)
+    {
+        history_identity = g_storage_uint4_2d[root.history_identity_texture][uint2(pixel)];
+    }
+    return vkr_ssr_reflected_history_accept(
+               root.params, candidate, match, identity, history_identity,
+               g_textures[root.history_depth_texture].Load(int3(pixel, 0)),
+               expected_depth, previous_receiver_normal, extent)
+               .accepted != 0u;
+}
+
+float4 vkr_vk_ssr_history_color(VkrVkSsrTemporalRoot root, int2 pixel)
+{
+    float4 color = g_textures[root.history_color_texture].Load(int3(pixel, 0));
+    return float4(vkr_ssr_storable(color.rgb), vkr_ssr_saturate(color.a));
+}
+
+// History around a candidate's reprojected location. Each tap proves its own
+// receiver plane, normal and `match`. A `glossy` receiver with the inner 2x2
+// accepted takes a 12-tap Catmull-Rom, the 4x4 footprint without its corners,
+// whose weights stay under 0.006 each; the kept weights are renormalised. It is
+// bounded by the inner taps' range and keeps a glossy reflection sharp under
+// repeated resampling; an outer tap that fails takes its nearest inner tap's
+// colour, so no other surface rings into the result. Otherwise, and for every
+// receiver at or above VKR_SSR_PARALLAX_ROUGHNESS_END, whose lobe blurs more
+// than the bilinear resampling does, the accepted bilinear taps resolve, and
+// their weight is the history support. Radiance is weighted by coverage as in
+// the spatial resolve.
+VkrVkSsrHistory vkr_vk_ssr_history_fetch(VkrVkSsrTemporalRoot root,
+                                         VkrSsrReflectedHit candidate,
+                                         VkrSsrPlaneDepth receiver_plane,
+                                         uint match, uint4 identity,
+                                         float3 previous_receiver_normal,
+                                         uint2 extent, bool glossy)
+{
+    VkrVkSsrHistory result;
+    result.color = 0.0f;
+    result.support = 0.0f;
+    if (candidate.valid == 0u || root.params.history_valid == 0u)
+        return result;
+    float2 half_texel = 0.5f / float2(extent);
+    float2 coordinate = clamp(candidate.previous_uv, half_texel, 1.0f - half_texel) *
+                        float2(extent) - 0.5f;
+    int2 base = int2(floor(coordinate));
+    float2 fraction = coordinate - float2(base);
+    float4 inner[4];
+    float4 bilinear = 0.0f;
+    float bilinear_support = 0.0f;
+    uint inner_accepted = 0u;
+    // Radiance of the covered inner taps and coverage of all of them.
+    float4 inner_min = float4(3.402823466e+38f);
+    float4 inner_max = float4(-3.402823466e+38f);
+    [unroll]
+    for (uint i = 0u; i < 4u; ++i)
+    {
+        int2 offset = int2(int(i & 1u), int(i >> 1u));
+        inner[i] = 0.0f;
+        if (!vkr_vk_ssr_history_tap(root, candidate, receiver_plane, match,
+                                    identity, previous_receiver_normal, extent,
+                                    base + offset))
+            continue;
+        inner[i] = vkr_vk_ssr_history_color(root, base + offset);
+        float weight = (offset.x == 0 ? 1.0f - fraction.x : fraction.x) *
+                       (offset.y == 0 ? 1.0f - fraction.y : fraction.y);
+        bilinear += vkr_ssr_spatial_sample(inner[i], weight);
+        bilinear_support += weight;
+        ++inner_accepted;
+        inner_min.w = min(inner_min.w, inner[i].w);
+        inner_max.w = max(inner_max.w, inner[i].w);
+        if (inner[i].w > 0.0f)
+        {
+            inner_min.xyz = min(inner_min.xyz, inner[i].xyz);
+            inner_max.xyz = max(inner_max.xyz, inner[i].xyz);
+        }
+    }
+    // Uncovered inner taps leave the cubic no positive coverage to resolve.
+    if (glossy && inner_accepted == 4u && bilinear.w > 0.0f)
+    {
+        float4 weights_x = vkr_temporal_cubic_weights(fraction.x);
+        float4 weights_y = vkr_temporal_cubic_weights(fraction.y);
+        float4 cubic = 0.0f;
+        float cubic_weight = 0.0f;
+        [unroll]
+        for (int y = -1; y <= 2; ++y)
+        {
+            [unroll]
+            for (int x = -1; x <= 2; ++x)
+            {
+                if ((x == -1 || x == 2) && (y == -1 || y == 2))
+                    continue;
+                int2 inner_offset = clamp(int2(x, y), int2(0), int2(1));
+                float4 color = inner[inner_offset.y * 2 + inner_offset.x];
+                if (any(int2(x, y) != inner_offset) &&
+                    vkr_vk_ssr_history_tap(root, candidate, receiver_plane, match,
+                                           identity, previous_receiver_normal,
+                                           extent, base + int2(x, y)))
+                {
+                    color = vkr_vk_ssr_history_color(root, base + int2(x, y));
+                }
+                float weight = weights_x[x + 1] * weights_y[y + 1];
+                cubic += vkr_ssr_spatial_sample(color, weight);
+                cubic_weight += weight;
+            }
+        }
+        cubic /= cubic_weight;
+        // Negative lobes can cancel most coverage at a coverage edge; the
+        // bilinear resolve then stands in (vkr_ssr_history_cubic).
+        float4 sharp = vkr_ssr_history_cubic(cubic, bilinear, inner_min, inner_max);
+        if (sharp.w > 0.0f)
+        {
+            result.color = sharp;
+            result.support = 1.0f;
+            return result;
+        }
+    }
+    if (bilinear_support > 0.0f)
+    {
+        result.color = vkr_ssr_spatial_resolve(bilinear, bilinear_support);
+        result.support = vkr_ssr_saturate(bilinear_support);
+    }
+    return result;
+}
+
+bool vkr_vk_ssr_model_equal(float4x4 a, float4x4 b)
+{
+    return all(a[0] == b[0]) && all(a[1] == b[1]) && all(a[2] == b[2]) &&
+           all(a[3] == b[3]);
+}
+
+bool vkr_vk_ssr_instance_tracked(VkrVulkanInstance instance)
+{
+    return instance.deformation_address == 0 &&
+           instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
+           instance.temporal_generation != 0u;
+}
+
+bool vkr_vk_ssr_previous_transform_valid(VkrVkSsrTemporalRoot root,
+                                         VkrVulkanInstance instance,
+                                         VkrTemporalTransform previous)
+{
+    return previous.valid != 0u &&
+           previous.generation == instance.temporal_generation &&
+           previous.frame_index == root.previous_frame_index;
 }
 
 [shader("compute")]
@@ -3753,217 +4105,301 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
     float device_depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     float3 receiver_view = vkr_ssr_reconstruct_view_position(root.params, uv, device_depth);
     float positive_depth = -receiver_view.z;
-    float4 clearcoat_packed = 0.0f;
-    if (root.clearcoat_texture != 0u)
-    {
-        clearcoat_packed = g_textures[root.clearcoat_texture].Load(int3(pixel, 0));
-    }
-    bool clearcoat_active = vkr_clearcoat_active(clearcoat_packed.x);
-    float roughness = clearcoat_active
-        ? clamp(clearcoat_packed.y, 0.04f, 1.0f)
-        : clamp(g_textures[root.specular_texture].Load(int3(pixel, 0)).a, 0.04f, 1.0f);
+    VkrVkSsrMaterial material = vkr_vk_ssr_material(
+        root.normal_texture, root.clearcoat_texture, root.specular_texture, pixel);
     if (!vkr_ssr_valid_depth(positive_depth) ||
-        !vkr_ssr_eligible(roughness, true, root.params))
+        !vkr_ssr_eligible(material.roughness, true, root.params))
     {
         g_storage_2d[root.output_color_texture][pixel] = 0.0f;
         g_storage_2d[root.output_depth_texture][pixel] = 0.0f;
         g_storage_uint4_2d[root.output_identity_texture][pixel] = 0u;
         return;
     }
-    float3 normal = clearcoat_active
-        ? vkr_vk_octahedral_decode(clearcoat_packed.zw)
-        : vkr_vk_octahedral_decode(g_textures[root.normal_texture].Load(int3(pixel, 0)).xy);
-    float2 trace_coordinate = float2(pixel);
-    bool mirror = roughness <= VKR_SSR_MIRROR_ROUGHNESS;
-    // Retain the half-resolution gather's physical width with full-source rays.
-    int gather_stride = mirror ? 1 : 2;
-    int2 center = mirror ? int2(floor(trace_coordinate))
-                         : int2(floor(trace_coordinate + 0.5f));
-    int begin = mirror ? 0 : -1;
-    float4 filtered = 0.0f;
-    float support_weight = 0.0f;
+    float3 normal = material.world_normal;
+    // History stores and validates the selected normal as it is; the lobe
+    // faces the camera as the trace's did.
+    float3 receiver_normal_view = vkr_vk_ssr_view_normal(root.params, normal);
+    float3 lobe_normal = dot(receiver_normal_view, -receiver_view) < 0.0f
+                             ? -receiver_normal_view
+                             : receiver_normal_view;
+    bool mirror = material.roughness <= VKR_SSR_MIRROR_ROUGHNESS;
+    float roughness = mirror
+        ? material.roughness
+        : vkr_vk_ssr_lobe_roughness(material, root.normal_texture,
+                                    root.clearcoat_texture, root.vbuffer_texture,
+                                    source_extent, pixel, visible);
+    VkrSsrLobe lobe = vkr_vk_ssr_lobe(root.params, material, roughness,
+                                      lobe_normal, normalize(-receiver_view),
+                                      root.anisotropy_texture, pixel);
+    // The trace's ray origin. Directions to hits start here, so the own
+    // sample's lobe value is taken along the direction it was traced in.
+    float3 ray_origin = receiver_view + lobe_normal * VKR_SSR_RAY_ORIGIN_BIAS;
+
+    // Ratio-estimator resolve over this receiver's ray and, for a rough
+    // receiver, eight rotated neighbours' rays. Each ray weighs this lobe's
+    // value toward its hit over the pdf it was traced with, so the result is
+    // the lobe's normalized incoming radiance (stochastic SSR). The receiver
+    // plane test keeps rays of other surfaces out; the same hits bound history.
+    VkrSsrResolve sum = vkr_ssr_resolve_empty();
     float3 neighborhood_min = float3(3.402823466e+38f);
     float3 neighborhood_max = float3(-3.402823466e+38f);
+    float3 radiance_sum = 0.0f;
+    float3 radiance_squared_sum = 0.0f;
     uint neighborhood_hits = 0u;
+    // Correspondence comes only from a ray of the output pixel's own draw,
+    // whose transform moves the traced receiver plane.
     float4 dominant_contribution = 0.0f;
-    int2 dominant_cell = int2(0);
-    uint traced_visible = 0u;
-    float3 traced_receiver = 0.0f;
-    float3 traced_world_normal = 0.0f;
-    for (int y = begin; y < 2; ++y) for (int x = begin; x < 2; ++x)
+    uint dominant_hit_visible = 0u;
+    float3 dominant_receiver = 0.0f;
+    float3 dominant_world_normal = 0.0f;
+    float3 dominant_hit = 0.0f;
+    float radius = vkr_ssr_reuse_radius(roughness, root.params);
+    float rotation =
+        vkr_vk_ssr_sample_2d(pixel, root.sample_phase, VKR_VK_SSR_REUSE_SEED).x;
+    uint tap_count = mirror ? 1u : 1u + VKR_SSR_REUSE_TAP_COUNT;
+    for (uint tap = 0u; tap < tap_count; ++tap)
     {
-        int2 q = center + int2(x, y) * gather_stride;
+        int2 offset = tap == 0u
+                          ? int2(0)
+                          : vkr_ssr_reuse_offset(tap - 1u, radius, rotation);
+        int2 q = int2(pixel) + offset;
         if (any(q < 0) || any(q >= int2(trace_extent))) continue;
-        float2 offset = (float2(q) - trace_coordinate) / float(gather_stride);
-        float grid_weight = vkr_ssr_reconstruction_grid_weight(offset, roughness);
-        if (grid_weight <= 0.0f) continue;
-        uint2 receiver = uint2(q);
-        uint neighbor_visible = g_uint2_textures[root.vbuffer_texture].Load(int3(receiver, 0)).x;
+        uint2 neighbor = uint2(q);
+        uint neighbor_visible = tap == 0u
+            ? visible
+            : g_uint2_textures[root.vbuffer_texture].Load(int3(neighbor, 0)).x;
         if (neighbor_visible == 0u) continue;
-        float3 neighbor_view = vkr_ssr_reconstruct_view_position(
-            root.params, vkr_ssr_uv_from_pixel(receiver, source_extent),
-            g_depth_textures[root.depth_texture].Load(int3(receiver, 0)));
-        float3 neighbor_normal = vkr_vk_ssr_selected_normal(
-            root.normal_texture, root.clearcoat_texture, receiver);
-        float weight = grid_weight * vkr_ssr_receiver_bilateral_weight(
-            offset, positive_depth, -neighbor_view.z, normal, neighbor_normal,
-            VKR_SSR_RECEIVER_DEPTH_ABSOLUTE);
-        if (weight <= 0.0f) continue;
-        float4 sample = g_textures[root.raw_texture].Load(int3(q, 0));
-        float4 contribution = vkr_ssr_spatial_sample(sample, weight);
-        filtered += contribution;
-        support_weight += weight;
-        if (sample.w > 0.0f)
+        VkrSsrRay ray = vkr_ssr_unpack_ray(
+            g_uint4_textures[root.hit_texture].Load(int3(neighbor, 0)));
+        if (ray.state == VKR_SSR_RAY_NONE || (!mirror && !(ray.pdf > 0.0f)))
+            continue;
+        float3 neighbor_view = receiver_view;
+        float3 neighbor_world_normal = normal;
+        float weight = 1.0f;
+        if (tap != 0u)
         {
-            neighborhood_min = min(neighborhood_min, sample.rgb);
-            neighborhood_max = max(neighborhood_max, sample.rgb);
-            ++neighborhood_hits;
-            if (vkr_ssr_reprojection_sample_dominates(
-                    contribution, dominant_contribution))
-            {
-                dominant_contribution = contribution;
-                dominant_cell = q;
-                traced_visible = neighbor_visible;
-                traced_receiver = neighbor_view;
-                traced_world_normal = neighbor_normal;
-            }
+            neighbor_view = vkr_ssr_reconstruct_view_position(
+                root.params, vkr_ssr_uv_from_pixel(neighbor, source_extent),
+                g_depth_textures[root.depth_texture].Load(int3(neighbor, 0)));
+            neighbor_world_normal = vkr_vk_ssr_selected_normal(
+                root.normal_texture, root.clearcoat_texture, neighbor);
+            weight = vkr_ssr_receiver_plane_weight(
+                         receiver_view, receiver_normal_view, neighbor_view,
+                         vkr_vk_ssr_view_normal(root.params, neighbor_world_normal)) *
+                     vkr_ssr_reuse_spatial_weight(float2(offset), radius);
+        }
+        float3 hit_view = 0.0f;
+        float3 direction = ray.direction;
+        if (ray.state == VKR_SSR_RAY_HIT)
+        {
+            hit_view = vkr_ssr_view_from_positive_depth(root.params, ray.hit_uv,
+                                                        ray.hit_depth);
+            direction = normalize(hit_view - ray_origin);
+        }
+        if (!mirror)
+            weight *= vkr_ssr_reuse_weight(lobe, direction, ray.pdf);
+        if (!(weight > 0.0f)) continue;
+        float4 sample = 0.0f;
+        if (ray.state == VKR_SSR_RAY_HIT)
+        {
+            sample = g_textures[root.raw_texture].Load(int3(neighbor, 0));
+            sample = float4(vkr_ssr_storable(sample.rgb), vkr_ssr_saturate(sample.w));
+        }
+        sum = vkr_ssr_resolve_add(sum, ray.state, sample, weight);
+        if (ray.state != VKR_SSR_RAY_HIT || !(sample.w > 0.0f)) continue;
+        neighborhood_min = min(neighborhood_min, sample.rgb);
+        neighborhood_max = max(neighborhood_max, sample.rgb);
+        radiance_sum += sample.rgb;
+        radiance_squared_sum += sample.rgb * sample.rgb;
+        ++neighborhood_hits;
+        float4 contribution = vkr_ssr_spatial_sample(sample, weight);
+        if (neighbor_visible == visible &&
+            vkr_ssr_reprojection_sample_dominates(contribution, dominant_contribution))
+        {
+            dominant_contribution = contribution;
+            dominant_hit_visible = ray.hit_visible;
+            dominant_receiver = neighbor_view;
+            dominant_world_normal = neighbor_world_normal;
+            dominant_hit = hit_view;
         }
     }
-    float4 raw = vkr_ssr_spatial_resolve(filtered, support_weight);
+    float4 raw = vkr_ssr_resolve_reflection(sum);
+    float known_share = vkr_ssr_resolve_known_share(sum);
+
+    // Static receivers and reflected objects need only geometry to match;
+    // instance identity is required where an instance moved (ADR-055).
     VkrVulkanInstance receiver_instance =
         root.instances[root.visible_rows[visible - 1u].instance_index];
     uint4 identity = uint4(receiver_instance.temporal_index + 1u,
-                          receiver_instance.temporal_generation, 0u, 0u);
-    float3 receiver_normal_view = normalize(
-        vkr_ssr_matrix_vector(root.params.view, float4(normal, 0.0f)).xyz);
-    VkrSsrReflectedHit hit;
-    hit.previous_uv = uv;
-    hit.expected_receiver_depth = 0.0f;
-    hit.expected_virtual_depth = 0.0f;
-    hit.current_virtual_depth = 0.0f;
-    hit.valid = 0u;
+                           receiver_instance.temporal_generation, 0u, 0u);
+    bool receiver_tracked = vkr_vk_ssr_instance_tracked(receiver_instance);
+    float parallax = mirror ? 1.0f : vkr_ssr_reflection_parallax(roughness);
+    // A lobe at or above the parallax end roughness blurs history more than
+    // bilinear resampling does; only a glossy lobe takes the cubic fetch.
+    bool glossy = roughness < VKR_SSR_PARALLAX_ROUGHNESS_END;
+    float3 dominant_normal_view = 0.0f;
     float current_virtual_depth = 0.0f;
-    float3 previous_receiver_normal_view = 0.0f;
-    bool current_correspondence = false;
-    if (dominant_contribution.w > 0.0f)
+    VkrVulkanInstance hit_instance = receiver_instance;
+    bool hit_tracked = false;
+    if (dominant_hit_visible != 0u)
     {
-        // The largest light contribution supplies the hit and traced plane.
-        // The hit read is independent of the gather footprint; its receiver row
-        // was retained from that sample's existing vbuffer load.
-        uint4 raw_hit = g_uint4_textures[root.hit_texture].Load(int3(dominant_cell, 0));
-        uint2 traced_identity = vkr_vk_ssr_identity(root, traced_visible);
-        float hit_depth = asfloat(raw_hit.z);
-        if (raw_hit.w != 0u && vkr_ssr_valid_depth(hit_depth))
+        hit_instance =
+            root.instances[root.visible_rows[dominant_hit_visible - 1u].instance_index];
+        identity.zw = uint2(hit_instance.temporal_index + 1u,
+                            hit_instance.temporal_generation);
+        hit_tracked = vkr_vk_ssr_instance_tracked(hit_instance);
+        dominant_normal_view = vkr_vk_ssr_view_normal(root.params, dominant_world_normal);
+        float depth = -vkr_ssr_virtual_point(dominant_receiver, dominant_normal_view,
+                                             dominant_hit, parallax).z;
+        current_virtual_depth = vkr_ssr_valid_depth(depth) ? depth : 0.0f;
+    }
+
+    // A mirror's all-miss ray returns to the environment term without
+    // reading history; a rough lobe's misses are weighed against it.
+    VkrSsrReflectedHit candidate = {};
+    candidate.previous_uv = uv;
+    VkrVkSsrHistory history;
+    history.color = 0.0f;
+    history.support = 0.0f;
+    uint tight = 0u;
+    bool needs_history = neighborhood_hits > 0u || known_share < 1.0f || !mirror;
+    if (needs_history && receiver_tracked && root.params.history_valid != 0u)
+    {
+        VkrTemporalTransform previous_receiver =
+            root.previous_transforms[receiver_instance.temporal_index];
+        if (vkr_vk_ssr_previous_transform_valid(root, receiver_instance,
+                                                previous_receiver))
         {
-            VkrVulkanInstance hit_instance =
-                root.instances[root.visible_rows[raw_hit.w - 1u].instance_index];
-            identity.zw = uint2(hit_instance.temporal_index + 1u, hit_instance.temporal_generation);
-            float3 hit_view = vkr_ssr_view_from_positive_depth(
-                root.params, asfloat(raw_hit.xy), hit_depth);
-            float3 traced_normal_view = normalize(vkr_ssr_matrix_vector(
-                root.params.view, float4(traced_world_normal, 0.0f)).xyz);
-            current_virtual_depth = vkr_ssr_virtual_hit_depth(
-                traced_receiver, traced_normal_view, hit_view);
-            current_correspondence = receiver_instance.deformation_address == 0 &&
-                hit_instance.deformation_address == 0 && all(traced_identity == identity.xy) &&
-                receiver_instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
-                hit_instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
-                receiver_instance.temporal_generation != 0u &&
-                hit_instance.temporal_generation != 0u &&
-                vkr_ssr_valid_depth(current_virtual_depth);
-            if (current_correspondence && root.params.history_valid != 0u)
+            bool receiver_moved =
+                !vkr_vk_ssr_model_equal(receiver_instance.model, previous_receiver.model);
+            uint receiver_match = receiver_moved ? VKR_SSR_MATCH_RECEIVER_IDENTITY : 0u;
+            float3 receiver_world = vkr_ssr_matrix_vector(
+                root.reprojection.inverse_view, float4(receiver_view, 1.0f)).xyz;
+            VkrSsrSurface previous_receiver_surface = vkr_ssr_transport_surface(
+                receiver_world, normal, receiver_instance.model, previous_receiver.model);
+            if (previous_receiver_surface.valid != 0u)
             {
-                VkrTemporalTransform previous_receiver =
-                    root.previous_transforms[receiver_instance.temporal_index];
-                VkrTemporalTransform previous_hit =
-                    root.previous_transforms[hit_instance.temporal_index];
-                if (previous_receiver.valid != 0u && previous_hit.valid != 0u &&
-                    previous_receiver.generation == receiver_instance.temporal_generation &&
-                    previous_hit.generation == hit_instance.temporal_generation &&
-                    previous_receiver.frame_index == root.previous_frame_index &&
-                    previous_hit.frame_index == root.previous_frame_index)
+                float3 previous_receiver_view = vkr_ssr_matrix_vector(
+                    root.reprojection.previous_view,
+                    float4(previous_receiver_surface.position, 1.0f)).xyz;
+                float3 previous_receiver_normal_view = normalize(vkr_ssr_matrix_vector(
+                    root.reprojection.previous_view,
+                    float4(previous_receiver_surface.normal, 0.0f)).xyz);
+                // Both candidates and every history tap use this one
+                // transported receiver plane.
+                VkrSsrPlaneDepth previous_receiver_plane = vkr_ssr_plane_depth_prepare(
+                    root.params, previous_receiver_view, previous_receiver_normal_view);
+                // Reflected-hit candidate: the virtual image's motion, blended
+                // toward the surface's as roughness widens the lobe.
+                VkrSsrReflectedHit reflected_candidate = {};
+                uint reflected_match = 0u;
+                if (dominant_hit_visible != 0u && hit_tracked && parallax > 0.0f &&
+                    vkr_ssr_valid_depth(current_virtual_depth))
                 {
-                    float3 receiver_world = vkr_ssr_matrix_vector(
-                        root.reprojection.inverse_view, float4(receiver_view, 1.0f)).xyz;
-                    float3 traced_world = vkr_ssr_matrix_vector(
-                        root.reprojection.inverse_view, float4(traced_receiver, 1.0f)).xyz;
-                    float3 hit_world = vkr_ssr_matrix_vector(
-                        root.reprojection.inverse_view, float4(hit_view, 1.0f)).xyz;
-                    VkrSsrSurface previous_receiver_surface = vkr_ssr_transport_surface(
-                        receiver_world, normal,
-                        receiver_instance.model, previous_receiver.model);
-                    VkrSsrSurface previous_traced_surface = vkr_ssr_transport_surface(
-                        traced_world, traced_world_normal,
-                        receiver_instance.model, previous_receiver.model);
-                    float4 previous_hit_world = vkr_ssr_transport_point(
-                        hit_world, hit_instance.model, previous_hit.model);
-                    if (previous_receiver_surface.valid != 0u &&
-                        previous_traced_surface.valid != 0u && previous_hit_world.w != 0.0f)
+                    VkrTemporalTransform previous_hit =
+                        root.previous_transforms[hit_instance.temporal_index];
+                    if (vkr_vk_ssr_previous_transform_valid(root, hit_instance, previous_hit))
                     {
-                        previous_receiver_normal_view = normalize(vkr_ssr_matrix_vector(
-                            root.reprojection.previous_view,
-                            float4(previous_receiver_surface.normal, 0.0f)).xyz);
-                        hit = vkr_ssr_reproject_hit(root.params, uv,
-                            traced_receiver, traced_normal_view, hit_view,
-                            vkr_ssr_matrix_vector(root.reprojection.previous_view,
-                                float4(previous_traced_surface.position, 1.0f)).xyz,
-                            normalize(vkr_ssr_matrix_vector(root.reprojection.previous_view,
-                                float4(previous_traced_surface.normal, 0.0f)).xyz),
-                            vkr_ssr_matrix_vector(root.reprojection.previous_view,
-                                float4(previous_hit_world.xyz, 1.0f)).xyz,
-                            vkr_ssr_matrix_vector(root.reprojection.previous_view,
-                                float4(previous_receiver_surface.position, 1.0f)).xyz,
-                            previous_receiver_normal_view);
+                        bool hit_moved =
+                            !vkr_vk_ssr_model_equal(hit_instance.model, previous_hit.model);
+                        float3 traced_world = vkr_ssr_matrix_vector(
+                            root.reprojection.inverse_view,
+                            float4(dominant_receiver, 1.0f)).xyz;
+                        float3 hit_world = vkr_ssr_matrix_vector(
+                            root.reprojection.inverse_view, float4(dominant_hit, 1.0f)).xyz;
+                        VkrSsrSurface previous_traced_surface = vkr_ssr_transport_surface(
+                            traced_world, dominant_world_normal,
+                            receiver_instance.model, previous_receiver.model);
+                        float4 previous_hit_world = vkr_ssr_transport_point(
+                            hit_world, hit_instance.model, previous_hit.model);
+                        if (previous_traced_surface.valid != 0u &&
+                            previous_hit_world.w != 0.0f)
+                        {
+                            reflected_candidate = vkr_ssr_reproject_hit(root.params, uv,
+                                dominant_receiver, dominant_normal_view, dominant_hit,
+                                vkr_ssr_matrix_vector(root.reprojection.previous_view,
+                                    float4(previous_traced_surface.position, 1.0f)).xyz,
+                                normalize(vkr_ssr_matrix_vector(root.reprojection.previous_view,
+                                    float4(previous_traced_surface.normal, 0.0f)).xyz),
+                                vkr_ssr_matrix_vector(root.reprojection.previous_view,
+                                    float4(previous_hit_world.xyz, 1.0f)).xyz,
+                                previous_receiver_plane, parallax);
+                            reflected_match = VKR_SSR_MATCH_VIRTUAL_DEPTH | receiver_match |
+                                (receiver_moved || hit_moved ? VKR_SSR_MATCH_HIT_IDENTITY : 0u);
+                        }
+                    }
+                }
+                // Surface-motion candidate: the rough receiver's own rule, and
+                // a glossy reflection's fallback when its reflected-hit history
+                // is missing or weak. The fallback clamps tightly.
+                VkrSsrReflectedHit surface_candidate = vkr_ssr_reproject_point(
+                    root.params, uv, receiver_view, previous_receiver_view,
+                    previous_receiver_plane);
+                // One fetch site keeps the history code emitted once.
+                // Attempt 0 fetches each receiver's first candidate: the
+                // reflected hit when it exists, otherwise the surface motion.
+                // Attempt 1 retries the surface only where the reflected-hit
+                // history supports less than half. A wave whose lanes start
+                // from different candidates then fetches once, not twice.
+                bool reflected = reflected_candidate.valid != 0u;
+                [loop]
+                for (uint attempt = 0u; attempt < 2u; ++attempt)
+                {
+                    if (attempt != 0u &&
+                        (!reflected ||
+                         history.support >= VKR_VK_SSR_SURFACE_CANDIDATE_SUPPORT))
+                        break;
+                    bool surface = attempt != 0u || !reflected;
+                    VkrSsrReflectedHit next = surface ? surface_candidate
+                                                      : reflected_candidate;
+                    VkrVkSsrHistory fetched = vkr_vk_ssr_history_fetch(
+                        root, next, previous_receiver_plane,
+                        surface ? receiver_match : reflected_match, identity,
+                        previous_receiver_normal_view, source_extent, glossy);
+                    if (fetched.support > history.support)
+                    {
+                        candidate = next;
+                        history = fetched;
+                        tight = surface && parallax > 0.0f ? 1u : 0u;
                     }
                 }
             }
         }
     }
-    float4 history_sum = 0.0f;
-    float history_support = 0.0f;
-    if (hit.valid != 0u)
-    {
-        float2 half_texel = 0.5f / float2(source_extent);
-        float2 coordinate = clamp(hit.previous_uv, half_texel, 1.0f - half_texel) *
-                            float2(source_extent) - 0.5f;
-        int2 first = int2(floor(coordinate));
-        for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x)
-        {
-            int2 p = first + int2(x, y);
-            if (any(p < 0) || any(p >= int2(source_extent))) continue;
-            float weight = vkr_ssr_history_tap_weight(coordinate, p);
-            if (weight <= 0.0f) continue;
-            VkrSsrHistoryDecision tap = vkr_ssr_reflected_history_accept(
-                root.params, hit, identity,
-                g_storage_uint4_2d[root.history_identity_texture][p],
-                g_textures[root.history_depth_texture].Load(int3(p, 0)),
-                previous_receiver_normal_view, source_extent);
-            if (tap.accepted == 0u) continue;
-            history_sum += vkr_ssr_spatial_sample(
-                g_textures[root.history_color_texture].Load(int3(p, 0)), weight);
-            history_support += weight;
-        }
-    }
-    float4 history = vkr_ssr_spatial_resolve(history_sum, history_support);
-    history.rgb *= root.history_pre_exposure_scale;
-    float2 motion = hit.previous_uv - uv -
+    float4 history_color = history.color;
+    history_color.rgb *= root.history_pre_exposure_scale;
+    float2 motion = candidate.previous_uv - uv -
         float2(root.params.history_jitter_uv_x, root.params.history_jitter_uv_y);
     VkrSsrHistoryDecision decision;
-    decision.accepted = history_support > 0.0f ? 1u : 0u;
+    decision.accepted = history.support > 0.0f ? 1u : 0u;
+    // Retention scales with the accepted share of the history footprint.
     decision.weight = decision.accepted != 0u
         ? vkr_ssr_temporal_weight(root.params.temporal_weight, roughness,
-                                 motion * float2(source_extent)) : 0.0f;
-    decision.expected_previous_depth = hit.expected_receiver_depth;
-    decision.reserved_float_0 = 0.0f;
+                                  motion * float2(source_extent)) *
+              vkr_ssr_saturate(history.support)
+        : 0.0f;
+    decision.expected_previous_depth = candidate.expected_receiver_depth;
+    decision.support = history.support;
+    decision.tight = tight;
+    if (tight != 0u && neighborhood_hits > 0u)
+    {
+        float count = float(neighborhood_hits);
+        vkr_ssr_tight_bounds(radiance_sum / count, radiance_squared_sum / count,
+                             neighborhood_min, neighborhood_max);
+    }
     float4 result = vkr_ssr_temporal_filter(
-        roughness, neighborhood_hits, raw, history, neighborhood_min,
-        neighborhood_max, decision);
-    g_storage_2d[root.output_color_texture][pixel] = result;
-    g_storage_2d[root.output_depth_texture][pixel] = current_correspondence
-        ? float4(positive_depth, current_virtual_depth, vkr_ssr_encode_normal(receiver_normal_view))
+        roughness, neighborhood_hits, raw, known_share, sum.known_rays,
+        history_color, neighborhood_min, neighborhood_max, decision);
+    g_storage_2d[root.output_color_texture][pixel] =
+        float4(vkr_ssr_storable(result.rgb), vkr_ssr_saturate(result.a));
+    // Every tracked receiver publishes its plane, so neighbours' surface
+    // candidates can use it; the virtual depth is zero without its own hit.
+    g_storage_2d[root.output_depth_texture][pixel] = receiver_tracked
+        ? float4(positive_depth, current_virtual_depth,
+                 vkr_ssr_encode_normal(receiver_normal_view))
         : float4(0.0f);
     g_storage_uint4_2d[root.output_identity_texture][pixel] =
-        current_correspondence ? identity : uint4(0u);
+        receiver_tracked ? identity : uint4(0u);
 }
 
 [shader("compute")]
@@ -4006,9 +4442,12 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
     if (!vkr_ssr_valid_depth(positive_depth)) return;
     float4 reflection_sample =
         g_textures[root.reflection_texture].Load(int3(pixel, 0));
-    if (reflection_sample.a <= 0.0f) return;
-    float3 reflection = reflection_sample.rgb;
-    float confidence = vkr_ssr_saturate(reflection_sample.a);
+    // History coverage is the share of the lobe with hits; the packed
+    // roughness fades it only near the eligibility cutoff.
+    float confidence = vkr_ssr_saturate(reflection_sample.a) *
+                       vkr_ssr_roughness_confidence(material_roughness, root.params);
+    if (!(confidence > 0.0f)) return;
+    float3 reflection = vkr_ssr_storable(reflection_sample.rgb);
     float2 uv = vkr_ssr_uv_from_pixel(pixel, extent);
     float3 world = vkr_vk_deferred_homogeneous(mul(root.inverse_view_projection,
         float4(uv * 2.0f - 1.0f, device_depth, 1.0f)));
@@ -4021,9 +4460,19 @@ void vk_ssr_composite(uint3 thread_id : SV_DispatchThreadID)
     // reflection by, so the reflection removed is the one it added.
     VkrVulkanBakedLight baked = packet_no_baked_light();
     if (root.diffuse_volume_texture != 0u)
+    {
         baked = vk_diffuse_volume_baked_light(
             root.frame,
             g_storage_2d[root.diffuse_volume_texture][pixel]);
+        if (baked.valid && root.baked_lamps_texture != 0u)
+        {
+            baked = packet_baked_light_with_lamps(
+                baked,
+                vk_baked_lamp_irradiance(
+                    root.frame, g_storage_2d[root.baked_lamps_texture][pixel],
+                    root.baked_lamp_shadow_texture, pixel));
+        }
+    }
     float3 old_specular = 0.0f;
     float3 receiver_weight;
     if (clearcoat_active)
@@ -4674,7 +5123,10 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         // Baked static lamps on a lightmapped transmissive draw, shaded as
         // deferred lighting shades them: the undirected share as diffuse
         // light, the directed share as a light from the dominant direction.
+        // Their irradiance also joins the surroundings a covered surface's
+        // environment reflection takes (ADR-054).
         bool lamps_baked = false;
+        float3 baked_lamp_irradiance = 0.0f;
         if (root.lightmap_rect_count != 0u)
         {
             VkrVkLightmapSource lightmap = {
@@ -4694,6 +5146,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             if (lamps_baked)
             {
                 float3 irradiance = baked.irradiance.rgb * frame.pre_exposure;
+                baked_lamp_irradiance = irradiance;
                 float directionality = baked.direction.a;
                 float3 undirected =
                     irradiance * ((1.0f - directionality) / 3.14159265f);
@@ -4781,6 +5234,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                     frame, world, surface.normal, surface.base.rgb,
                     surface.metallic, surface.occlusion, !lamps_baked,
                     energy, volume_diffuse, baked);
+            baked = packet_baked_light_with_lamps(baked, baked_lamp_irradiance);
             if (environment_enabled)
             {
                 if (diffuse_enabled && !volume_valid)

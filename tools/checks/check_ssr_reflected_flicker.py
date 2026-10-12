@@ -45,7 +45,7 @@ def measure(run):
             assert row["canonical_encoding"] == "RGBA16_FLOAT_LE", row
             assert [row["width"], row["height"]] == [width, height], row
             if channel == "ssr_reflection":
-                assert row["capture_version"] == 5, row
+                assert row["capture_version"] == 6, row
             data = (run / row["data_path"]).read_bytes()
             assert "sha256:" + hashlib.sha256(data).hexdigest() == row["data_sha256"], row
             frame = array.array("H")

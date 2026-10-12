@@ -37,6 +37,7 @@
 #include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
+#include "renderer/systems/vkr_scene_types.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "script/vkr_script_host.h"
 #include "vkr_renderer.h"
@@ -155,6 +156,45 @@ typedef struct SampleScriptPending {
   VkrSampleScriptLoad next;
 } SampleScriptPending;
 
+/* Seconds of a frame the opened scene's overlay may take to apply before
+ * the scene activates (vkr_scene_edit_overlay_step). */
+#define SAMPLE_OVERLAY_APPLY_SECONDS 0.008
+
+/* The primary scene's edit overlay (ADR-076): a worker reads and parses it
+ * while its scene loads, then activation applies it over as many frames as
+ * it needs. A job that claims this slot borrows it until `done`; the frame
+ * thread then owns `overlay` until it destroys it, once applied or at
+ * unload, before the scene it began on unloads. */
+typedef struct SampleOverlayLoad {
+  VkrSceneEditOverlay *overlay;
+  VkrAtomicBool done;
+  VkrAtomicBool cancel;
+  /* The ticket of the submitted job while no job has claimed the slot;
+     zero once the job claimed it or a discard revoked it, so a discard
+     drops a job that never started instead of waiting for it. */
+  VkrAtomicUint32 claim;
+  /* The latest ticket handed out; frame thread only. */
+  uint32_t ticket;
+  /* The job ended without running the read; activation then loads the
+     overlay whole. Written before `done` is stored. */
+  bool8_t skipped;
+  /* Component types registered when the read began. A first script load
+     after it can register a type the read did not know of. */
+  uint32_t type_count;
+  /* A read was started and its overlay is not destroyed yet. */
+  bool8_t active;
+  /* Activation began applying it to the loaded scene. */
+  bool8_t applying;
+  /* The sidecar the job reads, copied so the request's path may change. */
+  char path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
+} SampleOverlayLoad;
+
+/* The read job's payload: the slot and the ticket that lets it claim it. */
+typedef struct SampleOverlayJob {
+  SampleOverlayLoad *load;
+  uint32_t ticket;
+} SampleOverlayJob;
+
 typedef struct State {
   /* Script modules and the session of the active scene (ADR-079). */
   VkrScriptHost scripts;
@@ -242,9 +282,11 @@ typedef struct State {
   bool8_t graphics_dirty;
   float64_t graphics_changed_at;
   VkrSceneEditState edits;
-  /* Every container's undo journal and overlay loads draw from this pool,
+  SampleOverlayLoad overlay_load;
+  /* Every container's undo journal and overlay handle draws from this pool,
      not the UI's retained one, so a long build never starves the UI; each
-     journal bounds its own share (VKR_SCENE_EDIT_HISTORY_BYTES). */
+     journal bounds its own share (VKR_SCENE_EDIT_HISTORY_BYTES). An
+     overlay's parsed records use a pool of its own. */
   VkrDMemory edit_memory;
   VkrAllocator edit_allocator;
   /* Root physics world every loaded scene shares (ADR-076); created with the
@@ -2114,6 +2156,171 @@ vkr_internal void sample_warm_hold_release(VkrStandardSceneRuntime *application,
   }
 }
 
+/* Component types script modules have registered; the registry only grows. */
+static uint32_t sample_registered_type_count(void) {
+  uint32_t count = 0u;
+  while (vkr_scene_registered_type(count)) {
+    ++count;
+  }
+  return count;
+}
+
+/* Takes the slot for the job holding `ticket`; false when a discard revoked
+ * the ticket first, and the job must then leave the slot alone. */
+static bool8_t sample_overlay_claim(const SampleOverlayJob *job) {
+  uint32_t expected = job->ticket;
+  return vkr_atomic_uint32_compare_exchange(&job->load->claim, &expected, 0u,
+                                            VKR_MEMORY_ORDER_ACQUIRE,
+                                            VKR_MEMORY_ORDER_RELAXED);
+}
+
+static bool8_t sample_overlay_read_job(VkrJobContext *context, void *payload) {
+  (void)context;
+  const SampleOverlayJob *job = payload;
+  if (!sample_overlay_claim(job)) {
+    return true_v;
+  }
+  SampleOverlayLoad *load = job->load;
+  vkr_scene_edit_overlay_read(
+      load->overlay,
+      string8_create_from_cstr((const uint8_t *)load->path, strlen(load->path)),
+      &load->cancel);
+  vkr_atomic_bool_store(&load->done, true_v, VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+/* The job system ended the job without running the read (no worker
+ * scratch): activation then loads the overlay whole. */
+static void sample_overlay_read_skipped(VkrJobContext *context, void *payload) {
+  (void)context;
+  const SampleOverlayJob *job = payload;
+  if (!sample_overlay_claim(job)) {
+    return;
+  }
+  job->load->skipped = true_v;
+  vkr_atomic_bool_store(&job->load->done, true_v, VKR_MEMORY_ORDER_RELEASE);
+}
+
+/* Stops a read still running and frees the overlay, with the settings it
+ * staged in the scene it began on, which is still loaded. A job that has
+ * not started finds its ticket revoked, so nothing waits for it. */
+static void sample_overlay_discard(void) {
+  SampleOverlayLoad *load = &state->overlay_load;
+  uint32_t expected = load->ticket;
+  if (load->active && !vkr_atomic_uint32_compare_exchange(
+                          &load->claim, &expected, 0u, VKR_MEMORY_ORDER_ACQUIRE,
+                          VKR_MEMORY_ORDER_RELAXED)) {
+    vkr_atomic_bool_store(&load->cancel, true_v, VKR_MEMORY_ORDER_RELAXED);
+    while (!vkr_atomic_bool_load(&load->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+      vkr_platform_sleep(1);
+    }
+  }
+  vkr_scene_edit_overlay_destroy(load->overlay);
+  load->overlay = NULL;
+  load->active = false_v;
+  load->applying = false_v;
+}
+
+/* Starts reading the primary scene's overlay on a worker beside its scene's
+ * load. Without a job slot, activation loads it whole, as it did before. */
+static void sample_overlay_start(VkrStandardSceneRuntime *application) {
+  SampleOverlayLoad *load = &state->overlay_load;
+  sample_overlay_discard();
+  if (!state->sidecar_path[0]) {
+    return;
+  }
+  load->overlay = vkr_scene_edit_overlay_create(&state->edit_allocator);
+  if (!load->overlay) {
+    return;
+  }
+  snprintf(load->path, sizeof(load->path), "%s", state->sidecar_path);
+  load->ticket = load->ticket == UINT32_MAX ? 1u : load->ticket + 1u;
+  load->skipped = false_v;
+  load->type_count = sample_registered_type_count();
+  vkr_atomic_bool_store(&load->done, false_v, VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_bool_store(&load->cancel, false_v, VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_uint32_store(&load->claim, load->ticket, VKR_MEMORY_ORDER_RELAXED);
+  Bitset8 type_mask = bitset8_create();
+  bitset8_set(&type_mask, VKR_JOB_TYPE_GENERAL);
+  const SampleOverlayJob payload = {.load = load, .ticket = load->ticket};
+  const VkrJobDesc job = {.priority = VKR_JOB_PRIORITY_NORMAL,
+                          .type_mask = type_mask,
+                          .run = sample_overlay_read_job,
+                          .on_failure = sample_overlay_read_skipped,
+                          .payload = &payload,
+                          .payload_size = sizeof(payload)};
+  VkrJobHandle handle = {0};
+  if (!vkr_job_try_submit(&application->job_system, &job, &handle)) {
+    vkr_scene_edit_overlay_destroy(load->overlay);
+    load->overlay = NULL;
+    return;
+  }
+  load->active = true_v;
+}
+
+/* Applies the opened scene's overlay before the scene activates. The first
+ * call joins the scene to a fresh journal and the shared physics world and
+ * binds the overlay the worker read; each call then applies it for up to
+ * SAMPLE_OVERLAY_APPLY_SECONDS. False while the read runs or work remains,
+ * which keeps the scene loading (`scene_loading`, `wait.scene`). Until it
+ * activates, nothing simulates, draws or edits the scene. */
+static bool8_t sample_overlay_apply(VkrStandardSceneRuntime *application,
+                                    VkrScene *scene) {
+  SampleOverlayLoad *load = &state->overlay_load;
+  if (load->active &&
+      !vkr_atomic_bool_load(&load->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+    return false_v;
+  }
+  if (!load->applying) {
+    load->applying = true_v;
+    /* The journal takes the generation the scene publishes at activation. */
+    const uint64_t generation = application->scene_generation == UINT64_MAX
+                                    ? 1u
+                                    : application->scene_generation + 1u;
+    vkr_scene_edit_reset(&state->edits, &state->edit_allocator, generation);
+    sample_physics_attach(application, scene, true_v);
+    /* Script modules a first load added since the scene's documents were
+       read: the overlay may give their components. */
+    (void)vkr_scene_sync_world_types(scene);
+    /* A read that never ran, or one that a first script load may have
+       raced with a new component type, gives way to a whole load here. */
+    if (load->overlay &&
+        (load->skipped || sample_registered_type_count() != load->type_count)) {
+      vkr_scene_edit_overlay_destroy(load->overlay);
+      load->overlay = NULL;
+    }
+    const char *physics_root_error = NULL;
+    if (!vkr_scene_physics_set_asset_root(
+            scene,
+            string8_create((uint8_t *)state->physics_asset_root,
+                           strlen(state->physics_asset_root)),
+            &physics_root_error)) {
+      snprintf(state->edits.status, sizeof(state->edits.status), "%s",
+               physics_root_error ? physics_root_error
+                                  : "Invalid physics asset root");
+    } else if (load->overlay) {
+      /* A rejected overlay has set the journal's status; steps then find
+         nothing to apply. */
+      (void)vkr_scene_edit_overlay_begin(&state->edits, scene, load->overlay);
+    } else if (state->sidecar_path[0]) {
+      /* No worker took the read. */
+      (void)vkr_scene_edit_load(&state->edits, scene,
+                                string8_create((uint8_t *)state->sidecar_path,
+                                               strlen(state->sidecar_path)));
+    }
+  }
+  if (load->overlay &&
+      !vkr_scene_edit_overlay_step(&state->edits, scene, load->overlay,
+                                   SAMPLE_OVERLAY_APPLY_SECONDS)) {
+    return false_v;
+  }
+  vkr_scene_edit_overlay_destroy(load->overlay);
+  load->overlay = NULL;
+  load->active = false_v;
+  load->applying = false_v;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
     VkrStandardSceneRuntime *application) {
   if (!application || !state ||
@@ -2132,6 +2339,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
   case VKR_RESOURCE_LOAD_STATE_FAILED:
     sample_warm_hold_release(application, true_v);
     if (!state->scene_load_terminal_logged) {
+      sample_overlay_discard();
       String8 err = vkr_renderer_get_error_string(state_error);
       float64_t elapsed =
           vkr_standard_scene_runtime_consume_scene_load_elapsed_seconds(
@@ -2150,6 +2358,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
   case VKR_RESOURCE_LOAD_STATE_CANCELED:
     sample_warm_hold_release(application, true_v);
     if (!state->scene_load_terminal_logged) {
+      sample_overlay_discard();
       float64_t elapsed =
           vkr_standard_scene_runtime_consume_scene_load_elapsed_seconds(
               application);
@@ -2173,6 +2382,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
       if (!state->scene_load_terminal_logged) {
         log_error("Scene handle resolve failed for '%s'",
                   string8_cstr(&scene_path));
+        /* The status ends the editor's wait for the scene. */
+        snprintf(state->scene_status, sizeof(state->scene_status),
+                 "Scene load failed: the loaded scene could not be resolved");
         state->scene_load_terminal_logged = true_v;
       }
       return false_v;
@@ -2186,6 +2398,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
     if (!state->scene_load_terminal_logged) {
       log_error("Scene '%s' is marked ready but scene pointer is null",
                 string8_cstr(&scene_path));
+      snprintf(state->scene_status, sizeof(state->scene_status),
+               "Scene load failed: the loaded scene holds no scene");
       state->scene_load_terminal_logged = true_v;
     }
     return false_v;
@@ -2193,28 +2407,18 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
 
   state->scene_load_terminal_logged = false_v;
   if (application->active_scene != scene) {
+    /* The scene activates once its overlay applied, over several frames
+       for a large one. */
+    if (!sample_overlay_apply(application, scene)) {
+      return false_v;
+    }
+    /* Types a first script load registered while the overlay applied, when
+       only active scenes were told of them. */
+    (void)vkr_scene_sync_world_types(scene);
     vkr_standard_scene_runtime_clear_gizmo_selection(application);
     application->active_scene = scene;
-    application->scene_generation = application->scene_generation == UINT64_MAX
-                                        ? 1u
-                                        : application->scene_generation + 1u;
-    vkr_scene_edit_reset(&state->edits, &state->edit_allocator,
-                         application->scene_generation);
-    sample_physics_attach(application, scene, true_v);
-    const char *physics_root_error = NULL;
-    if (!vkr_scene_physics_set_asset_root(
-            scene,
-            string8_create((uint8_t *)state->physics_asset_root,
-                           strlen(state->physics_asset_root)),
-            &physics_root_error)) {
-      snprintf(state->edits.status, sizeof(state->edits.status), "%s",
-               physics_root_error ? physics_root_error
-                                  : "Invalid physics asset root");
-    } else if (state->sidecar_path[0]) {
-      (void)vkr_scene_edit_load(&state->edits, scene,
-                                string8_create((uint8_t *)state->sidecar_path,
-                                               strlen(state->sidecar_path)));
-    }
+    /* The journal reset for this scene when its overlay began applying. */
+    application->scene_generation = state->edits.generation;
     sample_partition_open(scene);
     sample_warm_hold_release(application, true_v);
     /* A fit from the previous scene is framed by a camera and caster set that
@@ -2271,9 +2475,14 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
     VkrRendererError existing_err = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState existing_state =
         vkr_resource_system_get_state(&state->scene_resource, &existing_err);
+    /* Still loading, or loaded while its overlay reads or applies over the
+       next frames: the request is already in flight. A loaded scene that
+       did not resolve stays held, with its status, until an unload
+       releases it; a new scene request or Reload unloads first. */
     if (existing_state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU ||
         existing_state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES ||
-        existing_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU) {
+        existing_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU ||
+        existing_state == VKR_RESOURCE_LOAD_STATE_READY) {
       return;
     }
 
@@ -2297,11 +2506,14 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
       vkr_allocator_begin_scope(application->frame_allocator);
   if (!vkr_allocator_scope_is_valid(&load_scope)) {
     log_error("Failed to create scene load scratch scope");
+    snprintf(state->scene_status, sizeof(state->scene_status),
+             "Scene load failed: no scratch memory to start it");
     return;
   }
 
-  /* The scene's texture limit applies before its materials start streaming;
-     its sidecar is applied once the scene loads. */
+  /* The scene's texture limit applies before its materials start streaming,
+     from the settings at the sidecar's end; a worker reads the whole
+     sidecar beside the scene, and it applies once the scene loads. */
   VkrSceneSettings scene_settings = {0};
   (void)vkr_scene_edit_peek_settings(
       application->frame_allocator,
@@ -2310,6 +2522,7 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
       &scene_settings);
   state->scene_texture_extent = scene_settings.texture_max_extent;
   sample_apply_texture_limit(application);
+  sample_overlay_start(application);
 
   VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene_path,
@@ -2318,6 +2531,10 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
     String8 err_str = vkr_renderer_get_error_string(load_err);
     log_error("Failed to load scene '%s': %s", string8_cstr(&scene_path),
               string8_cstr(&err_str));
+    /* The status ends the editor's wait for the scene. */
+    snprintf(state->scene_status, sizeof(state->scene_status),
+             "Scene load failed: %.*s", (int)err_str.length, err_str.str);
+    sample_overlay_discard();
     vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return;
   }
@@ -2346,6 +2563,8 @@ vkr_internal void vkr_standard_scene_runtime_unload_scene_system(
   }
 
   sample_scripts_stop(application);
+  /* An overlay still reading or applying goes before its scene. */
+  sample_overlay_discard();
   String8 scene_path = state->scene_path;
   if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE ||
       state->scene_resource.request_id != 0 || state->scene_resource.as.scene) {
@@ -5375,6 +5594,12 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .escape_taken = state->escape_taken,
       .mouse_captured = vkr_window_is_mouse_captured(&application->host.window),
   };
+  /* Only an overlay activation applies belongs to the frame thread. */
+  if (state->overlay_load.applying) {
+    vkr_scene_edit_overlay_progress(state->overlay_load.overlay,
+                                    &frame.scene_edits_applied,
+                                    &frame.scene_edits_total);
+  }
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
     frame.additive_loading |= state->additive_pending[i];
     if (state->additive_handles[i]) {
@@ -6982,9 +7207,9 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
              scene_path);
   }
   /* Address space for the journals that grow (the primary's and the
-     World's at their byte budget) plus a loading overlay; pages commit as
-     journals grow, and a full pool makes the journal that asks drop its
-     oldest steps. */
+     World's at their byte budget); pages commit as journals grow, and a
+     full pool makes the journal that asks drop its oldest steps. A loading
+     overlay reserves its own (vkr_scene_edit_overlay_create). */
   if (!vkr_dmemory_create(MB(4), GB(2), &state->edit_memory)) {
     log_error("Failed to reserve the scene edit memory");
     arena_destroy(state->stats_arena);

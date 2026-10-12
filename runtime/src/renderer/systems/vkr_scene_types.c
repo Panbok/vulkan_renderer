@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "core/vkr_atomic.h"
 #include "core/vkr_text.h"
 #include "vkr_bloom.h"
 #include "vkr_dof.h"
@@ -4058,16 +4059,24 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_terrain_cutout_type,
 };
 
-/* Types registered at startup by modules outside the renderer. */
+/* Types registered by modules outside the renderer. The frame thread only
+   appends: it fills a slot, then publishes the count with release order, so
+   a loader or overlay worker that reads the count with acquire order sees
+   every slot below it filled. */
 static const VkrTypeDesc *s_registered_types[VKR_SCENE_REGISTERED_TYPE_MAX];
-static uint32_t s_registered_type_count;
+static VkrAtomicUint32 s_registered_type_count;
+
+static uint32_t scene_registered_count(void) {
+  return vkr_atomic_uint32_load(&s_registered_type_count,
+                                VKR_MEMORY_ORDER_ACQUIRE);
+}
 
 const VkrTypeDesc *vkr_scene_world_type(uint32_t index) {
   if (index < ArrayCount(s_world_types)) {
     return s_world_types[index];
   }
   index -= ArrayCount(s_world_types);
-  return index < s_registered_type_count ? s_registered_types[index] : NULL;
+  return index < scene_registered_count() ? s_registered_types[index] : NULL;
 }
 
 const VkrTypeDesc *vkr_scene_world_type_named(String8 name) {
@@ -4083,11 +4092,12 @@ const VkrTypeDesc *vkr_scene_world_type_named(String8 name) {
 }
 
 const VkrTypeDesc *vkr_scene_registered_type(uint32_t index) {
-  return index < s_registered_type_count ? s_registered_types[index] : NULL;
+  return index < scene_registered_count() ? s_registered_types[index] : NULL;
 }
 
 bool8_t vkr_scene_world_type_registered(const VkrTypeDesc *type) {
-  for (uint32_t i = 0; i < s_registered_type_count; ++i) {
+  const uint32_t count = scene_registered_count();
+  for (uint32_t i = 0; i < count; ++i) {
     if (s_registered_types[i] == type) {
       return true_v;
     }
@@ -4096,14 +4106,17 @@ bool8_t vkr_scene_world_type_registered(const VkrTypeDesc *type) {
 }
 
 bool8_t vkr_scene_register_world_type(const VkrTypeDesc *type) {
+  const uint32_t count = scene_registered_count();
   if (!type || !type->name || !type->name[0] || !type->size ||
       type->size > VKR_TYPE_VALUE_MAX || !type->align ||
-      s_registered_type_count == VKR_SCENE_REGISTERED_TYPE_MAX ||
+      count == VKR_SCENE_REGISTERED_TYPE_MAX ||
       vkr_scene_world_type_named(string8_create_from_cstr(
           (const uint8_t *)type->name, strlen(type->name)))) {
     return false_v;
   }
-  s_registered_types[s_registered_type_count++] = type;
+  s_registered_types[count] = type;
+  vkr_atomic_uint32_store(&s_registered_type_count, count + 1u,
+                          VKR_MEMORY_ORDER_RELEASE);
   return true_v;
 }
 

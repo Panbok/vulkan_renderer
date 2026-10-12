@@ -13,6 +13,23 @@ float vkr_temporal_history_retention(bool stationary_surface, uint scene_history
 // eight phases. Verified unchanged scenes retain the completed integral.
 #define VKR_TEMPORAL_STATIC_SAMPLE_COUNT 128.0f
 
+// Effective sample count after blending a history worth `history_samples`
+// with one new sample at `history_weight`: the inverse variance of the blend
+// of independent samples. A running mean, weight n / (n + 1), gives exactly
+// n + 1; a constant weight w converges to (1 + w) / (1 - w), 19 at 0.9. The
+// ordinary resolve stores it so the static integral continues from the
+// ordinary history instead of restarting at one sample; a still pixel whose
+// content changed stores zero instead. It stays one below the static count,
+// so that integral still blends at least one frame.
+float vkr_temporal_effective_samples(float history_samples, float history_weight)
+{
+    float weight = saturate(history_weight);
+    float variance = (1.0f - weight) * (1.0f - weight) +
+                     weight * weight / max(history_samples, 1.0f);
+    float limit = VKR_TEMPORAL_STATIC_SAMPLE_COUNT - 1.0f;
+    return min(1.0f / max(variance, 1.0f / limit), limit);
+}
+
 // Catmull-Rom reconstruction: only the two positive inner weights can be
 // combined into a hardware bilinear lookup. The outer lobes stay separate.
 float4 vkr_temporal_cubic_weights(float t)

@@ -7,6 +7,7 @@
 #include "level/vkr_brush.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_gizmo_system.h"
+#include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
@@ -94,7 +95,8 @@ const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind) {
   static const char *const names[VKR_EDITOR_LEVEL_ISSUE_COUNT] = {
       "step_too_high",     "too_steep",   "low_ceiling", "too_narrow",
       "void_edge",         "unreachable", "overlap",     "invalid_brush",
-      "broken_connection", "crouch_only", "z_fight",     "mover_timing"};
+      "broken_connection", "crouch_only", "z_fight",     "mover_timing",
+      "light_overflow"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? names[kind] : "unknown";
 }
 
@@ -846,6 +848,45 @@ static void level_lint_connections(LevelGrid *grid, LevelIssues *issues) {
     /* Each connection is its own issue, never merged with a neighbour. */
     level_issue_pair(issues, VKR_EDITOR_LEVEL_BROKEN_CONNECTION, at,
                      transform->parent, entity, 0.0f);
+  }
+}
+
+/* More point lights than the renderer's light table holds: the runtime
+   ranks the enabled ones by camera distance and keeps
+   VKR_MAX_SCENE_POINT_LIGHTS (ADR-019), so a dense level drops lights
+   that may light the view. Mirrors the runtime's count: a static light
+   leaves the table once the scene's lightmaps hold its lamp groups.
+   Additive scenes' lights compete too and are not counted here. */
+static void level_lint_lights(LevelGrid *grid, LevelIssues *issues) {
+  const VkrScene *scene = grid->scene;
+  const bool8_t static_baked = scene->lightmaps &&
+                               scene->lightmaps->texture.id != 0u &&
+                               scene->lightmaps->lamps_baked;
+  uint32_t count = 0u;
+  Vec3 sum = vec3_zero();
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    if (!vkr_scene_entity_alive(scene, entity)) {
+      continue;
+    }
+    const ScenePointLight *light = vkr_entity_get_component(
+        scene->world, entity, scene->comp_point_light);
+    const SceneTransform *transform =
+        light ? vkr_entity_get_component(scene->world, entity,
+                                         scene->comp_transform)
+              : NULL;
+    if (!transform || !light->enabled ||
+        (static_baked && light->mobility == VKR_LIGHT_MOBILITY_STATIC)) {
+      continue;
+    }
+    count++;
+    sum = vec3_add(sum, mat4_position(transform->world));
+  }
+  if (count > VKR_MAX_SCENE_POINT_LIGHTS) {
+    level_issue_pair(issues, VKR_EDITOR_LEVEL_LIGHT_OVERFLOW,
+                     vec3_scale(sum, 1.0f / (float32_t)count),
+                     VKR_ENTITY_ID_INVALID, VKR_ENTITY_ID_INVALID,
+                     (float32_t)count);
   }
 }
 
@@ -1610,6 +1651,9 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
   if (level_wants(&issues, VKR_EDITOR_LEVEL_MOVER_TIMING)) {
     level_lint_movers(&grid, &issues);
   }
+  if (level_wants(&issues, VKR_EDITOR_LEVEL_LIGHT_OVERFLOW)) {
+    level_lint_lights(&grid, &issues);
+  }
   uint32_t reachable = 0u;
   int32_t *queue = malloc(total * sizeof(*queue));
   const int32_t origin = start && queue ? level_nearest(&grid, *start) : -1;
@@ -2034,6 +2078,43 @@ typedef struct LevelSolid {
 
 typedef void (*LevelSolidVisit)(void *context, const LevelSolid *solid);
 
+/* Visits the solids of live `entity`: the brush when it builds, else each
+   piece of its blockout shape. `scratch` holds the last brush built. */
+static void level_entity_solids(const VkrScene *scene, VkrEntityId entity,
+                                VkrBrushGeometry *scratch, VkrEntityId *faces,
+                                LevelSolidVisit visit, void *context) {
+  const SceneBrushSettings *brush =
+      vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type);
+  if (brush && vkr_editor_brush_build(scene, entity, scratch, faces)) {
+    const LevelSolid solid = {
+        .entity = entity,
+        .lo = scratch->min,
+        .hi = scratch->max,
+        .trigger = brush->role == SCENE_BRUSH_ROLE_TRIGGER,
+    };
+    visit(context, &solid);
+    return;
+  }
+  VkrBlockoutPiece *pieces = NULL;
+  const uint32_t count = vkr_editor_shape_pieces(scene, entity, &pieces);
+  for (uint32_t k = 0; k < count; ++k) {
+    LevelSolid solid = {
+        .entity = entity,
+        .lo = vec3_new(INFINITY, INFINITY, INFINITY),
+        .hi = vec3_new(-INFINITY, -INFINITY, -INFINITY),
+    };
+    for (uint32_t p = 0; p < pieces[k].point_count; ++p) {
+      const Vec3 at = pieces[k].points[p];
+      solid.lo = vec3_new(Min(solid.lo.x, at.x), Min(solid.lo.y, at.y),
+                          Min(solid.lo.z, at.z));
+      solid.hi = vec3_new(Max(solid.hi.x, at.x), Max(solid.hi.y, at.y),
+                          Max(solid.hi.z, at.z));
+    }
+    visit(context, &solid);
+  }
+  free(pieces);
+}
+
 /* Visits every solid of `scene`; `scratch` holds the last brush built. */
 static void level_solids(const VkrScene *scene, VkrBrushGeometry *scratch,
                          LevelSolidVisit visit, void *context) {
@@ -2043,43 +2124,95 @@ static void level_solids(const VkrScene *scene, VkrBrushGeometry *scratch,
     if (!vkr_scene_entity_alive(scene, entity)) {
       continue;
     }
-    const SceneBrushSettings *brush =
-        vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type);
-    if (brush && vkr_editor_brush_build(scene, entity, scratch, faces)) {
-      const LevelSolid solid = {
-          .entity = entity,
-          .lo = scratch->min,
-          .hi = scratch->max,
-          .trigger = brush->role == SCENE_BRUSH_ROLE_TRIGGER,
-      };
-      visit(context, &solid);
-      continue;
-    }
-    VkrBlockoutPiece *pieces = NULL;
-    const uint32_t count = vkr_editor_shape_pieces(scene, entity, &pieces);
-    for (uint32_t k = 0; k < count; ++k) {
-      LevelSolid solid = {
-          .entity = entity,
-          .lo = vec3_new(INFINITY, INFINITY, INFINITY),
-          .hi = vec3_new(-INFINITY, -INFINITY, -INFINITY),
-      };
-      for (uint32_t p = 0; p < pieces[k].point_count; ++p) {
-        const Vec3 at = pieces[k].points[p];
-        solid.lo = vec3_new(Min(solid.lo.x, at.x), Min(solid.lo.y, at.y),
-                            Min(solid.lo.z, at.z));
-        solid.hi = vec3_new(Max(solid.hi.x, at.x), Max(solid.hi.y, at.y),
-                            Max(solid.hi.z, at.z));
-      }
-      visit(context, &solid);
-    }
-    free(pieces);
+    level_entity_solids(scene, entity, scratch, faces, visit, context);
   }
 }
 
-/* The box around the solids within `root`, and whether any is. */
-typedef struct LevelBox {
+/* A visit that passes on only the solids within `root`, for the scan of
+   level_solids_within. */
+typedef struct LevelWithin {
   const VkrScene *scene;
   VkrEntityId root;
+  LevelSolidVisit visit;
+  void *context;
+} LevelWithin;
+
+static void level_within_visit(void *context, const LevelSolid *solid) {
+  const LevelWithin *within = context;
+  if (level_within(within->scene, solid->entity, within->root)) {
+    within->visit(within->context, solid);
+  }
+}
+
+static int level_entity_order(const void *a, const void *b) {
+  const uint32_t first = ((const VkrEntityId *)a)->parts.index;
+  const uint32_t second = ((const VkrEntityId *)b)->parts.index;
+  return (first > second) - (first < second);
+}
+
+/* Entities of a subtree level_solids_within gathers before it scans. */
+#define LEVEL_SUBTREE_MAX 1024u
+/* level_within looks this many links up, so the walk reaches as deep. */
+#define LEVEL_WITHIN_DEPTH_MAX 64u
+
+/* Visits the solids of live `root` and of the entities below it, the ones
+   level_solids visits where level_within holds, through the scene's child
+   index instead of every entity of the scene: a selection does not build
+   every brush of the level. The scene keeps the index in step with the
+   parent links while it is valid; a child whose link no longer names its
+   slot's parent is skipped. Without a valid index, or for a subtree past
+   LEVEL_SUBTREE_MAX entities, it scans every solid of the scene and keeps
+   those within `root`, as before. */
+static void level_solids_within(const VkrScene *scene, VkrEntityId root,
+                                VkrBrushGeometry *scratch,
+                                LevelSolidVisit visit, void *context) {
+  VkrEntityId faces[VKR_BRUSH_FACE_MAX];
+  VkrEntityId subtree[LEVEL_SUBTREE_MAX];
+  uint8_t depths[LEVEL_SUBTREE_MAX];
+  /* The whole subtree is gathered before any of it is visited, so a scan
+     that follows visits each solid once. */
+  bool8_t walk = scene->child_index_valid;
+  uint32_t count = 0u;
+  subtree[count] = root;
+  depths[count++] = 0u;
+  for (uint32_t at = 0u; walk && at < count; ++at) {
+    uint32_t child_count = 0u;
+    const VkrEntityId *children =
+        depths[at] + 1u < LEVEL_WITHIN_DEPTH_MAX
+            ? vkr_scene_get_children(scene, subtree[at], &child_count)
+            : NULL;
+    for (uint32_t c = 0u; walk && c < child_count; ++c) {
+      const SceneTransform *child = vkr_entity_get_component_if_alive_const(
+          scene->world, children[c], scene->comp_transform);
+      if (!child || child->parent.u64 != subtree[at].u64) {
+        continue;
+      }
+      /* Each entity has one parent, so only a cycle through `root` leads
+         back to an entity already gathered; the scan handles it. */
+      walk = count < LEVEL_SUBTREE_MAX && children[c].u64 != root.u64;
+      if (walk) {
+        subtree[count] = children[c];
+        depths[count++] = (uint8_t)(depths[at] + 1u);
+      }
+    }
+  }
+  if (!walk) {
+    LevelWithin within = {
+        .scene = scene, .root = root, .visit = visit, .context = context};
+    level_solids(scene, scratch, level_within_visit, &within);
+    return;
+  }
+  /* Entity index order, as the scan visits, so sums over the solids match
+     it bit for bit. */
+  qsort(subtree, count, sizeof(*subtree), level_entity_order);
+  for (uint32_t i = 0u; i < count; ++i) {
+    level_entity_solids(scene, subtree[i], scratch, faces, visit, context);
+  }
+}
+
+/* The box around the solids level_solids_within visits, and whether any
+   is. */
+typedef struct LevelBox {
   Vec3 lo;
   Vec3 hi;
   bool8_t found;
@@ -2087,9 +2220,6 @@ typedef struct LevelBox {
 
 static void level_box_visit(void *context, const LevelSolid *solid) {
   LevelBox *box = context;
-  if (!level_within(box->scene, solid->entity, box->root)) {
-    return;
-  }
   box->lo = vec3_new(Min(box->lo.x, solid->lo.x), Min(box->lo.y, solid->lo.y),
                      Min(box->lo.z, solid->lo.z));
   box->hi = vec3_new(Max(box->hi.x, solid->hi.x), Max(box->hi.y, solid->hi.y),
@@ -2104,12 +2234,10 @@ bool8_t vkr_editor_entity_world_box(const VkrScene *scene, VkrEntityId entity,
     return false_v;
   }
   LevelBox box = {
-      .scene = scene,
-      .root = entity,
       .lo = vec3_new(INFINITY, INFINITY, INFINITY),
       .hi = vec3_new(-INFINITY, -INFINITY, -INFINITY),
   };
-  level_solids(scene, scratch, level_box_visit, &box);
+  level_solids_within(scene, entity, scratch, level_box_visit, &box);
   Vec3 lo = box.lo;
   Vec3 hi = box.hi;
   bool8_t found = box.found;
@@ -2141,11 +2269,9 @@ bool8_t vkr_editor_box_slab(Vec3 lo, Vec3 hi) {
   return hi.y - lo.y <= Max(0.5f, 0.25f * Min(hi.x - lo.x, hi.z - lo.z));
 }
 
-/* The slabs at the bottom of the box `lo` around `root`'s solids: the area
-   they cover and the highest top. */
+/* The slabs at the bottom of the box `lo` around the solids
+   level_solids_within visits: the area they cover and the highest top. */
 typedef struct LevelFloor {
-  const VkrScene *scene;
-  VkrEntityId root;
   Vec3 lo;
   float32_t covered;
   float32_t top;
@@ -2153,8 +2279,7 @@ typedef struct LevelFloor {
 
 static void level_floor_visit(void *context, const LevelSolid *solid) {
   LevelFloor *floor = context;
-  if (level_within(floor->scene, solid->entity, floor->root) &&
-      solid->lo.y - floor->lo.y < 0.02f &&
+  if (solid->lo.y - floor->lo.y < 0.02f &&
       vkr_editor_box_slab(solid->lo, solid->hi)) {
     floor->covered += (solid->hi.x - solid->lo.x) * (solid->hi.z - solid->lo.z);
     floor->top = Max(floor->top, solid->hi.y);
@@ -2170,8 +2295,8 @@ float32_t vkr_editor_entity_floor(const VkrScene *scene, VkrEntityId entity,
   if (!scene || (shape && shape->shape == SCENE_BLOCKOUT_STAIRS)) {
     return lo.y;
   }
-  LevelFloor floor = {.scene = scene, .root = entity, .lo = lo, .top = lo.y};
-  level_solids(scene, scratch, level_floor_visit, &floor);
+  LevelFloor floor = {.lo = lo, .top = lo.y};
+  level_solids_within(scene, entity, scratch, level_floor_visit, &floor);
   const float32_t footprint = Max((hi.x - lo.x) * (hi.z - lo.z), 1.0e-4f);
   return floor.covered >= footprint * 0.25f ? floor.top : lo.y;
 }

@@ -250,27 +250,67 @@ vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
 vkr_internal void scene_shape_release(VkrScene *scene, VkrEntityId entity);
 vkr_internal void scene_text_release(VkrScene *scene, VkrEntityId entity);
 
+/* Home slot of a descriptor in `type_slots`: the top bits of its address
+   times the 64-bit golden ratio. */
+static uint32_t scene_type_home(const VkrTypeDesc *type) {
+  const uint64_t address = (uint64_t)(uintptr_t)type;
+  return (uint32_t)((address * UINT64_C(0x9E3779B97F4A7C15)) >>
+                    (64u - VKR_SCENE_TYPE_SLOT_BITS));
+}
+
+/* Index of `type` in `types`, or UINT32_MAX. A type is listed at most once
+   (scene_type_add), so this is the entry a scan of `types` finds. */
+static uint32_t scene_type_index(const VkrScene *scene,
+                                 const VkrTypeDesc *type) {
+  uint32_t slot = scene_type_home(type);
+  for (uint32_t probe = 0; probe < VKR_SCENE_TYPE_SLOTS; ++probe) {
+    const uint8_t entry = scene->type_slots[slot];
+    if (!entry) {
+      break;
+    }
+    if (scene->types[entry - 1u].type == type) {
+      return entry - 1u;
+    }
+    slot = (slot + 1u) & (VKR_SCENE_TYPE_SLOTS - 1u);
+  }
+  return UINT32_MAX;
+}
+
+/* Lists a type the scene does not list yet; false when `types` is full. */
+static bool8_t scene_type_add(VkrScene *scene, const VkrTypeDesc *type,
+                              VkrComponentTypeId id) {
+  if (scene->type_count == VKR_SCENE_TYPE_MAX) {
+    return false_v;
+  }
+  uint32_t slot = scene_type_home(type);
+  while (scene->type_slots[slot]) {
+    slot = (slot + 1u) & (VKR_SCENE_TYPE_SLOTS - 1u);
+  }
+  scene->types[scene->type_count] =
+      (VkrSceneComponentType){.type = type, .id = id};
+  scene->type_slots[slot] = (uint8_t)(scene->type_count + 1u);
+  scene->type_count++;
+  return true_v;
+}
+
 VkrComponentTypeId vkr_scene_type_id(const VkrScene *scene,
                                      const VkrTypeDesc *type) {
   if (!scene || !type) {
     return VKR_COMPONENT_TYPE_INVALID;
   }
-  for (uint32_t i = 0; i < scene->type_count; ++i) {
-    if (scene->types[i].type == type) {
-      return scene->types[i].id;
-    }
-  }
-  return VKR_COMPONENT_TYPE_INVALID;
+  const uint32_t index = scene_type_index(scene, type);
+  return index != UINT32_MAX ? scene->types[index].id
+                             : VKR_COMPONENT_TYPE_INVALID;
 }
 
 const void *vkr_scene_get_typed(const VkrScene *scene, VkrEntityId entity,
                                 const VkrTypeDesc *type) {
   const VkrComponentTypeId id = vkr_scene_type_id(scene, type);
-  if (id == VKR_COMPONENT_TYPE_INVALID ||
-      !vkr_entity_is_alive(scene->world, entity)) {
+  if (id == VKR_COMPONENT_TYPE_INVALID) {
     return NULL;
   }
-  return vkr_entity_get_component(scene->world, entity, id);
+  /* Validates the entity as vkr_entity_is_alive does. */
+  return vkr_entity_get_component_if_alive_const(scene->world, entity, id);
 }
 
 bool8_t vkr_scene_set_typed(VkrScene *scene, VkrEntityId entity,
@@ -288,15 +328,21 @@ bool8_t vkr_scene_set_typed(VkrScene *scene, VkrEntityId entity,
   }
   void *existing = vkr_entity_get_component_mut(scene->world, entity, id);
   if (existing) {
-    MemCopy(existing, value, type->size);
+    /* World revision readers (resolution, terrain cutouts, script bindings,
+       population, the Outliner's tag search) read values or presence; the
+       same bytes change neither. The change hooks still run. */
+    if (MemCompare(existing, value, type->size) != 0) {
+      MemCopy(existing, value, type->size);
+      scene->world_revision++;
+    }
   } else {
     if (!vkr_entity_add_component(scene->world, entity, id, value)) {
       return false_v;
     }
     scene_invalidate_queries(scene);
     scene->structure_revision++;
+    scene->world_revision++;
   }
-  scene->world_revision++;
   scene_typed_changed(scene, entity, type);
   return true_v;
 }
@@ -369,8 +415,40 @@ static bool8_t scene_world_value_enabled(const SceneWorldGather *gather,
   return enabled != 0.0;
 }
 
-/* Walk the entity directory in index order so ties resolve by creation
- * order, independent of archetype and chunk layout. */
+/* Keeps a collection's `capacity` lowest entity indices in ascending order,
+   with their values when the gather takes them. */
+static void scene_world_collect(SceneWorldGather *gather, uint32_t index,
+                                const void *value) {
+  const uint64_t size = gather->type->size;
+  uint32_t at = gather->count;
+  if (at == gather->capacity) {
+    if (!at || gather->indices[at - 1u] < index) {
+      return;
+    }
+    /* The highest index kept leaves for this one. */
+    at--;
+  } else {
+    gather->count++;
+  }
+  while (at > 0u && gather->indices[at - 1u] > index) {
+    gather->indices[at] = gather->indices[at - 1u];
+    if (gather->values) {
+      MemCopy(gather->values + (uint64_t)at * size,
+              gather->values + (uint64_t)(at - 1u) * size, size);
+    }
+    at--;
+  }
+  gather->indices[at] = index;
+  if (gather->values) {
+    MemCopy(gather->values + (uint64_t)at * size, value, size);
+  }
+}
+
+/* Visits only the entities that carry the type, archetype by archetype, so
+ * a resolution costs its instances rather than the scene's entities. Ties
+ * resolve by entity index as a walk of the directory in index order would:
+ * a singleton keeps the enabled instance with the lowest index, else the
+ * lowest index; a collection keeps its lowest indices in ascending order. */
 static void scene_world_gather(const VkrScene *scene,
                                SceneWorldGather *gather) {
   const VkrComponentTypeId id = vkr_scene_type_id(scene, gather->type);
@@ -382,32 +460,34 @@ static void scene_world_gather(const VkrScene *scene,
     return;
   }
   const VkrWorld *world = scene->world;
-  for (uint32_t i = 0; i < world->dir.capacity; ++i) {
-    if (!world->dir.records[i].chunk) {
+  for (uint32_t a = 0; a < world->arch_count; ++a) {
+    const VkrArchetype *arch = world->arch_list[a];
+    const uint16_t column = arch->type_to_col[id];
+    if (column == VKR_ENTITY_TYPE_TO_COL_INVALID) {
       continue;
     }
-    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
-    const void *value = vkr_entity_get_component(world, entity, id);
-    /* A hidden object takes no effect, like a hidden light. */
-    if (!value || !vkr_scene_entity_visible(scene, entity)) {
-      continue;
-    }
-    if (gather->indices) {
-      if (gather->count < gather->capacity) {
-        if (gather->values) {
-          MemCopy(gather->values + (uint64_t)gather->count * gather->type->size,
-                  value, gather->type->size);
+    for (const VkrChunk *chunk = arch->chunks; chunk; chunk = chunk->next) {
+      const uint8_t *values = (const uint8_t *)chunk->columns[column];
+      for (uint32_t row = 0; row < chunk->count; ++row) {
+        const VkrEntityId entity = chunk->ents[row];
+        const void *value = values + (uint64_t)arch->sizes[column] * row;
+        /* A hidden object takes no effect, like a hidden light. */
+        if (!vkr_scene_entity_visible(scene, entity)) {
+          continue;
         }
-        gather->indices[gather->count] = i;
-        gather->count++;
+        if (gather->indices) {
+          scene_world_collect(gather, entity.parts.index, value);
+          continue;
+        }
+        const bool8_t enabled = scene_world_value_enabled(gather, value);
+        if (!gather->best.u64 || (enabled && !gather->best_enabled) ||
+            (enabled == gather->best_enabled &&
+             entity.parts.index < gather->best.parts.index)) {
+          gather->best = entity;
+          gather->best_enabled = enabled;
+          MemCopy(gather->best_value, value, gather->type->size);
+        }
       }
-      continue;
-    }
-    const bool8_t enabled = scene_world_value_enabled(gather, value);
-    if (!gather->best.u64 || (enabled && !gather->best_enabled)) {
-      gather->best = entity;
-      gather->best_enabled = enabled;
-      MemCopy(gather->best_value, value, gather->type->size);
     }
   }
 }
@@ -448,12 +528,9 @@ bool8_t vkr_scene_sync_world_types(VkrScene *scene) {
     }
     const VkrComponentTypeId id = vkr_entity_register_component_once(
         scene->world, type->name, type->size, type->align);
-    if (id == VKR_COMPONENT_TYPE_INVALID ||
-        scene->type_count == VKR_SCENE_TYPE_MAX) {
+    if (id == VKR_COMPONENT_TYPE_INVALID || !scene_type_add(scene, type, id)) {
       return false_v;
     }
-    scene->types[scene->type_count++] =
-        (VkrSceneComponentType){.type = type, .id = id};
   }
   return true_v;
 }
@@ -464,15 +541,11 @@ bool8_t vkr_scene_migrate_world_type(VkrScene *scene, const VkrTypeDesc *type,
       type->size > VKR_TYPE_VALUE_MAX) {
     return false_v;
   }
-  VkrSceneComponentType *entry = NULL;
-  for (uint32_t i = 0; i < scene->type_count && !entry; ++i) {
-    if (scene->types[i].type == type) {
-      entry = &scene->types[i];
-    }
-  }
-  if (!entry) {
+  const uint32_t index = scene_type_index(scene, type);
+  if (index == UINT32_MAX) {
     return true_v;
   }
+  VkrSceneComponentType *entry = &scene->types[index];
   /* The type's name keeps the old storage; the new layout registers under
      the first free `<name>#<n>`. */
   VkrWorld *world = scene->world;
@@ -1074,6 +1147,7 @@ vkr_internal bool8_t scene_child_index_rebuild(VkrScene *scene) {
   vkr_entity_query_compiled_each_chunk(&scene->query_transforms,
                                        scene_child_index_build_cb, &ctx);
   scene->child_index_valid = true_v;
+  scene->child_index_revision++;
   return true_v;
 }
 
@@ -1322,6 +1396,36 @@ vkr_internal Mat4 scene_compute_local_matrix(Vec3 position, VkrQuat rotation,
 // Two-Pass Transform Update (Phase 3 Optimization)
 // ============================================================================
 
+/* Whether entities of `arch` can have their world matrix overridden: by an
+   evaluated pose, or while the scene has physics by a body or a character,
+   the only entities vkr_scene_physics_world_matrix answers for. */
+vkr_internal bool8_t scene_transform_overridable(const VkrScene *scene,
+                                                 const VkrArchetype *arch,
+                                                 VkrComponentTypeId character) {
+  if (arch->type_to_col[scene->comp_evaluated_transform] !=
+      VKR_ENTITY_TYPE_TO_COL_INVALID) {
+    return true_v;
+  }
+  if (!scene->physics) {
+    return false_v;
+  }
+  return arch->type_to_col[scene->comp_physics_body] !=
+             VKR_ENTITY_TYPE_TO_COL_INVALID ||
+         (character != VKR_COMPONENT_TYPE_INVALID &&
+          arch->type_to_col[character] != VKR_ENTITY_TYPE_TO_COL_INVALID);
+}
+
+/* What the local pass learns about every transform for the world pass. */
+typedef struct SceneTransformLocalPass {
+  VkrScene *scene;
+  /* The physics character component, or VKR_COMPONENT_TYPE_INVALID. */
+  VkrComponentTypeId character;
+  /* Some transform needs its world matrix computed. */
+  bool8_t dirty;
+  /* Some transform's archetype is scene_transform_overridable. */
+  bool8_t overridable;
+} SceneTransformLocalPass;
+
 /**
  * @brief Chunk callback for Pass 1: Update dirty local matrices.
  *
@@ -1330,18 +1434,23 @@ vkr_internal Mat4 scene_compute_local_matrix(Vec3 position, VkrQuat rotation,
  * are stored contiguously in chunks.
  *
  * Also clears WORLD_UPDATED flag from previous frame to prepare for Pass 2's
- * deferred dirty propagation.
+ * deferred dirty propagation. A transform is written only where a flag
+ * changes, so a scene at rest reads its transforms without dirtying them.
  *
  * Local matrix computation has no dependencies on other entities, so chunk
  * iteration order doesn't matter.
  */
 vkr_internal void transform_local_update_cb(const VkrArchetype *arch,
                                             VkrChunk *chunk, void *user) {
-  VkrScene *scene = (VkrScene *)user;
+  SceneTransformLocalPass *pass = (SceneTransformLocalPass *)user;
+  const VkrScene *scene = pass->scene;
 
   uint32_t count = chunk->count;
   if (count == 0)
     return;
+
+  pass->overridable = pass->overridable ||
+                      scene_transform_overridable(scene, arch, pass->character);
 
   // Direct column access via archetype - no per-entity lookup
   uint16_t transform_col = arch->type_to_col[scene->comp_transform];
@@ -1349,14 +1458,23 @@ vkr_internal void transform_local_update_cb(const VkrArchetype *arch,
 
   for (uint32_t i = 0; i < count; i++) {
     SceneTransform *t = &transforms[i];
+    uint8_t flags = t->flags;
 
-    // Clear WORLD_UPDATED from previous frame (for deferred dirty propagation)
-    t->flags &= ~SCENE_TRANSFORM_WORLD_UPDATED;
+    if (flags & (SCENE_TRANSFORM_WORLD_UPDATED | SCENE_TRANSFORM_DIRTY_LOCAL)) {
+      // Clear WORLD_UPDATED from previous frame (for deferred dirty
+      // propagation)
+      flags &= (uint8_t)~SCENE_TRANSFORM_WORLD_UPDATED;
 
-    if (t->flags & SCENE_TRANSFORM_DIRTY_LOCAL) {
-      t->local = scene_compute_local_matrix(t->position, t->rotation, t->scale);
-      t->flags &= ~SCENE_TRANSFORM_DIRTY_LOCAL;
-      t->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
+      if (flags & SCENE_TRANSFORM_DIRTY_LOCAL) {
+        t->local =
+            scene_compute_local_matrix(t->position, t->rotation, t->scale);
+        flags &= (uint8_t)~SCENE_TRANSFORM_DIRTY_LOCAL;
+        flags |= SCENE_TRANSFORM_DIRTY_WORLD;
+      }
+      t->flags = flags;
+    }
+    if (flags & SCENE_TRANSFORM_DIRTY_WORLD) {
+      pass->dirty = true_v;
     }
   }
 }
@@ -1819,12 +1937,10 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
     const VkrComponentTypeId id = vkr_entity_register_component_once(
         scene->world, world_type->name, world_type->size, world_type->align);
     if (id == VKR_COMPONENT_TYPE_INVALID ||
-        scene->type_count == VKR_SCENE_TYPE_MAX) {
+        !scene_type_add(scene, world_type, id)) {
       world_types_registered = false_v;
       break;
     }
-    scene->types[scene->type_count++] =
-        (VkrSceneComponentType){.type = world_type, .id = id};
   }
 
   if (!world_types_registered || !vkr_scene_physics_register(scene) ||
@@ -2893,6 +3009,60 @@ static Mat4 scene_evaluated_blend(const SceneEvaluatedTransform *evaluated,
   return blended;
 }
 
+/* The world matrix that overrides live `entity`'s, when one does: its
+   evaluated pose, drawn between ticks, else its physics pose. */
+static bool8_t scene_transform_override(VkrScene *scene, VkrEntityId entity,
+                                        VkrComponentTypeId character,
+                                        const VkrScenePhysicsClock *clock,
+                                        Mat4 *out) {
+  const VkrArchetype *arch =
+      scene->world->dir.records[entity.parts.index].chunk->arch;
+  if (!scene_transform_overridable(scene, arch, character)) {
+    return false_v;
+  }
+  const SceneEvaluatedTransform *evaluated =
+      vkr_entity_get_component_if_alive_const(scene->world, entity,
+                                              scene->comp_evaluated_transform);
+  if (evaluated) {
+    *out = evaluated->tick && evaluated->tick == clock->completed
+               ? scene_evaluated_blend(evaluated, clock->alpha)
+               : evaluated->world;
+    return true_v;
+  }
+  return vkr_scene_physics_world_matrix(scene, entity, out);
+}
+
+#ifndef NDEBUG
+/* Proves a skipped world pass: walks it read-only, looking overrides up per
+   entity as the pass did before it tested archetypes, and asserts that no
+   entity would be recomputed. */
+static void scene_transforms_assert_rest(VkrScene *scene) {
+  const VkrWorld *world = scene->world;
+  for (uint32_t i = 0; i < scene->topo_count; ++i) {
+    const VkrEntityId entity = scene->topo_order[i];
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        world, entity, scene->comp_transform);
+    if (!transform) {
+      continue;
+    }
+    const SceneTransform *parent =
+        transform->parent.u64
+            ? vkr_entity_get_component_if_alive_const(world, transform->parent,
+                                                      scene->comp_transform)
+            : NULL;
+    Mat4 physics_world;
+    const bool8_t stale =
+        (transform->flags & SCENE_TRANSFORM_DIRTY_WORLD) ||
+        (parent && (parent->flags & SCENE_TRANSFORM_WORLD_UPDATED)) ||
+        vkr_entity_has_component(world, entity,
+                                 scene->comp_evaluated_transform) ||
+        (scene->physics &&
+         vkr_scene_physics_world_matrix(scene, entity, &physics_world));
+    assert_log(!stale, "A skipped transform pass left a world matrix stale");
+  }
+}
+#endif
+
 void vkr_scene_update_transforms(VkrScene *scene) {
   if (!scene || scene->simulation.active || !scene_compile_queries(scene)) {
     return;
@@ -2918,14 +3088,31 @@ void vkr_scene_update_transforms(VkrScene *scene) {
   // - Eliminates expensive scene_mark_children_world_dirty() lookups
 
   // Pass 1: Chunk-based local matrix update + clear WORLD_UPDATED flags
+  SceneTransformLocalPass local = {
+      .scene = scene,
+      .character = vkr_scene_physics_character_component(scene),
+  };
   vkr_entity_query_compiled_each_chunk(&scene->query_transforms,
-                                       transform_local_update_cb, scene);
+                                       transform_local_update_cb, &local);
+
+  /* Pass 2 recomputes an entity only when it is dirty, its parent was
+     recomputed in this pass, or an override differs from its world. Pass 1
+     read every transform's flags and cleared last update's WORLD_UPDATED,
+     so with nothing dirty and no overridable archetype the pass changes
+     nothing. */
+  if (!local.dirty && !local.overridable) {
+#ifndef NDEBUG
+    scene_transforms_assert_rest(scene);
+#endif
+    return;
+  }
 
   // Pass 2: Topo-ordered world matrix propagation with deferred dirty
   // propagation
   VkrWorld *world = scene->world;
   VkrComponentTypeId comp_transform = scene->comp_transform;
   const VkrScenePhysicsClock clock = vkr_scene_physics_clock(scene);
+  bool8_t recomputed = false_v;
 
   for (uint32_t i = 0; i < scene->topo_count; i++) {
     // Full entity ID stored in topo_order - no reconstruction needed
@@ -2954,18 +3141,10 @@ void vkr_scene_update_transforms(VkrScene *scene) {
     }
 
     Mat4 physics_world;
-    const SceneEvaluatedTransform *evaluated =
-        vkr_entity_get_component_if_alive_const(
-            world, entity, scene->comp_evaluated_transform);
-    bool8_t physics_override = evaluated != NULL;
-    if (evaluated) {
-      physics_world = evaluated->tick && evaluated->tick == clock.completed
-                          ? scene_evaluated_blend(evaluated, clock.alpha)
-                          : evaluated->world;
-    } else if (scene->physics) {
-      physics_override =
-          vkr_scene_physics_world_matrix(scene, entity, &physics_world);
-    }
+    const bool8_t physics_override =
+        local.overridable &&
+        scene_transform_override(scene, entity, local.character, &clock,
+                                 &physics_world);
     if (physics_override &&
         MemCompare(&transform->world, &physics_world, sizeof(physics_world))) {
       transform->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
@@ -2987,9 +3166,13 @@ void vkr_scene_update_transforms(VkrScene *scene) {
     transform->flags &= ~SCENE_TRANSFORM_DIRTY_WORLD;
     transform->flags |=
         SCENE_TRANSFORM_WORLD_UPDATED; // Mark for child propagation
+    recomputed = true_v;
 
     // Mark for render sync
     scene_mark_render_dirty(scene, entity);
+  }
+  if (recomputed) {
+    scene->transform_revision++;
   }
 }
 
@@ -4063,6 +4246,7 @@ bool8_t vkr_scene_set_editor_hidden(VkrScene *scene,
   }
   scene->editor_hidden_count = count;
   scene->editor_isolate = isolate;
+  scene->editor_hidden_revision++;
   scene->render_full_sync_needed = true;
   return true_v;
 }

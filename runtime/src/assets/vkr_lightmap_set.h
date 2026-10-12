@@ -23,11 +23,12 @@ extern "C" {
  * meanings and each lightmapped instance's page rectangle.
  *
  * A plane is one layer's irradiance or dominant direction in one encoding.
- * A bake gives every layer an ASTC 4x4 HDR irradiance plane, which the tiled
- * pipeline samples, and each lamp-group layer planes in encodings desktop
- * GPUs sample (RGB9E5 or BC6H irradiance, RGBA8 or BC7 direction).
- * Packaging may leave out the planes a platform does not sample; a runtime
- * publishes only the planes its pipeline class samples.
+ * A bake writes only the planes its host's pipeline class samples: a tiled
+ * bake (Apple hosts) every layer's ASTC 4x4 HDR irradiance plane, a desktop
+ * bake each lamp-group layer's planes in encodings desktop GPUs sample
+ * (RGB9E5 or BC6H irradiance, RGBA8 or BC7 direction). A scene names one set
+ * per pipeline class, and a runtime publishes only the planes its class
+ * samples (vkr_lightmap_set_class_planes).
  *
  * VKLM v6 writes every scalar explicitly in little-endian order: a fixed
  * header, the layer table (vkr_light_layers.h records), the plane table, the
@@ -57,6 +58,12 @@ extern "C" {
 #define VKR_LIGHTMAP_SET_MAX_PAGES 64u
 #define VKR_LIGHTMAP_SET_MAX_LAYERS 32u
 #define VKR_LIGHTMAP_SET_MAX_PLANES 128u
+/* Bytes from the start of a file that always hold its header, layer table and
+   plane table, the most vkr_lightmap_set_decode_planes reads. */
+#define VKR_LIGHTMAP_SET_PLANES_PREFIX_BYTES                                   \
+  (VKR_LIGHTMAP_SET_HEADER_BYTES +                                             \
+   VKR_LIGHTMAP_SET_MAX_LAYERS * VKR_LIGHT_LAYER_RECORD_BYTES +                \
+   VKR_LIGHTMAP_SET_MAX_PLANES * VKR_LIGHTMAP_SET_PLANE_BYTES)
 
 /* What a plane holds. Irradiance is RGB irradiance with ambient visibility
    in alpha where the encoding has alpha; direction is the luminance-weighted
@@ -174,6 +181,30 @@ uint32_t vkr_lightmap_set_find_plane(const VkrLightmapSet *set, uint32_t layer,
                                      VkrLightmapPlaneKind kind,
                                      bool8_t desktop);
 
+/* The irradiance planes one pipeline class samples, in slice order within a
+   page: `layers[i]` and its plane `planes[i]` for i below `count`, all in
+   `format`. */
+typedef struct VkrLightmapClassPlanes {
+  uint32_t count;
+  uint32_t layers[VKR_LIGHTMAP_SET_MAX_LAYERS];
+  uint32_t planes[VKR_LIGHTMAP_SET_MAX_LAYERS];
+  VkrLightmapPlaneFormat format;
+  /** Every lamp group has a plane, so the set holds every static lamp. */
+  bool8_t every_lamp_group;
+} VkrLightmapClassPlanes;
+
+/*
+ * Selects the irradiance planes a pipeline class samples (ADR-088,
+ * ADR-104): on the tiled pipeline (`desktop` false) every layer's ASTC 4x4
+ * HDR plane, which each layer must have; on the desktop pipeline each lamp
+ * group's desktop plane. The selected planes share one encoding. False when
+ * the set holds nothing the class samples. Reads only the layer and plane
+ * tables, so a set from vkr_lightmap_set_decode_planes serves.
+ */
+bool8_t vkr_lightmap_set_class_planes(const VkrLightmapSet *set,
+                                      bool8_t desktop,
+                                      VkrLightmapClassPlanes *out_planes);
+
 /*
  * Validates a producer's set (everything but `payload`) and reports the
  * payload offset, which is also the prefix size, and the file size.
@@ -192,7 +223,7 @@ bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
                                       uint64_t prefix_size);
 
 /*
- * Validates and decodes a complete VKLM v4 or v5 file: header, table and
+ * Validates and decodes a complete VKLM v4 to v6 file: header, table and
  * payload checksums, sizes and offsets, layer meanings and names, the plane
  * table (known encodings of a kind they can hold, canonical order, desktop
  * planes only on lamp groups, lamp-direct planes only on lamp groups and
@@ -201,6 +232,21 @@ bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
  */
 bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
                                 Arena *arena, VkrLightmapSet *out_set);
+
+/*
+ * Decodes the layer and plane tables of a VKLM v4 to v6 file of `file_size`
+ * bytes from its first `prefix_size` bytes, which must reach the end of the
+ * plane table (VKR_LIGHTMAP_SET_PLANES_PREFIX_BYTES, or the whole file when
+ * smaller, always do), so a reader can tell what the set holds before it
+ * reads the pages. Checks the header, its checksum and the sizes and offsets
+ * it implies for `file_size`, the layer meanings and the plane table as
+ * vkr_lightmap_set_decode does; the table and payload checksums, instances
+ * and rectangles stay unchecked. `out_set` takes the counts, layers and
+ * planes; its instances, lamp-direct rectangles and payload are NULL.
+ */
+bool8_t vkr_lightmap_set_decode_planes(const uint8_t *prefix,
+                                       uint64_t prefix_size, uint64_t file_size,
+                                       Arena *arena, VkrLightmapSet *out_set);
 
 #ifdef __cplusplus
 }

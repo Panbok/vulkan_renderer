@@ -103,6 +103,8 @@ struct VkrEditorScenePanels {
   uint32_t capacity;
   /* Nodes the last rebuild laid out: headers and directory slots. */
   uint32_t node_total;
+  /* The first top-level node of the last rebuild, where rows start. */
+  uint32_t first_root;
   uint32_t row_count;
   uint32_t pinned_rows[TREE_PINNED_ROW_MAX];
   uint32_t pinned_depths[TREE_PINNED_ROW_MAX];
@@ -363,6 +365,83 @@ static uint64_t tree_world_revision(const VkrSampleUiFrame *frame) {
   return revision;
 }
 
+/* Expands every node above the selection, its container's header too, so
+   its row shows; true when one opened. Reads the nodes' links only. */
+static bool8_t tree_reveal(VkrEditorScenePanels *p,
+                           const TreeContainer *containers,
+                           uint32_t container_count,
+                           const VkrSampleUiFrame *frame) {
+  const uint32_t selected_node =
+      tree_node_index(containers, container_count, frame->selected_entity);
+  if (frame->selected_entity.u64 == p->revealed.u64 ||
+      selected_node >= p->node_total ||
+      p->nodes[selected_node].entity.u64 != frame->selected_entity.u64) {
+    return false_v;
+  }
+  bool8_t opened = false_v;
+  uint32_t parent = p->nodes[selected_node].parent;
+  while (parent != NO_ROW) {
+    opened = opened || !p->nodes[parent].expanded;
+    p->nodes[parent].expanded = true_v;
+    if (p->nodes[parent].header) {
+      p->container_collapsed[p->nodes[parent].container] = false_v;
+    }
+    parent = p->nodes[parent].parent;
+  }
+  return opened;
+}
+
+/* Lays out the pinned rows and the shown rows from the nodes' links,
+   expansion and search matches. */
+static void tree_layout_rows(VkrEditorScenePanels *p) {
+  /* Pinned objects, in tree order, each followed by its expanded subtree. */
+  p->pinned_row_count = 0;
+  for (uint32_t i = 0; i < p->node_total; ++i) {
+    if (!p->nodes[i].pinned || !p->nodes[i].entity.u64) {
+      continue;
+    }
+    uint32_t at = i;
+    uint32_t level = 0;
+    while (at != NO_ROW && p->pinned_row_count < TREE_PINNED_ROW_MAX) {
+      p->pinned_rows[p->pinned_row_count] = at;
+      p->pinned_depths[p->pinned_row_count++] = level;
+      const EditorTreeNode *n = &p->nodes[at];
+      if (n->child != NO_ROW && n->expanded) {
+        at = n->child;
+        ++level;
+        continue;
+      }
+      while (at != i && p->nodes[at].next == NO_ROW) {
+        at = p->nodes[at].parent;
+        --level;
+      }
+      at = at == i ? NO_ROW : p->nodes[at].next;
+    }
+  }
+  p->row_count = 0;
+  uint32_t index = p->first_root;
+  uint32_t depth = 0;
+  while (index != NO_ROW) {
+    EditorTreeNode *n = &p->nodes[index];
+    n->depth = depth;
+    bool8_t visible = !p->search[0] || n->match;
+    if (visible) {
+      p->rows[p->row_count++] = index;
+    }
+    if (visible && n->child != NO_ROW && (n->expanded || p->search[0])) {
+      index = n->child;
+      depth++;
+      continue;
+    }
+    while (n->next == NO_ROW && n->parent != NO_ROW) {
+      index = n->parent;
+      n = &p->nodes[index];
+      depth--;
+    }
+    index = n->next;
+  }
+}
+
 static bool8_t rebuild_tree(VkrEditorScenePanels *p,
                             const VkrSampleUiFrame *frame) {
   TreeContainer containers[TREE_CONTAINER_COUNT];
@@ -500,19 +579,9 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
       }
     }
   }
-  const uint32_t selected_node =
-      tree_node_index(containers, container_count, frame->selected_entity);
-  if (frame->selected_entity.u64 != p->revealed.u64 &&
-      selected_node != NO_ROW &&
-      p->nodes[selected_node].entity.u64 == frame->selected_entity.u64) {
-    uint32_t parent = p->nodes[selected_node].parent;
-    while (parent != NO_ROW) {
-      p->nodes[parent].expanded = true_v;
-      if (p->nodes[parent].header)
-        p->container_collapsed[p->nodes[parent].container] = false_v;
-      parent = p->nodes[parent].parent;
-    }
-  }
+  p->node_total = capacity;
+  p->first_root = first_root;
+  (void)tree_reveal(p, containers, container_count, frame);
   /* An object's icons stay off while any ancestor turns them off. */
   for (uint32_t i = 0; i < capacity; ++i) {
     EditorTreeNode *n = &p->nodes[i];
@@ -524,50 +593,7 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
       at = p->nodes[at].parent;
     }
   }
-  /* Pinned objects, in tree order, each followed by its expanded subtree. */
-  p->pinned_row_count = 0;
-  for (uint32_t i = 0; i < capacity; ++i) {
-    if (!p->nodes[i].pinned || !p->nodes[i].entity.u64)
-      continue;
-    uint32_t at = i;
-    uint32_t level = 0;
-    while (at != NO_ROW && p->pinned_row_count < TREE_PINNED_ROW_MAX) {
-      p->pinned_rows[p->pinned_row_count] = at;
-      p->pinned_depths[p->pinned_row_count++] = level;
-      const EditorTreeNode *n = &p->nodes[at];
-      if (n->child != NO_ROW && n->expanded) {
-        at = n->child;
-        ++level;
-        continue;
-      }
-      while (at != i && p->nodes[at].next == NO_ROW) {
-        at = p->nodes[at].parent;
-        --level;
-      }
-      at = at == i ? NO_ROW : p->nodes[at].next;
-    }
-  }
-  p->row_count = 0;
-  uint32_t index = first_root, depth = 0;
-  while (index != NO_ROW) {
-    EditorTreeNode *n = &p->nodes[index];
-    n->depth = depth;
-    bool8_t visible = !p->search[0] || n->match;
-    if (visible)
-      p->rows[p->row_count++] = index;
-    if (visible && n->child != NO_ROW && (n->expanded || p->search[0])) {
-      index = n->child;
-      depth++;
-      continue;
-    }
-    while (n->next == NO_ROW && n->parent != NO_ROW) {
-      index = n->parent;
-      n = &p->nodes[index];
-      depth--;
-    }
-    index = n->next;
-  }
-  p->node_total = capacity;
+  tree_layout_rows(p);
   p->cooking_key = 0u;
   p->generation = frame->scene_generation;
   p->tree_world = frame->world;
@@ -1733,6 +1759,61 @@ static void hierarchy_type_cell(VkrUiSystem *ui, HierarchyColumns cols,
   vkr_ui_label(ui, string8_lit("node.type"), text, &c);
 }
 
+/* A loading spinner's alpha: it pulses as cooking rows do, unless motion is
+   reduced. */
+static float32_t hierarchy_opening_pulse(const VkrUiSystem *ui) {
+  if (ui->reduce_motion) {
+    return 1.0f;
+  }
+  return 0.55f +
+         0.45f * sinf((float32_t)vkr_platform_get_absolute_time() * 4.0f);
+}
+
+/* What an opening scene runs now and for how long, such as "Building
+   brushes 2345 of 6973 · 15 s"; formatted into this build's allocator. */
+static String8 hierarchy_opening_text(VkrUiSystem *ui,
+                                      const VkrEditorSceneOpening *opening) {
+  const uint32_t seconds = (uint32_t)Max(0.0, opening->seconds);
+  if (opening->total) {
+    return string8_create_formatted(
+        ui->frame_allocator, "%.*s %u of %u \xc2\xb7 %u s",
+        (int)opening->step.length, (const char *)opening->step.str,
+        opening->done, opening->total, seconds);
+  }
+  return string8_create_formatted(ui->frame_allocator, "%.*s \xc2\xb7 %u s",
+                                  (int)opening->step.length,
+                                  (const char *)opening->step.str, seconds);
+}
+
+/* Until an opening scene activates, a row where its rows will appear names
+   it with a pulsing spinner; its tooltip says what runs (ADR-069). Returns
+   the height the row takes. */
+static float32_t hierarchy_opening_row(VkrUiSystem *ui,
+                                       const VkrEditorSceneOpening *opening,
+                                       float32_t w, float32_t y) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig c = widget_at(4, y, w - 8, HIERARCHY_ROW_PT);
+  c.style.corner_radius_pt =
+      (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
+  c.style.background_color = theme->header;
+  c.style.padding_pt = (VkrUiEdges){4, 6, 4, 8};
+  c.style.text_color = theme->text_secondary;
+  c.icon = VKR_UI_ICON_SPINNER;
+  c.icon_size_pt = 14.0f;
+  c.icon_color =
+      vkr_ui_color_alpha(theme->accent_hover, hierarchy_opening_pulse(ui));
+  c.tooltip = hierarchy_opening_text(ui, opening);
+  vkr_ui_label(ui, string8_lit("opening"),
+               opening->name.length
+                   ? string8_create_formatted(ui->frame_allocator,
+                                              "Loading %.*s...",
+                                              (int)opening->name.length,
+                                              (const char *)opening->name.str)
+                   : string8_lit("Loading scene..."),
+               &c);
+  return HIERARCHY_ROW_PT + 2.0f;
+}
+
 /* Container header: caret, icon and name; clicking folds the container. */
 static void hierarchy_container_row(VkrEditorUi *editor,
                                     VkrEditorScenePanels *p,
@@ -1782,6 +1863,17 @@ static void hierarchy_container_row(VkrEditorUi *editor,
                                                      : VKR_UI_ICON_SCENE;
   c.icon_size_pt = 14.0f;
   c.icon_color = world ? (Vec4){0.62f, 0.78f, 0.98f, 1.0f} : theme->accent;
+  /* An opened scene whose brushes, terrain or scatter copies still build
+     pulses until it is usable (ADR-069). */
+  VkrEditorSceneOpening opening = {0};
+  if (n->container == TREE_CONTAINER_SCENE &&
+      vkr_editor_projects_opening(editor->projects, &opening) &&
+      opening.phase == VKR_EDITOR_SCENE_OPEN_BUILDING) {
+    c.icon = VKR_UI_ICON_SPINNER;
+    c.icon_color =
+        vkr_ui_color_alpha(theme->accent_hover, hierarchy_opening_pulse(ui));
+    c.tooltip = hierarchy_opening_text(ui, &opening);
+  }
   vkr_ui_label(ui, string8_lit("container.name"),
                hierarchy_container_name(editor, frame, n->container), &c);
   /* A scene inherits the World's objects unless scoped to its own. */
@@ -2590,21 +2682,39 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
   bool8_t any_additive = false_v;
   for (uint32_t i = 0u; i < VKR_SCENE_ADDITIVE_MAX; ++i)
     any_additive |= frame->additive[i] != NULL;
+  /* A scene that opens shows as loading until it activates (ADR-069). */
+  VkrEditorSceneOpening opening = {0};
+  const bool8_t scene_opening =
+      !frame->scene &&
+      vkr_editor_projects_opening(editor->projects, &opening) &&
+      opening.phase != VKR_EDITOR_SCENE_OPEN_BUILDING;
   if (!frame->scene && !frame->world && !any_additive) {
     c = widget_at(8, 64, w - 16, 40);
     c.style.text_color = theme->text_secondary;
     c.placement.justify = VKR_UI_ALIGN_CENTER;
-    c.icon = frame->world_loading ? VKR_UI_ICON_SPINNER : VKR_UI_ICON_SCENE;
+    c.icon = frame->world_loading || scene_opening ? VKR_UI_ICON_SPINNER
+                                                   : VKR_UI_ICON_SCENE;
     c.icon_size_pt = 18.0f;
     c.icon_color = theme->text_disabled;
+    String8 text = frame->world_loading ? string8_lit("Loading World...")
+                                        : string8_lit("No scene loaded");
+    if (scene_opening) {
+      c.icon_color =
+          vkr_ui_color_alpha(theme->accent_hover, hierarchy_opening_pulse(ui));
+      c.tooltip = hierarchy_opening_text(ui, &opening);
+      text = opening.name.length
+                 ? string8_create_formatted(
+                       ui->frame_allocator, "Loading %.*s...",
+                       (int)opening.name.length, (const char *)opening.name.str)
+                 : string8_lit("Loading scene...");
+    }
     /* Scenes open from Content or the Scenes menu; a World whose document
        changed streams back in. */
-    vkr_ui_label(ui, string8_lit("no.scene"),
-                 frame->world_loading ? string8_lit("Loading World...")
-                                      : string8_lit("No scene loaded"),
-                 &c);
+    vkr_ui_label(ui, string8_lit("no.scene"), text, &c);
     return;
   }
+  const bool8_t selection_moved = frame->selected_entity.u64 != p->revealed.u64;
+  bool8_t laid_out = false_v;
   if (p->rebuild || p->generation != frame->scene_generation ||
       p->tree_world != frame->world ||
       (frame->scene &&
@@ -2612,10 +2722,23 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       (frame->world &&
        p->world_structure_revision != frame->world->structure_revision) ||
       tree_additive_changed(p, frame) ||
-      (p->search[0] == '#' && p->tags_revision != tree_world_revision(frame)) ||
-      frame->selected_entity.u64 != p->revealed.u64) {
+      (p->search[0] == '#' && p->tags_revision != tree_world_revision(frame))) {
     if (!rebuild_tree(p, frame))
       return;
+    laid_out = true_v;
+  } else if (selection_moved) {
+    /* Nothing the nodes are built from changed, so a new selection only
+       opens the rows above it, as a rebuild would, and lays the rows out
+       again when one opened. */
+    TreeContainer containers[TREE_CONTAINER_COUNT];
+    uint32_t total = 0u;
+    const uint32_t container_count = tree_containers(frame, containers, &total);
+    if (tree_reveal(p, containers, container_count, frame)) {
+      tree_layout_rows(p);
+    }
+    laid_out = true_v;
+  }
+  if (laid_out) {
     p->selected_row = NO_ROW;
     for (uint32_t row = 0; row < p->row_count; ++row)
       if (p->nodes[p->rows[row]].entity.u64 == frame->selected_entity.u64) {
@@ -2647,7 +2770,10 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
   const float32_t pinned_h = hierarchy_pinned_build(
       editor, p, frame, cols, pinned_top,
       (h - pinned_top - HIERARCHY_FOOTER_PT) * 0.4f, rect, marked_at);
-  const float32_t list_top = pinned_top + pinned_h;
+  float32_t list_top = pinned_top + pinned_h;
+  if (scene_opening) {
+    list_top += hierarchy_opening_row(ui, &opening, w, list_top);
+  }
   const float32_t row_h = HIERARCHY_ROW_PT;
   float32_t page = Max(0.0f, h - list_top - HIERARCHY_FOOTER_PT - 2.0f);
   const uint32_t selected_row = p->selected_row;

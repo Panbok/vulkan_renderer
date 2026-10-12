@@ -11,6 +11,7 @@
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_system.h"
 
 #include <assert.h>
@@ -1125,6 +1126,141 @@ static void test_scene_source_nodes_preserve_hierarchy_and_exact_matrix(void) {
   scene_loader_test_context_shutdown(&ctx);
 }
 
+/* World translation of `entity` after the last transform update. */
+vkr_internal Vec3 scene_test_world_position(VkrScene *scene,
+                                            VkrEntityId entity) {
+  return mat4_position(vkr_scene_get_transform(scene, entity)->world);
+}
+
+vkr_internal bool8_t scene_test_near(Vec3 a, Vec3 b) {
+  return fabsf(a.x - b.x) < 1e-5f && fabsf(a.y - b.y) < 1e-5f &&
+         fabsf(a.z - b.z) < 1e-5f;
+}
+
+/* The transform update skips its world pass while no transform is dirty and
+   no override can apply. Changes made between such updates still reach
+   every descendant, and transform_revision, which brushes and population
+   compare, advances exactly when a world matrix is recomputed. */
+vkr_internal void test_scene_transforms_follow_changes_after_rest(void) {
+  printf("  Running test_scene_transforms_follow_changes_after_rest...\n");
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  VkrScene *scene = &ctx.scene;
+  const VkrEntityId root = vkr_scene_create_entity(scene, NULL);
+  const VkrEntityId middle = vkr_scene_create_entity(scene, NULL);
+  const VkrEntityId leaf = vkr_scene_create_entity(scene, NULL);
+  assert(vkr_scene_set_transform(scene, root, vec3_new(10, 0, 0),
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_transform(scene, middle, vec3_new(0, 2, 0),
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_transform(scene, leaf, vec3_new(0, 0, 3),
+                                 vkr_quat_identity(), vec3_one()));
+  vkr_scene_set_parent(scene, middle, root);
+  vkr_scene_set_parent(scene, leaf, middle);
+  vkr_scene_update(scene, 0.0);
+  assert(scene_test_near(scene_test_world_position(scene, leaf),
+                         vec3_new(10, 2, 3)));
+
+  /* At rest nothing is recomputed. */
+  uint64_t revision = scene->transform_revision;
+  vkr_scene_update(scene, 0.0);
+  vkr_scene_update(scene, 0.0);
+  assert(scene->transform_revision == revision);
+
+  /* A root moved after rest updates carries its whole subtree. */
+  vkr_scene_set_position(scene, root, vec3_new(-4, 1, 0));
+  vkr_scene_update(scene, 0.0);
+  assert(scene->transform_revision != revision);
+  assert(scene_test_near(scene_test_world_position(scene, middle),
+                         vec3_new(-4, 3, 0)));
+  assert(scene_test_near(scene_test_world_position(scene, leaf),
+                         vec3_new(-4, 3, 3)));
+  revision = scene->transform_revision;
+  vkr_scene_update(scene, 0.0);
+  assert(scene->transform_revision == revision);
+
+  /* An evaluated pose replaces its entity's world and carries its children;
+     while it holds still nothing is recomputed, and clearing it restores
+     the hierarchy. */
+  const Mat4 pose = mat4_translate(vec3_new(0, 50, 0));
+  assert(vkr_scene_set_evaluated_transform(scene, middle, &pose));
+  vkr_scene_update(scene, 0.0);
+  assert(scene_test_near(scene_test_world_position(scene, leaf),
+                         vec3_new(0, 50, 3)));
+  revision = scene->transform_revision;
+  vkr_scene_update(scene, 0.0);
+  assert(scene->transform_revision == revision);
+  assert(vkr_scene_set_evaluated_transform(scene, middle, NULL));
+  vkr_scene_update(scene, 0.0);
+  assert(scene_test_near(scene_test_world_position(scene, leaf),
+                         vec3_new(-4, 3, 3)));
+
+  /* A reparent made at rest takes effect on the next update. */
+  vkr_scene_update(scene, 0.0);
+  vkr_scene_set_parent(scene, leaf, root);
+  vkr_scene_update(scene, 0.0);
+  assert(scene_test_near(scene_test_world_position(scene, leaf),
+                         vec3_new(-4, 1, 3)));
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_transforms_follow_changes_after_rest PASSED\n");
+}
+
+/* Spline points are children. A population pass that runs while the child
+   index is invalid (a brush build or an earlier rule's first copies
+   invalidated it, which moves no revision the pass compares) must not
+   settle a rule on a signature without its points: once the index
+   rebuilds, the rule follows its points and nothing stays pending. */
+vkr_internal void test_scene_population_waits_for_child_index(void) {
+  printf("  Running test_scene_population_waits_for_child_index...\n");
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  VkrScene *scene = &ctx.scene;
+  scene->assets = &ctx.assets;
+  const VkrEntityId spline = vkr_scene_create_entity(scene, NULL);
+  assert(vkr_scene_set_transform(scene, spline, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  const SceneSpline curve = {0};
+  assert(vkr_scene_set_typed(scene, spline, &vkr_scene_spline_type, &curve));
+  for (uint32_t i = 0; i < 2u; ++i) {
+    const VkrEntityId point = vkr_scene_create_entity(scene, NULL);
+    assert(vkr_scene_set_transform(scene, point,
+                                   vec3_new(4.0f * (float32_t)i, 0, 0),
+                                   vkr_quat_identity(), vec3_one()));
+    const SceneSplinePoint order = {.order = (float32_t)i};
+    assert(vkr_scene_set_typed(scene, point, &vkr_scene_spline_point_type,
+                               &order));
+    vkr_scene_set_parent(scene, point, spline);
+  }
+  /* No mesh is named, so a build only records the rule's signature. */
+  SceneSplineMesh rule;
+  vkr_type_defaults(&vkr_scene_spline_mesh_type, &rule);
+  assert(
+      vkr_scene_set_typed(scene, spline, &vkr_scene_spline_mesh_type, &rule));
+  const VkrEntityId other = vkr_scene_create_entity(scene, NULL);
+
+  vkr_scene_update_transforms(scene);
+  assert(scene->child_index_valid);
+  const uint64_t world = scene->world_revision;
+  const uint64_t structure = scene->structure_revision;
+  const uint64_t transform = scene->transform_revision;
+  /* A render id added between the transform update and the population
+     invalidates the child index and moves none of the compared revisions,
+     as population_create does for a rule's first copies. */
+  assert(vkr_scene_ensure_render_id(scene, other, NULL));
+  assert(!scene->child_index_valid);
+  vkr_scene_population_update(scene);
+
+  vkr_scene_update_transforms(scene);
+  assert(scene->child_index_valid);
+  assert(scene->world_revision == world &&
+         scene->structure_revision == structure &&
+         scene->transform_revision == transform);
+  vkr_scene_population_update(scene);
+  assert(vkr_scene_population_pending(scene) == 0u);
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_population_waits_for_child_index PASSED\n");
+}
+
 static void test_scene_source_fingerprint_detects_entity_reordering(void) {
   SceneLoaderTestContext a, b;
   assert(scene_loader_test_context_init(&a));
@@ -1545,6 +1681,8 @@ bool32_t run_scene_loader_tests(void) {
   test_scene_loader_document_ids();
   test_scene_loader_legacy_atmosphere_sun();
   test_scene_source_nodes_preserve_hierarchy_and_exact_matrix();
+  test_scene_transforms_follow_changes_after_rest();
+  test_scene_population_waits_for_child_index();
   test_scene_source_fingerprint_detects_entity_reordering();
   test_scene_loader_missing_environment_succeeds();
   test_scene_loader_invalid_environment_preserves_scene_load();

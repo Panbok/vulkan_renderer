@@ -37,14 +37,16 @@ bool8_t vkr_temporal_prepare_static_accumulation(
     bool8_t scene_matches, bool8_t ssr_enabled,
     uint32_t previous_unchanged_frames, uint32_t *out_unchanged_frames);
 
-/** Reflection radiance controls, independent of camera and object motion.
- * Native callers additionally prove resource/graph revisions and projection,
- * extent, frame continuity and selected motion-history compatibility. */
+/** Reflection radiance controls, independent of camera and object motion,
+ * asset publication state, texture uploads and fog. Always eligible. Native
+ * callers additionally prove the graph revision, temporal resets, extent,
+ * frame continuity and selected motion-history compatibility. */
 VkrTemporalSceneSignature
 vkr_ssr_content_signature(const struct VkrPreparedFrame *packet);
 
-/** Independent direct-light bounce content; excludes camera and sampling phase.
- */
+/** Independent direct-light bounce controls; excludes camera, sampling phase,
+ * world content generations, asset publication state and local-shadow
+ * strength. Always eligible; native callers prove the rest as for SSR. */
 VkrTemporalSceneSignature
 vkr_ssgi_content_signature(const struct VkrPreparedFrame *packet);
 

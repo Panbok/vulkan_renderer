@@ -553,6 +553,10 @@ vkr_internal bool8_t vkr_renderer_metrics_register_exposure(
                    VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_RATIO);
   VKR_REGISTER_U64(exposure_reset_reasons, "post.exposure.reset_reasons",
                    VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  /* One packed gauge rather than one per feature and reason: the catalog had
+     one free slot left. */
+  VKR_REGISTER_U64(screen_history_state, "post.screen_history.state",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
   return true_v;
 }
 
@@ -1537,6 +1541,7 @@ vkr_internal void vkr_renderer_metrics_collect_packet_build(
     VKR_SET_U64(packet_publication_omitted,
                 packet_build->publication_omitted_count);
     VKR_SET_U64(packet_geometry_row_bytes, packet_build->geometry_row_bytes);
+    VKR_SET_U64(screen_history_state, packet_build->screen_history_state);
   } else {
     const VkrMetricId packet_build_ids[] = {
         ids->packet_candidate_hash,
@@ -1548,6 +1553,7 @@ vkr_internal void vkr_renderer_metrics_collect_packet_build(
         ids->packet_dynamic_candidate_row_bytes,
         ids->packet_publication_omitted,
         ids->packet_geometry_row_bytes,
+        ids->screen_history_state,
     };
     for (uint32_t i = 0u; i < ArrayCount(packet_build_ids); ++i) {
       vkr_metrics_mark(metrics, packet_build_ids[i],

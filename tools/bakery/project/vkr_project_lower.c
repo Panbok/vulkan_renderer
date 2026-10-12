@@ -305,6 +305,30 @@ vkr_internal bool8_t vkr_project_lower_cube(VkrProjectLowering *lowering,
   return true_v;
 }
 
+/* Replaces a baked block's managed `asset` reference with its artifact's
+   `path`, which the runtime reads (ADR-054, ADR-088); `name` labels the
+   block in failures. */
+vkr_internal bool8_t vkr_project_lower_baked_block(VkrProjectLowering *lowering,
+                                                   VkrBakeryJson *block,
+                                                   const char *name,
+                                                   const char *role) {
+  VkrProjectJob *job = lowering->job;
+  if (vkr_bakery_json_get(block, "path")) {
+    return vkr_project_fail(job, "Managed %s contains a legacy path", name);
+  }
+  VkrBakeryJson *reference = vkr_bakery_json_get(block, "asset");
+  if (!reference) {
+    return true_v;
+  }
+  vkr_bakery_json_remove(block, "asset");
+  char path[VKR_PROJECT_PATH];
+  VKR_PROJECT_TRY(
+      vkr_project_lower_asset(lowering, reference, role, path, NULL, NULL));
+  vkr_bakery_json_set(job->arena, block, "path",
+                      vkr_bakery_json_cstr(job->arena, path));
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_project_check_inventory(
     VkrProjectJob *job, VkrProjectInventory *inventory) {
   Arena *arena = job->arena;
@@ -644,32 +668,33 @@ VkrBakeryJson *vkr_project_lower(VkrProjectJob *job, VkrBakeryJson *scene,
     }
   }
   /* Baked scene blocks reference their managed artifact; the runtime reads
-     a path (ADR-054, ADR-087). */
-  static const struct {
-    const char *key;
-    const char *role;
-  } baked_blocks[] = {{"diffuse_volume", "volume"}, {"lightmaps", "lightmap"}};
-  for (uint32_t b = 0u; b < ArrayCount(baked_blocks); ++b) {
-    VkrBakeryJson *block = vkr_bakery_json_get(runtime, baked_blocks[b].key);
-    if (!vkr_project_truthy(block)) {
-      continue;
-    }
-    if (vkr_bakery_json_get(block, "path")) {
-      vkr_project_fail(job, "Managed %s contains a legacy path",
-                       baked_blocks[b].key);
+     a path (ADR-054, ADR-088). */
+  VkrBakeryJson *volume = vkr_bakery_json_get(runtime, "diffuse_volume");
+  if (vkr_project_truthy(volume) &&
+      !vkr_project_lower_baked_block(&lowering, volume, "diffuse_volume",
+                                     "volume")) {
+    return NULL;
+  }
+  /* The scene names a lightmap set per pipeline class. The runtime document
+     keeps only this host's class, which it renders and packages, so the
+     other class's set is neither read nor packaged here. */
+  const VkrBakeryJson *own_lightmaps = vkr_bakery_json_get(
+      vkr_bakery_json_get(runtime, "lightmaps"), VKR_PROJECT_LIGHTMAP_CLASS);
+  VkrBakeryJson *lightmap_block =
+      vkr_project_truthy(own_lightmaps)
+          ? vkr_bakery_json_clone(arena, own_lightmaps)
+          : NULL;
+  vkr_bakery_json_remove(runtime, "lightmaps");
+  if (lightmap_block) {
+    if (!vkr_project_lower_baked_block(&lowering, lightmap_block,
+                                       "lightmaps." VKR_PROJECT_LIGHTMAP_CLASS,
+                                       "lightmap")) {
       return NULL;
     }
-    VkrBakeryJson *reference = vkr_bakery_json_get(block, "asset");
-    if (reference) {
-      vkr_bakery_json_remove(block, "asset");
-      char path[VKR_PROJECT_PATH];
-      if (!vkr_project_lower_asset(&lowering, reference, baked_blocks[b].role,
-                                   path, NULL, NULL)) {
-        return NULL;
-      }
-      vkr_bakery_json_set(arena, block, "path",
-                          vkr_bakery_json_cstr(arena, path));
-    }
+    VkrBakeryJson *lightmaps = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, lightmaps, VKR_PROJECT_LIGHTMAP_CLASS,
+                        lightmap_block);
+    vkr_bakery_json_set(arena, runtime, "lightmaps", lightmaps);
   }
   /* Document ids reach the runtime, which binds overlays through them; a
      document missing any id binds by index (ADR-076). */

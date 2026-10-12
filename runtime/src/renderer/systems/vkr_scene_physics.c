@@ -2831,6 +2831,12 @@ bool8_t vkr_scene_physics_world_matrix(VkrScene *scene, VkrEntityId entity,
   return true_v;
 }
 
+VkrComponentTypeId
+vkr_scene_physics_character_component(const VkrScene *scene) {
+  return scene && scene->physics ? scene->physics->character_component
+                                 : VKR_COMPONENT_TYPE_INVALID;
+}
+
 bool8_t vkr_scene_physics_raycast(VkrScene *scene, Vec3 origin,
                                   Vec3 displacement, VkrPhysicsRayHit *hit) {
   if (!scene || !scene->physics || scene->physics_disabled) {
@@ -2906,6 +2912,9 @@ bool8_t vkr_scene_physics_transform_validate(const VkrScene *scene,
     return physics_fail(
         error, "Edit collider transforms through their owner snapshot");
   }
+  if (!scene->physics->bodies) {
+    return true_v;
+  }
   const SceneTransform *old = vkr_entity_get_component_if_alive_const(
       scene->world, entity, scene->comp_transform);
   const PhysicsTransformOverride override = {.entity = entity,
@@ -2913,14 +2922,30 @@ bool8_t vkr_scene_physics_transform_validate(const VkrScene *scene,
                                              .rotation = rotation,
                                              .scale = scale,
                                              .parent = parent};
+  /* An edit reaches a body when `entity` is the body's entity, or lies on
+     the parent links up from its cursor. A walk steps onto `entity` from
+     below only through a transform whose parent is `entity`; while the
+     child index is valid it lists every such child (a listed child whose
+     link moved away is not one), so an entity without one meets only the
+     cursor itself. */
+  bool8_t leaf = scene->child_index_valid;
+  uint32_t child_count = 0u;
+  const VkrEntityId *children =
+      leaf ? vkr_scene_get_children(scene, entity, &child_count) : NULL;
+  for (uint32_t c = 0u; leaf && c < child_count; ++c) {
+    const SceneTransform *child = vkr_entity_get_component_if_alive_const(
+        scene->world, children[c], scene->comp_transform);
+    leaf = !child || child->parent.u64 != entity.u64;
+  }
   for (ScenePhysicsBody *body = scene->physics->bodies; body;
        body = body->next) {
     VkrEntityId cursor = body->authored.attachment.enabled
                              ? body->animation_wrapper
                              : body->entity;
-    bool8_t affected = body->entity.u64 == entity.u64;
+    bool8_t affected = body->entity.u64 == entity.u64 ||
+                       (cursor.u64 && cursor.u64 == entity.u64);
     for (uint32_t depth = 0;
-         !affected && cursor.u64 && depth < scene->world->dir.capacity;
+         !leaf && !affected && cursor.u64 && depth < scene->world->dir.capacity;
          ++depth) {
       affected = cursor.u64 == entity.u64;
       const SceneTransform *ancestor = vkr_entity_get_component_if_alive_const(

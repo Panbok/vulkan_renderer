@@ -1472,8 +1472,9 @@ static bool8_t cmd_run_scene_create(CmdContext *ctx, const CmdDef *def,
 
 /* `scene.bake [lightmaps]`: the Bake lighting job for the open project scene
    (ADR-088). Lightmaps follow the Bakery panel's option unless `lightmaps`
-   asks for them; the queue holds until the bake and the scene reload after
-   it settle, then reports the outcome. */
+   asks for them; a bake writes only the set of this machine's pipeline
+   class. The queue holds until the bake and the scene reload after it
+   settle, then reports the outcome. */
 static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
   /* "lightmaps" and an optional sample count per texel. */
@@ -1507,7 +1508,7 @@ static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
   ctx->editor->cmd_holding_bake = true_v;
   snprintf(ctx->message, sizeof(ctx->message),
            "Baking reflection probes, the diffuse volume%s",
-           lightmap ? " and lightmaps" : "");
+           lightmap ? " and this machine's pipeline's lightmaps" : "");
   return true_v;
 }
 
@@ -2482,7 +2483,8 @@ static const CmdDef cmd_defs[] = {
      CMD_COUNT, 0u, .holds = true_v},
     {"scene.bake", CMD_ARG_TEXT, "[lightmaps [samples]]",
      "Bake the open project scene's lighting as Bake lighting does; "
-     "lightmaps adds its lightmaps whatever the Bakery option, traced with "
+     "lightmaps adds the lightmaps of this machine's pipeline class, "
+     "keeping the other class's set, whatever the Bakery option, traced with "
      "samples per texel (1-4096; the baker's default is 16)",
      cmd_run_scene_bake, CMD_COUNT, 0u, .holds = true_v},
     {"scene.inherit", CMD_ARG_SWITCH, "[on|off|toggle]",
@@ -2545,8 +2547,10 @@ static const CmdDef cmd_defs[] = {
      "Close the editor; discard drops unsaved scene edits", cmd_run_quit,
      CMD_COUNT, 0u},
     {"wait.scene", CMD_ARG_NONE, "",
-     "Pause the command queue until a scene is loaded", cmd_run_wait, CMD_COUNT,
-     1u},
+     "Pause the command queue until a scene is loaded and its brushes, "
+     "terrain and scatter copies are built; a failed load drops the "
+     "remaining commands",
+     cmd_run_wait, CMD_COUNT, 1u},
 };
 
 static const CmdDef *cmd_find(String8 name) {
@@ -2695,8 +2699,26 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     return;
   }
   if (editor->cmd_wait_scene_seconds > 0.0) {
-    if (frame->scene && !frame->scene_loading) {
+    /* A project scene is usable once its opening ends: after activation its
+       brushes, terrain and scatter copies still build (ADR-075). */
+    VkrEditorSceneOpening opening = {0};
+    const bool8_t opening_runs =
+        vkr_editor_projects_opening(editor->projects, &opening);
+    if (frame->scene && !frame->scene_loading && !opening_runs) {
       editor->cmd_wait_scene_seconds = 0.0;
+    } else if (!frame->scene && !frame->scene_loading && !opening_runs &&
+               frame->scene_path.length && frame->scene_status.length) {
+      /* The load failed and nothing loads until another request, so the
+         commands that need the scene go. */
+      char text[640];
+      snprintf(text, sizeof(text),
+               "wait.scene: the scene did not load: %.*s; dropped the "
+               "remaining commands",
+               (int)frame->scene_status.length, frame->scene_status.str);
+      cmd_report(editor, false_v, text);
+      editor->cmd_wait_scene_seconds = 0.0;
+      editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
+      return;
     } else {
       editor->cmd_wait_scene_seconds -= dt;
       if (editor->cmd_wait_scene_seconds <= 0.0) {

@@ -179,6 +179,7 @@ VkrExposureFrame vkr_exposure_prepare(const VkrExposureState *state,
   frame.pre_exposure_stops = vkr_pre_exposure_select(
       state->valid ? state->pre_exposure_stops : 0, exposure);
   frame.pre_exposure = ldexpf(1.0f, frame.pre_exposure_stops);
+  frame.display_exposure = exposure;
   return frame;
 }
 

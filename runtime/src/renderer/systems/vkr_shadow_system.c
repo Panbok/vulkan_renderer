@@ -1456,11 +1456,13 @@ vkr_shadow_advance_static_histories(VkrShadowSystem *system,
   }
 }
 
-vkr_internal bool8_t vkr_shadow_submitted_signature_matches(
+/* A submitted layer drawn from the current static world, publications,
+   caster bounds, bias, light and resource; its dynamic contents aside. */
+vkr_internal bool8_t vkr_shadow_submitted_inputs_match(
     const VkrShadowCascadeHistory *history,
     const VkrWorldPassPayload *candidates, uint64_t resource_generation,
     uint64_t bias_signature, uint64_t light_signature) {
-  return history->last_submit_value != 0u && history->static_only_contents &&
+  return history->last_submit_value != 0u &&
          history->static_generation ==
              (candidates ? candidates->static_generation : 0u) &&
          history->publication_generation ==
@@ -1470,6 +1472,17 @@ vkr_internal bool8_t vkr_shadow_submitted_signature_matches(
          history->bias_signature == bias_signature &&
          history->light_signature == light_signature &&
          history->resource_generation == resource_generation;
+}
+
+/* A submitted layer of the current inputs that holds static casters only. */
+vkr_internal bool8_t vkr_shadow_submitted_signature_matches(
+    const VkrShadowCascadeHistory *history,
+    const VkrWorldPassPayload *candidates, uint64_t resource_generation,
+    uint64_t bias_signature, uint64_t light_signature) {
+  return history->static_only_contents &&
+         vkr_shadow_submitted_inputs_match(history, candidates,
+                                           resource_generation, bias_signature,
+                                           light_signature);
 }
 
 vkr_internal bool8_t vkr_shadow_rendered_descriptor_equal(
@@ -1505,6 +1518,8 @@ vkr_internal VkrShadowCascadeHistory vkr_shadow_drawn_history(
       .bias_signature = bias_signature,
       .light_signature = light_signature,
       .resource_generation = resource_generation,
+      .dynamic_contents = candidates && !candidates->publication_pending,
+      .dynamic_generation = candidates ? candidates->dynamic_generation : 0u,
   };
 }
 
@@ -1677,12 +1692,20 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         image_valid ? &system->cascade_history[image_index][cascade] : NULL;
     const bool8_t descriptor_matches =
         history && fit_history[cascade] &&
-        vkr_shadow_submitted_signature_matches(
+        vkr_shadow_submitted_inputs_match(
             history, candidates, retained_token.resource_generation,
             bias_signature, light_signatures[cascade]) &&
         vkr_shadow_rendered_descriptor_equal(history, fit_history[cascade]);
     const bool8_t dynamic_forced =
         dynamic_scan_failed || fit_dynamic_overlap[cascade];
+    /* The layer holds what this frame would draw there: the static casters
+       while no dynamic caster can reach it, or every dynamic caster of the
+       current generation too, which idle movers leave as it was. */
+    const bool8_t contents_current =
+        descriptor_matches &&
+        ((history->static_only_contents && !dynamic_forced) ||
+         (history->dynamic_contents && candidates &&
+          history->dynamic_generation == candidates->dynamic_generation));
     /* A filtered far cascade also needs moments built from that depth. */
     const bool8_t moments_required = system->config.far_cascade_evsm &&
                                      cascade >= VKR_SHADOW_EVSM_FIRST_CASCADE;
@@ -1690,8 +1713,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         (retained_token.valid_layer_mask & bit) != 0u &&
         (!moments_required ||
          (retained_token.moments_valid_cascade_mask & bit) != 0u) &&
-        descriptor_matches && fit_margin[cascade] >= 0.0f &&
-        !publication_pending && !dynamic_forced;
+        contents_current && fit_margin[cascade] >= 0.0f && !publication_pending;
   }
 
   const uint32_t proactive_budget =
@@ -1761,6 +1783,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
             bias_signature, light_signatures[cascade],
             retained_token.static_resource_generation);
         pending->static_cascades[cascade].static_only_contents = true_v;
+        pending->static_cascades[cascade].dynamic_contents = false_v;
       }
       pending->cascade_mask |= bit;
       pending->cascades[cascade] = vkr_shadow_drawn_history(
@@ -1911,8 +1934,9 @@ vkr_internal uint32_t vkr_shadow_select_baked_lamps(
 void vkr_shadow_system_resolve_local_shadows(
     VkrShadowSystem *system, VkrRetainedLocalShadowToken retained_token,
     const VkrWorldPassPayload *candidates, const VkrPointLight *lights,
-    uint32_t light_count, const VkrPointLight *baked_lamps,
-    uint32_t baked_lamp_count, const VkrLocalShadowCamera *camera,
+    uint32_t light_count, const float32_t *unfaded_intensity,
+    const VkrPointLight *baked_lamps, uint32_t baked_lamp_count,
+    const VkrLocalShadowCamera *camera,
     VkrLocalShadowPassPayload *out_payload) {
   if (!out_payload)
     return;
@@ -2006,6 +2030,7 @@ void vkr_shadow_system_resolve_local_shadows(
       .lights = selected_count != 0u ? combined : lights,
       .light_count = selected_count != 0u ? bounded_light_count + selected_count
                                           : light_count,
+      .unfaded_intensity = unfaded_intensity,
       .baked_light_count = selected_count,
       .baked_lamps_possible = bounded_lamp_count != 0u,
       .baked_lamp_candidates = baked_candidates,
@@ -2018,6 +2043,7 @@ void vkr_shadow_system_resolve_local_shadows(
       .dynamic_casters = shadow_count > static_count,
       .token = retained_token,
       .static_generation = candidates->static_generation,
+      .dynamic_generation = candidates->dynamic_generation,
       .static_changes = candidates->static_changes,
       .static_change_count = candidates->static_change_count,
       .static_change_floor = candidates->static_change_floor,
@@ -2031,6 +2057,7 @@ void vkr_shadow_system_resolve_local_shadows(
       .face_budget = system->config.local_shadow_face_budget,
       .map_size = system->config.local_shadow_map_size,
       .fade_distance = system->config.local_shadow_fade_distance,
+      .atlas_layer_budget = system->config.local_shadow_atlas_layer_budget,
   };
   vkr_local_shadow_cache_resolve(&system->local_cache,
                                  &system->local_cache_scratch, &input,

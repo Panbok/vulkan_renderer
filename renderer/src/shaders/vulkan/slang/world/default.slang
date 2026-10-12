@@ -1280,12 +1280,12 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
 // back-face term and a Chebyshev bound on its distance moments, after the
 // receiver moves off its surface by a fraction of the probe spacing. False
 // outside the volume and where no probe sees the receiver; the caller then
-// keeps the environment path. A surface whose lightmap holds the static
-// lamps (`include_lamps` false) leaves out the lamp groups' part the frame
-// keeps apart. `sky_share` is the luminance share of the response that is
-// not that part, the baked sky light environment reflections scale by
-// (ADR-054); it is one while the frame keeps no part apart, whose single
-// sum holds the lamp groups' indirect light too.
+// keeps the environment path. The composed texture keeps the active lamp
+// groups' part apart from the sun keys' (diffuse_volume_compose). A surface
+// whose lightmap holds the static lamps (`include_lamps` false) leaves that
+// part out. `sky_share` is the luminance share of the response that is not
+// that part, the baked sky light environment reflections scale by
+// (ADR-054); it is one where the response holds no lamp part.
 bool packet_diffuse_volume_lookup(VkrVulkanPacketFrameRoot *frame,
                                   float3 world_position, float3 normal,
                                   bool include_lamps, out float3 response,
@@ -1418,6 +1418,20 @@ VkrVulkanBakedLight packet_volume_baked_light(float3 response, float sky_share)
     baked.response = response;
     baked.sky = response * sky_share;
     baked.valid = true;
+    return baked;
+}
+
+// A lightmapped surface's volume light, which leaves out the lamp groups,
+// with the pre-exposed irradiance of the lamps its lightmap holds
+// (ADR-104): their E/pi joins the surroundings it reflects but not its sky
+// light (ADR-054). A surface the volume does not cover keeps none.
+VkrVulkanBakedLight packet_baked_light_with_lamps(VkrVulkanBakedLight baked,
+                                                  float3 lamp_irradiance)
+{
+    if (baked.valid)
+    {
+        baked.response += lamp_irradiance * (1.0f / 3.14159265f);
+    }
     return baked;
 }
 

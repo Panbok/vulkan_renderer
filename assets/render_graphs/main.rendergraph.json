@@ -389,7 +389,7 @@
       "type": "buffer",
       "size": {
         "mode": "draw_elements",
-        "count_source": "gpu_draw_view_rows",
+        "count_source": "gpu_draw_view_candidates",
         "bytes_per_element": 32
       },
       "usage": [
@@ -407,7 +407,7 @@
       "type": "buffer",
       "size": {
         "mode": "draw_elements",
-        "count_source": "gpu_draw_view_rows",
+        "count_source": "gpu_draw_view_candidates",
         "bytes_per_element": 4
       },
       "usage": [
@@ -446,7 +446,7 @@
       "type": "buffer",
       "size": {
         "mode": "draw_elements",
-        "count_source": "gpu_draw_view_rows",
+        "count_source": "gpu_draw_view_candidates",
         "bytes_per_element": 20
       },
       "usage": [
@@ -517,7 +517,7 @@
       "condition": "scene_rendering && transmission_pending",
       "size": {
         "mode": "draw_elements",
-        "count_source": "transmission_gpu_draw_visible_capacity",
+        "count_source": "transmission_gpu_draw_candidate_capacity",
         "bytes_per_element": 32
       },
       "usage": [
@@ -535,7 +535,7 @@
       "condition": "scene_rendering && transmission_pending",
       "size": {
         "mode": "draw_elements",
-        "count_source": "transmission_gpu_draw_visible_capacity",
+        "count_source": "transmission_gpu_draw_candidate_capacity",
         "bytes_per_element": 4
       },
       "usage": [
@@ -568,7 +568,7 @@
       "condition": "scene_rendering && transmission_pending",
       "size": {
         "mode": "draw_elements",
-        "count_source": "transmission_gpu_draw_visible_capacity",
+        "count_source": "transmission_gpu_draw_candidate_capacity",
         "bytes_per_element": 20
       },
       "usage": [
@@ -1112,7 +1112,7 @@
     {
       "name": "local_shadow_mask",
       "type": "image",
-      "condition": "scene_rendering && local_shadows_active",
+      "condition": "scene_rendering && local_shadow_mask_active",
       "extent": {
         "mode": "viewport"
       },
@@ -4209,7 +4209,7 @@
     {
       "name": "Shadow.LocalMask",
       "type": "compute",
-      "condition": "scene_rendering && local_shadows_active",
+      "condition": "scene_rendering && local_shadow_mask_active",
       "flags": [
         "NO_CULL"
       ],
@@ -4661,7 +4661,7 @@
           "image": "local_shadow_mask",
           "access": "STORAGE_READ",
           "binding": 16,
-          "when": "local_shadows_active"
+          "when": "local_shadow_mask_active"
         },
         {
           "image": "baked_lamp_irradiance",
@@ -4881,7 +4881,7 @@
           "image": "local_shadow_mask",
           "access": "STORAGE_READ",
           "binding": 16,
-          "when": "local_shadows_active"
+          "when": "local_shadow_mask_active"
         },
         {
           "image": "baked_lamp_irradiance",
@@ -5101,7 +5101,7 @@
           "image": "local_shadow_mask",
           "access": "STORAGE_READ",
           "binding": 16,
-          "when": "local_shadows_active"
+          "when": "local_shadow_mask_active"
         },
         {
           "image": "baked_lamp_irradiance",
@@ -5321,7 +5321,7 @@
           "image": "local_shadow_mask",
           "access": "STORAGE_READ",
           "binding": 16,
-          "when": "local_shadows_active"
+          "when": "local_shadow_mask_active"
         },
         {
           "image": "baked_lamp_irradiance",
@@ -5647,6 +5647,12 @@
           "image": "ssgi_receiver",
           "access": "SAMPLED",
           "binding": 13
+        },
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 14,
+          "when": "diffuse_volume_enabled"
         }
       ],
       "writes": [
@@ -5745,6 +5751,12 @@
           "image": "ssgi_receiver",
           "access": "SAMPLED",
           "binding": 13
+        },
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 14,
+          "when": "diffuse_volume_enabled"
         }
       ],
       "writes": [
@@ -5961,6 +5973,12 @@
           "access": "SAMPLED",
           "binding": 8,
           "when": "clearcoat_enabled"
+        },
+        {
+          "image": "gbuffer_anisotropy",
+          "access": "SAMPLED",
+          "binding": 10,
+          "when": "anisotropy_enabled"
         }
       ],
       "writes": [
@@ -6027,6 +6045,12 @@
           "access": "SAMPLED",
           "binding": 8,
           "when": "clearcoat_enabled"
+        },
+        {
+          "image": "gbuffer_anisotropy",
+          "access": "SAMPLED",
+          "binding": 10,
+          "when": "anisotropy_enabled"
         }
       ],
       "writes": [
@@ -6091,6 +6115,12 @@
           "access": "SAMPLED",
           "binding": 16,
           "when": "clearcoat_enabled"
+        },
+        {
+          "image": "gbuffer_anisotropy",
+          "access": "SAMPLED",
+          "binding": 19,
+          "when": "anisotropy_enabled"
         },
         {
           "image": "ssr_hit",
@@ -6201,6 +6231,18 @@
           "access": "STORAGE_READ",
           "binding": 13,
           "when": "diffuse_volume_enabled"
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 14,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "baked_lamp_shadow",
+          "access": "STORAGE_READ",
+          "binding": 15,
+          "when": "baked_lamp_shadows_active"
         }
       ],
       "writes": [
@@ -6298,6 +6340,18 @@
           "access": "STORAGE_READ",
           "binding": 13,
           "when": "diffuse_volume_enabled"
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 14,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "baked_lamp_shadow",
+          "access": "STORAGE_READ",
+          "binding": 15,
+          "when": "baked_lamp_shadows_active"
         }
       ],
       "writes": [

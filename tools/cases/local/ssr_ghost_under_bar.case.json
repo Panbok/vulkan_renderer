@@ -27,7 +27,7 @@
     "editor": false,
     "skybox": true,
     "text_fixture": false,
-    "render_scale": 0.8,
+    "render_scale": 1,
     "upscaler": "spatial",
     "taa_enabled": false,
     "shadow_preset": "balanced",
