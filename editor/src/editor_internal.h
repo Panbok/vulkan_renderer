@@ -149,6 +149,10 @@ bool8_t vkr_editor_search_field(VkrUiSystem *ui, String8 id,
 float32_t vkr_editor_scene_top_pt(const VkrSampleUiFrame *frame);
 
 void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
+/* A maximized Scene (G) has no dock, so the Model view's caption, orbit ring
+   and Frame button build over the Scene image itself. */
+void vkr_editor_dock_build_maximized(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame);
 void vkr_editor_labels_build(VkrEditorUi *editor,
                              const VkrSampleUiFrame *frame);
 void vkr_editor_labels_project(VkrEditorUi *editor,

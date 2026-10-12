@@ -449,6 +449,8 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   }
   if (!frame->scene_only)
     vkr_editor_dock_build(editor, frame);
+  else
+    vkr_editor_dock_build_maximized(editor, frame);
   if (file_drop) {
     char folder[VKR_EDITOR_FOLDER_PATH_CAPACITY];
     vkr_editor_content_file_drop_folder(editor->content, folder);

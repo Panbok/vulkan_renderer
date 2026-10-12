@@ -230,6 +230,25 @@ static void editor_dock_view_switcher(VkrEditorUi *editor,
   }
 }
 
+void vkr_editor_dock_build_maximized(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame) {
+  if (!frame->scene_maximized || !frame->mapping_valid ||
+      editor->view_shown != VKR_EDITOR_VIEW_MODEL) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const Vec4 panel_px = frame->mapping.panel_rect_px;
+  const VkrUiRect rect = {panel_px.x, panel_px.y, panel_px.z, panel_px.w};
+  if (!vkr_ui_rect_has_area(rect)) {
+    return;
+  }
+  VkrUiPanelConfig panel = editor_dock_rect_panel(ui, rect);
+  if (vkr_ui_panel_begin(ui, string8_lit("views.maximized"), &panel)) {
+    vkr_editor_views_build_body(editor, frame, rect);
+    (void)vkr_ui_panel_end(ui);
+  }
+}
+
 void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   VkrUiDockTree *dock = frame->dock;

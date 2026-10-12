@@ -150,7 +150,9 @@ to the workbench when it lacks one. The Script editor window and the Script
 view keep one host, as docked panels do: while the workbench offers the
 Script view, the window stays closed and opening it shows the view; other
 workbenches open the floating window. Maximize (G) is unavailable under
-Graph and Script.
+Graph and Script; over a maximized Model view, which has no dock, its
+caption, orbit ring and Frame build on the Scene image itself
+(`vkr_editor_dock_build_maximized`).
 
 The **Model view** shows the **model stage**
 ([vkr_model_stage.c](../../runtime/src/application/vkr_model_stage.c)): an
