@@ -2468,6 +2468,9 @@ typedef enum EditorContextAction {
   CONTEXT_COPY_NAME,
   CONTEXT_TAB_CLOSE,
   CONTEXT_TAB_LAYOUT,
+  /* Paint the Model view's subject with scatter `value` of the PAINT WITH
+     list. */
+  CONTEXT_MODEL_SCATTER_SET,
   /* Offer or take out the view `value` in the Views panel. */
   CONTEXT_VIEW_TOGGLE,
   /* The workbench tab `context_panel` names. */
@@ -2941,6 +2944,24 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
     return entity_alive
                ? editor_context_script_items(editor, frame, scene, items)
                : 0u;
+  case VKR_EDITOR_CONTEXT_MODEL_SCATTER: {
+    const VkrEditorModelView *model = &editor->model;
+    uint32_t count = 0u;
+    for (uint32_t i = 0;
+         i < model->scatter_count && i < EDITOR_CONTEXT_ITEM_CAPACITY; ++i) {
+      context_push(
+          items, &count,
+          (EditorContextItem){
+              .label = model->scatter_names[i],
+              .icon = VKR_UI_ICON_TREE,
+              .shortcut = model->scatter_named[i] ? NULL : "no mesh",
+              .disabled = !model->scatter_named[i],
+              .action = CONTEXT_MODEL_SCATTER_SET,
+              .value = i,
+              .checked = model->scatter_ids[i].u64 == model->scatter.u64});
+    }
+    return count;
+  }
   case VKR_EDITOR_CONTEXT_CHOICE: {
     const VkrEditorDetails *details = editor->context_details;
     const VkrPropertyDesc *property = details ? details->choice_property : NULL;
@@ -3384,6 +3405,10 @@ static void editor_context_run(VkrEditorUi *editor,
   case CONTEXT_TEXT_COMMAND:
     vkr_ui_text_field_command(frame->ui, editor->context_text_field,
                               (VkrUiTextCommand)item->value);
+    break;
+  case CONTEXT_MODEL_SCATTER_SET:
+    if (item->value < editor->model.scatter_count)
+      editor->model.scatter = editor->model.scatter_ids[item->value];
     break;
   case CONTEXT_CHOICE_SET:
     if (editor->context_details) {

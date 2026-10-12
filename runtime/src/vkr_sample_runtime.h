@@ -547,6 +547,9 @@ typedef struct VkrSampleUiFrame {
   VkrSampleModelStageRequest *model_stage;
   /* Mesh instances the model stage copied from its subject last frame. */
   uint32_t model_stage_copies;
+  /* The gizmo holds the pointer: a handle is under it, or a pick or drag
+     of one runs, so a click there belongs to the gizmo. */
+  bool8_t gizmo_busy;
   VkrSamplePhysicsRequest *physics_request;
   VkrSampleIoRequest *io_request;
   const VkrSampleIoResult *io_result;

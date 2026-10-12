@@ -1652,6 +1652,14 @@ static void gizmo_companions_move(VkrScene *scene, Vec3 offset) {
   }
 }
 
+/* Where the model stage stands its subject relative to the level, or zero
+   without a stage: the gizmo shows there, and pointer rays move back by it
+   so a drag edits the level's object. */
+vkr_internal Vec3
+sample_stage_shift(const VkrStandardSceneRuntime *application) {
+  return application->stage_scene ? application->stage_offset : vec3_zero();
+}
+
 vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
     VkrStandardSceneRuntime *application, VkrGizmoHandle handle) {
   if (!application || !state || !state->has_selection) {
@@ -1721,7 +1729,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
     world_position =
         vkr_standard_scene_runtime_text_pivot_world(transform, pivot_local);
   }
-  const Vec3 ray_origin = state->gizmo_drag.pick_ray_origin;
+  const Vec3 ray_origin = vec3_sub(state->gizmo_drag.pick_ray_origin,
+                                   sample_stage_shift(application));
   const Vec3 ray_dir = state->gizmo_drag.pick_ray_direction;
 
   Vec3 hit = vec3_zero();
@@ -1815,6 +1824,7 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
           camera, viewport_info->position, &ray_origin, &ray_dir)) {
     return;
   }
+  ray_origin = vec3_sub(ray_origin, sample_stage_shift(application));
 
   Vec3 hit = vec3_zero();
   if (!vkr_standard_scene_runtime_ray_plane_intersect(
@@ -1841,7 +1851,9 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
       Vec3 axis_delta = vec3_scale(state->gizmo_drag.axis, dist);
       new_pivot = vec3_add(state->gizmo_drag.start_world_position, axis_delta);
     }
-    if (state->ui.snap_move && !state->gizmo_drag.uses_text_pivot) {
+    /* The level the snap reads is hidden behind the model stage. */
+    if (state->ui.snap_move && !state->gizmo_drag.uses_text_pivot &&
+        !application->stage_scene) {
       /* The client's snap stays on an axis handle's axis and in a plane
          handle's plane; the free handle takes it whole. */
       const Vec3 start = state->gizmo_drag.start_world_position;
@@ -4223,7 +4235,8 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
   }
 
   /* The outline follows the selection even where the gizmo cannot edit;
-     on the model stage the selection is in the hidden level. */
+     on the model stage it would outline the hidden level's instances, but
+     the gizmo shows where the stage stands the selection. */
   const bool8_t selection_shown =
       state->has_selection && !application->stage_scene;
   application->selection_outline_entity =
@@ -4233,7 +4246,7 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
           ? sample_entity_container(application, state->selected_entity, NULL)
           : NULL;
   if (application->gizmo_system.initialized) {
-    if (!selection_shown) {
+    if (!state->has_selection) {
       vkr_gizmo_system_clear_target(&application->gizmo_system);
       return;
     }
@@ -4279,7 +4292,8 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
 
     /* Local and scale handles follow the object's world rotation. */
     vkr_gizmo_system_set_target(
-        &application->gizmo_system, state->selected_entity, world_position,
+        &application->gizmo_system, state->selected_entity,
+        vec3_add(world_position, sample_stage_shift(application)),
         vkr_quat_normalize(vkr_quat_mul(parent_rotation, transform->rotation)));
   }
 }
@@ -4562,10 +4576,7 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
        state->pick_selected_entity.u64 != state->selected_entity.u64))
     vkr_standard_scene_runtime_cancel_gizmo_pick(application);
 
-  /* The model stage's copies are not the level's objects, so nothing on
-     it picks or takes the gizmo. */
   if (vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) ||
-      application->stage_scene ||
       input_is_key_down(state->input_state, KEY_ESCAPE) ||
       vkr_window_is_mouse_captured(&application->host.window) ||
       (application->ui_capture.mouse && !state->gizmo_drag.active &&
@@ -4789,6 +4800,14 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
     /* A rendered gizmo keeps priority. In collision display mode, an eligible
        CPU ray hit selects its collider child even when the rendered mesh hit
        has no picking ID for the debug wireframe. */
+    /* The model stage's copies are not the level's objects: there a pick
+       takes the gizmo's handles and never selects; the editor selects. */
+    if (application->stage_scene) {
+      update_selection = false_v;
+      if (!context) {
+        picked_entity_valid = false_v;
+      }
+    }
     if (update_selection && state->picked_collider.u64 &&
         vkr_scene_entity_alive(application->active_scene,
                                state->picked_collider)) {
@@ -5294,6 +5313,9 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .hide_request = &requests->hide_request,
       .model_stage = &requests->model_stage,
       .model_stage_copies = state->model_stage.copy_count,
+      .gizmo_busy = state->gizmo_drag.active ||
+                    state->gizmo_drag.pending_pick ||
+                    state->gizmo_hot_handle != VKR_GIZMO_HANDLE_NONE,
       .physics_request = &requests->physics_request,
       .io_request = &requests->io_request,
       .io_result = &state->io_result,

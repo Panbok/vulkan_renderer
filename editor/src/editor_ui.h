@@ -437,7 +437,13 @@ typedef enum VkrEditorContextKind {
   VKR_EDITOR_CONTEXT_CHOICE,
   /* The workbench tab `context_panel` names: switch to it or reset it. */
   VKR_EDITOR_CONTEXT_WORKBENCH,
+  /* The scatters the Model view's scatter paint may add to, as the Art
+     palette's PAINT WITH dropdown lists them. */
+  VKR_EDITOR_CONTEXT_MODEL_SCATTER,
 } VkrEditorContextKind;
+
+/* Scatters the PAINT WITH dropdown lists. */
+#define VKR_EDITOR_MODEL_SCATTER_MAX 16u
 
 /* The Model view (editor_views.c): the Scene camera it puts aside while it
    shows the model stage, and its orbit about the subject. */
@@ -453,6 +459,12 @@ typedef struct VkrEditorModelView {
   /* The scatter the view's scatter paint adds to, chosen in the Art
      palette, since the selection is the subject. */
   VkrEntityId scatter;
+  /* The scatters the palette listed last build, by name, for its dropdown
+     menu. */
+  VkrEntityId scatter_ids[VKR_EDITOR_MODEL_SCATTER_MAX];
+  char scatter_names[VKR_EDITOR_MODEL_SCATTER_MAX][64];
+  bool8_t scatter_named[VKR_EDITOR_MODEL_SCATTER_MAX];
+  uint32_t scatter_count;
   /* Moves the subject from the level onto the stage: its box centred on
      the origin and standing on the ground (VkrSampleModelStageRequest). */
   Vec3 offset;

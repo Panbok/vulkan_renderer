@@ -560,6 +560,7 @@ static void model_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   /* A click with no Scene tool selects the subject's decal under the
      pointer, else the subject itself; either keeps the view on it. */
   if (over_image_click(frame, rect) && ui->mouse_pressed &&
+      !frame->gizmo_busy &&
       vkr_editor_scene_tool(editor) == VKR_EDITOR_SCENE_TOOL_NONE &&
       !input_is_button_down(frame->input, BUTTON_MIDDLE) && frame->scene_edit) {
     const VkrEntityId decal = model_pick_decal(

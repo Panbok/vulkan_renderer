@@ -83,6 +83,27 @@ static bool8_t model_stage_current(const VkrModelStage *stage,
   return true_v;
 }
 
+/* Moves each copy with its source, as a gizmo drag moves the level's
+   object: the copy stays its source moved by the stage's offset. */
+static void model_stage_follow(VkrModelStage *stage, VkrRenderAssets *assets) {
+  VkrMeshManager *manager = &assets->mesh_manager;
+  const Mat4 move = mat4_translate(stage->offset);
+  for (uint32_t i = 0; i < stage->copy_count; ++i) {
+    const VkrMeshInstance *source =
+        vkr_mesh_manager_get_instance(manager, stage->sources[i]);
+    const VkrMeshInstance *copy =
+        vkr_mesh_manager_get_instance(manager, stage->copies[i]);
+    if (!source || !copy) {
+      continue;
+    }
+    const Mat4 placed = mat4_mul(move, source->model);
+    if (MemCompare(&placed, &copy->model, sizeof(placed)) != 0) {
+      vkr_mesh_manager_instance_sync_render_state(manager, stage->copies[i],
+                                                  placed, 0u, true_v);
+    }
+  }
+}
+
 /* Copies the mesh instances of `subject` and of every entity below it. */
 static void model_stage_copy(VkrModelStage *stage, VkrRenderAssets *assets,
                              const VkrScene *source, VkrEntityId subject,
@@ -194,6 +215,7 @@ void vkr_model_stage_show(VkrModelStage *stage, VkrRenderAssets *assets,
       vec3_length(vec3_sub(offset, stage->offset)) < 1.0e-5f &&
       population == stage->population_revision &&
       model_stage_current(stage, assets)) {
+    model_stage_follow(stage, assets);
     return;
   }
   model_stage_clear(stage, assets);

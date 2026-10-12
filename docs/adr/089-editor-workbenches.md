@@ -186,7 +186,13 @@ editor stops asking, and Play shows the level. While it shows:
   scatter chosen under PAINT WITH and lands on drawn meshes (ADR-102).
   The tools' previews draw on the stage; the rest of the level's overlay
   does not.
-- Picking, the gizmo, the selection outline, the ground grid and the
+- The gizmo stands where the stage shows the selection (the subject or one
+  of its decals or parts): drags move the pointer ray back by the stage's
+  offset, so they edit the level's object in its own space, as one undo
+  step; snapping rests, since the level it reads is hidden. Copies follow
+  their sources' transforms each frame. A pick on the stage takes only
+  gizmo handles and never selects (`gizmo_busy` keeps the editor's own
+  click off a handle). The selection outline, the ground grid and the
   editor's level overlays (icons, physics shapes, brush outlines) rest.
 - A switch to or from the stage starts temporal history and the shadow
   fits afresh.
