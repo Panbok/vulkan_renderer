@@ -354,6 +354,8 @@ vkr_global const VkrVulkanReflectedField s_vk_material_row_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow,
                                material_diffuse_transmission),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, material_subsurface),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, material_brdf),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, material_specular_tint),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanMaterialGpuRow, temporal_reactivity),
 };
 

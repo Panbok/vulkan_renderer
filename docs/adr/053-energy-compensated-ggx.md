@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -14,7 +14,8 @@ Accepted.
 
 Use height-correlated Smith GGX visibility for direct lighting and a matching
 Schlick A/B integral for environment lighting. Both native renderers consume
-one immutable 256×256 RG16F table. Its axes are `sqrt(N·V)` and perceptual
+one immutable 256×256 RGBA16F table: A and B, the F82-tint term C of
+[ADR-113](113-brdf-material-extensions.md), and a zero fourth channel. Its axes are `sqrt(N·V)` and perceptual
 roughness, sampled at endpoint texel centers with linear clamp filtering.
 The nonlinear view coordinate resolves the narrow grazing region without
 increasing storage. GGX width remains `alpha = roughness²`.
@@ -45,7 +46,7 @@ coat, using separate directional energy and allocation reserves.
 
 ## Ownership and generation
 
-The renderer owns the 256 KiB native image until completion-safe destruction.
+The renderer owns the 512 KiB native image until completion-safe destruction.
 Metal uploads it during setup. Vulkan stages it on the first submitted frame,
 then releases staging only when that submission completes. The table is sampled
 through the native frame root; no material field or per-draw allocation is added.

@@ -1230,10 +1230,12 @@ void vkr_renderer_get_device_information(
     Arena *temp_arena);
 uint64_t vkr_renderer_get_submit_serial(VkrRenderer *renderer);
 uint64_t vkr_renderer_get_completed_submit_serial(VkrRenderer *renderer);
-/** Pipeline readiness of Custom material graphs (ADR-096). */
+/** Pipeline readiness of Custom material graphs (ADR-096) and of the tiled
+ * BRDF extension variant (ADR-113). */
 typedef struct VkrRendererPipelineStats {
-  /** Graphs whose pipelines are still being created. Their materials draw
-   * the Standard fallback meanwhile, so scene readiness waits for zero. */
+  /** Graphs whose pipelines are still being created, the BRDF extension
+   * variant counting as one. Their materials draw the Standard fallback or
+   * the base model meanwhile, so scene readiness waits for zero. */
   uint32_t pending_graphs;
   /** Camera draws that took that fallback, over every completed frame. */
   uint64_t late_draws;

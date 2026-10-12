@@ -122,6 +122,11 @@ vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
       .attenuation_color = {pbr->attenuation_color.x, pbr->attenuation_color.y,
                             pbr->attenuation_color.z,
                             pbr->attenuation_distance},
+      .brdf = {pbr->diffuse_roughness, pbr->smooth_terminator,
+               pbr->smooth_terminator_length, pbr->dual_specular_opacity},
+      .specular_tint = {pbr->specular_f82_tint.x, pbr->specular_f82_tint.y,
+                        pbr->specular_f82_tint.z,
+                        pbr->dual_specular_roughness_scale},
       .alpha_mode = (uint32_t)alpha_mode,
   };
 }

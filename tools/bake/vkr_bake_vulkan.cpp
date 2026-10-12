@@ -211,8 +211,9 @@ struct GpuMaterial {
   float specular[4];
   int32_t layers[4];
   float surface[4];
+  float brdf[4];
 };
-static_assert(sizeof(GpuMaterial) == 96u, "GpuMaterial matches the kernel");
+static_assert(sizeof(GpuMaterial) == 112u, "GpuMaterial matches the kernel");
 
 struct GpuLight {
   float position_kind[4];
@@ -1295,7 +1296,9 @@ bool upload_materials(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
          layer_for(
              material.textures[VKR_BAKE_MATERIAL_TEXTURE_METALLIC_ROUGHNESS]),
          layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_TRANSMISSION])},
-        {material.double_sided ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f}};
+        {material.double_sided ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f},
+        {material.specular_f82_tint.x, material.specular_f82_tint.y,
+         material.specular_f82_tint.z, material.diffuse_roughness}};
   }
   if (!upload_buffer(context, gpu.data(), gpu.size() * sizeof(GpuMaterial),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &context->materials)) {
@@ -1374,7 +1377,8 @@ bool upload_lights(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
 /* The renderer's split-sum table, as the CPU BSDF reads it. */
 bool upload_dfg(VkrBakeGpuContext *context) {
   return upload_image(
-      context, VK_FORMAT_R16G16_SFLOAT, VKR_DFG_LUT_SIZE, VKR_DFG_LUT_SIZE, 1u,
+      context, VK_FORMAT_R16G16B16A16_SFLOAT, VKR_DFG_LUT_SIZE,
+      VKR_DFG_LUT_SIZE, 1u,
       VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT,
       vkr_dfg_lut_pixels, sizeof(vkr_dfg_lut_pixels), &context->dfg);
 }

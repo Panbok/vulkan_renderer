@@ -76,7 +76,8 @@ float32_t half_to_float(uint16_t value) {
   return result;
 }
 
-Vec2 dfg(float32_t no_v, float32_t roughness) {
+// The table's Schlick A/B terms and the F82 term C (ADR-113).
+Vec3 dfg(float32_t no_v, float32_t roughness) {
   const float32_t x = sqrtf(clamp01(no_v)) * (VKR_DFG_LUT_SIZE - 1u);
   const float32_t y = clamp01(roughness) * (VKR_DFG_LUT_SIZE - 1u);
   const uint32_t x0 = (uint32_t)floorf(x), y0 = (uint32_t)floorf(y);
@@ -84,16 +85,20 @@ Vec2 dfg(float32_t no_v, float32_t roughness) {
   const uint32_t y1 = y0 + 1u < VKR_DFG_LUT_SIZE ? y0 + 1u : y0;
   const float32_t tx = x - x0, ty = y - y0;
   const auto fetch = [](uint32_t ix, uint32_t iy) {
-    const uint64_t offset = ((uint64_t)iy * VKR_DFG_LUT_SIZE + ix) * 2u;
-    return vec2_new(half_to_float(vkr_dfg_lut_pixels[offset]),
-                    half_to_float(vkr_dfg_lut_pixels[offset + 1u]));
+    const uint64_t offset =
+        ((uint64_t)iy * VKR_DFG_LUT_SIZE + ix) * VKR_DFG_LUT_CHANNELS;
+    return vec3_new(half_to_float(vkr_dfg_lut_pixels[offset]),
+                    half_to_float(vkr_dfg_lut_pixels[offset + 1u]),
+                    half_to_float(vkr_dfg_lut_pixels[offset + 2u]));
   };
-  const Vec2 a = fetch(x0, y0), b = fetch(x1, y0), c = fetch(x0, y1),
+  const Vec3 a = fetch(x0, y0), b = fetch(x1, y0), c = fetch(x0, y1),
              d = fetch(x1, y1);
-  return vec2_new(a.x + (b.x - a.x) * tx + (c.x - a.x) * ty +
+  return vec3_new(a.x + (b.x - a.x) * tx + (c.x - a.x) * ty +
                       (a.x - b.x - c.x + d.x) * tx * ty,
                   a.y + (b.y - a.y) * tx + (c.y - a.y) * ty +
-                      (a.y - b.y - c.y + d.y) * tx * ty);
+                      (a.y - b.y - c.y + d.y) * tx * ty,
+                  a.z + (b.z - a.z) * tx + (c.z - a.z) * ty +
+                      (a.z - b.z - c.z + d.z) * tx * ty);
 }
 
 bool8_t sheen_active(const VkrBakeBsdf *bsdf) {
@@ -301,7 +306,7 @@ float32_t anisotropy_lambda(Vec3 w, float32_t at, float32_t ab) {
   return 0.5f * (sqrtf(1.0f + (x*x+y*y)/(w.z*w.z)) - 1.0f);
 }
 
-Vec2 base_dfg(const VkrBakeBsdf *bsdf, Vec3 wo) {
+Vec3 base_dfg(const VkrBakeBsdf *bsdf, Vec3 wo) {
   if (bsdf->surface.anisotropy_strength == 0.0f)
     return dfg(fmaxf(wo.z, 0.0f), bsdf->surface.roughness);
   const Vec3 local = anisotropy_local(bsdf, wo);
@@ -309,7 +314,121 @@ Vec2 base_dfg(const VkrBakeBsdf *bsdf, Vec3 wo) {
   vkr_anisotropy_dfg_sample(fmaxf(wo.z, 0.0f), bsdf->surface.roughness,
                             bsdf->surface.anisotropy_strength,
                             atan2f(fabsf(local.y), fabsf(local.x)), ab);
-  return vec2_new(ab[0], ab[1]);
+  /* The anisotropic table has no C term; the runtime reads the isotropic
+     table at the lobe's environment roughness. */
+  const float32_t alpha = alpha_from_roughness(bsdf->surface.roughness);
+  const float32_t environment_roughness =
+      sqrtf(sqrtf(anisotropy_alpha_t(bsdf, alpha) * alpha));
+  return vec3_new(ab[0], ab[1],
+                  dfg(fmaxf(wo.z, 0.0f), environment_roughness).z);
+}
+
+Vec3 opaque_f0(const VkrBakeBsdf *bsdf) {
+  const float32_t metallic = clamp01(bsdf->surface.metallic);
+  return add(mul(clamp01(bsdf->surface.dielectric_specular), 1.0f - metallic),
+             mul(clamp01(rgb(bsdf->surface.base_color)), metallic));
+}
+
+/* F82-tint Fresnel (ADR-113): Schlick minus a * mu * (1 - mu)^6, matching
+   vkr_ggx_apply_f82. A white tint gives zero. */
+constexpr float32_t k_f82_schlick_weight = 0.46266436603796f;
+constexpr float32_t k_f82_correction_weight = 0.05665277951485f;
+
+float32_t f82_weight(float32_t cosine) {
+  const float32_t c = clamp01(cosine);
+  const float32_t m = 1.0f - c;
+  return c * m * m * m * m * m * m;
+}
+
+/* The base lobe's ADR-053 energy with the F82 correction, shared by lobe
+   selection, evaluation and the diffuse residual. */
+struct BaseEnergy {
+  Vec3 f0;
+  Vec3 scale;
+  Vec3 reflectance;
+  Vec3 f82_scale;
+};
+
+BaseEnergy base_energy(const VkrBakeBsdf *bsdf, Vec3 wo) {
+  BaseEnergy result = {};
+  result.f0 = opaque_f0(bsdf);
+  const Vec3 split_sum = base_dfg(bsdf, wo);
+  result.scale =
+      add(vec3_new(1, 1, 1),
+          mul(result.f0,
+              1.0f / fmaxf(split_sum.x + split_sum.y, .25f) - 1.0f));
+  const float32_t f90 =
+      clamp01(fmaxf(result.f0.x, fmaxf(result.f0.y, result.f0.z)) * 25.0f);
+  const Vec3 schlick_82 = add(
+      result.f0,
+      mul(sub(vec3_new(f90, f90, f90), result.f0), k_f82_schlick_weight));
+  const Vec3 tint = clamp01(bsdf->surface.specular_f82_tint);
+  result.f82_scale =
+      vec3_new(schlick_82.x * (1.0f - tint.x) / k_f82_correction_weight,
+               schlick_82.y * (1.0f - tint.y) / k_f82_correction_weight,
+               schlick_82.z * (1.0f - tint.z) / k_f82_correction_weight);
+  const Vec3 single = add(
+      mul(result.f0, split_sum.x),
+      vec3_new(f90 * split_sum.y, f90 * split_sum.y, f90 * split_sum.y));
+  result.reflectance = clamp01(
+      mul(sub(single, mul(result.f82_scale, split_sum.z)), result.scale));
+  return result;
+}
+
+/* EON rough diffuse (ADR-113; Portsmouth, Kutz and Hill 2024) in the local
+   frame, matching vkr_eon_apply and vkr_eon_direct_albedo. */
+constexpr float32_t k_eon_c1 = 0.28779340921081f;
+constexpr float32_t k_eon_c2 = 0.07248821245692f;
+
+float32_t eon_fon_albedo(float32_t cosine, float32_t roughness) {
+  const float32_t m = 1.0f - cosine;
+  const float32_t g =
+      m * (0.0571085289f +
+           m * (0.491881867f + m * (-0.332181442f + m * 0.0714429953f)));
+  return (1.0f + roughness * g) / (1.0f + k_eon_c1 * roughness);
+}
+
+/* rho_ms / rho for each channel. */
+Vec3 eon_multiple_ratio(Vec3 rho, float32_t average) {
+  return vec3_new(rho.x * average / (1.0f - rho.x * (1.0f - average)),
+                  rho.y * average / (1.0f - rho.y * (1.0f - average)),
+                  rho.z * average / (1.0f - rho.z * (1.0f - average)));
+}
+
+/* E(N.V) / rho: the view albedo relative to Lambert's. */
+Vec3 eon_albedo_ratio(Vec3 rho, float32_t roughness, float32_t no_v) {
+  if (roughness <= 0.0f)
+    return vec3_new(1, 1, 1);
+  const float32_t single = 1.0f / (1.0f + k_eon_c1 * roughness);
+  const float32_t average = single * (1.0f + k_eon_c2 * roughness);
+  const float32_t view_albedo = eon_fon_albedo(clamp01(no_v), roughness);
+  const Vec3 multiple = eon_multiple_ratio(rho, average);
+  return add(vec3_new(view_albedo, view_albedo, view_albedo),
+             mul(multiple, 1.0f - view_albedo));
+}
+
+/* f * pi / rho for a lit pair; 1 when roughness is zero. */
+Vec3 eon_brdf_ratio(Vec3 rho, float32_t roughness, Vec3 wo, Vec3 wi) {
+  if (roughness <= 0.0f)
+    return vec3_new(1, 1, 1);
+  const float32_t single = 1.0f / (1.0f + k_eon_c1 * roughness);
+  const float32_t average = single * (1.0f + k_eon_c2 * roughness);
+  const float32_t s = dot3(wi, wo) - wi.z * wo.z;
+  const float32_t s_over_t = s > 0.0f ? s / fmaxf(wi.z, wo.z) : s;
+  const float32_t view_albedo = eon_fon_albedo(clamp01(wo.z), roughness);
+  const float32_t light_albedo = eon_fon_albedo(clamp01(wi.z), roughness);
+  const Vec3 multiple = eon_multiple_ratio(rho, average);
+  const float32_t multiple_shape = (1.0f - view_albedo) *
+                                   (1.0f - light_albedo) / (1.0f - average);
+  const float32_t single_shape = single * (1.0f + roughness * s_over_t);
+  return add(vec3_new(single_shape, single_shape, single_shape),
+             mul(multiple, multiple_shape));
+}
+
+/* The opaque lobe's diffuse albedo, base color times the nonmetal share. */
+Vec3 diffuse_rho(const VkrBakeBsdf *bsdf) {
+  return mul(clamp01(rgb(bsdf->surface.base_color)),
+             1.0f - clamp01(bsdf->surface.metallic));
 }
 
 bool8_t refract_wo(Vec3 wo, Vec3 wm, float32_t eta_i_over_t, Vec3 *out_wi) {
@@ -341,19 +460,11 @@ Weights weights(const VkrBakeBsdf *bsdf, Vec3 wo) {
   const float32_t glass =
       (1.0f - metallic) * clamp01(bsdf->surface.transmission);
   const float32_t opaque = 1.0f - glass;
-  const Vec3 f0 =
-      add(mul(clamp01(bsdf->surface.dielectric_specular), 1.0f - metallic),
-          mul(clamp01(rgb(bsdf->surface.base_color)), metallic));
-  const Vec2 split_sum = base_dfg(bsdf, wo);
-  const Vec3 scale =
-      add(vec3_new(1, 1, 1),
-          mul(f0, 1.0f / fmaxf(split_sum.x + split_sum.y, .25f) - 1.0f));
-  const float32_t f90 = clamp01(fmaxf(f0.x, fmaxf(f0.y, f0.z)) * 25.0f);
-  const Vec3 reflectance = clamp01(mul(
-      add(mul(f0, split_sum.x),
-          vec3_new(f90 * split_sum.y, f90 * split_sum.y, f90 * split_sum.y)),
-      scale));
-  const Vec3 diffuse = mul(one_minus(reflectance), 1.0f - metallic);
+  const Vec3 reflectance = base_energy(bsdf, wo).reflectance;
+  const Vec3 diffuse =
+      mul(mul(one_minus(reflectance), 1.0f - metallic),
+          eon_albedo_ratio(diffuse_rho(bsdf), bsdf->surface.diffuse_roughness,
+                           wo.z));
   Weights result = {glass, opaque * luminance(reflectance),
                     opaque * luminance(diffuse), 0.0f, 0.0f};
   if (bsdf->surface.diffuse_transmission_strength > 0.0f) {
@@ -368,12 +479,6 @@ Weights weights(const VkrBakeBsdf *bsdf, Vec3 wo) {
   if (bsdf->surface.diffuse_transmission_strength > 0.0f)
     result.total += result.diffuse_transmission;
   return result;
-}
-
-Vec3 opaque_f0(const VkrBakeBsdf *bsdf) {
-  const float32_t metallic = clamp01(bsdf->surface.metallic);
-  return add(mul(clamp01(bsdf->surface.dielectric_specular), 1.0f - metallic),
-             mul(clamp01(rgb(bsdf->surface.base_color)), metallic));
 }
 
 Vec3 opaque_eval(const VkrBakeBsdf *bsdf, Vec3 wo, Vec3 wi,
@@ -399,23 +504,18 @@ Vec3 opaque_eval(const VkrBakeBsdf *bsdf, Vec3 wo, Vec3 wi,
     pdf_spec = visible_normal_pdf(wo, wm, alpha) /
                fmaxf(4.0f * fabsf(dot3(wo, wm)), 1e-20f);
   }
-  const Vec3 f0 = opaque_f0(bsdf);
-  const Vec2 split_sum = base_dfg(bsdf, wo);
-  const Vec3 scale =
-      add(vec3_new(1, 1, 1),
-          mul(f0, 1.0f / fmaxf(split_sum.x + split_sum.y, .25f) - 1.0f));
-  const Vec3 specular =
-      mul(mul(fresnel_schlick(fabsf(dot3(wo, wm)), f0), scale),
-          d * g / fmaxf(4.0f * wo.z * wi.z, 1e-20f));
-  const float32_t f90 = clamp01(fmaxf(f0.x, fmaxf(f0.y, f0.z)) * 25.0f);
-  const Vec3 reflectance = clamp01(mul(
-      add(mul(f0, split_sum.x),
-          vec3_new(f90 * split_sum.y, f90 * split_sum.y, f90 * split_sum.y)),
-      scale));
-  const Vec3 diffuse = mul(
-      mul(mul(one_minus(reflectance), 1.0f - clamp01(bsdf->surface.metallic)),
-          clamp01(rgb(bsdf->surface.base_color))),
-      1.0f / k_pi);
+  const BaseEnergy energy = base_energy(bsdf, wo);
+  const float32_t v_o_h = fabsf(dot3(wo, wm));
+  const Vec3 fresnel =
+      clamp01(sub(fresnel_schlick(v_o_h, energy.f0),
+                  mul(energy.f82_scale, f82_weight(v_o_h))));
+  const Vec3 specular = mul(mul(fresnel, energy.scale),
+                            d * g / fmaxf(4.0f * wo.z * wi.z, 1e-20f));
+  const Vec3 rho = diffuse_rho(bsdf);
+  const Vec3 diffuse =
+      mul(mul(mul(one_minus(energy.reflectance), rho),
+              eon_brdf_ratio(rho, bsdf->surface.diffuse_roughness, wo, wi)),
+          1.0f / k_pi);
   *out_pdf = pdf_spec;
   if (bsdf->surface.subsurface_strength > 0.0f)
     return add(specular, mul(diffuse, 1.0f - bsdf->surface.subsurface_strength));
@@ -427,14 +527,7 @@ Vec3 opaque_eval(const VkrBakeBsdf *bsdf, Vec3 wo, Vec3 wi,
 // The same directional residual used by front Lambert, allocated to the
 // opposite shading hemisphere. Tint absorbs its missing channels.
 Vec3 diffuse_transmission_eval(const VkrBakeBsdf *bsdf, Vec3 wo) {
-  const Vec3 f0 = opaque_f0(bsdf);
-  const Vec2 split_sum = base_dfg(bsdf, wo);
-  const Vec3 scale = add(vec3_new(1, 1, 1),
-      mul(f0, 1.0f / fmaxf(split_sum.x + split_sum.y, .25f) - 1.0f));
-  const float32_t f90 = clamp01(fmaxf(f0.x, fmaxf(f0.y, f0.z)) * 25.0f);
-  const Vec3 reflectance = clamp01(mul(
-      add(mul(f0, split_sum.x), vec3_new(f90 * split_sum.y, f90 * split_sum.y,
-                                       f90 * split_sum.y)), scale));
+  const Vec3 reflectance = base_energy(bsdf, wo).reflectance;
   return mul(mul(mul(one_minus(reflectance), clamp01(rgb(bsdf->surface.base_color))),
                  bsdf->surface.diffuse_transmission_color),
              (1.0f - clamp01(bsdf->surface.metallic)) *
@@ -475,7 +568,7 @@ float32_t coat_reflectance(const VkrBakeBsdf *bsdf, Vec3 wo) {
   const float32_t no_v = dot3(wo, coat_normal_for_view(bsdf, wo));
   if (no_v <= 0.0f)
     return 0.0f;
-  const Vec2 split_sum = dfg(no_v, bsdf->surface.clearcoat_roughness);
+  const Vec3 split_sum = dfg(no_v, bsdf->surface.clearcoat_roughness);
   constexpr float32_t f0 = 0.04f;
   const float32_t scale =
       1.0f + f0 * (1.0f / fmaxf(split_sum.x + split_sum.y, 0.25f) - 1.0f);
@@ -507,7 +600,7 @@ Vec3 coat_eval(const VkrBakeBsdf *bsdf, Vec3 wo, Vec3 wi, float32_t *out_pdf) {
   const float32_t d = ggx_d(wm, alpha);
   const float32_t g = smith_g2(coat_wo, coat_wi, alpha);
   constexpr float32_t f0 = 0.04f;
-  const Vec2 split_sum = dfg(coat_wo.z, bsdf->surface.clearcoat_roughness);
+  const Vec3 split_sum = dfg(coat_wo.z, bsdf->surface.clearcoat_roughness);
   const float32_t scale =
       1.0f + f0 * (1.0f / fmaxf(split_sum.x + split_sum.y, 0.25f) - 1.0f);
   const Vec3 f =
@@ -632,6 +725,12 @@ vkr_bake_bsdf_init(VkrBakeMaterialSample surface, float32_t eta_incident,
        (surface.alpha_mode == VKR_BAKE_MATERIAL_ALPHA_BLEND || surface.transmission > 0.0f || surface.thickness > 0.0f)) ||
       !isfinite(surface.anisotropy_strength) || surface.anisotropy_strength < 0.0f || surface.anisotropy_strength > 1.0f ||
       (surface.anisotropy_strength > 0.0f && surface.transmission > 0.0f) ||
+      !isfinite(surface.diffuse_roughness) || surface.diffuse_roughness < 0.0f ||
+      surface.diffuse_roughness > 1.0f ||
+      !finite3(surface.specular_f82_tint) ||
+      surface.specular_f82_tint.x < 0.0f || surface.specular_f82_tint.x > 1.0f ||
+      surface.specular_f82_tint.y < 0.0f || surface.specular_f82_tint.y > 1.0f ||
+      surface.specular_f82_tint.z < 0.0f || surface.specular_f82_tint.z > 1.0f ||
       !isfinite(eta_incident) ||
       !isfinite(eta_transmitted) || eta_incident <= 0.0f ||
       eta_transmitted <= 0.0f)
@@ -900,15 +999,12 @@ extern "C" VkrBakeBsdfSample vkr_bake_bsdf_sample(const VkrBakeBsdf *bsdf,
 }
 
 extern "C" Vec3 vkr_bake_bsdf_subsurface_receiver(const VkrBakeBsdf *bsdf, Vec3 wo) {
-  const Vec3 f0 = opaque_f0(bsdf);
-  const Vec2 split_sum = base_dfg(bsdf, wo);
-  const Vec3 scale = add(vec3_new(1, 1, 1),
-      mul(f0, 1.0f / fmaxf(split_sum.x + split_sum.y, .25f) - 1.0f));
-  const float32_t f90 = clamp01(fmaxf(f0.x, fmaxf(f0.y, f0.z)) * 25.0f);
-  const Vec3 reflectance = clamp01(mul(
-      add(mul(f0, split_sum.x), vec3_new(f90 * split_sum.y, f90 * split_sum.y, f90 * split_sum.y)), scale));
+  const Vec3 boundary =
+      mul(one_minus(base_energy(bsdf, wo).reflectance),
+          eon_albedo_ratio(diffuse_rho(bsdf), bsdf->surface.diffuse_roughness,
+                           wo.z));
   const Vec3 amplitude = vkr_bake_subsurface_amplitude(bsdf->surface);
-  return mul(mul(one_minus(reflectance), amplitude), base_transmission(bsdf, wo));
+  return mul(mul(boundary, amplitude), base_transmission(bsdf, wo));
 }
 
 extern "C" Vec3 vkr_bake_subsurface_amplitude(VkrBakeMaterialSample material) {

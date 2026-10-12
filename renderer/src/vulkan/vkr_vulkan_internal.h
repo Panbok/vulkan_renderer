@@ -507,6 +507,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanMaterialGpuRow {
   Vec4 material_diffuse_transmission;
   /** x strength, y scene profile index, zw reserved. */
   Vec4 material_subsurface;
+  /** x diffuse roughness, y smooth-terminator amount, z smooth-terminator
+   * length, w dual-specular opacity. */
+  Vec4 material_brdf;
+  /** Linear RGB F82 tint in xyz, dual-specular roughness scale in w. */
+  Vec4 material_specular_tint;
 } VkrVulkanMaterialGpuRow;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionMaterialGpuRow {
@@ -794,7 +799,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t clearcoat_texture;
   uint32_t sheen_texture;
   uint32_t anisotropy_texture;
-  /* Nonzero when the layered kernel also runs and owns layered tiles. */
+  /* Nonzero when the layered kernel also runs and owns layered tiles. Bit 1
+     also classifies pixels whose material uses a BRDF extension (ADR-113). */
   uint32_t layered_tiles;
   /* Shadow.LocalMask output: one RGBA8 layer per per-pixel overlap slot. */
   uint32_t local_shadow_mask_texture;
@@ -1702,7 +1708,11 @@ _Static_assert(sizeof(VkrVulkanPacketUtilityRoot) == 576u &&
                "Vulkan utility display-output ABI drift");
 _Static_assert(offsetof(VkrVulkanMaterialGpuRow, material_subsurface) == 272u,
                "Subsurface material ABI offset drift");
-_Static_assert(sizeof(VkrVulkanMaterialGpuRow) == 288u,
+_Static_assert(offsetof(VkrVulkanMaterialGpuRow, material_brdf) == 288u &&
+                   offsetof(VkrVulkanMaterialGpuRow, material_specular_tint) ==
+                       304u,
+               "Vulkan BRDF material ABI offset drift");
+_Static_assert(sizeof(VkrVulkanMaterialGpuRow) == 320u,
                "Vulkan material row ABI drift");
 _Static_assert(offsetof(VkrVulkanMaterialGpuRow, base_color_texture) == 16u,
                "Vulkan material texture ABI drift");

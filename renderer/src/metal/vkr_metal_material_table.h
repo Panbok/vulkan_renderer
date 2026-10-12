@@ -65,6 +65,11 @@ typedef struct VKR_SIMD_ALIGN VkrMetalMaterialGpuRow {
   Vec4 material_diffuse_transmission;
   /** x strength, y scene profile index, zw reserved. */
   Vec4 material_subsurface;
+  /** x diffuse roughness, y smooth-terminator amount, z smooth-terminator
+   * length, w dual-specular opacity. */
+  Vec4 material_brdf;
+  /** Linear RGB F82 tint in xyz, dual-specular roughness scale in w. */
+  Vec4 material_specular_tint;
 } VkrMetalMaterialGpuRow;
 
 // Cold transmission-only resource identifiers are segmented from the common

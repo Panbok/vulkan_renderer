@@ -763,6 +763,23 @@ Vec4 texture_sample(const VkrBakeTextureStore *store,
       top.z + (bottom.z - top.z) * ty, top.w + (bottom.w - top.w) * ty);
 }
 
+/* Whether the BRDF extensions lie in the runtime loader's ranges. */
+bool brdf_extensions_valid(const VkrBakeMaterial &material) {
+  const float32_t unit[] = {
+      material.diffuse_roughness,        material.smooth_terminator,
+      material.smooth_terminator_length, material.dual_specular_opacity,
+      material.specular_f82_tint.x,      material.specular_f82_tint.y,
+      material.specular_f82_tint.z,
+  };
+  for (const float32_t value : unit) {
+    if (!isfinite(value) || value < 0.0f || value > 1.0f)
+      return false;
+  }
+  return isfinite(material.dual_specular_roughness_scale) &&
+         material.dual_specular_roughness_scale >= 0.0f &&
+         material.dual_specular_roughness_scale <= 16.0f;
+}
+
 void material_defaults(VkrBakeMaterial *material) {
   *material = {};
   material->alpha_mode = VKR_BAKE_MATERIAL_ALPHA_OPAQUE;
@@ -776,6 +793,9 @@ void material_defaults(VkrBakeMaterial *material) {
   material->dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
   material->ior = 1.5f;
   material->attenuation_color = vec3_new(1, 1, 1);
+  material->smooth_terminator_length = 0.5f;
+  material->dual_specular_roughness_scale = 2.0f;
+  material->specular_f82_tint = vec3_new(1, 1, 1);
 }
 
 /* Replaces `text`, the `.mt` file `material_path`, with the definition its
@@ -1144,6 +1164,48 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
       final_pbr = true_v;
       continue;
     }
+    if (key == "diffuse_roughness") {
+      if (!parse_float(value, &material.diffuse_roughness))
+        goto parse_error;
+      pbr = true_v;
+      final_pbr = true_v;
+      continue;
+    }
+    if (key == "smooth_terminator") {
+      if (!parse_float(value, &material.smooth_terminator))
+        goto parse_error;
+      pbr = true_v;
+      final_pbr = true_v;
+      continue;
+    }
+    if (key == "smooth_terminator_length") {
+      if (!parse_float(value, &material.smooth_terminator_length))
+        goto parse_error;
+      pbr = true_v;
+      final_pbr = true_v;
+      continue;
+    }
+    if (key == "dual_specular_opacity") {
+      if (!parse_float(value, &material.dual_specular_opacity))
+        goto parse_error;
+      pbr = true_v;
+      final_pbr = true_v;
+      continue;
+    }
+    if (key == "dual_specular_roughness_scale") {
+      if (!parse_float(value, &material.dual_specular_roughness_scale))
+        goto parse_error;
+      pbr = true_v;
+      final_pbr = true_v;
+      continue;
+    }
+    if (key == "specular_f82_tint") {
+      if (!parse_vec3(value, &material.specular_f82_tint))
+        goto parse_error;
+      pbr = true_v;
+      final_pbr = true_v;
+      continue;
+    }
     if (key == "transmission_factor") {
       if (!parse_float(value, &material.transmission_factor))
         goto parse_error;
@@ -1336,7 +1398,8 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
       material.sheen_color.z > 1.0f || !isfinite(material.sheen_roughness) ||
       material.sheen_roughness < 0.0f || material.sheen_roughness > 1.0f ||
       !isfinite(material.ior) || !isfinite(material.thickness_factor) ||
-      !isfinite(material.attenuation_distance))
+      !isfinite(material.attenuation_distance) ||
+      !brdf_extensions_valid(material))
     goto parse_error;
   if (material.anisotropy_strength > 0.0f &&
       material.transmission_factor > 0.0f) {
@@ -1436,6 +1499,8 @@ extern "C" void vkr_bake_material_sample(const VkrBakeTextureStore *store,
       .anisotropy_strength = material->anisotropy_strength,
       .anisotropy_direction = vec2_new(cosf(material->anisotropy_rotation),
                                        sinf(material->anisotropy_rotation)),
+      .diffuse_roughness = material->diffuse_roughness,
+      .specular_f82_tint = material->specular_f82_tint,
   };
   if (material->textures[VKR_BAKE_MATERIAL_TEXTURE_BASE_COLOR].present) {
     const Vec4 sample = texture_sample(

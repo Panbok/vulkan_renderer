@@ -308,7 +308,63 @@ typedef struct VkrPbrProperties {
   /** Opaque surface diffusion; profile indexes the scene RGB distance bank. */
   float32_t subsurface_strength;
   uint32_t subsurface_profile;
+  /** EON rough-diffuse roughness (OpenPBR base_diffuse_roughness) in [0,1];
+   * zero is Lambert. */
+  float32_t diffuse_roughness;
+  /** Callisto smooth-terminator amount and length, each in [0,1]; a zero
+   * amount leaves the shading-normal terminator unchanged. */
+  float32_t smooth_terminator;
+  float32_t smooth_terminator_length;
+  /** Mix weight in [0,1] of a second GGX lobe whose roughness is
+   * clamp(roughness * scale, 0, 1); scale lies in [0,16]. */
+  float32_t dual_specular_opacity;
+  float32_t dual_specular_roughness_scale;
+  /** Linear F82 tint (Hoffman/Kutz), each channel in [0,1]; white is
+   * Schlick Fresnel. */
+  Vec3 specular_f82_tint;
 } VkrPbrProperties;
+
+#define VKR_MATERIAL_DUAL_SPECULAR_ROUGHNESS_SCALE_MAX 16.0f
+
+/* Writes the identity BRDF extensions: Lambert diffuse, no smooth
+   terminator, one specular lobe and Schlick Fresnel. */
+static inline void vkr_pbr_reset_brdf_extensions(VkrPbrProperties *pbr) {
+  pbr->diffuse_roughness = 0.0f;
+  pbr->smooth_terminator = 0.0f;
+  pbr->smooth_terminator_length = 0.5f;
+  pbr->dual_specular_opacity = 0.0f;
+  pbr->dual_specular_roughness_scale = 2.0f;
+  pbr->specular_f82_tint = vec3_new(1.0f, 1.0f, 1.0f);
+}
+
+/* Whether every BRDF extension is finite and in its range. */
+static inline bool8_t
+vkr_pbr_brdf_extensions_valid(const VkrPbrProperties *pbr) {
+  const float32_t unit[] = {
+      pbr->diffuse_roughness,        pbr->smooth_terminator,
+      pbr->smooth_terminator_length, pbr->dual_specular_opacity,
+      pbr->specular_f82_tint.x,      pbr->specular_f82_tint.y,
+      pbr->specular_f82_tint.z,
+  };
+  for (uint32_t i = 0; i < ArrayCount(unit); ++i) {
+    if (!isfinite(unit[i]) || unit[i] < 0.0f || unit[i] > 1.0f) {
+      return false_v;
+    }
+  }
+  const float32_t scale = pbr->dual_specular_roughness_scale;
+  return isfinite(scale) && scale >= 0.0f &&
+         scale <= VKR_MATERIAL_DUAL_SPECULAR_ROUGHNESS_SCALE_MAX;
+}
+
+/* Whether any BRDF extension differs from identity. The terminator length
+   and the dual roughness scale change nothing while their amount and
+   opacity are zero. */
+static inline bool8_t
+vkr_pbr_brdf_extensions_active(const VkrPbrProperties *pbr) {
+  return pbr->diffuse_roughness > 0.0f || pbr->smooth_terminator > 0.0f ||
+         pbr->dual_specular_opacity > 0.0f || pbr->specular_f82_tint.x < 1.0f ||
+         pbr->specular_f82_tint.y < 1.0f || pbr->specular_f82_tint.z < 1.0f;
+}
 
 /* Factors of one extra terrain layer; its textures are the layer's slots. */
 typedef struct VkrMaterialLayer {

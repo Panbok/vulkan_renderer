@@ -753,16 +753,22 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->gpu_shadow_pipeline release];
   [renderer->gpu_shadow_opaque_pipeline release];
   [renderer->depth_clear_pipeline release];
-  for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
-       ++probes) {
-    for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
-      for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
-           ++decals) {
-        [renderer->tiled_forward_pipelines[decals][probes][i] release];
-        [renderer->tiled_coverage_pipelines[decals][probes][i] release];
+  /* vkr_metal_packet_custom_release waited for the background creation of
+     the extended variant. */
+  for (uint32_t brdf = 0; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT; ++brdf) {
+    for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
+         ++probes) {
+      for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+        for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
+             ++decals) {
+          [renderer->tiled_forward_pipelines[brdf][decals][probes][i] release];
+          [renderer->tiled_coverage_pipelines[brdf][decals][probes][i]
+              release];
+        }
+        [renderer->tiled_blend_pipelines[brdf][probes][i] release];
       }
-      [renderer->tiled_blend_pipelines[probes][i] release];
     }
+    [renderer->tiled_brdf_constants[brdf] release];
   }
   [renderer->tiled_sky_pipeline release];
   [renderer->tiled_resolve_pipeline release];

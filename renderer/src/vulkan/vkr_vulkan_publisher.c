@@ -2720,6 +2720,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
     pbr.anisotropy_rotation = 0.0f;
     pbr.diffuse_transmission_strength = 0.0f;
     pbr.diffuse_transmission_color = (Vec3){0.0f, 0.0f, 0.0f};
+    vkr_pbr_reset_brdf_extensions(&pbr);
   }
   const VkrPacketMaterialConstants material_constants =
       vkr_packet_derive_material_constants(&pbr, material->alpha_cutoff,
@@ -2786,6 +2787,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
               .material_subsurface = {pbr.subsurface_strength,
                                       (float32_t)pbr.subsurface_profile, 0.0f,
                                       0.0f},
+              .material_brdf = material_constants.brdf,
+              .material_specular_tint = material_constants.specular_tint,
           },
       .transmission =
           {

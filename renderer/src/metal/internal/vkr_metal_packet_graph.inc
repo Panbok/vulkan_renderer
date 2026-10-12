@@ -1579,6 +1579,8 @@ vkr_internal bool8_t vkr_metal_packet_material_info_valid(
         pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f ||
         pbr->diffuse_transmission_strength > 0.0f)))
     return false_v;
+  if (!vkr_pbr_brdf_extensions_valid(pbr))
+    return false_v;
   for (uint32_t i = 0; i < ArrayCount(create_info->tint); ++i) {
     if (!isfinite(create_info->tint[i]))
       return false_v;

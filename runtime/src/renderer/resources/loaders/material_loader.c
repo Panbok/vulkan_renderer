@@ -224,6 +224,7 @@ vkr_internal void vkr_material_init_defaults(VkrMaterial *material,
   material->pbr.emissive_factor = vec3_new(0, 0, 0);
   material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
   material->pbr.temporal_reactivity = 0.0f;
+  vkr_pbr_reset_brdf_extensions(&material->pbr);
   material->alpha_cutoff = 0.0f;
 
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
@@ -1428,6 +1429,7 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   material->pbr.occlusion_strength = 1.0f;
   material->pbr.emissive_factor = vec3_zero();
   material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
+  vkr_pbr_reset_brdf_extensions(&material->pbr);
   material->alpha_cutoff = 0.0f;
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
     material->textures[tex_slot].handle = VKR_TEXTURE_HANDLE_INVALID;
@@ -1651,6 +1653,7 @@ vkr_material_loader_set_parse_defaults(VkrParsedMaterialData *out_data) {
   out_data->pbr.attenuation_color = vec3_new(1, 1, 1);
   out_data->pbr.attenuation_distance = 0.0f;
   out_data->pbr.temporal_reactivity = 0.0f;
+  vkr_pbr_reset_brdf_extensions(&out_data->pbr);
   out_data->alpha_cutoff = 0.0f;
   out_data->alpha_cutoff_set = false_v;
   out_data->cutout_enabled = false_v;
@@ -1728,6 +1731,77 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_surface_key(
     (void)string8_to_vec3(&value, &out_data->pbr.dielectric_specular);
   } else {
     return VKR_MATERIAL_KEY_UNMATCHED;
+  }
+  return VKR_MATERIAL_KEY_MATCHED;
+}
+
+/* Whether `key` begins with `prefix`, ignoring case as key matching does. */
+vkr_internal bool8_t vkr_material_key_has_prefix(String8 key,
+                                                 const char *prefix) {
+  String8 head = key;
+  const uint64_t prefix_length = string_length(prefix);
+  if (head.length < prefix_length) {
+    return false_v;
+  }
+  head.length = prefix_length;
+  return vkr_string8_equals_cstr_i(&head, prefix);
+}
+
+/* Whether `value` is one finite number in [min, max], stored in `out`. */
+vkr_internal bool8_t vkr_material_parse_bounded_f32(String8 value,
+                                                    float32_t min,
+                                                    float32_t max,
+                                                    float32_t *out) {
+  float32_t parsed = 0.0f;
+  if (!string8_to_f32(&value, &parsed) || !isfinite(parsed) || parsed < min ||
+      parsed > max) {
+    return false_v;
+  }
+  *out = parsed;
+  return true_v;
+}
+
+/* Rough diffuse, smooth terminator, dual specular and F82-tint factors of
+ * the BRDF; an out-of-range value rejects the material. */
+vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_brdf_key(
+    VkrParsedMaterialData *out_data, String8 path, String8 key, String8 value) {
+  VkrPbrProperties *pbr = &out_data->pbr;
+  bool8_t valid = true_v;
+  if (vkr_string8_equals_cstr_i(&key, "diffuse_roughness")) {
+    valid = vkr_material_parse_bounded_f32(value, 0.0f, 1.0f,
+                                           &pbr->diffuse_roughness);
+  } else if (vkr_string8_equals_cstr_i(&key, "smooth_terminator")) {
+    valid = vkr_material_parse_bounded_f32(value, 0.0f, 1.0f,
+                                           &pbr->smooth_terminator);
+  } else if (vkr_string8_equals_cstr_i(&key, "smooth_terminator_length")) {
+    valid = vkr_material_parse_bounded_f32(value, 0.0f, 1.0f,
+                                           &pbr->smooth_terminator_length);
+  } else if (vkr_string8_equals_cstr_i(&key, "dual_specular_opacity")) {
+    valid = vkr_material_parse_bounded_f32(value, 0.0f, 1.0f,
+                                           &pbr->dual_specular_opacity);
+  } else if (vkr_string8_equals_cstr_i(&key, "dual_specular_roughness_scale")) {
+    valid = vkr_material_parse_bounded_f32(
+        value, 0.0f, VKR_MATERIAL_DUAL_SPECULAR_ROUGHNESS_SCALE_MAX,
+        &pbr->dual_specular_roughness_scale);
+  } else if (vkr_string8_equals_cstr_i(&key, "specular_f82_tint")) {
+    Vec3 tint = vec3_zero();
+    valid = string8_to_vec3(&value, &tint) && isfinite(tint.x) &&
+            tint.x >= 0.0f && tint.x <= 1.0f && isfinite(tint.y) &&
+            tint.y >= 0.0f && tint.y <= 1.0f && isfinite(tint.z) &&
+            tint.z >= 0.0f && tint.z <= 1.0f;
+    if (valid) {
+      pbr->specular_f82_tint = tint;
+    }
+  } else {
+    return VKR_MATERIAL_KEY_UNMATCHED;
+  }
+
+  out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+  if (!valid) {
+    log_error("Material: invalid %.*s in '%.*s'", (int)key.length, key.str,
+              (int)path.length, path.str);
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return VKR_MATERIAL_KEY_INVALID;
   }
   return VKR_MATERIAL_KEY_MATCHED;
 }
@@ -2155,6 +2229,24 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
     return false_v;
   }
 
+  /* The BRDF extension families take only their own keys, so a misspelt
+     one fails instead of shading at its default. */
+  if ((vkr_material_key_has_prefix(key, "smooth_terminator") &&
+       !vkr_string8_equals_cstr_i(&key, "smooth_terminator") &&
+       !vkr_string8_equals_cstr_i(&key, "smooth_terminator_length")) ||
+      (vkr_material_key_has_prefix(key, "dual_specular") &&
+       !vkr_string8_equals_cstr_i(&key, "dual_specular_opacity") &&
+       !vkr_string8_equals_cstr_i(&key, "dual_specular_roughness_scale")) ||
+      (vkr_material_key_has_prefix(key, "specular_f82") &&
+       !vkr_string8_equals_cstr_i(&key, "specular_f82_tint")) ||
+      (vkr_material_key_has_prefix(key, "diffuse_roughness") &&
+       !vkr_string8_equals_cstr_i(&key, "diffuse_roughness"))) {
+    log_error("Material: unknown BRDF key '%.*s' in '%.*s'", (int)key.length,
+              key.str, (int)path.length, path.str);
+    out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
   VkrTextureSlot texture_slot = VKR_TEXTURE_SLOT_COUNT;
   if (vkr_material_parse_texture_slot_from_key(key, &texture_slot)) {
     if (value.length > 0 && value.length < VKR_MATERIAL_PATH_MAX) {
@@ -2182,6 +2274,9 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
       vkr_material_loader_parse_surface_key(out_data, key, value);
   if (result == VKR_MATERIAL_KEY_UNMATCHED) {
     result = vkr_material_loader_parse_layer_key(out_data, path, key, value);
+  }
+  if (result == VKR_MATERIAL_KEY_UNMATCHED) {
+    result = vkr_material_loader_parse_brdf_key(out_data, path, key, value);
   }
   if (result == VKR_MATERIAL_KEY_UNMATCHED) {
     result = vkr_material_loader_parse_volume_key(out_data, key, value);
@@ -2698,7 +2793,9 @@ bool8_t vkr_material_loader_replace_terrain(
     return false_v;
   }
   /* A terrain is opaque PBR, so the extensions an opaque terrain cannot
-     carry are off; its vertex colours weigh the layers. */
+     carry are off; its vertex colours weigh the layers. Layer 0's BRDF
+     extensions would shade every blended layer, so the terrain keeps the
+     identity BRDF. */
   parsed->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
   parsed->alpha_cutoff = 0.0f;
   parsed->alpha_cutoff_set = false_v;
@@ -2708,6 +2805,7 @@ bool8_t vkr_material_loader_replace_terrain(
   parsed->pbr.thickness_factor = 0.0f;
   parsed->pbr.diffuse_transmission_strength = 0.0f;
   parsed->pbr.subsurface_strength = 0.0f;
+  vkr_pbr_reset_brdf_extensions(&parsed->pbr);
   parsed->layer_mask = VKR_MATERIAL_LAYER_MASK_VERTEX_COLOR;
   parsed->texture_paths[VKR_TEXTURE_SLOT_LAYER_MASK][0] = '\0';
   for (uint32_t layer = 1u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {

@@ -165,6 +165,9 @@ float4 vk_local_shadow_transmission_fragment(
             energy = packet_prepare_anisotropy(raster.frame, normal, axis, light,
                                                roughness, anisotropy_strength, f0);
     }
+    energy = packet_apply_specular_extension(
+        raster.frame, energy, packet_material_brdf_extension(material),
+        roughness, f0);
     float3 reflectance = energy.reflectance;
     float3 sheen_color = max(material.material_sheen.rgb, 0.0f);
     if (vkr_sheen_active(sheen_color) && (material.flags & 256u) != 0u)

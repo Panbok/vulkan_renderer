@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -792,12 +792,21 @@ importance-sampling PDF must remain consistent. The Vulkan entry passes
 the branch is not recorded.
 
 The material energy record uses correlated Smith visibility and one shared
-RG16F DFG lookup per surface in both native implementations: the Metal frame
+RGBA16F DFG lookup per surface in both native implementations: the Metal frame
 root holds the DFG texture at byte 472, and Vulkan uses sampled-image and
 sampler indices at 488/492. Native manifests and Vulkan reflection include
 these fields. [ADR-053](053-energy-compensated-ggx.md) owns the equations and
 approximation. No furnace test has run on the tiled pipeline or on Vulkan; the
 earlier Metal furnace used the removed deferred lighting.
+
+The BRDF material extensions ([ADR-113](113-brdf-material-extensions.md)) run
+on both classes from the same shared kernel functions. They append two
+`float4` fields to each material row: Vulkan rows grow to 320 bytes, Metal
+rows to 384 bytes. The DFG table gains its C channel and both renderers and
+both GPU lightmap bakers sample it as RGBA16F. On Metal, a Release Bistro
+snapshot of the tiled pipeline at identity values is byte-identical to the
+base revision. On Vulkan, the SPIR-V compiles; reflection at pipeline
+creation and native execution are not recorded.
 
 Clearcoat is desktop-only and changes world material rows and resolve/deferred
 roots; Vulkan rows are 192 bytes. Production SPIR-V reflection passed all nine

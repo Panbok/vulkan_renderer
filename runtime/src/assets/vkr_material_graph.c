@@ -134,6 +134,19 @@ _Static_assert(ArrayCount(vkr_material_graph_mask_names) ==
     "emissive_texture", -1, true_v)                                            \
   X(SPECULAR, "specular", "Dielectric specular", COLOR, "dielectric_specular", \
     NULL, -1, false_v)                                                         \
+  X(SPECULAR_F82_TINT, "specular_f82_tint", "Specular F82 tint", COLOR,        \
+    "specular_f82_tint", NULL, -1, false_v)                                    \
+  X(DUAL_SPECULAR_OPACITY, "dual_specular_opacity", "Dual specular opacity",   \
+    SCALAR, "dual_specular_opacity", NULL, -1, false_v)                        \
+  X(DUAL_SPECULAR_ROUGHNESS_SCALE, "dual_specular_scale",                      \
+    "Dual specular roughness scale", SCALAR, "dual_specular_roughness_scale",  \
+    NULL, -1, false_v)                                                         \
+  X(DIFFUSE_ROUGHNESS, "diffuse_roughness", "Diffuse roughness", SCALAR,       \
+    "diffuse_roughness", NULL, -1, false_v)                                    \
+  X(SMOOTH_TERMINATOR, "smooth_terminator", "Smooth terminator", SCALAR,       \
+    "smooth_terminator", NULL, -1, false_v)                                    \
+  X(SMOOTH_TERMINATOR_LENGTH, "smooth_terminator_length", "Terminator length", \
+    SCALAR, "smooth_terminator_length", NULL, -1, false_v)                     \
   X(CLEARCOAT, "clearcoat", "Clearcoat", SCALAR, "clearcoat_factor",           \
     "clearcoat_texture", 0, false_v)                                           \
   X(CLEARCOAT_ROUGHNESS, "clearcoat_roughness", "Clearcoat roughness", SCALAR, \
@@ -1958,6 +1971,9 @@ static bool8_t raise_is_default(uint32_t input, String8 text) {
       [SURFACE_OCCLUSION] = {1.0f, 0.0f, 0.0f},
       [SURFACE_NORMAL] = {1.0f, 0.0f, 0.0f},
       [SURFACE_SPECULAR] = {0.04f, 0.04f, 0.04f},
+      [SURFACE_SPECULAR_F82_TINT] = {1.0f, 1.0f, 1.0f},
+      [SURFACE_DUAL_SPECULAR_ROUGHNESS_SCALE] = {2.0f, 0.0f, 0.0f},
+      [SURFACE_SMOOTH_TERMINATOR_LENGTH] = {0.5f, 0.0f, 0.0f},
       [SURFACE_CLEARCOAT_NORMAL] = {1.0f, 0.0f, 0.0f},
       [SURFACE_ATTENUATION_COLOR] = {1.0f, 1.0f, 1.0f},
       [SURFACE_IOR] = {1.5f, 0.0f, 0.0f},

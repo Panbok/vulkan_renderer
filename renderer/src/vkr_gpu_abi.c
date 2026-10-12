@@ -346,6 +346,9 @@ bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {
        pbr->diffuse_transmission_strength > 0.0f)) {
     return false_v;
   }
+  if (!vkr_pbr_brdf_extensions_valid(pbr)) {
+    return false_v;
+  }
   /* A terrain material blends opaque PBR layers in the visibility resolve,
      which forward and transmission shading never reach. */
   if (material->terrain) {

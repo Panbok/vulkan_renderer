@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -217,7 +217,9 @@ pipeline rather than a backend mechanism.
    on this pipeline (first-in-order choice, dominant-direction lookup, own
    gains, no baked sky scaling under a probe) were neither compiled nor run
    on Metal. Clearcoat, sheen, anisotropy and
-   diffuse transmission are not drawn yet. The
+   diffuse transmission are not drawn yet. The BRDF material extensions
+   ([ADR-113](113-brdf-material-extensions.md)) are drawn: F82 tint, the
+   dual specular lobe, EON diffuse and the smooth terminator. The
    vertex stage is MSL, because the Slang module numbers entry point buffers
    in declaration order and the GPU-encoded commands bind the draw root at
    buffer 0.

@@ -73,6 +73,13 @@ float3 vkr_vk_subsurface_receiver(VkrVkSubsurfaceRoot root, uint2 pixel,
       root.frame, normal, view, roughness, saturate(specular.rgb),
       (root.anisotropy == 0u ? float4(0.0f) : g_textures[NonUniformResourceIndex(root.anisotropy)].Load(
           int3(pixel, 0))));
+  float3 albedo =
+      g_textures[NonUniformResourceIndex(root.albedo)].Load(int3(pixel, 0)).rgb;
+  VkrBrdfExtension extension = packet_material_brdf_extension(
+      root.frame.materials[root.visible_rows[visible - 1u].material_index]);
+  energy = packet_apply_specular_extension(root.frame, energy, extension,
+                                           roughness, saturate(specular.rgb));
+  energy = vkr_brdf_apply_diffuse_extension(energy, extension, albedo);
   float3 boundary = energy.diffuse_weight;
   float4 coat =
       (root.clearcoat == 0u ? float4(0.0f) : g_textures[NonUniformResourceIndex(root.clearcoat)].Load(int3(pixel, 0)));
@@ -89,10 +96,7 @@ float3 vkr_vk_subsurface_receiver(VkrVkSubsurfaceRoot root, uint2 pixel,
             packet_sheen_allocation_reserve(root.frame, max(dot(normal, view), 0.0f), sheen.w));
     boundary *= layer.base_transmission;
   }
-  return boundary * vkr_subsurface_root_amplitude(
-                        g_textures[NonUniformResourceIndex(root.albedo)]
-                            .Load(int3(pixel, 0))
-                            .rgb);
+  return boundary * vkr_subsurface_root_amplitude(albedo);
 }
 [shader("compute")][numthreads(8, 8, 1)] void
 vk_subsurface_gather(uint3 thread_id : SV_DispatchThreadID) {

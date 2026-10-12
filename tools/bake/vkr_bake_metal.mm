@@ -142,6 +142,8 @@ struct GpuMaterial {
   int4 layers;
   /* x 1 when double-sided: both sides are front faces. */
   float4 surface;
+  /* xyz F82 specular tint, w EON diffuse roughness (ADR-113). */
+  float4 brdf;
 };
 
 struct GpuLight {
@@ -216,6 +218,8 @@ struct Material {
   float3 dielectric_specular;
   float roughness;
   bool double_sided;
+  float3 specular_f82_tint;
+  float diffuse_roughness;
 };
 
 static Material material_at(thread const Scene &scene, uint triangle,
@@ -266,6 +270,8 @@ static Material material_at(thread const Scene &scene, uint triangle,
   material.shadow_layer = source.misc.w != 0.0f;
   material.dielectric_specular = source.specular.xyz;
   material.double_sided = source.surface.x != 0.0f;
+  material.specular_f82_tint = source.brdf.xyz;
+  material.diffuse_roughness = source.brdf.w;
   return material;
 }
 
@@ -576,10 +582,27 @@ static LightSample sample_light(GpuLight light, float3 position,
   return sample;
 }
 
+/* EON rough diffuse (ADR-113): the view albedo relative to Lambert's,
+   E(N.V) / rho, as the renderer's vkr_eon_apply folds it. */
+static float3 eon_albedo_ratio(float3 rho, float roughness, float no_v) {
+  if (roughness <= 0.0f) {
+    return float3(1.0f);
+  }
+  float single = 1.0f / (1.0f + 0.28779340921081f * roughness);
+  float average = single * (1.0f + 0.07248821245692f * roughness);
+  float m = 1.0f - saturate(no_v);
+  float g = m * (0.0571085289f +
+                 m * (0.491881867f +
+                      m * (-0.332181442f + m * 0.0714429953f)));
+  float view_albedo = (1.0f + roughness * g) * single;
+  float3 multiple = rho * average / (1.0f - rho * (1.0f - average));
+  return view_albedo + multiple * (1.0f - view_albedo);
+}
+
 /* Albedo of the one diffuse lobe an opaque bounce scatters with: the CPU
-   BSDF's view-dependent split-sum specular reflectance R plus its diffuse
-   residual (1 - R)(1 - metallic) base. Specular energy is kept and
-   redistributed as a cosine lobe. */
+   BSDF's view-dependent split-sum specular reflectance R, with its F82
+   correction, plus its EON diffuse residual (1 - R) E(N.V). Specular energy
+   is kept and redistributed as a cosine lobe. */
 static float3 bounce_albedo(thread const Material &material, float no_v,
                             texture2d<float> dfg) {
   constexpr sampler dfg_sampler(coord::normalized, address::clamp_to_edge,
@@ -594,12 +617,19 @@ static float3 bounce_albedo(thread const Material &material, float no_v,
                            (size - 1.0f) +
                        0.5f) /
                       size;
-  float2 split_sum = dfg.sample(dfg_sampler, coordinate, level(0.0f)).xy;
+  float3 split_sum = dfg.sample(dfg_sampler, coordinate, level(0.0f)).xyz;
   float3 scale = 1.0f + f0 * (1.0f / max(split_sum.x + split_sum.y, 0.25f) -
                               1.0f);
   float f90 = saturate(max3(f0.x, f0.y, f0.z) * 25.0f);
-  float3 reflectance = saturate((f0 * split_sum.x + f90 * split_sum.y) * scale);
-  return reflectance + (1.0f - reflectance) * (1.0f - metallic) * base;
+  float3 f82_scale = (f0 + (f90 - f0) * 0.46266436603796f) *
+                     (1.0f - saturate(material.specular_f82_tint)) /
+                     0.05665277951485f;
+  float3 reflectance = saturate(
+      (f0 * split_sum.x + f90 * split_sum.y - f82_scale * split_sum.z) * scale);
+  float3 rho = (1.0f - metallic) * base;
+  return reflectance + (1.0f - reflectance) * rho *
+                           eon_albedo_ratio(rho, material.diffuse_roughness,
+                                            no_v);
 }
 
 /* Length of a punctual light's shadow segment, next to the light, that no
@@ -1224,8 +1254,9 @@ struct GpuMaterial {
   float specular[4];
   int32_t layers[4];
   float surface[4];
+  float brdf[4];
 };
-static_assert(sizeof(GpuMaterial) == 96u, "GpuMaterial matches the kernel");
+static_assert(sizeof(GpuMaterial) == 112u, "GpuMaterial matches the kernel");
 
 struct GpuLight {
   float position_kind[4];
@@ -1483,7 +1514,9 @@ bool upload_materials(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
          layer_for(
              material.textures[VKR_BAKE_MATERIAL_TEXTURE_METALLIC_ROUGHNESS]),
          layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_TRANSMISSION])},
-        {material.double_sided ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f}};
+        {material.double_sided ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f},
+        {material.specular_f82_tint.x, material.specular_f82_tint.y,
+         material.specular_f82_tint.z, material.diffuse_roughness}};
   }
 
   const NSUInteger layers = std::max<size_t>(layer_refs.size(), 1u);
@@ -1569,7 +1602,7 @@ bool upload_lights(VkrBakeGpuContext *context, const VkrBakeScene &scene) {
 /* The renderer's split-sum table, as the CPU BSDF reads it. */
 bool upload_dfg(VkrBakeGpuContext *context) {
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
-      texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
                                    width:VKR_DFG_LUT_SIZE
                                   height:VKR_DFG_LUT_SIZE
                                mipmapped:NO];
@@ -1583,7 +1616,8 @@ bool upload_dfg(VkrBakeGpuContext *context) {
       replaceRegion:MTLRegionMake2D(0u, 0u, VKR_DFG_LUT_SIZE, VKR_DFG_LUT_SIZE)
         mipmapLevel:0u
           withBytes:vkr_dfg_lut_pixels
-        bytesPerRow:VKR_DFG_LUT_SIZE * 2u * sizeof(uint16_t)];
+        bytesPerRow:VKR_DFG_LUT_SIZE * VKR_DFG_LUT_CHANNELS *
+                    sizeof(uint16_t)];
   return true;
 }
 

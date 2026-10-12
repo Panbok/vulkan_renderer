@@ -595,6 +595,13 @@ typedef enum VkrMetalTiledLighting {
    them. Blended surfaces take no decals. */
 #define VKR_METAL_TILED_DECAL_VARIANT_COUNT 2u
 
+/* Each tiled shading variant without and with the BRDF material extensions
+   (ADR-113): their state costs every pixel registers, so frames whose scene
+   has no extended material take the variant without them. The extended
+   pipelines are created in the background when a scene first publishes an
+   extended material. */
+#define VKR_METAL_TILED_BRDF_VARIANT_COUNT 2u
+
 #define VKR_METAL_CUSTOM_LIBRARY_PATH 4096u
 
 /* A Custom graph's pipelines (ADR-096): created on a background queue the
@@ -799,11 +806,13 @@ struct VkrMetalPacketRenderer {
      alpha-tested draws, which write the samples their alpha covers; without
      and with decals and reflection probes, by shading variant. */
   id<MTLRenderPipelineState>
-      tiled_forward_pipelines[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+      tiled_forward_pipelines[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
+                             [VKR_METAL_TILED_DECAL_VARIANT_COUNT]
                              [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                              [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState>
-      tiled_coverage_pipelines[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+      tiled_coverage_pipelines[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
+                              [VKR_METAL_TILED_DECAL_VARIANT_COUNT]
                               [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                               [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState> tiled_sky_pipeline;
@@ -814,8 +823,17 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> tiled_picking_pipeline;
   /* Glass and blended surfaces, and world text, over the resolved image. */
   id<MTLRenderPipelineState>
-      tiled_blend_pipelines[VKR_METAL_TILED_PROBE_VARIANT_COUNT]
+      tiled_blend_pipelines[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
+                           [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                            [VKR_METAL_TILED_LIGHTING_COUNT];
+  /* The fragment function constant of each BRDF variant, which every
+     pipeline whose entry reaches vkr_metal_tiled_shade takes. */
+  MTLFunctionConstantValues
+      *tiled_brdf_constants[VKR_METAL_TILED_BRDF_VARIANT_COUNT];
+  /* A VkrMetalCustomGraphState for the extended variant's pipelines: EMPTY
+     until a scene first publishes an extended material, then PENDING while
+     the custom group creates them, READY or FAILED with release order. */
+  VkrAtomicUint32 tiled_brdf_state;
   id<MTLRenderPipelineState> tiled_text_pipeline;
   /* Custom material graphs (ADR-096): the project library, each slot's
      pipelines (slot 0 stays empty) and the queue group creating them. */

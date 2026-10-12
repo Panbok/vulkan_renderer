@@ -1598,7 +1598,8 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .sheen_texture = sheen,
       .anisotropy_texture = anisotropy,
       .layered_tiles =
-          renderer->prepared_frame.lighting_layers_enabled ? 1u : 0u,
+          (renderer->prepared_frame.lighting_layers_enabled ? 1u : 0u) |
+          (renderer->prepared_frame.brdf_extensions_enabled ? 2u : 0u),
       .local_shadow_mask_texture = local_shadow_mask,
       .shadow_moments_texture = shadow_moments,
       .baked_lamps_texture = baked_lamps,

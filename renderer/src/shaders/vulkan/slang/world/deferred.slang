@@ -255,7 +255,9 @@ struct VkrVkLightingRoot
     uint clearcoat_texture;
     uint sheen_texture;
     uint anisotropy_texture;
-    // Nonzero when the layered kernel also runs and owns tiles with layer data.
+    // Nonzero when the layered kernel also runs and owns tiles with layer
+    // data. Bit 1 also gives it pixels whose material uses a BRDF extension
+    // (ADR-113).
     uint layered_tiles;
     // Shadow.LocalMask output: one RGBA8 layer per per-pixel overlap slot.
     uint local_shadow_mask_texture;
@@ -2560,14 +2562,21 @@ void vk_diffuse_volume_fallback(uint3 thread_id : SV_DispatchThreadID)
 
 groupshared uint g_deferred_tile_layered;
 
-// A pixel with no clearcoat, sheen or anisotropy G-buffer data shades
-// identically in the base kernel, which compiles those layers out.
+// A pixel with no clearcoat, sheen or anisotropy G-buffer data and no BRDF
+// extension shades identically in the base kernel, which compiles those
+// layers and extensions out.
 bool vk_deferred_pixel_layered(VkrVkLightingRoot root, uint2 pixel)
 {
-    if (any(pixel >= root.extent) ||
-        g_storage_uint2_2d[root.vbuffer_texture][pixel].x == 0u)
+    if (any(pixel >= root.extent))
         return false;
-    return (root.clearcoat_texture != 0u &&
+    uint visible = g_storage_uint2_2d[root.vbuffer_texture][pixel].x;
+    if (visible == 0u)
+        return false;
+    return ((root.layered_tiles & 2u) != 0u &&
+            vkr_brdf_extension_active(packet_material_brdf_extension(
+                root.frame.materials[root.visible_rows[visible - 1u]
+                                         .material_index]))) ||
+           (root.clearcoat_texture != 0u &&
             any(g_storage_2d[root.clearcoat_texture][pixel] != 0.0f)) ||
            (root.sheen_texture != 0u &&
             any(g_storage_2d[root.sheen_texture][pixel] != 0.0f)) ||
@@ -2667,8 +2676,21 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         frame, normal, view, roughness, f0, anisotropy_packed);
     if (!vkr_editor_neutral_lighting(frame.render_mode))
     {
-        energy = vkr_ggx_diffuse_transmission(energy,
-            frame.materials[root.visible_rows[encoded.x - 1u].material_index].material_diffuse_transmission);
+        VkrVulkanMaterial material =
+            frame.materials[root.visible_rows[encoded.x - 1u].material_index];
+        // Only the layered kernel carries the extensions; the base kernel
+        // shades the pixels whose extensions are all at identity.
+        VkrBrdfExtension extension = Layered
+            ? packet_material_brdf_extension(material)
+            : vkr_brdf_extension_identity();
+        if (Layered)
+            energy = packet_apply_specular_extension(frame, energy, extension,
+                                                     roughness, f0);
+        energy = vkr_ggx_diffuse_transmission(
+            energy, material.material_diffuse_transmission);
+        if (Layered)
+            energy = vkr_brdf_apply_diffuse_extension(energy, extension,
+                                                      diffuse_albedo);
     }
     float4 clearcoat_packed = 0.0f;
     if (Layered && root.clearcoat_texture != 0u)
@@ -3848,6 +3870,13 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             frame, no_v, surface.roughness, f0);
     if (anisotropy_strength > 0.0f)
       energy = packet_prepare_anisotropy(frame, surface.normal, anisotropy_axis, view, surface.roughness, anisotropy_strength, f0);
+        VkrBrdfExtension extension =
+            neutral_lighting ? vkr_brdf_extension_identity()
+                             : packet_material_brdf_extension(material);
+        energy = packet_apply_specular_extension(frame, energy, extension,
+                                                 surface.roughness, f0);
+        energy = vkr_brdf_apply_diffuse_extension(
+            energy, extension, surface.base.rgb * (1.0f - surface.metallic));
         float clearcoat_factor =
             neutral_lighting ? 0.0f : saturate(material.material_clearcoat.x);
         if (clearcoat_factor > 0.0f && (material.flags & 32u) != 0u)

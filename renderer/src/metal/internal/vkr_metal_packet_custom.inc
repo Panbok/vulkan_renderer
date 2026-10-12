@@ -76,7 +76,8 @@ vkr_metal_packet_custom_build(VkrMetalPacketRenderer *renderer, uint32_t slot)
                         VKR_METAL_PACKET_BLEND_NONE,
                         VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                         VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                        VKR_METAL_TILED_SAMPLE_COUNT, label);
+                        VKR_METAL_TILED_SAMPLE_COUNT,
+                        renderer->tiled_brdf_constants[0], label);
                 snprintf(name, sizeof(name), "%s_%s", graph->function,
                          tiled_lighting[i].coverage[decals][probes]);
                 graph->coverage[decals][probes][i] =
@@ -87,7 +88,8 @@ vkr_metal_packet_custom_build(VkrMetalPacketRenderer *renderer, uint32_t slot)
                         VKR_METAL_PACKET_BLEND_COVERAGE,
                         VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                         VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                        VKR_METAL_TILED_SAMPLE_COUNT, label);
+                        VKR_METAL_TILED_SAMPLE_COUNT,
+                        renderer->tiled_brdf_constants[0], label);
                 ok = graph->forward[decals][probes][i] != nil &&
                      graph->coverage[decals][probes][i] != nil;
               }
@@ -167,6 +169,10 @@ void vkr_metal_packet_renderer_pipeline_stats(
                                       VKR_MEMORY_ORDER_ACQUIRE) ==
                VKR_METAL_CUSTOM_GRAPH_PENDING;
   }
+  /* The tiled BRDF extension variant counts as one graph (ADR-113). */
+  pending += vkr_atomic_uint32_load(&renderer->tiled_brdf_state,
+                                    VKR_MEMORY_ORDER_ACQUIRE) ==
+             VKR_METAL_CUSTOM_GRAPH_PENDING;
   *out_pending_graphs = pending;
 }
 

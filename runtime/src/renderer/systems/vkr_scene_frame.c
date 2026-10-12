@@ -23,6 +23,9 @@ vkr_internal uint32_t vkr_scene_material_features(const VkrMaterial *material) {
   if (material->pbr.anisotropy_strength > 0.0f) {
     features |= VKR_WORLD_MATERIAL_FEATURE_ANISOTROPY;
   }
+  if (vkr_pbr_brdf_extensions_active(&material->pbr)) {
+    features |= VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION;
+  }
   return features;
 }
 
@@ -330,9 +333,11 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
           vkr_material_system_material_alpha_mode(materials, material));
       const bool8_t transmissive =
           vkr_material_system_material_is_transmissive(material);
-      if (!transmissive && !alpha.world_transparent) {
-        opaque_material_features |= vkr_scene_material_features(material);
-      }
+      const uint32_t material_features = vkr_scene_material_features(material);
+      opaque_material_features |=
+          !transmissive && !alpha.world_transparent
+              ? material_features
+              : material_features & VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION;
       stats.objects_tested++;
       stats.objects_without_bounds += mesh->bounds_valid ? 0u : 1u;
       gpu_camera_opaque_candidate_count +=
@@ -381,9 +386,11 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
           vkr_material_system_material_alpha_mode(materials, material));
       const bool8_t transmissive =
           vkr_material_system_material_is_transmissive(material);
-      if (!transmissive && !alpha.world_transparent) {
-        opaque_material_features |= vkr_scene_material_features(material);
-      }
+      const uint32_t material_features = vkr_scene_material_features(material);
+      opaque_material_features |=
+          !transmissive && !alpha.world_transparent
+              ? material_features
+              : material_features & VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION;
       stats.objects_tested++;
       stats.objects_without_bounds += instance->bounds_valid ? 0u : 1u;
       gpu_camera_opaque_candidate_count +=

@@ -624,6 +624,15 @@ static float3 vkr_metal_tiled_moving_shadow(
   return removed;
 }
 
+// The frame's BRDF extension variant (ADR-113), set by the pipelines the
+// renderer creates when a scene first publishes an extended material. A
+// pipeline without the constant, such as a Custom graph's, shades the base
+// model, and the extension code compiles out of it.
+constant bool vkr_tiled_brdf_extension_constant [[function_constant(0)]];
+constant bool vkr_tiled_brdf_extension =
+    is_function_constant_defined(vkr_tiled_brdf_extension_constant) &&
+    vkr_tiled_brdf_extension_constant;
+
 // Shades a forward-drawn surface: the sun with its cascades and cloud shadow,
 // the dynamic local lights that Lighting includes, diffuse light from its
 // lightmap, the diffuse volume or the environment, and environment specular.
@@ -677,6 +686,16 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                   base, metallic);
   VkrGgxMaterialEnergy energy =
       vkr_metal_packet_prepare_brdf(frame, no_v, roughness, f0);
+  // The material's BRDF extensions (ADR-113) in the extension variant; a
+  // neutral inspection keeps the base model.
+  if (vkr_tiled_brdf_extension && !neutral) {
+    VkrBrdfExtension extension =
+        vkr_metal_packet_material_brdf_extension(material);
+    energy = vkr_metal_packet_apply_specular_extension(frame, energy,
+                                                       extension, roughness, f0);
+    energy = vkr_brdf_apply_diffuse_extension(energy, extension,
+                                              base * (1.0f - metallic));
+  }
   VkrMetalTiledSurfaceLight light;
   light.diffuse = float3(0.0f);
   light.specular = float3(0.0f);
@@ -837,8 +856,48 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     float specular_visibility =
         horizon * horizon *
         vkr_metal_packet_specular_ao(ao * baked_occlusion, no_v, roughness);
-    light.specular +=
-        incoming * energy.reflectance * specular_visibility * specular_gain;
+    light.specular += incoming * energy.primary_reflectance *
+                      specular_visibility * specular_gain;
+    // The dual lobe (ADR-113) reads the same environment at its roughness,
+    // about its own dominant direction.
+    if (energy.dual_opacity > 0.0f) {
+      const float dual_lod = energy.dual_roughness *
+                             float(max(frame->prefilter_mip_count, 1u) - 1u);
+      const float dual_alpha = energy.dual_roughness * energy.dual_roughness;
+      const float3 dual_dominant =
+          vkr_specular_dominant_direction(normal, reflection, dual_alpha);
+      float3 dual_incoming;
+      if (probe != 0u) {
+        const device VkrMetalPacketIblProbe &local =
+            frame->ibl_probes[probe - 1u];
+        float3 direction =
+            local.intensity_box.w > 0.5f
+                ? vkr_reflection_probe_direction(
+                      dual_dominant, input.world_position,
+                      local.center_blend.xyz,
+                      max(local.extents_weight.xyz, 0.0f), dual_alpha)
+                : dual_dominant;
+        dual_incoming = local.prefilter
+                            .sample(environment_sampler, direction,
+                                    level(dual_lod))
+                            .rgb *
+                        radiance_scale;
+      } else {
+        dual_incoming = vkr_metal_packet_global_prefiltered(
+                            frame, environment_sampler, dual_dominant,
+                            dual_lod) *
+                        radiance_scale;
+        if (!environment_diffuse)
+          dual_incoming = vkr_sh_l2_occluded_radiance(
+              dual_incoming, diffuse_light,
+              vkr_sh_l2_sky_visibility(baked_sky, environment_response));
+      }
+      light.specular +=
+          dual_incoming * energy.dual_reflectance * horizon * horizon *
+          vkr_metal_packet_specular_ao(ao * baked_occlusion, no_v,
+                                       energy.dual_roughness) *
+          specular_gain;
+    }
   } else if (environment_diffuse) {
     diffuse_light = frame->ambient_color.rgb;
   }

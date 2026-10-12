@@ -122,6 +122,12 @@ vkr_internal void test_packet_material_constants(void) {
       .thickness_factor = 0.75f,
       .attenuation_color = {0.11f, 0.22f, 0.33f},
       .attenuation_distance = 4.5f,
+      .diffuse_roughness = 0.31f,
+      .smooth_terminator = 0.32f,
+      .smooth_terminator_length = 0.33f,
+      .dual_specular_opacity = 0.34f,
+      .dual_specular_roughness_scale = 3.5f,
+      .specular_f82_tint = {0.61f, 0.62f, 0.63f},
   };
   const VkrPacketMaterialConstants constants =
       vkr_packet_derive_material_constants(&pbr, 0.42f,
@@ -135,6 +141,12 @@ vkr_internal void test_packet_material_constants(void) {
          constants.alpha.z == 1.5f && constants.alpha.w == 0.75f);
   assert(constants.attenuation_color.x == 0.11f &&
          constants.attenuation_color.w == 4.5f);
+  assert(constants.brdf.x == 0.31f && constants.brdf.y == 0.32f &&
+         constants.brdf.z == 0.33f && constants.brdf.w == 0.34f);
+  assert(constants.specular_tint.x == 0.61f &&
+         constants.specular_tint.y == 0.62f &&
+         constants.specular_tint.z == 0.63f &&
+         constants.specular_tint.w == 3.5f);
   assert(constants.alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT);
   printf("  test_packet_material_constants PASSED\n");
 }

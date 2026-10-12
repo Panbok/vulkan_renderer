@@ -89,16 +89,22 @@ VkrVulkanDirectResult packet_direct(float3 normal, float3 view, float3 light,
         return back;
     }
     half_vector *= half_inverse_length;
-    float3 fresnel = packet_fresnel(max(dot(half_vector, view), 0.0f), f0);
-    float distribution =
-        vkr_ggx_surface_distribution(normal, half_vector, roughness, energy);
-    float3 specular = distribution * vkr_ggx_surface_visibility(no_l, light, energy) *
-                      fresnel * energy.specular_scale;
+    float v_o_h = max(dot(half_vector, view), 0.0f);
+    float3 fresnel =
+        vkr_ggx_f82_fresnel(packet_fresnel(v_o_h, f0), v_o_h, energy);
+    float3 specular = vkr_ggx_direct_specular(normal, half_vector, light, no_l,
+                                              roughness, energy) *
+                      fresnel;
     float3 kd = energy.diffuse_weight * (1.0f - metallic);
-    float3 scale = radiance * no_l;
+    float3 scale = radiance * no_l *
+                   vkr_smooth_terminator(no_l, dot(normal, half_vector), v_o_h,
+                                         energy);
     VkrVulkanDirectResult result;
     result.irradiance = scale / vkr_pi;
-    result.diffuse = kd * albedo / vkr_pi * scale;
+    result.diffuse = kd *
+                     vkr_eon_direct_albedo(albedo, no_l, dot(light, view),
+                                           energy) /
+                     vkr_pi * scale;
     result.specular = specular * scale;
     return result;
 }
@@ -113,12 +119,15 @@ float3 packet_direct_specular(float3 normal, float3 view, float3 light,
     if (half_inverse_length == 0.0f)
         return float3(0.0f);
     half_vector *= half_inverse_length;
-    float3 fresnel = packet_fresnel(max(dot(half_vector, view), 0.0f), f0);
-    float distribution =
-        vkr_ggx_surface_distribution(normal, half_vector, roughness, energy);
-    float3 specular = distribution * vkr_ggx_surface_visibility(no_l, light, energy) *
-                      fresnel * energy.specular_scale;
-    float3 scale = radiance * no_l;
+    float v_o_h = max(dot(half_vector, view), 0.0f);
+    float3 fresnel =
+        vkr_ggx_f82_fresnel(packet_fresnel(v_o_h, f0), v_o_h, energy);
+    float3 specular = vkr_ggx_direct_specular(normal, half_vector, light, no_l,
+                                              roughness, energy) *
+                      fresnel;
+    float3 scale = radiance * no_l *
+                   vkr_smooth_terminator(no_l, dot(normal, half_vector), v_o_h,
+                                         energy);
     return specular * scale;
 }
 
@@ -163,8 +172,28 @@ VkrVulkanDirectResult packet_layered_rectangle_lights(
         .SampleLevel(g_samplers[ltc.sampler], uv, 0.0f).rg;
     VkrLtcFrame ltc_frame = vkr_ltc_make_frame(normal, view);
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
-    float3 specular_amplitude = vkr_ltc_specular_amplitude(
-        sample, energy.no_v, f0, f90, energy.specular_scale);
+    float3 specular_amplitude = vkr_ggx_ltc_f82_amplitude(
+        vkr_ltc_specular_amplitude(sample, energy.no_v, f0, f90,
+                                   energy.specular_scale),
+        sample.amplitude_fresnel.x, energy.f82_directional,
+        energy.specular_scale, energy);
+    // The dual lobe (ADR-113) takes its own LTC sample at its roughness.
+    VkrLtcSample dual_sample = (VkrLtcSample)0;
+    float3 dual_amplitude = 0.0f;
+    bool dual = energy.dual_opacity > 0.0f;
+    if (dual)
+    {
+        float2 dual_uv = vkr_ltc_lut_uv(energy.no_v, energy.dual_roughness);
+        dual_sample.inverse_matrix = g_textures[ltc.matrix_texture]
+            .SampleLevel(g_samplers[ltc.sampler], dual_uv, 0.0f);
+        dual_sample.amplitude_fresnel = g_textures[ltc.amplitude_texture]
+            .SampleLevel(g_samplers[ltc.sampler], dual_uv, 0.0f).rg;
+        dual_amplitude = vkr_ggx_ltc_f82_amplitude(
+            vkr_ltc_specular_amplitude(dual_sample, energy.no_v, f0, f90,
+                                       energy.dual_specular_scale),
+            dual_sample.amplitude_fresnel.x, energy.dual_f82_directional,
+            energy.dual_specular_scale, energy);
+    }
     VkrAnisotropyLtc anisotropic_sample = (VkrAnisotropyLtc)0;
     bool anisotropic = energy.anisotropy_strength > 0.0f;
     if (anisotropic) {
@@ -221,6 +250,19 @@ VkrVulkanDirectResult packet_layered_rectangle_lights(
                   anisotropic_sample.amplitude
             : vkr_ltc_evaluate_specular_rectangle(
                 local_rectangle, sample.inverse_matrix, specular_amplitude);
+        if (dual)
+        {
+            // The isotropic dual lobe integrates in the view-aligned frame,
+            // which an anisotropic primary has rotated.
+            VkrLtcRectangle dual_rectangle = anisotropic
+                ? vkr_ltc_project_rectangle_in_frame(
+                      center - world_position, right, up,
+                      vkr_ltc_make_frame(normal, view))
+                : local_rectangle;
+            float3 second = vkr_ltc_evaluate_specular_rectangle(
+                dual_rectangle, dual_sample.inverse_matrix, dual_amplitude);
+            specular += (second - specular) * energy.dual_opacity;
+        }
         float3 radiance = row.color.rgb * row.up_radiance.w;
         result.specular += radiance * specular;
         if (coat_active)
@@ -313,6 +355,44 @@ VkrGgxMaterialEnergy packet_prepare_gbuffer_brdf(
   return packet_prepare_anisotropy(frame, normal,
       vkr_anisotropy_decode_axis(anisotropy.rg, normal), view, roughness,
       anisotropy.b, f0);
+}
+
+VkrBrdfExtension packet_material_brdf_extension(VkrVulkanMaterial material)
+{
+    return vkr_brdf_extension_unpack(material.material_brdf,
+                                     material.material_specular_tint);
+}
+
+// The DFG table's A, B and C terms for one lobe.
+float3 packet_dfg_sample(VkrVulkanPacketFrameRoot *frame, float no_v,
+                         float roughness)
+{
+    return g_textures[frame.dfg_texture]
+        .SampleLevel(g_samplers[frame.dfg_sampler],
+                     vkr_ggx_dfg_uv(no_v, roughness), 0.0f).rgb;
+}
+
+// ADR-113 specular extensions, after the base (and anisotropic) energy and
+// before the diffuse-transmission split. Each adds its table samples only
+// when the material enables it.
+VkrGgxMaterialEnergy packet_apply_specular_extension(
+    VkrVulkanPacketFrameRoot *frame, VkrGgxMaterialEnergy energy,
+    VkrBrdfExtension extension, float roughness, float3 f0)
+{
+    if (vkr_brdf_extension_f82_active(extension))
+        energy = vkr_ggx_apply_f82(
+            energy, f0, extension.specular_f82_tint,
+            packet_dfg_sample(
+                frame, energy.no_v,
+                vkr_anisotropy_environment_roughness(roughness, energy)));
+    if (vkr_brdf_extension_dual_active(extension))
+    {
+        float dual_roughness = vkr_brdf_dual_roughness(roughness, extension);
+        energy = vkr_ggx_apply_dual_specular(
+            energy, f0, extension.dual_specular_opacity, dual_roughness,
+            packet_dfg_sample(frame, energy.no_v, dual_roughness));
+    }
+    return energy;
 }
 
 VkrClearcoatLayer packet_prepare_clearcoat(VkrVulkanPacketFrameRoot *frame,
@@ -1555,7 +1635,11 @@ packet_environment_terms_with_diffuse_normal(
     VkrVulkanEnvironmentResult result;
     result.irradiance = irradiance * ao;
     result.diffuse = kd * albedo * result.irradiance;
-    result.specular = specular * energy.reflectance * specular_visibility;
+    result.specular = specular * energy.primary_reflectance *
+                          specular_visibility +
+                      packet_environment_dual_specular(
+                          frame, world_position, normal, horizon_normal, view,
+                          ao, energy, packet_no_baked_light());
     return result;
 }
 
@@ -1623,6 +1707,26 @@ float3 packet_environment_specular_radiance(
     return radiance + global * (global_weight * frame.ibl_controls.z);
 }
 
+// The dual lobe's environment reflection (ADR-113), zero without one. It
+// is isotropic about the shading normal.
+float3 packet_environment_dual_specular(VkrVulkanPacketFrameRoot *frame,
+                                        float3 world_position, float3 normal,
+                                        float3 horizon_normal, float3 view,
+                                        float ao, VkrGgxMaterialEnergy energy,
+                                        VkrVulkanBakedLight baked)
+{
+    if (energy.dual_opacity <= 0.0f)
+        return 0.0f;
+    float no_v = max(dot(normal, view), 0.0f);
+    float3 reflection = reflect(-view, normal);
+    float horizon = saturate(1.0f + dot(reflection, horizon_normal));
+    return packet_environment_specular_radiance(frame, world_position, normal,
+                                                view, energy.dual_roughness,
+                                                baked) *
+           energy.dual_reflectance * horizon * horizon *
+           packet_specular_ao(ao, no_v, energy.dual_roughness);
+}
+
 float3 packet_environment_specular_weight(float3 normal, float3 horizon_normal,
                                           float3 view, float roughness, float ao,
                                           VkrGgxMaterialEnergy energy)
@@ -1631,7 +1735,7 @@ float3 packet_environment_specular_weight(float3 normal, float3 horizon_normal,
     roughness = vkr_anisotropy_environment_roughness(roughness, energy);
     float3 reflection = reflect(-view, vkr_anisotropy_environment_normal(normal, view, energy));
     float horizon = saturate(1.0f + dot(reflection, horizon_normal));
-    return energy.reflectance * horizon * horizon *
+    return energy.primary_reflectance * horizon * horizon *
            packet_specular_ao(ao, no_v, roughness);
 }
 
@@ -1647,7 +1751,10 @@ float3 packet_environment_specular(VkrVulkanPacketFrameRoot *frame,
                 vkr_anisotropy_environment_roughness(roughness, energy),
                 baked) *
            packet_environment_specular_weight(normal, horizon_normal, view,
-                                              roughness, ao, energy);
+                                              roughness, ao, energy) +
+           packet_environment_dual_specular(frame, world_position, normal,
+                                            horizon_normal, view, ao, energy,
+                                            baked);
 }
 
 float3 packet_sheen_environment(VkrVulkanPacketFrameRoot *frame,
@@ -1914,9 +2021,16 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
     VkrGgxMaterialEnergy energy = packet_prepare_brdf(frame, no_v, roughness, f0);
   if (anisotropy_strength > 0.0f)
     energy = packet_prepare_anisotropy(frame, normal, anisotropy_axis, view, roughness, anisotropy_strength, f0);
+    VkrBrdfExtension extension =
+        neutral_lighting ? vkr_brdf_extension_identity()
+                         : packet_material_brdf_extension(material);
+    energy = packet_apply_specular_extension(frame, energy, extension,
+                                             roughness, f0);
     energy = vkr_ggx_diffuse_transmission(
         energy, neutral_lighting ? float4(0.0f)
                                  : material.material_diffuse_transmission);
+    energy = vkr_brdf_apply_diffuse_extension(energy, extension,
+                                              base.rgb * (1.0f - metallic));
     float clearcoat_factor =
         neutral_lighting ? 0.0f : saturate(material.material_clearcoat.x);
     if (clearcoat_factor > 0.0f && (material.flags & 32u) != 0u)

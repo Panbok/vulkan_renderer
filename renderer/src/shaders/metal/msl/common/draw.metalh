@@ -72,6 +72,11 @@ struct VkrMetalPacketMaterial {
   sampler anisotropy_sampler;
   float4 material_diffuse_transmission;
   float4 material_subsurface;
+  // x diffuse roughness, y smooth-terminator amount, z smooth-terminator
+  // length, w dual-specular opacity.
+  float4 material_brdf;
+  // RGB linear F82 tint, A dual-specular roughness scale.
+  float4 material_specular_tint;
 };
 
 struct VkrMetalPacketTransmissionMaterial {
@@ -652,8 +657,8 @@ static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
               "Geometry decode record ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketInstance) == 144,
               "Prepared instance Metal ABI must remain 144 bytes");
-static_assert(sizeof(VkrMetalPacketMaterial) == 352,
-              "Metal material row ABI must remain 352 bytes");
+static_assert(sizeof(VkrMetalPacketMaterial) == 384,
+              "Metal material row ABI must remain 384 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
               "Metal transmission material row ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketFrameRoot) == 592,

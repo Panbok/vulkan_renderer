@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-13
 authority: architecture
 ---
 
@@ -993,9 +993,13 @@ probe bounds and GTAO do not establish arbitrary wall/furniture occlusion.
 See [ADR-019](adr/019-bounded-forward-spatial-lighting.md).
 
 Direct and environment lighting share height-correlated Smith GGX and an immutable
-256×256 RG16F DFG. A per-surface energy record scales specular and reserves residual
+256×256 RGBA16F DFG. A per-surface energy record scales specular and reserves residual
 energy for diffuse and transmission. [ADR-053](adr/053-energy-compensated-ggx.md)
-owns the approximation and native evidence limits.
+owns the approximation and native evidence limits. Materials can opt into F82-tint
+Fresnel, a dual specular lobe, EON rough diffuse and a smooth terminator; identity
+values keep the base model on both pipeline classes and in the lightmap bakers.
+[ADR-113](adr/113-brdf-material-extensions.md) owns their parameters, math and
+approximations.
 
 Scenes also support at most eight authored one-sided rectangular lights, including
 disabled entries. The lighting system publishes a render-ID-sorted table; a frame

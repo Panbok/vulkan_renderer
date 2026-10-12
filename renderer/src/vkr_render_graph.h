@@ -564,8 +564,12 @@ typedef struct VkrRenderGraphFrameInfo {
   /* The frame binds a sparse diffuse volume, which DiffuseVolume.Sample
      looks up per pixel for deferred lighting. */
   bool8_t diffuse_volume_enabled;
-  /** Any of clearcoat, sheen or anisotropy: deferred lighting splits its
-   * tiles between a base kernel and the layered kernel. */
+  /** A scene material uses a BRDF extension (ADR-113): the frame takes the
+   * extension shading variants. */
+  bool8_t brdf_extensions_enabled;
+  /** Any of clearcoat, sheen, anisotropy or a BRDF extension: deferred
+   * lighting splits its tiles between a base kernel and the layered kernel.
+   */
   bool8_t lighting_layers_enabled;
   bool8_t editor_image_available;
   bool8_t editor_overlay_enabled;

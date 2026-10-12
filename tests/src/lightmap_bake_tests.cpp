@@ -1228,6 +1228,60 @@ void write_text_file(const char *path, const char *text) {
   fclose(file);
 }
 
+/* The bake reads the BRDF extension keys the runtime loader reads, keeps
+   their identity defaults when a file leaves them out, and rejects a value
+   outside the runtime's range. */
+void test_bake_material_reads_brdf_extensions() {
+  const char *path = PROJECT_SOURCE_DIR "tests/tmp/lightmap_bake_brdf.mt";
+  Arena *arena = arena_create(KB(256), KB(256));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrBakeTextureStore *store = vkr_bake_texture_store_create(&allocator);
+  assert(store);
+  VkrBakeMaterial material = {};
+  VkrBakeMaterialError error = VKR_BAKE_MATERIAL_ERROR_NONE;
+
+  write_text_file(path, "type=pbr\nbase_color=0.5,0.5,0.5,1\n");
+  assert(vkr_bake_material_load(store, path, &material, &error));
+  assert(material.diffuse_roughness == 0.0f &&
+         material.smooth_terminator == 0.0f &&
+         material.smooth_terminator_length == 0.5f &&
+         material.dual_specular_opacity == 0.0f &&
+         material.dual_specular_roughness_scale == 2.0f);
+  assert(material.specular_f82_tint.x == 1.0f &&
+         material.specular_f82_tint.y == 1.0f &&
+         material.specular_f82_tint.z == 1.0f);
+
+  write_text_file(path, "base_color=0.5,0.5,0.5,1\ndiffuse_roughness=0.25\n"
+                        "smooth_terminator=0.5\nsmooth_terminator_length=0.75\n"
+                        "dual_specular_opacity=0.125\n"
+                        "dual_specular_roughness_scale=4\n"
+                        "specular_f82_tint=0.25,0.5,0.75\n");
+  assert(vkr_bake_material_load(store, path, &material, &error));
+  assert(material.diffuse_roughness == 0.25f &&
+         material.smooth_terminator == 0.5f &&
+         material.smooth_terminator_length == 0.75f &&
+         material.dual_specular_opacity == 0.125f &&
+         material.dual_specular_roughness_scale == 4.0f);
+  assert(material.specular_f82_tint.x == 0.25f &&
+         material.specular_f82_tint.y == 0.5f &&
+         material.specular_f82_tint.z == 0.75f);
+  VkrBakeMaterialSample sample = {};
+  vkr_bake_material_sample(store, &material, vec2_new(0.0f, 0.0f),
+                           vec4_new(1.0f, 1.0f, 1.0f, 1.0f), &sample);
+  assert(sample.diffuse_roughness == 0.25f &&
+         sample.specular_f82_tint.z == 0.75f);
+
+  write_text_file(path, "type=pbr\ndual_specular_roughness_scale=17\n");
+  assert(!vkr_bake_material_load(store, path, &material, &error));
+  assert(error == VKR_BAKE_MATERIAL_ERROR_PARSE);
+  vkr_bake_texture_store_release(store);
+  arena_destroy(arena);
+  remove(path);
+  printf("  test_bake_material_reads_brdf_extensions PASSED\n");
+}
+
 /* A level's blockout stairs (ADR-084) are bake geometry: a `blockout`
    component whose own "shape" field names the shape kind loads, and its four
    steps become four 1 x 0.25 x 0.5 boxes (48 triangles) inside the stairs'
@@ -1611,6 +1665,9 @@ void test_l1_lambert_furnace() {
   material.attenuation_color = vec3_new(1.0f, 1.0f, 1.0f);
   material.attenuation_distance = INFINITY;
   material.diffuse_transmission_color = vec3_new(1.0f, 1.0f, 1.0f);
+  material.smooth_terminator_length = 0.5f;
+  material.dual_specular_roughness_scale = 2.0f;
+  material.specular_f82_tint = vec3_new(1.0f, 1.0f, 1.0f);
 
   const uint32_t face_size = 4u;
   const float32_t expected[2] = {1.0f, 1.75f};
@@ -1681,6 +1738,9 @@ void test_point_lamp_direct_l1() {
   material.attenuation_color = vec3_new(1.0f, 1.0f, 1.0f);
   material.attenuation_distance = INFINITY;
   material.diffuse_transmission_color = vec3_new(1.0f, 1.0f, 1.0f);
+  material.smooth_terminator_length = 0.5f;
+  material.dual_specular_roughness_scale = 2.0f;
+  material.specular_f82_tint = vec3_new(1.0f, 1.0f, 1.0f);
   VkrBakeSceneLight light = {};
   light.kind = VkrBakeSceneLightKind::Point;
   light.position = lamp;
@@ -1808,6 +1868,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_lightmap_denoise_atrous_keeps_edges();
   test_lightmap_fill_buried_texels();
   test_bake_material_accepts_roughness_bound();
+  test_bake_material_reads_brdf_extensions();
   test_bake_scene_builds_blockout_stairs();
   test_bake_scene_leaves_out_moving_brushes();
   test_sparse_bricks_place_and_relocate();

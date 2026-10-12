@@ -70,6 +70,16 @@ typedef struct VkrBakeMaterial {
   Vec3 diffuse_transmission_color;
   float32_t anisotropy_strength;
   float32_t anisotropy_rotation;
+  /* BRDF extensions with the runtime's ranges and identity defaults: EON
+     diffuse roughness (0 is Lambert), smooth terminator amount and length
+     (0, 0.5), dual-specular opacity and roughness scale (0, 2) and the F82
+     tint (white is Schlick). */
+  float32_t diffuse_roughness;
+  float32_t smooth_terminator;
+  float32_t smooth_terminator_length;
+  float32_t dual_specular_opacity;
+  float32_t dual_specular_roughness_scale;
+  Vec3 specular_f82_tint;
   /* Meters one texture repeat covers on brush faces; zero unset (1 m). */
   Vec2 world_size;
   VkrBakeMaterialTextureRef textures[VKR_BAKE_MATERIAL_TEXTURE_COUNT];
@@ -104,6 +114,9 @@ typedef struct VkrBakeMaterialSample {
   /* Unit direction in the base tangent frame; the integrator projects it
      against the mapped normal before BSDF creation. */
   Vec2 anisotropy_direction;
+  /* EON diffuse roughness, 0 Lambert, and the F82 tint, white Schlick. */
+  float32_t diffuse_roughness;
+  Vec3 specular_f82_tint;
 } VkrBakeMaterialSample;
 
 typedef enum VkrBakeMaterialError {

@@ -271,7 +271,10 @@ typedef struct VkrPreparedUiDrawList {
 #define VKR_WORLD_MATERIAL_FEATURE_CLEARCOAT 0x1u
 #define VKR_WORLD_MATERIAL_FEATURE_SHEEN 0x2u
 #define VKR_WORLD_MATERIAL_FEATURE_ANISOTROPY 0x4u
-#define VKR_WORLD_MATERIAL_FEATURE_ALL 0x7u
+/* ADR-113: a material whose BRDF extensions differ from identity selects
+   the frame's extension shading variants. */
+#define VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION 0x8u
+#define VKR_WORLD_MATERIAL_FEATURE_ALL 0xfu
 
 /** Immutable source arrays and current pose borrowed through render_frame.
  * Vertices use the complete geometry-local order. Unreferenced vertices may
@@ -311,6 +314,8 @@ typedef struct VkrWorldPassPayload {
   uint32_t skinning_count;
   /** Conservative aggregate over opaque/cutout source materials. Unknown
    * aggregates retain all planes for packet producers that do not extract it.
+   * The BRDF extension bit also counts blended and transmissive sources,
+   * whose passes take the same shading variant.
    */
   uint32_t opaque_material_features;
   bool8_t opaque_material_features_valid;

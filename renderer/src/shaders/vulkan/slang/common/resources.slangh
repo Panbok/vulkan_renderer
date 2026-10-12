@@ -77,6 +77,11 @@ struct VkrVulkanMaterial
     uint2 anisotropy_reserved;
     float4 material_diffuse_transmission;
     float4 material_subsurface;
+    // x diffuse roughness, y smooth-terminator amount, z smooth-terminator
+    // length, w dual-specular opacity.
+    float4 material_brdf;
+    // RGB linear F82 tint, A dual-specular roughness scale.
+    float4 material_specular_tint;
 };
 
 // Terrain layers 1 to 3 of a terrain material, segmented from the common row

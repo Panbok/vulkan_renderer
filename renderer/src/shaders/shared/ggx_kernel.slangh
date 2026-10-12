@@ -17,6 +17,26 @@ struct VkrGgxMaterialEnergy
     float2 directional_dfg;
     float anisotropy_support_z;
     float anisotropy_rectangle_b;
+    // The material extensions (ADR-113); zero leaves the ADR-053 model.
+    // `reflectance` stays the total directional reflectance; environment
+    // specular splits it between the primary and the dual lobe.
+    float3 primary_reflectance;
+    float3 dual_reflectance;
+    float3 dual_specular_scale;
+    float dual_opacity;
+    float dual_roughness;
+    float dual_alpha_squared;
+    float dual_view_root;
+    float dual_f82_directional;
+    float3 f82_scale;
+    // C / (A + B) of the primary lobe, the share of its lobe integral that
+    // the F82 correction weight takes.
+    float f82_directional;
+    float eon_roughness;
+    float3 eon_single;
+    float3 eon_multiple;
+    float terminator_amount;
+    float terminator_length;
 };
 
 float2 vkr_ggx_dfg_uv(float no_v, float roughness)
@@ -39,6 +59,20 @@ VkrGgxMaterialEnergy vkr_ggx_prepare_material(float no_v, float roughness,
     result.anisotropy_tangent = float3(0.0f);
     result.anisotropy_bitangent = float3(0.0f);
     result.anisotropy_alpha = float2(0.0f);
+    result.dual_reflectance = float3(0.0f);
+    result.dual_specular_scale = float3(0.0f);
+    result.dual_opacity = 0.0f;
+    result.dual_roughness = 0.0f;
+    result.dual_alpha_squared = 0.0f;
+    result.dual_view_root = 0.0f;
+    result.dual_f82_directional = 0.0f;
+    result.f82_scale = float3(0.0f);
+    result.f82_directional = 0.0f;
+    result.eon_roughness = 0.0f;
+    result.eon_single = float3(1.0f);
+    result.eon_multiple = float3(0.0f);
+    result.terminator_amount = 0.0f;
+    result.terminator_length = 0.0f;
     result.no_v = saturate(no_v);
     float alpha = roughness * roughness;
     result.alpha_squared = alpha * alpha;
@@ -54,6 +88,7 @@ VkrGgxMaterialEnergy vkr_ggx_prepare_material(float no_v, float roughness,
     // A per-light Schlick diffuse weight can exceed unit total energy at
     // grazing views when combined with the compensated specular lobe.
     result.diffuse_weight = 1.0f - result.reflectance;
+    result.primary_reflectance = result.reflectance;
     return result;
 }
 
@@ -232,4 +267,251 @@ float3 vkr_anisotropy_environment_normal(float3 normal, float3 view,
                    (1.0f - energy.anisotropy_alpha.y);
     return normalize(normal * (1.0f - amount) +
                      projected * (amount * rsqrt(length_squared)));
+}
+
+// ADR-113 material extensions over the ADR-053 model: F82-tint Fresnel, a
+// dual specular lobe, EON rough diffuse and the smooth terminator. The host
+// validates every value; identity values leave the base model unchanged.
+struct VkrBrdfExtension
+{
+    float diffuse_roughness;
+    float smooth_terminator;
+    float smooth_terminator_length;
+    float dual_specular_opacity;
+    float dual_specular_roughness_scale;
+    float3 specular_f82_tint;
+};
+
+// The material row packs (diffuse roughness, terminator amount, terminator
+// length, dual opacity) and (F82 tint, dual roughness scale).
+VkrBrdfExtension vkr_brdf_extension_unpack(float4 brdf, float4 specular_tint)
+{
+    VkrBrdfExtension result;
+    result.diffuse_roughness = brdf.x;
+    result.smooth_terminator = brdf.y;
+    result.smooth_terminator_length = brdf.z;
+    result.dual_specular_opacity = brdf.w;
+    result.dual_specular_roughness_scale = specular_tint.w;
+    result.specular_f82_tint = specular_tint.xyz;
+    return result;
+}
+
+VkrBrdfExtension vkr_brdf_extension_identity()
+{
+    return vkr_brdf_extension_unpack(float4(0.0f, 0.0f, 0.5f, 0.0f),
+                                     float4(1.0f, 1.0f, 1.0f, 2.0f));
+}
+
+bool vkr_brdf_extension_f82_active(VkrBrdfExtension extension)
+{
+    return any(extension.specular_f82_tint < 1.0f);
+}
+
+// Whether any extension differs from identity, as
+// vkr_pbr_brdf_extensions_active decides on the host.
+bool vkr_brdf_extension_active(VkrBrdfExtension extension)
+{
+    return extension.diffuse_roughness > 0.0f ||
+           extension.smooth_terminator > 0.0f ||
+           extension.dual_specular_opacity > 0.0f ||
+           any(extension.specular_f82_tint < 1.0f);
+}
+
+bool vkr_brdf_extension_dual_active(VkrBrdfExtension extension)
+{
+    return extension.dual_specular_opacity > 0.0f;
+}
+
+// The dual lobe keeps the shaded-material roughness floor.
+float vkr_brdf_dual_roughness(float roughness, VkrBrdfExtension extension)
+{
+    return clamp(roughness * extension.dual_specular_roughness_scale, 0.04f,
+                 1.0f);
+}
+
+// F82-tint Fresnel (Hoffman 2023): Schlick minus a * mu * (1 - mu)^6, with
+// `a` chosen so that the reflectance at mu = 1/7 (about 82 degrees) is the
+// tint times Schlick's. A white tint gives a = 0.
+#define VKR_F82_SCHLICK_WEIGHT 0.46266436603796f
+#define VKR_F82_CORRECTION_WEIGHT 0.05665277951485f
+
+float vkr_f82_weight(float cosine)
+{
+    float c = saturate(cosine);
+    float m = 1.0f - c;
+    float m2 = m * m;
+    return c * m2 * m2 * m2;
+}
+
+// `dfg` is this lobe's table sample: A and B integrate Schlick's terms and
+// C integrates the correction weight over the same lobe.
+VkrGgxMaterialEnergy vkr_ggx_apply_f82(VkrGgxMaterialEnergy energy,
+                                       float3 f0, float3 tint, float3 dfg)
+{
+    float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
+    float3 schlick = f0 + (f90 - f0) * VKR_F82_SCHLICK_WEIGHT;
+    energy.f82_scale =
+        schlick * (1.0f - saturate(tint)) / VKR_F82_CORRECTION_WEIGHT;
+    // The immutable table proves A+B >= .25.
+    energy.f82_directional = dfg.z / (dfg.x + dfg.y);
+    energy.reflectance = saturate(energy.reflectance - energy.f82_scale *
+                                  dfg.z * energy.specular_scale);
+    energy.primary_reflectance = energy.reflectance;
+    energy.diffuse_weight = 1.0f - energy.reflectance;
+    return energy;
+}
+
+// The per-light Fresnel from the backend's Schlick value at the same cosine.
+float3 vkr_ggx_f82_fresnel(float3 schlick, float cosine,
+                           VkrGgxMaterialEnergy energy)
+{
+    return max(schlick - energy.f82_scale * vkr_f82_weight(cosine),
+               float3(0.0f));
+}
+
+// A second isotropic GGX lobe mixed by opacity, each lobe compensated by
+// its own table sample, so the mixture keeps the ADR-053 energy bound.
+// Apply after vkr_ggx_apply_f82, which sets the shared correction.
+VkrGgxMaterialEnergy vkr_ggx_apply_dual_specular(VkrGgxMaterialEnergy energy,
+                                                 float3 f0, float opacity,
+                                                 float roughness, float3 dfg)
+{
+    VkrGgxMaterialEnergy second =
+        vkr_ggx_prepare_material(energy.no_v, roughness, f0, dfg.xy);
+    float3 second_reflectance = saturate(
+        second.reflectance - energy.f82_scale * dfg.z * second.specular_scale);
+    energy.dual_opacity = saturate(opacity);
+    energy.dual_roughness = roughness;
+    energy.dual_alpha_squared = second.alpha_squared;
+    energy.dual_view_root = second.view_root;
+    energy.dual_specular_scale = second.specular_scale;
+    energy.dual_f82_directional = dfg.z / (dfg.x + dfg.y);
+    energy.primary_reflectance = energy.reflectance *
+                                 (1.0f - energy.dual_opacity);
+    energy.dual_reflectance = second_reflectance * energy.dual_opacity;
+    energy.reflectance =
+        energy.primary_reflectance + energy.dual_reflectance;
+    energy.diffuse_weight = 1.0f - energy.reflectance;
+    return energy;
+}
+
+// A rectangle light's LTC amplitude with the F82 correction; the lobe's
+// LTC norm stands in for its A + B.
+float3 vkr_ggx_ltc_f82_amplitude(float3 amplitude, float norm,
+                                 float f82_directional,
+                                 float3 specular_scale,
+                                 VkrGgxMaterialEnergy energy)
+{
+    return max(amplitude - energy.f82_scale * f82_directional *
+                               max(norm, 0.0f) * specular_scale,
+               float3(0.0f));
+}
+
+// D * V * compensation of the specular lobes, without Fresnel.
+float3 vkr_ggx_direct_specular(float3 normal, float3 half_vector,
+                               float3 light, float no_l, float roughness,
+                               VkrGgxMaterialEnergy energy)
+{
+    float3 specular =
+        vkr_ggx_surface_distribution(normal, half_vector, roughness, energy) *
+        vkr_ggx_surface_visibility(no_l, light, energy) *
+        energy.specular_scale;
+    if (energy.dual_opacity > 0.0f && energy.no_v > 0.0f)
+    {
+        float light_root =
+            sqrt(no_l * no_l * (1.0f - energy.dual_alpha_squared) +
+                 energy.dual_alpha_squared);
+        float visibility = 0.5f / (no_l * energy.dual_view_root +
+                                   energy.no_v * light_root);
+        float3 second = vkr_ggx_distribution(dot(normal, half_vector),
+                                             energy.dual_roughness) *
+                        visibility * energy.dual_specular_scale;
+        specular += (second - specular) * energy.dual_opacity;
+    }
+    return specular;
+}
+
+// EON (Portsmouth, Kutz and Hill 2024): energy-preserving Oren-Nayar with
+// the polynomial fit of the single-scatter directional albedo.
+#define VKR_EON_C1 0.28779340921081f
+#define VKR_EON_C2 0.07248821245692f
+
+float vkr_eon_fon_albedo(float cosine, float roughness)
+{
+    float m = 1.0f - cosine;
+    float g = m * (0.0571085289f +
+                   m * (0.491881867f + m * (-0.332181442f +
+                                            m * 0.0714429953f)));
+    return (1.0f + roughness * g) / (1.0f + VKR_EON_C1 * roughness);
+}
+
+// Folds the view-dependent EON albedo E(N.V) / albedo into diffuse_weight,
+// so environment, baked and screen-space diffuse take it as they take the
+// Lambertian albedo. Direct lights restore the angular shape through
+// vkr_eon_direct_albedo. Apply after the diffuse-transmission split.
+VkrGgxMaterialEnergy vkr_eon_apply(VkrGgxMaterialEnergy energy,
+                                   float3 albedo, float roughness)
+{
+    if (roughness <= 0.0f)
+        return energy;
+    float single = 1.0f / (1.0f + VKR_EON_C1 * roughness);
+    float view_albedo = vkr_eon_fon_albedo(energy.no_v, roughness);
+    float average = single * (1.0f + VKR_EON_C2 * roughness);
+    float3 rho = saturate(albedo);
+    // rho_ms / rho; the denominator is at least `average`.
+    float3 multiple_ratio = rho * average / (1.0f - rho * (1.0f - average));
+    // E / rho is at least the single-scatter view albedo, about 0.77.
+    float3 environment =
+        view_albedo + multiple_ratio * (1.0f - view_albedo);
+    float3 inverse_environment = 1.0f / environment;
+    energy.diffuse_weight *= environment;
+    energy.eon_roughness = roughness;
+    energy.eon_single = single * inverse_environment;
+    // roughness > 0 proves 1 - average > 0.
+    energy.eon_multiple = multiple_ratio * (1.0f - view_albedo) /
+                          (1.0f - average) * inverse_environment;
+    return energy;
+}
+
+// The albedo a direct light's Lambertian term takes in place of `albedo`.
+float3 vkr_eon_direct_albedo(float3 albedo, float no_l, float l_o_v,
+                             VkrGgxMaterialEnergy energy)
+{
+    if (energy.eon_roughness == 0.0f)
+        return albedo;
+    float s = l_o_v - no_l * energy.no_v;
+    // A lit light direction proves max(N.L, N.V) > 0.
+    float s_over_t = s > 0.0f ? s / max(no_l, energy.no_v) : s;
+    float light_albedo = vkr_eon_fon_albedo(no_l, energy.eon_roughness);
+    return albedo * (energy.eon_single *
+                         (1.0f + energy.eon_roughness * s_over_t) +
+                     energy.eon_multiple * (1.0f - light_albedo));
+}
+
+// The Callisto smooth terminator (Jimenez and Petersen 2023):
+// lerp(1, smoothstep(0, mask * length, N.L), mask * amount), where the mask
+// (1 - (1 - L.H)^3)(1 - (1 - N.H)^3) leaves grazing and retroreflective
+// configurations alone. Amounts are limited to [0, 1], so it never adds
+// energy.
+float vkr_smooth_terminator(float no_l, float no_h, float l_o_h,
+                            VkrGgxMaterialEnergy energy)
+{
+    if (energy.terminator_amount <= 0.0f)
+        return 1.0f;
+    float d = 1.0f - saturate(l_o_h);
+    float h = 1.0f - saturate(no_h);
+    float mask = (1.0f - d * d * d) * (1.0f - h * h * h);
+    float width = mask * energy.terminator_length;
+    float smoothed = width > 0.0f ? smoothstep(0.0f, width, no_l) : 1.0f;
+    return 1.0f + (smoothed - 1.0f) * mask * energy.terminator_amount;
+}
+
+// The diffuse and per-light extensions, after the diffuse-transmission split.
+VkrGgxMaterialEnergy vkr_brdf_apply_diffuse_extension(
+    VkrGgxMaterialEnergy energy, VkrBrdfExtension extension, float3 albedo)
+{
+    energy = vkr_eon_apply(energy, albedo, extension.diffuse_roughness);
+    energy.terminator_amount = saturate(extension.smooth_terminator);
+    energy.terminator_length = saturate(extension.smooth_terminator_length);
+    return energy;
 }

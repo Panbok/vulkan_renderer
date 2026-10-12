@@ -40,6 +40,43 @@ vkr_metal_packet_prepare_brdf(constant VkrMetalPacketFrameRoot *frame,
   return vkr_ggx_prepare_material(no_v, roughness, f0, dfg);
 }
 
+VkrBrdfExtension
+vkr_metal_packet_material_brdf_extension(const device VkrMetalPacketMaterial &material) {
+  return vkr_brdf_extension_unpack(material.material_brdf,
+                                   material.material_specular_tint);
+}
+
+// The DFG table's A, B and C terms for one lobe.
+float3 vkr_metal_packet_dfg_sample(constant VkrMetalPacketFrameRoot *frame,
+                                   float no_v, float roughness) {
+  constexpr sampler dfg_sampler(coord::normalized, address::clamp_to_edge,
+                                filter::linear, mip_filter::none);
+  return frame->dfg_lut
+      .sample(dfg_sampler, vkr_ggx_dfg_uv(no_v, roughness), level(0.0f))
+      .rgb;
+}
+
+// ADR-113 specular extensions, after the base energy and before the
+// diffuse-transmission split. Each adds its table samples only when the
+// material enables it.
+VkrGgxMaterialEnergy vkr_metal_packet_apply_specular_extension(
+    constant VkrMetalPacketFrameRoot *frame, VkrGgxMaterialEnergy energy,
+    VkrBrdfExtension extension, float roughness, float3 f0) {
+  if (vkr_brdf_extension_f82_active(extension))
+    energy = vkr_ggx_apply_f82(
+        energy, f0, extension.specular_f82_tint,
+        vkr_metal_packet_dfg_sample(
+            frame, energy.no_v,
+            vkr_anisotropy_environment_roughness(roughness, energy)));
+  if (vkr_brdf_extension_dual_active(extension)) {
+    float dual_roughness = vkr_brdf_dual_roughness(roughness, extension);
+    energy = vkr_ggx_apply_dual_specular(
+        energy, f0, extension.dual_specular_opacity, dual_roughness,
+        vkr_metal_packet_dfg_sample(frame, energy.no_v, dual_roughness));
+  }
+  return energy;
+}
+
 float4 vkr_metal_anisotropy_sample(texture2d_array<float, access::sample> table,
                                   VkrAnisotropyLookup lookup) {
   constexpr sampler state(coord::normalized, address::clamp_to_edge,
@@ -69,15 +106,18 @@ VkrMetalPacketDirectResult vkr_metal_packet_direct(
                 (max(-dot(normal, light), 0.0f) / vkr_metal_packet_pbr_pi) * radiance,
             float3(0.0f), float3(0.0f)};
   half_vector *= half_inverse_length;
-  float3 fresnel =
-      vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
-  float distribution =
-      vkr_ggx_surface_distribution(normal, half_vector, roughness, energy);
-  float3 specular = distribution * vkr_ggx_surface_visibility(no_l, light, energy) * fresnel *
-                    energy.specular_scale;
-  float3 scale = radiance * no_l;
-  return {energy.diffuse_weight * albedo * (1.0 - metallic) /
-              vkr_metal_packet_pbr_pi * scale,
+  float v_o_h = max(dot(half_vector, view), 0.0f);
+  float3 fresnel = vkr_ggx_f82_fresnel(vkr_metal_packet_fresnel(v_o_h, f0),
+                                       v_o_h, energy);
+  float3 specular = vkr_ggx_direct_specular(normal, half_vector, light, no_l,
+                                            roughness, energy) *
+                    fresnel;
+  float3 scale = radiance * no_l *
+                 vkr_smooth_terminator(no_l, dot(normal, half_vector), v_o_h,
+                                       energy);
+  return {energy.diffuse_weight *
+              vkr_eon_direct_albedo(albedo, no_l, dot(light, view), energy) *
+              (1.0 - metallic) / vkr_metal_packet_pbr_pi * scale,
           specular * scale, scale / vkr_metal_packet_pbr_pi};
 }
 
@@ -92,13 +132,15 @@ float3 vkr_metal_packet_direct_specular(float3 normal, float3 view,
   if (half_inverse_length == 0.0f)
     return float3(0.0f);
   half_vector *= half_inverse_length;
-  float3 fresnel =
-      vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
-  float distribution =
-      vkr_ggx_surface_distribution(normal, half_vector, roughness, energy);
-  float3 specular = distribution * vkr_ggx_surface_visibility(no_l, light, energy) * fresnel *
-                    energy.specular_scale;
-  float3 scale = radiance * no_l;
+  float v_o_h = max(dot(half_vector, view), 0.0f);
+  float3 fresnel = vkr_ggx_f82_fresnel(vkr_metal_packet_fresnel(v_o_h, f0),
+                                       v_o_h, energy);
+  float3 specular = vkr_ggx_direct_specular(normal, half_vector, light, no_l,
+                                            roughness, energy) *
+                    fresnel;
+  float3 scale = radiance * no_l *
+                 vkr_smooth_terminator(no_l, dot(normal, half_vector), v_o_h,
+                                       energy);
   return specular * scale;
 }
 
@@ -205,7 +247,11 @@ VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
   // peak D / (4 n.v), doubled for multiple-scattering compensation. An
   // anisotropic lobe can be narrower than roughness implies, so it keeps
   // every row.
-  float alpha = max(roughness * roughness, 1e-4f);
+  // A dual lobe (ADR-113) can be the narrower one.
+  float lobe_roughness = energy.dual_opacity > 0.0f
+                             ? min(roughness, energy.dual_roughness)
+                             : roughness;
+  float alpha = max(lobe_roughness * lobe_roughness, 1e-4f);
   float lobe = (1.0f + 0.5f / (alpha * alpha * max(energy.no_v, 1e-3f))) /
                M_PI_F;
   uint active_rows = 0u;
@@ -236,8 +282,27 @@ VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
       ltc.amplitude_texture.sample(ltc_sampler, uv, level(0.0f)).rg};
   VkrLtcFrame ltc_frame = vkr_ltc_make_frame(normal, view);
   float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
-  float3 specular_amplitude = vkr_ltc_specular_amplitude(
-      sample, energy.no_v, f0, f90, energy.specular_scale);
+  float3 specular_amplitude = vkr_ggx_ltc_f82_amplitude(
+      vkr_ltc_specular_amplitude(sample, energy.no_v, f0, f90,
+                                 energy.specular_scale),
+      sample.amplitude_fresnel.x, energy.f82_directional,
+      energy.specular_scale, energy);
+  // The dual lobe (ADR-113) takes its own LTC sample at its roughness.
+  VkrLtcSample dual_sample = {};
+  float3 dual_amplitude = 0.0f;
+  bool dual = energy.dual_opacity > 0.0f;
+  if (dual) {
+    float2 dual_uv = vkr_ltc_lut_uv(energy.no_v, energy.dual_roughness);
+    dual_sample.inverse_matrix =
+        ltc.matrix_texture.sample(ltc_sampler, dual_uv, level(0.0f));
+    dual_sample.amplitude_fresnel =
+        ltc.amplitude_texture.sample(ltc_sampler, dual_uv, level(0.0f)).rg;
+    dual_amplitude = vkr_ggx_ltc_f82_amplitude(
+        vkr_ltc_specular_amplitude(dual_sample, energy.no_v, f0, f90,
+                                   energy.dual_specular_scale),
+        dual_sample.amplitude_fresnel.x, energy.dual_f82_directional,
+        energy.dual_specular_scale, energy);
+  }
     VkrAnisotropyLtc anisotropic_sample = {};
     if (anisotropic) {
         VkrAnisotropyLookup lookup = vkr_anisotropy_lookup(
@@ -289,6 +354,18 @@ VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
                   anisotropic_sample.amplitude
             : vkr_ltc_evaluate_specular_rectangle(
                 local_rectangle, sample.inverse_matrix, specular_amplitude);
+    if (dual) {
+      // The isotropic dual lobe integrates in the view-aligned frame, which
+      // an anisotropic primary has rotated.
+      VkrLtcRectangle dual_rectangle =
+          anisotropic ? vkr_ltc_project_rectangle_in_frame(
+                            center - world_position, right, up,
+                            vkr_ltc_make_frame(normal, view))
+                      : local_rectangle;
+      float3 second = vkr_ltc_evaluate_specular_rectangle(
+          dual_rectangle, dual_sample.inverse_matrix, dual_amplitude);
+      specular += (second - specular) * energy.dual_opacity;
+    }
     float3 radiance = row.color.rgb * row.up_radiance.w;
     result.specular += radiance * specular;
     if (coat_active) {

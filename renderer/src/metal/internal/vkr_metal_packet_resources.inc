@@ -770,6 +770,9 @@ bool8_t vkr_metal_packet_renderer_create_material(
           vkr_packet_derive_material_constants(&create_info->pbr,
                                                create_info->alpha_cutoff,
                                                create_info->alpha_mode);
+      // An extended material asks for the tiled extension variant (ADR-113).
+      if (vkr_pbr_brdf_extensions_active(&create_info->pbr))
+        vkr_metal_packet_request_tiled_brdf_pipelines(renderer);
       VkrMetalMaterialPublishedRow row = {
           .material =
               {
@@ -826,6 +829,8 @@ bool8_t vkr_metal_packet_renderer_create_material(
                       {create_info->pbr.subsurface_strength,
                        (float32_t)create_info->pbr.subsurface_profile, 0.0f,
                        0.0f},
+                  .material_brdf = material_constants.brdf,
+                  .material_specular_tint = material_constants.specular_tint,
               },
           .transmission =
               {
@@ -1098,10 +1103,14 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       pbr.anisotropy_rotation = 0.0f;
       pbr.diffuse_transmission_strength = 0.0f;
       pbr.diffuse_transmission_color = (Vec3){0.0f, 0.0f, 0.0f};
+      vkr_pbr_reset_brdf_extensions(&pbr);
     }
     const VkrPacketMaterialConstants material_constants =
         vkr_packet_derive_material_constants(&pbr, material->alpha_cutoff,
                                              material->alpha_mode);
+    // An extended material asks for the tiled extension variant (ADR-113).
+    if (vkr_pbr_brdf_extensions_active(&pbr))
+      vkr_metal_packet_request_tiled_brdf_pipelines(renderer);
     VkrMetalMaterialPublishedRow row = {
         .material =
             {
@@ -1156,6 +1165,8 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                 .material_subsurface = {pbr.subsurface_strength,
                                         (float32_t)pbr.subsurface_profile, 0.0f,
                                         0.0f},
+                .material_brdf = material_constants.brdf,
+                .material_specular_tint = material_constants.specular_tint,
             },
         .transmission =
             {

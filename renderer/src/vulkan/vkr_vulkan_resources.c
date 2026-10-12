@@ -813,18 +813,18 @@ bool8_t vkr_vk_create_image_ex(
 }
 
 vkr_internal bool8_t vkr_vk_create_dfg_resources(VkrVulkanRenderer *renderer) {
-  _Static_assert(sizeof(vkr_dfg_lut_pixels) == 256u * 1024u,
-                 "DFG LUT must remain one 256 KiB RG16F mip");
+  _Static_assert(sizeof(vkr_dfg_lut_pixels) == 512u * 1024u,
+                 "DFG LUT must remain one 512 KiB RGBA16F mip");
   const VkDeviceSize upload_size = sizeof(vkr_dfg_lut_pixels);
   VkFormatProperties format_properties = {0};
   vkGetPhysicalDeviceFormatProperties(
-      vkr_vulkan_device_physical(renderer->device), VK_FORMAT_R16G16_SFLOAT,
-      &format_properties);
+      vkr_vulkan_device_physical(renderer->device),
+      VK_FORMAT_R16G16B16A16_SFLOAT, &format_properties);
   const VkFormatFeatureFlags required_features =
       VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
   if ((format_properties.optimalTilingFeatures & required_features) !=
       required_features) {
-    log_error("Vulkan RG16F DFG format lacks sampled/transfer-destination "
+    log_error("Vulkan RGBA16F DFG format lacks sampled/transfer-destination "
               "support");
     return false_v;
   }
@@ -835,7 +835,8 @@ vkr_internal bool8_t vkr_vk_create_dfg_resources(VkrVulkanRenderer *renderer) {
       !renderer->dfg_upload.allocation.mapped ||
       !vkr_vk_create_image_ex(
           renderer, VKR_DFG_LUT_SIZE, VKR_DFG_LUT_SIZE, 1u, 1u, 1u,
-          VK_FORMAT_R16G16_SFLOAT, 0u, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D,
+          VK_FORMAT_R16G16B16A16_SFLOAT, 0u, VK_IMAGE_TYPE_2D,
+          VK_IMAGE_VIEW_TYPE_2D,
           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
           VKR_GPU_ALLOCATION_OWNER_SHADER, &renderer->dfg_image, NULL)) {
     goto cleanup;
@@ -2134,6 +2135,9 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
               .sheen_roughness_texture = sampled_handle.index,
               .sheen_color_sampler = sampler_handle.index,
               .sheen_roughness_sampler = sampler_handle.index,
+              /* The identity BRDF of vkr_pbr_reset_brdf_extensions. */
+              .material_brdf = {0.0f, 0.0f, 0.5f, 0.0f},
+              .material_specular_tint = {1.0f, 1.0f, 1.0f, 2.0f},
           },
       .transmission =
           {

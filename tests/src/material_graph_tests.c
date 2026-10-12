@@ -112,6 +112,16 @@ static bool8_t graph_test_same(const VkrParsedMaterialData *a,
                        q->diffuse_transmission_color));
   SAME(subsurface_strength, p->subsurface_strength == q->subsurface_strength);
   SAME(subsurface_profile, p->subsurface_profile == q->subsurface_profile);
+  SAME(diffuse_roughness, p->diffuse_roughness == q->diffuse_roughness);
+  SAME(smooth_terminator, p->smooth_terminator == q->smooth_terminator);
+  SAME(smooth_terminator_length,
+       p->smooth_terminator_length == q->smooth_terminator_length);
+  SAME(dual_specular_opacity,
+       p->dual_specular_opacity == q->dual_specular_opacity);
+  SAME(dual_specular_roughness_scale,
+       p->dual_specular_roughness_scale == q->dual_specular_roughness_scale);
+  SAME(specular_f82_tint,
+       graph_test_vec3(p->specular_f82_tint, q->specular_f82_tint));
   /* A colour space without a texture samples nothing, so only textured
      slots compare it. */
   for (uint32_t slot = 0; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
@@ -740,7 +750,9 @@ static void test_graph_round_trip(VkrAllocator *allocator) {
       "alpha_cutoff=0.4\nshader=shader.pbr.world\npipeline=world\n"
       "clearcoat_factor=0.5\nclearcoat_roughness=0.1\n"
       "clearcoat_normal_scale=0.75\nsheen_color=0.2,0.1,0.05\n"
-      "sheen_roughness=0.6\n"
+      "sheen_roughness=0.6\ndiffuse_roughness=0.3\nsmooth_terminator=0.4\n"
+      "smooth_terminator_length=0.6\ndual_specular_opacity=0.2\n"
+      "dual_specular_roughness_scale=3\nspecular_f82_tint=0.9,0.8,0.7\n"
       "base_color_texture=./../../textures/a.png?cs=srgb&tc=color_srgb\n"
       "normal_texture=./../../textures/n.png?tc=normal_rg\n"
       "metallic_roughness_texture=./../../textures/orm.png?tc=data_mask\n"
@@ -760,6 +772,18 @@ static void test_graph_round_trip(VkrAllocator *allocator) {
                                graph_test_str(full), graph, direct, lowered,
                                &skipped));
   assert(skipped == 0u);
+
+  /* The BRDF extensions' identity values are the loader's defaults, so a
+     definition that spells them out raises to the output node alone. */
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  assert(vkr_material_graph_from_definition(
+      graph_test_str("type=pbr\ndiffuse_roughness=0\nsmooth_terminator=0\n"
+                     "smooth_terminator_length=0.5\n"
+                     "dual_specular_opacity=0\n"
+                     "dual_specular_roughness_scale=2\n"
+                     "specular_f82_tint=1,1,1\n"),
+      graph, error, sizeof(error)));
+  assert(graph->node_count == 1u);
 
   uint32_t checked = 0u;
 #if !defined(_WIN32)

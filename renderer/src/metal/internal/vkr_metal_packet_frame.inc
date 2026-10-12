@@ -2135,6 +2135,24 @@ vkr_metal_packet_tiled_decal_variant(const VkrPreparedFrame *packet) {
   return 0u;
 }
 
+/* Whether the frame takes the tiled shading variants with the BRDF material
+   extensions (ADR-113): a scene material uses one and the variant's
+   pipelines are READY. */
+vkr_internal uint32_t
+vkr_metal_packet_tiled_brdf_variant(VkrMetalPacketRenderer *renderer,
+                                    const VkrPreparedFrame *packet) {
+  const VkrWorldPassPayload *world = packet->input.world;
+  if (!world || !world->opaque_material_features_valid ||
+      (world->opaque_material_features &
+       VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION) == 0u)
+    return 0u;
+  return vkr_atomic_uint32_load(&renderer->tiled_brdf_state,
+                                VKR_MEMORY_ORDER_ACQUIRE) ==
+                 VKR_METAL_CUSTOM_GRAPH_READY
+             ? 1u
+             : 0u;
+}
+
 /* Prepares the tiled pipeline's opaque pass (ADR-087): the camera's culled
    opaque draws, the clear sky's root, and multisampled targets in place of
    the pass's graph colour and depth, which they resolve into. Depth resolves
@@ -2148,10 +2166,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
       vkr_metal_packet_tiled_lighting(packet);
   const uint32_t probes = vkr_metal_packet_tiled_probe_variant(packet);
   const uint32_t decals = vkr_metal_packet_tiled_decal_variant(packet);
+  const uint32_t brdf = vkr_metal_packet_tiled_brdf_variant(renderer, packet);
   if (!vkr_metal_packet_prepare_gpu_draws(
           renderer, pass, prepared,
-          renderer->tiled_coverage_pipelines[decals][probes][lighting],
-          renderer->tiled_forward_pipelines[decals][probes][lighting])) {
+          renderer->tiled_coverage_pipelines[brdf][decals][probes][lighting],
+          renderer->tiled_forward_pipelines[brdf][decals][probes][lighting])) {
     return false_v;
   }
   VkrMetalPacketIndirectPass draws = prepared->indirect;
@@ -2311,9 +2330,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         vkr_metal_packet_tiled_lighting(packet);
     if (!vkr_metal_packet_prepare_draws(
             renderer, &prepared->world.direct,
-            renderer
-                ->tiled_blend_pipelines[vkr_metal_packet_tiled_probe_variant(
-                    packet)][lighting],
+            renderer->tiled_blend_pipelines
+                [vkr_metal_packet_tiled_brdf_variant(renderer, packet)]
+                [vkr_metal_packet_tiled_probe_variant(packet)][lighting],
             renderer->depth_read_state, upload->direct_draws,
             upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,

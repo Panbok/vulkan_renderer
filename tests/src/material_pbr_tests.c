@@ -2371,6 +2371,67 @@ vkr_internal void test_material_layered_keys(MaterialPbrTestContext *ctx) {
   printf("  test_material_layered_keys PASSED\n");
 }
 
+/* The BRDF extension keys parse into their factors and make the material
+ * PBR; a file without them keeps the identity BRDF. A value outside its
+ * range, a non-finite value and a misspelt key of a BRDF family each
+ * reject the material. */
+vkr_internal void test_material_brdf_keys(MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_brdf_keys...\n");
+  const String8 path = string8_lit("tests/tmp/material_pbr/brdf.mt");
+  VkrParsedMaterialData parsed;
+  assert(vkr_material_loader_parse_definition(
+      &ctx->temp_allocator, path, string8_lit("name=plain\nshininess=8\n"),
+      &parsed));
+  assert(parsed.material_type == VKR_MATERIAL_TYPE_PHONG);
+  assert(parsed.pbr.diffuse_roughness == 0.0f &&
+         parsed.pbr.smooth_terminator == 0.0f &&
+         parsed.pbr.smooth_terminator_length == 0.5f &&
+         parsed.pbr.dual_specular_opacity == 0.0f &&
+         parsed.pbr.dual_specular_roughness_scale == 2.0f);
+  assert(parsed.pbr.specular_f82_tint.x == 1.0f &&
+         parsed.pbr.specular_f82_tint.y == 1.0f &&
+         parsed.pbr.specular_f82_tint.z == 1.0f);
+
+  assert(vkr_material_loader_parse_definition(
+      &ctx->temp_allocator, path,
+      string8_lit("diffuse_roughness=0.25\nsmooth_terminator=0.5\n"
+                  "smooth_terminator_length=0.75\n"
+                  "dual_specular_opacity=0.125\n"
+                  "dual_specular_roughness_scale=4\n"
+                  "specular_f82_tint=0.25,0.5,0.75\n"),
+      &parsed));
+  assert(parsed.material_type == VKR_MATERIAL_TYPE_PBR);
+  assert(parsed.pbr.diffuse_roughness == 0.25f &&
+         parsed.pbr.smooth_terminator == 0.5f &&
+         parsed.pbr.smooth_terminator_length == 0.75f &&
+         parsed.pbr.dual_specular_opacity == 0.125f &&
+         parsed.pbr.dual_specular_roughness_scale == 4.0f);
+  assert(parsed.pbr.specular_f82_tint.x == 0.25f &&
+         parsed.pbr.specular_f82_tint.y == 0.5f &&
+         parsed.pbr.specular_f82_tint.z == 0.75f);
+
+  const char *const refused[] = {
+      "type=pbr\ndiffuse_roughness=1.5\n",
+      "type=pbr\nsmooth_terminator=-0.1\n",
+      "type=pbr\nsmooth_terminator_length=2\n",
+      "type=pbr\ndual_specular_opacity=1.01\n",
+      "type=pbr\ndual_specular_roughness_scale=17\n",
+      "type=pbr\nspecular_f82_tint=1,1.5,1\n",
+      "type=pbr\ndiffuse_roughness=nan\n",
+      "type=pbr\nspecular_f82_tint=1,1\n",
+      "type=pbr\ndual_specular_opacty=0.5\n",
+      "type=pbr\nsmooth_terminator_lenght=0.5\n",
+  };
+  for (uint32_t i = 0u; i < ArrayCount(refused); ++i) {
+    assert(!vkr_material_loader_parse_definition(
+        &ctx->temp_allocator, path,
+        string8_create_from_cstr((const uint8_t *)refused[i],
+                                 strlen(refused[i])),
+        &parsed));
+  }
+  printf("  test_material_brdf_keys PASSED\n");
+}
+
 /* Shadows read an opaque material's geometry alone: publishing it again
    with another texture changes no caster's shadow. Its first publication, a
    change in culling or alpha testing, any publication of a cutout material
@@ -2467,6 +2528,7 @@ bool32_t run_material_pbr_tests(void) {
   test_material_shadow_change_scope(&context);
   test_material_terrain_composes_layers(&context);
   test_material_layered_keys(&context);
+  test_material_brdf_keys(&context);
   test_compressed_texture_subresource_shapes(&context);
   test_texture_request_owns_pending_publication(&context);
   test_material_texture_limit_reloads_changed_textures(&context);

@@ -140,6 +140,7 @@ vkr_internal void vkr_material_system_init_surface_material(
   material->pbr.thickness_factor = 0.0f;
   material->pbr.attenuation_color = vec3_new(1.0f, 1.0f, 1.0f);
   material->pbr.attenuation_distance = 0.0f;
+  vkr_pbr_reset_brdf_extensions(&material->pbr);
 
   vkr_material_system_reset_texture_slots(material);
   vkr_material_system_apply_default_surface_textures(system, material);
@@ -282,7 +283,8 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
       material->pbr.sheen_color.z > 1.0f ||
       !isfinite(material->pbr.sheen_roughness) ||
       material->pbr.sheen_roughness < 0.0f ||
-      material->pbr.sheen_roughness > 1.0f) {
+      material->pbr.sheen_roughness > 1.0f ||
+      !vkr_pbr_brdf_extensions_valid(&material->pbr)) {
     if (out_error)
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;

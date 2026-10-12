@@ -70,6 +70,9 @@ vkr_global const VkrMetalPacketAbiField vkr_material_fields[] = {
                   "material_diffuse_transmission", 320),
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, material_subsurface,
                   "material_subsurface", 336),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, material_brdf, "material_brdf", 352),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, material_specular_tint,
+                  "material_specular_tint", 368),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_transmission_material_fields[] = {
@@ -828,7 +831,7 @@ vkr_global const VkrMetalPacketAbiRecord
     vkr_metal_packet_abi_records[VKR_METAL_PACKET_ABI_RECORD_COUNT] = {
         [VKR_METAL_PACKET_ABI_MATERIAL] =
             VKR_ABI_RECORD(VkrMetalMaterialGpuRow, "VkrMetalPacketMaterial",
-                           352, 16, vkr_material_fields),
+                           384, 16, vkr_material_fields),
         [VKR_METAL_PACKET_ABI_TRANSMISSION_MATERIAL] =
             VKR_ABI_RECORD(VkrMetalTransmissionMaterialGpuRow,
                            "VkrMetalPacketTransmissionMaterial", 32, 16,

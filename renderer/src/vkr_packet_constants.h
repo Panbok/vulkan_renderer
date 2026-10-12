@@ -48,6 +48,11 @@ typedef struct VkrPacketMaterialConstants {
   Vec4 alpha;
   /** xyz attenuation colour; w attenuation distance. */
   Vec4 attenuation_color;
+  /** Diffuse roughness, smooth-terminator amount and length, dual-specular
+   * opacity. */
+  Vec4 brdf;
+  /** xyz F82 tint; w dual-specular roughness scale. */
+  Vec4 specular_tint;
   uint32_t alpha_mode;
 } VkrPacketMaterialConstants;
 

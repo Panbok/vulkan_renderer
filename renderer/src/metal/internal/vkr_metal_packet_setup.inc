@@ -443,18 +443,31 @@ vkr_metal_packet_create_pipeline_with_targets(
     const char *fragment_name, MTLPixelFormat color_format,
     VkrMetalPacketBlend blend, VkrMetalPacketAbiRecordId vertex_abi,
     VkrMetalPacketAbiRecordId fragment_abi, bool8_t supports_icb,
-    uint32_t sample_count, NSString *label) API_AVAILABLE(macos(26.0)) {
+    uint32_t sample_count, MTLFunctionConstantValues *fragment_constants,
+    NSString *label) API_AVAILABLE(macos(26.0)) {
   MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
   vertex.library = vertex_library;
   vertex.name = [NSString stringWithUTF8String:vertex_name];
   // A null fragment name builds a depth-only pipeline. Metal's tiler takes a
   // materially faster path when there is no fragment stage at all, which a
   // shadow cascade that never shades anything should be using.
-  MTL4LibraryFunctionDescriptor *fragment = nil;
+  MTL4FunctionDescriptor *fragment = nil;
   if (fragment_name) {
-    fragment = [MTL4LibraryFunctionDescriptor new];
-    fragment.library = fragment_library;
-    fragment.name = [NSString stringWithUTF8String:fragment_name];
+    MTL4LibraryFunctionDescriptor *function =
+        [MTL4LibraryFunctionDescriptor new];
+    function.library = fragment_library;
+    function.name = [NSString stringWithUTF8String:fragment_name];
+    fragment = function;
+    // Function constants specialize the entry, such as a tiled shading
+    // entry's BRDF extension variant.
+    if (fragment_constants) {
+      MTL4SpecializedFunctionDescriptor *specialized =
+          [MTL4SpecializedFunctionDescriptor new];
+      specialized.functionDescriptor = function;
+      specialized.constantValues = fragment_constants;
+      [function release];
+      fragment = specialized;
+    }
   }
   MTL4RenderPipelineDescriptor *descriptor = [MTL4RenderPipelineDescriptor new];
   descriptor.label = label;
@@ -527,7 +540,8 @@ vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
     NSString *label) API_AVAILABLE(macos(26.0)) {
   return vkr_metal_packet_create_pipeline_with_targets(
       renderer, vertex_library, vertex_name, fragment_library, fragment_name,
-      color_format, blend, vertex_abi, fragment_abi, supports_icb, 1u, label);
+      color_format, blend, vertex_abi, fragment_abi, supports_icb, 1u, nil,
+      label);
 }
 
 vkr_internal id<MTLComputePipelineState>
@@ -859,6 +873,94 @@ static const VkrMetalTiledEntries
             },
 };
 
+/* Creates one BRDF variant's tiled shading pipelines (ADR-113): forward
+   shading of opaque and alpha-tested draws, and the blend pass's glass and
+   blended surfaces back to front over the resolved image. Returns whether
+   every one exists. */
+vkr_internal bool8_t vkr_metal_packet_create_tiled_shading_pipelines(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment, uint32_t brdf)
+    API_AVAILABLE(macos(26.0)) {
+  MTLFunctionConstantValues *constants = renderer->tiled_brdf_constants[brdf];
+  bool8_t complete = true_v;
+  for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
+       ++decals) {
+    for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
+         ++probes) {
+      for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+        renderer->tiled_forward_pipelines[brdf][decals][probes][i] =
+            vkr_metal_packet_create_pipeline_with_targets(
+                renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+                tiled_lighting[i].forward[decals][probes],
+                MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_NONE,
+                VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+                VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+                VKR_METAL_TILED_SAMPLE_COUNT, constants,
+                tiled_lighting[i].forward_label);
+        renderer->tiled_coverage_pipelines[brdf][decals][probes][i] =
+            vkr_metal_packet_create_pipeline_with_targets(
+                renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+                tiled_lighting[i].coverage[decals][probes],
+                MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_COVERAGE,
+                VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+                VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+                VKR_METAL_TILED_SAMPLE_COUNT, constants,
+                tiled_lighting[i].coverage_label);
+        complete &=
+            renderer->tiled_forward_pipelines[brdf][decals][probes][i] != nil &&
+            renderer->tiled_coverage_pipelines[brdf][decals][probes][i] != nil;
+      }
+    }
+  }
+  for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
+       ++probes) {
+    for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+      renderer->tiled_blend_pipelines[brdf][probes][i] =
+          vkr_metal_packet_create_pipeline_with_targets(
+              renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+              tiled_lighting[i].blend[probes], MTLPixelFormatRGBA16Float,
+              VKR_METAL_PACKET_BLEND_BEHIND,
+              VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+              VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, 1u, constants,
+              tiled_lighting[i].blend_label);
+      complete &= renderer->tiled_blend_pipelines[brdf][probes][i] != nil;
+    }
+  }
+  return complete;
+}
+
+/* Starts creating the extended variant's tiled shading pipelines on the
+   custom group's background queue the first time a published material uses
+   a BRDF extension (ADR-113). Frames take the variant once it is READY;
+   until then, and after a failure, extended materials shade with the base
+   model. Material publication runs on the rendering thread (ADR-082). */
+vkr_internal void vkr_metal_packet_request_tiled_brdf_pipelines(
+    VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
+  if (vkr_atomic_uint32_load(&renderer->tiled_brdf_state,
+                             VKR_MEMORY_ORDER_ACQUIRE) !=
+          VKR_METAL_CUSTOM_GRAPH_EMPTY ||
+      !renderer->custom_group || !renderer->fragment_library)
+    return;
+  vkr_atomic_uint32_store(&renderer->tiled_brdf_state,
+                          VKR_METAL_CUSTOM_GRAPH_PENDING,
+                          VKR_MEMORY_ORDER_RELAXED);
+  log_info("Metal: creating the tiled BRDF extension pipelines");
+  dispatch_group_async(
+      renderer->custom_group,
+      dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+          const bool8_t ok = vkr_metal_packet_create_tiled_shading_pipelines(
+              renderer, renderer->fragment_library, 1u);
+          if (!ok)
+            log_error("Metal: tiled BRDF extension pipelines failed; "
+                      "extended materials shade with the base model");
+          vkr_atomic_uint32_store(&renderer->tiled_brdf_state,
+                                  ok ? VKR_METAL_CUSTOM_GRAPH_READY
+                                     : VKR_METAL_CUSTOM_GRAPH_FAILED,
+                                  VKR_MEMORY_ORDER_RELEASE);
+        }
+      });
+}
+
 /* Creates the tiled pipeline's raster pipelines (ADR-087): forward shading
    and the clear sky, multisampled; the atmosphere draw over the resolved
    image, which reads the destination and lays the clouds, aerial perspective
@@ -867,30 +969,13 @@ static const VkrMetalTiledEntries
 vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
     id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
-  for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
-       ++decals) {
-    for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
-         ++probes) {
-      for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
-        renderer->tiled_forward_pipelines[decals][probes][i] =
-            vkr_metal_packet_create_pipeline_with_targets(
-                renderer, fragment, "vkr_metal_tiled_vertex", fragment,
-                tiled_lighting[i].forward[decals][probes],
-                MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_NONE,
-                VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-                VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                VKR_METAL_TILED_SAMPLE_COUNT, tiled_lighting[i].forward_label);
-        renderer->tiled_coverage_pipelines[decals][probes][i] =
-            vkr_metal_packet_create_pipeline_with_targets(
-                renderer, fragment, "vkr_metal_tiled_vertex", fragment,
-                tiled_lighting[i].coverage[decals][probes],
-                MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_COVERAGE,
-                VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-                VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                VKR_METAL_TILED_SAMPLE_COUNT, tiled_lighting[i].coverage_label);
-      }
-    }
+  for (uint32_t brdf = 0; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT; ++brdf) {
+    const bool8_t extension = brdf != 0u;
+    MTLFunctionConstantValues *constants = [MTLFunctionConstantValues new];
+    [constants setConstantValue:&extension type:MTLDataTypeBool atIndex:0];
+    renderer->tiled_brdf_constants[brdf] = constants;
   }
+  vkr_metal_packet_create_tiled_shading_pipelines(renderer, fragment, 0u);
   /* Without a visibility buffer, a pick replays the opaque draws; their
      alpha-tested surfaces pick whole. */
   renderer->tiled_picking_pipeline = vkr_metal_packet_create_pipeline(
@@ -903,7 +988,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
       "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float,
       VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
       VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v,
-      VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled sky");
+      VKR_METAL_TILED_SAMPLE_COUNT, nil, @"VKR tiled sky");
   {
     MTL4LibraryFunctionDescriptor *function =
         [MTL4LibraryFunctionDescriptor new];
@@ -926,21 +1011,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     [descriptor release];
     [function release];
   }
-  /* Glass and alpha-blended surfaces, back to front over the resolved
-     image, and world text over them. */
-  for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
-       ++probes) {
-    for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
-      renderer->tiled_blend_pipelines[probes][i] =
-          vkr_metal_packet_create_pipeline(
-              renderer, fragment, "vkr_metal_tiled_vertex", fragment,
-              tiled_lighting[i].blend[probes], MTLPixelFormatRGBA16Float,
-              VKR_METAL_PACKET_BLEND_BEHIND,
-              VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-              VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v,
-              tiled_lighting[i].blend_label);
-    }
-  }
+  /* World text over the glass and blended surfaces. */
   renderer->tiled_text_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float,
@@ -1350,7 +1421,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
   for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
        ++probes) {
     for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
-      if (!renderer->tiled_blend_pipelines[probes][i]) {
+      if (!renderer->tiled_blend_pipelines[0][probes][i]) {
         log_error("Metal renderer startup object unavailable: tiled blend "
                   "variant %u with probes %u",
                   i, probes);
@@ -1358,8 +1429,8 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       }
       for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
            ++decals) {
-        if (!renderer->tiled_forward_pipelines[decals][probes][i] ||
-            !renderer->tiled_coverage_pipelines[decals][probes][i]) {
+        if (!renderer->tiled_forward_pipelines[0][decals][probes][i] ||
+            !renderer->tiled_coverage_pipelines[0][decals][probes][i]) {
           log_error("Metal renderer startup object unavailable: tiled "
                     "shading variant %u with probes %u and decals %u",
                     i, probes, decals);
@@ -1922,7 +1993,7 @@ vkr_internal bool8_t vkr_metal_packet_create_dfg_lut(
     VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
   descriptor.textureType = MTLTextureType2D;
-  descriptor.pixelFormat = MTLPixelFormatRG16Float;
+  descriptor.pixelFormat = MTLPixelFormatRGBA16Float;
   descriptor.width = VKR_DFG_LUT_SIZE;
   descriptor.height = VKR_DFG_LUT_SIZE;
   descriptor.mipmapLevelCount = 1u;
@@ -1956,7 +2027,7 @@ vkr_internal bool8_t vkr_metal_packet_create_dfg_lut(
           .region_count = 1u,
           .regions = &region,
       },
-      VKR_TEXTURE_FORMAT_R16G16_SFLOAT,
+      VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
       (id<MTLTexture>)renderer->dfg_lut.metal_texture);
   renderer->dfg_lut_last_use_submit_value = renderer->submit_value;
   return uploaded;

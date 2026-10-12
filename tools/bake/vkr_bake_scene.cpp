@@ -1291,6 +1291,9 @@ VkrBakeMaterial default_material(Vec4 color) {
   material.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
   material.ior = 1.5f;
   material.attenuation_color = vec3_new(1.0f, 1.0f, 1.0f);
+  material.smooth_terminator_length = 0.5f;
+  material.dual_specular_roughness_scale = 2.0f;
+  material.specular_f82_tint = vec3_new(1.0f, 1.0f, 1.0f);
   return material;
 }
 

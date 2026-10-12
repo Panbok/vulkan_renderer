@@ -67,7 +67,7 @@ vkr_internal void test_packet_pre_recording_rejection(void) {
   world.static_candidate_count = 0u;
 
   world.opaque_material_features_valid = true_v;
-  world.opaque_material_features = 0x8u;
+  world.opaque_material_features = VKR_WORLD_MATERIAL_FEATURE_ALL + 1u;
   assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,

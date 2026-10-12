@@ -170,9 +170,12 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->input.lighting->diffuse_volume.indirection.id != 0u &&
       packet->input.lighting->diffuse_volume.indirection.generation !=
           VKR_INVALID_ID;
-  frame->lighting_layers_enabled = frame->clearcoat_enabled ||
-                                   frame->sheen_enabled ||
-                                   frame->anisotropy_enabled;
+  frame->brdf_extensions_enabled =
+      packet->scene_rendering &&
+      (material_features & VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION) != 0u;
+  frame->lighting_layers_enabled =
+      frame->clearcoat_enabled || frame->sheen_enabled ||
+      frame->anisotropy_enabled || frame->brdf_extensions_enabled;
   frame->editor_image_available = packet->editor_image_available;
   frame->editor_presenter = packet->editor_presenter;
   frame->editor_overlay_enabled = packet->scene_rendering &&
