@@ -1,5 +1,5 @@
 ---
-status: partial
+status: implemented
 updated: 2026-10-06
 authority: adr
 ---
@@ -8,11 +8,10 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The LOD table, per-view selection, level encoding and
-terrain geomorphing are implemented in both backends and used by both
-pipeline classes, and cooked static meshes carry levels (2026-10-06). Native
-Vulkan runs terrain levels (2026-10-04); cooked levels have no native Vulkan
-run yet.
+Accepted. The LOD table, per-view selection, level encoding and terrain
+geomorphing are implemented in both backends and used by both pipeline
+classes, and cooked static meshes carry levels (2026-10-06). Native Vulkan
+runs terrain levels (2026-10-04) and cooked levels (2026-10-06).
 
 ## Context
 
@@ -270,4 +269,35 @@ scene's triangles.
   `sha256:fcf79f6e8841ea2a9030225613b42c922fab9ea9164f1f515211675d90b5a08e`,
   `sha256:7ffa586e183ea765a446a691edf60b6933d35a6d6055cb9446a3d022b37ecb2d`,
   `sha256:7429d8809e20a66ef8c68f999daaad518f8600860b12dfa27cd68a3ca2ced1eb`.
-- Native Vulkan execution of cooked levels is unverified.
+- Cooked levels, Release, Windows, RX 6700 XT, driver 26.6.3, Vulkan desktop
+  pipeline (2026-10-06): Bistro's `bistro-lights-main.vkb` cooked twice by one
+  cooker, once with levels skipped by a temporary local patch, byte-identical
+  to the earlier cook without levels, and once with levels
+  (`sha256:c3bc160977ae1ca41c292e0d82912a57e4ed592b88d20e76334844f8a59574d4`,
+  2.8 MB larger). `bistro_shadow_orbit` at 1280×720, immediate present,
+  `local-windowed-gpu-single`, alternated without, with, without, with
+  (non-authoritative: local profile, dirty submodule). Draw counts match
+  (2,317 opaque draws); live index data grows from 21.2 to 36.8 MB. Median /
+  p95 or median, without then with levels:
+
+  | Metric | Without levels | With levels |
+  |---|---|---|
+  | `frame.wall` | 6.62 / 9.44, 6.80 / 9.99 ms | 5.07 / 7.52, 5.10 / 7.52 ms |
+  | `VBuffer.Opaque` | 0.84, 0.84 ms | 0.37, 0.37 ms |
+  | `Shadow.Cascade.0` / `.2` / `.3` | 0.51 to 0.56, 0.78, 0.68 ms | 0.30, 0.33, 0.17 ms |
+  | `GBuffer.Resolve.Fullscreen` | 0.33, 0.34 ms | 0.26, 0.26 ms |
+
+  The frame is GPU-bound: `cpu.render_wait` falls from 5.31 and 5.44 to 3.85
+  and 3.84 ms while the CPU work scopes match. `Temporal.Resolve`,
+  `Lighting.Deferred` and `Shadow.LocalMask` also fall by 0.15 to 0.25 ms;
+  the cause is unmeasured. `local_shadow_bistro_vulkan_street_capture`
+  (`local-offscreen`) differs in 7,581 pixels by more than 2 of 255, at most
+  89, on distant cornices, lanterns, a hanging basket and hedge edges, with
+  no cracks or holes. Reports, without then with levels: orbit
+  `sha256:c60433fb673631b8a910483eb1420d3839d4945e682247eb33c401ee0e496aaf`,
+  `sha256:f509e555c452fd645f509522247cbdd419acee7a6787e8175db6a04189ac8ffe`,
+  `sha256:5428dfe193c7d079aeffd78c884f203c38548c98d6a7c33f7a0bec48c71eef7d`,
+  `sha256:0173da291500a9e3936b6459ca209701b210d58f4f5161550f76c6d67564ba77`;
+  capture
+  `sha256:cef75ed21fa325283c88d052388bbceb37d21e740734b786f20f7fe20940e206`,
+  `sha256:b085c5f1f7cf692151cf0eee4637ee6437af67f2e43cfeda444bcbc455bb06ef`.
