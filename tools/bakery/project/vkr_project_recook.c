@@ -86,16 +86,46 @@ vkr_internal VkrRecookFamily vkr_recook_family(const char *path) {
   return VKR_RECOOK_FAMILY_OTHER;
 }
 
-/* The build folder below `owner` that a record path names, or false. */
+/* The build folder below `owner` that a record path names, or false: a
+   `builds/<revision>/...` path whose revision is an identifier. */
 vkr_internal bool8_t vkr_recook_build_of(const VkrRecook *recook,
                                          const char *path, char *out) {
   if (!path || strncmp(path, "builds/", 7u) != 0) {
     return false_v;
   }
   const char *end = strchr(path + 7, '/');
-  return end &&
-         (uint32_t)snprintf(out, VKR_PROJECT_PATH, "%s/%.*s", recook->owner,
-                            (int)(end - path), path) < VKR_PROJECT_PATH;
+  char revision[40];
+  if (!end || end - (path + 7) != 36) {
+    return false_v;
+  }
+  (void)snprintf(revision, sizeof(revision), "%.36s", path + 7);
+  return vkr_project_identifier_valid(revision) &&
+         (uint32_t)snprintf(out, VKR_PROJECT_PATH, "%s/builds/%s",
+                            recook->owner, revision) < VKR_PROJECT_PATH;
+}
+
+/* A build's `textures` folder, refused when it or a folder above it inside
+   the owner is a link or resolves outside the owner: recipes come from
+   another host and must not reach past their build. */
+vkr_internal bool8_t vkr_recook_textures_folder(VkrRecook *recook,
+                                                const VkrRecookBuild *build,
+                                                char *out) {
+  VkrProjectJob *job = recook->job;
+  char builds[VKR_PROJECT_PATH];
+  (void)snprintf(builds, sizeof(builds), "%s/builds", recook->owner);
+  (void)snprintf(out, VKR_PROJECT_PATH, "%s/textures", build->directory);
+  const char *const folders[] = {builds, build->directory, out};
+  for (uint32_t i = 0u; i < ArrayCount(folders); ++i) {
+    if (vkr_project_lstat_is_link(folders[i])) {
+      return vkr_project_fail(job, "Re-cook refuses links: %s", folders[i]);
+    }
+  }
+  char resolved[VKR_PROJECT_PATH];
+  return vkr_project_contained(
+      job, recook->owner,
+      vkr_project_printf(job, "builds/%s/textures",
+                         vkr_bakery_path_name(build->directory)),
+      false_v, resolved);
 }
 
 vkr_internal bool8_t vkr_recook_collect(VkrRecook *recook,
@@ -146,6 +176,10 @@ bool8_t vkr_project_read_recipes(VkrProjectJob *job, const char *textures,
   *out_recipes = NULL;
   const char *path =
       vkr_project_printf(job, "%s/%s", textures, VKR_PROJECT_RECIPES_FILE);
+  if (vkr_project_lstat_is_link(path)) {
+    return vkr_project_fail(job, "Texture recipes must not be a link: %s",
+                            path);
+  }
   if (!vkr_bakery_is_file(path)) {
     return true_v;
   }
@@ -217,10 +251,12 @@ vkr_internal bool8_t vkr_recook_images(VkrRecook *recook, const char *textures,
     const bool8_t preview = vkr_bakery_json_is_string(
         vkr_bakery_json_get(entry, "tier"), "preview");
     char source[VKR_PROJECT_PATH];
-    if (!source_name || strchr(source_name, '/') || !texture_class ||
+    if (!vkr_project_plain_name(source_name) || !texture_class ||
         !vkr_bakery_path_join(source, sizeof(source), textures, source_name) ||
-        !vkr_bakery_is_file(source)) {
-      ok = vkr_project_fail(job, "The source image of %s is missing",
+        vkr_project_lstat_is_link(source) || !vkr_bakery_is_file(source)) {
+      ok = vkr_project_fail(job,
+                            "The source image of %s is missing or not "
+                            "a plain file in its folder",
                             (const char *)entry->key.str);
       break;
     }
@@ -326,7 +362,7 @@ vkr_internal bool8_t vkr_recook_build(VkrRecook *recook,
   VkrProjectJob *job = recook->job;
   Arena *arena = job->arena;
   char textures[VKR_PROJECT_PATH];
-  (void)snprintf(textures, sizeof(textures), "%s/textures", build->directory);
+  VKR_PROJECT_TRY(vkr_recook_textures_folder(recook, build, textures));
   const VkrBakeryJson *recipes = NULL;
   VKR_PROJECT_TRY(vkr_project_read_recipes(job, textures, &recipes));
   if (vkr_project_textures_unrecorded(job, textures, recipes)) {
@@ -343,13 +379,18 @@ vkr_internal bool8_t vkr_recook_build(VkrRecook *recook,
   }
   for (const VkrBakeryJson *entry = recipes->first; entry;
        entry = entry->next) {
+    /* A recipe names one texture beside it, whatever host wrote it. */
     const char *name = (const char *)entry->key.str;
-    if (!vkr_project_is_cooked_texture(name) || strchr(name, '/') ||
+    if (!vkr_project_plain_name(name) || !vkr_project_is_cooked_texture(name) ||
         entry->type != VKR_BAKERY_JSON_OBJECT) {
-      continue;
+      return vkr_project_fail(job, "Invalid texture recipe '%s' in %s", name,
+                              textures);
     }
     recook->textures += 1u;
     const char *texture = vkr_project_printf(job, "%s/%s", textures, name);
+    if (vkr_project_lstat_is_link(texture)) {
+      return vkr_project_fail(job, "Re-cook refuses links: %s", texture);
+    }
     const VkrRecookFamily family = vkr_recook_family(texture);
     if (family == recook->host || family == VKR_RECOOK_FAMILY_OTHER) {
       recook->current += 1u;

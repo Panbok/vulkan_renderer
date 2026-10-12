@@ -777,6 +777,14 @@ void vkr_project_suffix_lower(const char *path, char *out, uint32_t capacity) {
   out[i] = 0;
 }
 
+bool8_t vkr_project_plain_name(const char *name) {
+  /* The managed grammar refuses `\\`, `:`, `.` and `..` segments and empty
+     ones, so a name valid on one host names the same file on every host. */
+  return name && name[0] && name[0] != '.' && !strchr(name, '/') &&
+         vkr_asset_path_managed_valid(
+             (String8){.str = (uint8_t *)name, .length = strlen(name)});
+}
+
 bool8_t vkr_project_is_cooked_texture(const char *path) {
   char suffix[16];
   vkr_project_suffix_lower(path, suffix, sizeof(suffix));

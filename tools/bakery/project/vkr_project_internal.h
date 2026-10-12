@@ -258,6 +258,10 @@ bool8_t vkr_project_gltf_uri_path(VkrProjectJob *job, const char *uri,
 bool8_t vkr_project_model_tokens(VkrProjectJob *job, const char *line,
                                  VkrProjectStrings *out_tokens);
 void vkr_project_suffix_lower(const char *path, char *out, uint32_t capacity);
+/** A file name a peer's document may name inside a folder: one managed
+ * path segment without a leading dot, so no separator of any host, drive,
+ * `..` or hidden name (`.git`, `.vkrdepot`). */
+bool8_t vkr_project_plain_name(const char *name);
 /** A cooked texture (`.vkt`, any case), whose bytes are per host: a closure
  * records VKR_PROJECT_PLATFORM_DIGEST for it and no fingerprint check reads
  * it. */

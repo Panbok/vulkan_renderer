@@ -73,6 +73,7 @@ typedef struct VkrShare {
   uint32_t group_count;
   uint32_t group_capacity;
   VkrBakeryJson *needs_rebuild; /* [{scene, asset_id, name}] */
+  uint32_t skipped;             /* Files in reserved folders. */
   bool8_t destination_exists;
 } VkrShare;
 
@@ -217,12 +218,19 @@ vkr_internal void vkr_share_add_records(VkrShare *share, const char *owner,
   }
 }
 
-/* The build revision folder (`builds/<rev>`) a record path names, or NULL. */
+/* The build revision folder (`builds/<revision>`) a record path names, or
+   NULL unless the revision is an identifier. */
 vkr_internal const char *vkr_share_build_of(VkrProjectJob *job,
                                             const char *path) {
   const char *end =
       path && strncmp(path, "builds/", 7u) == 0 ? strchr(path + 7, '/') : NULL;
-  return end ? vkr_project_printf(job, "%.*s", (int)(end - path), path) : NULL;
+  if (!end || end - (path + 7) != 36) {
+    return NULL;
+  }
+  const char *revision = vkr_project_printf(job, "%.36s", path + 7);
+  return vkr_project_identifier_valid(revision)
+             ? vkr_project_printf(job, "builds/%s", revision)
+             : NULL;
 }
 
 /* Per build revision the records name: its texture recipes and the source
@@ -273,8 +281,11 @@ vkr_internal void vkr_share_add_builds(VkrShare *share, const char *owner,
     for (const VkrBakeryJson *entry = recipes ? recipes->first : NULL; entry;
          entry = entry->next) {
       const char *source = vkr_project_json_text(entry, "source");
-      if (source && !strchr(source, '/')) {
+      if (source && vkr_project_plain_name(source)) {
         (void)vkr_share_add(share, textures, source, true_v);
+      } else if (source) {
+        vkr_project_warn(job, "Skipped the recipe source '%s' in %s", source,
+                         textures);
       }
     }
     if (vkr_project_textures_unrecorded(job, host, recipes)) {
@@ -491,6 +502,31 @@ vkr_internal bool8_t vkr_share_destination(VkrShare *share) {
   return true_v;
 }
 
+/* Whether an identity has a `.git` or `.vkrdepot` segment, which a working
+   copy reserves for its version control; the share never writes one. */
+vkr_internal bool8_t vkr_share_reserved(const char *identity) {
+  static const char *const reserved[] = {".git", ".vkrdepot"};
+  for (const char *segment = identity; segment && *segment;) {
+    const char *end = strchr(segment, '/');
+    const uint64_t length =
+        end ? (uint64_t)(end - segment) : (uint64_t)strlen(segment);
+    for (uint32_t i = 0u; i < ArrayCount(reserved); ++i) {
+      const uint64_t size = strlen(reserved[i]);
+      bool8_t same = length == size;
+      for (uint64_t c = 0u; same && c < size; ++c) {
+        const char a = segment[c];
+        same = (a >= 'A' && a <= 'Z' ? (char)(a - 'A' + 'a') : a) ==
+               reserved[i][c];
+      }
+      if (same) {
+        return true_v;
+      }
+    }
+    segment = end ? end + 1 : NULL;
+  }
+  return false_v;
+}
+
 /* Clones every collected file into `staging`; `.vkreditor`-side mounts keep
    their place below `.vkreditor/`. */
 vkr_internal bool8_t vkr_share_copy(VkrShare *share, const char *staging,
@@ -507,7 +543,9 @@ vkr_internal bool8_t vkr_share_copy(VkrShare *share, const char *staging,
   for (uint32_t i = 0u; i < files->count; ++i) {
     char path[VKR_PROJECT_PATH];
     VkrBakeryStat info = {0};
-    if (vkr_bundle_source(&share->bundle, files->items[i], path,
+    sizes[i] = 0u;
+    if (!vkr_share_reserved(files->items[i]) &&
+        vkr_bundle_source(&share->bundle, files->items[i], path,
                           sizeof(path)) &&
         vkr_bakery_stat(path, &info)) {
       sizes[i] = info.size;
@@ -524,6 +562,12 @@ vkr_internal bool8_t vkr_share_copy(VkrShare *share, const char *staging,
       VKR_PROJECT_TRY(vkr_project_progress(
           job, "Copying files",
           total ? (float64_t)done / (float64_t)total : 0.0, identity));
+    }
+    if (vkr_share_reserved(identity)) {
+      vkr_project_warn(job, "Skipped %s: a working copy reserves its folder",
+                       identity);
+      share->skipped += 1u;
+      continue;
     }
     char source[VKR_PROJECT_PATH];
     uint32_t mount = 0u;
@@ -663,8 +707,9 @@ vkr_internal VkrBakeryJson *vkr_share_result(VkrShare *share, uint64_t bytes) {
       vkr_bakery_json_cstr(arena, vkr_project_printf(job, "%s/%s/project.json",
                                                      workspace_root,
                                                      share->project_identity)));
-  vkr_bakery_json_set(arena, result, "files",
-                      vkr_bakery_json_int(arena, bundle->files.count));
+  vkr_bakery_json_set(
+      arena, result, "files",
+      vkr_bakery_json_int(arena, bundle->files.count - share->skipped));
   vkr_bakery_json_set(arena, result, "bytes",
                       vkr_bakery_json_int(arena, (int64_t)bytes));
   VkrBakeryJson *scenes = vkr_bakery_json_array(arena);

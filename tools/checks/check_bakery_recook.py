@@ -16,6 +16,9 @@ base colour the project texture packer packs. The check asserts that:
   another GPU family under the same names, with the same bytes on this host,
   leaves materials, the mesh and the inventory untouched, and then finds
   nothing to do;
+- a recipe whose name or source leaves its folder (a separator of any host,
+  a drive, `..`, a hidden name) or a texture that is a link fails the job and
+  changes nothing outside the build;
 - scene preparation accepts cooked textures whose bytes differ from the
   cooking host's (closures record `platform` for `.vkt`);
 - a build without recipes is reported for a rebuild, and the rebuild
@@ -215,6 +218,40 @@ def main():
         assert not list((project / '.staging').glob('recook-*')), 'No staging folder is left'
         idle = run(recook, 'recook-idle')
         assert idle['recooked'] == 0 and idle['current'] == len(textures), idle
+
+        # Recipes come from another host: a name or source that leaves its
+        # folder by a separator of any host, a drive or `..`, a hidden name,
+        # or a link, fails the job and changes nothing outside the build.
+        recipes_path = build / 'textures' / 'recipes.json'
+        good_recipes = recipes_path.read_bytes()
+        outside = root / 'outside.png'
+        write_png(outside, 32, 99)
+        outside_bytes = outside.read_bytes()
+        image = next(name for name in names if 'source' in recipes[name])
+        mesh_entry = next(recipes[name] for name in names if 'source' not in recipes[name])
+        hostile = [{'..\\..\\..\\escaped.vkt': mesh_entry}, {'../escaped.vkt': mesh_entry},
+                   {'C:escaped.vkt': mesh_entry}, {'.vkrdepot.vkt': mesh_entry},
+                   {image: dict(recipes[image], source='../../../../outside.png')},
+                   {image: dict(recipes[image], source='..\\..\\outside.png')},
+                   {image: dict(recipes[image], source='C:outside.png')}]
+        for index, entries in enumerate(hostile):
+            recipes_path.write_text(json.dumps({'version': 1, 'textures': entries}))
+            (build / 'textures' / image).unlink(missing_ok=True)
+            run(recook, f'recook-hostile-{index}', code=1)
+        try:
+            (build / 'textures' / image).symlink_to(outside)
+            linked = True
+        except OSError:
+            linked = False
+        if linked:
+            recipes_path.write_bytes(good_recipes)
+            run(recook, 'recook-link', code=1)
+            (build / 'textures' / image).unlink()
+        assert outside.read_bytes() == outside_bytes
+        assert not list(root.rglob('*escaped*')), list(root.rglob('*escaped*'))
+        recipes_path.write_bytes(good_recipes)
+        assert run(recook, 'recook-restored')['recooked'] == 1
+        assert (build / 'textures' / image).read_bytes() == textures[image]
 
         # Preparation accepts other bytes for a cooked texture, as another
         # host's cook has, and records `platform` for it.
