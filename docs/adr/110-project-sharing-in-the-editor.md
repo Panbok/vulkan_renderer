@@ -183,7 +183,9 @@ Design Test), and a launchd `vkr_depot serve` holding UDP 7319 and IPv4 7320.
   receiving editor's hashing and writes share the machine, so this bounds
   the server thread's cost from above.
 - A script module added and submitted on the sharer stayed held on the
-  copy after Get (`scripts_held`) and built only after `depot.trust`.
+  copy after Get (`scripts_held`); its build started only after
+  `depot.trust`. The `script.new` template does not compile against the
+  current script SDK (12 errors on both editors), a defect outside sharing.
 
 Unverified: the editor part on Windows; a share between two computers; the
 Local Network prompt for the editor binary; scene reload after a pull with
