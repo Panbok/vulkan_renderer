@@ -1029,7 +1029,7 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
   }
 
   /* Tracked files the target lacks leave first, unless they are local
-     changes or ignored: a case-only rename (Foo.png to foo.png) removes the
+     changes or ignored: a case-only rename, Foo.png to foo.png, removes the
      old name before writing the new one, which is the same file on macOS
      and Windows. */
   for (uint32_t i = 0u; i < workspace->index.count && ok; ++i) {

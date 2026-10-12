@@ -1076,13 +1076,8 @@ static bool8_t depot_project_job(DepotJob *job, const char *folder,
     *out_result = vkr_bakery_json_parse(arena, bytes, size, 32u, NULL);
   }
   free(bytes);
-  char progress_path[DEPOT_PATH + 16];
-  snprintf(progress_path, sizeof(progress_path), "%s.progress.json",
-           result_path);
-  remove(progress_path);
-  remove(result_path);
-  remove(request_path);
-  remove(jobs);
+  /* The job folder is named by a fresh id, so nothing else uses it. */
+  (void)vkr_bakery_remove_tree(jobs);
   if (ran && exit_code == 0 && *out_result) {
     return true_v;
   }
