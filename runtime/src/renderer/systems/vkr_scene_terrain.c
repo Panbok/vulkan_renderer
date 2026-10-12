@@ -57,6 +57,12 @@
 /* Updates a batch may take on the workers before the main thread finishes
    it, so busy workers delay tiles by at most this many frames. */
 #define TERRAIN_BATCH_WAIT_MAX 4u
+/* Fine tiles a build may take and still publish its batches in the update
+   that starts them, as a brush stroke's step does. */
+#define TERRAIN_BUILD_NOW_TILES (2u * TERRAIN_BATCH_MAX)
+/* Build steps one update takes for such a build: its fine batches, an
+   overview batch and the finish. */
+#define TERRAIN_BUILD_NOW_STEPS 4u
 /* Grid samples a side a tile's copied samples span: its 65 and the
    neighbour on each side its edge normals read. */
 #define TERRAIN_SNAPSHOT_SIDE (VKR_HEIGHTFIELD_TILE_CELLS + 3u)
@@ -131,6 +137,15 @@ typedef struct TerrainRecord {
      terrain builds only the tiles near streaming sources. */
   VkrGeometryHandle tiles[TERRAIN_TILES_MAX];
   uint64_t dirty_tiles[TERRAIN_TILES_MAX / 64u];
+  /* The fine and overview tiles the current build takes, moved from the
+     dirty bits as it begins, so a stroke's next steps mark tiles for the
+     build after it and each build finishes and shows. */
+  uint64_t build_tiles[TERRAIN_TILES_MAX / 64u];
+  uint64_t build_overview;
+  /* The current build rebuilt fine tiles. */
+  bool8_t build_fine;
+  /* The build is small enough to publish each batch as it starts. */
+  bool8_t build_now;
   /* A streamed terrain (ADR-086): its window radius, overview tiles with
      their hole seams and dirty bits, and the fine tiles near the sources
      its one body covers, inclusive, whose samples may have changed. */
@@ -1759,11 +1774,13 @@ static void terrain_batch_begin(VkrScene *scene, TerrainRecord *record,
 }
 
 /* Publishes the batch once its tiles are prepared, or once it has waited
-   TERRAIN_BATCH_WAIT_MAX updates, finishing them here; each replaces the
-   geometry its tile had. Loaded tiles mark the mesh changed. */
-static void terrain_batch_poll(VkrScene *scene, TerrainRecord *record) {
+   TERRAIN_BATCH_WAIT_MAX updates, or at once with `now`, finishing them
+   here; each replaces the geometry its tile had. Loaded tiles mark the mesh
+   changed. */
+static void terrain_batch_poll(VkrScene *scene, TerrainRecord *record,
+                               bool8_t now) {
   TerrainBatch *batch = &record->batch;
-  if (!batch->active || (!vkr_job_for_done(batch->loop) &&
+  if (!batch->active || (!now && !vkr_job_for_done(batch->loop) &&
                          ++batch->age < TERRAIN_BATCH_WAIT_MAX)) {
     return;
   }
@@ -1848,12 +1865,27 @@ static bool8_t terrain_begin_build(VkrScene *scene, TerrainRecord *record) {
   record->texture_size = terrain->texture_size;
   record->serial++;
   record->building = true_v;
+  MemCopy(record->build_tiles, record->dirty_tiles,
+          sizeof(record->build_tiles));
+  MemZero(record->dirty_tiles, sizeof(record->dirty_tiles));
+  record->build_overview = record->overview_dirty;
+  record->overview_dirty = 0u;
+  record->build_fine = false_v;
+  uint32_t count = 0u;
+  for (uint32_t i = 0;
+       i < ArrayCount(record->build_tiles) && count <= TERRAIN_BUILD_NOW_TILES;
+       ++i) {
+    for (uint64_t word = record->build_tiles[i]; word; word &= word - 1u) {
+      count++;
+    }
+  }
+  record->build_now = count <= TERRAIN_BUILD_NOW_TILES;
   return true_v;
 }
 
-/* Starts a batch rebuilding changed fine tiles, or once none is left,
-   overview tiles; their dirty bits clear now, so edits meanwhile mark them
-   again. Done once none is left. False when a batch could not start. */
+/* Starts a batch rebuilding the build's fine tiles, or once none is left,
+   its overview tiles. Done once none is left. False when a batch could not
+   start. */
 static bool8_t terrain_build_step(VkrScene *scene, TerrainRecord *record,
                                   bool8_t *out_done) {
   const uint32_t tiles = terrain_tiles(record);
@@ -1861,7 +1893,7 @@ static bool8_t terrain_build_step(VkrScene *scene, TerrainRecord *record,
   for (uint32_t index = 0;
        record->batch.count < TERRAIN_BATCH_MAX && index < tiles * tiles;
        ++index) {
-    const bool8_t dirty = terrain_bit(record->dirty_tiles, index);
+    const bool8_t dirty = terrain_bit(record->build_tiles, index);
     const bool8_t drawn = record->tiles[index].id != 0u;
     /* A streamed terrain rebuilds only tiles that draw; streaming adds the
        rest. */
@@ -1872,17 +1904,30 @@ static bool8_t terrain_build_step(VkrScene *scene, TerrainRecord *record,
                            NULL)) {
       return false_v;
     }
-    terrain_bit_set(record->dirty_tiles, index, false_v);
+    terrain_bit_set(record->build_tiles, index, false_v);
   }
   if (record->batch.count) {
+    record->build_fine = true_v;
     terrain_batch_begin(scene, record, TERRAIN_BATCH_TILES);
+    terrain_batch_poll(scene, record, record->build_now);
     return true_v;
+  }
+  /* While a stroke keeps changing fine tiles, the overview under them
+     waits for a build without them, so each build shows the stroke a
+     batch sooner. */
+  bool8_t fine_dirty = false_v;
+  for (uint32_t i = 0; i < ArrayCount(record->dirty_tiles); ++i) {
+    fine_dirty = fine_dirty || record->dirty_tiles[i] != 0u;
+  }
+  if (record->build_fine && fine_dirty) {
+    record->overview_dirty |= record->build_overview;
+    record->build_overview = 0u;
   }
   const uint32_t overview_tiles = terrain_overview_tiles(record);
   for (uint32_t index = 0; record->batch.count < TERRAIN_BATCH_MAX &&
                            index < overview_tiles * overview_tiles;
        ++index) {
-    if (!(record->overview_dirty & (1ull << index))) {
+    if (!(record->build_overview & (1ull << index))) {
       continue;
     }
     const uint32_t ox = index % overview_tiles;
@@ -1893,7 +1938,7 @@ static bool8_t terrain_build_step(VkrScene *scene, TerrainRecord *record,
     for (uint32_t i = 0; i < TERRAIN_HOLE_WORDS; ++i) {
       covered = covered && holes[i] == UINT64_MAX;
     }
-    record->overview_dirty &= ~(1ull << index);
+    record->build_overview &= ~(1ull << index);
     /* A tile fine tiles cover entirely draws nothing. */
     if (covered) {
       terrain_geometry_release(scene, &record->overview[index]);
@@ -1907,11 +1952,12 @@ static bool8_t terrain_build_step(VkrScene *scene, TerrainRecord *record,
   }
   if (record->batch.count) {
     terrain_batch_begin(scene, record, TERRAIN_BATCH_OVERVIEW);
+    terrain_batch_poll(scene, record, record->build_now);
     return true_v;
   }
   /* Tiles a streamed terrain does not draw keep no dirty bit: streaming
      builds them afresh. */
-  MemZero(record->dirty_tiles, sizeof(record->dirty_tiles));
+  MemZero(record->build_tiles, sizeof(record->build_tiles));
   *out_done = true_v;
   return true_v;
 }
@@ -2456,14 +2502,20 @@ void vkr_scene_terrain_update(VkrScene *scene) {
     const Vec3 position = mat4_position(transform->world);
     terrain_body_poll(scene, record);
     /* Tiles the job workers finished replace those they rebuilt. */
-    terrain_batch_poll(scene, record);
+    terrain_batch_poll(scene, record, false_v);
     /* Streaming and the body share one frame budget. */
     const float64_t start = vkr_platform_get_absolute_time();
     if (record->streamed && terrain_stream(scene, record, position, start)) {
       record->mesh_dirty = true_v;
     }
+    if (record->attach_pending && terrain_mesh_settled(scene, record) &&
+        !terrain_attach_mesh(scene, record)) {
+      snprintf(record->status, sizeof(record->status),
+               "The terrain mesh failed");
+    }
     /* Changed tiles build a batch at a time and show together once
-       uploaded; changes meanwhile wait for the next build. */
+       uploaded; changes meanwhile wait for the next build, which starts in
+       the update the last one shows. */
     if (record->mesh_dirty && !record->building && !record->attach_pending &&
         !record->batch.active) {
       record->mesh_dirty = false_v;
@@ -2472,7 +2524,12 @@ void vkr_scene_terrain_update(VkrScene *scene) {
                  "The terrain mesh failed");
       }
     }
-    if (record->building && !record->batch.active) {
+    /* A small build publishes each batch as it starts, so it steps on
+       until it is done in this update, within a few steps should a tile
+       fail and be taken again. */
+    for (uint32_t step = 0; step < TERRAIN_BUILD_NOW_STEPS &&
+                            record->building && !record->batch.active;
+         ++step) {
       bool8_t done = false_v;
       if (!terrain_build_step(scene, record, &done)) {
         snprintf(record->status, sizeof(record->status),
@@ -2481,11 +2538,9 @@ void vkr_scene_terrain_update(VkrScene *scene) {
       }
       record->building = !done;
       record->attach_pending = done;
-    }
-    if (record->attach_pending && terrain_mesh_settled(scene, record) &&
-        !terrain_attach_mesh(scene, record)) {
-      snprintf(record->status, sizeof(record->status),
-               "The terrain mesh failed");
+      if (!record->build_now) {
+        break;
+      }
     }
     /* A resident terrain builds again only after edits; its batch storage
        goes until then. */

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -60,7 +60,14 @@ every tile, as before. Larger ones, up to 8,192 cells and a multiple of
   one at a time per terrain: the main thread copies each tile's samples,
   job workers build and pack its geometry (`vkr_job_for_begin`,
   `vkr_geometry_pack`), and a later update publishes the batch, finishing
-  any tile no worker took after four updates. Rebuilt tiles show together
+  any tile no worker took after four updates. A rebuild of at most 16 fine
+  tiles, as a brush stroke's step makes, publishes each batch in the update
+  that starts it, the main thread taking the tiles no worker took. Each
+  rebuild takes the tiles changed when it starts; changes meanwhile wait for
+  the next, which starts in the update the last one shows, so a stroke shows
+  every few frames instead of when it ends. While a stroke keeps changing
+  fine tiles, the overview under them waits for a rebuild without them.
+  Rebuilt tiles show together
   once their geometry has uploaded: the mesh is swapped in place then
   (`vkr_scene_replace_generated_mesh`), naming the footprints of the tiles
   that started, stopped or changed drawing, and the tiles that draw hold
