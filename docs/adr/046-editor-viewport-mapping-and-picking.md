@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-08
+updated: 2026-10-12
 authority: adr
 ---
 # ADR-046: One editor viewport mapping for scene presentation and interaction
@@ -135,10 +135,10 @@ singularity criterion so a valid wide orthographic projection does not silently
 become identity because its absolute determinant is small.
 
 Orthographic frames use spatial reconstruction and bypass the perspective-only
-analytic/froxel fog, SSGI, SSR, GTAO, subsurface diffusion, depth of field and motion
-blur paths. Temporal reconstruction and its SDK scalers are disabled for those
-frames. The runtime preserves the user's perspective graphics settings and
-restores their use when Perspective returns. This is an explicit capability
+analytic/froxel fog, GTAO, subsurface diffusion, depth of field and motion
+blur paths. Temporal reconstruction is disabled for those frames. The runtime
+preserves the user's perspective graphics settings and restores their use when
+Perspective returns. This is an explicit capability
 boundary until those effects support orthographic depth and rays.
 
 `VkrEditorPassPayload.scene_rendering_stopped` suspends Scene extraction and graph

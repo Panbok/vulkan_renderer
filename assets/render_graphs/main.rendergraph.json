@@ -1221,7 +1221,7 @@
     {
       "name": "temporal_history_color",
       "type": "image",
-      "condition": "scene_rendering && !fsr31_enabled",
+      "condition": "scene_rendering",
       "extent": {
         "mode": "viewport"
       },
@@ -1239,7 +1239,7 @@
     {
       "name": "temporal_history_depth",
       "type": "image",
-      "condition": "scene_rendering && !fsr31_enabled",
+      "condition": "scene_rendering",
       "extent": {
         "mode": "viewport"
       },
@@ -1255,7 +1255,7 @@
     {
       "name": "temporal_history_identity",
       "type": "image",
-      "condition": "scene_rendering && !fsr31_enabled",
+      "condition": "scene_rendering",
       "extent": {
         "mode": "viewport"
       },
@@ -1271,7 +1271,7 @@
     {
       "name": "temporal_history_surface",
       "type": "image",
-      "condition": "scene_rendering && !fsr31_enabled",
+      "condition": "scene_rendering",
       "extent": {
         "mode": "viewport"
       },
@@ -1282,80 +1282,6 @@
       "flags": [
         "HISTORY",
         "RESIZABLE"
-      ]
-    },
-    {
-      "name": "fsr31_depth",
-      "type": "image",
-      "condition": "scene_rendering && fsr31_enabled",
-      "extent": {
-        "mode": "viewport"
-      },
-      "format": "R32_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
-      "name": "fsr31_reactive",
-      "type": "image",
-      "condition": "scene_rendering && fsr31_enabled",
-      "extent": {
-        "mode": "viewport"
-      },
-      "format": "R8_UNORM",
-      "usage": [
-        "STORAGE",
-        "SAMPLED"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
-      "name": "fsr31_composition",
-      "type": "image",
-      "condition": "scene_rendering && fsr31_enabled",
-      "extent": {
-        "mode": "viewport"
-      },
-      "format": "R8_UNORM",
-      "usage": [
-        "STORAGE",
-        "SAMPLED"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
-      "name": "fsr31_output_color",
-      "type": "image",
-      "condition": "scene_rendering && fsr31_enabled",
-      "extent": {
-        "mode": "scene_output"
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "COLOR_ATTACHMENT",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "HISTORY"
       ]
     },
     {
@@ -1385,127 +1311,9 @@
       ]
     },
     {
-      "name": "ssr_depth_pyramid",
-      "type": "image",
-      "condition": "scene_rendering && ssr_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 2
-      },
-      "format": "R32_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ],
-      "mip_levels": "full_chain"
-    },
-    {
-      "name": "ssr_raw",
-      "type": "image",
-      "condition": "scene_rendering && ssr_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 1
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
-      "name": "ssr_hit",
-      "type": "image",
-      "condition": "scene_rendering && ssr_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 1
-      },
-      "format": "R32G32B32A32_UINT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
-      "name": "ssr_history_color",
-      "type": "image",
-      "condition": "scene_rendering && ssr_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 1
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "HISTORY",
-        "RESIZABLE"
-      ]
-    },
-    {
-      "name": "ssr_history_depth",
-      "type": "image",
-      "condition": "scene_rendering && ssr_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 1
-      },
-      "format": "R32G32B32A32_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "HISTORY",
-        "RESIZABLE"
-      ]
-    },
-    {
-      "name": "ssr_history_identity",
-      "type": "image",
-      "condition": "scene_rendering && ssr_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 1
-      },
-      "format": "R32G32B32A32_UINT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "HISTORY",
-        "RESIZABLE"
-      ]
-    },
-    {
       "name": "bloom_chain",
       "type": "image",
-      "condition": "scene_rendering && bloom_enabled && !fsr31_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "extent": {
         "mode": "viewport",
         "divisor": 2
@@ -1526,7 +1334,7 @@
     {
       "name": "bloom_accum",
       "type": "image",
-      "condition": "scene_rendering && bloom_enabled && !fsr31_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "extent": {
         "mode": "viewport",
         "divisor": 2
@@ -1547,70 +1355,9 @@
     {
       "name": "bloom_combined",
       "type": "image",
-      "condition": "scene_rendering && bloom_enabled && !fsr31_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "extent": {
         "mode": "viewport"
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
-      "name": "fsr31_bloom_chain",
-      "type": "image",
-      "condition": "scene_rendering && bloom_enabled && fsr31_enabled",
-      "extent": {
-        "mode": "scene_output",
-        "divisor": 2
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "mip_levels": "full_chain",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
-      "name": "fsr31_bloom_accum",
-      "type": "image",
-      "condition": "scene_rendering && bloom_enabled && fsr31_enabled",
-      "extent": {
-        "mode": "scene_output",
-        "divisor": 2
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "mip_levels": "full_chain",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_IMAGE"
-      ]
-    },
-    {
-      "name": "fsr31_bloom_combined",
-      "type": "image",
-      "condition": "scene_rendering && bloom_enabled && fsr31_enabled",
-      "extent": {
-        "mode": "scene_output"
       },
       "format": "R16G16B16A16_SFLOAT",
       "usage": [
@@ -1736,143 +1483,6 @@
         "divisor": 2
       },
       "format": "R16G16B16A16_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "HISTORY",
-        "RESIZABLE"
-      ]
-    },
-    {
-      "name": "ssgi_direct_source",
-      "type": "image",
-      "condition": "scene_rendering && ssgi_enabled",
-      "extent": {
-        "mode": "viewport"
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_FRAME_SLOT"
-      ]
-    },
-    {
-      "name": "ssgi_depth_pyramid",
-      "type": "image",
-      "condition": "scene_rendering && ssgi_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 2
-      },
-      "format": "R32_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_FRAME_SLOT"
-      ],
-      "mip_levels": "full_chain"
-    },
-    {
-      "name": "ssgi_receiver",
-      "type": "image",
-      "condition": "scene_rendering && ssgi_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 2
-      },
-      "format": "R32G32_UINT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_FRAME_SLOT"
-      ]
-    },
-    {
-      "name": "ssgi_raw",
-      "type": "image",
-      "condition": "scene_rendering && ssgi_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 2
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "TRANSIENT",
-        "RESIZABLE",
-        "PER_FRAME_SLOT"
-      ]
-    },
-    {
-      "name": "ssgi_history_color",
-      "type": "image",
-      "condition": "scene_rendering && ssgi_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 2
-      },
-      "format": "R16G16B16A16_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "HISTORY",
-        "RESIZABLE"
-      ]
-    },
-    {
-      "name": "ssgi_history_depth",
-      "type": "image",
-      "condition": "scene_rendering && ssgi_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 2
-      },
-      "format": "R32_SFLOAT",
-      "usage": [
-        "STORAGE",
-        "SAMPLED",
-        "TRANSFER_SRC"
-      ],
-      "flags": [
-        "HISTORY",
-        "RESIZABLE"
-      ]
-    },
-    {
-      "name": "ssgi_history_identity",
-      "type": "image",
-      "condition": "scene_rendering && ssgi_enabled",
-      "extent": {
-        "mode": "viewport",
-        "divisor": 2
-      },
-      "format": "R32G32_UINT",
       "usage": [
         "STORAGE",
         "SAMPLED",
@@ -4695,12 +4305,6 @@
           "binding": 6
         },
         {
-          "image": "ssgi_direct_source",
-          "access": "STORAGE_WRITE",
-          "binding": 9,
-          "when": "ssgi_enabled"
-        },
-        {
           "image": "subsurface_diffuse",
           "access": "STORAGE_WRITE",
           "binding": 14,
@@ -4913,12 +4517,6 @@
           "image": "hdr_pre_transmission",
           "access": "STORAGE_WRITE",
           "binding": 6
-        },
-        {
-          "image": "ssgi_direct_source",
-          "access": "STORAGE_WRITE",
-          "binding": 9,
-          "when": "ssgi_enabled"
         },
         {
           "image": "subsurface_diffuse",
@@ -5135,12 +4733,6 @@
           "binding": 6
         },
         {
-          "image": "ssgi_direct_source",
-          "access": "STORAGE_WRITE",
-          "binding": 9,
-          "when": "ssgi_enabled"
-        },
-        {
           "image": "subsurface_diffuse",
           "access": "STORAGE_WRITE",
           "binding": 14,
@@ -5355,12 +4947,6 @@
           "binding": 6
         },
         {
-          "image": "ssgi_direct_source",
-          "access": "STORAGE_WRITE",
-          "binding": 9,
-          "when": "ssgi_enabled"
-        },
-        {
           "image": "subsurface_diffuse",
           "access": "STORAGE_WRITE",
           "binding": 14,
@@ -5368,411 +4954,6 @@
         }
       ],
       "execute": "pass.lighting.deferred.layered"
-    },
-    {
-      "name": "SSGI.DepthBase",
-      "type": "compute",
-      "condition": "scene_rendering && ssgi_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 0
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 1
-        }
-      ],
-      "writes": [
-        {
-          "image": "ssgi_depth_pyramid",
-          "access": "STORAGE_WRITE",
-          "binding": 2,
-          "subresource": {
-            "base_mip": 0,
-            "mip_count": 1
-          }
-        },
-        {
-          "image": "ssgi_receiver",
-          "access": "STORAGE_WRITE",
-          "binding": 3
-        }
-      ],
-      "execute": "pass.ssgi.depth_base"
-    },
-    {
-      "name": "SSGI.DepthMip.${i}",
-      "type": "compute",
-      "condition": "scene_rendering && ssgi_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "ssgi_depth_pyramid",
-          "access": "SAMPLED",
-          "binding": 0,
-          "subresource": {
-            "base_mip": "${i}",
-            "mip_count": 1
-          }
-        }
-      ],
-      "writes": [
-        {
-          "image": "ssgi_depth_pyramid",
-          "access": "STORAGE_WRITE",
-          "binding": 1,
-          "subresource": {
-            "base_mip": "${i+1}",
-            "mip_count": 1
-          }
-        }
-      ],
-      "execute": "pass.ssgi.depth_mip",
-      "repeat": {
-        "count_source": "ssgi_depth_mip_pass_count"
-      }
-    },
-    {
-      "name": "SSGI.Trace",
-      "type": "compute",
-      "condition": "scene_rendering && ssgi_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 0
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 1
-        },
-        {
-          "image": "gbuffer_normal",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "gbuffer_albedo",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "ssgi_depth_pyramid",
-          "access": "SAMPLED",
-          "binding": 4
-        },
-        {
-          "image": "ssgi_direct_source",
-          "access": "SAMPLED",
-          "binding": 5
-        },
-        {
-          "image": "ssgi_receiver",
-          "access": "SAMPLED",
-          "binding": 7
-        }
-      ],
-      "writes": [
-        {
-          "image": "ssgi_raw",
-          "access": "STORAGE_WRITE",
-          "binding": 6
-        }
-      ],
-      "execute": "pass.ssgi.trace"
-    },
-    {
-      "name": "SSGI.Temporal",
-      "type": "compute",
-      "condition": "scene_rendering && ssgi_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "ssgi_raw",
-          "access": "SAMPLED",
-          "binding": 0
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 1
-        },
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "gbuffer_normal",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "temporal_motion",
-          "access": "SAMPLED",
-          "binding": 4
-        },
-        {
-          "image": "temporal_validity",
-          "access": "SAMPLED",
-          "binding": 5
-        },
-        {
-          "buffer": "gpu_visible_draws",
-          "access": "STORAGE_READ",
-          "binding": 12
-        },
-        {
-          "buffer": "gpu_draw_instances",
-          "access": "STORAGE_READ",
-          "binding": 13
-        },
-        {
-          "image": "ssgi_receiver",
-          "access": "SAMPLED",
-          "binding": 14
-        }
-      ],
-      "writes": [
-        {
-          "image": "ssgi_history_color",
-          "access": "STORAGE_WRITE",
-          "binding": 9
-        },
-        {
-          "image": "ssgi_history_depth",
-          "access": "STORAGE_WRITE",
-          "binding": 10
-        },
-        {
-          "image": "ssgi_history_identity",
-          "access": "STORAGE_WRITE",
-          "binding": 11
-        }
-      ],
-      "execute": "pass.ssgi.temporal"
-    },
-    {
-      "name": "SSGI.Composite.Fullscreen",
-      "type": "compute",
-      "condition": "scene_rendering && ssgi_enabled && !editor_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "hdr_pre_transmission",
-          "access": "STORAGE_READ",
-          "binding": 0
-        },
-        {
-          "image": "ssgi_history_color",
-          "access": "SAMPLED",
-          "binding": 1
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "gbuffer_albedo",
-          "access": "SAMPLED",
-          "binding": 4
-        },
-        {
-          "image": "gbuffer_normal",
-          "access": "SAMPLED",
-          "binding": 5
-        },
-        {
-          "image": "ssgi_history_depth",
-          "access": "SAMPLED",
-          "binding": 6
-        },
-        {
-          "image": "gbuffer_specular",
-          "access": "SAMPLED",
-          "binding": 7
-        },
-        {
-          "image": "gbuffer_clearcoat",
-          "access": "SAMPLED",
-          "binding": 8,
-          "when": "clearcoat_enabled"
-        },
-        {
-          "image": "gbuffer_sheen",
-          "access": "SAMPLED",
-          "binding": 9,
-          "when": "sheen_enabled"
-        },
-        {
-          "image": "gbuffer_anisotropy",
-          "access": "SAMPLED",
-          "binding": 10,
-          "when": "anisotropy_enabled"
-        },
-        {
-          "buffer": "gpu_visible_draws",
-          "access": "STORAGE_READ",
-          "binding": 11
-        },
-        {
-          "image": "subsurface_diffuse",
-          "access": "STORAGE_READ",
-          "binding": 12,
-          "when": "subsurface_enabled"
-        },
-        {
-          "image": "ssgi_receiver",
-          "access": "SAMPLED",
-          "binding": 13
-        },
-        {
-          "image": "diffuse_volume_irradiance",
-          "access": "STORAGE_READ",
-          "binding": 14,
-          "when": "diffuse_volume_enabled"
-        }
-      ],
-      "writes": [
-        {
-          "image": "hdr_pre_transmission",
-          "access": "STORAGE_WRITE",
-          "binding": 0
-        },
-        {
-          "image": "subsurface_diffuse",
-          "access": "STORAGE_WRITE",
-          "binding": 12,
-          "when": "subsurface_enabled"
-        }
-      ],
-      "execute": "pass.ssgi.composite"
-    },
-    {
-      "name": "SSGI.Composite.Editor",
-      "type": "compute",
-      "condition": "scene_rendering && ssgi_enabled && editor_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "scene_pre_transmission",
-          "access": "STORAGE_READ",
-          "binding": 0
-        },
-        {
-          "image": "ssgi_history_color",
-          "access": "SAMPLED",
-          "binding": 1
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "gbuffer_albedo",
-          "access": "SAMPLED",
-          "binding": 4
-        },
-        {
-          "image": "gbuffer_normal",
-          "access": "SAMPLED",
-          "binding": 5
-        },
-        {
-          "image": "ssgi_history_depth",
-          "access": "SAMPLED",
-          "binding": 6
-        },
-        {
-          "image": "gbuffer_specular",
-          "access": "SAMPLED",
-          "binding": 7
-        },
-        {
-          "image": "gbuffer_clearcoat",
-          "access": "SAMPLED",
-          "binding": 8,
-          "when": "clearcoat_enabled"
-        },
-        {
-          "image": "gbuffer_sheen",
-          "access": "SAMPLED",
-          "binding": 9,
-          "when": "sheen_enabled"
-        },
-        {
-          "image": "gbuffer_anisotropy",
-          "access": "SAMPLED",
-          "binding": 10,
-          "when": "anisotropy_enabled"
-        },
-        {
-          "buffer": "gpu_visible_draws",
-          "access": "STORAGE_READ",
-          "binding": 11
-        },
-        {
-          "image": "subsurface_diffuse",
-          "access": "STORAGE_READ",
-          "binding": 12,
-          "when": "subsurface_enabled"
-        },
-        {
-          "image": "ssgi_receiver",
-          "access": "SAMPLED",
-          "binding": 13
-        },
-        {
-          "image": "diffuse_volume_irradiance",
-          "access": "STORAGE_READ",
-          "binding": 14,
-          "when": "diffuse_volume_enabled"
-        }
-      ],
-      "writes": [
-        {
-          "image": "scene_pre_transmission",
-          "access": "STORAGE_WRITE",
-          "binding": 0
-        },
-        {
-          "image": "subsurface_diffuse",
-          "access": "STORAGE_WRITE",
-          "binding": 12,
-          "when": "subsurface_enabled"
-        }
-      ],
-      "execute": "pass.ssgi.composite"
     },
     {
       "name": "Subsurface.Gather",
@@ -5856,519 +5037,6 @@
         }
       ],
       "execute": "pass.subsurface.gather"
-    },
-    {
-      "name": "SSR.DepthBase",
-      "type": "compute",
-      "condition": "scene_rendering && ssr_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 0
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 1
-        }
-      ],
-      "writes": [
-        {
-          "image": "ssr_depth_pyramid",
-          "access": "STORAGE_WRITE",
-          "binding": 2,
-          "subresource": {
-            "base_mip": 0,
-            "mip_count": 1
-          }
-        }
-      ],
-      "execute": "pass.ssr.depth_base"
-    },
-    {
-      "name": "SSR.DepthMip.${i}",
-      "type": "compute",
-      "condition": "scene_rendering && ssr_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "ssr_depth_pyramid",
-          "access": "SAMPLED",
-          "binding": 0,
-          "subresource": {
-            "base_mip": "${i}",
-            "mip_count": 1
-          }
-        }
-      ],
-      "writes": [
-        {
-          "image": "ssr_depth_pyramid",
-          "access": "STORAGE_WRITE",
-          "binding": 1,
-          "subresource": {
-            "base_mip": "${i+1}",
-            "mip_count": 1
-          }
-        }
-      ],
-      "execute": "pass.ssr.depth_mip",
-      "repeat": {
-        "count_source": "ssr_depth_mip_pass_count"
-      }
-    },
-    {
-      "name": "SSR.Trace.Fullscreen",
-      "type": "compute",
-      "condition": "scene_rendering && ssr_enabled && !editor_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 0
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 1
-        },
-        {
-          "image": "gbuffer_normal",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "gbuffer_specular",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "ssr_depth_pyramid",
-          "access": "SAMPLED",
-          "binding": 4
-        },
-        {
-          "image": "hdr_pre_transmission",
-          "access": "SAMPLED",
-          "binding": 6,
-          "when": "!subsurface_enabled"
-        },
-        {
-          "image": "subsurface_color",
-          "access": "SAMPLED",
-          "binding": 6,
-          "when": "subsurface_enabled"
-        },
-        {
-          "image": "gbuffer_clearcoat",
-          "access": "SAMPLED",
-          "binding": 8,
-          "when": "clearcoat_enabled"
-        },
-        {
-          "image": "gbuffer_anisotropy",
-          "access": "SAMPLED",
-          "binding": 10,
-          "when": "anisotropy_enabled"
-        }
-      ],
-      "writes": [
-        {
-          "image": "ssr_raw",
-          "access": "STORAGE_WRITE",
-          "binding": 7
-        },
-        {
-          "image": "ssr_hit",
-          "access": "STORAGE_WRITE",
-          "binding": 9
-        }
-      ],
-      "execute": "pass.ssr.trace"
-    },
-    {
-      "name": "SSR.Trace.Editor",
-      "type": "compute",
-      "condition": "scene_rendering && ssr_enabled && editor_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 0
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 1
-        },
-        {
-          "image": "gbuffer_normal",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "gbuffer_specular",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "ssr_depth_pyramid",
-          "access": "SAMPLED",
-          "binding": 4
-        },
-        {
-          "image": "scene_pre_transmission",
-          "access": "SAMPLED",
-          "binding": 6,
-          "when": "!subsurface_enabled"
-        },
-        {
-          "image": "subsurface_color",
-          "access": "SAMPLED",
-          "binding": 6,
-          "when": "subsurface_enabled"
-        },
-        {
-          "image": "gbuffer_clearcoat",
-          "access": "SAMPLED",
-          "binding": 8,
-          "when": "clearcoat_enabled"
-        },
-        {
-          "image": "gbuffer_anisotropy",
-          "access": "SAMPLED",
-          "binding": 10,
-          "when": "anisotropy_enabled"
-        }
-      ],
-      "writes": [
-        {
-          "image": "ssr_raw",
-          "access": "STORAGE_WRITE",
-          "binding": 7
-        },
-        {
-          "image": "ssr_hit",
-          "access": "STORAGE_WRITE",
-          "binding": 9
-        }
-      ],
-      "execute": "pass.ssr.trace"
-    },
-    {
-      "name": "SSR.Temporal",
-      "type": "compute",
-      "condition": "scene_rendering && ssr_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "ssr_raw",
-          "access": "SAMPLED",
-          "binding": 0
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "gbuffer_normal",
-          "access": "SAMPLED",
-          "binding": 4
-        },
-        {
-          "buffer": "gpu_visible_draws",
-          "access": "STORAGE_READ",
-          "binding": 13
-        },
-        {
-          "buffer": "gpu_draw_instances",
-          "access": "STORAGE_READ",
-          "binding": 14
-        },
-        {
-          "image": "gbuffer_specular",
-          "access": "SAMPLED",
-          "binding": 15
-        },
-        {
-          "image": "gbuffer_clearcoat",
-          "access": "SAMPLED",
-          "binding": 16,
-          "when": "clearcoat_enabled"
-        },
-        {
-          "image": "gbuffer_anisotropy",
-          "access": "SAMPLED",
-          "binding": 19,
-          "when": "anisotropy_enabled"
-        },
-        {
-          "image": "ssr_hit",
-          "access": "SAMPLED",
-          "binding": 17
-        },
-        {
-          "buffer": "temporal_transform_history",
-          "access": "STORAGE_READ",
-          "binding": 18
-        }
-      ],
-      "writes": [
-        {
-          "image": "ssr_history_color",
-          "access": "STORAGE_WRITE",
-          "binding": 10
-        },
-        {
-          "image": "ssr_history_depth",
-          "access": "STORAGE_WRITE",
-          "binding": 11
-        },
-        {
-          "image": "ssr_history_identity",
-          "access": "STORAGE_WRITE",
-          "binding": 12
-        }
-      ],
-      "execute": "pass.ssr.temporal"
-    },
-    {
-      "name": "SSR.Composite.Fullscreen",
-      "type": "compute",
-      "condition": "scene_rendering && ssr_enabled && !editor_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "hdr_pre_transmission",
-          "access": "STORAGE_READ",
-          "binding": 0,
-          "when": "!subsurface_enabled"
-        },
-        {
-          "image": "subsurface_color",
-          "access": "STORAGE_READ",
-          "binding": 0,
-          "when": "subsurface_enabled"
-        },
-        {
-          "image": "ssr_history_color",
-          "access": "SAMPLED",
-          "binding": 1
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "gbuffer_albedo",
-          "access": "SAMPLED",
-          "binding": 4
-        },
-        {
-          "image": "gbuffer_specular",
-          "access": "SAMPLED",
-          "binding": 5
-        },
-        {
-          "image": "gbuffer_normal",
-          "access": "SAMPLED",
-          "binding": 6
-        },
-        {
-          "image": "gtao_visibility",
-          "access": "SAMPLED",
-          "binding": 7,
-          "when": "gtao_enabled"
-        },
-        {
-          "image": "gbuffer_clearcoat",
-          "access": "SAMPLED",
-          "binding": 10,
-          "when": "clearcoat_enabled"
-        },
-        {
-          "image": "gbuffer_sheen",
-          "access": "SAMPLED",
-          "binding": 11,
-          "when": "sheen_enabled"
-        },
-        {
-          "image": "gbuffer_anisotropy",
-          "access": "SAMPLED",
-          "binding": 12,
-          "when": "anisotropy_enabled"
-        },
-        {
-          "image": "diffuse_volume_irradiance",
-          "access": "STORAGE_READ",
-          "binding": 13,
-          "when": "diffuse_volume_enabled"
-        },
-        {
-          "image": "baked_lamp_irradiance",
-          "access": "STORAGE_READ",
-          "binding": 14,
-          "when": "baked_lamps_enabled"
-        },
-        {
-          "image": "baked_lamp_shadow",
-          "access": "STORAGE_READ",
-          "binding": 15,
-          "when": "baked_lamp_shadows_active"
-        }
-      ],
-      "writes": [
-        {
-          "image": "hdr_pre_transmission",
-          "access": "STORAGE_WRITE",
-          "binding": 0,
-          "when": "!subsurface_enabled"
-        },
-        {
-          "image": "subsurface_color",
-          "access": "STORAGE_WRITE",
-          "binding": 0,
-          "when": "subsurface_enabled"
-        }
-      ],
-      "execute": "pass.ssr.composite"
-    },
-    {
-      "name": "SSR.Composite.Editor",
-      "type": "compute",
-      "condition": "scene_rendering && ssr_enabled && editor_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "scene_pre_transmission",
-          "access": "STORAGE_READ",
-          "binding": 0,
-          "when": "!subsurface_enabled"
-        },
-        {
-          "image": "subsurface_color",
-          "access": "STORAGE_READ",
-          "binding": 0,
-          "when": "subsurface_enabled"
-        },
-        {
-          "image": "ssr_history_color",
-          "access": "SAMPLED",
-          "binding": 1
-        },
-        {
-          "image": "opaque_vbuffer",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "gbuffer_albedo",
-          "access": "SAMPLED",
-          "binding": 4
-        },
-        {
-          "image": "gbuffer_specular",
-          "access": "SAMPLED",
-          "binding": 5
-        },
-        {
-          "image": "gbuffer_normal",
-          "access": "SAMPLED",
-          "binding": 6
-        },
-        {
-          "image": "gtao_visibility",
-          "access": "SAMPLED",
-          "binding": 7,
-          "when": "gtao_enabled"
-        },
-        {
-          "image": "gbuffer_clearcoat",
-          "access": "SAMPLED",
-          "binding": 10,
-          "when": "clearcoat_enabled"
-        },
-        {
-          "image": "gbuffer_sheen",
-          "access": "SAMPLED",
-          "binding": 11,
-          "when": "sheen_enabled"
-        },
-        {
-          "image": "gbuffer_anisotropy",
-          "access": "SAMPLED",
-          "binding": 12,
-          "when": "anisotropy_enabled"
-        },
-        {
-          "image": "diffuse_volume_irradiance",
-          "access": "STORAGE_READ",
-          "binding": 13,
-          "when": "diffuse_volume_enabled"
-        },
-        {
-          "image": "baked_lamp_irradiance",
-          "access": "STORAGE_READ",
-          "binding": 14,
-          "when": "baked_lamps_enabled"
-        },
-        {
-          "image": "baked_lamp_shadow",
-          "access": "STORAGE_READ",
-          "binding": 15,
-          "when": "baked_lamp_shadows_active"
-        }
-      ],
-      "writes": [
-        {
-          "image": "scene_pre_transmission",
-          "access": "STORAGE_WRITE",
-          "binding": 0,
-          "when": "!subsurface_enabled"
-        },
-        {
-          "image": "subsurface_color",
-          "access": "STORAGE_WRITE",
-          "binding": 0,
-          "when": "subsurface_enabled"
-        }
-      ],
-      "execute": "pass.ssr.composite"
     },
     {
       "name": "Froxel.Inject",
@@ -10747,7 +9415,7 @@
     {
       "name": "Temporal.Resolve.Fullscreen",
       "type": "compute",
-      "condition": "scene_rendering && !editor_enabled && !fsr31_enabled",
+      "condition": "scene_rendering && !editor_enabled",
       "flags": [
         "NO_CULL"
       ],
@@ -10857,160 +9525,9 @@
       "execute": "pass.temporal.resolve"
     },
     {
-      "name": "FSR31.Prepare",
-      "type": "compute",
-      "condition": "scene_rendering && fsr31_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "hdr_scene_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "!editor_enabled"
-        },
-        {
-          "image": "scene_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "editor_enabled"
-        },
-        {
-          "image": "hdr_pre_transmission",
-          "access": "SAMPLED",
-          "binding": 1,
-          "when": "!subsurface_enabled && !editor_enabled"
-        },
-        {
-          "image": "subsurface_color",
-          "access": "SAMPLED",
-          "binding": 1,
-          "when": "subsurface_enabled"
-        },
-        {
-          "image": "scene_pre_transmission",
-          "access": "SAMPLED",
-          "binding": 1,
-          "when": "!subsurface_enabled && editor_enabled"
-        },
-        {
-          "image": "temporal_validity",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "opaque_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "transmission_vbuffer_depth",
-          "access": "SAMPLED",
-          "binding": 4,
-          "subresource": {
-            "base_layer": 0,
-            "layer_count": 1
-          },
-          "when": "transmission_pending"
-        }
-      ],
-      "writes": [
-        {
-          "image": "fsr31_depth",
-          "access": "STORAGE_WRITE",
-          "binding": 5
-        },
-        {
-          "image": "fsr31_reactive",
-          "access": "STORAGE_WRITE",
-          "binding": 6
-        },
-        {
-          "image": "fsr31_composition",
-          "access": "STORAGE_WRITE",
-          "binding": 7
-        }
-      ],
-      "execute": "pass.fsr31.prepare"
-    },
-    {
-      "name": "FSR31.Upscale",
-      "type": "compute",
-      "condition": "scene_rendering && fsr31_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "hdr_scene_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "!editor_enabled"
-        },
-        {
-          "image": "scene_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "editor_enabled"
-        },
-        {
-          "image": "fsr31_depth",
-          "access": "SAMPLED",
-          "binding": 1
-        },
-        {
-          "image": "temporal_motion",
-          "access": "SAMPLED",
-          "binding": 2
-        },
-        {
-          "image": "fsr31_reactive",
-          "access": "SAMPLED",
-          "binding": 3
-        },
-        {
-          "image": "fsr31_composition",
-          "access": "SAMPLED",
-          "binding": 4
-        }
-      ],
-      "writes": [
-        {
-          "image": "fsr31_output_color",
-          "access": "STORAGE_WRITE",
-          "binding": 5
-        }
-      ],
-      "execute": "pass.fsr31.upscale"
-    },
-    {
-      "name": "FSR31.Stabilize",
-      "type": "compute",
-      "condition": "scene_rendering && fsr31_enabled",
-      "flags": [
-        "NO_CULL"
-      ],
-      "reads": [
-        {
-          "image": "fsr31_reactive",
-          "access": "SAMPLED",
-          "binding": 1
-        }
-      ],
-      "writes": [
-        {
-          "image": "fsr31_output_color",
-          "access": "STORAGE_READ_WRITE",
-          "binding": 0
-        }
-      ],
-      "execute": "pass.fsr31.stabilize"
-    },
-    {
       "name": "Temporal.Resolve.Editor",
       "type": "compute",
-      "condition": "scene_rendering && editor_enabled && !fsr31_enabled",
+      "condition": "scene_rendering && editor_enabled",
       "flags": [
         "NO_CULL"
       ],
@@ -11130,14 +9647,7 @@
         {
           "image": "temporal_history_color",
           "access": "SAMPLED",
-          "binding": 0,
-          "when": "!fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "fsr31_enabled"
+          "binding": 0
         }
       ],
       "writes": [
@@ -11239,14 +9749,7 @@
         {
           "image": "temporal_history_color",
           "access": "SAMPLED",
-          "binding": 0,
-          "when": "!fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "fsr31_enabled"
+          "binding": 0
         },
         {
           "image": "temporal_motion",
@@ -11359,13 +9862,7 @@
           "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
-          "when": "!motion_blur_enabled && !fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "!motion_blur_enabled && fsr31_enabled"
+          "when": "!motion_blur_enabled"
         },
         {
           "image": "dof_coc",
@@ -11453,13 +9950,7 @@
           "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
-          "when": "!motion_blur_enabled && !fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "!motion_blur_enabled && fsr31_enabled"
+          "when": "!motion_blur_enabled"
         },
         {
           "image": "dof_coc",
@@ -11509,13 +10000,7 @@
           "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
-          "when": "!dof_enabled && !motion_blur_enabled && !fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "!dof_enabled && !motion_blur_enabled && fsr31_enabled"
+          "when": "!dof_enabled && !motion_blur_enabled"
         },
         {
           "image": "dof_composite",
@@ -11535,17 +10020,6 @@
           "image": "bloom_chain",
           "access": "STORAGE_WRITE",
           "binding": 1,
-          "when": "!fsr31_enabled",
-          "subresource": {
-            "base_mip": 0,
-            "mip_count": 1
-          }
-        },
-        {
-          "image": "fsr31_bloom_chain",
-          "access": "STORAGE_WRITE",
-          "binding": 1,
-          "when": "fsr31_enabled",
           "subresource": {
             "base_mip": 0,
             "mip_count": 1
@@ -11569,17 +10043,6 @@
           "image": "bloom_chain",
           "access": "SAMPLED",
           "binding": 0,
-          "when": "!fsr31_enabled",
-          "subresource": {
-            "base_mip": "${i}",
-            "mip_count": 1
-          }
-        },
-        {
-          "image": "fsr31_bloom_chain",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "fsr31_enabled",
           "subresource": {
             "base_mip": "${i}",
             "mip_count": 1
@@ -11591,17 +10054,6 @@
           "image": "bloom_chain",
           "access": "STORAGE_WRITE",
           "binding": 1,
-          "when": "!fsr31_enabled",
-          "subresource": {
-            "base_mip": "${i+1}",
-            "mip_count": 1
-          }
-        },
-        {
-          "image": "fsr31_bloom_chain",
-          "access": "STORAGE_WRITE",
-          "binding": 1,
-          "when": "fsr31_enabled",
           "subresource": {
             "base_mip": "${i+1}",
             "mip_count": 1
@@ -11626,17 +10078,6 @@
           "image": "bloom_chain",
           "access": "SAMPLED",
           "binding": 0,
-          "when": "!fsr31_enabled",
-          "subresource": {
-            "base_mip": "${i}",
-            "mip_count": 1
-          }
-        },
-        {
-          "image": "fsr31_bloom_chain",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "fsr31_enabled",
           "subresource": {
             "base_mip": "${i}",
             "mip_count": 1
@@ -11646,17 +10087,6 @@
           "image": "bloom_accum",
           "access": "SAMPLED",
           "binding": 2,
-          "when": "!fsr31_enabled",
-          "subresource": {
-            "base_mip": "${i+1}",
-            "mip_count": 1
-          }
-        },
-        {
-          "image": "fsr31_bloom_accum",
-          "access": "SAMPLED",
-          "binding": 2,
-          "when": "fsr31_enabled",
           "subresource": {
             "base_mip": "${i+1}",
             "mip_count": 1
@@ -11666,17 +10096,6 @@
           "image": "bloom_chain",
           "access": "SAMPLED",
           "binding": 3,
-          "when": "!fsr31_enabled",
-          "subresource": {
-            "base_mip": "${i+1}",
-            "mip_count": 1
-          }
-        },
-        {
-          "image": "fsr31_bloom_chain",
-          "access": "SAMPLED",
-          "binding": 3,
-          "when": "fsr31_enabled",
           "subresource": {
             "base_mip": "${i+1}",
             "mip_count": 1
@@ -11688,17 +10107,6 @@
           "image": "bloom_accum",
           "access": "STORAGE_WRITE",
           "binding": 1,
-          "when": "!fsr31_enabled",
-          "subresource": {
-            "base_mip": "${i}",
-            "mip_count": 1
-          }
-        },
-        {
-          "image": "fsr31_bloom_accum",
-          "access": "STORAGE_WRITE",
-          "binding": 1,
-          "when": "fsr31_enabled",
           "subresource": {
             "base_mip": "${i}",
             "mip_count": 1
@@ -11719,29 +10127,12 @@
           "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
-          "when": "!dof_enabled && !motion_blur_enabled && !fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "!dof_enabled && !motion_blur_enabled && fsr31_enabled"
+          "when": "!dof_enabled && !motion_blur_enabled"
         },
         {
           "image": "bloom_accum",
           "access": "SAMPLED",
           "binding": 2,
-          "when": "!fsr31_enabled",
-          "subresource": {
-            "base_mip": 0,
-            "mip_count": 1
-          }
-        },
-        {
-          "image": "fsr31_bloom_accum",
-          "access": "SAMPLED",
-          "binding": 2,
-          "when": "fsr31_enabled",
           "subresource": {
             "base_mip": 0,
             "mip_count": 1
@@ -11764,14 +10155,7 @@
         {
           "image": "bloom_combined",
           "access": "STORAGE_WRITE",
-          "binding": 1,
-          "when": "!fsr31_enabled"
-        },
-        {
-          "image": "fsr31_bloom_combined",
-          "access": "STORAGE_WRITE",
-          "binding": 1,
-          "when": "fsr31_enabled"
+          "binding": 1
         }
       ],
       "execute": "pass.bloom.combine"
@@ -11786,15 +10170,7 @@
           "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
-          "array_index": 0,
-          "when": "!fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "array_index": 0,
-          "when": "fsr31_enabled"
+          "array_index": 0
         },
         {
           "buffer": "exposure_state",
@@ -11810,17 +10186,7 @@
             "base_mip": 0,
             "mip_count": 1
           },
-          "when": "bloom_enabled && !fsr31_enabled"
-        },
-        {
-          "image": "fsr31_bloom_combined",
-          "access": "SAMPLED",
-          "binding": 2,
-          "subresource": {
-            "base_mip": 0,
-            "mip_count": 1
-          },
-          "when": "bloom_enabled && fsr31_enabled"
+          "when": "bloom_enabled"
         },
         {
           "image": "dof_composite",
@@ -11856,15 +10222,7 @@
           "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
-          "array_index": 0,
-          "when": "!fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "array_index": 0,
-          "when": "fsr31_enabled"
+          "array_index": 0
         },
         {
           "buffer": "exposure_state",
@@ -11880,17 +10238,7 @@
             "base_mip": 0,
             "mip_count": 1
           },
-          "when": "bloom_enabled && !fsr31_enabled"
-        },
-        {
-          "image": "fsr31_bloom_combined",
-          "access": "SAMPLED",
-          "binding": 2,
-          "subresource": {
-            "base_mip": 0,
-            "mip_count": 1
-          },
-          "when": "bloom_enabled && fsr31_enabled"
+          "when": "bloom_enabled"
         },
         {
           "image": "dof_composite",
@@ -11932,15 +10280,7 @@
           "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
-          "array_index": 0,
-          "when": "!fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "array_index": 0,
-          "when": "fsr31_enabled"
+          "array_index": 0
         },
         {
           "buffer": "exposure_state",
@@ -11956,17 +10296,7 @@
             "base_mip": 0,
             "mip_count": 1
           },
-          "when": "bloom_enabled && !fsr31_enabled"
-        },
-        {
-          "image": "fsr31_bloom_combined",
-          "access": "SAMPLED",
-          "binding": 2,
-          "subresource": {
-            "base_mip": 0,
-            "mip_count": 1
-          },
-          "when": "bloom_enabled && fsr31_enabled"
+          "when": "bloom_enabled"
         }
       ],
       "attachments": {
@@ -11990,15 +10320,7 @@
           "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
-          "array_index": 0,
-          "when": "!fsr31_enabled"
-        },
-        {
-          "image": "fsr31_output_color",
-          "access": "SAMPLED",
-          "binding": 0,
-          "array_index": 0,
-          "when": "fsr31_enabled"
+          "array_index": 0
         },
         {
           "buffer": "exposure_state",
@@ -12014,17 +10336,7 @@
             "base_mip": 0,
             "mip_count": 1
           },
-          "when": "bloom_enabled && !fsr31_enabled"
-        },
-        {
-          "image": "fsr31_bloom_combined",
-          "access": "SAMPLED",
-          "binding": 2,
-          "subresource": {
-            "base_mip": 0,
-            "mip_count": 1
-          },
-          "when": "bloom_enabled && fsr31_enabled"
+          "when": "bloom_enabled"
         },
         {
           "image": "post_display_linear_editor",

@@ -206,9 +206,9 @@ def main() -> None:
         raise AssertionError("temporal DoF case did not enable TAA")
     if len(captures(runs["taa"], "dof_color")) != 2 or len(captures(runs["taa"], "dof_coc")) != 2:
         raise AssertionError("temporal DoF case requires two color and CoC frames")
-    for name, upscaler, scale in (("spatial", "spatial", 0.666666667),):
+    for name, scale in (("spatial", 0.666666667),):
         config = report(runs[name])["effective_config"]
-        if config["upscaler"] != upscaler or abs(config["render_scale"] - scale) > 1e-5:
+        if abs(config["render_scale"] - scale) > 1e-5:
             raise AssertionError(f"{name} DoF reconstruction mode was not realized")
         color, color_path = capture(runs[name], "dof_color")
         coc_item, coc_path = capture(runs[name], "dof_coc")

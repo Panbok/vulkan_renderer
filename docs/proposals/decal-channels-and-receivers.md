@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-07
+updated: 2026-10-12
 authority: proposal
 ---
 
@@ -22,7 +22,7 @@ decision 3).
 - Mesh decals follow their glTF alpha mode. Bistro's three `BLEND` decal
   materials (`LMBR_000005f_Decals`, `LMBR_0000060_Decal_Bottomdirt`,
   `LMBR_0000061_Decal_Crack`), 381 triangles on three nodes, draw forward in
-  `World.Blend` after SSR, fog and transmission on the desktop pipeline.
+  `World.Blend` after fog and transmission on the desktop pipeline.
 - Project packaging does not lower or package a material path inside a
   component, for decals and brush faces alike.
 

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-06
+updated: 2026-10-12
 authority: proposal
 ---
 # Meshlet cluster culling
@@ -153,11 +153,12 @@ the extra draws cost more in the camera, cascade and culling passes than local
 shadows saved. At this granularity per-draw cost, not submitted triangles,
 bounds the geometry passes on M1 Pro.
 
-Chunking also exposed a contract: deferred specular antialiasing, SSR, SSGI and
+Chunking also exposed a contract: deferred specular antialiasing and
 subsurface treat "neighbor has the same visible row" as "same surface" when
-estimating normal variance (on Vulkan `deferred.slang`, `ssgi.slang` and
-`subsurface.slang`; the Metal copies were removed with the desktop
-pipeline). Chunk seams follow creases, so those passes lost
+estimating normal variance (on Vulkan `deferred.slang` and `subsurface.slang`;
+the Metal copies were removed with the desktop pipeline). SSR and SSGI, both
+removed on 2026-10-12, shared the contract at the time. Chunk seams follow
+creases, so those passes lost
 their variance there and final color changed in about 3% of pixels of a Bistro
 night view. Any finer-than-range draw unit must keep a surface identity those
 passes can compare.

@@ -4,7 +4,7 @@ updated: 2026-10-12
 authority: adr
 ---
 
-# ADR-062: Layered clearcoat with coat-priority SSR
+# ADR-062: Layered clearcoat
 
 ## Status
 
@@ -17,8 +17,7 @@ evidence below comes from the Metal desktop implementation, removed on
 ## Context
 
 A transparent dielectric coat has its own normal and roughness. Sharing the
-base normal loses that distinction, while tracing both specular lobes would
-exceed the accepted single-ray SSR budget.
+base normal loses that distinction.
 
 ## Decision
 
@@ -42,11 +41,9 @@ compensated correlated Smith GGX. Prepare its directional DFG reflectance once.
 Base transmission is `1 - factor * coat_reflectance`. Multiply base diffuse,
 specular, emission and transmitted radiance by that value, then add the factor
 weighted coat specular. Each direct lobe uses its own normal and light cosine.
-Opaque indirect coat lighting and SSR probe removal also use the coat normal for
-GTAO cone occlusion, decoding bent direction against that normal and using the
-packed coat roughness. SSR's incoming history uses filtered coat roughness.
-This keeps probe removal equal to the term deferred lighting actually added.
-Deferred, forward and transmission lighting traverse each active punctual and
+Opaque indirect coat lighting also uses the coat normal for GTAO cone
+occlusion, decoding bent direction against that normal and using the packed
+coat roughness. Deferred, forward and transmission lighting traverse each active punctual and
 rectangle list once for the base, coat and sheen. Vulkan has one punctual
 helper and one rectangle helper for all three passes; transmission skips the
 base diffuse lobe on fully transmissive surfaces outside diagnostic views.
@@ -66,26 +63,10 @@ and split-sum IBL remain approximations for strongly tilted normals.
 This retains ADR-053's directional approximation and is not an exact reciprocal
 multiple-scattering layered BSDF. Zero factor takes the existing base path.
 
-Coated opaque pixels use the existing SSR ray and history for the coat normal
-and roughness: since 2026-10-11 the ray samples the isotropic coat lobe's
-visible normals at the filtered coat roughness
-([ADR-055](055-screen-space-reflections.md)). A valid hit replaces only coat
-environment specular; the base retains probes. Misses retain both environment
-lobes. Uncoated pixels retain base SSR. The existing roughness cutoff,
-traversal and history budgets stay in force. Temporal validation uses the
-selected lobe's normal and roughness. A material or texture publication keeps
-SSR history (ADR-055). History from a different base/coat selection passes
-only where the selected normal still matches; incoming radiance along the
-same mirror direction does not depend on the lobe, and the current-sample
-bounds limit the roughness-dependent difference. On 2026-10-12 the
-`ssr_shaded_layers` case, whose fixture has coated SSR receivers, ran on
-native Vulkan (RX 6700 XT, Release, dirty tree, local) and passed its only
-assertion, no invalid G-buffer resolve; no check yet compares coat-lobe SSR
-output with a reference.
-
-SSGI's source includes the source surface's layered direct lighting and
-attenuated emission. Its receiver composite attenuates only the receiver's
-base diffuse response; SSGI does not add a coat lobe at that receiver.
+The coat lobe reads local probes and the global environment like the base
+lobe, with the coat normal and roughness. Coat-priority SSR, which traced the
+coat lobe on coated pixels, was removed with SSR
+([ADR-055](055-screen-space-reflections.md)).
 
 ## Ownership and lifetime
 
@@ -97,8 +78,8 @@ publication. The bake texture store retains decoded images for the bake lifetime
 
 The graph owns a full-resolution `R8G8B8A8_UNORM` PER_IMAGE image only when
 the opaque/cutout source-material aggregate contains clearcoat: factor, roughness
-and octahedral normal XY. Resolve writes it; deferred lighting,
-SSGI composite, and SSR trace/temporal/composite read it. The plane adds no
+and octahedral normal XY. Resolve writes it; deferred lighting reads it. The
+plane adds no
 resolve pass; deferred lighting adds its layered pass, described below.
 At 1280×720 this adds 3.515625 MiB per image, 10.546875 MiB for three images or
 28.125 MiB for eight, before native alignment. Vulkan uses one sampled and one
@@ -129,22 +110,20 @@ also vary between identical runs.
 ## Consequences
 
 Coat highlights can move independently of the base, and one additional coat
-lookup/allocation is needed on coated surfaces. Coated pixels spend SSR on one
-lobe; base screen-space reflections are deliberately unavailable there.
+lookup/allocation is needed on coated surfaces.
 Coat normal/roughness maps are independent and do not use the base map's paired
 normal-variance roughness recipe. The baker retains its existing bounded
 caustic estimator and first-diffuse-receiver policy.
 
 ## Alternatives considered
 
-Tracing both layers would need more rays and history storage. Reusing the base
-normal would lose authored coat detail. Per-light Schlick base attenuation would
+Reusing the base normal would lose authored coat detail. Per-light Schlick base attenuation would
 conflict with the existing integrated-energy allocation.
 
 ## Revisit when
 
 Assets require transformed or alternate UV sets, custom samplers, coupled coat
-mip filtering, two-lobe SSR, or a reciprocal layered transport model.
+mip filtering, or a reciprocal layered transport model.
 
 ## Implementation
 
@@ -155,8 +134,9 @@ mip filtering, two-lobe SSR, or a reciprocal layered transport model.
 
 ## Verification
 
-The production Release wrapper and actual Vulkan SPIR-V reflection validate all
-four resolve variants, deferred, SSR trace/temporal/composite and SSGI composite.
+The production Release wrapper and actual Vulkan SPIR-V reflection validated all
+four resolve variants and deferred lighting, together with the SSR and SSGI
+modules since removed.
 Material and root offsets match independently pinned native layouts.
 
 On the Metal desktop implementation, a 480×480 unit-environment capture
@@ -169,9 +149,9 @@ energy, tilted/opposed normals and thin/thick glass event classification.
 
 On the same implementation, the 512×384 material fixture checked factor and
 roughness response, independent coat normals and green light through coated
-glass. A floor with base roughness 1 and coat roughness .04 produced 682 SSR
-hits, including 33 red-emitter hits inside the floor region; its base is
-ineligible for SSR.
+glass. While SSR was still in the frame, a floor with base roughness 1 and coat
+roughness .04 produced 682 SSR hits, including 33 red-emitter hits inside the
+floor region; its base was ineligible for SSR.
 
 A coated nested-glass bake completes 20,000 emitted photons with 1,605 caustic
 deposits, 100 valid probes and 32 valid cells. All 4,032 stored SH components are

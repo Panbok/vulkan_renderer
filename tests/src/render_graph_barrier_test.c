@@ -2109,10 +2109,9 @@ vkr_internal void test_tiled_graph_topology(void) {
 vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   enum {
-    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 412u,
-    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 399u,
-    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 398u,
-    VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT = 428u,
+    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 378u,
+    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 372u,
+    VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT = 394u,
   };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -2197,10 +2196,6 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .bloom_mip_count = VKR_BLOOM_MAX_MIP_COUNT,
       .gtao_enabled = true_v,
       .gtao_depth_mip_count = VKR_GTAO_MAX_DEPTH_MIP_COUNT,
-      .ssr_enabled = true_v,
-      .ssr_depth_mip_count = 14u,
-      .ssgi_enabled = true_v,
-      .ssgi_depth_mip_count = 14u,
       .subsurface_enabled = true_v,
       .fog_enabled = true_v,
       .froxel_fog_enabled = true_v,
@@ -2273,17 +2268,6 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   frame.shadow_cascade_dynamic_render_mask = 0u;
   frame.shadow_cascade_dynamic_view_count = 0u;
 
-  frame.hzb_build_enabled = false_v;
-  frame.fsr31_enabled = true_v;
-  assert(vkr_rg_begin_frame(runtime, &frame));
-  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
-  assert(runtime->passes.length == VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT);
-  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
-  assert(vkr_rg_compile_schedule(runtime));
-  vkr_rg_end_frame(runtime);
-
-  frame.fsr31_enabled = false_v;
-  frame.hzb_build_enabled = true_v;
   frame.transmission_compact_enabled = true_v;
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
@@ -2304,8 +2288,6 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   frame.editor_image_width = 1280u;
   frame.editor_image_height = 720u;
   frame.hzb_reduce_pass_count = 10u;
-  frame.ssr_depth_mip_count = 10u;
-  frame.ssgi_depth_mip_count = 10u;
   frame.bloom_mip_count = 7u;
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));

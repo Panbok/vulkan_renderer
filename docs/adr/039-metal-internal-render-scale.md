@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -22,11 +22,11 @@ Scene scale that changes between frames.
 
 Accept a finite Metal Scene scale in `(0,1]`; zero selects unit scale for API
 callers. `vkr_renderer_set_render_scale` changes it between frames within the
-range `vkr_renderer_render_scale_range` reports. Vulkan's spatial path rejects
-non-unit scale, so the sample runtime renders a Vulkan Scene without temporal
-upscaling at unit scale and keeps the stored preference for when FSR is
-enabled again. Vulkan FSR 3.1, accepted separately in ADR-052, accepts a live
-scale in `[1/3, 1]`. Keep native physical output and UI extent separate from
+range `vkr_renderer_render_scale_range` reports. Only the Metal tiled pipeline
+scales the Scene. Vulkan rejects non-unit scale and always renders the Scene at
+unit scale; Vulkan FSR 3.1, which scaled it temporally, was removed
+([ADR-052](052-vulkan-fsr31-upscaling.md)). The default render scale is 1.0 on
+both backends. Keep native physical output and UI extent separate from
 the Scene presentation extent: whole target in direct mode or the dock-owned
 panel in editor mode.
 
@@ -65,4 +65,3 @@ measurements justify a different spatial filter.
 [`vkr_viewport.c`](../../renderer/src/vkr_viewport.c),
 [`vkr_metal_packet_graph.inc`](../../renderer/src/metal/internal/vkr_metal_packet_graph.inc), and
 [`tonemap.metal`](../../renderer/src/shaders/metal/msl/post/tonemap.metal).
-Vulkan FSR scale selection and output extent use [ADR-052](052-vulkan-fsr31-upscaling.md).

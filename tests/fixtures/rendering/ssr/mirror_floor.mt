@@ -1,9 +1,0 @@
-name=ssr_mirror_floor
-type=pbr
-base_color=0.10,0.10,0.10,1.0
-metallic=0.75
-roughness=0.0
-alpha_mode=opaque
-double_sided=true
-shader=shader.pbr.world
-pipeline=world

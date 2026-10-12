@@ -286,7 +286,7 @@ directories (ADR-078).
 Settings > Graphics has a left tab rail for Display, Quality, Lighting, Effects,
 and Color and a clipped, scrollable right content area. The editor emits typed
 `VkrGraphicsSettingsRequest` values; the sample runtime validates and owns their
-application. HDR, temporal upscaling and texture resolution changes
+application. HDR and texture resolution changes
 show a restart-required notice; render scale and dynamic resolution do too unless the renderer's live
 range covers them, and vsync only when the renderer refuses the present mode,
 since it switches between frames (ADR-027). Other controls apply live and
@@ -497,7 +497,7 @@ Frame-input version 48 contains frame metadata, camera/lighting/settings and typ
 world, shadow, sky, baked diffuse-volume, rectangle-light, analytic-fog and
 froxel-fog, UI, editor, picking and debug payloads. Supplied world-text and UI
 streams are authoritative. `vkr_frame_input_validate()` checks structural input.
-Private `VkrPreparedFrame` holds derived temporal, exposure, bloom, GTAO, SSR,
+Private `VkrPreparedFrame` holds derived temporal, exposure, bloom, GTAO,
 sky, analytic-fog and froxel-fog values alongside the borrowed input; those derived
 fields and text mutations are absent from the public frame input.
 
@@ -729,9 +729,8 @@ and barriers.
 HZB/transmission/bloom/GTAO mip counts and GTAO constants once from the prepared
 frame. Native formats, resource instances and history/completion selection remain
 with each backend. Both native registries load one executor catalog from
-`vkr_render_graph_frame.c`, so every authored operation, including the
-conditional Vulkan FSR 3.1 declarations, resolves to the same executor id and
-pass type on either backend. Disabled declarations do not block startup. Both
+`vkr_render_graph_frame.c`, so every authored operation resolves to the
+same executor id and pass type on either backend. Disabled declarations do not block startup. Both
 classes draw the world from the same GPU-driven culling; no CPU-recorded
 forward world path remains.
 
@@ -833,17 +832,13 @@ post controls and the temporal consumer. The main dataflow is:
    them ([ADR-104](adr/104-desktop-baked-lamps.md)); evaluate GTAO; sample a
    bound sparse diffuse volume at half resolution, upsample it with an exact
    fallback for unmatched pixels ([ADR-054](adr/054-baked-diffuse-volumes.md)),
-   and compute HDR lighting. When enabled,
-   SSGI writes an isolated direct/emissive source, traces and filters its
-   half-resolution diffuse residual, and composites it outside pixels the
-   volume covers. Optional profiled surface diffusion gathers the diffuse source before
-   opaque SSR. The graph then traces and composites opaque SSR,
-   injects/reprojects local froxel scattering, integrates the current-camera
+   and compute HDR lighting. Optional profiled surface diffusion gathers the
+   diffuse source. The graph then injects/reprojects local froxel scattering, integrates the current-camera
    froxel volume and applies it, then applies analytic fog before the opaque
    transmission pyramid. Transmission and ordinary blend sample the current
    integrated volume when froxel fog is enabled. Shade transmission from deepest
    to nearest, resolve requested picking, then draw ordinary blend.
-4. Reconstruct temporal Scene HDR through portable TAA or FSR 3.1.
+4. Reconstruct temporal Scene HDR through portable TAA.
 5. Meter exposure, produce/combine bloom, tonemap/FXAA and compose native UI.
 
 Optional profiled surface diffusion uses eight scene-authored RGB distance
@@ -905,8 +900,8 @@ production policy; a fifth layer is diagnostic. See
 
 Clearcoat adds independent linear factor/roughness/normal maps,
 a layered GGX response and one graph-owned RGBA8 G-buffer image per target
-image. Coated opaque pixels select the coat lobe for the SSR ray/history;
-base reflections retain probes. [ADR-062](adr/062-layered-clearcoat.md) records
+image. The coat and base lobes both reflect the global environment and
+reflection probes. [ADR-062](adr/062-layered-clearcoat.md) records
 the accepted scope and native evidence limits. Coated diffuse, metal and glass
 share the directional energy allocation in runtime and the offline baker.
 
@@ -916,8 +911,7 @@ Anisotropic base GGX reflection retains authored tangent direction and adds
 linear direction/strength maps, 6 MiB shared array tables and one RGBA8 axis/
 strength G-buffer per target image. Runtime punctual/rectangle and offline
 reflection share the material convention. Probe IBL keeps a scalar-filter
-approximation, while one-ray SSR samples the anisotropic lobe; active
-anisotropy with refraction is rejected.
+approximation; active anisotropy with refraction is rejected.
 [ADR-064](adr/064-anisotropic-ggx-reflection.md) owns the encoding, input subset,
 resource lifetime and measured fit limits.
 
@@ -944,53 +938,11 @@ same for lightmapped and volume-lit draws.
 
 Thin-sheet diffuse transmission partitions residual base diffuse into front
 reflection and tinted direct backlighting. Material-wide strength/color use
-existing visible-draw/material tables in deferred lighting and SSGI composite;
-there are no new graph images. Opaque/cutout sheets exclude refraction and volume
+existing visible-draw/material tables in deferred lighting; there are no new
+graph images. Opaque/cutout sheets exclude refraction and volume
 thickness. The offline baker samples the opposite Lambert hemisphere without
 changing media. [ADR-065](adr/065-thin-sheet-diffuse-transmission.md) owns the
 runtime indirect-light approximation, shadow policy and evidence limits.
-
-Optional SSGI traces one cosine-weighted ray per nearest covered half-resolution
-receiver from a deterministic 256-phase Halton(2, 3) sequence with a per-pixel
-rotation, starting at the receiver's hierarchy leaf. Its direct source
-contains layered punctual/rectangle diffuse radiance and emission, excluding
-camera-directed specular, clearcoat and sheen highlights, environment, probes,
-baked diffuse, SSR, fog, and post effects. Depth-base selection writes one
-half-resolution RG32UI receiver image containing bit-preserved positive depth
-and an exact local source offset. Trace, temporal neighbors and composite reuse
-that selection, including the nearest-covered odd trailing footprint policy. A 3×3 tangent-plane/normal raw
-filter includes valid misses as zero samples, and excludes exhausted rays,
-before temporal filtering. It scales each raw sample down to the larger of
-four times its reference (the larger of the other samples' mean and the
-receiver's history) and the radiance that adds a quarter of displayed
-luminance, so a lone hit on a small emitter cannot splat. Workgroup-memory
-tiles share the neighbours' data
-within each 8×8 group in the temporal filter and the composite. Its tolerance scales
-the separation the centre's tangent plane predicts at each neighbour, as
-SSR's ray reuse does. SSGI selects the color/depth/identity tuple only when it matches the
-motion-transform instance and submit/frame/scene tuple, content signature,
-graph revision and retained shadow state; texture uploads, asset
-publications, point-light table changes and the resident local shadows'
-views and strengths keep it, since its signature hashes only the
-local-shadow map size and face budget. The shared predecessor is the
-immediately preceding frame with or without final TAA, and existing native
-queue dependencies admit it while in flight; no other tuple is eligible.
-Unjittered motion gains the producer's
-previous-minus-current raster jitter on the raw grid. FSR uses its active phase
-count, and no-TAA leaves zero jitter offsets.
-Four bilinear history taps independently validate identity and the depth the
-receiver's tangent plane predicts, then resolve RGB with bilinear ×
-history-confidence weight, retained in proportion to the accepted support. This adds nine history texture
-accesses over the former single tap, with no new SSGI images or rays. When no
-compatible predecessor exists, SSGI uses current radiance without waiting.
-Composite applies the diffuse residual before SSR and skips the pixels deferred
-lighting lit from the baked volume, read from its volume image. It remains optional and disabled by default; [ADR-060](adr/060-screen-space-diffuse-indirect-lighting.md)
-owns its storage and evidence limits. Release emission and Bistro runs plus a
-focused Windows Vulkan synchronization-validation run pass on RX 6700 XT after
-correcting descriptor-family use, AMD trace-loop control and composite frame-root
-initialization. The 2026-10-11 revision and its 2026-10-12 changes pass CPU
-and SPIR-V checks and local Release Bistro runs on the same GPU, which are
-not authoritative.
 
 Offline texture mips use linear-light sRGB color filtering and area-weighted
 footprints that retain odd source edges. Alpha and non-sRGB channels remain
@@ -1137,102 +1089,28 @@ occlusion remains active. Invalid or uncovered cells keep the global/probe diffu
 fallback. [ADR-054](adr/054-baked-diffuse-volumes.md) owns offline room detection,
 artifact layout, lifetime and evidence limits.
 
-Opaque SSR runs before transmission under
-[ADR-055](adr/055-screen-space-reflections.md). Each source pixel owns one ray;
-the current-frame depth hierarchy still begins at floor-half extent, with
-full-resolution leaves and a 48-decision limit. A mirror receiver traces its
-mirror ray; a rougher one samples its coat or anisotropic base GGX lobe's
-visible normals from the 256-phase Halton(2, 3) sequence SSGI uses. Trace
-writes full-source incoming radiance and an integer ray record holding a hit
-or the MISS or UNKNOWN (out of decisions) state with the ray's pdf. Temporal
-resolves a rough receiver from its own ray and eight rays on a rotated
-spiral of 1 to 3 pixels, weighted by the receiver plane and by the
-receiver's GGX value over each ray's pdf; mirrors use their own ray. Among
-rays of the pixel's own draw, the hit supplying the largest weighted RGB
-contribution is reprojected with the current and selected producer's camera
-and instance transforms, through a point blended from the virtual image
-toward the receiver as roughness rises. The motion delta preserves the
-receiver's offset from a neighboring trace sample. Coverage breaks
-equal-radiance ties. This prevents dark geometry from owning history whose
-light comes from a neighboring lamp. Thin geometry and missing current
-samples can still shimmer before stationary accumulation.
-
-History taps validate the transported receiver plane's depth at each tap,
-the selected normal and, only for moved instances, receiver and
-reflected-instance identities; the reflected-hit candidate also checks
-virtual depth. Below lobe roughness 0.4, accepted inner taps give a 12-tap
-Catmull-Rom (the 4×4 footprint without corners) clamped to the inner taps'
-range; otherwise, and for rougher receivers, accepted bilinear taps
-resolve. Each receiver fetches its first candidate once, and below half
-reflected-hit support the receiver's surface motion is tried with a tight
-clamp for glossy receivers. Retention scales with the accepted support.
-Without a current hit, a mirror's unknown ray or a glossy lobe whose misses
-the history's coverage made plausible holds history at half coverage per
-frame for at most four frames; a rough lobe counts the frame as a zero
-sample at the ordinary retention, so its coverage converges to its hit
-share. A mirror's known miss and misses that refute a covered lobe return
-to probes at once. Curved surfaces retain a tangent-plane approximation.
-
-Full-resolution history stores incoming light. Composite applies the current
-receiver's BRDF, indirect-specular GTAO, selected coat or base sheen/anisotropy
-response once, while removing the exact current probe contribution, and
-fades coverage to zero over the 0.15 of roughness below the cutoff. SSR and
-SSGI history survive texture uploads, asset publications, pending assets,
-fog changes and changes of the camera-ranked point-light table, which their
-signatures leave out; the scene generation, content signature, graph revision,
-temporal resets and image size invalidate it, and
-`post.screen_history.state` reports the selection every frame. Raw and
-history radiance store finite values only, saturated at 65504.
-
-The graph owns full-source RGBA16F raw light and RGBA32_UINT hit images; source
-pixel ownership replaces the former receiver-coordinate image. RGBA32F geometry
-history retains receiver/virtual depths and the octahedral selected view normal.
-RGBA32_UINT identity history retains receiver/hit index-generation pairs.
-Full-resolution tracing adds 42.1875 MiB over reflected-hit SSR at source
-1280×720 with three frame slots, or 112.5 MiB with eight, below the approved
-64/169 MiB limits. Including the earlier history expansion, the total increase
-is 140.625/316.40625 MiB, excluding alignment and resize overlap.
-A 128-byte camera record borrows the exact selected transform producer, the
-immediately preceding frame with or without final TAA; existing
-waits/barriers and reader retirement remain. The depth history's only
-reader moves it from `GENERAL` to the sampled layout, and a capture copy
-returns its image to the graph layout.
-`ssr_reflection` capture version 6 identifies full-resolution incoming
-radiance with the lobe's hit share; `ssr_raw` version 3 holds one lobe sample.
-The Bistro SSR cases run on Vulkan, five of them at `render_scale` 1, and
-the moving-emitter case runs over a mirror floor. Local Release runs on an
-RX 6700 XT (2026-10-12, dirty tree, not authoritative) pass them and their
-checkers, and API validation reports no message; there `SSR.Temporal` measures
-about twice its time before the 2026-10-11 rework, 1.5 ms at 1280×720
-([ADR-055](adr/055-screen-space-reflections.md)).
-
-SSR-enabled scenes wait 128 unchanged
-submitted frames before portable TAA's or FSR's following pass begins
-128-sample static accumulation, which continues from the ordinary history's
-effective sample count. Portable TAA caps ordinary history retention at
-90% during settling, including after camera movement stops; its former stationary
-99% boost could prolong reflection trails. This uses the existing TAA root word
-for an explicit history mode, with unchanged image storage and texture reads.
-SSR-off retention, the checked static integral and FSR remain unchanged.
-The [cap evidence](../assets/verification/renderer-features/ssr-taa-settling-cap.txt)
-shows faster convergence and increased shimmer before convergence on the
-removed Metal desktop implementation. Current reconstruction continues during
-settling.
-The selected producer's CPU metadata owns the counter; failed history/input
-equality resets it. SSR history pool ownership and image count stay fixed.
-The earlier TAA-cap evidence and the reflected-hit evidence are separated in
-[ADR-055](adr/055-screen-space-reflections.md). Shader compilation does not
-establish Vulkan output.
+Screen-space reflections, screen-space diffuse indirect lighting and FSR 3.1
+were removed from the desktop pipeline on 2026-10-12
+([ADR-055](adr/055-screen-space-reflections.md),
+[ADR-060](adr/060-screen-space-diffuse-indirect-lighting.md),
+[ADR-052](adr/052-vulkan-fsr31-upscaling.md)). Specular indirect light comes
+from the global environment and box-projected reflection probes on both
+lobes of a coated material, and diffuse indirect light from lightmaps,
+diffuse volumes and the environment. Portable TAA keeps only its ordinary
+and static-accumulation modes
+([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
+Planar water reflections and DDGI-style volume updates are proposed work
+([Short-history rendering](proposals/short-history-rendering.md)).
 
 Scenes may author analytic height fog. Frame preparation uploads one 48-byte
 record per frame slot; a zero record bypasses fog. Fog in-scatters its authored
 constant colour or, with sky lighting and a published atmosphere, the sun
 through a Henyey-Greenstein lobe plus the sky light's average radiance. The in-place opaque/sky pass
-runs after SSR and before the opaque transmission pyramid, and also applies
+runs after deferred lighting and froxel fog and before the opaque transmission pyramid, and also applies
 atmospheric aerial perspective before fog. Transmission fogs only
 new local lobes over already-fogged ordered feedback, and blend retains alpha.
 Fog changes invalidate normal temporal content and request a scene-change
-reset; SSR's own signature ignores fog. The tiled pipeline
+reset. The tiled pipeline
 applies the same fog in `Tiled.Atmosphere` and its blend draws (ADR-087).
 [ADR-057](adr/057-analytic-height-fog.md) owns the constants and composition;
 native Vulkan fog output is not recorded.
@@ -1296,7 +1174,7 @@ retain their completed value exactly. Sample age uses the existing depth-history
 spare channel, with no additional images. Retained shadow images converge to a
 common submitted projection so cached per-image fits cannot prevent temporal
 convergence after camera movement. The G-buffer writes
-sky rotation motion for portable TAA and FSR. Completed history remains
+sky rotation motion for portable TAA. Completed history remains
 scene-linear. It is stored at the frame's whole-stop pre-exposure, and each
 consumer rescales it exactly when that changes
 ([ADR-081](adr/081-physical-night-sky.md)).
@@ -1308,7 +1186,7 @@ limit, so physical night scenes are reachable. Exposure, bloom and GTAO have ind
 basis and horizon signs follow view reconstruction. RGBA8 outputs carry world
 bent normals and visibility: global/probe diffuse uses bent sampling and
 albedo-aware multi-bounce compensation, while baked volumes retain scalar AO.
-A derived visibility cone occludes indirect specular, including SSR replacement.
+A derived visibility cone occludes indirect specular.
 Direct-light visibility remains shadow-owned. Direct lighting and the IBL PDF share the unclipped supported GGX lobe.
 See [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)
 and [ADR-042](adr/042-scene-linear-post-processing.md).
@@ -1336,11 +1214,11 @@ harness cases default to zero. A shared, neighborhood-limited sharpening filter
 operates on tone-mapped linear Scene RGB in the existing presentation draw, after
 FXAA when the desktop pipeline enables it. FXAA reuses its samples and
 attenuates sharpening where its subpixel blend is strongest. UI, editor recomposition, diagnostic views and
-temporal histories are excluded. FSR's SDK sharpener remains disabled.
+temporal histories are excluded.
 When FXAA or sharpening filters the final draw, an output-size RGBA16F
 display-linear image is prepared first, so the display transform runs once per
 pixel rather than per filter sample. FXAA filters only desktop frames without
-temporal reconstruction: portable TAA and FSR frames omit it, and the tiled
+temporal reconstruction: portable TAA frames omit it, and the tiled
 pipeline draws no FXAA (ADR-087).
 [ADR-043](adr/043-presentation-dpi-and-color-transfer.md) records its measured
 cost.
@@ -1365,33 +1243,16 @@ vsync selects FIFO and its absence IMMEDIATE, with a FIFO fallback
 Metal supports an explicit internal Scene scale, which the tiled pipeline's
 adaptive quality steps between 0.65 and native while its tonemap pass upscales
 spatially ([ADR-039](adr/039-metal-internal-render-scale.md), ADR-087 decision
-12). Zero-initialized renderer API callers use unit scale. Metal has no temporal
-upscaler. Vulkan spatial rendering rejects non-unit scale. Vulkan FSR 3.1
-accepts a scale in
-`[1/3, 1]`, changeable between frames, including Native AA, with no frame
-generation or dynamic resolution.
-It consumes raw HDR, normalized previous-UV minus current-UV motion, portable
-jitter, masks and nearest transmission depth, then writes output-sized HDR before
-exposure, bloom, tonemap and UI. The first slice supports finite perspective
-cameras only; orthographic, infinite and reversed projections are unsupported.
-The FSR mask pass puts optical contrast only in the composition mask; authored
-reactivity and missing motion drive the reactive mask. TAA's full-scene and native
-revision proof suppresses static composition contrast. A following compute
-pass accumulates 128 stationary output samples and freezes completed pixels.
-Camera or scene changes immediately restore current FSR RGB. The output uses the
-five-instance graph history pool, with private sample age in alpha; fullscreen
-conversion keeps final FSR alpha opaque. SDK-private accumulation remains active.
-Separating optical composition from reactivity reduces motion variation around
-glass. Forward/deferred specular antialiasing now shares the perceptual-to-GGX
+12). Zero-initialized renderer API callers use unit scale, and the default
+render scale is 1.0 on both backends. Neither backend has a temporal
+upscaler. Vulkan renders the Scene at unit scale and rejects any other
+scale; FSR 3.1 was removed on 2026-10-12
+([ADR-052](adr/052-vulkan-fsr31-upscaling.md)).
+Forward/deferred specular antialiasing shares the perceptual-to-GGX
 roughness conversion on both backends; normal variance broadens squared GGX
 width. Its measured benefit in the supplied Bistro view is small, and opaque
-thin-edge motion remains a tuning gap. The tested camera
-rotation has valid, correctly scaled opaque/transmission motion; see ADR-052 for the bounded evidence.
-FSR's SDK-private resources and classic descriptors remain behind a C bridge;
-the graph restores Vulkan descriptor buffers and graphics/compute offsets afterward.
-Bounded native Vulkan validation passes. UI stays native after Scene
-reconstruction. See [ADR-039](adr/039-metal-internal-render-scale.md) and
-[ADR-052](adr/052-vulkan-fsr31-upscaling.md).
+thin-edge motion remains a tuning gap. UI stays native after Scene
+reconstruction. See [ADR-039](adr/039-metal-internal-render-scale.md).
 
 ## Memory, synchronization and observability
 
@@ -1469,9 +1330,8 @@ end. Transfer timing is not supported. Every Vulkan pass interval likewise
 starts no earlier than the previous timed pass's end.
 The harness owns case identity, artifacts, comparison and performance authority.
 After resource/bootstrap readiness it starts authored warmup at the common zero
-of raster jitter and GTAO noise, with temporal history invalidated; replay version
-5 includes FSR's scale-dependent jitter period in this alignment, and
-version 7 the 256-phase SSR/SSGI sample sequence whenever SSR or SSGI ran.
+of raster jitter and GTAO noise, with temporal history invalidated; replay
+version 8 aligns to the 64-phase GTAO noise sequence alone.
 See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-and-evidence.md).
 
 ## Remaining implementation and evidence boundaries
@@ -1655,16 +1515,15 @@ These are limits of current code or retained acceptance, not scheduled promises:
   and the [Windows/Vulkan verification checklist](proposals/windows-vulkan-verification.md).
 - SH needs deterministic GPU projection fixtures, local-probe quality review,
   submitted-frame lifetime stress and a valid comparative performance record.
-- Moving TAA and FSR quality, final-color baseline acceptance and authoritative
+- Moving TAA quality, final-color baseline acceptance and authoritative
   post-effect/reconstruction performance require their own matched Vulkan
   evidence. No tiled-pipeline Bistro baseline is accepted yet.
-- TAA, SSR, SSGI and motion blur read the immediately preceding frame's
+- TAA and motion blur read the immediately preceding frame's
   history, but cloud history without TAA and froxel fog history still take
   the newest completed producer, so their history age follows GPU timing
   ([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
-- Vulkan FSR 3.1 static, motion, Native AA, portable-TAA reference and editor-resize
-  checks pass on Windows. Native Vulkan static and resize diagnostics are clean;
-  performance and comprehensive temporal-quality evidence remain open.
+- Native evidence for the 2026-10-12 removal of SSR, SSGI and FSR 3.1
+  (builds, Bistro captures and timing) is pending.
 - The temporal shader corrections and stationary coverage support pass
   bounded Vulkan Release Bistro profiling and static/moving-camera snapshots
   on RX 6700 XT after fixing cooker memory growth, upload-memory fallback and

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.vulkan.texture_stream_features",
   "suite": "local",
-  "description": "Bistro texture publication and resize with the current Vulkan post stack and FSR 3.1.",
+  "description": "Bistro texture publication and resize with the current Vulkan post stack.",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 20,
   "resolution": [1258, 752],
@@ -20,8 +20,6 @@
     "skybox": true,
     "text_fixture": false,
     "backend": "vulkan",
-    "render_scale": 0.666666667,
-    "upscaler": "fsr31",
     "taa_enabled": true,
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
@@ -34,9 +32,7 @@
     "bloom_intensity": 0.05,
     "gtao_enabled": true,
     "gtao_radius": 0.5,
-    "gtao_power": 2.2,
-    "ssr_enabled": true,
-    "ssgi_enabled": true
+    "gtao_power": 2.2
   },
   "camera": {
     "mode": "static",

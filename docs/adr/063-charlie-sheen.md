@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -66,12 +66,8 @@ integrating the transformed lobes, so lights below the surface contribute zero.
 The light loop still evaluates two integrals per rectangle.
 Existing one-sided, unshadowed runtime rectangle policy remains in force.
 
-SSR continues tracing base GGX or clearcoat under its existing selection policy.
-Sheen has no SSR ray or history. For base SSR, sheen attenuates the replaced base
-specular; coat SSR retains the outer-layer policy. SSGI source lighting includes
-layered direct diffuse and emission, excluding camera-directed sheen highlights; the receiver attenuates base diffuse and adds no
-screen-space sheen lobe. Offline path and photon transport use the matching
-layered BSDF, with geometric normals governing real medium crossings.
+Offline path and photon transport use the matching layered BSDF, with geometric
+normals governing real medium crossings.
 
 ## Ownership and lifetime
 
@@ -83,8 +79,8 @@ bake. Input loaders validate scalar ranges and texture intent before publication
 The graph owns a full-resolution `R8G8B8A8_UNORM` PER_IMAGE image containing
 linear sheen RGB and roughness only when the opaque/cutout material aggregate
 contains nonzero sheen color. The coarse feature and absent-binding contract
-follows [ADR-062](062-layered-clearcoat.md). Resolve writes it; deferred lighting and SSGI/SSR
-composites read it. No pass is added. At 1280×720 the additional payload is
+follows [ADR-062](062-layered-clearcoat.md). Resolve writes it; deferred
+lighting reads it. No pass is added. At 1280×720 the additional payload is
 10.546875 MiB for three images or 28.125 MiB for eight, before native alignment.
 Generation retirement and frame completion govern reuse.
 
@@ -125,8 +121,8 @@ pass. A 65×65 rectangle capture on the Metal desktop implementation, checked
 with `tools/checks/check_sheen_rectangle.py`, measured 0.0821533 against
 independent Charlie area quadrature of 0.0788004: 4.25% error. The reference
 uses the captured, quantized surface normal. Mixed rectangle/material, glass
-and SSR checks passed there; the floor retained 682 SSR hits, including 33 red
-hits.
+and SSR checks passed there while SSR was still in the frame; the floor
+retained 682 SSR hits, including 33 red hits.
 
 For 100 checked roughness/view/rectangle combinations, the cooked fit has maximum
 absolute error 0.002359 at unit emitted radiance; maximum relative error where
@@ -149,13 +145,12 @@ output. Native Vulkan output remains unrecorded.
 
 Dedicated Charlie environment prefilters would add approximately 4 MiB per
 source plus another bake. Replacing Charlie with a different fitted volumetric
-sheen model would change the accepted material model. Additional SSR rays would
-exceed the accepted reflection budget.
+sheen model would change the accepted material model.
 
 ## Revisit when
 
 Assets require alternate UVs, texture transforms or custom samplers; sheen needs
-its own environment filtering or SSR; or the rectangle fit and directional
+its own environment filtering; or the rectangle fit and directional
 allocation are insufficient for the intended fabric.
 
 ## Implementation

@@ -11,8 +11,8 @@ scene's adjacent `.vkt` payloads exist.
 
 The script intentionally compares spatially separated pixels from a fixed scene
 instead of reproducing the GGX implementation. It detects a dropped coat row,
-a swapped coat-normal map, an inactive roughness input, missing glass transport,
-or an absent coat-priority SSR hit.
+a swapped coat-normal map, an inactive roughness input, or missing glass
+transport.
 """
 from __future__ import annotations
 
@@ -30,10 +30,6 @@ PANEL_CENTERS = {
     "rough": (408, 110),
 }
 GLASS_CENTER = (256, 212)
-# The floor starts near full-resolution y=202 in the 512x384 witness. The
-# region below y=250 excludes the vertical panels and proves the coat ray
-# came from the floor rather than another coated surface.
-SSR_FLOOR_Y_MIN = 250
 
 
 def capture_path(run: Path, channel: str) -> tuple[dict, Path]:
@@ -127,31 +123,9 @@ def main() -> None:
     if not (glass[1] > glass[0] * 1.10 and glass[1] > glass[2] * 1.10):
         raise AssertionError(f"coated glass did not transmit the green backdrop: {glass}")
 
-    raw_item, raw_path = capture_path(run, "ssr_raw")
-    raw = half_rgba(raw_path, raw_item["width"], raw_item["height"])
-    floor_y_min = (SSR_FLOOR_Y_MIN * raw_item["height"] + height - 1) // height
-    hits = [pixel for pixel in raw if pixel[3] > 0.01]
-    red_hits = [pixel for pixel in hits if pixel[0] > 2.0 * max(pixel[1], pixel[2], 1e-5)]
-    if len(hits) < 8 or len(red_hits) < 4:
-        raise AssertionError(
-            f"coated floor did not produce red coat-priority SSR hits: "
-            f"hits={len(hits)} red_hits={len(red_hits)}")
-    floor_hits = [pixel for y in range(raw_item["height"])
-                  for pixel in raw[y * raw_item["width"]:(y + 1) * raw_item["width"]]
-                  if y >= floor_y_min and pixel[3] > 0.01]
-    floor_red_hits = [pixel for pixel in floor_hits
-                      if pixel[0] > 2.0 * max(pixel[1], pixel[2], 1e-5)]
-    if len(floor_hits) < 8 or len(floor_red_hits) < 4:
-        raise AssertionError(
-            f"floor ROI did not produce red coat-priority SSR hits: "
-            f"y>={floor_y_min} hits={len(floor_hits)} "
-            f"red_hits={len(floor_red_hits)}")
-
     print("PASS clearcoat fixture")
     print("panel HDR means", panels)
     print("glass HDR mean", glass)
-    print("SSR hits", len(hits), "red hits", len(red_hits))
-    print("floor SSR hits", len(floor_hits), "red hits", len(floor_red_hits))
 
 
 if __name__ == "__main__":

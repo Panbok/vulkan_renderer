@@ -114,16 +114,11 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_DISABLED},
 
     {"motion_blur_enabled", VKR_RG_JSON_CONDITION_MOTION_BLUR_ENABLED},
-    {"!motion_blur_enabled && fsr31_enabled",
-     VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_ENABLED},
-    {"!motion_blur_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_DISABLED},
+    {"!motion_blur_enabled", VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED},
     {"!dof_enabled && motion_blur_enabled",
      VKR_RG_JSON_CONDITION_DOF_DISABLED_MOTION_BLUR_ENABLED},
-    {"!dof_enabled && !motion_blur_enabled && fsr31_enabled",
-     VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_ENABLED},
-    {"!dof_enabled && !motion_blur_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_DISABLED},
+    {"!dof_enabled && !motion_blur_enabled",
+     VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED},
     {"gtao_enabled", VKR_RG_JSON_CONDITION_GTAO_ENABLED},
     {"fog_apply_enabled && editor_enabled",
      VKR_RG_JSON_CONDITION_FOG_APPLY_EDITOR_ENABLED},
@@ -138,25 +133,6 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_ENABLED},
     {"froxel_fog_enabled && !editor_enabled",
      VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_DISABLED},
-    {"ssr_enabled", VKR_RG_JSON_CONDITION_SSR_ENABLED},
-    {"ssgi_enabled", VKR_RG_JSON_CONDITION_SSGI_ENABLED},
-    {"ssgi_enabled && editor_enabled",
-     VKR_RG_JSON_CONDITION_SSGI_EDITOR_ENABLED},
-    {"ssgi_enabled && !editor_enabled",
-     VKR_RG_JSON_CONDITION_SSGI_FULLSCREEN_ENABLED},
-    {"ssr_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SSR_EDITOR_ENABLED},
-    {"ssr_enabled && !editor_enabled",
-     VKR_RG_JSON_CONDITION_SSR_EDITOR_DISABLED},
-    {"fsr31_enabled", VKR_RG_JSON_CONDITION_FSR31_ENABLED},
-    {"!fsr31_enabled", VKR_RG_JSON_CONDITION_FSR31_DISABLED},
-    {"editor_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_FSR31_DISABLED},
-    {"!editor_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_FSR31_DISABLED},
-    {"bloom_enabled && fsr31_enabled",
-     VKR_RG_JSON_CONDITION_BLOOM_FSR31_ENABLED},
-    {"bloom_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_BLOOM_FSR31_DISABLED},
     {"picking_pending", VKR_RG_JSON_CONDITION_PICKING_PENDING},
     {"!picking_pending", VKR_RG_JSON_CONDITION_PICKING_IDLE},
     {"picking_pending && transmission_pending",
@@ -2150,18 +2126,12 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->dof_enabled;
   case VKR_RG_JSON_CONDITION_MOTION_BLUR_ENABLED:
     return frame->motion_blur_enabled;
-  case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_ENABLED:
-    return !frame->motion_blur_enabled && frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_DISABLED:
-    return !frame->motion_blur_enabled && !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED:
+    return !frame->motion_blur_enabled;
   case VKR_RG_JSON_CONDITION_DOF_DISABLED_MOTION_BLUR_ENABLED:
     return !frame->dof_enabled && frame->motion_blur_enabled;
-  case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_ENABLED:
-    return !frame->dof_enabled && !frame->motion_blur_enabled &&
-           frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_DISABLED:
-    return !frame->dof_enabled && !frame->motion_blur_enabled &&
-           !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED:
+    return !frame->dof_enabled && !frame->motion_blur_enabled;
   case VKR_RG_JSON_CONDITION_GTAO_ENABLED:
     return frame->gtao_enabled;
   case VKR_RG_JSON_CONDITION_FOG_APPLY_EDITOR_ENABLED:
@@ -2180,30 +2150,6 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->froxel_fog_enabled && frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_FROXEL_FOG_EDITOR_DISABLED:
     return frame->froxel_fog_enabled && !frame->editor_enabled;
-  case VKR_RG_JSON_CONDITION_SSR_ENABLED:
-    return frame->ssr_enabled;
-  case VKR_RG_JSON_CONDITION_SSGI_ENABLED:
-    return frame->ssgi_enabled;
-  case VKR_RG_JSON_CONDITION_SSGI_EDITOR_ENABLED:
-    return frame->ssgi_enabled && frame->editor_enabled;
-  case VKR_RG_JSON_CONDITION_SSGI_FULLSCREEN_ENABLED:
-    return frame->ssgi_enabled && !frame->editor_enabled;
-  case VKR_RG_JSON_CONDITION_SSR_EDITOR_ENABLED:
-    return frame->ssr_enabled && frame->editor_enabled;
-  case VKR_RG_JSON_CONDITION_SSR_EDITOR_DISABLED:
-    return frame->ssr_enabled && !frame->editor_enabled;
-  case VKR_RG_JSON_CONDITION_FSR31_ENABLED:
-    return frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_FSR31_DISABLED:
-    return !frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_FSR31_DISABLED:
-    return frame->editor_enabled && !frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_FSR31_DISABLED:
-    return !frame->editor_enabled && !frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_BLOOM_FSR31_ENABLED:
-    return frame->bloom_enabled && frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_BLOOM_FSR31_DISABLED:
-    return frame->bloom_enabled && !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING:
     return frame->picking_pending;
   case VKR_RG_JSON_CONDITION_PICKING_IDLE:
@@ -2286,19 +2232,6 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
                                 "transmission_rough_mip_pass_count")) {
     *out_count = frame->transmission_rough_mip_pass_count;
-    return true_v;
-  }
-  if (vkr_string8_equals_cstr_i(&repeat->count_source,
-                                "ssr_depth_mip_pass_count")) {
-    *out_count =
-        frame->ssr_depth_mip_count > 0u ? frame->ssr_depth_mip_count - 1u : 0u;
-    return true_v;
-  }
-  if (vkr_string8_equals_cstr_i(&repeat->count_source,
-                                "ssgi_depth_mip_pass_count")) {
-    *out_count = frame->ssgi_depth_mip_count > 0u
-                     ? frame->ssgi_depth_mip_count - 1u
-                     : 0u;
     return true_v;
   }
   /* Both bloom chains are one step shorter than the chain itself: the prefilter

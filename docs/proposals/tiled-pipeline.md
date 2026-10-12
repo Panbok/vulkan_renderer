@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-07
+updated: 2026-10-12
 authority: proposal
 ---
 
@@ -33,11 +33,11 @@ measured.
 |---|---|---|
 | Culling and draw encoding | GPU classification, indirect-count draws | Shared classification, Metal ICB draws |
 | Opaque surfaces | Visibility buffer, compute G-buffer resolve, compute lighting | One MSAA render pass of forward shading with clustered lists of the dynamic lights, without a depth pre-pass (decided) |
-| Anti-aliasing | Portable TAA or FSR 3.1 | 4× MSAA with alpha to coverage and a tone-mapped resolve in tile memory; no FXAA or temporal history (decided, ADR-087) |
+| Anti-aliasing | Portable TAA | 4× MSAA with alpha to coverage and a tone-mapped resolve in tile memory; no FXAA or temporal history (decided, ADR-087) |
 | Static light | Every static light evaluated per pixel each frame | Lightmaps baked by `vkr_bakery`: direct and bounced diffuse light from static lights, on a second UV set (owner decision, 2026-10-05) |
-| Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)), optional SSGI | Lightmaps on static surfaces; IBL and baked volumes for dynamic objects; no SSGI |
+| Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)) | Lightmaps on static surfaces; IBL and baked volumes for dynamic objects |
 | Ambient occlusion | GTAO in compute | Baked AO in the lightmap alpha, on environment specular (decided, ADR-088) |
-| Reflections | IBL and optional SSR | IBL and one reflection probe per surface (decided, ADR-087); [planar reflections](planar-reflections.md) for mirror-like surfaces; no SSR (owner decision, 2026-10-06) |
+| Reflections | IBL and box-projected reflection probes | IBL and one reflection probe per surface (decided, ADR-087); [planar reflections](planar-reflections.md) for mirror-like surfaces; no SSR (owner decision, 2026-10-06) |
 | Directional shadows | Retained cascades with PCF | Shared retained cascades; a tier may lower filtering |
 | Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights filtered in the lighting pass with a four-tap tent (decided: 4 of the 16 dynamic lights, ADR-087) |
 | Transmission | Four peeled layers shaded in compute | Sorted forward blend with dual-source transmittance for smooth thin glass; volumes absorb and refract, and rough glass blurs, through a half-resolution copy taken only on frames with either in view (decided, ADR-087) |

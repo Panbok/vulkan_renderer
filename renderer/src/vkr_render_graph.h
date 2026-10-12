@@ -545,8 +545,6 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t viewport_width;  /**< Viewport width */
   uint32_t viewport_height; /**< Viewport height */
   float32_t render_scale;   /**< Internal Scene extent / Scene output extent. */
-  /** True only for the Vulkan FSR 3.1 temporal reconstruction topology. */
-  bool8_t fsr31_enabled;
   bool8_t editor_enabled; /**< Whether editor is enabled */
   bool8_t scene_rendering;
   bool8_t skinning_enabled;
@@ -638,9 +636,6 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t gtao_enabled;
   /** Current-frame AO depth levels, including full-resolution mip zero. */
   uint32_t gtao_depth_mip_count;
-  /** Independent current-frame SSR resources, including reflection history. */
-  bool8_t ssr_enabled;
-  bool8_t ssgi_enabled;
   bool8_t subsurface_enabled;
   bool8_t fog_enabled;
   bool8_t froxel_fog_enabled;
@@ -655,8 +650,6 @@ typedef struct VkrRenderGraphFrameInfo {
   /** True when the in-place opaque pass applies analytic fog or aerial
       perspective. Froxel application owns the latter under froxel fog. */
   bool8_t fog_apply_enabled;
-  uint32_t ssr_depth_mip_count;
-  uint32_t ssgi_depth_mip_count;
   /** Metal P19 state; false only for the diagnostic full-screen rollback. */
   bool8_t transmission_compact_enabled;
   /** True when this frame requests backend pass timestamps. */

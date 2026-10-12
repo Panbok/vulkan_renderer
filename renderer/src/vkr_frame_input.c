@@ -326,13 +326,6 @@ vkr_internal VkrRendererError vkr_frame_input_validate_effects(
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.froxel_fog",
                       "invalid volumetric fog medium or depth range");
-  if (packet->globals.ssgi_enabled > true_v)
-    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                      "packet.globals.ssgi_enabled", "must be zero or one");
-  if (packet->globals.ssr_enabled > true_v)
-    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                      "packet.globals.ssr_enabled", "must be zero or one");
-
   if (packet->globals.gtao_enabled > true_v)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.gtao_enabled", "must be zero or one");

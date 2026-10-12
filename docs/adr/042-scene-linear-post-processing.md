@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -84,11 +84,11 @@ Global/probe diffuse uses the bent normal and albedo-aware multi-bounce AO fit,
 multiplied by independent material AO. This fit compensates local missing energy;
 it does not compute scene-wide light transport or color bleeding. Baked diffuse
 volumes retain their shading-normal SH lookup and scalar AO because their bake
-already includes multiple bounces. Indirect specular, including SSR replacement,
-uses a visibility cone derived from alpha and an approximate spherical-cap
-intersection with the rough reflection lobe. The practical near-mirror fade
-limits this approximation. Environment and SSR receiver weights apply the same
-cone factor once; authored IBL gain remains specific to environment lighting.
+already includes multiple bounces. Indirect specular uses a visibility cone
+derived from alpha and an approximate spherical-cap intersection with the rough
+reflection lobe. The practical near-mirror fade limits this approximation.
+The environment receiver weight applies the cone factor once; authored IBL
+gain remains specific to environment lighting.
 Direct lighting keeps its shadow visibility. GTAO is not reused HZB history or
 general wall visibility. Raw/denoised capture schema version 2 records the RGBA
 directional tuple as data, without a color-transfer interpretation.
@@ -107,8 +107,9 @@ On the Metal desktop implementation, removed on 2026-10-06, the Release corner
 fixture verified that bent normals point away from a nearby wall and that
 diffuse/specular lighting follows the captured tuple (maximum HDR error
 0.000960297 across 34 samples). Disabling GTAO preserved the previous fixture's
-HDR bytes. A mirror fixture exercised non-neutral SSR cone attenuation, with
-maximum HDR error 0.002351667 across 15 interior samples. A directional-SH
+HDR bytes. A mirror fixture exercised non-neutral cone attenuation of SSR, since
+removed (ADR-055), with maximum HDR error 0.002351667 across 15 interior
+samples. A directional-SH
 volume fixture verified scalar AO across 201,629 covered pixels (maximum HDR
 error 0.0002432). Production Vulkan SPIR-V validation passes; native Vulkan
 GTAO output is not yet recorded. These checks establish local behavior, not a

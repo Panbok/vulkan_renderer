@@ -6,14 +6,6 @@
 #define VKR_TEMPORAL_CAMERA_CUT_DISTANCE 10.0f
 #define VKR_TEMPORAL_CAMERA_CUT_FORWARD_DOT 0.5f
 
-uint32_t vkr_temporal_upscale_sequence_length(uint32_t render_width,
-                                              uint32_t output_width) {
-  return Max((uint32_t)floorf(
-                 8.0f * (float32_t)output_width / (float32_t)render_width *
-                 (float32_t)output_width / (float32_t)render_width),
-             VKR_TEMPORAL_SEQUENCE_LENGTH);
-}
-
 vkr_internal void temporal_scene_lane(VkrTemporalSceneSignature *signature,
                                       uint64_t lane) {
   // Two independent 64-bit recurrences over semantic lanes, not struct bytes.
@@ -139,14 +131,8 @@ vkr_internal void temporal_scene_sky(VkrTemporalSceneSignature *signature,
   temporal_scene_floats(signature, clouds->wind_mps.x, clouds->wind_mps.y);
 }
 
-/* `point_lights` false leaves the point-light table out. The scene table
-   ranks point lights by camera distance and fades a light in or out when
-   the selection changes (ADR-019), so the table changes while the camera
-   moves; a screen history then rejects the light a change adds with its
-   colour clamp, as it does a fading shadow strength (ADR-055, ADR-060). */
 vkr_internal void temporal_scene_lighting(VkrTemporalSceneSignature *signature,
-                                          const VkrFrameLighting *lighting,
-                                          bool8_t point_lights) {
+                                          const VkrFrameLighting *lighting) {
   temporal_scene_lane(signature, lighting != NULL);
   if (lighting) {
     temporal_scene_pair(signature, lighting->directional_enabled,
@@ -170,10 +156,8 @@ vkr_internal void temporal_scene_lighting(VkrTemporalSceneSignature *signature,
       temporal_scene_floats(signature, light->radiance, 0.0f);
       temporal_scene_lane(signature, light->render_id);
     }
-    const uint32_t point_light_count =
-        point_lights ? lighting->point_light_count : 0u;
-    temporal_scene_lane(signature, point_light_count);
-    for (uint32_t i = 0u; i < point_light_count; ++i) {
+    temporal_scene_lane(signature, lighting->point_light_count);
+    for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
       const VkrPointLight *light = &lighting->point_lights[i];
       temporal_scene_vec3(signature, light->position);
       temporal_scene_vec3(signature, light->color);
@@ -231,8 +215,6 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
   temporal_scene_pair(
       &signature, packet->input.globals.render_mode,
       packet->input.debug ? packet->input.debug->shadow_debug_mode : 0u);
-  temporal_scene_lane(&signature, packet->ssr_enabled);
-  temporal_scene_lane(&signature, packet->ssgi_enabled);
   temporal_scene_vec4(&signature, packet->fog.color_density);
   temporal_scene_vec4(&signature, packet->fog.height_distance);
   temporal_scene_lane(&signature, packet->froxel_fog_signature);
@@ -265,7 +247,7 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
     }
   }
   const VkrFrameLighting *lighting = packet->input.lighting;
-  temporal_scene_lighting(&signature, lighting, true_v);
+  temporal_scene_lighting(&signature, lighting);
   if (lighting && lighting->point_light_count) {
     const VkrPointLightGrid *grid = lighting->point_light_grid;
     temporal_scene_vec3(&signature, grid->origin);
@@ -325,98 +307,6 @@ vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
     }
   }
   temporal_scene_sky(&signature, packet->input.sky);
-  return signature;
-}
-
-bool8_t vkr_temporal_prepare_static_accumulation(
-    bool8_t scene_matches, bool8_t ssr_enabled,
-    uint32_t previous_unchanged_frames, uint32_t *out_unchanged_frames) {
-  if (!scene_matches) {
-    *out_unchanged_frames = 0u;
-    return false_v;
-  }
-  *out_unchanged_frames =
-      previous_unchanged_frames < VKR_TEMPORAL_SSR_SETTLE_FRAMES
-          ? previous_unchanged_frames + 1u
-          : VKR_TEMPORAL_SSR_SETTLE_FRAMES;
-  return !ssr_enabled ||
-         previous_unchanged_frames >= VKR_TEMPORAL_SSR_SETTLE_FRAMES;
-}
-
-/* Screen-space history keeps across asset publications, pending or unloaded
-   visible assets and fog: per-pixel identity, depth and motion tests reject
-   changed surfaces, and the colour clamp bounds changed light. SSR traces
-   the HDR before fog runs. An authored fog edit still resets every history
-   through the explicit scene-change reset. */
-VkrTemporalSceneSignature
-vkr_ssr_content_signature(const VkrPreparedFrame *packet) {
-  VkrTemporalSceneSignature signature = {
-      .hash = {UINT64_C(0x243f6a8885a308d3), UINT64_C(0x13198a2e03707344)},
-      .eligible = true_v,
-  };
-  temporal_scene_lane(&signature, packet->input.frame.scene_generation);
-  temporal_scene_lane(&signature, packet->ssr_enabled);
-  temporal_scene_lane(&signature, packet->ssgi_enabled);
-  temporal_scene_vec4(&signature, packet->input.globals.ambient_color);
-  temporal_scene_lane(&signature, packet->gtao.enabled);
-  temporal_scene_floats(&signature, packet->gtao.radius, packet->gtao.power);
-  temporal_scene_lighting(&signature, packet->input.lighting, false_v);
-  const VkrShadowPassPayload *shadow = packet->input.shadow;
-  temporal_scene_lane(&signature, shadow != NULL);
-  if (shadow) {
-    temporal_scene_lane(&signature, shadow->cascade_count);
-    for (uint32_t i = 0u; i < shadow->cascade_count; ++i)
-      temporal_scene_floats(&signature,
-                            shadow->cascades[i].origin_inv_size_sun.w, 0.0f);
-    const VkrShadowReceiverPacketData *receiver = &shadow->receiver;
-    temporal_scene_floats(&signature, receiver->receiver_bias_texels,
-                          receiver->slope_bias_texels);
-    temporal_scene_floats(&signature, receiver->normal_offset_texels,
-                          receiver->pcf_radius_texels);
-    temporal_scene_pair(&signature, receiver->pcf_sample_count,
-                        receiver->pcf_uniform_early_out);
-  }
-  temporal_scene_sky(&signature, packet->input.sky);
-  return signature;
-}
-
-/* Same history rule as SSR. World content generations also stay out: mesh
-   arrival, movers and skinned poses advance them every frame anywhere in the
-   scene, and the per-pixel tests already reject a moved receiver. */
-VkrTemporalSceneSignature
-vkr_ssgi_content_signature(const VkrPreparedFrame *packet) {
-  VkrTemporalSceneSignature signature = {
-      .hash = {UINT64_C(0x9e3779b97f4a7c15), UINT64_C(0xd1b54a32d192ed03)},
-      .eligible = true_v,
-  };
-  temporal_scene_lane(&signature, packet->input.frame.scene_generation);
-  temporal_scene_lane(&signature, packet->ssgi_enabled);
-  /* The complete lighting publication also covers baked-volume replacement.
-     Camera matrices and the progressive ray phase are not content revisions. */
-  temporal_scene_lighting(&signature, packet->input.lighting, false_v);
-  const VkrShadowPassPayload *shadow = packet->input.shadow;
-  temporal_scene_lane(&signature, shadow != NULL);
-  if (shadow) {
-    temporal_scene_lane(&signature, shadow->cascade_count);
-    for (uint32_t i = 0u; i < shadow->cascade_count; ++i)
-      temporal_scene_floats(&signature,
-                            shadow->cascades[i].origin_inv_size_sun.w, 0.0f);
-    const VkrShadowReceiverPacketData *receiver = &shadow->receiver;
-    temporal_scene_floats(&signature, receiver->receiver_bias_texels,
-                          receiver->slope_bias_texels);
-    temporal_scene_floats(&signature, receiver->normal_offset_texels,
-                          receiver->pcf_radius_texels);
-    temporal_scene_pair(&signature, receiver->pcf_sample_count,
-                        receiver->pcf_uniform_early_out);
-  }
-  const VkrLocalShadowPassPayload *local = packet->input.local_shadow;
-  temporal_scene_lane(&signature, local != NULL);
-  if (local) {
-    /* Only the settings: the resident shadowed lights and their strengths
-       follow the camera (distance fade, atlas budget, ADR-019), and the
-       colour clamp bounds the light a change adds or removes. */
-    temporal_scene_pair(&signature, local->map_size, local->face_budget);
-  }
   return signature;
 }
 

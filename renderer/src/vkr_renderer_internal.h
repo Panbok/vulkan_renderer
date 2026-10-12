@@ -163,7 +163,6 @@ struct VkrRenderer {
       upscaler is built once for this range. Equal bounds fix the scale. */
   float32_t render_scale_min;
   float32_t render_scale_max;
-  VkrUpscaleMode upscale_mode;
   VkrGraphicsPipelineClass graphics_pipeline;
   /** The caller's dynamic-resolution request before normalization, kept so
       the controller can be switched on again between frames. */
@@ -211,8 +210,6 @@ struct VkrRenderer {
   bool8_t pre_exposure_forced;
   bool8_t bloom_forced_disabled;
   bool8_t gtao_forced_disabled;
-  bool8_t ssr_forced_disabled;
-  bool8_t ssgi_forced_disabled;
   /* The frame static generation volumetric fog history last saw, and the one
      it follows (vkr_froxel_fog_static_generation). */
   uint64_t froxel_static_seen;
@@ -221,10 +218,6 @@ struct VkrRenderer {
   /* False only for the analytic reference path; a frame uses the display-linear
      target when its final pass filters (vkr_renderer_prepare_frame_data). */
   bool8_t post_transform_cache_enabled;
-  /* Screen-space effects the latest scene submission ran; both sample the
-     256-phase SSGI sequence, which harness replays align to. */
-  bool8_t submitted_ssgi_enabled;
-  bool8_t submitted_ssr_enabled;
 
   // Per-frame render statistics for UI/debug use.
   VkrRendererFrameMetrics frame_metrics;

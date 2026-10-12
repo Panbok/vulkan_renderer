@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.sheen.resize",
   "suite": "local",
-  "description": "Sheen material image and immutable tables across window resize with SSR and SSGI enabled.",
+  "description": "Sheen material image and immutable tables across window resize.",
   "scene": "assets/scenes/fixtures/sheen_local.scene.json",
   "seed": 1,
   "resolution": [
@@ -33,8 +33,6 @@
     "render_mode": "default",
     "display_transform": "agx",
     "gtao_enabled": false,
-    "ssr_enabled": true,
-    "ssgi_enabled": true,
     "bloom_enabled": false,
     "image_sharpness": 0
   },

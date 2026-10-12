@@ -26,8 +26,6 @@ typedef struct VkrPreparedFrame {
   uint32_t scene_output_width;
   uint32_t scene_output_height;
   float32_t render_scale;
-  /** Vulkan FSR 3.1 consumes temporal inputs and owns its private history. */
-  bool8_t fsr31_enabled;
   VkrTemporalFrame temporal;
   VkrExposureFrame exposure;
   VkrColorGradingGpu color_grading;
@@ -43,8 +41,6 @@ typedef struct VkrPreparedFrame {
   bool8_t subsurface_enabled;
   VkrSubsurfaceGpuParams subsurface;
   VkrGtaoFrame gtao;
-  bool8_t ssr_enabled;
-  bool8_t ssgi_enabled;
   VkrFogGpuParams fog;
   VkrFroxelFogGpuParams froxel_fog;
   uint64_t froxel_fog_signature;

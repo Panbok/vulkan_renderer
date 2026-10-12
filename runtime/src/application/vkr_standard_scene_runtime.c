@@ -392,8 +392,6 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
       .dof_focus_distance = VKR_DOF_DEFAULT_FOCUS_DISTANCE,
       .dof_f_stop = VKR_DOF_DEFAULT_F_STOP,
       .motion_blur_shutter_angle = VKR_MOTION_BLUR_DEFAULT_SHUTTER_ANGLE,
-      .ssr_enabled = !application->renderer.ssr_forced_disabled,
-      .ssgi_enabled = false_v,
       .gtao_enabled = !application->renderer.gtao_forced_disabled,
       .gtao_radius = VKR_GTAO_DEFAULT_RADIUS,
       .gtao_power = VKR_GTAO_DEFAULT_POWER,
@@ -551,7 +549,6 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       .requested_present_mode = config->requested_present_mode,
       .display_output_mode = config->display_output_mode,
       .render_scale = config->render_scale,
-      .upscale_mode = config->upscale_mode,
       .dynamic_resolution = config->dynamic_resolution,
       .capture_enabled = config->capture_enabled,
       .capture_ring_capacity = config->capture_ring_capacity,
@@ -739,7 +736,6 @@ bool8_t vkr_standard_scene_runtime_editor_viewport_mapping(
   /* The render extent is the one the last acquisition chose; reading the
      renderer's would race the render thread's next acquisition. */
   const bool8_t renderer_scaled_scene =
-      application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
       application->renderer.scene_output_extent_overridden ||
       application->renderer.render_scale != 1.0f;
   if (renderer_scaled_scene && application->target_render_width > 0u &&
@@ -774,8 +770,7 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_scene_output_request(
     VkrStandardSceneRuntime *application,
     VkrStandardSceneRuntimeSceneOutput *out_request) {
   *out_request = (VkrStandardSceneRuntimeSceneOutput){0};
-  if (application->renderer.backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
-      application->renderer.upscale_mode != VKR_UPSCALE_MODE_FSR31)
+  if (application->renderer.backend_type != VKR_RENDERER_BACKEND_TYPE_METAL)
     return VKR_RENDERER_ERROR_NONE;
 
   if (vkr_standard_scene_runtime_editor_scene_rendering_stopped(application))
@@ -785,16 +780,14 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_scene_output_request(
       vkr_subsystem_plan_includes(&application->subsystem_plan,
                                   VKR_RENDERER_SUBSYSTEM_EDITOR);
   /* Unit-scale editor scenes already use the packet's mapped viewport. */
-  if ((paneled &&
-       application->renderer.upscale_mode != VKR_UPSCALE_MODE_FSR31 &&
-       application->renderer.render_scale == 1.0f &&
+  if ((paneled && application->renderer.render_scale == 1.0f &&
        application->scene_output_scale == 1.0f) ||
       (!paneled && application->scene_output_scale == 1.0f)) {
     out_request->mode = VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_RESTORE;
     return VKR_RENDERER_ERROR_NONE;
   }
 
-  /* Temporal scalers recreate completion-protected output on release. Keep the
+  /* A Scene output resize recreates completion-protected output. Keep the
      previous Scene output while a dock gesture is live, then resize once.
      Pending memory relief must realize smaller targets before texture retries.
    */
@@ -1868,8 +1861,6 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
               .motion_blur_enabled = globals->motion_blur_enabled &&
                                      globals->projection.m33 == 0.0f,
               .motion_blur_shutter_angle = globals->motion_blur_shutter_angle,
-              .ssr_enabled = globals->ssr_enabled,
-              .ssgi_enabled = globals->ssgi_enabled,
               .gtao_enabled = globals->gtao_enabled,
               .gtao_radius = globals->gtao_radius,
               .gtao_power = globals->gtao_power,
@@ -1944,8 +1935,7 @@ vkr_internal void vkr_standard_scene_runtime_finish_submit(
       application->editor_viewport.rendered_height = draw->viewport_height;
       const bool8_t scaled_scene =
           application->renderer.scene_output_extent_overridden ||
-          application->renderer.render_scale != 1.0f ||
-          application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31;
+          application->renderer.render_scale != 1.0f;
       application->editor_viewport.output_width =
           scaled_scene ? application->renderer.scene_output_width
                        : draw->viewport_width;

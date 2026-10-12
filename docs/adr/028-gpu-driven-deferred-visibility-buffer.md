@@ -156,7 +156,8 @@ with the graphics validation variables unset.
   two or five children each). `memory.gpu.owner.render_graph.bytes.live`,
   constant within each run, fell from 789.66 to 655.87 MiB in
   `ssr_tier_bistro_cost` (640x360), from 1,454.70 to 1,320.90 MiB in
-  `ssgi_bistro_on_profile_local` (1280x720), from 3,977.66 to 3,678.50 MiB in
+  `ssgi_bistro_on_profile_local` (1280x720; both cases were deleted with SSR
+  and SSGI), from 3,977.66 to 3,678.50 MiB in
   `sparse_volume_bistro_street_on_timing` (2560x1440) and from 2,111.32 to
   1,536.53 MiB in `local_shadow_bistro_vulkan_walk_ultra` (1280x720).
   Render-graph images did not change, so the whole fall is in buffers. Every
@@ -167,7 +168,8 @@ with the graphics validation variables unset.
   and `local_shadow_bistro_vulkan_walk_ultra` (profile, `local-offscreen`,
   `sha256:c9763acdab237627e15866ad31fd241ce5a70bb200113bad4795970350cf98cf`)
   reported no visible-row, transmission, compact-pixel or cascade overflow.
-- A copy of `ssr_ghost_under_bar` with longer timeouts ran under
+- A copy of `ssr_ghost_under_bar` (deleted with SSR) with longer timeouts,
+  while SSR was still in the frame, ran under
   `local-offscreen-gpu-single` with `VK_LAYER_KHRONOS_validation`, its core
   and synchronization checks enabled by a layer settings file, and logged no
   message

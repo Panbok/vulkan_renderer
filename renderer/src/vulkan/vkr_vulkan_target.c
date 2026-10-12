@@ -457,7 +457,6 @@ void vkr_vk_discard_unsubmitted_asset_uses(VkrVulkanRenderer *renderer) {
 void vkr_vulkan_renderer_cancel_frame(VkrVulkanRenderer *renderer) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
-  vkr_vk_cancel_fsr31(renderer);
   vkr_vk_fail_picking_readback(renderer, slot);
   vkr_vk_abandon_ibl_bake_recordings(renderer);
   slot->sh_coefficients_clear_recorded = false_v;

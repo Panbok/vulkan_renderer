@@ -166,16 +166,6 @@
       "stage": "compute"
     },
     {
-      "name": "packet.fsr31.prepare.comp",
-      "entry": "vk_fsr31_prepare",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.fsr31.stabilize.comp",
-      "entry": "vk_fsr31_stabilize",
-      "stage": "compute"
-    },
-    {
       "name": "packet.visibility.vert",
       "entry": "vk_visibility_vertex",
       "stage": "vertex"
@@ -414,56 +404,6 @@
     {
       "name": "packet.gtao_denoise.comp",
       "entry": "vk_gtao_denoise",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssr_depth_base.comp",
-      "entry": "vk_ssr_depth_base",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssr_depth_mip.comp",
-      "entry": "vk_ssr_depth_mip",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssr_trace.comp",
-      "entry": "vk_ssr_trace",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssr_temporal.comp",
-      "entry": "vk_ssr_temporal",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssr_composite.comp",
-      "entry": "vk_ssr_composite",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssgi_depth_base.comp",
-      "entry": "ssgi_depth_base_compute",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssgi_depth_mip.comp",
-      "entry": "ssgi_depth_mip_compute",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssgi_trace.comp",
-      "entry": "ssgi_trace_compute",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssgi_temporal.comp",
-      "entry": "ssgi_temporal_compute",
-      "stage": "compute"
-    },
-    {
-      "name": "packet.ssgi_composite.comp",
-      "entry": "ssgi_composite_compute",
       "stage": "compute"
     },
     {

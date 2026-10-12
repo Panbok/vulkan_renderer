@@ -27,7 +27,6 @@
 #include "renderer/systems/vkr_ui_system.h"
 #include "script/vkr_script_host.h"
 #include "vkr_gtao.h"
-#include "vkr_ssgi.h"
 #include "vkr_temporal.h"
 #include <math.h>
 
@@ -40,38 +39,12 @@ _Static_assert(VKR_GTAO_NOISE_SEQUENCE_LENGTH % VKR_TEMPORAL_SEQUENCE_LENGTH ==
 /* Everything below drives an instrumented repetition. Without
    instrumentation, vkr_harness_child_run reports the harness unavailable. */
 #if VKR_METRICS_ENABLED
+/* The GTAO noise sequence covers the raster jitter sequence (asserted above),
+   so its zero aligns both. */
 vkr_internal uint32_t
 vkr_harness_temporal_alignment(const VkrRenderer *renderer) {
   vkr_renderer_join_render_thread(renderer);
-  _Static_assert(VKR_SSGI_SEQUENCE_LENGTH % VKR_GTAO_NOISE_SEQUENCE_LENGTH ==
-                     0u,
-                 "SSGI phase alignment must cover the GTAO sequence");
-  /* SSR samples its lobes from the SSGI sequence too, indexed by the absolute
-     frame, so either effect needs the 256-phase zero at warmup. */
-  const uint32_t noise_sequence =
-      renderer->submitted_ssgi_enabled || renderer->submitted_ssr_enabled
-          ? VKR_SSGI_SEQUENCE_LENGTH
-          : VKR_GTAO_NOISE_SEQUENCE_LENGTH;
-  // Stopped editor scenes and non-temporal diagnostic modes have no raster
-  // sequence to align. In particular, no submitted Scene may exist yet.
-  if (!renderer->temporal_state.valid || !renderer->temporal_state.enabled)
-    return noise_sequence;
-  const uint32_t output_width = renderer->scene_output_extent_overridden
-                                    ? renderer->scene_output_width
-                                    : renderer->last_window_width;
-  const uint32_t jitter =
-      renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31
-          ? vkr_temporal_upscale_sequence_length(renderer->temporal_state.width,
-                                                 output_width)
-          : VKR_TEMPORAL_SEQUENCE_LENGTH;
-  uint32_t a = noise_sequence;
-  uint32_t b = jitter;
-  while (b != 0u) {
-    const uint32_t remainder = a % b;
-    a = b;
-    b = remainder;
-  }
-  return (noise_sequence / a) * jitter;
+  return VKR_GTAO_NOISE_SEQUENCE_LENGTH;
 }
 
 vkr_internal bool8_t vkr_harness_u64_add(uint64_t a, uint64_t b,
@@ -1284,7 +1257,7 @@ vkr_internal void vkr_harness_child_update(void *state,
                  0u) {
     const uint64_t next_frame = vkr_harness_child_next_frame(application);
     /* Bootstrap duration must not choose the animation clock, cloud wind
-       offset, raster jitter, GTAO, SSGI or SSR phase consumed by authored
+       offset, raster jitter or GTAO phase consumed by authored
        warmup, including zero-warmup cases. Reset players and the wind after
        asset readiness and temporal alignment. */
     VkrScene *scene = application->active_scene;
@@ -1521,9 +1494,6 @@ vkr_internal VkrStandardSceneRuntimeConfig vkr_harness_child_application_config(
       .render_scale = case_manifest->renderer.render_scale,
       .texture_max_load_dimension =
           case_manifest->renderer.texture_max_load_dimension,
-      .upscale_mode = string_equals(case_manifest->renderer.upscaler, "fsr31")
-                          ? VKR_UPSCALE_MODE_FSR31
-                          : VKR_UPSCALE_MODE_SPATIAL,
       .dynamic_resolution =
           {
               .min_scale = case_manifest->renderer.dynamic_resolution_min_scale,
@@ -1672,8 +1642,6 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   application->globals.bloom_knee = case_manifest->renderer.bloom_knee;
   application->globals.bloom_intensity =
       case_manifest->renderer.bloom_intensity;
-  application->globals.ssr_enabled = case_manifest->renderer.ssr_enabled;
-  application->globals.ssgi_enabled = case_manifest->renderer.ssgi_enabled;
   application->globals.dof_enabled = case_manifest->renderer.dof_enabled;
   application->globals.dof_focus_distance =
       case_manifest->renderer.dof_focus_distance;

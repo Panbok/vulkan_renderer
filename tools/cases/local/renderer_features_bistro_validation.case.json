@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.renderer_features.bistro.validation",
   "suite": "local",
-  "description": "Single-process Bistro optional material planes and cached SSGI receivers with SSR, across odd-extent resize.",
+  "description": "Single-process Bistro optional material planes across odd-extent resize.",
   "scene": "assets/scenes/fixtures/renderer_features_bistro_validation.scene.json",
   "seed": 20,
   "resolution": [
@@ -27,7 +27,6 @@
     "skybox": true,
     "text_fixture": false,
     "render_scale": 1,
-    "upscaler": "spatial",
     "taa_enabled": true,
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
@@ -42,9 +41,7 @@
     "bloom_threshold": 1.0,
     "bloom_knee": 0.5,
     "bloom_intensity": 0.05,
-    "image_sharpness": 0,
-    "ssr_enabled": true,
-    "ssgi_enabled": true
+    "image_sharpness": 0
   },
   "camera": {
     "mode": "static",

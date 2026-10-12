@@ -467,7 +467,7 @@ vkr_internal void test_harness_case_parser(void) {
       "\"frames\":{\"measure\":3},\"renderer\":{\"editor\":false,"
       "\"skybox\":true,\"taa_enabled\":true,\"backend\":\"metal\","
       "\"shadow_preset\":\"default\",\"shadow_cascades\":4,"
-      "\"render_scale\":0.72,\"upscaler\":\"spatial\","
+      "\"render_scale\":0.72,"
       "\"dynamic_resolution\":true,"
       "\"dynamic_resolution_min_scale\":0.55,"
       "\"dynamic_resolution_max_scale\":0.85,"
@@ -482,13 +482,13 @@ vkr_internal void test_harness_case_parser(void) {
   assert(parsed.renderer.render_scale == 0.7f);
   assert(parsed.renderer.dynamic_resolution_min_scale == 0.55f);
   assert(parsed.renderer.dynamic_resolution_max_scale == 0.85f);
-  /* MetalFX temporal upscaling is retired; a case naming it is invalid. */
-  const char *spatial = strstr(dynamic_case, "\"spatial\"");
-  assert(spatial);
+  /* Cases no longer author an upscaler; a case naming one is invalid. */
+  const char *dynamic_key = strstr(dynamic_case, "\"dynamic_resolution\":true");
+  assert(dynamic_key);
   char retired_upscaler[2048];
   snprintf(retired_upscaler, sizeof(retired_upscaler),
-           "%.*s\"metalfx_temporal\"%s", (int)(spatial - dynamic_case),
-           dynamic_case, spatial + sizeof("\"spatial\"") - 1u);
+           "%.*s\"upscaler\":\"spatial\",%s", (int)(dynamic_key - dynamic_case),
+           dynamic_case, dynamic_key);
   assert(!vkr_harness_case_parse(retired_upscaler, strlen(retired_upscaler),
                                  "memory", &parsed, &backend_error));
   char editor_dynamic[2048];
@@ -874,14 +874,6 @@ vkr_internal void test_harness_fingerprints(void) {
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
   case_manifest.renderer.render_scale = 1.0f;
-  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "fsr31");
-  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
-                                       &case_manifest, &profile,
-                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
-                                       environment, workload, policy, &error));
-  assert(strcmp(original_workload, workload) != 0);
-  char upscaler_workload[VKR_HARNESS_DIGEST_MAX];
-  snprintf(upscaler_workload, sizeof(upscaler_workload), "%s", workload);
   case_manifest.renderer.dynamic_resolution = true_v;
   case_manifest.renderer.dynamic_resolution_min_scale = 0.55f;
   case_manifest.renderer.dynamic_resolution_max_scale = 0.85f;
@@ -890,8 +882,7 @@ vkr_internal void test_harness_fingerprints(void) {
                                        &case_manifest, &profile,
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
-  assert(strcmp(upscaler_workload, workload) != 0);
-  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "spatial");
+  assert(strcmp(original_workload, workload) != 0);
   case_manifest.renderer.dynamic_resolution = false_v;
   case_manifest.renderer.dynamic_resolution_min_scale = 0.0f;
   case_manifest.renderer.dynamic_resolution_max_scale = 0.0f;
@@ -1002,55 +993,6 @@ vkr_internal void test_harness_fingerprints(void) {
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
-  /* A cold quality selection changes measured work. Missing and explicit high
-     must compare equally; balanced must not accidentally match that workload.
-   */
-  const char *previous_ssr_quality = getenv("VKR_SSR_QUALITY");
-  char saved_ssr_quality[4096] = {0};
-  const bool8_t had_ssr_quality = previous_ssr_quality != NULL;
-  if (had_ssr_quality) {
-    assert(vkr_string_copy_bounded(saved_ssr_quality, sizeof(saved_ssr_quality),
-                                   previous_ssr_quality));
-  }
-  const bool8_t previous_ssr_enabled = case_manifest.renderer.ssr_enabled;
-  case_manifest.renderer.ssr_enabled = true_v;
-#if defined(_WIN32)
-#define SET_SSR_QUALITY(value) assert(_putenv_s("VKR_SSR_QUALITY", value) == 0)
-#else
-#define SET_SSR_QUALITY(value) assert(setenv("VKR_SSR_QUALITY", value, 1) == 0)
-#endif
-#define SSR_FINGERPRINT(output)                                                \
-  assert(vkr_harness_case_fingerprints_with_scene_digest(                      \
-      VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,                      \
-      VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,                                    \
-      "sha256:"                                                                \
-      "0000000000000000000000000000000000000000000000000000000000000000",      \
-      environment, output, policy, &error))
-  char high_workload[VKR_HARNESS_DIGEST_MAX];
-  SET_SSR_QUALITY("high");
-  SSR_FINGERPRINT(high_workload);
-#if defined(_WIN32)
-  SET_SSR_QUALITY("");
-#else
-  assert(unsetenv("VKR_SSR_QUALITY") == 0);
-#endif
-  SSR_FINGERPRINT(workload);
-  assert(strcmp(high_workload, workload) == 0);
-  SET_SSR_QUALITY("balanced");
-  SSR_FINGERPRINT(workload);
-  assert(strcmp(high_workload, workload) != 0);
-  case_manifest.renderer.ssr_enabled = previous_ssr_enabled;
-  if (had_ssr_quality) {
-    SET_SSR_QUALITY(saved_ssr_quality);
-  } else {
-#if defined(_WIN32)
-    SET_SSR_QUALITY("");
-#else
-    assert(unsetenv("VKR_SSR_QUALITY") == 0);
-#endif
-  }
-#undef SSR_FINGERPRINT
-#undef SET_SSR_QUALITY
   // The default display-linear filtering path must not share the analytic
   // reference workload fingerprint. Only the explicit "0" spelling selects the
   // analytic path, and a case whose final pass does not filter has no cache.
@@ -1560,7 +1502,6 @@ vkr_internal void test_harness_report_shape(void) {
   report.case_manifest.renderer.render_scale = 0.5f;
   report.case_manifest.renderer.render_width = 320u;
   report.case_manifest.renderer.render_height = 180u;
-  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.upscaler, "fsr31");
   report.case_manifest.renderer.dynamic_resolution = true_v;
   report.case_manifest.renderer.dynamic_resolution_min_scale = 0.5f;
   report.case_manifest.renderer.dynamic_resolution_max_scale = 0.8f;
@@ -1643,7 +1584,6 @@ vkr_internal void test_harness_report_shape(void) {
   assert(strstr(json, "\"ibl_probe_limit\":1") != NULL);
   assert(strstr(json, "\"render_scale\":0.5") != NULL);
   assert(strstr(json, "\"render_resolution\":[320,180]") != NULL);
-  assert(strstr(json, "\"upscaler\":\"fsr31\"") != NULL);
   assert(strstr(json, "\"dynamic_resolution\":true") != NULL);
   assert(strstr(json, "\"content_scale\":1.25") != NULL);
   assert(strstr(json, "\"scale_range\":[") != NULL);
@@ -2337,12 +2277,6 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
       vkr_renderer_capture_channel_from_name("gtao_visibility");
   const VkrCaptureChannelId gtao_raw =
       vkr_renderer_capture_channel_from_name("gtao_raw");
-  const VkrCaptureChannelId ssr_depth =
-      vkr_renderer_capture_channel_from_name("ssr_depth");
-  const VkrCaptureChannelId ssr_raw =
-      vkr_renderer_capture_channel_from_name("ssr_raw");
-  const VkrCaptureChannelId ssr_reflection =
-      vkr_renderer_capture_channel_from_name("ssr_reflection");
   const VkrCaptureChannelId gbuffer_normal =
       vkr_renderer_capture_channel_from_name("gbuffer_normal");
   const VkrCaptureChannelId deferred_emissive =
@@ -2376,9 +2310,6 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
   assert(gtao_view_depth != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gtao_visibility != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gtao_raw != VKR_CAPTURE_CHANNEL_INVALID);
-  assert(ssr_depth != VKR_CAPTURE_CHANNEL_INVALID);
-  assert(ssr_raw != VKR_CAPTURE_CHANNEL_INVALID);
-  assert(ssr_reflection != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gbuffer_normal != VKR_CAPTURE_CHANNEL_INVALID);
   assert(deferred_emissive != VKR_CAPTURE_CHANNEL_INVALID);
   assert(resolve_barycentric_lod != VKR_CAPTURE_CHANNEL_INVALID);
@@ -2405,37 +2336,19 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
     assert(description && description->version == 2u);
     assert(strcmp(description->canonical_encoding, "RGBA8_UNORM_PNG") == 0);
   }
-  const VkrCaptureChannelDescription *ssr_depth_description =
-      vkr_renderer_capture_channel_get(ssr_depth);
-  assert(ssr_depth_description && ssr_depth_description->version == 1u);
-  assert(strcmp(ssr_depth_description->canonical_encoding, "R32_FLOAT_LE") ==
-         0);
-  const VkrCaptureChannelDescription *ssr_reflection_description =
-      vkr_renderer_capture_channel_get(ssr_reflection);
-  assert(ssr_reflection_description &&
-         ssr_reflection_description->version == 6u);
-  assert(strcmp(ssr_reflection_description->canonical_encoding,
-                "RGBA16_FLOAT_LE") == 0);
   const VkrCaptureChannelId rgba16f_channels[] = {
-      deferred_emissive,
-      resolve_barycentric_lod,
-      hdr_pre_bloom,
-      bloom_prefilter,
-      bloom_result,
-      hdr_combined,
-      hdr_pre_transmission,
-      hdr_post_transmission,
-      ssr_raw,
+      deferred_emissive,    resolve_barycentric_lod,
+      hdr_pre_bloom,        bloom_prefilter,
+      bloom_result,         hdr_combined,
+      hdr_pre_transmission, hdr_post_transmission,
   };
   for (uint32_t channel_index = 0u;
        channel_index < ArrayCount(rgba16f_channels); ++channel_index) {
     const VkrCaptureChannelDescription *description =
         vkr_renderer_capture_channel_get(rgba16f_channels[channel_index]);
-    /* hdr_pre_bloom and ssr_raw (GGX lobe rays, ADR-055) moved to
-       version 3. */
+    /* hdr_pre_bloom moved to version 3. */
     const bool8_t version_three =
-        rgba16f_channels[channel_index] == hdr_pre_bloom ||
-        rgba16f_channels[channel_index] == ssr_raw;
+        rgba16f_channels[channel_index] == hdr_pre_bloom;
     assert(description && description->version == (version_three ? 3u : 2u));
     assert(strcmp(description->canonical_encoding, "RGBA16_FLOAT_LE") == 0);
   }
@@ -2690,22 +2603,13 @@ vkr_internal void test_harness_capture_replays(void) {
   VkrHarnessCase case_manifest = {.capture_count = 1u};
   VkrHarnessCapture *capture = &case_manifest.captures[0];
   capture->at_frame = 2u;
-  capture->channel_count = 15u;
-  const char *channels[] = {"final_color",
-                            "depth",
-                            "gbuffer_normal",
-                            "gtao_view_depth",
-                            "gtao_raw",
-                            "gtao_visibility",
-                            "ssr_depth",
-                            "ssr_raw",
-                            "ssr_reflection",
-                            "normals",
-                            "unlit",
-                            "temporal_motion",
-                            "temporal_history",
-                            "indirect_diffuse",
-                            "shadow_debug_factor"};
+  capture->channel_count = 12u;
+  const char *channels[] = {"final_color",      "depth",
+                            "gbuffer_normal",   "gtao_view_depth",
+                            "gtao_raw",         "gtao_visibility",
+                            "normals",          "unlit",
+                            "temporal_motion",  "temporal_history",
+                            "indirect_diffuse", "shadow_debug_factor"};
   for (uint32_t i = 0; i < ArrayCount(channels); ++i) {
     snprintf(capture->channels[i], sizeof(capture->channels[i]), "%s",
              channels[i]);
@@ -2717,14 +2621,11 @@ vkr_internal void test_harness_capture_replays(void) {
       &case_manifest, replays, ArrayCount(replays), &replay_count, &error));
   assert(replay_count == 7u);
   assert(strcmp(replays[0].mode, "direct") == 0 &&
-         replays[0].channel_count == 9u);
+         replays[0].channel_count == 6u);
   assert(strcmp(replays[0].direct_channels[2], "gbuffer_normal") == 0);
   assert(strcmp(replays[0].direct_channels[3], "gtao_view_depth") == 0);
   assert(strcmp(replays[0].direct_channels[4], "gtao_raw") == 0);
   assert(strcmp(replays[0].direct_channels[5], "gtao_visibility") == 0);
-  assert(strcmp(replays[0].direct_channels[6], "ssr_depth") == 0);
-  assert(strcmp(replays[0].direct_channels[7], "ssr_raw") == 0);
-  assert(strcmp(replays[0].direct_channels[8], "ssr_reflection") == 0);
   assert(strcmp(replays[1].mode, "normals") == 0 &&
          replays[1].render_mode == VKR_RENDER_MODE_NORMAL);
   assert(strcmp(replays[2].mode, "unlit") == 0 &&

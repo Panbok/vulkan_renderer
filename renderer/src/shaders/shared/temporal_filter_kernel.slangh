@@ -2,11 +2,10 @@
 #include "temporal_contract.slangh"
 #endif
 
-// Recursive SSR radiance must settle before the stationary retention boost.
-float vkr_temporal_history_retention(bool stationary_surface, uint scene_history_mode)
+// A stationary surface keeps more history than a moving one.
+float vkr_temporal_history_retention(bool stationary_surface)
 {
-    return stationary_surface && scene_history_mode != VKR_TEMPORAL_HISTORY_SSR_SETTLING
-               ? 0.99f : 0.9f;
+    return stationary_surface ? 0.99f : 0.9f;
 }
 
 // Two complete 64-phase GTAO noise cycles, also divisible by raster jitter's

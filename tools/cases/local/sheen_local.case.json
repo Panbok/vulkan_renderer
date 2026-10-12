@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.sheen.layers",
   "suite": "local",
-  "description": "Charlie sheen zero, roughness endpoints, color/alpha maps, coated glass and retained coat-priority SSR.",
+  "description": "Charlie sheen zero, roughness endpoints, color/alpha maps and coated glass.",
   "scene": "assets/scenes/fixtures/sheen_local.scene.json",
   "seed": 1,
   "resolution": [
@@ -34,8 +34,6 @@
     "render_mode": "default",
     "display_transform": "agx",
     "gtao_enabled": false,
-    "ssr_enabled": true,
-    "ssgi_enabled": false,
     "bloom_enabled": false,
     "image_sharpness": 0
   },
@@ -61,9 +59,7 @@
         "hdr_post_transmission",
         "depth",
         "gbuffer_normal",
-        "gbuffer_specular",
-        "ssr_raw",
-        "ssr_reflection"
+        "gbuffer_specular"
       ]
     }
   ],

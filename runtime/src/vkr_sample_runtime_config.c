@@ -123,8 +123,8 @@ vkr_internal bool8_t sample_bootstrap_font_directory(char *path,
 }
 
 /* Missing files keep defaults; an invalid file is reported and ignored.
- * Vulkan's desktop pipeline offers FSR 3.1 temporal upscaling; Metal's tiled
- * pipeline offers dynamic resolution of its spatial upscale (ADR-087). */
+ * Metal's tiled pipeline offers dynamic resolution of its spatial upscale
+ * (ADR-087). */
 vkr_internal bool8_t
 sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
                      VkrSampleRuntimeOptions *options) {
@@ -164,12 +164,7 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
     fprintf(stderr, "Ignoring invalid Graphics settings: %s\n", graphics_path);
   }
 
-  const bool8_t temporal_available =
-      backend == VKR_RENDERER_BACKEND_TYPE_VULKAN;
   const bool8_t dynamic_available = backend == VKR_RENDERER_BACKEND_TYPE_METAL;
-  if (!temporal_available) {
-    settings.temporal_upscaling = false_v;
-  }
   if (!dynamic_available) {
     settings.dynamic_resolution = false_v;
   }
@@ -181,14 +176,11 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
   options->graphics_path = graphics_path;
   options->graphics = (VkrGraphicsSettingsState){
       .settings = settings,
-      .temporal_upscaling_available = temporal_available,
       .dynamic_resolution_available = dynamic_available,
       .graphics_pipeline = vkr_graphics_pipeline_for_backend(backend),
       .spatial_render_scale_available =
           backend == VKR_RENDERER_BACKEND_TYPE_METAL,
       .high_dpi_available = high_dpi_available,
-      .temporal_upscaling_name =
-          temporal_available ? string8_lit("FSR 3.1") : (String8){0},
   };
   return true_v;
 }
@@ -284,10 +276,6 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
                                 const VkrSampleRuntimeOptions *options) {
   const VkrGraphicsSettings *graphics = &options->graphics.settings;
   const bool8_t paneled = runtime_config->presentation.paneled;
-  /* Only Vulkan offers temporal upscaling (sample_load_graphics). */
-  const VkrUpscaleMode upscale_mode = graphics->temporal_upscaling
-                                          ? VKR_UPSCALE_MODE_FSR31
-                                          : VKR_UPSCALE_MODE_SPATIAL;
   const uint32_t width = runtime_config->presentation.window_width_pt
                              ? runtime_config->presentation.window_width_pt
                          : paneled ? 1280
@@ -344,7 +332,6 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
                                  : VKR_DISPLAY_OUTPUT_SDR,
       .render_scale =
           vkr_graphics_settings_render_scale(&options->graphics, graphics),
-      .upscale_mode = upscale_mode,
       /* The tiled pipeline's adaptive quality upscales spatially, so it
          keeps 0.65 of each axis at least and holds the 60 Hz frame
          (ADR-087). */

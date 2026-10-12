@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -78,7 +78,7 @@ path depends on the capability.
 | Ray tracing | API, no hardware units | API, no hardware units | Hardware | `VK_KHR_ray_query` | `VK_KHR_ray_query` | Not used |
 | Lossy render-target compression | No | Yes | Yes | Not exposed | Not exposed | Not used |
 | Samplers per stage in argument buffers | 996 | 996 | 500,000 | Not applicable | Not applicable | The Metal sampler cache holds at most 932 states below Apple9, keeping 64 for inline MSL samplers, and reuses the closest cached state beyond that |
-| Temporal upscaler | None; spatial upscale with adaptive quality | Same | Same | FSR 3.1 | FSR 3.1 | ADR-087 (decision 12), ADR-052 |
+| Scene scaling | Spatial upscale with adaptive quality | Same | Same | None; unit scale | None; unit scale | ADR-087 (decision 12); Vulkan FSR 3.1 was removed (ADR-052) |
 | Memory budget source | `recommendedMaxWorkingSetSize` | Same | Same | `VK_EXT_memory_budget`, not enabled | Same | Metal only |
 | `VK_EXT_descriptor_heap` | Not applicable | Not applicable | Not applicable | Missing on Windows drivers | Present | Not used; adopting it drops Windows RDNA 2 |
 

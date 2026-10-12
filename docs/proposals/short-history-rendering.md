@@ -9,7 +9,10 @@ authority: proposal
 The owner decided on 2026-10-12 to stop hiding stochastic shading behind long
 temporal history. This proposal records those decisions, the current baseline,
 the work in order, the open choices and the Bistro evidence each step needs.
-No part of it is implemented.
+Section 1 is implemented (2026-10-12): [ADR-052](../adr/052-vulkan-fsr31-upscaling.md),
+[ADR-055](../adr/055-screen-space-reflections.md) and
+[ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md) record the
+removal as declined. The other sections are not implemented.
 
 ## Owner decisions (2026-10-12)
 
@@ -20,7 +23,7 @@ No part of it is implemented.
 | FSR 3.1 | Remove. Revisit when a PC release expects vendor upscalers, or the desktop pipeline misses its budget at native resolution. |
 | Reflections | Baked, box-projected reflection probes for metal, weapons and general surfaces; planar reflections for water only. No voxel reflections. |
 | Diffuse GI | Baked lightmaps and diffuse volumes on both pipelines; runtime DDGI-style volume updates on the desktop pipeline only (section 6). |
-| Probe audit | Audit the baked reflection probes, bake and lookup, before they replace SSR (section 5). |
+| Probe audit | Audit the baked reflection probes, bake and lookup, now that they replace SSR (section 5). |
 | Anti-aliasing | Replace the long-history TAA with the original SMAA T2x: two jitter phases and one previous frame. |
 | GTAO | Spatial only: fixed noise and more edge-aware denoise passes. |
 | Tone mapping | Replace AgX with the Gran Turismo 7 operator on both pipelines, without an offline A/B comparison first. |
@@ -42,13 +45,8 @@ previous frame.
   identity, depth and raw-footprint history validation
   ([`vkr_temporal.c`](../../renderer/src/vkr_temporal.c)). FXAA runs on
   output when TAA does not ([ADR-043](../adr/043-presentation-dpi-and-color-transfer.md)).
-- **SSR and SSGI** ([ADR-055](../adr/055-screen-space-reflections.md),
-  [ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md),
-  [ADR-062](../adr/062-layered-clearcoat.md) coat priority): desktop only,
-  each with its own history, read through the TAA or temporal-transform tuple.
-- **FSR 3.1** ([ADR-052](../adr/052-vulkan-fsr31-upscaling.md)): opt-in,
-  off by default (`settings.temporal_upscaling = false_v` in
-  [`vkr_sample_runtime_config.c`](../../runtime/src/vkr_sample_runtime_config.c)).
+- **SSR, SSGI and FSR 3.1** are removed (section 1). The desktop pipeline
+  renders the Scene at unit scale.
 - **GTAO** ([ADR-042](../adr/042-scene-linear-post-processing.md)): desktop
   only, XeGTAO High (3 slices × 3 steps), full resolution, one 3×3 denoise
   pass ([`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json)
@@ -72,26 +70,11 @@ previous frame.
 
 ## 1. Remove SSR, SSGI and FSR 3.1
 
-### Scope
-
-- Renderer: `vkr_ssr.*`, `vkr_ssgi.*`, `ssr_kernel.slangh`,
-  `ssgi_kernel.slangh`, `ssgi_contract.slangh`, `post/ssgi.slang`, their
-  passes, images and executors in `main.rendergraph.json`, and their paths in
-  `vkr_vulkan_deferred.c`, `vkr_vulkan_graph.c`, `vkr_vulkan_pipelines.c`,
-  `vkr_temporal.c` (SSR settling mode, signatures) and `deferred.slang`.
-- FSR: `vkr_vulkan_fsr.c`, `vkr_vulkan_fsr_sdk.*`, `post/fsr31.slang`,
-  `cmake/vkr_fsr.cmake`, `VKR_UPSCALE_MODE_FSR31`, the runtime and editor
-  settings and the scale-dependent jitter path.
-- Evidence and tools: 54 local cases (`ssr_*`, `ssgi_*`, `fsr31_*`,
-  `sharpness_bistro_fsr_*`, `dgtao_ssr_local`), 6 scene fixtures, 8 material
-  fixtures, the SSR and SSGI checks in `tools/checks/`, the harness's SSR and
-  SSGI sample phases ([ADR-051](../adr/051-renderer-harness-and-evidence.md)),
-  and 61 files in `assets/verification/renderer-features/`.
-- Kept: motion vectors, the temporal-transform tuple for motion blur
-  ([ADR-067](../adr/067-post-reconstruction-motion-blur.md)), cloud and froxel
-  history, reflection probes and the diffuse-volume lookup.
-
-### What replaces each signal
+Implemented on 2026-10-12; the declined ADRs record what was removed and when
+to revisit. Motion vectors, the temporal-transform tuple for motion blur
+([ADR-067](../adr/067-post-reconstruction-motion-blur.md)), cloud and froxel
+history, reflection probes and the diffuse-volume lookup stay. The signals the
+removal leaves to other work:
 
 | Removed | Replacement |
 |---|---|
@@ -103,17 +86,7 @@ previous frame.
 
 Probe normalization by local baked irradiance and per-room probes
 ([Large-level rendering](large-level-rendering.md), section 4) are the follow-up
-fixes for probe light in the wrong place. They are not part of this removal.
-
-### Evidence
-
-- Release and Debug builds, the CPU suites, and a Vulkan validation run of the
-  Bistro smoke case with zero messages.
-- Bistro street and interior captures before and after with SSR and SSGI off
-  in the before run: depth and `gbuffer_*` identical, `final_color` differing
-  only where SSR or SSGI wrote.
-- Release timing of the Bistro profile at 2560×1440 before and after; the
-  removal must not add cost to any remaining pass.
+fixes for probe light in the wrong place (section 5).
 
 ## 2. SMAA T2x anti-aliasing
 
@@ -137,8 +110,7 @@ and FXAA:
 5. A texture LOD bias of about −0.5 compensates for the jitter's blur.
 
 Removed with portable TAA: the eight-phase Halton sequence, the 0.9 and 0.99
-history weights, the 128-sample static accumulation and the SSR settling
-mode. Existing screen-space specular AA stays; two frames cannot hide
+history weights and the 128-sample static accumulation. Existing screen-space specular AA stays; two frames cannot hide
 shimmer that long history used to average.
 
 The tiled pipeline keeps multisampled forward rendering without history
@@ -418,7 +390,7 @@ visibility and composition stay unchanged:
 
 ## Order
 
-1. Remove SSR, SSGI and FSR 3.1 (section 1).
+1. Remove SSR, SSGI and FSR 3.1 (section 1). Done 2026-10-12.
 2. Probe audit fixes (section 5, item 1); probes become the only glossy
    reflection source in step 1.
 3. Spatial GTAO (section 3); independent of AA once TAA no longer drives the
@@ -433,7 +405,7 @@ visibility and composition stay unchanged:
 
 | Step | Documents |
 |---|---|
-| 1 | ADR-055, ADR-060 and ADR-052 become Declined with this rationale; ADR-037, 051, 054, 062 and 087 lose SSR, SSGI and FSR claims; `ARCHITECTURE.md`; [Sparse diffuse volumes](sparse-diffuse-volumes.md) |
+| 1 | Done 2026-10-12: ADR-052, ADR-055 and ADR-060 declined; the other ADRs, `ARCHITECTURE.md` and the proposals lost their SSR, SSGI and FSR claims |
 | 2 | ADR-019, ADR-054, ADR-058, ADR-103; [Tiled graphics pipeline](tiled-pipeline.md) remaining-work item 1, which lists per-surface probes that already exist |
 | 3 | ADR-042 (GTAO) |
 | 4 | ADR-043, 044, 061 and 087 (colour pipeline), ADR-099 |

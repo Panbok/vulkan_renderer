@@ -34,12 +34,9 @@
     "render_mode": "default",
     "display_transform": "agx",
     "gtao_enabled": false,
-    "ssgi_enabled": false,
-    "ssr_enabled": false,
     "bloom_enabled": false,
     "image_sharpness": 0,
-    "render_scale": 0.666666667,
-    "upscaler": "spatial"
+    "render_scale": 0.666666667
   },
   "camera": {
     "mode": "static",

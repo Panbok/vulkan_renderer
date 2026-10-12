@@ -32,7 +32,7 @@ Each domain below names the backends that run it:
   light arithmetic that forward and deferred shading both call.
 - **Desktop**: only Vulkan runs it. This covers the visibility buffer,
   G-buffer resolve, deferred lighting, the local shadow mask, transmission
-  layers, TAA, FSR 3.1, SSR, SSGI, GTAO, depth of field, motion blur, froxel
+  layers, TAA, GTAO, depth of field, motion blur, froxel
   fog, profiled surface diffusion, FXAA and the clearcoat, sheen, anisotropy
   and thin-sheet diffuse transmission material layers.
 - **Tiled**: only Metal runs it: the tiled forward, atmosphere, blend and
@@ -179,8 +179,8 @@ on Metal. It shares kernels and host records with the desktop pipeline:
 Thin-sheet diffuse transmission is desktop-only; the tiled forward shader does
 not draw it (ADR-087, decision 8). Production Slang compilation and nine
 affected SPIR-V layout/validation checks pass. Vulkan material rows are 272
-bytes, deferred roots 192 bytes and SSGI composite roots 432 bytes; both roots
-borrow the existing visible-draw buffer at graph binding 11, without new images.
+bytes and deferred roots 192 bytes; the deferred root borrows the existing
+visible-draw buffer at graph binding 11, without new images.
 [ADR-065](065-thin-sheet-diffuse-transmission.md) owns the split, input
 restrictions and offline transport. The 2026-09-12 Windows sweep passes a Debug
 synchronization-validation resize; Vulkan output checks of front/back energy,
@@ -252,8 +252,8 @@ rescaling applies to the histories each class keeps.
     Metal tonemap root carries `inverse_pre_exposure`.
   - Bloom parameters carry `inverse_pre_exposure`.
   - The cloud trace root carries `history_pre_exposure_scale` on both
-    backends; on Vulkan so do the TAA, SSR temporal, SSGI temporal, froxel
-    inject and FSR stabilize roots, and TAA also carries `pre_exposure`.
+    backends; on Vulkan so do the TAA and froxel inject roots, and TAA also
+    carries `pre_exposure`.
 - **Root sizes.** The Metal cloud trace root grows to 144 bytes and the Metal
   tonemap root to 64; the Vulkan TAA root grows to 160 bytes.
 - **Metal evidence.** The forced P = 1, 8 and 1/64 Bistro runs used the
@@ -297,8 +297,8 @@ atmosphere, aerial perspective and volumetric cloud domains.
 [ADR-109](109-reversed-camera-depth.md) reverses camera depth in GPU
 culling and the HZB, the editor grid and clouds (shared), the tiled
 forward, atmosphere and picking passes (tiled), and fog, froxel fog, depth
-of field, motion blur, surface diffusion, transmission peeling, TAA's sky
-history and FSR 3.1 (desktop). Shadow kernels are unchanged.
+of field, motion blur, surface diffusion, transmission peeling and TAA's sky
+history (desktop). Shadow kernels are unchanged.
 
 - **Metal (tiled).** Bistro snapshots before and after match within
   isolated silhouette pixels, with identical sky masks, linear depth and
@@ -307,8 +307,8 @@ history and FSR 3.1 (desktop). Shadow kernels are unchanged.
 - **Vulkan (desktop).** The changed modules compile and pass `spirv-val`.
   No native run exists. Missing gate: a Windows Release
   `bistro_snapshot` against a before run of the same build, plus a focused
-  Debug validation run with fog, depth of field, motion blur, transmission
-  and FSR 3.1 on.
+  Debug validation run with fog, depth of field, motion blur and
+  transmission on.
 
 ## Editor inspection views
 
@@ -340,8 +340,8 @@ views wait for a Windows host. On 2026-10-09 the tiled pipeline drew all
 seven views on Bistro and passed Metal API validation.
 
 On the desktop pipeline the three inspection modes bypass bloom,
-analytic/froxel fog, SSGI, SSR, subsurface diffusion, depth of field and motion
-blur, and Wireframe also bypasses temporal reconstruction and GTAO.
+analytic/froxel fog, subsurface diffusion, depth of field and motion blur,
+and Wireframe also bypasses temporal reconstruction and GTAO.
 Orthographic frames have a separate per-frame spatial capability boundary
 recorded in [ADR-046](046-editor-viewport-mapping-and-picking.md).
 
@@ -381,13 +381,14 @@ pointer reads: the same broadcast in the visibility vertex shader made
 sum fell from 16.68 to 14.98 ms and `Temporal.Resolve` from 3.41 to 2.03 ms
 (reports `sha256:00023a09a58cd98c5837493ac487c4e06f1b0cf6765441329773129325b97c5e`,
 `sha256:f3abae63cd90c291b3d24d909967556e73ff24445187acdc1547ac875b1a7ae5`).
-With GTAO, SSR, SSGI, bloom, depth of field and motion blur also on, it fell
-from 35.52 to 29.83 ms; `SSR.Temporal` fell from 3.85 to 2.45 ms
+With GTAO, SSR, SSGI, bloom, depth of field and motion blur also on (SSR and
+SSGI were removed on 2026-10-12), it fell from 35.52 to 29.83 ms;
+`SSR.Temporal` fell from 3.85 to 2.45 ms
 (`sha256:b9c00e110fb02548e29bb7a753f3f740a14b5d569d9f95a2c031698e0994ce1b`,
 `sha256:3d69e50a27b6b8afa2fda4717e81c36c662f566c87730528e92d9508502f75c3`).
-Without SSR, moving-camera TAA captures of the old and new builds differ no
-more than two runs of one build do. With SSR, the trace rounds differently:
-its first captured frame differs in 69 pixels by at most 1.1e-4, and the SSR
+Without SSR, moving-camera TAA captures of the old and new builds differed no
+more than two runs of one build do. With SSR, the trace rounded differently:
+its first captured frame differed in 69 pixels by at most 1.1e-4, and the SSR
 and TAA histories spread that to about 1,000 final pixels by frame 30, 15 of
 them above 2/255, within the harness capture thresholds.
 
@@ -426,26 +427,15 @@ dimensions with the decal count at bytes 416, 424, 432 and 448 (ADR-092), for
 a 464-byte size. The G-buffer owns sky motion for every temporal consumer;
 portable resolve carries no duplicate reprojection matrix. The Vulkan temporal
 resolve root carries current and previous pixel jitter at bytes 128 and 136
-of its 144 bytes for canonical color reconstruction and raw metadata
+of its 160 bytes for canonical color reconstruction and raw metadata
 validation, and the checked-scene flag at byte 124. It stores accumulation age
 in the existing depth-history second channel and retains raw depth in the
 first. Native content/revision eligibility and the portable signature gate the
 static algorithm.
 
-Vulkan FSR 3.1 ([ADR-052](052-vulkan-fsr31-upscaling.md)) is desktop-only. Its
-prepare shader converts raw HDR, temporal validity and nearest transmission
-depth into depth and mask inputs. The SDK consumes these with normalized
-temporal motion and records the upscale.
-Its 48-byte prepare root carries the submitted-history scene-stationary proof;
-optical contrast contributes only to composition and is suppressed for matching
-scenes. Reactive rejection retains authored reactivity and missing-motion protection. Its separate 48-byte stabilization root carries output
-and render extents, raster jitter, sampled history/reactivity indices and the
-same stationary proof. The output-resolution pass averages 128 stationary samples
-and freezes completed pixels; changes or reactive footprints reset age. Age uses
-private output alpha, removed by the FSR-only fullscreen opaque-alpha flag.
-Production Vulkan compilation and reflection pass. Bounded Bistro static,
-camera-translation and editor-resize runs pass native Vulkan diagnostics.
-ADR-052 records the accepted capability boundary and evidence limits.
+Vulkan FSR 3.1 ([ADR-052](052-vulkan-fsr31-upscaling.md)) was removed on
+2026-10-12 with its prepare and stabilization roots and the SDK dispatch.
+Vulkan renders the Scene at unit scale.
 
 Presentation sharpening is shared: both production shader libraries use the
 bounded cross-neighborhood arithmetic of `shared/sharpen_kernel.slangh`. Frame
@@ -454,8 +444,9 @@ without extra samples. The Vulkan utility root carries strength in
 `point_light_grid_origin_cell_size.z` beside output extent in xy, with unchanged
 native layout. Metal's tonemap root carries flags at byte 8 and float strength
 at byte 12; exposure and extent remain at bytes 16 and 24, with the ABI
-manifest updated. Vulkan Release captures cover FSR/TAA/native, both FXAA
-states, zero/default/maximum strength and editor text. The enabled editor/text
+manifest updated. Vulkan Release captures covered FSR (removed on
+2026-10-12), TAA and native presentation, both FXAA states,
+zero/default/maximum strength and editor text. The enabled editor/text
 Debug case passes Khronos synchronization validation with no API warnings or
 errors; local cost and quality limits are in ADR-043. Native Metal sharpening
 captures are not recorded.
@@ -520,8 +511,9 @@ transmission candidates passed API validation
 Its matched Release captures were byte-identical with SHA-256
 `82510845bfe55d00ca57c4948579a0ebe367e8dd210f8f42fa48b9a2b49a7c28`.
 On 2026-10-12 a Vulkan Release profile of a copy of `ssr_ghost_under_bar`
-under `VK_LAYER_KHRONOS_validation`, with core and synchronization checks
-enabled by a settings file, logged no message over the partitioned ranges
+(an SSR case deleted with SSR the same day) under
+`VK_LAYER_KHRONOS_validation`, with core and synchronization checks enabled by
+a settings file, logged no message over the partitioned ranges
 (`sha256:4c08ff5cb67021c8df1e94609156bf05e5486a33b681e4c45d6547187f6e971b`);
 no layer status line confirmed that the synchronization checks ran.
 
@@ -755,12 +747,9 @@ domain under the [evidence rules](#evidence-rules).
 | IBL and SH | Shared | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
 | Sky atmosphere and aerial perspective | Shared | `shared/atmosphere_kernel.slangh` | `metal/msl/ibl/atmosphere.metal`, `world/lighting.metalh`, `world/tiled.metal` | `vulkan/slang/ibl/atmosphere.slang`, `world/default.slang`, `deferred.slang`, `post/fog.slang`, `post/froxel_fog.slang` |
 | Volumetric clouds | Shared | `shared/cloud_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `ibl/sh_projection.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `world/tiled.metal` | `vulkan/slang/ibl/clouds.slang`, `ibl/default.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |
-| Opaque SSR | Desktop | `shared/ssr_kernel.slangh`; the sample sequence of `ssgi_kernel.slangh` | — | `vulkan/slang/world/deferred.slang` |
-| Opaque SSGI | Desktop | `shared/ssgi_kernel.slangh` | — | `vulkan/slang/post/ssgi.slang` |
 | Exposure/bloom | Shared | matching `shared/*_kernel.slangh` | `metal/msl/post/exposure.metal`, `bloom.metal` | `vulkan/slang/post/exposure.slang`, `bloom.slang` |
 | GTAO | Desktop | `shared/gtao_kernel.slangh` | — | `vulkan/slang/post/gtao.slang` |
 | Temporal resolve | Desktop | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | — | `vulkan/slang/world/deferred.slang` |
-| FSR 3.1 | Desktop | graph inputs and prepared temporal metadata | — | `vulkan/slang/post/fsr31.slang`, FSR SDK dispatch |
 | Depth of field, motion blur, surface diffusion | Desktop | `shared/dof_kernel.slangh`, `motion_blur_kernel.slangh`, `subsurface_kernel.slangh` | — | `vulkan/slang/post/dof.slang`, `motion_blur.slang`, `subsurface.slang` |
 | Tonemap/sharpening/display output | Shared | shared exposure state, `shared/sharpen_kernel.slangh`, `agx_kernel.slangh`, `display_output_kernel.slangh`, `color_grading_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
 | FXAA | Desktop | — | — | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
@@ -779,18 +768,11 @@ Fog composition preserves scene HDR and ray reconstruction extrapolates beyond
 raster far depth. Material planes are conditionally declared from an opaque
 feature aggregate; the Vulkan path guards absent texture bindings. Deferred,
 forward and transmission lighting share active lobe traversal. Deferred lighting
-skips discarded environment diffuse, and SSGI excludes camera-directed specular
-from its source. Vulkan splits deferred lighting into base and layered kernels
-(a Slang generic value parameter) with 8x8 group classification; the lighting
-root carries the split flag at byte 164. Both Vulkan modules pass `spirv-val`
+skips discarded environment diffuse. Vulkan splits deferred lighting into base
+and layered kernels (a Slang generic value parameter) with 8x8 group
+classification; the lighting root carries the split flag at byte 156. Both
+Vulkan modules pass `spirv-val`
 with matching root offsets.
-
-SSGI depth-base writes current-frame RG32UI receiver metadata with bit-preserved
-32-bit depth and an exact local offset. Trace, temporal and composite reuse it.
-Vulkan root sizes are 304/320/368/448 bytes for depth-base/trace/temporal/
-composite; shared parameters remain 288 bytes. Source review and CPU
-arithmetic do not establish execution; a native Vulkan run of this change is
-pending.
 
 Material normals transform through the explicit tangent/bitangent/normal basis;
 Slang row constructors must not transpose that basis. Native model-matrix
@@ -816,18 +798,18 @@ these fields. [ADR-053](053-energy-compensated-ggx.md) owns the equations and
 approximation. No furnace test has run on the tiled pipeline or on Vulkan; the
 earlier Metal furnace used the removed deferred lighting.
 
-Clearcoat is desktop-only and changes world material rows and resolve/deferred,
-SSGI composite, and SSR trace/temporal/composite roots; Vulkan rows are 192
-bytes. Production SPIR-V reflection passes all nine affected compute modules,
+Clearcoat is desktop-only and changes world material rows and resolve/deferred
+roots; Vulkan rows are 192 bytes. Production SPIR-V reflection passed all nine
+compute modules it affected at the time, including the SSGI and SSR modules
+removed on 2026-10-12,
 and the 2026-09-12 Windows sweep passes a Debug synchronization-validation
 resize. Vulkan output checks are pending. [ADR-062](062-layered-clearcoat.md)
-owns its independent-normal, layer allocation, graph storage and coat-priority
-SSR policy.
+owns its independent-normal, layer allocation and graph storage policy.
 
 Charlie sheen is desktop-only and extends the Vulkan material rows to 224
 bytes. The shared layer and two-component rectangle kernels use a separate
 immutable 32-byte table block addressed by the Vulkan frame root. Resolve
-writes a sheen G-buffer; deferred lighting and SSGI/SSR composites consume it.
+writes a sheen G-buffer; deferred lighting consumes it.
 Actual SPIR-V reflection passes, and the 2026-09-12 Windows sweep passes a
 Debug synchronization-validation resize. The implementation decodes
 positive-orientation matrix parameters and clips rectangles to the receiver
@@ -860,10 +842,10 @@ names the active lamp groups in `lamp_mask` at byte 28 and writes the sun-key
 luminance into the composed texture's second band, whose row
 `VkrMetalPacketDiffuseVolume::dimensions.w` names; `VkrMetalPacketLightmap`
 carries `active_lamp_mask` at byte 152. Vulkan's volume images hold the sky
-share in alpha, and the 432-byte SSR composite root names the volume image
-at byte 416, the baked lamp irradiance at 424 and the hidden baked-lamp light
-at 428. Native evidence: Metal Bistro snapshots and Black Mesa captures
-(2026-10-11, ADR-054); Vulkan is compiled and passes `spirv-val` only, and
+share in alpha; the SSR composite root that also named the volume and baked
+lamp images was removed with SSR on 2026-10-12. Native evidence: Metal
+Bistro snapshots and Black Mesa captures (2026-10-11, ADR-054); Vulkan is
+compiled and passes `spirv-val` only, and
 has no native run of the lamp band or of lamp light in lightmapped
 reflections.
 
@@ -896,8 +878,8 @@ moments passes (`pass.shadow.moments`), on Vulkan; the tiled pipeline keeps
 depth PCF for every cascade and renders no moments (ADR-041). The passes use
 a 32-byte root: depth and moments bindless indices at bytes 0 and 4, depth
 and moments layers, and the two square sizes. The Vulkan deferred-lighting
-root keeps its size and reuses bytes 172 for the
-moments index and 200 for the linear-sampler slot; `UINT32_MAX` keeps PCF.
+root keeps its size and reuses bytes 164 for the
+moments index and 192 for the linear-sampler slot; `UINT32_MAX` keeps PCF.
 Vulkan's compiled-SPIR-V reflection test covers both roots. Native Vulkan
 output of the far cascades is not recorded.
 
@@ -910,121 +892,21 @@ Directional GTAO is desktop-only and keeps the existing 192-byte parameter
 record; Vulkan uses its existing 240-byte utility root. Raw and denoised graph
 images are RGBA8, with world bent direction in RGB and visibility in alpha. The
 shared kernel holds horizon moments, packing, multi-bounce diffuse and cone
-specular arithmetic. Base deferred environment and SSR receiver weights use the
-shared cone factor. Deferred coat lighting and matching SSR probe removal use
-the coat-directed cone, with bent direction decoded against the coat normal and
-packed coat roughness. SSR composite uses filtered coat roughness for incoming
-reflection shading. This corrected Vulkan's omitted coat occlusion. Baked
+specular arithmetic. Base deferred environment weights use the shared cone
+factor. Deferred coat lighting uses the coat-directed cone, with bent direction
+decoded against the coat normal and packed coat roughness. This corrected
+Vulkan's omitted coat occlusion. Baked
 volumes retain scalar AO. Production SPIR-V validation passes; native Vulkan
 output checks are pending. ADR-042 owns the lighting policy.
 
-Opaque SSR is desktop-only. [ADR-055](055-screen-space-reflections.md) owns its
-accepted reflected-hit reprojection, incoming-radiance history, storage and
-fallback policy. Shared `VkrSsrParams` stays 288 bytes. The temporal-only
-camera record is 128 bytes, with inverse current view at 0 and exact selected
-producer view at 64.
-
-| Vulkan root | Size | Changed contract |
-| --- | ---: | --- |
-| SSR depth base | 304 B | Independent floor-half extent; receiver-coordinate output removed |
-| SSR trace | 336 B | Full-source raw and uint4 ray record; receiver-coordinate input removed; `anisotropy_texture` 328 and `sample_phase` 332 (2026-10-11) |
-| SSR temporal | 512 B | Camera record, selected transforms, paired identities and wider geometry; receiver input removed; `anisotropy_texture` 500 and `sample_phase` 504 (2026-10-11) |
-| SSR composite | 432 B | Same-pixel incoming history, current receiver shading; volume image 416, baked lamp irradiance 424, hidden baked-lamp light 428 |
-
-Vulkan embeds the camera record at offset 288, then visible
-rows/instances/prior transforms at 416/424/432, producer frame at 440, hit
-texture at 460, and output color/geometry/identity at 476/480/484.
-Specular/coat indices are 488/492, the history pre-exposure scale is at 496,
-anisotropy and sample phase at 500/504, and byte 508 is reserved. Native
-assertions and compiled reflection pin each layout. Existing 80-byte GPU
-transform rows retain their layout; CPU graph-buffer history metadata adds an
-owned camera view matrix, published only after successful submission.
-
-Trace stores one ray record per source pixel in full-source RGBA32_UINT: a
-hit's UV as two 16-bit unorms, its positive view depth, the ray's pdf and the
-reflected visible row, or a miss's octahedral direction, MISS or UNKNOWN
-state and pdf. The full-resolution geometry history is
-RGBA32F (receiver depth, virtual depth, selected view-normal octahedral components);
-RGBA32_UINT identity stores receiver and reflected instance index/generation.
-History color remains RGBA16F and now contains incoming radiance. The approved
-full-resolution trial adds 42.1875 MiB with three slots at source 1280×720, or
-112.5 MiB with eight, below the approved 64/169 MiB bounds. Including the earlier
-reflected-hit history expansion, the increase is 140.625/316.40625 MiB. Alignment
-and resize overlap are excluded. History instance count and completion ownership
-are unchanged; the obsolete half-size RG32_UINT receiver image is removed.
-
-Since 2026-10-11 the temporal entry resolves a rough receiver from its own ray
-and eight rays on a rotated Vogel spiral of radius 1 to 3 source pixels,
-weighted by the receiver plane, the spiral and the receiver's GGX value over
-each ray's pdf; a mirror uses its own ray. Among rays of the pixel's own
-draw, the shared ranking helper selects the largest weighted RGB component,
-breaking equal-energy ties by covered weight, to supply the reflected hit.
-Transported hit/receiver models and producer camera supply the motion of the
-virtual reflected point, blended toward the receiver as roughness rises;
-adding its UV delta preserves the current full-resolution pixel's offset.
-Current jittered projection plus producer-minus-current jitter supplies
-history UV. Each history tap compares the transported receiver plane's depth
-along its own camera ray and the selected normal; identities are compared
-only for moved instances. For a receiver below roughness 0.4, accepted inner
-taps give a 12-tap Catmull-Rom (the 4×4 footprint without its corners);
-otherwise accepted bilinear taps resolve. Each receiver fetches its first
-candidate once, the reflected hit or else its surface motion, and a weak
-reflected-hit result tries the surface motion; both candidates share one
-transported receiver plane (2026-10-12). Shared affine, projection,
-octahedral, lobe and acceptance math runs in the native entry. Curved surfaces remain approximate.
-[ADR-055](055-screen-space-reflections.md) owns the weights and limits.
-
-Per candidate the temporal entry reads up to 12 history taps of geometry and
-colour (four for a rough receiver), plus identity for moved instances,
-after nine ray records, raw samples, depths and normals; it writes three outputs. Former temporal
-material/LUT, motion and validity reads are removed. Graph bindings 17/18
-supply the hit image and exact prior transform buffer, and binding 19 the
-anisotropy plane. The graph declares these accesses; same-queue
-barriers synchronize the selected producer, while submitted readers extend last
-use. Output reuse still requires GPU completion.
-
-Composite applies current base BRDF, sheen/anisotropy and indirect-specular GTAO
-once. Coated pixels use filtered selected-normal roughness for new SSR and packed
-roughness with the coat-directed GTAO cone for exact old-probe removal, and
-scales coverage by the roughness fade below the cutoff. Trace samples one
-GGX lobe direction per rough receiver (binding 10 reads the anisotropy plane),
-takes one bilinear source sample per hit, and keeps full-resolution leaves
-and the 48-decision limit. It traces each source pixel, nominally four times the
-former floor-half grid, without another per-ray source read. The depth pyramid
-remains independently floor-half. Removed graph bindings are depth-base 3,
-trace 5 and temporal 1; surviving bindings retain their numbers.
-`ssr_reflection` version 6 denotes full-resolution incoming radiance with
-the lobe's hit share in alpha; earlier versions cannot be compared
-numerically. Raw is version 3, one lobe sample with its edge and depth
-confidence.
-
-The shared supported RGB-retention cap and 128-frame SSR settling period remain.
-Portable TAA caps ordinary history at 90% while settling, through the unchanged
-144-byte Vulkan root, with its mode at offset 124. SSR-off stationary retention
-is unchanged, and the checked 128-sample integral continues from the
-ordinary resolve's effective sample count (ADR-037); FSR retains its
-accepted policy. The 2026-10-11 SSR rework and its 2026-10-12 changes pass
-`spirv-val`, compiled root offsets and 416 `check_ssr_stability.py`
-outputs; no 2026-10-12 change moved a root, binding or offset. Native
-Vulkan evidence (2026-10-12, RX 6700 XT, Release, dirty tree, local and
-not authoritative): `ssr_tier_bistro`, `ssr_ghost_under_bar_taa`,
-`ssr_reflected_hit_flicker` with its checker, `ssr_reflected_hit_motion`
-in six replays with its checker (the rough zero sample and the
-exact-predecessor history without TAA), byte-identical captures for the
-output-identical fetch restructure, and API validation of
-`ssr_ghost_under_bar` (TAA off) and `ssr_reflected_hit_motion` with no
-message; [ADR-055](055-screen-space-reflections.md) records the values.
-Metal has no consumer. The
-reflected-hit change passed Release app/editor builds, 268
-independent shared-math outputs, eleven SSR/SSGI/deferred SPIR-V modules and
-Vulkan host syntax checks. Compiled temporal root/camera/transform strides are
-512/128/80 bytes. The radiance-owner selection, the former nine spaced rough taps and
-full-resolution tracing were chosen from captures of the removed Metal desktop
-implementation; the
-[reflected-hit](../../assets/verification/renderer-features/ssr-reflected-hit.txt),
-[radiance-owner](../../assets/verification/renderer-features/ssr-radiance-owner.txt)
-and [full-resolution tracing](../../assets/verification/renderer-features/ssr-full-resolution-tracing.txt)
-records keep their commands, visual and cost limits.
+Opaque SSR ([ADR-055](055-screen-space-reflections.md)) was removed from the
+desktop pipeline on 2026-10-12 with its shared kernel, Vulkan roots, graph
+passes and `ssr_depth`, `ssr_raw` and `ssr_reflection` capture channels; Git
+history keeps its contracts and evidence. Desktop reflections come from the
+global environment and box-projected reflection probes. Portable TAA lost its
+SSR settling mode with it: it takes the checked 128-sample static integral
+whenever the scene signature matches, continuing from the ordinary resolve's
+effective sample count (ADR-037).
 
 Analytic fog shares `VkrFogParams`, three `float4` values (48 bytes), between
 native passes: colour and density, height and distance limits, and sky lighting
@@ -1056,52 +938,12 @@ The editor composite preserves pre-encoded highlights without a second scale or
 SDR clamp. Maximum numeric error is 0.003899. Native Vulkan EDR output needs an
 HDR display on Windows and is not recorded.
 
-SSGI is desktop-only. It shares a 288-byte parameter record and has five
-phases: depth base/mips, trace, temporal, and composite. Bytes 280/284 carry
-`history_jitter_uv_x/y` in the former unused tail, and byte 252 carries
-`pixel_footprint` (2026-10-11). Deferred lighting writes the
-isolated direct/emissive source only when SSGI is enabled; its root retains
-existing solar fields and appends the direct-source identifier and enable flag,
-producing a 160-byte Vulkan root.
-
-The implementation uses a 256-phase Halton(2, 3) trace sequence with a
-per-pixel rotation, which SSR's lobe sampling shares, starts each trace at the
-receiver's leaf, and applies a 3×3 tangent-plane/normal raw filter with a
-per-sample firefly bound over nearest covered receivers. Valid misses remain
-zero samples in that normalized average; exhausted rays are excluded. The
-368-byte temporal root carries `display_exposure_scale` at byte 364,
-formerly reserved: display exposure over pre-exposure, which bounds what
-one raw sample adds in displayed units (2026-10-12). The temporal filter
-and the composite read per-group workgroup-memory tiles (10×10 and 6×6
-trace texels per 8×8 group), bit-identical to evaluating each tap in place.
-History selection proves the exact temporal-transform instance, submit,
-frame, scene and compatible retained tuple: the immediately preceding
-frame's, with or without final TAA. That same-queue predecessor may be in
-flight through existing barriers; no other tuple is eligible. Reprojection adds the producer's previous-minus-
-current raster jitter to unjittered motion on the raw grid. FSR uses its active
-phase count and no-TAA keeps zero offsets.
-Four bilinear color/depth/identity taps validate each depth and identity before
-resolving RGB with bilinear × history-confidence weight, the expected depth
-coming from the receiver's tangent plane at each tap. The four taps add nine
-history texture accesses over the former single tap, with no new images or rays.
-The 448-byte composite root names deferred's `diffuse_volume_irradiance` at
-byte 436 (graph binding 14); composite skips pixels the volume lit.
-
-Release builds, all ten SSR/SSGI SPIR-V modules, compiled parameter offsets and
-Vulkan host syntax pass. The
-[correction record](../../assets/verification/renderer-features/ssgi-ssr-history-correction.txt)
-retains the reported-view comparisons, made on the removed Metal desktop
-implementation, and their limits. Native Vulkan evidence is the 2026-09-12
-Release emission and Bistro runs and a Debug validation run
-([ADR-060](060-screen-space-diffuse-indirect-lighting.md), which owns the
-feature policy and acceptance evidence). The 2026-10-11 revision and its
-2026-10-12 changes pass `spirv-val`, compiled root offsets and the
-38-output `check_ssgi_kernel.py` CPU check. Native Vulkan evidence
-(2026-10-12, RX 6700 XT, Release, dirty tree, local and not
-authoritative): `ssgi_bistro_on_local` against `_off_local` for the
-firefly bound, `ssgi_bistro_remaining_flicker`, byte-identical captures for
-the tiles, and API validation of `ssgi_vulkan_validation` with no message;
-ADR-060 records the values. Metal has no consumer.
+SSGI ([ADR-060](060-screen-space-diffuse-indirect-lighting.md)) was removed
+from the desktop pipeline on 2026-10-12 with `ssgi_kernel.slangh`,
+`ssgi_contract.slangh`, `post/ssgi.slang` and its graph passes. Deferred
+lighting no longer writes the SSGI direct-light source: the lighting root lost
+`direct_source_texture` and `ssgi_enabled`, keeps its 224-byte size and moves
+the later fields down 8 bytes.
 
 Froxel volumetric fog is desktop-only and uses a 944-byte `VkrFroxelFogParams`
 record. Fields through byte 799 retain their existing offsets; unjittered
@@ -1199,10 +1041,11 @@ Offline normal/roughness recipes use these existing shader inputs and GGX
 roughness units without changing shader sources, bindings or host ABI. They
 retain full normal moments, bake capped directional spread into roughness and
 fold normal strength/roughness factor into the images; ADR-012 owns that asset
-contract. The corrected filter passes Vulkan Release Bistro motion and
-stationary captures with FSR and motion captures with portable TAA. The
-bounded Debug static-reset case loads Khronos synchronization validation and
-reports no API warnings or errors; ADR-052 records the small, mixed
+contract. The corrected filter passed Vulkan Release Bistro motion and
+stationary captures with FSR (removed on 2026-10-12) and motion captures with
+portable TAA. The bounded Debug FSR static-reset case, since deleted, loaded
+Khronos synchronization validation and reported no API warnings or errors;
+ADR-052 records the small, mixed
 motion-quality changes and local cost. Native Metal evidence of the filter on
 the tiled pipeline is not recorded.
 
@@ -1223,9 +1066,10 @@ ordering, optional resolve outputs and numerical edges. Its Vulkan evidence is
 in [ARCHITECTURE](../ARCHITECTURE.md#remaining-implementation-and-evidence-boundaries);
 analytical oracles do not substitute for native execution.
 
-The 2026-09-24 shader audit changes the SSR/SSGI cell restart, layered light
-traversal, sheen view-visibility preparation, GTAO denoise texel loads, Vulkan
-resolve material-row reuse, motion-blur extent queries and the
+The 2026-09-24 shader audit changes the SSR/SSGI cell restart (removed with
+SSR and SSGI on 2026-10-12), layered light traversal, sheen view-visibility
+preparation, GTAO denoise texel loads, Vulkan resolve material-row reuse,
+motion-blur extent queries and the
 surface-diffusion same-row path, all on the desktop pipeline. ADR-055 records
 the restart's measured effect and ADR-062 the coat-shadow correction, both on
 the removed Metal desktop implementation. Vulkan compiles and all 95 SPIR-V
@@ -1249,10 +1093,11 @@ motion blur and profiled surface diffusion. Report IDs are
 `20260912T111336.086Z-003163`. Child logs confirm Khronos validation with
 synchronization checks and contain no API errors.
 
-The sweep also passes Release portable-TAA reference and Vulkan FSR static and
-motion snapshots. SSGI has separate Release emission/Bistro and Debug validation
-witnesses recorded in ADR-060. These local dirty-tree runs establish bounded
-native Vulkan execution; output checks of these features remain open on
+The sweep also passed Release portable-TAA reference and Vulkan FSR static and
+motion snapshots, and ADR-060 records separate SSGI Release emission/Bistro and
+Debug validation witnesses; FSR and SSGI were removed on 2026-10-12. These
+local dirty-tree runs establish bounded native Vulkan execution; output checks
+of these features remain open on
 Vulkan.
 
 ## Post-reconstruction depth of field
@@ -1275,8 +1120,8 @@ Debug resize. Native Vulkan output checks are pending.
 Profiled surface diffusion is desktop-only.
 [ADR-068](068-profiled-surface-diffusion.md) records the implemented 32-sample,
 32-pixel-radius surface approximation and ownership. Reflection and `spirv-val`
-pass for the actual gather, deferred and SSGI composite modules: parameters are
-32 bytes, gather roots 192 bytes, material rows 288 bytes, deferred roots 192
-bytes and SSGI roots 432 bytes. The Windows sweep above passes a Release
+pass for the actual gather and deferred modules: parameters are 32 bytes,
+gather roots 192 bytes, material rows 288 bytes and deferred roots 192 bytes.
+The Windows sweep above passes a Release
 snapshot and a Debug resize. Its five numeric output fixtures and checker ran
 on the removed Metal desktop implementation; Vulkan output checks are pending.

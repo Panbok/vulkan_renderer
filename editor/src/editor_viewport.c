@@ -534,13 +534,12 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
                         .icon = VKR_UI_ICON_SETTINGS};
     snprintf(custom->text, sizeof(custom->text), "Custom settings...");
     /* With dynamic resolution the percentage caps the scale it chooses; a
-       backend that cannot scale without temporal upscaling renders at 100%. */
+       backend that cannot scale renders at 100%. */
     const bool8_t automatic = settings.dynamic_resolution &&
                               frame->graphics->dynamic_resolution_available;
     const float32_t render_scale =
         vkr_graphics_settings_render_scale(frame->graphics, &settings);
-    const bool8_t fixed = !settings.temporal_upscaling &&
-                          !frame->graphics->spatial_render_scale_available;
+    const bool8_t fixed = !frame->graphics->spatial_render_scale_available;
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
     snprintf(rows[count++].text, sizeof(rows[0].text),
              automatic ? "Screen percentage  up to %.0f%%"

@@ -31,11 +31,9 @@ nearest rounding and could disagree with the captured source textures.
 The camera script is versioned: warmup holds its initial pose and measured frame
 zero starts the authored path. Version 5 starts warmup at the common zero of the
 active raster jitter and 64-phase GTAO noise sequences, invalidating temporal
-history at that boundary. Portable TAA uses eight raster phases; FSR uses the
-renderer-owned period from the rounded render/output width ratio (17 for
-1239-to-1858 pixels, giving a common 1088-frame period). Stopped scenes and non-temporal modes require only the GTAO
-alignment. Aligning to 64 frames alone left FSR captures dependent on bootstrap
-duration through their raster jitter phase.
+history at that boundary. Portable TAA uses eight raster phases, which divide
+the 64 GTAO phases. Stopped scenes and non-temporal modes require only the
+GTAO alignment.
 Waiting for that phase remains bootstrap work; authored frame counts and GPU
 completion rules do not change. The workload fingerprint includes this version,
 so results from the previous replay behavior are incompatible.
@@ -49,17 +47,16 @@ one run in three, and in none of 7 runs after the change (2026-10-11,
 Windows Vulkan). A short warmup now measures that redraw, the same in every
 repetition. A work-volume mismatch names the first differing metric, frame
 and values on stderr.
-Version 7 (2026-10-12) uses the 256-phase SSGI sequence
-(`VKR_SSGI_SEQUENCE_LENGTH`) as the noise period whenever the last
-submitted frame ran SSR, not only SSGI, because SSR samples its lobes from
-that sequence by absolute frame ([ADR-055](055-screen-space-reflections.md)).
-Before, an SSR case without SSGI started warmup at a multiple of 64, so
-replays of `ssr_reflected_hit_motion` sampled its frame 3 at phase 91 or
-155 depending on bootstrap length; with version 7 its `ssr_raw` captures
-are byte-identical across replays (2026-10-12, Windows Vulkan). An SSR case
-without SSGI waits up to 255 bootstrap frames instead of 63. The workload
-fingerprint includes the version, so results and baselines of version 6
-are incompatible.
+Version 7 (2026-10-12) aligned warmup to the 256-phase sequence that SSR
+and SSGI sampled ([ADR-055](055-screen-space-reflections.md),
+[ADR-060](060-screen-space-diffuse-indirect-lighting.md)). Version 8
+(2026-10-12) follows the removal of SSR, SSGI and FSR: warmup aligns to the
+64-phase GTAO noise sequence alone, and the fingerprint no longer records
+their controls. Case manifests no longer accept the renderer keys
+`ssr_enabled`, `ssgi_enabled` and `upscaler`; stored capture summaries keep
+those fields, always false and `spatial`, like the retired
+`metalfx_temporal`. The workload fingerprint includes the version, so
+results and baselines of version 7 and earlier are incompatible.
 
 Editor cases may set `renderer.editor_stop_frame` and `editor_resume_frame` to
 exercise retained Scene presentation. Their zero-based indices include authored
@@ -102,17 +99,8 @@ swapchain; automation boot alone does not imply an offscreen target.
 Color channels declared `RGBA16_FLOAT_LE` publish tight, top-left, little-endian
 binary16 RGBA payloads separately from their PNG previews. Version 2 introduced
 the actual float16 payload; earlier output mislabeled PNG-only files as float16,
-so those baselines are incompatible. `ssr_reflection` version 6 contains
-[ADR-055](055-screen-space-reflections.md)'s full-source-resolution incoming
-radiance with the lobe's hit share in alpha (2026-10-11). Version 5 held the
-same radiance with coverage after the roughness fade, version 4
-full-resolution receiver-shaded RGB and version 3 half-resolution shaded
-RGB; earlier versions held incoming radiance. Baselines of another version
-are incompatible. `ssr_raw` version 3 holds one GGX lobe sample's incoming
-radiance with its edge and depth confidence; version 2 held the mirror
-sample. Native Vulkan captures of versions 6 and 3 were first taken on
-2026-10-12 ([ADR-055](055-screen-space-reflections.md)); no baseline of them
-is published. Numeric comparison
+so those baselines are incompatible. The SSR channels `ssr_depth`,
+`ssr_raw` and `ssr_reflection` were removed with SSR on 2026-10-12. Numeric comparison
 decodes finite half values and never substitutes
 a preview for radiance data. Portable temporal modes capture `scene_color` and
 `hdr_pre_bloom` from `temporal_history_color`; the former is a display-converted
@@ -230,7 +218,7 @@ host that produced it.
 
 A child draws far-cascade EVSM (ADR-041) when its case's shadow preset does:
 High and Ultra cases do, Balanced cases do not. `VKR_SHADOW_EVSM` overrides the
-preset in every child, like `VKR_SSR_QUALITY`: `1` turns EVSM on and `0` turns
+preset in every child: `1` turns EVSM on and `0` turns
 it off. The workload fingerprint adds `renderer.shadow_evsm` only when the case
 draws EVSM, which needs the desktop pipeline and more than two cascades
 ([`vkr_harness_fingerprint.c`](../../tools/harness/vkr_harness_fingerprint.c)).
@@ -269,9 +257,8 @@ separate, bounded native runs; CPU manifest checks do not establish GPU stabilit
 
 ## Consequences
 
-FSR cases default to FXAA disabled. An explicitly authored
-`renderer.fxaa_enabled` overrides that default, so post-upscaler filtering can
-be compared with the runtime. Capture channels select their replay render mode:
+Cases default to FXAA enabled, like the runtime; an explicitly authored
+`renderer.fxaa_enabled` overrides that default. Capture channels select their replay render mode:
 use `unlit` for unlit output; `final_color` selects the normal shaded path.
 
 A report can pass execution yet be non-authoritative for performance. Capture

@@ -299,8 +299,8 @@ World. Unloading an additive scene clears its selection and journal.
 - **Authored rendering intent** (exposure, white balance, grading, bloom, fog,
   environment, atmosphere) is a world component. A new project's World post
   process takes the grading values older editors kept in machine preferences.
-- **Machine preferences** (vsync, HDR, frame limit, render scale, upscaling,
-  shadow quality, feature gates) stay machine-local `VkrGraphicsSettings`,
+- **Machine preferences** (vsync, HDR, frame limit, render scale, shadow
+  quality, feature gates) stay machine-local `VkrGraphicsSettings`,
   edited in the Preferences window through descriptors.
 - **Editor UI state** (layout, panels, Content view and folder) is persisted
   project state, not an object.
@@ -544,8 +544,8 @@ World, so Bistro cases and baselines are unchanged.
   synthetic double click on the Materials folder card opened it.
 - A later run of the same build showed the "Loading" chip and locked mesh,
   folder and World object cards while the World streamed, and their removal
-  once it resolved. Toggling HDR and FSR in Preferences no longer freezes the
-  window: the "Restart required" notice had filled the section's one-cell
+  once it resolved. Toggling HDR and FSR (since removed) in Preferences no
+  longer froze the window: the "Restart required" notice had filled the section's one-cell
   grid, so the auto-placed scroll area failed placement and every later frame
   failed to prepare; the scroll area now claims the cell explicitly. The run
   logged no frame preparation failure.

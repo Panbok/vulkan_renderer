@@ -471,8 +471,6 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
   VkrFrameGlobals *globals = &application->globals;
   globals->bloom_enabled = settings->bloom;
   globals->gtao_enabled = settings->ambient_occlusion;
-  globals->ssr_enabled = settings->screen_space_reflections;
-  globals->ssgi_enabled = settings->screen_space_gi;
   globals->dof_enabled = settings->depth_of_field;
   globals->motion_blur_enabled = settings->motion_blur;
   application->disable_directional_shadows = settings->shadow_quality == 0;
@@ -499,10 +497,8 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
   /* Soft shadows also covers local lights' authored source radii. */
   application->shadow_config.local_shadow_soft = settings->soft_shadows;
   application->shadow_config.far_cascade_evsm = settings->filtered_far_shadows;
-  const bool8_t temporal =
-      application->renderer.upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
-      settings->anti_aliasing;
-  vkr_renderer_set_temporal_enabled(&application->renderer, temporal);
+  vkr_renderer_set_temporal_enabled(&application->renderer,
+                                    settings->anti_aliasing);
   application->host.config.target_frame_rate = settings->frame_limit;
 }
 
@@ -539,8 +535,6 @@ static void sample_graphics_apply_display(VkrStandardSceneRuntime *application,
        settings->render_scale != state->graphics_started.render_scale ||
        settings->dynamic_resolution !=
            state->graphics_started.dynamic_resolution) &&
-      settings->temporal_upscaling ==
-          state->graphics_started.temporal_upscaling &&
       settings->render_scale >= live_min - 1e-4f &&
       settings->render_scale <= live_max + 1e-4f &&
       (!dynamic || vkr_renderer_dynamic_resolution_switchable(renderer)) &&
@@ -574,8 +568,6 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
       old.local_shadows != settings.local_shadows ||
       old.contact_shadows != settings.contact_shadows ||
       old.ambient_occlusion != settings.ambient_occlusion ||
-      old.screen_space_reflections != settings.screen_space_reflections ||
-      old.screen_space_gi != settings.screen_space_gi ||
       old.reflection_probes != settings.reflection_probes ||
       old.subsurface_scattering != settings.subsurface_scattering ||
       old.fog != settings.fog || old.volumetric_fog != settings.volumetric_fog;

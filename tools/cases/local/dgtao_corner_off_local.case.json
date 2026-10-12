@@ -34,7 +34,6 @@
     "render_mode": "default",
     "display_transform": "aces_fitted",
     "gtao_enabled": false,
-    "ssr_enabled": false,
     "image_sharpness": 0,
     "gtao_radius": 0.8,
     "gtao_power": 2.2

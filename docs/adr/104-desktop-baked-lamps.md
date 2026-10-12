@@ -106,7 +106,7 @@ Owner decisions:
      and the BRDF gives its highlight.
 
    GTAO does not darken either share, since the bake holds the lamps'
-   occlusion. SSGI does not bounce it again. Transmission shading samples
+   occlusion. Transmission shading samples
    the same lamp layers for a lightmapped transmissive draw through the
    shared `vkr_vk_baked_lamps` and adds both shares to its analytic light;
    its volume lookup then leaves out the lamp part, as below.
@@ -294,7 +294,7 @@ Unavailable:
   `bistro_lamps_baked_volume_night_capture` ran with the change, but no
   capture without it was compared;
 - the moving-caster fixtures with the per-class reference, and the light
-  that moving casters hide, which `SSR.Composite` now subtracts.
+  that moving casters hide.
 
 ## Revisit when
 

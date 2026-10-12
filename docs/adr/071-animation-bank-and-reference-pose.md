@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -197,8 +197,7 @@ seek, replacement or unavailable producer invalidates motion. Submission commits
 the metadata; acquired slot age is never the completion proof. Material resolve
 uses current triangle barycentrics to reconstruct previous deformed positions.
 Main visibility, shadows, picking, deferred material reconstruction, transmission
-and ordinary blend all consume the stream. Rigid-only SSR/SSGI history reuse
-rejects deforming surfaces.
+and ordinary blend all consume the stream.
 
 ## Movable animation editor
 

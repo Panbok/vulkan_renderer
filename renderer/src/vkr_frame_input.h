@@ -141,9 +141,6 @@ typedef struct VkrFrameGlobals {
   float32_t gtao_power;
   /** Presentation-only sharpness in [0, 1]. Zero bypasses sharpening. */
   float32_t image_sharpness;
-  /** Half-resolution opaque SSR with independent reflection history. */
-  bool8_t ssr_enabled;
-  bool8_t ssgi_enabled;
   VkrFogSettings fog;
   /** Opt-in local participating medium; supersedes analytic fog when enabled.
    */

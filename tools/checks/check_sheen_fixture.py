@@ -3,14 +3,14 @@
 
 Pack tests/fixtures/rendering/sheen with
 `vkr_bakery cook tests/fixtures/rendering/sheen` first.
-This checks visible roughness response, transmitted background and retained coat
-SSR. Channel decoding and numerical energy use separate CPU/furnace checks.
+This checks visible roughness response and transmitted background. Channel
+decoding and numerical energy use separate CPU/furnace checks.
 """
 import json
 from pathlib import Path
 import sys
 from check_clearcoat_fixture import (
-    SSR_FLOOR_Y_MIN, capture_path, half_rgba, mean_patch, rgb_distance,
+    capture_path, half_rgba, mean_patch, rgb_distance,
 )
 
 run = Path(sys.argv[1])
@@ -27,11 +27,4 @@ item, path = capture_path(run, 'hdr_post_transmission')
 post = half_rgba(path, width, height)
 glass = mean_patch(post, width, height, (256, 212))
 assert glass[1] > 1.1 * max(glass[0], glass[2]), glass
-item, path = capture_path(run, 'ssr_raw')
-raw = half_rgba(path, item['width'], item['height'])
-floor_y_min = (SSR_FLOOR_Y_MIN * item['height'] + height - 1) // height
-hits = [p for i, p in enumerate(raw) if i // item['width'] >= floor_y_min and p[3] > .01]
-red = [p for p in hits if p[0] > 2 * max(p[1], p[2], 1e-5)]
-assert len(hits) >= 8 and len(red) >= 4, (len(hits), len(red))
-print(json.dumps({'status': 'pass', 'panels': panels, 'glass': glass,
-                  'floor_ssr_hits': len(hits), 'red_hits': len(red)}, indent=2))
+print(json.dumps({'status': 'pass', 'panels': panels, 'glass': glass}, indent=2))

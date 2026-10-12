@@ -1,5 +1,4 @@
 #include "vkr_render_graph_frame.h"
-#include "vulkan/vkr_vulkan_fsr_sdk.h"
 #include "vulkan/vkr_vulkan_internal.h"
 #include <math.h>
 
@@ -164,8 +163,6 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   renderer->exposure_metering = vkr_exposure_metering_config_normalize(NULL);
   renderer->bloom_config = vkr_bloom_config_normalize(&config->bloom);
   renderer->gtao_config = vkr_gtao_config_normalize(&config->gtao);
-  renderer->ssr_config = vkr_ssr_config_normalize(&config->ssr);
-  renderer->ssgi_config = vkr_ssgi_config_normalize(&config->ssgi);
   renderer->capture_storage_size = vkr_capture_ring_storage_requirement(
       config->capture_ring_capacity, config->capture_max_batch_bytes);
   if (config->capture_ring_capacity > 0u) {
@@ -251,7 +248,6 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
       .enable_synchronization_validation =
           config->enable_synchronization_validation,
       .enable_gpu_assisted = config->enable_gpu_assisted,
-      .fsr31_enabled = config->fsr31_enabled,
   };
   if (!vkr_vulkan_device_create(&device_config, &renderer->device) ||
       !vkr_vk_create_timeline(renderer) ||
@@ -638,9 +634,7 @@ vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
                                                    VkrVulkanFrameSlot *slot) {
   slot->temporal_scene = (VkrVulkanTemporalSceneState){0};
   if (renderer->graph->packet->scene_rendering &&
-      (renderer->graph->packet->temporal.enabled ||
-       renderer->prepared_frame.ssr_enabled ||
-       renderer->prepared_frame.ssgi_enabled) &&
+      renderer->graph->packet->temporal.enabled &&
       vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle)) {
     // Capture rendered inputs before upload/IBL commands publish new content.
     slot->temporal_scene = (VkrVulkanTemporalSceneState){
@@ -949,9 +943,6 @@ vkr_internal bool8_t vkr_vk_realize_compiled_graph(
     log_error("Vulkan failed to validate the authored graph");
     return false_v;
   }
-  if (!vkr_vk_prepare_fsr31_context(renderer)) {
-    return false_v;
-  }
   if (!vkr_vk_realize_graph_images(renderer)) {
     log_error("Vulkan failed to realize authored graph images");
     return false_v;
@@ -1082,7 +1073,6 @@ vkr_internal VkResult vkr_vk_queue_submit_frame(VkrVulkanRenderer *renderer,
    leaves the renderer terminally failed. */
 vkr_internal void vkr_vk_unwind_rejected_submission(VkrVulkanRenderer *renderer,
                                                     VkrVulkanFrameSlot *slot) {
-  vkr_vk_cancel_fsr31(renderer);
   vkr_vk_fail_picking_readback(renderer, slot);
   vkr_vk_abandon_ibl_bake_recordings(renderer);
   vkr_vk_discard_unsubmitted_asset_uses(renderer);
@@ -1146,8 +1136,6 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
   if (packet->scene_rendering) {
     vkr_vk_mark_hzb_submitted(renderer, signal_value);
     vkr_vk_mark_temporal_submitted(renderer, signal_value);
-    vkr_vk_mark_ssr_submitted(renderer, signal_value);
-    vkr_vk_mark_ssgi_submitted(renderer, signal_value);
     vkr_vk_mark_froxel_submitted(renderer, signal_value);
     vkr_vk_mark_cloud_submitted(renderer, signal_value);
     vkr_vk_mark_exposure_submitted(renderer, signal_value);
@@ -2255,10 +2243,6 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
                         : VK_NULL_HANDLE;
   if (device) {
     vkr_vulkan_renderer_wait_idle(renderer);
-#if VKR_HAS_FSR3_UPSCALER
-    vkr_vulkan_fsr_sdk_destroy(renderer->fsr31);
-#endif
-    renderer->fsr31 = NULL;
     if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
       (void)vkDeviceWaitIdle(device);
     vkr_vk_discard_ibl_bakes(renderer);

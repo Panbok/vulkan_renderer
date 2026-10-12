@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -45,8 +45,8 @@ an integer.
 - **Effect on existing content.** Ordinary scenes keep P = 1, so existing
   baselines are unchanged.
 
-The prepared packet stays physical, because temporal, SSR, SSGI and froxel
-history signatures hash unscaled inputs. P is applied where values are lowered
+The prepared packet stays physical, because temporal and froxel history
+signatures hash unscaled inputs. P is applied where values are lowered
 into GPU constants:
 
 - frame constants: the directional light, ambient light and IBL gain;
@@ -69,11 +69,9 @@ Consumers that need physical values divide P back out:
 - **Bloom.** Scales its threshold, knee, knee epsilon and firefly clamp by P.
   The Karis weight uses L/P.
 - **TAA.** Scales its transmission-reactivity luminance floor by P.
-- **Upscaler.** FSR 3.1 receives P as its `preExposure`.
 
 Each backend records the exponent of every submission in a 32-entry ring. TAA,
-SSR, SSGI, cloud, froxel-injection and FSR stabilization histories are
-rescaled on reuse by 2^(k_now − k_producer), which is also exact. A producer
+cloud and froxel-injection histories are rescaled on reuse by 2^(k_now − k_producer), which is also exact. A producer
 outside the ring is treated as this frame's scale.
 
 Each texture records the scale its IBL bake was written at
@@ -229,9 +227,10 @@ Metal desktop implementation, removed on 2026-10-06, Release, M1 Pro:
   - Before the TAA floor was scaled, 1,917 pixels differed.
 - **Validation.**
   - The CPU suite passes.
-  - All 102 production SPIR-V modules pass `spirv-val`. Compiled offsets
-    match the C roots for TAA (144), SSR temporal (496), SSGI temporal (360),
-    froxel inject (44), cloud trace (120) and FSR stabilize (40).
+  - All 102 production SPIR-V modules passed `spirv-val`. Compiled offsets
+    matched the C roots for TAA (144), SSR temporal (496), SSGI temporal
+    (360), froxel inject (44), cloud trace (120) and FSR stabilize (40); the
+    SSR, SSGI and FSR modules have since been removed.
 
 Moon evidence (Metal desktop implementation, Release, M1 Pro):
 

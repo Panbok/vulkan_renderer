@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -43,9 +43,9 @@ absorbs energy from the transmitted fraction. Specular reflection and emission
 retain their existing treatment. Exact zero takes the existing shading path.
 
 Runtime transmission receives direct sun, punctual and rectangle light only.
-The front reflection fraction also applies to global/probe diffuse, baked-volume
-receivers and SSGI. No backside environment or screen-space query is added.
-SSGI’s direct source includes visible backlighting. Punctual and sun shadows use
+The front reflection fraction also applies to global/probe diffuse and
+baked-volume receivers. No backside environment or screen-space query is added.
+Punctual and sun shadows use
 light-facing receiver bias for the backside lobe; independently oriented coats
 retain their existing shadow query when needed. Rectangles use the existing
 unshadowed runtime policy and a Lambert integral over the flipped hemisphere.
@@ -63,18 +63,18 @@ The material row appends one float4: RGB tint and W strength. Metal rows grow
 from 320 to 336 bytes; Vulkan rows grow from 256 to 272. Existing material-table
 owners, publication generations and GPU retirement govern the extra 16 bytes
 per material per retained copy. No texture slots, images, history or passes are
-added. Deferred and SSGI composite borrow the existing visible-draw buffer and
-look up material through the visibility image. Their graph buffer bindings are
-13 and 11 in both fullscreen and editor paths. On Vulkan the deferred root is
-192 bytes and the SSGI composite root 432 bytes. Frame roots and their two-cell
+added. Deferred lighting borrows the existing visible-draw buffer and looks up
+material through the visibility image. Its graph buffer binding is 13 in both
+fullscreen and editor paths. On Vulkan the deferred root is 224 bytes. Frame
+roots and their two-cell
 Metal allocation remain unchanged.
 
 ## Consequences
 
 Thin surfaces gain tinted backlighting with bounded diffuse energy. Runtime
 indirect backside lighting and spatial transport inside a solid are absent.
-Material-table reads increase in deferred lighting and SSGI composite; no frame
-time improvement is claimed. A backside light on a coated sheet may require a
+Material-table reads increase in deferred lighting; no frame time improvement
+is claimed. A backside light on a coated sheet may require a
 second shadow query to preserve the independent coat’s original bias.
 
 ## Verification and limits
@@ -114,8 +114,9 @@ area quadrature, with 128²→256² convergence delta 2.73e-6. These are local
 numeric checks, not a performance measurement or universal scene-quality
 guarantee.
 
-On the same implementation, the layered SSR/SSGI scene passed material/glass
-checks with 682 floor SSR hits, including 33 red hits. The existing clearcoat
+On the same implementation, while SSR and SSGI were still in the frame, the
+layered SSR/SSGI scene passed material/glass checks with 682 floor SSR hits,
+including 33 red hits. The existing clearcoat
 scene with zero sheet strength preserved all eight captured channels
 byte-for-byte against the preceding anisotropy implementation. Its report
 SHA256 is `23fb0a613cac83f71f17182dadf222aa7d089bb1b56daa7a795777ce4c3ba324`.

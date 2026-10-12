@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -67,7 +67,7 @@ Direct mode tonemaps to the target. Editor mode tonemaps/composites the Scene
 rectangle and draws native-resolution UI afterward. In the desktop pipeline,
 output-space FXAA stays in the final draw, with offsets expressed in output
 pixels. It filters only frames without temporal reconstruction; portable TAA
-and FSR frames omit it. On the Metal desktop implementation, removed on
+frames omit it. On the Metal desktop implementation, removed on
 2026-10-06, `bistro_metal_production_040` (a Metal desktop case since removed;
 M1 Pro, 0.4 render scale, portable TAA) ran at 17.54 ms per frame with FXAA and
 16.27 ms without, and an orbit frame changed by more than 8/255 in 2,044 of
@@ -75,7 +75,7 @@ M1 Pro, 0.4 render scale, portable TAA) ran at 17.54 ms per frame with FXAA and
 2026-10-01). Frames with TAA disabled keep FXAA. HDR/intermediate and
 final-color captures are different contracts and must be compared accordingly.
 
-The user-approved `VkrFrameGlobals.image_sharpness` control applies to FSR,
+The user-approved `VkrFrameGlobals.image_sharpness` control applies to
 portable TAA and native Scene presentation. It accepts finite values in
 [0,1]; zero bypasses sharpening, and the sample app starts at 0.25. The harness
 default is zero so existing cases retain their settings. Frame-input version 32
@@ -92,9 +92,8 @@ This is bounded detail recovery, not FSR RCAS or a new antialiasing algorithm.
 
 Sharpening adds no temporal history; its source is the display-linear image
 described below. Editor.Resolve applies the filter once before overlays;
-Editor.Composite bypasses it. UI and diagnostic render modes are excluded. The
-SDK's FSR sharpener stays disabled, avoiding two sharpening stages. Native
-roots are recorded in ADR-044. Increased edge contrast can expose existing
+Editor.Composite bypasses it. UI and diagnostic render modes are excluded.
+Native roots are recorded in ADR-044. Increased edge contrast can expose existing
 temporal variation, so quality and cost require matched static and moving
 captures.
 
@@ -233,12 +232,14 @@ baseline acceptance. Offscreen rendering cannot validate monitor transitions.
 
 ## Sharpness validation
 
-Windows Release, RX 6700 XT, Bistro at the supplied camera, output 1858x1057:
-FSR, portable TAA and native captures pass at strength 0.25; strength 1 and
-FXAA on/off paths also pass. Inspected stationary windows and road detail gain
-about 3.3% and 4.7% in local gradient magnitude. This measures contrast, not
-recovered scene resolution. Moving FSR range rises roughly 9–11% in the same
-regions, so sharpening does not replace temporal antialiasing. The static pair
+Windows Release, RX 6700 XT, Bistro at the supplied camera, output 1858x1057,
+measured while FSR 3.1 was still in the desktop pipeline (removed on
+2026-10-12, [ADR-052](052-vulkan-fsr31-upscaling.md)): FSR, portable TAA and
+native captures passed at strength 0.25; strength 1 and FXAA on/off paths also
+passed. Inspected stationary windows and road detail gained about 3.3% and 4.7%
+in local gradient magnitude. This measures contrast, not recovered scene
+resolution. Moving FSR range rose roughly 9–11% in the same regions, so
+sharpening does not replace temporal antialiasing. The static pair
 remains stable (mean RGB difference 0.000092/255).
 
 In three local Release children per setting, with FXAA off, presentation-pass
@@ -246,7 +247,9 @@ mean cost changes from 0.1075 to 0.1610 ms. Summed GPU pass means change from
 5.5180 to 5.6286 ms, with all 61 pass rows and draw counts preserved. These
 are dirty-tree observations, not authoritative timings or elapsed GPU-frame
 time. Native editor captures retain all 5,185 colored UI pixels outside the
-Scene rectangle exactly while changing Scene pixels.
+Scene rectangle exactly while changing Scene pixels. The cost case then ran
+FSR 3.1 at render scale 0.667; since 2026-10-12 the `sharpness_bistro_*` cases
+run at unit scale and have not been rerun.
 
 Release and Debug wrappers pass. The enabled editor/text case passes three
 assertions under Khronos synchronization validation with no API warnings or
@@ -255,14 +258,15 @@ measured frames.
 
 ```powershell
 .\build_release.bat
-.\build_release\tools\vkr_harness.exe snapshot --case tools/cases/local/sharpness_bistro_fsr_motion.case.json --profile tools/profiles/local-offscreen-gpu-single.json
 .\build_release\tools\vkr_harness.exe snapshot --case tools/cases/local/sharpness_bistro_editor_ui.case.json --profile tools/profiles/local-metal-windowed-validation-serial.json
 .\build_release\tools\vkr_harness.exe profile --case tools/cases/local/sharpness_bistro_cost.case.json --profile tools/profiles/local-offscreen-gpu-single.json
 .\build.bat Debug
 .\build_debug\tools\vkr_harness.exe profile --case tools/cases/local/sharpness_bistro_editor_ui.case.json --profile tools/profiles/local-metal-windowed-validation-serial.json
 ```
 
-Motion, cost and native diagnostic report SHA-256 values are respectively
+The motion report came from the FSR motion case `sharpness_bistro_fsr_motion`,
+deleted with FSR on 2026-10-12 (Git history keeps it). Motion, cost and native
+diagnostic report SHA-256 values are respectively
 `a40d7b15f06611e32cf3ff62f17736bf1ef643b5e487826084f0c1e1e2ae297b`,
 `4f592a8777d478e142b0ab5b3a159f596ff8895af8de0c8870b6988349d8537a` and
 `9ef330905efa7bebcbb0e91a59def4e251e1c8ff26933400f4790c53e68a4857`.

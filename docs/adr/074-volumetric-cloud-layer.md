@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -238,7 +238,8 @@ with 48 steps cost 0.22 ms for the same roof value. Debug Vulkan with
 error for that case.
 
 Cloud-lit reflections, the same host and scene from the street-level camera
-of `bistro_bright_spot_snapshot` with SSR on: window glass that reflected
+of `bistro_bright_spot_snapshot` with SSR on, before SSR was removed
+([ADR-055](055-screen-space-reflections.md)): window glass that reflected
 blue sky reflects the grey layer overhead (a window region from sRGB
 (21, 25, 25) to (23, 26, 26), maximum pixel change 36 of 255, 2% of pixels
 above 4), and sky pixels are unchanged. Two non-authoritative 16-frame

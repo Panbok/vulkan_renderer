@@ -33,7 +33,6 @@
     "render_mode": "default",
     "display_transform": "aces_fitted",
     "gtao_enabled": false,
-    "ssr_enabled": false,
     "image_sharpness": 0,
     "bloom_enabled": false
   },

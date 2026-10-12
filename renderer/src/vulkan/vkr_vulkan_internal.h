@@ -29,8 +29,6 @@
 #include "vkr_render_graph_internal.h"
 #include "vkr_rg_json.h"
 #include "vkr_sheen_lut.h"
-#include "vkr_ssgi.h"
-#include "vkr_ssr.h"
 #include "vkr_subsurface.h"
 #include "vkr_temporal.h"
 #include "vkr_texture_upload.h"
@@ -99,9 +97,6 @@
 #define VKR_VULKAN_PACKET_SKINNING_COMP_SPV "packet.skinning.comp.spv"
 #define VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV                          \
   "packet.temporal_transform.comp.spv"
-#define VKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV "packet.fsr31.prepare.comp.spv"
-#define VKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV                             \
-  "packet.fsr31.stabilize.comp.spv"
 #define VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV "packet.visibility.vert.spv"
 #define VKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV "packet.visibility.frag.spv"
 #define VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV                           \
@@ -176,20 +171,6 @@
   "packet.gtao_depth_mip.comp.spv"
 #define VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV "packet.gtao_evaluate.comp.spv"
 #define VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV "packet.gtao_denoise.comp.spv"
-#define VKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV                              \
-  "packet.ssr_depth_base.comp.spv"
-#define VKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV "packet.ssr_depth_mip.comp.spv"
-#define VKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV "packet.ssr_trace.comp.spv"
-#define VKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV "packet.ssr_temporal.comp.spv"
-#define VKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV "packet.ssr_composite.comp.spv"
-#define VKR_VULKAN_PACKET_SSGI_DEPTH_BASE_COMP_SPV                             \
-  "packet.ssgi_depth_base.comp.spv"
-#define VKR_VULKAN_PACKET_SSGI_DEPTH_MIP_COMP_SPV                              \
-  "packet.ssgi_depth_mip.comp.spv"
-#define VKR_VULKAN_PACKET_SSGI_TRACE_COMP_SPV "packet.ssgi_trace.comp.spv"
-#define VKR_VULKAN_PACKET_SSGI_TEMPORAL_COMP_SPV "packet.ssgi_temporal.comp.spv"
-#define VKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV                              \
-  "packet.ssgi_composite.comp.spv"
 #define VKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV "packet.fog_apply.comp.spv"
 #define VKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV "packet.froxel_inject.comp.spv"
 #define VKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV                            \
@@ -338,7 +319,6 @@ typedef enum VkrVulkanFullscreenFlag {
   VKR_VULKAN_FULLSCREEN_ALREADY_OUTPUT_ENCODED = 1u << 0u,
   VKR_VULKAN_FULLSCREEN_TONEMAP = 1u << 1u,
   VKR_VULKAN_FULLSCREEN_FXAA = 1u << 2u,
-  VKR_VULKAN_FULLSCREEN_OPAQUE_ALPHA = 1u << 3u,
   VKR_VULKAN_FULLSCREEN_SOURCE_DISPLAY_LINEAR = 1u << 5u,
   VKR_VULKAN_FULLSCREEN_PREPARE_DISPLAY_LINEAR = 1u << 6u,
   VKR_VULKAN_FULLSCREEN_SCENE_BLUR = 1u << 7u,
@@ -407,20 +387,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,
-  VKR_VULKAN_DEFERRED_PIPELINE_FSR31_PREPARE,
-  VKR_VULKAN_DEFERRED_PIPELINE_FSR31_STABILIZE,
   VKR_VULKAN_DEFERRED_PIPELINE_HZB,
   VKR_VULKAN_DEFERRED_PIPELINE_SHADOW_MOMENTS,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSR_DEPTH_BASE,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSR_DEPTH_MIP,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSR_TRACE,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSR_TEMPORAL,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSR_COMPOSITE,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSGI_DEPTH_BASE,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSGI_DEPTH_MIP,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSGI_TRACE,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSGI_TEMPORAL,
-  VKR_VULKAN_DEFERRED_PIPELINE_SSGI_COMPOSITE,
   VKR_VULKAN_DEFERRED_PIPELINE_FOG_APPLY,
   VKR_VULKAN_DEFERRED_PIPELINE_FROXEL_INJECT,
   VKR_VULKAN_DEFERRED_PIPELINE_FROXEL_INTEGRATE,
@@ -805,36 +773,6 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
   uint32_t reserved[2];
 } VkrVulkanTemporalResolveRoot;
 
-typedef struct VKR_SIMD_ALIGN VkrVulkanFsr31PrepareRoot {
-  uint32_t scene_texture;
-  uint32_t pre_transmission_texture;
-  uint32_t validity_texture;
-  uint32_t opaque_depth_texture;
-  uint32_t transmission_depth_texture;
-  uint32_t output_depth_texture;
-  uint32_t reactive_texture;
-  uint32_t composition_texture;
-  uint32_t extent[2];
-  uint32_t transmission_enabled;
-  uint32_t scene_stationary;
-} VkrVulkanFsr31PrepareRoot;
-_Static_assert(sizeof(VkrVulkanFsr31PrepareRoot) == 48u,
-               "FSR input preparation root must match its shader");
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanFsr31StabilizeRoot {
-  uint32_t output_texture;
-  uint32_t history_texture;
-  uint32_t reactive_texture;
-  uint32_t scene_stationary;
-  uint32_t output_extent[2];
-  uint32_t render_extent[2];
-  Vec2 jitter_pixels;
-  float32_t history_pre_exposure_scale;
-  uint32_t reserved;
-} VkrVulkanFsr31StabilizeRoot;
-_Static_assert(sizeof(VkrVulkanFsr31StabilizeRoot) == 48u,
-               "FSR stabilization root must match its shader");
-
 typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint64_t frame;
   uint64_t frame_padding;
@@ -853,8 +791,6 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t sky_mode;
   uint32_t gtao_visibility_texture;
   Vec4 sky_radiance;
-  uint32_t direct_source_texture;
-  uint32_t ssgi_enabled;
   uint32_t clearcoat_texture;
   uint32_t sheen_texture;
   uint32_t anisotropy_texture;
@@ -886,9 +822,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t baked_reserved;
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
-                       184u &&
+                       176u &&
                    offsetof(VkrVulkanLightingRoot, subsurface_profile_count) ==
-                       188u,
+                       180u,
                "Subsurface source producer ABI drift");
 
 /** Shadow.LocalMask inputs: the G-buffer surface, its camera reconstruction,
@@ -1011,179 +947,6 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanHzbRoot {
   uint32_t reserved[3];
 } VkrVulkanHzbRoot;
 
-/** Mirrors the dedicated current-frame positive view-depth reduction. */
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsrDepthBaseRoot {
-  VkrSsrGpuParams params;
-  uint32_t depth_texture;
-  uint32_t vbuffer_texture;
-  uint32_t destination_depth_texture;
-  uint32_t reserved;
-} VkrVulkanSsrDepthBaseRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsrDepthMipRoot {
-  uint32_t source_depth_texture;
-  uint32_t destination_depth_texture;
-  uint32_t source_extent[2];
-  uint32_t destination_extent[2];
-  uint32_t reserved[2];
-} VkrVulkanSsrDepthMipRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTraceRoot {
-  VkrSsrGpuParams params;
-  uint32_t depth_texture;
-  uint32_t vbuffer_texture;
-  uint32_t normal_texture;
-  uint32_t specular_texture;
-  uint32_t depth_pyramid_texture;
-  uint32_t source_texture;
-  uint32_t destination_texture;
-  uint32_t clearcoat_texture;
-  uint32_t source_sampler;
-  uint32_t hit_texture;
-  /* G-buffer anisotropy, or zero without anisotropic materials: an uncoated
-     receiver samples its anisotropic GGX lobe (ADR-064). */
-  uint32_t anisotropy_texture;
-  /* Frame index selecting the 256-phase lobe sequence (ADR-055). */
-  uint32_t sample_phase;
-} VkrVulkanSsrTraceRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTemporalRoot {
-  VkrSsrGpuParams params;
-  VkrSsrReprojectionGpuParams reprojection;
-  uint64_t visible_rows;
-  uint64_t instances;
-  uint64_t previous_transforms;
-  uint32_t previous_frame_index;
-  uint32_t raw_texture;
-  uint32_t vbuffer_texture;
-  uint32_t depth_texture;
-  uint32_t normal_texture;
-  uint32_t hit_texture;
-  uint32_t history_color_texture;
-  uint32_t history_depth_texture;
-  uint32_t history_identity_texture;
-  uint32_t output_color_texture;
-  uint32_t output_depth_texture;
-  uint32_t output_identity_texture;
-  uint32_t specular_texture;
-  uint32_t clearcoat_texture;
-  float32_t history_pre_exposure_scale;
-  /* As in the trace root: the lobe that weighs reused rays and the frame
-     index that turns the reuse pattern. */
-  uint32_t anisotropy_texture;
-  uint32_t sample_phase;
-  uint32_t reserved;
-} VkrVulkanSsrTemporalRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsrCompositeRoot {
-  VkrSsrGpuParams params;
-  uint64_t frame;
-  uint32_t frame_padding[2];
-  Mat4 inverse_view_projection;
-  uint32_t scene_texture;
-  uint32_t reflection_texture;
-  uint32_t vbuffer_texture;
-  uint32_t depth_texture;
-  uint32_t albedo_texture;
-  uint32_t specular_texture;
-  uint32_t normal_texture;
-  uint32_t gtao_visibility_texture;
-  uint32_t linear_sampler;
-  uint32_t clearcoat_texture;
-  uint32_t sheen_texture;
-  uint32_t anisotropy_texture;
-  /* DiffuseVolume's full-resolution image or the sentinel (ADR-054). */
-  uint32_t diffuse_volume_texture;
-  uint32_t reserved;
-  /* The baked lamp irradiance and hidden baked-lamp light deferred lighting
-     reads, or the sentinel: a lightmapped pixel's reflected surroundings
-     hold its lamps' light (ADR-054). */
-  uint32_t baked_lamps_texture;
-  uint32_t baked_lamp_shadow_texture;
-} VkrVulkanSsrCompositeRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiDepthBaseRoot {
-  VkrSsgiGpuParams params;
-  uint32_t depth_texture;
-  uint32_t vbuffer_texture;
-  uint32_t destination_depth_texture;
-  uint32_t receiver_texture;
-} VkrVulkanSsgiDepthBaseRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiDepthMipRoot {
-  uint32_t source_depth_texture;
-  uint32_t destination_depth_texture;
-  uint32_t source_extent[2];
-  uint32_t destination_extent[2];
-  uint32_t reserved[2];
-} VkrVulkanSsgiDepthMipRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiTraceRoot {
-  VkrSsgiGpuParams params;
-  uint32_t depth_texture;
-  uint32_t vbuffer_texture;
-  uint32_t normal_texture;
-  uint32_t albedo_texture;
-  uint32_t depth_pyramid_texture;
-  uint32_t direct_source_texture;
-  uint32_t destination_texture;
-  uint32_t receiver_texture;
-} VkrVulkanSsgiTraceRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiTemporalRoot {
-  VkrSsgiGpuParams params;
-  uint64_t visible_rows;
-  uint64_t instances;
-  uint32_t raw_texture;
-  uint32_t vbuffer_texture;
-  uint32_t depth_texture;
-  uint32_t normal_texture;
-  uint32_t motion_texture;
-  uint32_t validity_texture;
-  uint32_t history_color_texture;
-  uint32_t history_depth_texture;
-  uint32_t history_identity_texture;
-  uint32_t output_color_texture;
-  uint32_t output_depth_texture;
-  uint32_t output_identity_texture;
-  uint32_t linear_sampler;
-  uint32_t receiver_texture;
-  float32_t history_pre_exposure_scale;
-  /* Displayed radiance per pre-exposed radiance unit: the display exposure
-     over the pre-exposure; finite and positive. */
-  float32_t display_exposure_scale;
-} VkrVulkanSsgiTemporalRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiCompositeRoot {
-  VkrSsgiGpuParams params;
-  uint64_t frame;
-  uint32_t frame_padding[2];
-  Mat4 inverse_view_projection;
-  uint32_t scene_texture;
-  uint32_t reflection_texture;
-  uint32_t vbuffer_texture;
-  uint32_t depth_texture;
-  uint32_t albedo_texture;
-  uint32_t normal_texture;
-  uint32_t history_depth_texture;
-  uint32_t specular_texture;
-  uint32_t linear_sampler;
-  uint32_t clearcoat_texture;
-  uint32_t sheen_texture;
-  uint32_t anisotropy_texture;
-  uint64_t visible_rows;
-  uint32_t subsurface_source_texture;
-  uint32_t subsurface_profile_count;
-  uint32_t receiver_texture;
-  /* DiffuseVolume's full-resolution image or the sentinel (ADR-060). */
-  uint32_t diffuse_volume_texture;
-  uint32_t reserved[2];
-} VkrVulkanSsgiCompositeRoot;
-_Static_assert(offsetof(VkrVulkanSsgiCompositeRoot,
-                        subsurface_source_texture) == 424u &&
-                   offsetof(VkrVulkanSsgiCompositeRoot,
-                            subsurface_profile_count) == 428u,
-               "Subsurface source producer ABI drift");
 typedef struct VKR_SIMD_ALIGN VkrVulkanFogRoot {
   VkrFogGpuParams params;
   Mat4 inverse_view_projection;
@@ -2072,84 +1835,30 @@ _Static_assert(
     "Temporal resolve-root scene/jitter ABI drift");
 _Static_assert(sizeof(VkrVulkanLightingRoot) == 224u,
                "Deferred lighting-root ABI size drift");
-_Static_assert(offsetof(VkrVulkanLightingRoot, light_contribution) == 192u,
+_Static_assert(offsetof(VkrVulkanLightingRoot, light_contribution) == 184u,
                "Deferred lighting-root contribution ABI drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, inverse_view_projection) == 16u,
                "Deferred lighting-root matrix ABI drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, sky_radiance) == 128u,
                "Deferred lighting-root sky ABI drift");
-_Static_assert(offsetof(VkrVulkanLightingRoot, direct_source_texture) == 144u &&
-                   offsetof(VkrVulkanLightingRoot, ssgi_enabled) == 148u &&
-                   offsetof(VkrVulkanLightingRoot, clearcoat_texture) == 152u &&
-                   offsetof(VkrVulkanLightingRoot, sheen_texture) == 156u &&
+_Static_assert(offsetof(VkrVulkanLightingRoot, clearcoat_texture) == 144u &&
+                   offsetof(VkrVulkanLightingRoot, sheen_texture) == 148u &&
                    offsetof(VkrVulkanLightingRoot, anisotropy_texture) ==
-                       160u &&
-                   offsetof(VkrVulkanLightingRoot, layered_tiles) == 164u &&
+                       152u &&
+                   offsetof(VkrVulkanLightingRoot, layered_tiles) == 156u &&
                    offsetof(VkrVulkanLightingRoot, local_shadow_mask_texture) ==
-                       168u,
-               "Deferred lighting-root SSGI/clearcoat ABI drift");
-_Static_assert(offsetof(VkrVulkanLightingRoot, visible_rows) == 176u,
+                       160u,
+               "Deferred lighting-root clearcoat ABI drift");
+_Static_assert(offsetof(VkrVulkanLightingRoot, visible_rows) == 168u,
                "Deferred lighting-root visible-row ABI drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, shadow_moments_texture) ==
-                       172u &&
+                       164u &&
                    offsetof(VkrVulkanLightingRoot, shadow_moments_sampler) ==
-                       200u &&
+                       192u &&
                    sizeof(VkrVulkanLightingRoot) == 224u,
                "Deferred lighting-root EVSM moments ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsrDepthBaseRoot) == 304u &&
-                   offsetof(VkrVulkanSsrDepthBaseRoot, reserved) == 300u,
-               "SSR depth-base root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsrDepthMipRoot) == 32u,
-               "SSR depth-mip root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsrTraceRoot) == 336u &&
-                   offsetof(VkrVulkanSsrTraceRoot, clearcoat_texture) == 316u &&
-                   offsetof(VkrVulkanSsrTraceRoot, source_sampler) == 320u &&
-                   offsetof(VkrVulkanSsrTraceRoot, hit_texture) == 324u &&
-                   offsetof(VkrVulkanSsrTraceRoot, anisotropy_texture) ==
-                       328u &&
-                   offsetof(VkrVulkanSsrTraceRoot, sample_phase) == 332u,
-               "SSR trace root ABI size drift");
-_Static_assert(
-    sizeof(VkrVulkanSsrTemporalRoot) == 512u &&
-        offsetof(VkrVulkanSsrTemporalRoot, reprojection) == 288u &&
-        offsetof(VkrVulkanSsrTemporalRoot, visible_rows) == 416u &&
-        offsetof(VkrVulkanSsrTemporalRoot, instances) == 424u &&
-        offsetof(VkrVulkanSsrTemporalRoot, previous_transforms) == 432u &&
-        offsetof(VkrVulkanSsrTemporalRoot, previous_frame_index) == 440u &&
-        offsetof(VkrVulkanSsrTemporalRoot, hit_texture) == 460u &&
-        offsetof(VkrVulkanSsrTemporalRoot, clearcoat_texture) == 492u &&
-        offsetof(VkrVulkanSsrTemporalRoot, history_pre_exposure_scale) ==
-            496u &&
-        offsetof(VkrVulkanSsrTemporalRoot, anisotropy_texture) == 500u &&
-        offsetof(VkrVulkanSsrTemporalRoot, sample_phase) == 504u,
-    "SSR temporal root ABI size drift");
-_Static_assert(
-    sizeof(VkrVulkanSsrCompositeRoot) == 432u &&
-        offsetof(VkrVulkanSsrCompositeRoot, clearcoat_texture) == 404u &&
-        offsetof(VkrVulkanSsrCompositeRoot, sheen_texture) == 408u &&
-        offsetof(VkrVulkanSsrCompositeRoot, anisotropy_texture) == 412u &&
-        offsetof(VkrVulkanSsrCompositeRoot, diffuse_volume_texture) == 416u &&
-        offsetof(VkrVulkanSsrCompositeRoot, baked_lamps_texture) == 424u &&
-        offsetof(VkrVulkanSsrCompositeRoot, baked_lamp_shadow_texture) == 428u,
-    "SSR composite root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsgiDepthBaseRoot) == 304u,
-               "SSGI depth-base root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsgiDepthMipRoot) == 32u,
-               "SSGI depth-mip root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsgiTraceRoot) == 320u,
-               "SSGI trace root ABI size drift");
-_Static_assert(sizeof(VkrVulkanSsgiTemporalRoot) == 368u,
-               "SSGI temporal root ABI size drift");
-_Static_assert(
-    sizeof(VkrVulkanSsgiCompositeRoot) == 448u &&
-        offsetof(VkrVulkanSsgiCompositeRoot, clearcoat_texture) == 404u &&
-        offsetof(VkrVulkanSsgiCompositeRoot, sheen_texture) == 408u &&
-        offsetof(VkrVulkanSsgiCompositeRoot, anisotropy_texture) == 412u &&
-        offsetof(VkrVulkanSsgiCompositeRoot, visible_rows) == 416u &&
-        offsetof(VkrVulkanSsgiCompositeRoot, diffuse_volume_texture) == 436u,
-    "SSGI composite root ABI size drift");
 _Static_assert(sizeof(VkrVulkanFogRoot) == 176u,
                "Vulkan fog root ABI size drift");
 _Static_assert(offsetof(VkrVulkanFogRoot, params) == 0u &&
@@ -2419,8 +2128,6 @@ typedef struct VkrVulkanTemporalSceneState {
   uint64_t radiance_revision;
   uint64_t publication_generation;
   uint64_t graph_revision;
-  /** Consecutive submitted static frames, capped at the SSR settle limit. */
-  uint32_t unchanged_frames;
 } VkrVulkanTemporalSceneState;
 
 typedef struct VkrVulkanGraphImageInstance {
@@ -2439,8 +2146,6 @@ typedef struct VkrVulkanGraphImageInstance {
   /** Exact raster grid that produced HZB depth; camera compatibility is
    * separate. */
   Mat4 history_raster_view_projection;
-  /** Previous jittered projection for SSR temporal depth linearization. */
-  Mat4 history_projection;
   uint32_t history_width;
   uint32_t history_height;
   uint64_t history_frame_index;
@@ -2827,20 +2532,6 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphImageInstance *temporal_surface_output;
   bool8_t temporal_history_valid;
   float32_t motion_blur_interval_scale;
-  VkrVulkanGraphImageInstance *ssr_color_input;
-  VkrVulkanGraphImageInstance *ssr_color_output;
-  VkrVulkanGraphImageInstance *ssr_depth_input;
-  VkrVulkanGraphImageInstance *ssr_depth_output;
-  VkrVulkanGraphImageInstance *ssr_identity_input;
-  VkrVulkanGraphImageInstance *ssr_identity_output;
-  bool8_t ssr_history_valid;
-  VkrVulkanGraphImageInstance *ssgi_color_input;
-  VkrVulkanGraphImageInstance *ssgi_color_output;
-  VkrVulkanGraphImageInstance *ssgi_depth_input;
-  VkrVulkanGraphImageInstance *ssgi_depth_output;
-  VkrVulkanGraphImageInstance *ssgi_identity_input;
-  VkrVulkanGraphImageInstance *ssgi_identity_output;
-  bool8_t ssgi_history_valid;
   VkrVulkanGraphImageInstance *froxel_history_input;
   VkrVulkanGraphImageInstance *froxel_history_output;
   bool8_t froxel_history_valid;
@@ -2859,7 +2550,6 @@ typedef struct VkrVulkanFrameSlot {
   /* Lowered once from the selected temporal consumer's predecessor. */
   Mat4 temporal_previous_view_projection;
   uint64_t temporal_previous_frame_index;
-  bool8_t fsr31_recorded;
   VkrVulkanPreparedCaptureCopy *capture_copies;
   VkImage picking_readback_image;
   VkBufferImageCopy2 picking_readback_region;
@@ -3110,18 +2800,6 @@ typedef struct VkrVulkanRetiredMaterial {
   bool8_t occupied;
 } VkrVulkanRetiredMaterial;
 
-typedef struct VkrVulkanFsrSdk VkrVulkanFsrSdk;
-
-typedef struct VkrVulkanFsr31History {
-  Mat4 view_projection;
-  VkrVulkanTemporalSceneState scene;
-  uint64_t frame_index;
-  uint64_t scene_generation;
-  uint64_t submit_value;
-  uint32_t history_index;
-  bool8_t valid;
-} VkrVulkanFsr31History;
-
 /**
  * Completion-owned metadata for one physical scattering-history volume. The
  * graph owns its image; this compact record owns only the froxel-specific
@@ -3157,21 +2835,6 @@ typedef struct VkrVulkanCloudHistory {
   bool8_t valid;
 } VkrVulkanCloudHistory;
 
-/** Completion-owned compatibility proof for one SSGI history tuple. */
-typedef struct VkrVulkanSsgiHistory {
-  uint64_t producer_submit_value;
-  uint64_t frame_index;
-  uint32_t dimensions[2];
-  uint32_t shadow_generation;
-  uint32_t local_shadow_generation;
-  uint32_t shadow_valid_layer_mask;
-  uint64_t local_shadow_valid_layer_mask;
-  uint64_t local_shadow_transmission_generations
-      [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
-  uint64_t local_shadow_transmission_valid_layer_mask;
-  bool8_t valid;
-} VkrVulkanSsgiHistory;
-
 struct VkrVulkanRenderer {
   VkrAllocator *allocator;
   VkrVulkanRendererConfig config;
@@ -3181,24 +2844,12 @@ struct VkrVulkanRenderer {
   float64_t motion_seconds;
   VkrBloomConfig bloom_config;
   VkrGtaoConfig gtao_config;
-  VkrSsrConfig ssr_config;
-  VkrSsgiConfig ssgi_config;
   VkrDisplayOutputParams display_output_params;
   VkrDisplayOutputParams display_output_requested;
   uint64_t display_output_snapshot_revision;
   VkrGtaoGpuParams gtao_params;
-  VkrVulkanFsrSdk *fsr31;
-  uint32_t fsr31_output_width;
-  uint32_t fsr31_output_height;
-  VkrVulkanFsr31History fsr31_history;
   VkrVulkanFroxelHistory froxel_histories[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
   VkrVulkanCloudHistory cloud_histories[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
-  VkrVulkanSsgiHistory ssgi_histories[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
-  /* Independent of command slots: cancelled SDK dispatches advance its rings.
-   */
-  uint64_t fsr31_dispatch_uses[VKR_VULKAN_FRAME_SLOT_COUNT];
-  uint32_t fsr31_dispatch_slot;
-  bool8_t fsr31_recreate;
   VkrDMemory publication_staging_memory;
   VkrDMemory capture_storage_memory;
   Arena *graph_frame_arena;
@@ -3559,13 +3210,6 @@ void vkr_vk_record_capture(VkrVulkanRenderer *renderer, VkCommandBuffer command,
                            VkrVulkanFrameSlot *slot);
 bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
                             VkCommandBuffer command);
-bool8_t vkr_vk_prepare_fsr31_context(VkrVulkanRenderer *renderer);
-bool8_t vkr_vk_prepare_fsr31_inputs(VkrVulkanRenderer *renderer,
-                                    VkrVulkanPreparedCompute *prepared,
-                                    const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_fsr31_stabilize(VkrVulkanRenderer *renderer,
-                                       VkrVulkanPreparedCompute *prepared,
-                                       const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_froxel_inject(VkrVulkanRenderer *renderer,
                                      VkrVulkanPreparedCompute *prepared,
                                      const VkrRgPass *pass);
@@ -3614,7 +3258,6 @@ void vkr_vk_mark_froxel_submitted(VkrVulkanRenderer *renderer,
                                   uint64_t submit_value);
 void vkr_vk_mark_cloud_submitted(VkrVulkanRenderer *renderer,
                                  uint64_t submit_value);
-void vkr_vk_cancel_fsr31(VkrVulkanRenderer *renderer);
 void vkr_vk_bind_descriptor_buffers(VkrVulkanRenderer *renderer,
                                     VkCommandBuffer command);
 bool8_t vkr_vk_prepare_deferred_upload(VkrVulkanRenderer *renderer,
@@ -3672,43 +3315,9 @@ bool8_t vkr_vk_prepare_shadow_moments(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_deferred_hzb(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
                                     const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssr_depth_base(VkrVulkanRenderer *renderer,
-                                      VkrVulkanPreparedCompute *prepared,
-                                      const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssr_depth_mip(VkrVulkanRenderer *renderer,
-                                     VkrVulkanPreparedCompute *prepared,
-                                     const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssr_trace(VkrVulkanRenderer *renderer,
-                                 VkrVulkanPreparedCompute *prepared,
-                                 const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
-                                    VkrVulkanPreparedCompute *prepared,
-                                    const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssr_composite(VkrVulkanRenderer *renderer,
-                                     VkrVulkanPreparedCompute *prepared,
-                                     const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssgi_depth_base(VkrVulkanRenderer *renderer,
-                                       VkrVulkanPreparedCompute *prepared,
-                                       const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssgi_depth_mip(VkrVulkanRenderer *renderer,
-                                      VkrVulkanPreparedCompute *prepared,
-                                      const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssgi_trace(VkrVulkanRenderer *renderer,
-                                  VkrVulkanPreparedCompute *prepared,
-                                  const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssgi_temporal(VkrVulkanRenderer *renderer,
-                                     VkrVulkanPreparedCompute *prepared,
-                                     const VkrRgPass *pass);
-bool8_t vkr_vk_prepare_ssgi_composite(VkrVulkanRenderer *renderer,
-                                      VkrVulkanPreparedCompute *prepared,
-                                      const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_fog_apply(VkrVulkanRenderer *renderer,
                                  VkrVulkanPreparedCompute *prepared,
                                  const VkrRgPass *pass);
-void vkr_vk_mark_ssr_submitted(VkrVulkanRenderer *renderer,
-                               uint64_t submit_value);
-void vkr_vk_mark_ssgi_submitted(VkrVulkanRenderer *renderer,
-                                uint64_t submit_value);
 bool8_t vkr_vk_prepare_exposure_histogram(VkrVulkanRenderer *renderer,
                                           VkrVulkanPreparedCompute *prepared,
                                           const VkrRgPass *pass);

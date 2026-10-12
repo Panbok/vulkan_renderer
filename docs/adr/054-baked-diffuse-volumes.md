@@ -218,7 +218,6 @@ composed texture before rewriting it in place.
 - The weighted L1 evaluated at the normal replaces only diffuse indirect
   light. Ambient occlusion stays; environment and probe specular stay but
   are scaled by baked sky light (below).
-- SSGI does not add bounce on covered pixels.
 
 **On the desktop pipeline** the lookup runs outside deferred lighting
 ([`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c)):
@@ -232,8 +231,8 @@ composed texture before rewriting it in place.
 3. `DiffuseVolume.Fallback` looks those pixels up exactly in one indirect
    dispatch.
 
-Deferred lighting reads the result per pixel. Transmission shading and SSGI
-call the lookup inline. The tiled pipeline calls it inline in
+Deferred lighting reads the result per pixel. Transmission shading calls the
+lookup inline. The tiled pipeline calls it inline in
 `Tiled.Opaque`. Frame roots carry the textures, origin, spacing, `sh_scale`,
 moment rows, lamp band offset (zero when no lamp group is active) and
 dimensions ([ADR-044](044-shader-cross-backend-contract.md) owns the ABI
@@ -293,11 +292,8 @@ Per backend:
   (`packet_baked_light_with_lamps` in
   [`default.slang`](../../renderer/src/shaders/vulkan/slang/world/default.slang));
   one outside the volume keeps the environment, because nothing measures
-  its sky light. `SSR.Composite` reads the volume image (binding 13), the
-  baked lamp irradiance (binding 14) and the hidden baked-lamp light
-  (binding 15), so the environment reflection it replaces is the one
-  lighting added; an SSR hit stays unscaled. Transmission shading adds its
-  lightmap's lamp light without subtracting the light moving casters hide.
+  its sky light. Transmission shading adds its lightmap's lamp light without
+  subtracting the light moving casters hide.
 
 Cost per baked pixel on Metal: one L2 SH evaluation (seven `float4`
 constant reads, about 30 FMA), one multiply-add per sun-key layer, two
@@ -320,10 +316,7 @@ On the desktop pipeline a frame without baked lamps reads the lamp band too
 while a lamp group is active: three more texel reads per valid corner in
 `DiffuseVolume.Sample`, `DiffuseVolume.Fallback`, forward and transmission
 lookups. A frame with baked lamps and no active lamp group reads three fewer.
-On a frame with baked lamps, `SSR.Composite` adds one storage read per
-eligible covered pixel, and one more on lightmapped pixels with a selected
-moving-caster lamp. These are
-source counts; the cost is not measured.
+These are source counts; the cost is not measured.
 
 ## Consequences
 
@@ -336,7 +329,8 @@ source counts; the cost is not measured.
 - Baked sky light scales a reflection by one number per pixel. A mirror in a
   half-open place loses sky detail in the directions that do see the sky, and
   an enclosed one reflects a uniform colour, not the shapes around it: local
-  probes or planar reflections supply those.
+  probes supply those, and planar reflections are proposed for water
+  ([Short-history rendering](../proposals/short-history-rendering.md)).
 - On the desktop pipeline a lightmapped surface outside the volume keeps
   the full environment reflection: its lightmap holds only the lamp groups,
   so it has no baked sky light to scale by. The tiled pipeline also scales
@@ -490,15 +484,16 @@ Baked sky in reflections (2026-10-11, Release, validation unset, M1):
   beyond the clouds' motion.
 - Vulkan: every SPIR-V module of the build passes `spirv-val --target-env
   vulkan1.4 --scalar-block-layout`; CPU suites pass. No native Vulkan run:
-  the desktop pipeline's reflections, the volume images' alpha and the SSR
-  composite's subtraction are unchecked on hardware.
+  the desktop pipeline's reflections, the volume images' alpha and the
+  subtraction in the SSR composite, since removed (ADR-055), were unchecked on
+  hardware.
 - Vulkan lamp band on every frame and lamp light in lightmapped reflections
   (2026-10-11): a scratch compile of the Vulkan shader catalog
   (`vkr_bakery shaders --backend vulkan`) built every module, and the
   modules pass `spirv-val --target-env vulkan1.4 --scalar-block-layout`.
-  Reflection of `packet.ssr_composite.comp.spv` gives the baked lamp fields
-  at bytes 424 and 428 of the 432-byte root. The changed host files pass
-  `clang -fsyntax-only`.
+  Reflection of `packet.ssr_composite.comp.spv`, a module since removed with
+  SSR, gave the baked lamp fields at bytes 424 and 428 of the 432-byte root.
+  The changed host files pass `clang -fsyntax-only`.
 - Native Vulkan after that change, 2026-10-12 (Windows 10 Pro 19045, Ryzen 5
   2600, RX 6700 XT, AMD 26.6.3, Release, graphics validation unset, dirty
   tree, not authoritative). Bistro's volume fixture has no lightmap, and its

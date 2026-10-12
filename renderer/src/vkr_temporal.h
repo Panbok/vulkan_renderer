@@ -8,19 +8,10 @@
 /** Renderer-owned jitter period used to align deterministic replay. */
 #define VKR_TEMPORAL_SEQUENCE_LENGTH 8u
 
-/** Unchanged rendered inputs required before accumulating recursive SSR output.
- */
-#define VKR_TEMPORAL_SSR_SETTLE_FRAMES 128u
-
-/** FSR jitter period for validated nonzero render/output widths. */
-uint32_t vkr_temporal_upscale_sequence_length(uint32_t render_width,
-                                              uint32_t output_width);
-
 struct VkrPreparedFrame;
 
 /** Rendered-input identity for static accumulation; native resource and graph
- * revisions must also match. Recursive SSR output needs the settling gate
- * below. Contains no borrowed storage. */
+ * revisions must also match. Contains no borrowed storage. */
 typedef struct VkrTemporalSceneSignature {
   uint64_t hash[2];
   bool8_t eligible;
@@ -30,25 +21,6 @@ typedef struct VkrTemporalSceneSignature {
  * Excludes temporal sampling noise and post-temporal exposure/bloom/UI. */
 VkrTemporalSceneSignature
 vkr_temporal_scene_signature(const struct VkrPreparedFrame *packet);
-
-/** Advance metadata from the selected producer; publish the result only after
- * successful submission. The first 128 matching SSR frames remain adaptive. */
-bool8_t vkr_temporal_prepare_static_accumulation(
-    bool8_t scene_matches, bool8_t ssr_enabled,
-    uint32_t previous_unchanged_frames, uint32_t *out_unchanged_frames);
-
-/** Reflection radiance controls, independent of camera and object motion,
- * asset publication state, texture uploads and fog. Always eligible. Native
- * callers additionally prove the graph revision, temporal resets, extent,
- * frame continuity and selected motion-history compatibility. */
-VkrTemporalSceneSignature
-vkr_ssr_content_signature(const struct VkrPreparedFrame *packet);
-
-/** Independent direct-light bounce controls; excludes camera, sampling phase,
- * world content generations, asset publication state and local-shadow
- * strength. Always eligible; native callers prove the rest as for SSR. */
-VkrTemporalSceneSignature
-vkr_ssgi_content_signature(const struct VkrPreparedFrame *packet);
 
 typedef enum VkrTemporalResetReason {
   VKR_TEMPORAL_RESET_NONE = 0u,

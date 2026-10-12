@@ -28,8 +28,6 @@
     "render_mode": "default",
     "display_transform": "aces_fitted",
     "gtao_enabled": false,
-    "ssr_enabled": false,
-    "ssgi_enabled": false,
     "bloom_enabled": false,
     "motion_blur_enabled": true,
     "motion_blur_shutter_angle": 180,

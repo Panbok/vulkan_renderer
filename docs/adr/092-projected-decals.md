@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-07
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -113,7 +113,7 @@ it lights them, so the surface's own material model shades the result.
    position and its screen derivatives from the barycentric derivatives
    only on frames with decals, iterates the union of its wave's cell masks
    and writes the decal-covered base colour before the metallic fold, so
-   deferred lighting, GTAO, SSR and SSGI see it while the visibility id,
+   deferred lighting and GTAO see it while the visibility id,
    motion and emission stay the surface's. The editor's neutral inspection
    views keep their neutral base colour. Frame validation rejects a grid
    bit that names a row beyond the table, since both shaders index rows by

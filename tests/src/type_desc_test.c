@@ -300,18 +300,14 @@ static void test_graphics_preferences_type(void) {
   assert(settings.high_dpi);
   assert(!vkr_graphics_settings_read_json(
       string8_lit("{\"version\":1,\"shadow_quality\":4}"), &settings));
-  assert(!vkr_graphics_settings_read_json(
+  /* Files written with the removed screen-space and upscaling settings
+     still load. */
+  assert(vkr_graphics_settings_read_json(
       string8_lit("{\"version\":1,\"temporal_upscaling\":true,"
-                  "\"anti_aliasing\":false}"),
+                  "\"screen_space_reflections\":true,"
+                  "\"screen_space_gi\":true,\"shadow_quality\":1}"),
       &settings));
   assert(settings.shadow_quality == 1u);
-
-  /* Normalization repairs the dependency an interactive toggle breaks. */
-  settings.temporal_upscaling = true_v;
-  settings.anti_aliasing = false_v;
-  assert(!vkr_graphics_settings_valid(&settings));
-  vkr_graphics_settings_type.normalize(&settings);
-  assert(settings.anti_aliasing && vkr_graphics_settings_valid(&settings));
 
   /* Which backend offers dynamic resolution, and which effects the tiled
    * pipeline draws, follow the running renderer's state (ADR-087). */
@@ -321,7 +317,6 @@ static void test_graphics_preferences_type(void) {
       &vkr_graphics_settings_type, string8_lit("ambient_occlusion"));
   assert(dynamic != UINT32_MAX && occlusion != UINT32_MAX);
   const VkrGraphicsSettingsState vulkan_state = {
-      .temporal_upscaling_available = true_v,
       .graphics_pipeline = VKR_GRAPHICS_PIPELINE_DESKTOP,
   };
   const VkrGraphicsSettingsState metal_state = {

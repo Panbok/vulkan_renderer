@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-11
+updated: 2026-10-12
 authority: proposal
 ---
 # Editor Projects
@@ -444,7 +444,7 @@ to leave currently unsaved settings behind.
 
 Preserve the requested graphics settings when a backend/display cannot support
 them; derive separate effective settings and show the reason. Current startup-owned
-values (vsync, HDR, temporal upscaling, dynamic resolution and render scale) remain
+values (vsync, HDR, dynamic resolution and render scale) remain
 restart-required in v1. Switching projects applies live values and shows requested
 versus running values for startup settings. **Restart editor** flushes state and
 uses a one-use project resume token; normal launches still show the chooser.

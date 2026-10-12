@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -155,7 +155,7 @@ pipeline rather than a backend mechanism.
    evidence matches a tiled run, and a case that names a render mode or
    replay channel the tiled class does not draw fails on Metal
    (`vkr_graphics_pipeline_draws_render_mode`). The tiled class turns
-   off temporal reconstruction, SSR, SSGI, GTAO,
+   off temporal reconstruction, GTAO,
    surface diffusion, depth of field, motion blur, froxel fog, the local
    shadow mask, SDSM and the transmission passes
    ([`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
@@ -217,9 +217,10 @@ pipeline rather than a backend mechanism.
    and an alpha-tested surface picks whole. The pick readback also copies the
    picked pixel's resolved depth, which grid fit reads in scenes without
    collision. Graphics settings written while the class was a preference
-   still load and ignore the retired `tiled_pipeline` key; on Metal,
-   temporal upscaling is unavailable and dynamic resolution steps the
-   spatial upscale. A project-managed editor starts from a machine-local
+   still load and ignore the retired `tiled_pipeline`,
+   `temporal_upscaling`, `screen_space_reflections` and `screen_space_gi`
+   keys; on Metal, dynamic resolution steps the spatial upscale. A
+   project-managed editor starts from a machine-local
    `graphics.json` beside the workspace locator
    ([ADR-069](069-editor-projects-and-workspaces.md)), and a project's stored
    restart-time settings do not override it
@@ -365,7 +366,8 @@ pipeline rather than a backend mechanism.
     to 1 and 16 ms
     ([`vkr_sample_runtime_config.c`](../../runtime/src/vkr_sample_runtime_config.c));
     the dynamic-resolution setting turns it off. Vulkan has no dynamic
-    resolution; FSR 3.1 takes a fixed scale
+    resolution and renders the Scene at render scale 1; the FSR 3.1
+    upscaler was removed on 2026-10-12
     ([ADR-052](052-vulkan-fsr31-upscaling.md)).
 
 ### First tiled pipeline measurement
@@ -408,7 +410,8 @@ and 0.60 ms p95. Captures of the café windows on both pipelines
 and `sha256:a665f9223234785166e38502f335266702e156483cb1f6f4db4aa1c77d42b571`)
 show the interior through the panes on both. The tiled panes reflect the
 sky where the desktop ones reflect the street, because the tiled pipeline
-has no local reflection probes or SSR yet, and the desktop interior is lit
+has no local reflection probes yet (the desktop run also had SSR, removed
+on 2026-10-12), and the desktop interior is lit
 by lamps the tiled one does not draw yet.
 
 ### Dynamic light evidence

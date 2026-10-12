@@ -141,8 +141,6 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId exposure_adapted_ev;
   VkrMetricId exposure_multiplier;
   VkrMetricId exposure_reset_reasons;
-  /* SSR and SSGI history selection, packed (VkrScreenHistoryState). */
-  VkrMetricId screen_history_state;
   VkrMetricId geometry_megabuffer_vertex_capacity;
   VkrMetricId geometry_megabuffer_index_capacity;
   VkrMetricId geometry_megabuffer_vertex_live_bytes;

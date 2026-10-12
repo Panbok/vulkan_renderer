@@ -28,7 +28,6 @@
     "skybox": true,
     "text_fixture": false,
     "render_scale": 1,
-    "upscaler": "spatial",
     "taa_enabled": true,
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
@@ -44,7 +43,6 @@
     "bloom_knee": 0.5,
     "bloom_intensity": 0.05,
     "image_sharpness": 0,
-    "ssr_enabled": true,
     "exposure_reset_frame": 4294967295
   },
   "camera": {

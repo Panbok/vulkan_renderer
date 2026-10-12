@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -61,8 +61,7 @@ outgoing GGX diffuse reserve multiplied by coat and sheen transmission.
 Deferred lighting writes `F = sqrt(C) * E`, where E is uncolored diffuse
 irradiance in the renderer's diffuse-response convention. Light helpers retain
 the irradiance they already evaluated; they do not repeat shadow queries or
-rectangle integrals. SSGI adds its corresponding irradiance to F with its
-existing confidence, AO and baked-volume coverage policy.
+rectangle integrals.
 
 The gather couples two points with `min(s_receiver, s_source)`. It filters F
 within one object and profile, rejecting depth/normal discontinuities. All four
@@ -75,8 +74,8 @@ strength. The final update is equivalent to
 The implementation accumulates weighted differences, so a constant field with
 constant strength cancels before HDR addition. Specular and emission stay in
 HDR. Global/probe/volume diffuse keeps its existing AO policy. The pass runs
-after SSGI, before SSR, fog, transparency and temporal reconstruction. SSR and
-refraction therefore see the composed diffuse appearance.
+after deferred lighting, before fog, transparency and temporal reconstruction.
+Refraction therefore sees the composed diffuse appearance.
 
 The offline model uses the same radial profile and material coupling, with
 the existing angular reserve at the outgoing endpoint:
@@ -128,8 +127,8 @@ reference; failed native destruction remains registered under the texture
 system's existing final-destruction ownership.
 
 The gather parameter block is 32 bytes and the Vulkan gather root 192 bytes.
-The Vulkan deferred root is 192 bytes and the SSGI root 432 bytes, including
-the optional source image and profile count. Disabled
+The Vulkan deferred root is 224 bytes, including the optional source image and
+profile count. Disabled
 scenes allocate neither diffusion graph image.
 
 ### Approximation limits
@@ -162,8 +161,9 @@ without a second incident cosine pass. The tilted case also demonstrates the
 folded-sheet limitation above.
 
 The normal Release wrapper compiles the production shaders. Reflection
-and `spirv-val` pass for the actual gather, deferred and SSGI composite modules,
-including the 32-byte parameters, 192-byte Vulkan gather root and material row.
+and `spirv-val` passed for the actual gather, deferred and SSGI composite
+modules (SSGI since removed), including the 32-byte parameters, 192-byte Vulkan
+gather root and material row.
 These are compilation and ABI results, not native Vulkan execution.
 
 On the Metal desktop implementation, removed on 2026-10-06, five 513×321

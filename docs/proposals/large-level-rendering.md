@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-11
+updated: 2026-10-12
 authority: proposal
 ---
 
@@ -415,8 +415,9 @@ a correction or a real-time pass.
 
 ### Problem
 
-The level's water reflects the sky: it has no probes, and the tiled pipeline
-has no SSR (owner decision, 2026-10-06). The real-time planar pass of the
+The level's water reflects the sky: it has no probes, and neither pipeline
+has SSR (owner decisions, 2026-10-06 for the tiled pipeline and 2026-10-12 for
+the desktop pipeline). The real-time planar pass of the
 [planar reflections](planar-reflections.md) proposal renders the mirrored
 scene. At the valley and bridge views that scene is the terrain, the backdrop
 and the forests, which are geometry-bound, so the pass could cost a large
@@ -435,8 +436,9 @@ the global environment.
 | D. Hybrid: B as the far field, plus a real-time near-field pass limited to a reflection distance and to dynamic objects | Near static and dynamic content, and the far field | Content between the near limit and the box walls | The planar pass over a small part of the scene | B's cube and the pass target |
 | E. Real-time planar pass alone (planar reflections proposal) | Everything it draws | Content it leaves out to save cost | The full mirrored view | The pass target |
 
-On the desktop pipeline (Vulkan), SSR (ADR-055) already gives the near
-field over the probes, so B is its far field.
+The desktop pipeline (Vulkan) lost SSR's near field over the probes on
+2026-10-12 (ADR-055). Its water also takes planar reflections (owner decision,
+2026-10-12), so the same options apply there.
 
 ### Recommendation
 

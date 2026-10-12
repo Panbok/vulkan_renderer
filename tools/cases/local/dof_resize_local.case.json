@@ -27,8 +27,6 @@
     "render_mode": "default",
     "display_transform": "aces_fitted",
     "gtao_enabled": false,
-    "ssr_enabled": false,
-    "ssgi_enabled": false,
     "bloom_enabled": false,
     "image_sharpness": 0,
     "dof_enabled": true,

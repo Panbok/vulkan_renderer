@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-06
+updated: 2026-10-12
 authority: proposal
 ---
 
@@ -115,7 +115,7 @@ Radeon RX 6700 XT, driver 26.6.3, Vulkan 1.4.315, Windows 10, Ryzen 5 2600 with
 | BC outputs | Every `.vkt` cooked on this host is BC7 sRGB (146), BC7 UNORM (145) or BC5 (141); paired normal/roughness outputs record `vmf-alpha2-v2`. 402 older Basis files under `assets/textures/generated/normalrough_v1/` and six `normalrough_v2/normal_a377259d*` files are untracked and unreferenced | `p21_vulkan_bistro_windowed_validation`, Debug: pass, validation layer with synchronization, no VUID or error, three images, `immediate` — `profile/20261003T152636.284Z-0020a5` / `54714c6f3290fe6a9040078e5809431be12e20d5c2d822aa6d79423fc9602c5b` |
 | D16 atlas | The capability report lists `D16_UNORM depth+sampled compare` present. Debug `local_shadow_bistro_vulkan_street_ultra_validation`: both repetitions pass with no VUID, synchronization hazard or error. The run is incomplete only for `determinism.work_volume_mismatch` on `visibility.hzb.history_rejection.incomplete`, whose 0/1 phase differs between repetitions. D16 against D32 fails the default gate ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)) | `profile/20261003T153031.825Z-002ffc` / `feafa309d2541e2b829f3da709d3febf728de8d528d686b89efddd7280f71ca1`; D16 `snapshot/20261003T154045.331Z-0024a6` / `9b8ce4c4205928838e3b2114ad0c9339bbbee80cf587f46d149a689d5594b148`; D32 `snapshot/20261003T154253.572Z-0030d1` / `913868f75b8d684a0e71e1f8d00ec5356bbbfc637d599075e6f7a5d1722ff81c` |
 | Vulkan text baseline | After the recook: `missing_baseline`. Against the before image, mean error is 0.0007 to 0.0024 per capture; the differences lie on foliage cutouts and local shadow edges. Accepted generation `683333909dc5c3fb464adbc16701b2a8ee571be05338067d0439eb9848576f60`; `compare --run` passes | `snapshot/20261003T154533.726Z-00204f` / `f3bd7607f95a19e17f344d4944d0e5a86a3d3ae51611e58a95f8b92f365fd090`; `compare/20261003T155438.610Z-001587` / `128589322fb4662b052de6a18861422345b22cfca2a656618513ab7064f6e2a7` |
-| Hardware matrix | RDNA 2 row and [capability profile](../../assets/verification/renderer-features/windows-vulkan-capability-profile.txt) updated ([ADR-083](../adr/083-supported-hardware-matrix.md)) | FSR entry: `profile/20261003T155453.534Z-00091b` / `5f6ffe139c2380a87a8fdc95a35804f7597cb49c4fa291ec12c2e7cc9db3c2ec` |
+| Hardware matrix | RDNA 2 row and [capability profile](../../assets/verification/renderer-features/windows-vulkan-capability-profile.txt) updated ([ADR-083](../adr/083-supported-hardware-matrix.md)) | FSR entry (FSR removed on 2026-10-12): `profile/20261003T155453.534Z-00091b` / `5f6ffe139c2380a87a8fdc95a35804f7597cb49c4fa291ec12c2e7cc9db3c2ec` |
 | Memory floor | Textures 3.176 GB at full resolution and 1.995 GB at 2048; peaks 4.84 and 3.56 GB ([ADR-083](../adr/083-supported-hardware-matrix.md)) | `profile/20261003T155717.083Z-002d3a` / `8d895b4ae299d9502408cbec901d4bd327bf89541838359951668a01f478fdac`; `profile/20261003T155846.795Z-000812` / `6c579d8cb48d5fe1a658e92263a50b8b191787e1edb6bd40ac20a0c1fb09e283` |
 | Cross-backend local shadows | Exit 4 for both cases: the workload fingerprints differ ([ADR-051](../adr/051-renderer-harness-and-evidence.md)) | street `snapshot/20261003T151320.506Z-0013f3` / `f4d3fa0ad318b90d4220bd6b0a906477df331d720d3edea7c92069c39ea4f947`; indoor `snapshot/20261003T151634.384Z-001c25` / `2c90dd177456e1007f2b49ba095b49a031aa565616440e94f77c586cca160508` |
 
@@ -196,6 +196,9 @@ because the fixes are not yet committed.
 | Profiled surface diffusion, Release snapshot and Debug resize validation | pass | `20260912T111422.875Z-003ffe` / `ce2ee2896257522f972aa200a9eeae78937ba9ed0be9decc77af81920ad9664b`; `20260912T111336.086Z-003163` / `9457566e5ba9fac63cf042b8e2e87fb041a780293cbfadc7dbb288743e474db9` |
 | Full-feature Bistro texture streaming and 1258x752/866x555 resize, Release / Debug validation | pass | `20260912T115416.259Z-003742` / `b440a48dcd851e1657e8d0355e81b22d473d0bea8b87884c6d7fb94e2b79ddb1`; `20260912T115010.173Z-003268` / `6d02aed7706799c832c5a7b03685d7862c531385bc0ddf19cdb4bc4220f38008` |
 
+SSGI, SSR and FSR 3.1 were removed from the desktop pipeline on 2026-10-12;
+their rows here are history.
+
 The reported SSGI device loss was reproduced before repair. Its Vulkan path
 mixed sampled and storage descriptor indices, AMD lost the device on the
 unannotated variable trace loop, and SSGI/SSR composite allocated zeroed frame
@@ -211,11 +214,13 @@ texture streaming. Each new Vulkan image-pool block needs a 47,640-byte
 `VkrGpuMemoryCore` record, but graph resize and texture publication exhausted the
 renderer DMemory's former 64 MiB reserve. The reserve is now 96 MiB while its
 initial 2 MiB commit and GPU completion rules remain unchanged. The retained
-regression case enables FSR 3.1, bloom, GTAO, SSR and SSGI, loads all 632 texture
-assignments, and performs the reported 1258x752 to 866x555 resize round trip. Two
-Release and two validation-enabled Debug runs ended with zero pending, failed or
-demanded-missing assignments, zero omitted publication candidates, empty stderr,
-and no Vulkan API or synchronization diagnostics.
+regression case, `vulkan_texture_stream_features`, then enabled FSR 3.1, bloom,
+GTAO, SSR and SSGI; since 2026-10-12 it enables bloom and GTAO at unit scale. It
+loads all 632 texture assignments and performs the reported 1258x752 to 866x555
+resize round trip. Two Release and two validation-enabled Debug runs ended
+with zero pending, failed or demanded-missing assignments, zero omitted
+publication candidates, empty stderr, and no Vulkan API or synchronization
+diagnostics.
 
 This Windows host cannot complete the checklist's HDR-display inspection,
 multi-DPI monitor transitions or manual editor/Bakery UI actions. Those boxes remain open rather than being inferred from Vulkan.
@@ -239,9 +244,10 @@ three-image hidden-window witness.
   [capability profile](../../assets/verification/renderer-features/windows-vulkan-capability-profile.txt).
   Target-device coverage beyond this one adapter is unmeasured.
 - [x] Run `build_editor.bat Release` and confirm the editor Vulkan target starts
-  with the same cooked assets and shader set. The Release editor reaches the
-  frame loop and creates its FSR 3.1.4 context at 866x555 with no error or
-  validation output. Startup only; no editor UI interaction was exercised.
+  with the same cooked assets and shader set. The Release editor reached the
+  frame loop and created its FSR 3.1.4 context at 866x555 with no error or
+  validation output (FSR was removed on 2026-10-12). Startup only; no editor UI
+  interaction was exercised.
 - [x] Run `build.bat Debug` for the diagnostic build. Confirm that
   `VK_LAYER_KHRONOS_validation` is initialized by the child, then inspect
   stderr/stdout for validation errors; a Debug build without the layer is not
@@ -249,9 +255,11 @@ three-image hidden-window witness.
   `Vulkan validation enabled: VK_LAYER_KHRONOS_validation (synchronization=1,
   GPU-assisted=0)` in child stdout with empty child stderr. Debug application
   targets need the 8 MiB main-stack reserve set in the root list file: an
-  unoptimized FidelityFX dispatch overflows the Windows 1 MiB default about
+  unoptimized FidelityFX dispatch overflowed the Windows 1 MiB default about
   five seconds in, at the first FSR dispatch, with `0xC00000FD` and no log
-  output. Release is unaffected, so a passing Release run does not cover it.
+  output. FSR was removed on 2026-10-12; the reserve stays for unoptimized
+  Debug frames. Release is unaffected, so a passing Release run does not cover
+  it.
 - [x] Confirm that the Release wrappers compile every production Slang/native
   entry point and that Vulkan reflection validates the generated SPIR-V roots,
   bindings, push constants, and dispatch sizes under
@@ -312,50 +320,6 @@ run on Metal in the tiled pipeline, whose evidence is recorded separately.
 - [ ] Energy-compensated GGX and shared DFG: [ADR-053](../adr/053-energy-compensated-ggx.md).
 - [ ] Baked diffuse volumes, room boundaries, thick glass, multi-bounce diffuse
   transport, and photon caustics: [ADR-054](../adr/054-baked-diffuse-volumes.md).
-- [ ] Opaque SSR: validate the 512-byte temporal and 416-byte composite roots,
-  the 128-byte camera record at temporal offset 288, exact producer transform
-  reads and graph bindings 17/18. Trace writes the hit image at binding 9 with
-  a 336-byte root. Check the removed depth-base/trace/temporal receiver bindings
-  3/5/1 and temporal hit/output indices at offsets 460/476/480/484.
-  Trace/raw/hit use source extent; the depth pyramid remains floor-half with
-  odd trailing rows/columns retained. Check RGBA32_UINT sampled/storage support.
-  Capture version-5 `ssr_reflection` is full-resolution incoming radiance;
-  composite applies current material/GTAO exactly once and removes the current
-  probe term. Prior shaded-history captures are not numerically comparable.
-  Check the expanded geometry/identity histories, full-source raw/hit images and
-  removed receiver-coordinate image: +140.625 MiB logical payload at source
-  1280×720 with three slots/five histories, or +316.40625 MiB with eight slots/ten
-  histories, excluding allocation overhead. Full-resolution tracing accounts for
-  42.1875/112.5 MiB of this increase over the prior reflected-hit implementation.
-  Resize, cancellation, scene reload and retirement must preserve completion.
-  Exercise no-TAA and TAA, subpixel jitter, camera translation, rigid reflected
-  objects and receivers, nonuniform/mirrored models, material/coat boundaries,
-  missing hits, foreign identities, depth discontinuities and normal rejection.
-  Run `ssr_reflected_hit_motion.case.json` and its
-  `tools/checks/check_ssr_reflected_hit.py` payload check: the moving emitter must
-  stop leaving red history when its current reflection loses coverage.
-  Run `ssr_reflected_hit_editor.case.json` for odd-size scaled editor bindings.
-  Run `ssr_reflected_hit_flicker.case.json` at the later reported bar camera and
-  `tools/checks/check_ssr_reflected_flicker.py` on its retained snapshot. Confirm
-  that weighted RGB, rather than coverage alone, selects the history's reflected
-  object. Assess the bar lip and upper woodwork before static accumulation;
-  absent current hits and thin edges were limitations on the removed Metal
-  implementation. For FSR motion, use a separately identified Vulkan/FSR
-  witness.
-  Unsupported correspondence must use current radiance/probes without fading
-  an old reflection. Four history taps retain individual validation; raw bounds
-  reuse nine guided rough samples at source offsets {-2,0,2}, weighted at half
-  those offsets. Mirrors use their exact current ray. Dominant metadata adds one
-  hit read; the gather retains its visible row. Composite reads one history pixel
-  and shades it at the current receiver. Trace uses one ray per source pixel,
-  fractional linear-clamp sampling,
-  full-resolution leaves, absolute crossings and earliest rear-slab hits.
-  Compare the under-bar in/out case and the separate SSGI flicker camera in
-  `ssr_ghost_under_bar[_taa].case.json` and
-  `ssgi_bistro_remaining_flicker.case.json`. Check filtered coat SSR against exact
-  packed-roughness probe removal, sheen/anisotropy and disabled GTAO's 1×1 sentinel.
-  Assess visible trails, flicker, reflection strength and measured temporal cost
-  before accepting the Vulkan output: [ADR-055](../adr/055-screen-space-reflections.md).
 - [ ] Rectangular LTC lights and offline rectangle transport:
   [ADR-056](../adr/056-rectangular-ltc-lights.md).
 - [ ] Analytic height fog and ordered transmission composition:
@@ -364,12 +328,9 @@ run on Metal in the tiled pipeline, whose evidence is recorded separately.
   [ADR-058](../adr/058-revision-baked-sky-atmosphere.md).
 - [ ] Froxel volumetric fog, scattering history, and invalid-input fallback:
   [ADR-059](../adr/059-froxel-volumetric-fog.md).
-- [ ] Independent SSGI, source classification, shared motion predecessor consistency,
-  exact in-flight producer ordering, jitter-corrected four-tap depth/identity
-  rejection, no-TAA zero jitter, and baked-volume suppression: [ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md).
 - [ ] Extended-linear scRGB/EDR output, headroom mapping, and SDR fallback:
   [ADR-061](../adr/061-extended-linear-display-output.md).
-- [ ] Layered clearcoat maps, coat energy, and coat-priority SSR:
+- [ ] Layered clearcoat maps and coat energy:
   [ADR-062](../adr/062-layered-clearcoat.md).
 - [ ] Charlie sheen, directional tables, and rectangle-light response:
   [ADR-063](../adr/063-charlie-sheen.md).
@@ -383,17 +344,12 @@ run on Metal in the tiled pipeline, whose evidence is recorded separately.
   [ADR-067](../adr/067-post-reconstruction-motion-blur.md).
 - [ ] Profiled RGB surface diffusion and offline BSSRDF transport:
   [ADR-068](../adr/068-profiled-surface-diffusion.md).
-- [ ] 2026-09-24 shader audit changes: SSR/SSGI cell restart, single-pass
-  layered forward/transmission lighting with the coat's own punctual shadow,
-  GTAO denoise texel loads, resolve material-row reuse, motion-blur extent
-  queries and the surface-diffusion same-row path. Vulkan captures of the
-  SSR bar view before and after the restart should gain SSR hits along
-  rounded pixel columns and lose almost none, as on the removed Metal
-  implementation; port the camera of the deleted Metal case
-  `ssr_bar_turn_stop` from Git history. The other changes should leave
-  deterministic fixtures byte-identical:
-  [ADR-044](../adr/044-shader-cross-backend-contract.md),
-  [ADR-055](../adr/055-screen-space-reflections.md).
+- [ ] 2026-09-24 shader audit changes: single-pass layered
+  forward/transmission lighting with the coat's own punctual shadow, GTAO
+  denoise texel loads, resolve material-row reuse, motion-blur extent queries
+  and the surface-diffusion same-row path. They should leave deterministic
+  fixtures byte-identical:
+  [ADR-044](../adr/044-shader-cross-backend-contract.md).
 - [ ] Default display-linear post target: run `post_transform_cache_bistro`
   unset and with `VKR_POST_TRANSFORM_CACHE=0`, confirm the
   `Post.DisplayLinear.Fullscreen` pass only in the default run, and compare
@@ -452,51 +408,24 @@ Native BC7/BC5 derived textures and Windows import measurements are in
 
 ## Temporal, target, and WSI checks
 
-- [ ] Disable TAA with all post effects in Bistro and verify that the expanded
-  graph fits the shared 163-pass native capacity. Port the settings of the
-  deleted Metal case `ssr_bar_no_taa` (Git history before 2026-10-06) to a
-  Vulkan witness and inspect the actual native pass count and frame result.
-  The CPU envelope check and the removed Metal implementation's
-  [capacity evidence](../../assets/verification/renderer-features/ssr-no-taa-capacity.txt)
-  do not establish native Vulkan acceptance.
-- [ ] With SSR and portable TAA enabled below 100% scale, exercise a camera turn
-  followed by a hold beyond 256 unchanged frames. Port the settings of the
-  deleted Metal cases `ssr_bar_turn_stop`, `ssr_bar_turn_stop_settled` and
-  `ssr_bar_scaled_taa` to Vulkan, then repeat with FSR 3.1.
-  Check that the first 128 matching submitted frames keep ordinary accumulation
-  and FSR composition masking, then begin the existing 128-sample static mean.
-  Motion, SSR toggles, invalid history, scene/resource changes and resize must
-  reset the settling counter. Failed submissions must not advance it. Verify the
-  TAA root's history mode at offset 124 (144-byte root): SSR settling caps ordinary
-  history at 0.9, SSR-off ordinary stationary retention stays 0.99, and mode 1
-  alone enables the checked static integral. Compare the user under-bar in/out
-  case `ssr_ghost_under_bar_taa` and separate `ssgi_bistro_remaining_flicker` case
-  for shorter trails and the possible pre-settle shimmer tradeoff. Compare
-  trails, reflection strength, the first static sample and the final held image;
-  the removed Metal implementation's
-  [settling evidence](../../assets/verification/renderer-features/ssr-history-settling.txt)
-  does not validate FSR SDK execution or native Vulkan history ordering.
-- [ ] Run the portable TAA reference and Vulkan FSR 3.1 static case, then the
-  moving-camera cases. Use `snapshot` and inspect final color, motion/depth
-  channels, history age/validity assertions, and the effective render/output
-  extents:
-
-  ```powershell
-  .\build_release\tools\vkr_harness.exe snapshot `
-    --case tools\cases\local\fsr31_bistro_taa_reference.case.json `
-    --profile tools\profiles\local-offscreen.json
-  .\build_release\tools\vkr_harness.exe snapshot `
-    --case tools\cases\local\fsr31_bistro_static.case.json `
-    --profile tools\profiles\local-offscreen.json
-  ```
-
-  Repeat with `fsr31_bistro_motion.case.json`,
-  `fsr31_bistro_motion_translation.case.json`, and
-  `fsr31_editor_bistro_resize.case.json`. Require completed-submission history
+- [ ] Disable TAA with all post effects in Bistro and verify that the graph
+  fits the native pass capacity (`VKR_RENDERER_IMPL_MAX_GRAPH_PASSES`, 397) on
+  a Vulkan witness; inspect the actual native pass count and frame result. The
+  CPU envelope check does not establish native Vulkan acceptance.
+- [ ] With portable TAA, exercise a camera turn followed by a hold beyond 128
+  unchanged frames. Since 2026-10-12 TAA takes the static accumulation path
+  whenever the scene signature matches, with no SSR settling period. Motion,
+  invalid history, scene/resource changes and resize must return to the
+  ordinary path. Compare trails, the first static sample and the final held
+  image: [ADR-037](../adr/037-portable-same-resolution-temporal-antialiasing.md).
+- [ ] Run the portable TAA static and moving-camera cases
+  (`shader_fixes_bistro_taa_static.case.json`,
+  `sharpness_bistro_taa_motion.case.json`). Use `snapshot` and inspect final
+  color, motion/depth channels, history age/validity assertions, and the
+  effective render/output extents. Require completed-submission history
   ordering, no stale history after camera or extent changes, and no temporal
-  fallback hidden by a passing process exit. The contracts are
-  [ADR-037](../adr/037-portable-same-resolution-temporal-antialiasing.md) and
-  [ADR-052](../adr/052-vulkan-fsr31-upscaling.md).
+  fallback hidden by a passing process exit. The contract is
+  [ADR-037](../adr/037-portable-same-resolution-temporal-antialiasing.md).
 - [ ] Run the existing Vulkan three-image Bistro witness and check the report's
   `effective_config` and `provenance` for `target_image_count: 3`:
 
@@ -506,9 +435,8 @@ Native BC7/BC5 derived textures and Windows import measurements are in
     --profile tools\profiles\local-offscreen.json
   ```
 
-  Pair it with `fsr31_editor_bistro_resize.case.json`, whose current manifest
-  also requests three images, to cover resize and history invalidation at that
-  count.
+  Resize and history invalidation at that count lost their witness when
+  `fsr31_editor_bistro_resize.case.json` was deleted with FSR on 2026-10-12.
 
 - [x] Add and run the matching eight-image offscreen Vulkan lifetime witness.
   The checked-in `p21_vulkan_offscreen_8image.case.json` exercises startup,
@@ -550,11 +478,10 @@ Native BC7/BC5 derived textures and Windows import measurements are in
   right content for Display, Quality, Lighting, Effects, and Color. Check active
   tab state, keyboard/mouse focus, Restore defaults, and narrow-dock layout.
   Confirm the UI emits typed requests and the runtime owns validation/application.
-- [ ] Change vsync, HDR and temporal upscaling and verify the restart-required
-  notice and the started/effective values. With FSR 3.1, change render scale
-  from the Settings slider and the viewport Scalability menu and verify it
-  applies live; without temporal upscaling, verify render scale is disabled at
-  100%. Change the remaining controls and verify live application plus
+- [ ] Change vsync and HDR and verify the restart-required notice and the
+  started/effective values. Vulkan renders the Scene at unit scale; verify
+  that render scale stays at 100% there. Change the remaining controls and
+  verify live application plus
   shadow/history invalidation where applicable.
 - [ ] Set `VKR_GRAPHICS_SETTINGS_PATH` to a temporary Windows path and verify
   missing-file defaults, invalid-file rejection, versioned JSON, 0.25-second

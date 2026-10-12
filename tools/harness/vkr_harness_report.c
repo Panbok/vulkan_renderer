@@ -372,7 +372,7 @@ vkr_internal bool8_t vkr_harness_report_write_provenance(
 
 vkr_internal bool8_t vkr_harness_report_write_renderer_features(
     VkrJsonWriter *writer, const VkrHarnessRendererConfig *renderer,
-    bool8_t post_transform_cache_enabled, const char *ssr_quality) {
+    bool8_t post_transform_cache_enabled) {
   return vkr_harness_json_emit_bool(writer, "taa_enabled",
                                     renderer->taa_enabled) &&
          vkr_harness_json_emit_bool(writer, "tonemap_enabled",
@@ -424,11 +424,6 @@ vkr_internal bool8_t vkr_harness_report_write_renderer_features(
                                    renderer->bloom_intensity) &&
          vkr_harness_json_emit_string(writer, "display_output",
                                       renderer->display_output) &&
-         vkr_harness_json_emit_bool(writer, "ssgi_enabled",
-                                    renderer->ssgi_enabled) &&
-         vkr_harness_json_emit_bool(writer, "ssr_enabled",
-                                    renderer->ssr_enabled) &&
-         vkr_harness_json_emit_string(writer, "ssr_quality", ssr_quality) &&
          vkr_harness_json_emit_bool(writer, "post_transform_cache_enabled",
                                     post_transform_cache_enabled) &&
          vkr_harness_json_emit_bool(writer, "dof_enabled",
@@ -534,7 +529,7 @@ vkr_internal bool8_t vkr_harness_report_write_dynamic_resolution(
 
 vkr_internal bool8_t vkr_harness_report_write_effective_config(
     VkrJsonWriter *writer, const VkrHarnessReport *report,
-    bool8_t post_transform_cache_enabled, const char *ssr_quality) {
+    bool8_t post_transform_cache_enabled) {
   char subsystem_mask[VKR_HARNESS_SUBSYSTEM_MASK_MAX];
   vkr_harness_format_subsystem_mask(subsystem_mask, report->subsystem_mask);
   const uint32_t target_width = report->provenance.actual_target_width
@@ -560,9 +555,6 @@ vkr_internal bool8_t vkr_harness_report_write_effective_config(
           ? report->case_manifest.renderer.render_height
           : ClampBot((uint32_t)((float64_t)target_height * render_scale + 0.5),
                      1u);
-  const char *upscaler = report->case_manifest.renderer.upscaler[0]
-                             ? report->case_manifest.renderer.upscaler
-                             : "spatial";
   return vkr_harness_json_emit_name(writer, "effective_config") &&
          vkr_json_writer_begin_object(writer) &&
          vkr_harness_json_emit_name(writer, "resolution") &&
@@ -622,11 +614,10 @@ vkr_internal bool8_t vkr_harness_report_write_effective_config(
              report->case_manifest.renderer.physics_fixture) &&
          vkr_harness_report_write_renderer_features(
              writer, &report->case_manifest.renderer,
-             post_transform_cache_enabled, ssr_quality) &&
+             post_transform_cache_enabled) &&
          vkr_harness_json_emit_f64(
              writer, "render_scale",
              report->case_manifest.renderer.render_scale) &&
-         vkr_harness_json_emit_string(writer, "upscaler", upscaler) &&
          vkr_harness_json_emit_string(
              writer, "graphics_pipeline",
              report->case_manifest.renderer.graphics_pipeline ==
@@ -941,10 +932,6 @@ bool8_t vkr_harness_report_write(const char *path,
   }
   const bool8_t post_transform_cache_enabled =
       vkr_harness_post_transform_cache_enabled(&report->case_manifest);
-  const char *ssr_quality = getenv("VKR_SSR_QUALITY");
-  if (!ssr_quality || ssr_quality[0] == '\0') {
-    ssr_quality = "high";
-  }
   VkrJsonFileWriter file_writer = {0};
   if (!vkr_json_file_writer_begin(&file_writer, vkr_harness_string(path))) {
     vkr_harness_error_set(out_error, "report.open", "$",
@@ -956,8 +943,8 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_json_writer_begin_object(writer) &&
       vkr_harness_report_write_header(writer, report) &&
       vkr_harness_report_write_provenance(writer, report) &&
-      vkr_harness_report_write_effective_config(
-          writer, report, post_transform_cache_enabled, ssr_quality) &&
+      vkr_harness_report_write_effective_config(writer, report,
+                                                post_transform_cache_enabled) &&
       vkr_harness_report_write_execution(writer, report) &&
       vkr_harness_report_write_run_references(writer, "runs", report->runs,
                                               report->run_count) &&

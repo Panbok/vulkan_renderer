@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -39,7 +39,7 @@ time or history. Cuts, reset epochs and zero duration produce zero blur.
 When existing temporal selectors provide no predecessor, motion blur selects a
 compatible completed transform history. It preserves scene, extent, age and GPU
 last-use proofs. It does not enable camera jitter or change the predecessor
-selected by TAA, SSR or SSGI.
+selected by TAA.
 
 The [graph](../../assets/render_graphs/main.rendergraph.json) executes tile maximum,
 3×3 neighbor maximum and reconstruction after exposure metering and temporal

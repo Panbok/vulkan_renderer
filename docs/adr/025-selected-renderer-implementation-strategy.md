@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -52,20 +52,17 @@ failures propagate through begin/render/cancel. A Metal failure after queue comm
 also reports `DEVICE_ERROR`; already-submitted GPU work and native history cannot
 be rolled back as though preparation had failed.
 
-The shared native pass/timing capacity is 411
+The shared native pass/timing capacity is 397
 ([`VKR_RENDERER_IMPL_MAX_GRAPH_PASSES`](../../renderer/src/vkr_renderer_impl.h)),
 derived from the authored main graph's full feature and repeat envelope,
 including the local-shadow atlas clear, the opaque and three transmitting
 passes for each of the 64 local-shadow render slots
 (`VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX`), the local shadow mask and the
 layered deferred-lighting pass. Disabling temporal reconstruction
-restores culling HZB generation, so the no-TAA graph is larger than the FSR
-graph. The CPU graph-expansion check covers the 720p envelope without
-allocating 16K render targets. Backend-owned pass records,
+restores culling HZB generation. The CPU graph-expansion check covers the 720p
+envelope without allocating 16K render targets. Backend-owned pass records,
 labels and timestamp capacity are reserved at initialization and released at
 renderer teardown; GPU completion rules and image budgets are unchanged.
-The [Bistro capacity check](../../assets/verification/renderer-features/ssr-no-taa-capacity.txt)
-records the reproduced overflow and the CPU graph envelope.
 
 Metal records each run of consecutive compute and transfer passes in one
 compute encoder; graphics passes keep their own encoders. On the Metal desktop

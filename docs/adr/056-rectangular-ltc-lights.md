@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -37,7 +37,7 @@ The lighting system owns a fixed eight-entry table sorted by render ID.
 count, table, dimensions, radiance and orthonormal basis before native packing.
 Each native frame slot uploads a typed 64-byte row containing center/half-width,
 right/half-height, up/radiance, and color. Completed slot reuse owns GPU last use.
-Rectangle state participates in temporal and SSR radiance invalidation.
+Rectangle state participates in temporal history invalidation.
 
 Two immutable 64x64 RGBA16F textures occupy 64 KiB per renderer. They contain the
 inverse LTC matrix and GGX amplitude/Schlick fit from the pinned Self Shadow

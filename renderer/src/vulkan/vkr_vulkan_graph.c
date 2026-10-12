@@ -1,6 +1,5 @@
 #include "math/vkr_frustum.h"
 #include "vkr_render_graph_frame.h"
-#include "vulkan/vkr_vulkan_fsr_sdk.h"
 #include "vulkan/vkr_vulkan_internal.h"
 
 enum { VKR_VULKAN_FULLSCREEN_ACES_FITTED = 1u << 4u };
@@ -30,7 +29,6 @@ struct VkrVulkanPreparedGraphPass {
   uint32_t skinning_count;
   VkrVulkanPreparedUpload upload;
   VkrVulkanPreparedIbl ibl;
-  VkrVulkanFsrSdkDispatch fsr31;
   VkCopyImageInfo2 transfer;
   VkImageCopy2 transfer_region;
 };
@@ -50,13 +48,6 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
     }
     const char *executor_name = vkr_render_graph_executor_name(kind);
     const VkrRgPassType executor_type = vkr_render_graph_executor_type(kind);
-    if ((kind == VKR_RG_EXECUTOR_FSR31_PREPARE ||
-         kind == VKR_RG_EXECUTOR_FSR31_UPSCALE ||
-         kind == VKR_RG_EXECUTOR_FSR31_STABILIZE) &&
-        !renderer->config.fsr31_enabled) {
-      log_error("FSR 3.1 graph work requires an FSR-enabled Vulkan device");
-      return false_v;
-    }
     /* Vulkan implements only the desktop pipeline (ADR-087). */
     if (kind == VKR_RG_EXECUTOR_TILED_OPAQUE ||
         kind == VKR_RG_EXECUTOR_TILED_ATMOSPHERE ||
@@ -1588,9 +1579,6 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
             (packet->input.globals.display_transform ==
                      VKR_DISPLAY_TRANSFORM_ACES_FITTED
                  ? VKR_VULKAN_FULLSCREEN_ACES_FITTED
-                 : 0u) |
-            (renderer->prepared_frame.fsr31_enabled
-                 ? VKR_VULKAN_FULLSCREEN_OPAQUE_ALPHA
                  : 0u),
         false_v, target_width, target_height);
     if (!recorded)
@@ -1821,54 +1809,6 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
   return bytes;
 }
 
-vkr_internal bool8_t vkr_vk_prepare_fsr31_dispatch(
-    VkrVulkanRenderer *renderer, VkrVulkanFsrSdkDispatch *prepared,
-    const VkrRgPass *pass) {
-  VkrVulkanFsrSdkImage *images[] = {&prepared->hdr_color,   &prepared->depth,
-                                    &prepared->motion,      &prepared->reactive,
-                                    &prepared->composition, &prepared->output};
-  for (uint32_t i = 0u; i < ArrayCount(images); ++i) {
-    const VkrRgImageUse *use = vkr_rg_pass_find_image_use(&pass->desc, i, 0u);
-    VkrVulkanGraphImageInstance *image =
-        use ? vkr_vk_graph_image(renderer, use->image,
-                                 renderer->prepared_frame.image_index)
-            : NULL;
-    if (!image)
-      return false_v;
-    *images[i] = (VkrVulkanFsrSdkImage){
-        .image = image->image.handle,
-        .format = image->image.format,
-        .extent = {image->image.width, image->image.height},
-        .layout = i == 5u ? VK_IMAGE_LAYOUT_GENERAL
-                          : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
-  }
-  const VkrPreparedFrame *packet = renderer->graph->packet;
-  const Mat4 projection = packet->input.globals.projection;
-  prepared->camera_near = mat4_perspective_reversed_near(projection);
-  prepared->camera_far = mat4_perspective_reversed_far(projection);
-  prepared->camera_fov_y_radians =
-      2.0f * atanf(1.0f / fabsf(projection.elements[5]));
-  if (!isfinite(prepared->camera_near) || !isfinite(prepared->camera_far) ||
-      prepared->camera_near <= 0.0f ||
-      prepared->camera_far <= prepared->camera_near ||
-      projection.elements[11] != -1.0f || projection.elements[15] != 0.0f) {
-    log_error("FSR 3.1 requires a finite, reversed-depth perspective camera");
-    return false_v;
-  }
-  prepared->jitter_x = packet->temporal.jitter_pixels.x;
-  prepared->jitter_y = packet->temporal.jitter_pixels.y;
-  prepared->motion_scale_x = (float32_t)prepared->motion.extent.width;
-  prepared->motion_scale_y = (float32_t)prepared->motion.extent.height;
-  prepared->frame_time_ms =
-      (float32_t)(packet->input.frame.delta_time * 1000.0);
-  prepared->pre_exposure = packet->exposure.pre_exposure;
-  prepared->reset = !renderer->frame_slots[renderer->active_frame_slot]
-                         .temporal_history_valid;
-  prepared->sharpness = 0.0f;
-  return true_v;
-}
-
 vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedGraphPass *prepared,
     const VkrRgPass *pass) {
@@ -1974,36 +1914,10 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
                                             true_v);
   case VKR_RG_EXECUTOR_TEMPORAL_RESOLVE:
     return vkr_vk_prepare_temporal_resolve(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_FSR31_PREPARE:
-    return vkr_vk_prepare_fsr31_inputs(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_FSR31_STABILIZE:
-    return vkr_vk_prepare_fsr31_stabilize(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_FSR31_UPSCALE:
-    return vkr_vk_prepare_fsr31_dispatch(renderer, &prepared->fsr31, pass);
   case VKR_RG_EXECUTOR_HZB_BUILD:
     return vkr_vk_prepare_deferred_hzb(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SHADOW_MOMENTS:
     return vkr_vk_prepare_shadow_moments(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSR_DEPTH_BASE:
-    return vkr_vk_prepare_ssr_depth_base(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSR_DEPTH_MIP:
-    return vkr_vk_prepare_ssr_depth_mip(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSR_TRACE:
-    return vkr_vk_prepare_ssr_trace(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSR_TEMPORAL:
-    return vkr_vk_prepare_ssr_temporal(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSR_COMPOSITE:
-    return vkr_vk_prepare_ssr_composite(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSGI_DEPTH_BASE:
-    return vkr_vk_prepare_ssgi_depth_base(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSGI_DEPTH_MIP:
-    return vkr_vk_prepare_ssgi_depth_mip(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSGI_TRACE:
-    return vkr_vk_prepare_ssgi_trace(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSGI_TEMPORAL:
-    return vkr_vk_prepare_ssgi_temporal(renderer, &prepared->compute, pass);
-  case VKR_RG_EXECUTOR_SSGI_COMPOSITE:
-    return vkr_vk_prepare_ssgi_composite(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_FOG_APPLY:
     return vkr_vk_prepare_fog_apply(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_FROXEL_INJECT:
@@ -2143,20 +2057,6 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
   slot->temporal_surface_output = NULL;
   slot->temporal_history_valid = false_v;
   slot->motion_blur_interval_scale = 0.0f;
-  slot->ssr_color_input = NULL;
-  slot->ssr_color_output = NULL;
-  slot->ssr_depth_input = NULL;
-  slot->ssr_depth_output = NULL;
-  slot->ssr_identity_input = NULL;
-  slot->ssr_identity_output = NULL;
-  slot->ssr_history_valid = false_v;
-  slot->ssgi_color_input = NULL;
-  slot->ssgi_color_output = NULL;
-  slot->ssgi_depth_input = NULL;
-  slot->ssgi_depth_output = NULL;
-  slot->ssgi_identity_input = NULL;
-  slot->ssgi_identity_output = NULL;
-  slot->ssgi_history_valid = false_v;
   slot->froxel_history_input = NULL;
   slot->froxel_history_output = NULL;
   slot->froxel_history_valid = false_v;
@@ -2166,7 +2066,6 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
       renderer->graph->packet->temporal.current_view_projection;
   slot->temporal_previous_frame_index =
       renderer->graph->packet->input.frame.frame_index;
-  slot->fsr31_recorded = false_v;
   slot->sdsm_reduce_state = NULL;
   slot->exposure_histogram = NULL;
   slot->exposure_state_history = NULL;
@@ -2365,30 +2264,6 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
       break;
     case VKR_RG_EXECUTOR_PICKING_READBACK:
       break;
-    case VKR_RG_EXECUTOR_FSR31_UPSCALE: {
-#if VKR_HAS_FSR3_UPSCALER
-      VkrVulkanFsrSdkDispatch dispatch = prepared->fsr31;
-      dispatch.command_buffer = command;
-      // Even a failed dispatch may have changed SDK CPU-side state.
-      slot->fsr31_recorded = true_v;
-      const VkrVulkanFsrSdkResult result =
-          vkr_vulkan_fsr_sdk_dispatch(renderer->fsr31, &dispatch);
-      if (result != VKR_VULKAN_FSR_SDK_SUCCESS) {
-        if (end_label)
-          end_label(command);
-        log_error("FSR 3.1 dispatch failed (%u)", (uint32_t)result);
-        return false_v;
-      }
-      // SDK descriptor sets invalidate descriptor-buffer bindings and offsets.
-      vkr_vk_bind_descriptor_buffers(renderer, command);
-      break;
-#else
-      if (end_label)
-        end_label(command);
-      log_error("FSR 3.1 upscaling is unavailable in this Vulkan build");
-      return false_v;
-#endif
-    }
     case VKR_RG_EXECUTOR_SKINNING:
       for (uint32_t skin = 0u; skin < prepared->skinning_count; ++skin) {
         vkr_vk_record_prepared_compute(renderer, command,

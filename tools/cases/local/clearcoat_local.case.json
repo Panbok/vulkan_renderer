@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.clearcoat.layers",
   "suite": "local",
-  "description": "Scalar and textured clearcoat layers: coat-off, roughness limits, independent normals, coated glass, and coat-priority SSR.",
+  "description": "Scalar and textured clearcoat layers: coat-off, roughness limits, independent normals, and coated glass.",
   "scene": "assets/scenes/fixtures/clearcoat_local.scene.json",
   "seed": 1,
   "resolution": [512, 384],
@@ -28,8 +28,6 @@
     "render_mode": "default",
     "display_transform": "agx",
     "gtao_enabled": false,
-    "ssr_enabled": true,
-    "ssgi_enabled": false,
     "bloom_enabled": false,
     "image_sharpness": 0
   },
@@ -51,9 +49,7 @@
         "hdr_post_transmission",
         "depth",
         "gbuffer_normal",
-        "gbuffer_specular",
-        "ssr_raw",
-        "ssr_reflection"
+        "gbuffer_specular"
       ]
     }
   ],

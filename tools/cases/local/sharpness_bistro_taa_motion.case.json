@@ -28,7 +28,6 @@
     "text_fixture": false,
     "backend": "vulkan",
     "render_scale": 1,
-    "upscaler": "spatial",
     "taa_enabled": true,
     "shadow_preset": "balanced",
     "shadow_cascades": 4,

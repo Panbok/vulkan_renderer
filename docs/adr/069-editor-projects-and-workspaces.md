@@ -235,8 +235,8 @@ without the local file takes the settings and recall `project.json` still
 carries (manifests written before the split), and a writer publishes them to
 the local file at once; the next `project.json` save drops them. A depot clone
 without either starts from default settings.
-The restart-checked Graphics settings (vsync, HDR, temporal upscaling,
-dynamic resolution and render scale) belong to the
+The restart-checked Graphics settings (vsync, HDR, dynamic resolution and
+render scale) belong to the
 machine: the editor starts from the last applied settings in a machine-local
 `graphics.json` beside the workspace locator, and a project's stored values
 of those settings do not apply. Vsync applies between frames
@@ -244,7 +244,7 @@ of those settings do not apply. Vsync applies between frames
 [`vkr_sample_runtime.c`](../../runtime/src/vkr_sample_runtime.c)) and asks
 for a restart only when the renderer refuses the present mode; render scale
 and dynamic resolution apply between frames inside the renderer's live
-range, and HDR and temporal upscaling at the next start
+range, and HDR at the next start
 ([ADR-027](027-immediate-mode-grid-ui.md)).
 Viewport and hierarchy recall are keyed by scene within the project. A
 recalled view restores the camera pose, clip planes and grid height; its

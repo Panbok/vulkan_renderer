@@ -33,15 +33,6 @@ typedef enum VkrRendererBackendType {
   VKR_RENDERER_BACKEND_TYPE_COUNT
 } VkrRendererBackendType;
 
-/** Scene-resolution reconstruction selected once at renderer initialization. */
-typedef enum VkrUpscaleMode {
-  /** Existing normalized linear sampling in the final fullscreen pass. */
-  VKR_UPSCALE_MODE_SPATIAL = 0,
-  /** FidelityFX Super Resolution 3.1 temporal upscaling on Vulkan. */
-  VKR_UPSCALE_MODE_FSR31,
-  VKR_UPSCALE_MODE_COUNT,
-} VkrUpscaleMode;
-
 /** Graphics pipeline class (ADR-087): the render graph and shading path a
  * renderer's backend runs (vkr_graphics_pipeline_for_backend). */
 typedef enum VkrGraphicsPipelineClass {
@@ -1016,8 +1007,6 @@ typedef struct VkrRendererBackendConfig {
   /** Internal Scene resolution relative to its presentation extent. Zero
    * selects 1.0. Editor UI always remains at the physical target extent. */
   float32_t render_scale;
-  /** Reconstruction path. Zero-initialized preserves spatial sampling. */
-  VkrUpscaleMode upscale_mode;
   /** Valid only on Metal, whose tiled pipeline steps the resolution of its
    * spatial upscale (ADR-087). */
   VkrDynamicResolutionConfig dynamic_resolution;
@@ -1413,8 +1402,8 @@ vkr_renderer_restore_scene_output_extent(VkrRenderer *renderer);
 void vkr_renderer_invalidate_temporal_history(VkrRenderer *renderer);
 /** Enables temporal reconstruction for the following frames. */
 void vkr_renderer_set_temporal_enabled(VkrRenderer *renderer, bool8_t enabled);
-/** Scene render scales accepted between frames without recreating the device
- * or upscaler. A backend whose upscaler fixes its scale reports min == max. */
+/** Scene render scales accepted between frames without recreating the device.
+ * A backend that fixes its scale reports min == max. */
 void vkr_renderer_render_scale_range(const VkrRenderer *renderer,
                                      float32_t *out_min, float32_t *out_max);
 /** Switch a windowed target between vertical sync (FIFO) and immediate

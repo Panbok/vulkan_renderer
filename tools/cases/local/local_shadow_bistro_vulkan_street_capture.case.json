@@ -41,7 +41,6 @@
     "gtao_enabled": true,
     "gtao_radius": 0.5,
     "gtao_power": 2.2,
-    "upscaler": "spatial",
     "dynamic_resolution": false
   },
   "camera": {

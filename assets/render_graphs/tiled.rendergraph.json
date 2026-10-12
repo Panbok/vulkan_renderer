@@ -309,7 +309,7 @@
     {
       "name": "bloom_chain",
       "type": "image",
-      "condition": "scene_rendering && bloom_enabled && !fsr31_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "extent": {
         "mode": "viewport",
         "divisor": 2
@@ -330,7 +330,7 @@
     {
       "name": "bloom_accum",
       "type": "image",
-      "condition": "scene_rendering && bloom_enabled && !fsr31_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "extent": {
         "mode": "viewport",
         "divisor": 2

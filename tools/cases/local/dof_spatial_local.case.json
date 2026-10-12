@@ -19,11 +19,11 @@
   "renderer": {
     "backend": "vulkan",
     "editor": false, "skybox": false, "taa_enabled": false,
-    "render_scale": 0.666666667, "upscaler": "spatial",
+    "render_scale": 0.666666667,
     "exposure_mode": "manual", "manual_exposure": 1,
     "shadow_preset": "balanced", "shadow_cascades": 3,
     "render_mode": "default", "display_transform": "aces_fitted",
-    "gtao_enabled": false, "ssr_enabled": false, "ssgi_enabled": false,
+    "gtao_enabled": false,
     "bloom_enabled": false, "image_sharpness": 0,
     "dof_enabled": true, "dof_focus_distance": 0.5, "dof_f_stop": 1.0
   },

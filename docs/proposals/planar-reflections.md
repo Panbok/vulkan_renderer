@@ -14,21 +14,24 @@ choices and the evidence needed to accept it. No part of it is implemented.
 
 ## Problem and scope
 
-The tiled pipeline reflects only the global environment today; glass reflects
-the sky where the desktop pipeline reflects the street (ADR-087, Glass
+The tiled pipeline reflects only the global environment today; in the
+2026-10-06 captures, glass reflected the sky where the removed Metal desktop
+pipeline, with local probes and SSR, reflected the street (ADR-087, Glass
 evidence). Queued per-draw reflection probes
 ([Tiled graphics pipeline](tiled-pipeline.md#remaining-work)) serve glossy
 surfaces. Planar reflections serve the few surfaces that must reflect clearly:
 mirrors, still water, polished floors and glass panes viewed at grazing angles.
 
-- **SSR is not planned for the tiled pipeline** (owner decision, 2026-10-06).
-  It needs the frame's depth and colour before shading, so it would split the
-  one on-chip `Tiled.Opaque` pass and store its attachments. It also needs a
-  history to hide noise, which the tiled pipeline does not keep.
+- **Neither pipeline has SSR.** The tiled pipeline never planned it (owner
+  decision, 2026-10-06): it needs the frame's depth and colour before shading,
+  so it would split the one on-chip `Tiled.Opaque` pass and store its
+  attachments. It also needs a history to hide noise, which the tiled pipeline
+  does not keep. The desktop pipeline removed it on 2026-10-12
+  ([ADR-055](../adr/055-screen-space-reflections.md)).
 - **Water uses planar reflections on both pipelines** (owner decision,
-  2026-10-12). The desktop pipeline loses SSR, and baked reflection probes
-  serve metal, weapons and other surfaces
-  ([Short-history rendering](short-history-rendering.md)).
+  2026-10-12). Planar reflections are the only reflection path for water; the
+  global environment and box-projected reflection probes serve metal, weapons
+  and other surfaces ([Short-history rendering](short-history-rendering.md)).
 - **Probes alone fail for mirrors.** A cube captured at one point has
   parallax errors away from that point, even when box-projected, and it does
   not show dynamic objects or the player.

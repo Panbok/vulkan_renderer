@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -77,12 +77,9 @@ a far plane kilometres away costs no precision.
      direction, froxel fog in the shader and in its CPU light bounds, the
      runtime pick ray, label sight, the editor's orthographic ray).
    - Depth of field, motion blur and surface diffusion linearize with
-     `n f / (n + d (f - n))`. GTAO and the SSR/SSGI history linearize from
-     projection elements and need no change.
-   - Transmission peeling keeps fragments with smaller depth; FSR's
-     reactive pass takes the nearer of opaque and transmission depth as the
-     maximum, and the FSR 3.1 context sets
-     `FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED`.
+     `n f / (n + d (f - n))`. GTAO linearizes from projection elements and
+     needs no change.
+   - Transmission peeling keeps fragments with smaller depth.
    - Vulkan sky pixels reproject through the far plane at depth 0 and store
      previous depth 0 in the temporal validity image;
      `vkr_temporal_sky_reprojection` intersects orthographic rays with
@@ -180,8 +177,8 @@ reversed builders, the forward and reversed frustum, the far-plane sky
 reprojection, reversed occupied-depth feedback and the recalled far plane.
 
 Vulkan: the 13 changed SPIR-V modules pass `spirv-val --target-env
-vulkan1.4 --scalar-block-layout`. The FSR 3.1 source is not compiled on
-macOS.
+vulkan1.4 --scalar-block-layout`. The FSR 3.1 source, since removed
+(ADR-052), was not compiled on macOS.
 
 Native Vulkan (Windows, AMD Radeon RX 6700 XT, driver 26.6.3, `main` at
 `6c314d11` plus the froxel fix below), 2026-10-11:
@@ -197,6 +194,6 @@ Native Vulkan (Windows, AMD Radeon RX 6700 XT, driver 26.6.3, `main` at
   not a matched before/after of the change.
 - A Debug snapshot with synchronization validation of a scratch case built
   from `froxel_bistro_on_local` with depth of field, motion blur, FSR 3.1
-  at render scale 0.67 and the scene's glass passes with no validation
-  message. It first failed every frame in `Froxel.Apply.Fullscreen`, a
-  fault older than this change (ADR-059).
+  (since removed) at render scale 0.67 and the scene's glass passed with no
+  validation message. It first failed every frame in
+  `Froxel.Apply.Fullscreen`, a fault older than this change (ADR-059).

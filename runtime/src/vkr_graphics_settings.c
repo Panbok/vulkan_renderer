@@ -51,11 +51,6 @@ static const VkrPropertyDesc s_graphics_properties[] = {
                 "gameplay",
      .offset = GRAPHICS_OFFSET(invert_mouse_y),
      .kind = VKR_PROPERTY_BOOL},
-    {.name = "temporal_upscaling",
-     .label = "Temporal upscaling",
-     .tooltip = "Reconstruct a higher-resolution image from temporal data",
-     .offset = GRAPHICS_OFFSET(temporal_upscaling),
-     .kind = VKR_PROPERTY_BOOL},
     {.name = "dynamic_resolution",
      .label = "Dynamic resolution",
      .tooltip = "Adjust internal resolution to keep frame pacing stable",
@@ -74,7 +69,7 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .display_scale = 100.0f},
     {.name = "anti_aliasing",
      .label = "Anti-aliasing",
-     .tooltip = "Smooth visible edges; temporal upscaling requires it",
+     .tooltip = "Smooth visible edges",
      .group = "Quality",
      .offset = GRAPHICS_OFFSET(anti_aliasing),
      .kind = VKR_PROPERTY_BOOL},
@@ -122,16 +117,6 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .group = "Lighting",
      .offset = GRAPHICS_OFFSET(ambient_occlusion),
      .kind = VKR_PROPERTY_BOOL},
-    {.name = "screen_space_gi",
-     .label = "Screen-space global illumination",
-     .tooltip = "Add indirect light from visible surfaces",
-     .offset = GRAPHICS_OFFSET(screen_space_gi),
-     .kind = VKR_PROPERTY_BOOL},
-    {.name = "screen_space_reflections",
-     .label = "Screen-space reflections",
-     .tooltip = "Reflect visible surroundings on glossy surfaces",
-     .offset = GRAPHICS_OFFSET(screen_space_reflections),
-     .kind = VKR_PROPERTY_BOOL},
     {.name = "reflection_probes",
      .label = "Reflection probes",
      .tooltip = "Use authored environment reflections",
@@ -174,29 +159,19 @@ static const VkrPropertyDesc s_graphics_properties[] = {
 /* Grading and effect strengths moved to the post_process component, and the
  * pipeline class follows the backend (ADR-087); files written before still
  * load. */
-static const char *const s_graphics_retired[] = {
-    "brightness",     "contrast",  "saturation",      "temperature",
-    "tint",           "sharpness", "bloom_intensity", "motion_blur_amount",
-    "tiled_pipeline", NULL};
-
-static bool8_t graphics_validate(const void *value, char *error,
-                                 uint32_t capacity) {
-  const VkrGraphicsSettings *settings = value;
-  if (settings->temporal_upscaling && !settings->anti_aliasing) {
-    snprintf(error, capacity, "Temporal upscaling requires anti-aliasing");
-    return false_v;
-  }
-  return true_v;
-}
-
-/* Which backend offers temporal upscaling and dynamic resolution is the
-   runtime's to gate (VkrGraphicsSettingsState). */
-static void graphics_normalize(void *value) {
-  VkrGraphicsSettings *settings = value;
-  if (settings->temporal_upscaling) {
-    settings->anti_aliasing = true_v;
-  }
-}
+static const char *const s_graphics_retired[] = {"brightness",
+                                                 "contrast",
+                                                 "saturation",
+                                                 "temperature",
+                                                 "tint",
+                                                 "sharpness",
+                                                 "bloom_intensity",
+                                                 "motion_blur_amount",
+                                                 "tiled_pipeline",
+                                                 "temporal_upscaling",
+                                                 "screen_space_gi",
+                                                 "screen_space_reflections",
+                                                 NULL};
 
 /* Context is the runtime's VkrGraphicsSettingsState, or NULL. */
 static VkrPropertyState graphics_state(const void *value, uint32_t property,
@@ -212,8 +187,6 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       offset == offsetof(VkrGraphicsSettings, contact_shadows) ||
       offset == offsetof(VkrGraphicsSettings, filtered_far_shadows) ||
       offset == offsetof(VkrGraphicsSettings, ambient_occlusion) ||
-      offset == offsetof(VkrGraphicsSettings, screen_space_gi) ||
-      offset == offsetof(VkrGraphicsSettings, screen_space_reflections) ||
       offset == offsetof(VkrGraphicsSettings, reflection_probes) ||
       offset == offsetof(VkrGraphicsSettings, subsurface_scattering) ||
       offset == offsetof(VkrGraphicsSettings, volumetric_fog) ||
@@ -223,24 +196,12 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       tiled_unused) {
     result.flags |= VKR_PROPERTY_STATE_DISABLED;
   }
-  if (offset == offsetof(VkrGraphicsSettings, temporal_upscaling)) {
-    if (state && !state->temporal_upscaling_available) {
-      result.flags |= VKR_PROPERTY_STATE_DISABLED;
-    }
-    if (state && state->temporal_upscaling_name.length) {
-      result.label = state->temporal_upscaling_name;
-    }
-  } else if (offset == offsetof(VkrGraphicsSettings, dynamic_resolution)) {
+  if (offset == offsetof(VkrGraphicsSettings, dynamic_resolution)) {
     if (state && !state->dynamic_resolution_available) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
-  } else if (offset == offsetof(VkrGraphicsSettings, anti_aliasing)) {
-    if (settings->temporal_upscaling) {
-      result.flags |= VKR_PROPERTY_STATE_DISABLED;
-    }
   } else if (offset == offsetof(VkrGraphicsSettings, render_scale)) {
-    if (!settings->temporal_upscaling && state &&
-        !state->spatial_render_scale_available) {
+    if (state && !state->spatial_render_scale_available) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, high_dpi)) {
@@ -274,26 +235,22 @@ const VkrTypeDesc vkr_graphics_settings_type = {
     .align = AlignOf(VkrGraphicsSettings),
     .version = 1u,
     .retired = s_graphics_retired,
-    .validate = graphics_validate,
-    .normalize = graphics_normalize,
     .state = graphics_state,
 };
 
 VkrGraphicsSettings
 vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
-  /* Vulkan's desktop pipeline upscales with FSR 3.1; Metal's tiled pipeline
-     upscales spatially, adapting its resolution to the frame (ADR-087). */
+  /* Metal's tiled pipeline upscales spatially, adapting its resolution to
+     the frame (ADR-087); Vulkan's desktop pipeline renders at unit scale. */
   return (VkrGraphicsSettings){
       .vsync = true_v,
       .hdr = false_v,
       .high_dpi = true_v,
-      .temporal_upscaling = backend != VKR_RENDERER_BACKEND_TYPE_METAL,
       .dynamic_resolution = backend == VKR_RENDERER_BACKEND_TYPE_METAL,
       .anti_aliasing = true_v,
       /* With dynamic resolution the scale caps the controller, so Metal
          starts uncapped and lets it choose. */
-      .render_scale =
-          backend == VKR_RENDERER_BACKEND_TYPE_METAL ? 1.0f : 2.0f / 3.0f,
+      .render_scale = 1.0f,
       .shadow_quality = 2,
       /* Full-resolution Bistro textures take 3.2 GB of a 16 GB Mac's 8 GiB
          managed budget (ADR-083). */
@@ -303,7 +260,6 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
       .filtered_far_shadows = true_v,
       .local_shadows = true_v,
       .ambient_occlusion = true_v,
-      .screen_space_reflections = true_v,
       .reflection_probes = true_v,
       .subsurface_scattering = true_v,
       .fog = true_v,
@@ -335,8 +291,6 @@ graphics_preset_gates(const VkrGraphicsSettings *base,
   out.local_shadows = medium;
   out.contact_shadows = epic;
   out.ambient_occlusion = medium;
-  out.screen_space_gi = epic;
-  out.screen_space_reflections = high;
   out.reflection_probes = true_v;
   out.subsurface_scattering = medium;
   out.fog = true_v;
@@ -367,8 +321,6 @@ vkr_graphics_settings_preset(const VkrGraphicsSettings *settings) {
         gates.local_shadows == settings->local_shadows &&
         gates.contact_shadows == settings->contact_shadows &&
         gates.ambient_occlusion == settings->ambient_occlusion &&
-        gates.screen_space_gi == settings->screen_space_gi &&
-        gates.screen_space_reflections == settings->screen_space_reflections &&
         gates.reflection_probes == settings->reflection_probes &&
         gates.subsurface_scattering == settings->subsurface_scattering &&
         gates.fog == settings->fog &&
@@ -390,7 +342,6 @@ bool8_t vkr_graphics_settings_valid(const VkrGraphicsSettings *settings) {
 bool8_t vkr_graphics_settings_restart_required(const VkrGraphicsSettings *a,
                                                const VkrGraphicsSettings *b) {
   return a->vsync != b->vsync || a->hdr != b->hdr ||
-         a->temporal_upscaling != b->temporal_upscaling ||
          a->dynamic_resolution != b->dynamic_resolution ||
          a->render_scale != b->render_scale;
 }
@@ -400,10 +351,8 @@ void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
   /* The fields vkr_graphics_settings_restart_required compares. */
   settings->vsync = running->vsync;
   settings->hdr = running->hdr;
-  settings->temporal_upscaling = running->temporal_upscaling;
   settings->dynamic_resolution = running->dynamic_resolution;
   settings->render_scale = running->render_scale;
-  graphics_normalize(settings);
 }
 
 uint32_t vkr_graphics_settings_texture_max_dimension(
@@ -417,8 +366,7 @@ uint32_t vkr_graphics_settings_texture_max_dimension(
 float32_t
 vkr_graphics_settings_render_scale(const VkrGraphicsSettingsState *state,
                                    const VkrGraphicsSettings *settings) {
-  if (!settings->temporal_upscaling && state &&
-      !state->spatial_render_scale_available) {
+  if (state && !state->spatial_render_scale_available) {
     return 1.0f;
   }
   return settings->render_scale;

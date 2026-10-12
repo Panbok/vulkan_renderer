@@ -20,7 +20,7 @@ recorded.
 Brushed surfaces need a directional reflection lobe. The existing isotropic
 GGX distribution, rectangle fit and environment convolution cannot represent
 that direction. The user approved reflection transport, a bounded table and
-G-buffer allocation, approximate environment and screen-space reflections, and
+G-buffer allocation, approximate environment reflections, and
 rejection of active anisotropy on refractive materials.
 
 ## Decision
@@ -85,9 +85,8 @@ RG, strength in B and zero in A. It exists only when the opaque/cutout material
 aggregate contains nonzero anisotropy. The coarse feature and absent-binding
 contract follows [ADR-062](062-layered-clearcoat.md). At 1280×720 this adds 10.546875 MiB for three
 images, or 28.125 MiB at the supported eight-image maximum. Resolve writes binding
-15; deferred lighting, SSGI composite and SSR composite read bindings 12, 10 and
-12 respectively, and SSR trace and temporal bindings 10 and 19. Images use the
-existing graph resize and completion lifetime.
+15; deferred lighting reads binding 12. Images use the existing graph resize
+and completion lifetime.
 
 Immutable tables belong to each native renderer until shutdown after GPU drain.
 Startup upload staging is retired after its submitted use completes. Metal
@@ -101,19 +100,10 @@ and transitions all 64 array layers before shader reads.
 
 Probe IBL uses a bent reflection direction and one equivalent scalar roughness
 mip. Its existing circular prefilter cannot reproduce an elliptical footprint.
-Since 2026-10-11 SSR samples the anisotropic GGX lobe of an uncoated receiver
-along the decoded axis with its one ray, and weights reused rays by the same
-lobe ([ADR-055](055-screen-space-reflections.md)); clearcoat still has
-priority. The environment prefilter keeps its circular footprint, so SSR and
-probe reflections differ in shape on brushed surfaces. Receiver energy and
-probe subtraction use the anisotropic DFG. These are explicit approximations
-within the approved ray and storage budgets. Native Vulkan runs on
-2026-10-12 (RX 6700 XT, Release, dirty tree, local) sampled the lobe: on
-the anisotropic floor of `ssr_shaded_layers.scene.json` the moving
-emitter's reflection arrived as 17 to 30 lobe hits scattered over 80 to 120
-pixels per frame, and `ssr_shaded_layers` passed its only assertion, no
-invalid G-buffer resolve. No check yet compares the lobe's shape or energy
-with a reference.
+Receiver energy uses the anisotropic DFG. These are explicit approximations
+within the approved storage budget. SSR, which sampled the anisotropic GGX
+lobe along the decoded axis, was removed
+([ADR-055](055-screen-space-reflections.md)).
 
 ## Consequences
 
@@ -165,9 +155,9 @@ rotation swapped highlight variance ratios from 3.80290 to .262957; the
 direction map produced .263183. The existing clearcoat scene with zero
 anisotropy preserves seven channels byte-for-byte, including final color; one
 post-transmission HDR pixel changes by one half-float step (.00048828125).
-The layered witness passes the existing material/glass/SSR checks with 682 floor
-SSR hits, including 33 red hits. Previews were inspected. The isolated rectangle
-capture is .424561 at the center against independent GGX area quadrature
+While SSR was still in the frame, the layered witness passed the existing
+material/glass/SSR checks with 682 floor SSR hits, including 33 red hits.
+Previews were inspected. The isolated rectangle capture is .424561 at the center against independent GGX area quadrature
 .440796 (3.68% error). Adjacent inferred UNorm8 parameter codes bound the
 reference to [.440600,.448650]; axis/roughness/strength were inferred from the
 fixture’s generated tangent and default normal map, while the resolved normal
@@ -182,8 +172,7 @@ Native Vulkan execution and performance remain unverified.
 An isotropic rectangle approximation loses the authored direction. Fixed sparse
 area-light samples miss narrow GGX highlights. Anisotropic refraction requires
 matching transmission transport and an elliptical runtime filtering policy;
-that work was excluded from the approved first scope. Additional SSR rays and
-history were also excluded.
+that work was excluded from the approved first scope.
 
 ## Revisit when
 

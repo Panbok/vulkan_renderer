@@ -107,8 +107,6 @@ typedef struct VkrStandardSceneRuntimeConfig {
   /** Internal Scene resolution relative to its presentation extent. Zero
    * selects 1.0. Metal currently supports values in (0, 1]. */
   float32_t render_scale;
-  /** Cold reconstruction path; zero preserves spatial sampling. */
-  VkrUpscaleMode upscale_mode;
   /** Valid only on Metal, whose tiled pipeline adapts its resolution
       (ADR-087). */
   VkrDynamicResolutionConfig dynamic_resolution;

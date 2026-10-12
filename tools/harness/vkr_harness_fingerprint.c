@@ -135,8 +135,8 @@ vkr_harness_shadow_evsm_enabled(const VkrHarnessRendererConfig *renderer) {
       renderer->shadow_cascades <= VKR_SHADOW_EVSM_FIRST_CASCADE) {
     return false_v;
   }
-  /* A cold process option every child inherits, like VKR_SSR_QUALITY, so the
-     stored case and capture-summary layouts stay unchanged. "1" and "0"
+  /* A cold process option every child inherits, so the stored case and
+     capture-summary layouts stay unchanged. "1" and "0"
      override the preset. */
   const char *evsm = getenv("VKR_SHADOW_EVSM");
   if (evsm && (string_equals(evsm, "1") || string_equals(evsm, "0"))) {
@@ -215,16 +215,6 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
   if (post_transform_cache) {
     ADD("renderer.post_transform_cache", "%u", 1u);
   }
-  ADD("renderer.ssr", "%u", renderer->ssr_enabled);
-  /* The tier is a cold process option inherited by every capture/profile child.
-     Keep explicit high equivalent to the unset reference configuration. */
-  const char *ssr_quality = getenv("VKR_SSR_QUALITY");
-  if (renderer->ssr_enabled && ssr_quality && ssr_quality[0] != '\0' &&
-      !string_equals(ssr_quality, "high")) {
-    ADD("renderer.ssr_quality", "%s", ssr_quality);
-  }
-  if (renderer->ssgi_enabled)
-    ADD("renderer.ssgi", "%u", renderer->ssgi_enabled);
   /* Disabled DoF has no output or workload effect, preserving legacy identity.
    */
   if (renderer->dof_enabled) {
@@ -264,10 +254,6 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
      nothing, preserving identities authored before the tiled pipeline. */
   if (renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
     ADD("renderer.graphics_pipeline", "%s", "tiled");
-  }
-  const char *upscaler = renderer->upscaler[0] ? renderer->upscaler : "spatial";
-  if (!string_equals(upscaler, "spatial")) {
-    ADD("renderer.upscaler", "%s", upscaler);
   }
   if (renderer->dynamic_resolution) {
     ADD("renderer.dynamic_resolution", "%.9g,%.9g,%.9g",

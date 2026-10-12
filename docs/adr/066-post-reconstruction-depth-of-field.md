@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -49,7 +49,7 @@ blur radius. Half-resolution dimensions round down and retain a minimum of one.
 
 Meter the original reconstructed HDR. Apply defocus before bloom and display
 mapping, preserving UI sharpness. A separate full-resolution composite preserves
-TAA and FSR history: later frames must never accumulate already-defocused color.
+TAA history: later frames must never accumulate already-defocused color.
 Disabled frames instantiate no DoF resources or passes. No DoF history is added.
 
 Eight graph-owned transient, resizable, per-image resources use the reconstructed

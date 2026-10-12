@@ -27,8 +27,6 @@
     "skybox": true,
     "text_fixture": false,
     "backend": "vulkan",
-    "render_scale": 0.666666667,
-    "upscaler": "fsr31",
     "taa_enabled": true,
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
@@ -84,22 +82,22 @@
     },
     {
       "stat": "min",
-      "min": 1239,
+      "min": 1858,
       "metric": "frame.render_width"
     },
     {
       "stat": "max",
-      "max": 1239,
+      "max": 1858,
       "metric": "frame.render_width"
     },
     {
       "stat": "min",
-      "min": 705,
+      "min": 1057,
       "metric": "frame.render_height"
     },
     {
       "stat": "max",
-      "max": 705,
+      "max": 1057,
       "metric": "frame.render_height"
     }
   ]

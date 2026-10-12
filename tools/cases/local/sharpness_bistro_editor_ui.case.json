@@ -26,8 +26,6 @@
     "skybox": true,
     "text_fixture": true,
     "backend": "vulkan",
-    "render_scale": 0.666666667,
-    "upscaler": "fsr31",
     "taa_enabled": true,
     "shadow_preset": "balanced",
     "shadow_cascades": 4,

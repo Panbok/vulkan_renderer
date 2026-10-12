@@ -34,8 +34,6 @@
     "render_mode": "default",
     "display_transform": "agx",
     "gtao_enabled": false,
-    "ssr_enabled": true,
-    "ssgi_enabled": true,
     "bloom_enabled": false,
     "image_sharpness": 0
   },

@@ -11,7 +11,6 @@ struct VkrVulkanFullscreenPush
 static const uint VKR_FULLSCREEN_ALREADY_OUTPUT_ENCODED = 1u << 0u;
 static const uint VKR_FULLSCREEN_TONEMAP = 1u << 1u;
 static const uint VKR_FULLSCREEN_FXAA = 1u << 2u;
-static const uint VKR_FULLSCREEN_OPAQUE_ALPHA = 1u << 3u;
 // The unset default is AgX. Bit 4 selects the retained ACES comparison path.
 static const uint VKR_FULLSCREEN_ACES_FITTED = 1u << 4u;
 static const uint VKR_FULLSCREEN_SOURCE_DISPLAY_LINEAR = 1u << 5u;
@@ -248,8 +247,5 @@ float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
                           1.0f / float2(extent), tonemap, aces_fitted,
                           exposure, sharpness, *root.color_grading,
                           display_output);
-    // FSR output alpha carries a private static-history sample count.
-    if ((g_fullscreen_push.flags & VKR_FULLSCREEN_OPAQUE_ALPHA) != 0u)
-        result.a = 1.0f;
     return vkr_finish_output(result, g_fullscreen_push.flags, display_output);
 }

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -69,7 +69,8 @@ different light selection while the camera moves. Gliding over an 8 km
 terrain with fog on the Metal desktop implementation, history missed 0–2 of
 every 240 frames, against 33–44 before (`56d2d39c`). Integration
 then traverses each current-camera column front to back. Opaque fog resolves
-after SSR and before the opaque transmission pyramid, replacing analytic fog
+after subsurface diffusion and before the opaque transmission pyramid,
+replacing analytic fog
 while enabled. Transparent local radiance uses `T * local + S * (1 - W)` over
 the already integrated feedback term `W * background`. Refraction retains the
 straight camera-segment approximation. The 5,000-radiance working bound applies

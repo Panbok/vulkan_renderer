@@ -280,8 +280,8 @@ uint64_t vkr_froxel_fog_content_signature(const VkrFrameInput *input,
   }
   if (input->shadow) {
     /* A cascade refit as the camera moves resamples the same sun shadow,
-       which the history's temporal clamp absorbs, as SSR history does
-       (vkr_ssr_content_signature); the map size and sun size change it. */
+       which the history's temporal clamp absorbs; the map size and sun size
+       change it. */
     HASH(input->shadow->cascade_count);
     for (uint32_t i = 0; i < input->shadow->cascade_count; ++i) {
       HASH(input->shadow->cascades[i].origin_inv_size_sun.z);

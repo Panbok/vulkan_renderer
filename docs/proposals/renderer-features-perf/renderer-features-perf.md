@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-06
+updated: 2026-10-12
 authority: proposal
 ---
 
@@ -22,11 +22,17 @@ authoritative timing and temporal-quality evidence on Vulkan. These features
 belong to the desktop pipeline, which runs only on Vulkan since 2026-10-06
 ([ADR-087](../../adr/087-gpu-class-graphics-pipelines.md)); the M1 Pro
 measurements below describe its removed Metal implementation.
-The high SSR and analytic post-transform defaults remain in force. The coarser
-SSR tier changes fallback quality without reducing full-resolution histories.
-LUT-based transforms, reflective-tile dispatch, variable ray density, shared SSR/SSGI hierarchy routing,
-and different diffuse-volume coefficient storage remain profiling candidates;
-none is implied by the current implementation or by a source-level load count.
+SSR, SSGI and FSR 3.1 were removed from the desktop pipeline on 2026-10-12
+([ADR-055](../../adr/055-screen-space-reflections.md),
+[ADR-060](../../adr/060-screen-space-diffuse-indirect-lighting.md),
+[ADR-052](../../adr/052-vulkan-fsr31-upscaling.md)), so the SSR tier, the cached
+SSGI receivers and the SSGI source above no longer exist, and sections 4, 7 and
+10 and the SSR rows below are history only. The post-transform intermediate
+has been the default since 2026-09-24
+([ADR-043](../../adr/043-presentation-dpi-and-color-transfer.md)). LUT-based
+transforms and different diffuse-volume coefficient storage remain profiling
+candidates; neither is implied by the current
+implementation or by a source-level load count.
 
 ## Original pinned-snapshot findings
 

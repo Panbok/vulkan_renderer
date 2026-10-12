@@ -21,14 +21,15 @@
 
 #define VKR_HARNESS_SCHEMA_VERSION 1u
 /**
- * Version 7 starts warmup at the 256-phase SSGI sequence's zero whenever SSR
- * runs, not only SSGI, so SSR lobe samples repeat across replays. Version 6
+ * Version 8 aligns warmup to the GTAO noise sequence alone, after SSR and SSGI
+ * were removed. Version 7 started warmup at the 256-phase SSGI sequence's zero
+ * whenever SSR or SSGI ran. Version 6
  * also forgets the local-shadow cache where warmup starts. Version 3
  * starts authored warmup at jitter phase zero with invalid history. Version 2
  * first held warmup at the initial pose. This value participates in the
  * workload fingerprint, preventing comparisons across replay behavior.
  */
-#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 7u
+#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 8u
 #define VKR_HARNESS_PATH_MAX 1024u
 /**
  * Paths recorded inside a report are relative to its run root, never absolute.
@@ -302,11 +303,11 @@ typedef struct VkrHarnessRendererConfig {
    */
   uint32_t render_width;
   uint32_t render_height;
-  /** Reconstruction implementation: `spatial` or `fsr31`. Stored summaries
-   * may name the retired `metalfx_temporal`. */
+  /** Stored-summary field: always `spatial` now. Stored summaries may name
+   * the retired `metalfx_temporal` or `fsr31`; manifests cannot author it. */
   char upscaler[24];
   /** Completion-driven resolution policy of the tiled pipeline's spatial
-   * upscale. FSR 3.1 uses fixed scale. */
+   * upscale. */
   bool8_t dynamic_resolution;
   float32_t dynamic_resolution_min_scale;
   float32_t dynamic_resolution_max_scale;
@@ -324,7 +325,8 @@ typedef struct VkrHarnessRendererConfig {
   float32_t white_balance_tint;
   float32_t color_contrast;
   float32_t color_saturation;
-  /** Half-resolution opaque reflections; opt-in for deterministic cases. */
+  /** Stored-summary fields of the removed SSR and SSGI; always false now and
+   * not authored by manifests. */
   bool8_t ssr_enabled;
   bool8_t ssgi_enabled;
   /** Requested presentation policy; offscreen targets remain SDR. */

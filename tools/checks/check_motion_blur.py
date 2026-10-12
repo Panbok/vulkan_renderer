@@ -107,8 +107,8 @@ def main() -> None:
 
     for name in ("disabled", "zero"):
         config = report(runs[name])["effective_config"]
-        if config["taa_enabled"] or config["ssr_enabled"] or config["ssgi_enabled"]:
-            raise AssertionError(f"{name} enabled a temporal/reflection feature")
+        if config["taa_enabled"]:
+            raise AssertionError(f"{name} enabled a temporal feature")
     for channel in ("final_color", "hdr_pre_bloom"):
         disabled_item, disabled_path = capture(runs["disabled"], channel)
         zero_item, zero_path = capture(runs["zero"], channel)
@@ -141,7 +141,7 @@ def main() -> None:
         config = report(runs[name])["effective_config"]
         if (not config["motion_blur_enabled"] or
                 abs(config["motion_blur_shutter_angle"] - shutter) > 1e-5 or
-                config["taa_enabled"] or config["ssr_enabled"] or config["ssgi_enabled"]):
+                config["taa_enabled"]):
             raise AssertionError(f"{name} did not realize its authored motion-blur workload")
         hdr_item, hdr_path = capture(runs[name], "hdr_pre_bloom")
         color_item, color_path = capture(runs[name], "motion_blur_color")

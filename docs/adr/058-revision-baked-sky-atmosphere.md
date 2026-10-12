@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -296,8 +296,8 @@ this stage's accepted update and storage scope. Sampling the observer-altitude
 source cube for the visible sky cannot follow the camera, and its 256-texel
 faces limited the disc to a blocky coverage estimate. Renderer-owned lookup
 caches let a candidate bake overwrite the lookups the published sky samples.
-Applying aerial perspective in deferred lighting would skip SSR, SSGI and
-subsurface radiance added afterwards. Keeping image skies as a second source
+Applying aerial perspective in deferred lighting would skip subsurface radiance
+added afterwards. Keeping image skies as a second source
 would retain two global-environment producers and their adapters; the constant
 source covers the uniform furnace fixtures that no atmosphere can produce.
 Direct equirectangular runtime sampling complicates filtering at poles and

@@ -628,9 +628,6 @@ vkr_internal bool8_t vkr_harness_parse_renderer_fields(
           &renderer->transmission_depth_diagnostic_enabled, error) ||
       !vkr_harness_manifest_f64(doc, token, "render_scale", false_v,
                                 &fields->render_scale, error) ||
-      !vkr_harness_manifest_string(doc, token, "upscaler", false_v,
-                                   renderer->upscaler,
-                                   sizeof(renderer->upscaler), error) ||
       !vkr_harness_manifest_bool(doc, token, "dynamic_resolution", false_v,
                                  &renderer->dynamic_resolution, error) ||
       !vkr_harness_manifest_f64(doc, token, "dynamic_resolution_min_scale",
@@ -692,10 +689,6 @@ vkr_internal bool8_t vkr_harness_parse_renderer_fields(
                                   &fields->bloom_intensity_token, error) ||
       !vkr_harness_manifest_f64(doc, token, "bloom_intensity", false_v,
                                 &fields->bloom_intensity, error) ||
-      !vkr_harness_manifest_bool(doc, token, "ssgi_enabled", false_v,
-                                 &renderer->ssgi_enabled, error) ||
-      !vkr_harness_manifest_bool(doc, token, "ssr_enabled", false_v,
-                                 &renderer->ssr_enabled, error) ||
       !vkr_harness_manifest_bool(doc, token, "dof_enabled", false_v,
                                  &renderer->dof_enabled, error) ||
       !vkr_harness_manifest_f64(doc, token, "dof_focus_distance", false_v,
@@ -798,9 +791,6 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
   const bool8_t display_output_valid =
       string_equals(renderer->display_output, "sdr") ||
       string_equals(renderer->display_output, "auto_extended_linear");
-  /* MetalFX temporal upscaling is retired; a case naming it is invalid. */
-  const bool8_t upscaler_valid = string_equals(renderer->upscaler, "spatial") ||
-                                 string_equals(renderer->upscaler, "fsr31");
   const bool8_t exposure_mode_valid =
       string_equals(renderer->exposure_mode, "manual") ||
       string_equals(renderer->exposure_mode, "automatic");
@@ -855,12 +845,12 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
       (renderer->motion_blur_entity_velocity_x == 0.0f &&
        renderer->motion_blur_entity_velocity_y == 0.0f &&
        renderer->motion_blur_entity_velocity_z == 0.0f);
-  if (!preset_valid || !mode_valid || !backend_valid || !upscaler_valid ||
-      !display_output_valid || fields->cascades < 1u || fields->cascades > 8u ||
-      !exposure_mode_valid || !display_transform_valid ||
-      !automatic_controls_valid || !bloom_controls_valid ||
-      !gtao_controls_valid || !dof_focus_valid || !dof_f_stop_valid ||
-      !motion_blur_controls_valid || !motion_blur_entity_valid ||
+  if (!preset_valid || !mode_valid || !backend_valid || !display_output_valid ||
+      fields->cascades < 1u || fields->cascades > 8u || !exposure_mode_valid ||
+      !display_transform_valid || !automatic_controls_valid ||
+      !bloom_controls_valid || !gtao_controls_valid || !dof_focus_valid ||
+      !dof_f_stop_valid || !motion_blur_controls_valid ||
+      !motion_blur_entity_valid ||
       (fields->ibl_probe_limit_token >= 0 &&
        fields->ibl_probe_limit > VKR_FRAME_IBL_PROBE_MAX) ||
       !isfinite(fields->manual_exposure) || fields->manual_exposure <= 0.0 ||
@@ -881,7 +871,7 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
       fields->exposure_reset_frame > UINT32_MAX) {
     vkr_harness_error_set(
         error, "renderer.config", "$.renderer",
-        "Renderer backend, preset, upscaler, "
+        "Renderer backend, preset, "
         "render/exposure/display-transform mode, "
         "exposure/white-balance/grading/bloom/GTAO/DoF/motion-blur/"
         "image-sharpness controls, "
@@ -919,8 +909,8 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
 }
 
 /**
- * Validates the render scale and upscaler pairing, then resolves the FXAA and
- * dynamic-resolution controls that depend on them.
+ * Validates the render scale and dynamic-resolution pairing, then resolves the
+ * FXAA and dynamic-resolution controls.
  */
 vkr_internal bool8_t vkr_harness_parse_renderer_upscaling(
     const VkrHarnessJsonDocument *doc, int32_t token,
@@ -934,20 +924,13 @@ vkr_internal bool8_t vkr_harness_parse_renderer_upscaling(
     return false_v;
   }
   renderer->render_scale = (float32_t)fields->render_scale;
-  const bool8_t fsr31 = string_equals(renderer->upscaler, "fsr31");
-  if ((fsr31 &&
-       (!string_equals(renderer->backend, "vulkan") || !renderer->taa_enabled ||
-        fields->render_scale < (1.0 / 3.0))) ||
-      (renderer->dynamic_resolution &&
-       renderer->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED)) {
-    vkr_harness_error_set(
-        error, "renderer.upscaler", "$.renderer.upscaler",
-        "FSR 3.1 requires Vulkan with temporal jitter and scale in [1/3, 1], "
-        "and dynamic resolution requires the tiled pipeline");
+  if (renderer->dynamic_resolution &&
+      renderer->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED) {
+    vkr_harness_error_set(error, "renderer.dynamic_resolution",
+                          "$.renderer.dynamic_resolution",
+                          "Dynamic resolution requires the tiled pipeline");
     return false_v;
   }
-  if (fsr31)
-    renderer->fxaa_enabled = false_v;
   if (!vkr_harness_manifest_bool(doc, token, "fxaa_enabled", false_v,
                                  &renderer->fxaa_enabled, error))
     return false_v;
@@ -1064,7 +1047,6 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "image_sharpness",
       "render_scale",
       "texture_max_load_dimension",
-      "upscaler",
       "dynamic_resolution",
       "dynamic_resolution_min_scale",
       "dynamic_resolution_max_scale",
@@ -1091,8 +1073,6 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "bloom_threshold",
       "bloom_knee",
       "bloom_intensity",
-      "ssr_enabled",
-      "ssgi_enabled",
       "dof_enabled",
       "dof_focus_distance",
       "dof_f_stop",

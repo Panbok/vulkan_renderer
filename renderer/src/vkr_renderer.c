@@ -617,24 +617,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   return true_v;
 #else
   (void)device_requirements;
-  VkrSsrQuality ssr_quality = VKR_SSR_QUALITY_HIGH;
-  const char *ssr_quality_env = getenv("VKR_SSR_QUALITY");
-  if (ssr_quality_env && ssr_quality_env[0] != '\0') {
-    if (strcmp(ssr_quality_env, "balanced") == 0) {
-      ssr_quality = VKR_SSR_QUALITY_BALANCED;
-    } else if (strcmp(ssr_quality_env, "high") != 0) {
-      log_error("VKR_SSR_QUALITY must be high or balanced");
-      if (out_error) {
-        *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-      }
-      return false_v;
-    }
-  }
-  const VkrSsrConfig ssr_config = vkr_ssr_config_for_quality(ssr_quality);
   char graph_path[4096];
   VkrVulkanRendererConfig config = {
-      .ssr = ssr_config,
-      .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
       .graph_path = vkr_renderer_graph_path(renderer->graphics_pipeline,
                                             graph_path, sizeof(graph_path)),
@@ -697,7 +681,6 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .frustum_enabled = !vkr_renderer_env_enabled("VKR_FRUSTUM_DISABLED"),
-      .fsr31_enabled = renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31,
       .transmission_compact_enabled =
           !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
 #if !defined(NDEBUG)
@@ -803,8 +786,6 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
       backend_config && backend_config->render_scale != 0.0f
           ? backend_config->render_scale
           : 1.0f;
-  const VkrUpscaleMode requested_upscale_mode =
-      backend_config ? backend_config->upscale_mode : VKR_UPSCALE_MODE_SPATIAL;
   VkrDynamicResolutionConfig requested_dynamic_resolution =
       backend_config ? backend_config->dynamic_resolution
                      : (VkrDynamicResolutionConfig){0};
@@ -815,28 +796,9 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     return false_v;
   }
   if (backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
-      requested_upscale_mode != VKR_UPSCALE_MODE_FSR31 &&
       requested_render_scale != 1.0f) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
     log_error("Internal render scale is currently supported only by Metal");
-    return false_v;
-  }
-  if (requested_upscale_mode < VKR_UPSCALE_MODE_SPATIAL ||
-      requested_upscale_mode >= VKR_UPSCALE_MODE_COUNT) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    log_error("Renderer upscale mode is invalid");
-    return false_v;
-  }
-  if (requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 &&
-      backend_type != VKR_RENDERER_BACKEND_TYPE_VULKAN) {
-    *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
-    log_error("FSR 3.1 upscaling requires the Vulkan backend");
-    return false_v;
-  }
-  if (requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 &&
-      requested_render_scale < (1.0f / 3.0f)) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    log_error("FSR 3.1 render scale must be in [1/3, 1]");
     return false_v;
   }
   /* The class follows the backend (ADR-087). The tiled pipeline resolves
@@ -844,28 +806,19 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
      the resolution of that upscale. */
   const VkrGraphicsPipelineClass requested_graphics =
       vkr_graphics_pipeline_for_backend(backend_type);
-  if (requested_graphics == VKR_GRAPHICS_PIPELINE_TILED &&
-      requested_upscale_mode != VKR_UPSCALE_MODE_SPATIAL) {
-    *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
-    log_error("Metal's tiled graphics pipeline upscales spatially, without "
-              "temporal upscaling");
-    return false_v;
-  }
   if (requested_dynamic_resolution.enabled &&
       requested_graphics != VKR_GRAPHICS_PIPELINE_TILED) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
     log_error("Dynamic resolution requires Metal's tiled graphics pipeline");
     return false_v;
   }
-  /* The live range: the FSR 3.1 context accepts any render extent up to its
-     output, and the spatial Metal path resamples any extent. Vulkan spatial
+  /* The live range: the spatial Metal path resamples any extent. Vulkan
      fixes unit scale. */
   const VkrDynamicResolutionConfig dynamic_resolution_request =
       requested_dynamic_resolution;
   float32_t live_min = requested_render_scale;
   float32_t live_max = requested_render_scale;
-  if (requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
-      backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+  if (backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
     live_min = Min(live_min, 1.0f / 3.0f);
     live_max = 1.0f;
   }
@@ -915,7 +868,6 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->render_scale = requested_render_scale;
   renderer->render_scale_min = live_min;
   renderer->render_scale_max = live_max;
-  renderer->upscale_mode = requested_upscale_mode;
   renderer->graphics_pipeline = requested_graphics;
   renderer->dynamic_resolution_request = dynamic_resolution_request;
   renderer->dynamic_resolution_config = requested_dynamic_resolution;
@@ -934,9 +886,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->editor_image_height = 0u;
   renderer->temporal_state = (VkrTemporalState){0};
   renderer->temporal_reset_reasons = 0u;
-  renderer->temporal_enabled =
-      requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
-      !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
+  renderer->temporal_enabled = !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
   renderer->exposure_state = (VkrExposureState){0};
   renderer->exposure_reset_reasons = 0u;
   /* Diagnostic: a forced pre-exposure exponent. Pre-exposure is exact, so
@@ -956,9 +906,6 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
      and without it must not require a rebuild. */
   renderer->bloom_forced_disabled =
       vkr_renderer_env_enabled("VKR_BLOOM_DISABLED");
-  renderer->ssr_forced_disabled = vkr_renderer_env_enabled("VKR_SSR_DISABLED");
-  renderer->ssgi_forced_disabled =
-      vkr_renderer_env_enabled("VKR_SSGI_DISABLED");
   renderer->fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED");
   /* Filtering display-linear pixels is the default (ADR-043); only the explicit
      "0" spelling keeps the analytic per-tap transform as a reference. */
@@ -1011,14 +958,12 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
       .boot_metrics = &renderer->boot_metrics,
       .present_target = requested_target,
       .render_scale = requested_render_scale,
-      .upscale_mode = requested_upscale_mode,
       .dynamic_resolution = requested_dynamic_resolution,
   };
   if (backend_config) {
     resolved_backend_config = *backend_config;
     resolved_backend_config.boot_metrics = &renderer->boot_metrics;
     resolved_backend_config.render_scale = requested_render_scale;
-    resolved_backend_config.upscale_mode = requested_upscale_mode;
     resolved_backend_config.dynamic_resolution = requested_dynamic_resolution;
   }
   resolved_backend_config.display_output_mode = requested_display_output;
@@ -1093,8 +1038,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.tiled_pipeline = tiled;
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
-  /* Portable TAA and FSR both reconstruct edges temporally, so FXAA filters
-     only frames without temporal reconstruction. The tiled pipeline's
+  /* Portable TAA reconstructs edges temporally, so FXAA filters only
+     frames without temporal reconstruction. The tiled pipeline's
      multisampling resolves its edges instead (ADR-087). */
   const bool8_t temporal_frame =
       rf->temporal_enabled && !tiled &&
@@ -1115,9 +1060,6 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.scene_output_width = rf->scene_output_width;
   prepared->frame.scene_output_height = rf->scene_output_height;
   prepared->frame.render_scale = rf->render_scale;
-  prepared->frame.fsr31_enabled =
-      rf->upscale_mode == VKR_UPSCALE_MODE_FSR31 && !orthographic &&
-      packet->globals.render_mode != VKR_RENDER_MODE_WIREFRAME;
   if (packet->editor) {
     const Vec4 rect = packet->editor->image_rect_px;
     const bool8_t rendering = prepared->frame.scene_rendering;
@@ -1186,9 +1128,6 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE;
   rf->ibl_probes_packed =
       packet->lighting ? packet->lighting->ibl_probe_count : 0u;
-  prepared->frame.ssgi_enabled =
-      packet->globals.ssgi_enabled && !rf->ssgi_forced_disabled &&
-      !orthographic && packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.fog = vkr_fog_prepare(&packet->globals.fog);
   /* The tiled graph has no froxel fog; its forward shading applies the
      analytic fog (ADR-087). */
@@ -1246,16 +1185,10 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       .width = temporal_width,
       .height = temporal_height,
       .render_mode = packet->globals.render_mode,
-      .jitter_phase_count = prepared->frame.fsr31_enabled
-                                ? vkr_temporal_upscale_sequence_length(
-                                      temporal_width, rf->scene_output_width)
-                                : VKR_TEMPORAL_SEQUENCE_LENGTH,
+      .jitter_phase_count = VKR_TEMPORAL_SEQUENCE_LENGTH,
       .explicit_reset_reasons =
           rf->temporal_reset_reasons |
-          ((fog_changed ||
-            rf->submitted_ssgi_enabled != prepared->frame.ssgi_enabled)
-               ? VKR_TEMPORAL_RESET_SCENE_CHANGE
-               : 0u),
+          (fog_changed ? VKR_TEMPORAL_RESET_SCENE_CHANGE : 0u),
       .enabled = temporal_frame,
   };
   prepared->frame.temporal =
@@ -1363,9 +1296,6 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
         temporal_width, temporal_height);
   /* GTAO is current-frame spatial state: like bloom, it has no prepare/commit
      history chain. */
-  prepared->frame.ssr_enabled =
-      packet->globals.ssr_enabled && !rf->ssr_forced_disabled &&
-      !orthographic && packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.gtao = vkr_gtao_prepare(
       packet->globals.gtao_enabled && !rf->gtao_forced_disabled &&
           !orthographic && !wireframe,
@@ -1376,8 +1306,6 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
     prepared->frame.subsurface_enabled = false_v;
     prepared->frame.dof_enabled = false_v;
     prepared->frame.motion_blur_enabled = false_v;
-    prepared->frame.ssr_enabled = false_v;
-    prepared->frame.ssgi_enabled = false_v;
     prepared->frame.gtao = vkr_gtao_prepare(
         false_v, packet->globals.gtao_radius, packet->globals.gtao_power);
   }
@@ -2187,7 +2115,6 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
       .viewport_width = renderer->render_width,
       .viewport_height = renderer->render_height,
       .render_scale = renderer->render_scale,
-      .fsr31_enabled = renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31,
       .picking_pending = false_v,
       .target_color_format = renderer->impl.caps.present_color_format,
       .target_depth_format = renderer->impl.caps.present_depth_format,
@@ -2336,8 +2263,6 @@ vkr_renderer_commit_submitted_frame(VkrRenderer *renderer,
                                     const VkrFramePreparation *prepared) {
   if (prepared->frame.scene_rendering) {
     vkr_temporal_commit(&renderer->temporal_state, &prepared->temporal_input);
-    renderer->submitted_ssgi_enabled = prepared->frame.ssgi_enabled;
-    renderer->submitted_ssr_enabled = prepared->frame.ssr_enabled;
     renderer->submitted_fog = prepared->frame.fog;
     renderer->submitted_froxel_fog = prepared->frame.froxel_fog;
     renderer->temporal_reset_reasons = 0u;
@@ -2921,8 +2846,7 @@ vkr_internal VkrRendererError vkr_renderer_configure_scene_output_extent(
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   if (renderer->frame_active)
     return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
-  if (renderer->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
-      renderer->upscale_mode != VKR_UPSCALE_MODE_FSR31)
+  if (renderer->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL)
     return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   if (renderer->scene_output_extent_overridden == overridden &&
       renderer->scene_output_width == width &&

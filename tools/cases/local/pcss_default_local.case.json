@@ -29,7 +29,6 @@
     "taa_enabled": false,
     "fxaa_enabled": false,
     "render_scale": 1.0,
-    "upscaler": "spatial",
     "dynamic_resolution": false,
     "exposure_mode": "manual",
     "manual_exposure": 1.0,
@@ -43,7 +42,6 @@
     "display_transform": "agx",
     "bloom_enabled": false,
     "gtao_enabled": false,
-    "ssr_enabled": false,
     "image_sharpness": 0.0
   },
   "camera": {

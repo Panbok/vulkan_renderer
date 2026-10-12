@@ -9,7 +9,7 @@
  * (exposure, grading, bloom and motion blur strength) is the scene's
  * post_process component (ADR-076). */
 typedef struct VkrGraphicsSettings {
-  bool8_t vsync, hdr, temporal_upscaling, dynamic_resolution, anti_aliasing;
+  bool8_t vsync, hdr, dynamic_resolution, anti_aliasing;
   /* Render the display's physical pixels; off renders one pixel per point,
    * a quarter of the pixels on a 2x Retina display. macOS only. */
   bool8_t high_dpi;
@@ -30,7 +30,7 @@ typedef struct VkrGraphicsSettings {
    * (ADR-083). Scene material textures reload when it changes; other
    * textures take it at the next start. */
   uint32_t texture_resolution;
-  bool8_t screen_space_reflections, screen_space_gi, reflection_probes;
+  bool8_t reflection_probes;
   bool8_t subsurface_scattering, fog, volumetric_fog;
   bool8_t bloom, depth_of_field, motion_blur;
   /* Captured mouse look turns down for upward motion, as flight controls do. */
@@ -40,17 +40,15 @@ typedef struct VkrGraphicsSettings {
 typedef struct VkrGraphicsSettingsState {
   VkrGraphicsSettings settings;
   bool8_t restart_required;
-  bool8_t temporal_upscaling_available;
   bool8_t dynamic_resolution_available;
   /* The running renderer's class (ADR-087); the tiled pipeline leaves the
      desktop pipeline's effects out. */
   VkrGraphicsPipelineClass graphics_pipeline;
-  /* Whether render scale applies without temporal upscaling; otherwise the
-     Scene renders at unit scale until temporal upscaling is enabled. */
+  /* Whether render scale applies; otherwise the Scene renders at unit
+     scale. */
   bool8_t spatial_render_scale_available;
   /* Whether the platform window can turn high-DPI rendering off. */
   bool8_t high_dpi_available;
-  String8 temporal_upscaling_name;
   String8 message;
 } VkrGraphicsSettingsState;
 

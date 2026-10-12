@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.diffuse_sheet.layers",
   "suite": "local",
-  "description": "Thin-sheet layers witness with layered materials, SSR and SSGI.",
+  "description": "Thin-sheet layers witness with layered materials.",
   "scene": "assets/scenes/fixtures/diffuse_sheet_layers_local.scene.json",
   "seed": 1,
   "resolution": [
@@ -34,8 +34,6 @@
     "render_mode": "default",
     "display_transform": "agx",
     "gtao_enabled": false,
-    "ssr_enabled": true,
-    "ssgi_enabled": true,
     "bloom_enabled": false,
     "image_sharpness": 0
   },
@@ -61,9 +59,7 @@
         "hdr_post_transmission",
         "depth",
         "gbuffer_normal",
-        "gbuffer_specular",
-        "ssr_raw",
-        "ssr_reflection"
+        "gbuffer_specular"
       ]
     }
   ],

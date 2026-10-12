@@ -44,10 +44,7 @@ table, a newly selected light fades in over 0.25 s once a slot is free and
 a light no longer selected fades out in its slot; the fade scales the
 table's `intensity`
 ([`vkr_lighting_system_select_point_lights`](../../runtime/src/renderer/systems/vkr_lighting_system.h)).
-The table therefore changes while the camera moves, so SSR and SSGI history
-signatures leave it out
-([ADR-055](055-screen-space-reflections.md),
-[ADR-060](060-screen-space-diffuse-indirect-lighting.md)).
+The table therefore changes while the camera moves.
 
 Pack up to 16 ready local IBL probes per frame. Compute their influence from
 fragment position and AABB weights; keep the global environment as fallback.
@@ -839,7 +836,8 @@ with the graphics validation variables unset.
   No capture compared a kept square with a fresh draw.
 - Builds before (B) and after the change set (A, and A' after a rebuild)
   alternated under `local-offscreen-perf-audit-gpu`, two children each. In
-  `ssr_tier_bistro_cost` (640x360, TAA, 24 warmup and 32 measured frames, 48
+  `ssr_tier_bistro_cost` (since deleted with SSR; 640x360, TAA, 24 warmup and
+  32 measured frames, 48
   to 72 shadowed lights while their shadows fade in) `Shadow.LocalMask` read
   0.178 ms in B against 0.125 ms in A and 0.120 ms in a repeat of A', beyond
   the per-child spread (`sha256:b6373852f3be`, `sha256:a6b37e05f249`,

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-09
+updated: 2026-10-12
 authority: proposal
 ---
 # Lighting efficiency
@@ -148,7 +148,7 @@ together with a meshlet-rendering decision. Each needs a separate decision.
 
 ## Decision boundaries
 
-- Further tap reduction outside the mask relies on TAA or an upscaler; the
+- Further tap reduction outside the mask relies on TAA; the
   mask's fallback without temporal resolve is the fixed nine-tap kernel.
 - Half precision changes output within a tolerance that must be chosen
   before implementation. The contribution cutoff shipped at 0.001 of

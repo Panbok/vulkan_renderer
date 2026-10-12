@@ -13,8 +13,6 @@
 #include "vkr_render_graph.h"
 #include "vkr_renderer_impl.h"
 #include "vkr_sheen_lut.h"
-#include "vkr_ssgi.h"
-#include "vkr_ssr.h"
 #include "vulkan/vkr_vulkan_device.h"
 
 enum {
@@ -43,10 +41,6 @@ typedef struct VkrVulkanRendererConfig {
   VkrBloomConfig bloom;
   /** A zeroed record selects the production GTAO defaults. */
   VkrGtaoConfig gtao;
-  /** Set explicitly with vkr_ssr_config_default() for production defaults. */
-  VkrSsrConfig ssr;
-  /** Set explicitly with vkr_ssgi_config_default() for production defaults. */
-  VkrSsgiConfig ssgi;
   const char *graph_path;
   VkrNativeSurface surface;
   VkrPresentTargetKind target_kind;
@@ -100,8 +94,6 @@ typedef struct VkrVulkanRendererConfig {
   bool8_t frustum_enabled;
   /** Bounded transmission scan plus indirect sparse shading. */
   bool8_t transmission_compact_enabled;
-  /** Enables the FSR-specific device feature boundary at creation. */
-  bool8_t fsr31_enabled;
   bool8_t enable_validation;
   bool8_t enable_synchronization_validation;
   bool8_t enable_gpu_assisted;

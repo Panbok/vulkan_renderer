@@ -1,6 +1,6 @@
 # Apply final options after upstream directory and target options. In particular,
-# KTX adds -O0 in Debug and FidelityFX adds /Od; neither should win over this
-# project's optimized dependency policy. Configuration names still select VKR's
+# KTX adds -O0 in Debug, which should not win over this project's optimized
+# dependency policy. Configuration names still select VKR's
 # debugging, assertions and diagnostics.
 include(CheckIPOSupported)
 option(VKR_ENABLE_IPO "Use supported interprocedural optimization in Release" ON)

@@ -29,7 +29,6 @@
     "shadow_cascades": 4,
     "render_mode": "default",
     "taa_enabled": false,
-    "upscaler": "spatial",
     "dynamic_resolution": false,
     "exposure_mode": "manual",
     "gtao_enabled": false,

@@ -58,8 +58,8 @@ Henyey-Greenstein phase with the authored anisotropy `g`. `cos theta` is the
 cosine between the view ray and the direction toward the sun, so positive `g`
 scatters forward. `sky_lighting` acts as the single-scattering albedo. Fog
 allocates no image, LUT, froxel grid, or fog history. In the desktop pipeline,
-the opaque/sky compute pass runs after SSR composite and before the opaque
-transmission pyramid. It reads and writes only the matching HDR pixel,
+the opaque/sky compute pass runs after deferred lighting and subsurface
+diffusion and before the opaque transmission pyramid. It reads and writes only the matching HDR pixel,
 preserving alpha. The same pass applies
 [ADR-058](058-revision-baked-sky-atmosphere.md) aerial perspective to opaque
 pixels before height fog, and runs when either is active.
@@ -70,14 +70,10 @@ feedback source already fogged. Its composition is
 where `W` is the current transmission-feedback coefficient and `J` is evaluated
 along the layer's view ray. World blend fogs RGB
 and retains source alpha. Canonical fog parameters participate in the normal
-temporal signature. SSR traces opaque HDR before fog, so its history ignores
-fog content (2026-10-11, [ADR-055](055-screen-space-reflections.md)).
-Preparation also compares the parameters with the last successfully
-submitted fog record and requests a temporal scene-change reset before
-exposure preparation, which also resets SSR and SSGI history, so an
-authored fog change still restarts them. Failed or cancelled frames do not
-replace that record. SSR history has native Vulkan runs since 2026-10-12
-(ADR-055), but none has yet changed fog while SSR history is selected.
+temporal signature. Preparation also compares the parameters with the last
+successfully submitted fog record and requests a temporal scene-change reset
+before exposure preparation, so an authored fog change restarts temporal
+history. Failed or cancelled frames do not replace that record.
 
 ## Consequences
 

@@ -1,7 +1,5 @@
 #include "vkr_render_graph_frame.h"
 #include "math/vkr_frustum.h"
-#include "vkr_ssgi.h"
-#include "vkr_ssr.h"
 
 /* Metres added to a light's range before the frustum test. It covers float
    error in the planes and in the world position that the mask and lighting
@@ -128,7 +126,6 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     const VkrGtaoConfig *gtao_config,
                                     VkrRenderGraphFrameInfo *frame,
                                     VkrGtaoGpuParams *gtao_params) {
-  frame->fsr31_enabled = packet->fsr31_enabled;
   frame->scene_output_width = packet->scene_output_width;
   frame->scene_output_height = packet->scene_output_height;
   frame->render_scale = packet->render_scale;
@@ -315,16 +312,6 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->fog_apply_enabled =
       frame->fog_enabled ||
       (frame->aerial_perspective_enabled && !frame->froxel_fog_enabled);
-  frame->ssgi_enabled = packet->scene_rendering && packet->ssgi_enabled;
-  frame->ssgi_depth_mip_count =
-      frame->ssgi_enabled ? vkr_ssgi_depth_mip_count(frame->viewport_width,
-                                                     frame->viewport_height)
-                          : 0u;
-  frame->ssr_enabled = packet->scene_rendering && packet->ssr_enabled;
-  frame->ssr_depth_mip_count =
-      frame->ssr_enabled ? vkr_ssr_depth_mip_count(frame->viewport_width,
-                                                   frame->viewport_height)
-                         : 0u;
   frame->hzb_reduce_pass_count = hzb_mip_count - 1u;
   /* Six levels of the opaque copy at most: the desktop pipeline's is full
      resolution, the tiled pipeline's half (ADR-087), one level shorter. */
@@ -334,14 +321,10 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       Min(transmission_source_chain, 6u) - 1u;
 
   /* Bloom requires enough viewport extent for both reduction and upsampling. */
-  const uint32_t bloom_width =
-      frame->fsr31_enabled ? frame->scene_output_width : frame->viewport_width;
-  const uint32_t bloom_height = frame->fsr31_enabled
-                                    ? frame->scene_output_height
-                                    : frame->viewport_height;
   frame->bloom_mip_count =
       packet->bloom.enabled
-          ? vkr_bloom_mip_count(bloom_config, bloom_width, bloom_height)
+          ? vkr_bloom_mip_count(bloom_config, frame->viewport_width,
+                                frame->viewport_height)
           : 0u;
   frame->bloom_enabled = frame->bloom_mip_count > 0u;
   frame->subsurface_enabled =
@@ -439,25 +422,6 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                            VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_LIGHTING_DEFERRED_LAYERED] =
         {"pass.lighting.deferred.layered", VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSGI_DEPTH_BASE] = {"pass.ssgi.depth_base",
-                                         VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSGI_DEPTH_MIP] = {"pass.ssgi.depth_mip",
-                                        VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSGI_TRACE] = {"pass.ssgi.trace",
-                                    VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSGI_TEMPORAL] = {"pass.ssgi.temporal",
-                                       VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSGI_COMPOSITE] = {"pass.ssgi.composite",
-                                        VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSR_DEPTH_BASE] = {"pass.ssr.depth_base",
-                                        VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSR_DEPTH_MIP] = {"pass.ssr.depth_mip",
-                                       VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSR_TRACE] = {"pass.ssr.trace", VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSR_TEMPORAL] = {"pass.ssr.temporal",
-                                      VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_SSR_COMPOSITE] = {"pass.ssr.composite",
-                                       VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_FOG_APPLY] = {"pass.fog.apply", VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_FROXEL_INJECT] = {"pass.froxel.inject",
                                        VKR_RG_PASS_TYPE_COMPUTE},
@@ -553,12 +517,6 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
     [VKR_RG_EXECUTOR_ANIMATION_PREVIEW] = {"pass.animation.preview",
                                            VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_UI] = {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
-    [VKR_RG_EXECUTOR_FSR31_PREPARE] = {"pass.fsr31.prepare",
-                                       VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_FSR31_UPSCALE] = {"pass.fsr31.upscale",
-                                       VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_FSR31_STABILIZE] = {"pass.fsr31.stabilize",
-                                         VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TILED_OPAQUE] = {"pass.tiled.opaque",
                                       VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_TILED_ATMOSPHERE] = {"pass.tiled.atmosphere",

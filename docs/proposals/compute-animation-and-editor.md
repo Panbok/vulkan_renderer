@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-06
+updated: 2026-10-12
 authority: proposal
 ---
 
@@ -355,7 +355,7 @@ rendering cost; the present fixed target is not a general second scene viewport.
 | Import/math correctness | Independent CPU fixtures for non-joint ancestors, missing inverse binds, transformed mesh nodes, remap with distinct weights, uneven keys, antipodal linear quaternions, cubic tangents, STEP boundaries, and partial-channel defaults. Analytically known transforms provide the oracle. |
 | Playback independence | Replay the same timestamped inputs at 30/60/120/144 Hz and irregular deltas; compare poses at common times, sequence duration, root displacement, and event IDs/order. Fixed mode also checks zero/multiple ticks and overload debt. |
 | Skinning/parity | Small synthetic isolated arithmetic cases plus the player in Bistro. Compare GPU positions, normals, palettes, and bounds to the CPU oracle; inspect both native outputs under the same declared tolerances. |
-| Render integration | Bistro character visible, outside camera but casting shadows, moving against static geometry, masked/blended materials, picking, and stationary actor with moving limbs. Capture motion/validity/depth and inspect temporal consumers, including SSR rigid-transport rejection. |
+| Render integration | Bistro character visible, outside camera but casting shadows, moving against static geometry, masked/blended materials, picking, and stationary actor with moving limbs. Capture motion/validity/depth and inspect temporal consumers. |
 | History/lifetime | Pause/seek/reverse/loop, spawn/despawn, differing instance times, skipped render, graph reload, asset replacement, resize, and closing preview while work is in flight. Validate producer identity, generations, live bytes and handles after retirement drains. |
 | Editor behavior | Mouse and keyboard graph edits, two-clip overlaps, invalid third overlap, frame stepping, scrub event suppression, root-motion display, undo/redo, save/reopen, DPI resize, focus loss, main-camera isolation, and preview/main color agreement under matched SDR/HDR settings. |
 | Cost | Capture-free normal Release with validation variables unset; matched Bistro camera/output/settings and 1, 16, and 64 player instances as capacity permits. Compare CPU pose + compute skinning with GPU pose + compute skinning at equal output; include static-scene and preview-open/closed cost. |
