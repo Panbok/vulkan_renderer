@@ -133,6 +133,18 @@ typedef struct VkrSampleHideRequest {
   VkrEntityId entities[VKR_SCENE_EDITOR_HIDDEN_MAX];
 } VkrSampleHideRequest;
 
+/* The editor's Model view (ADR-089): while `active`, the Scene draws the
+ * model stage (vkr_model_stage.h) - a ground, a sun and a uniform sky - with
+ * copies of `subject`'s meshes and its descendants' moved by `offset`, in
+ * place of the loaded containers, which stay loaded but hidden. Picking, the
+ * gizmo and the selection outline rest meanwhile. The editor asks again every
+ * build it wants the stage; Play draws the level. Nothing saves it. */
+typedef struct VkrSampleModelStageRequest {
+  bool8_t active;
+  VkrEntityId subject;
+  Vec3 offset;
+} VkrSampleModelStageRequest;
+
 typedef struct VkrSampleViewRequest {
   VkrSampleViewState value;
   bool8_t apply;
@@ -532,6 +544,9 @@ typedef struct VkrSampleUiFrame {
      library: the renderer loads it again (ADR-096). */
   bool8_t *custom_materials_reload;
   VkrSampleHideRequest *hide_request;
+  VkrSampleModelStageRequest *model_stage;
+  /* Mesh instances the model stage copied from its subject last frame. */
+  uint32_t model_stage_copies;
   VkrSamplePhysicsRequest *physics_request;
   VkrSampleIoRequest *io_request;
   const VkrSampleIoResult *io_result;

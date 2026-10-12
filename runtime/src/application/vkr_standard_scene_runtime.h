@@ -279,6 +279,10 @@ typedef struct VkrStandardSceneRuntime {
      meshes through their render bridges, local lights appended. */
   VkrScene *additive_scenes[VKR_SCENE_ADDITIVE_MAX];
   uint32_t additive_count;
+  /* The editor's model stage (vkr_model_stage.h), or NULL: while set, frames
+     light and draw it in place of the containers, whose objects the editor
+     hides, and leave out added scenes' lights, decals and world text. */
+  VkrScene *stage_scene;
   uint64_t scene_generation;
   /** Cloud wind offset in world X and Z metres, wrapped at
       VKR_CLOUD_WIND_PERIOD_M. Float64 keeps metre precision over a session. */
@@ -330,10 +334,18 @@ typedef struct VkrStandardSceneRuntime {
  * An offscreen application creates no window, so it has no surface, input
  * state, or gamepads to poll, update, or destroy.
  */
-/** The scene a frame renders: the active scene, else the root World. */
+/** The level's scene: the active scene, else the root World. */
+vkr_internal INLINE VkrScene *
+vkr_standard_scene_runtime_level_scene(VkrStandardSceneRuntime *runtime) {
+  return runtime->active_scene ? runtime->active_scene : runtime->world_scene;
+}
+
+/** The scene a frame renders: the model stage while it shows, else the
+    level's scene. */
 vkr_internal INLINE VkrScene *
 vkr_standard_scene_runtime_render_scene(VkrStandardSceneRuntime *runtime) {
-  return runtime->active_scene ? runtime->active_scene : runtime->world_scene;
+  return runtime->stage_scene ? runtime->stage_scene
+                              : vkr_standard_scene_runtime_level_scene(runtime);
 }
 
 vkr_internal INLINE bool8_t vkr_standard_scene_runtime_is_windowed(

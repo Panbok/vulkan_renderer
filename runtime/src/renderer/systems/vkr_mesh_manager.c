@@ -2797,6 +2797,38 @@ vkr_internal VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
                                  .generation = inst->generation};
 }
 
+VkrMeshInstanceHandle
+vkr_mesh_manager_instance_clone(VkrMeshManager *manager,
+                                VkrMeshInstanceHandle source, Mat4 model,
+                                VkrRendererError *out_error) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  const VkrMeshInstance *from = vkr_mesh_manager_get_instance(manager, source);
+  if (!from) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    return VKR_MESH_INSTANCE_HANDLE_INVALID;
+  }
+  /* Copied first: creation writes another slot of the same array. */
+  const VkrMeshAssetHandle asset = from->asset;
+  const uint32_t override_count = from->material_override_count;
+  VkrMaterialHandle overrides[VKR_MESH_MATERIAL_OVERRIDE_MAX];
+  MemCopy(overrides, from->material_overrides, sizeof(overrides));
+
+  const VkrMeshInstanceHandle handle = vkr_mesh_manager_create_instance(
+      manager, asset, model, 0u, true_v, out_error);
+  if (handle.id == 0u || override_count == 0u) {
+    return handle;
+  }
+  if (!vkr_mesh_manager_instance_set_materials(manager, handle, overrides,
+                                               override_count)) {
+    (void)vkr_mesh_manager_destroy_instance(manager, handle);
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return VKR_MESH_INSTANCE_HANDLE_INVALID;
+  }
+  return handle;
+}
+
 VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
     VkrMeshManager *manager, const VkrMeshLoadDesc *desc,
     const VkrResourceHandleInfo *handle_info, uint32_t render_id,

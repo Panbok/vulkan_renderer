@@ -155,7 +155,8 @@ Editor workflow terms:
 |---|---|---|
 | Workspace | User-selected directory whose `.vkreditor` child contains managed projects, editor bundles and caches. | [Project store](../editor/src/editor_project_store.h) |
 | Workbench | Editor tab under the top bar: a dock layout, the floating windows open in it, the views of its Views panel and the Scene's editing mode for one task, such as Level Design. Not a workspace. |
-| Views panel, view | The dock tab that holds the Scene image and switches it with the workbench's other views: Model (the selection alone), Graph (the open material) and Script (the Script editor). | [ADR-089](adr/089-editor-workbenches.md) | [ADR-089](adr/089-editor-workbenches.md) |
+| Views panel, view | The dock tab that holds the Scene image and switches it with the workbench's other views: Model (the selection alone), Graph (the open material) and Script (the Script editor). | [ADR-089](adr/089-editor-workbenches.md) |
+| Model stage | The runtime's in-memory scene with a ground, a sun and a uniform sky that the Model view renders in place of the level, holding copies of the selection's meshes. | [vkr_model_stage.c](../runtime/src/application/vkr_model_stage.c) | [ADR-089](adr/089-editor-workbenches.md) |
 | Host path | Filesystem location represented as UTF-8 at C interfaces and converted to native syntax at I/O. | [ADR-070](adr/070-portable-path-boundaries.md) |
 | Managed reference | Owner-relative serialized path with `/` separators and validated raw segments, resolved with physical containment checks. | [ADR-070](adr/070-portable-path-boundaries.md) |
 | Resource reference | Runtime asset reference with explicit owner-relative or legacy repository-root semantics, separate from a source format URI. | [Asset resolver](../lib/src/filesystem/vkr_asset_path.h) |

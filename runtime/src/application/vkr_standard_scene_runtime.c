@@ -1042,7 +1042,9 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
     vkr_scene_decal_frame_append(
         decals, vkr_standard_scene_runtime_render_scene(application),
         application->globals.view_position);
-    for (uint32_t i = 0; i < application->additive_count; ++i) {
+    /* The model stage shows no level decals. */
+    for (uint32_t i = 0;
+         !application->stage_scene && i < application->additive_count; ++i) {
       vkr_scene_decal_frame_append(decals, application->additive_scenes[i],
                                    application->globals.view_position);
     }
@@ -1499,7 +1501,9 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_prepare_world_text(
   if (world_resources->initialized) {
     vkr_standard_scene_runtime_follow_world_text(application);
   }
-  if (!draw->scene_stopped && world_resources->initialized) {
+  /* World text belongs to the level, which the model stage replaces. */
+  if (!draw->scene_stopped && world_resources->initialized &&
+      !application->stage_scene) {
     VkrPreparedTextDraw *text_draws = NULL;
     uint32_t text_draw_count = 0u;
     if (!vkr_world_resources_prepare_text_draws(
@@ -2796,8 +2800,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     vkr_lighting_system_sync_from_scene(&application->lighting_system,
                                         render_scene);
     /* Additive scenes' light groups follow the rendered scene's sun and
-       time of day (ADR-090). */
-    for (uint32_t i = 0; i < application->additive_count; ++i) {
+       time of day (ADR-090); the model stage lights only itself. */
+    for (uint32_t i = 0;
+         !application->stage_scene && i < application->additive_count; ++i) {
       vkr_scene_update_light_groups(
           application->additive_scenes[i], render_scene->clock.night,
           render_scene->world_state.time_of_day.night_groups);

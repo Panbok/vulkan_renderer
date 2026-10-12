@@ -7,6 +7,7 @@
 #include "renderer/resources/loaders/scene_loader.h"
 #include "vkr_sample_runtime_config.h"
 
+#include "application/vkr_model_stage.h"
 #include "application/vkr_standard_scene_runtime.h"
 #include "core/event.h"
 #include "core/input.h"
@@ -183,6 +184,9 @@ typedef struct State {
   VkrSampleViewState view_state;
   /* The editor's last applied Hide or Isolate (VkrSampleHideRequest). */
   VkrSampleHideRequest hidden;
+  /* The Model view's stage and the editor's last request for it. */
+  VkrModelStage model_stage;
+  VkrSampleModelStageRequest model_stage_request;
   VkrCamera perspective_camera;
   bool8_t perspective_camera_saved;
   /* Reused application-owned event buffer; outside a session, draining
@@ -4123,6 +4127,48 @@ static void sample_stream_sources(VkrStandardSceneRuntime *application) {
   }
 }
 
+static void sample_show_filter_apply(VkrStandardSceneRuntime *application);
+
+/* Opens, updates or closes the Model view's stage from the editor's last
+   request; Play shows the level. A switch starts temporal history and the
+   shadow fits afresh, as a scene switch does, and hides or shows the
+   containers' objects at once. */
+vkr_internal void
+sample_model_stage_update(VkrStandardSceneRuntime *application) {
+  const VkrSampleModelStageRequest *request = &state->model_stage_request;
+  const bool8_t wanted = request->active &&
+                         application->editor_viewport.enabled &&
+                         !application->editor_viewport.simulation_running;
+  VkrScene *before = application->stage_scene;
+  application->stage_scene = NULL;
+  if (!wanted) {
+    vkr_model_stage_close(&state->model_stage, &application->assets);
+  } else {
+    VkrAllocatorScope scope =
+        vkr_allocator_begin_scope(application->frame_allocator);
+    if (vkr_allocator_scope_is_valid(&scope) &&
+        vkr_model_stage_open(&state->model_stage, &application->assets,
+                             application->frame_allocator)) {
+      vkr_model_stage_show(
+          &state->model_stage, &application->assets,
+          sample_entity_container(application, request->subject, NULL),
+          request->subject, request->offset);
+      vkr_scene_handle_update_and_sync(state->model_stage.scene,
+                                       &application->assets, 0.0);
+      application->stage_scene = vkr_model_stage_scene(&state->model_stage);
+    }
+    if (vkr_allocator_scope_is_valid(&scope)) {
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
+    }
+  }
+  if (application->stage_scene != before) {
+    vkr_renderer_invalidate_temporal_history(&application->renderer);
+    vkr_standard_scene_runtime_invalidate_shadow_fit(application);
+    vkr_standard_scene_runtime_invalidate_local_shadows(application);
+    sample_show_filter_apply(application);
+  }
+}
+
 /**
  * @brief Update scene system each frame.
  */
@@ -4153,6 +4199,7 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
                                        &application->assets, 0.0);
     }
   }
+  sample_model_stage_update(application);
   /* During a session the IO router drains sensor events after each tick
      (vkr_io_router.h); otherwise they are discarded here so the queue never
      fills. */
@@ -4166,15 +4213,18 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
              vkr_scene_physics_error(application->active_scene));
   }
 
-  /* The outline follows the selection even where the gizmo cannot edit. */
+  /* The outline follows the selection even where the gizmo cannot edit;
+     on the model stage the selection is in the hidden level. */
+  const bool8_t selection_shown =
+      state->has_selection && !application->stage_scene;
   application->selection_outline_entity =
-      state->has_selection ? state->selected_entity : VKR_ENTITY_ID_INVALID;
+      selection_shown ? state->selected_entity : VKR_ENTITY_ID_INVALID;
   application->selection_outline_scene =
-      state->has_selection
+      selection_shown
           ? sample_entity_container(application, state->selected_entity, NULL)
           : NULL;
   if (application->gizmo_system.initialized) {
-    if (!state->has_selection) {
+    if (!selection_shown) {
       vkr_gizmo_system_clear_target(&application->gizmo_system);
       return;
     }
@@ -4503,7 +4553,10 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
        state->pick_selected_entity.u64 != state->selected_entity.u64))
     vkr_standard_scene_runtime_cancel_gizmo_pick(application);
 
+  /* The model stage's copies are not the level's objects, so nothing on
+     it picks or takes the gizmo. */
   if (vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) ||
+      application->stage_scene ||
       input_is_key_down(state->input_state, KEY_ESCAPE) ||
       vkr_window_is_mouse_captured(&application->host.window) ||
       (application->ui_capture.mouse && !state->gizmo_drag.active &&
@@ -4931,6 +4984,10 @@ static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
                           !application->editor_viewport.simulation_running;
   /* The editor's hidden objects likewise apply only while it edits. */
   const uint32_t hidden_count = volumes ? state->hidden.count : 0u;
+  /* The model stage hides every container's objects: an isolated id no
+     container holds leaves nothing of theirs drawn. */
+  static const VkrEntityId stage_isolate = {.u64 = UINT64_MAX};
+  const bool8_t staged = application->stage_scene != NULL;
   VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX] = {
       application->active_scene,
       vkr_scene_handle_get_scene(state->world_handle)};
@@ -4941,8 +4998,9 @@ static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
     vkr_scene_brush_set_greybox_view(scenes[i], state->view_state.greybox_view);
     vkr_scene_set_editor_hidden_kinds(scenes[i], hidden);
     vkr_scene_set_editor_volumes(scenes[i], volumes);
-    (void)vkr_scene_set_editor_hidden(scenes[i], state->hidden.entities,
-                                      hidden_count, state->hidden.isolate);
+    (void)vkr_scene_set_editor_hidden(
+        scenes[i], staged ? &stage_isolate : state->hidden.entities,
+        staged ? 1u : hidden_count, staged || state->hidden.isolate);
   }
 }
 
@@ -4964,7 +5022,8 @@ static void sample_grid_apply(VkrStandardSceneRuntime *application) {
     plane = VKR_EDITOR_GRID_PLANE_XY;
   }
   VkrEditorGridPayload grid = {
-      .enabled = view->grid_enabled && camera &&
+      /* The model stage has its own ground and no level grid. */
+      .enabled = view->grid_enabled && camera && !application->stage_scene &&
                  (application->active_scene ||
                   vkr_scene_handle_get_scene(state->world_handle)),
       .through_geometry = view->grid_through_geometry,
@@ -5135,6 +5194,7 @@ typedef struct VkrSampleUiRequests {
   bool8_t looks_changed;
   bool8_t custom_materials_reload;
   VkrSampleHideRequest hide_request;
+  VkrSampleModelStageRequest model_stage;
   VkrSamplePhysicsRequest physics_request;
   VkrSampleIoRequest io_request;
   VkrSceneEditRequest scene_edit;
@@ -5223,6 +5283,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .looks_changed = &requests->looks_changed,
       .custom_materials_reload = &requests->custom_materials_reload,
       .hide_request = &requests->hide_request,
+      .model_stage = &requests->model_stage,
+      .model_stage_copies = state->model_stage.copy_count,
       .physics_request = &requests->physics_request,
       .io_request = &requests->io_request,
       .io_result = &state->io_result,
@@ -5541,7 +5603,8 @@ vkr_internal void sample_world_request(VkrStandardSceneRuntime *application,
 vkr_internal void
 sample_time_of_day_apply(VkrStandardSceneRuntime *application,
                          const VkrSampleTimeOfDayRequest *request) {
-  VkrScene *render = vkr_standard_scene_runtime_render_scene(application);
+  /* The hour is the level's; the model stage has its own fixed sun. */
+  VkrScene *render = vkr_standard_scene_runtime_level_scene(application);
   if (request->set_hour && render) {
     (void)vkr_scene_set_time_of_day_hour(render, request->hour);
   }
@@ -6615,6 +6678,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     state->hidden.count =
         Min(state->hidden.count, (uint32_t)VKR_SCENE_EDITOR_HIDDEN_MAX);
   }
+  state->model_stage_request = requests.model_stage;
   sample_show_filter_apply(application);
   if (requests.looks_changed) {
     VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX] = {
@@ -7219,6 +7283,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
   }
 
   sample_warm_hold_release(&application, false_v);
+  application.stage_scene = NULL;
+  vkr_model_stage_close(&state->model_stage, &application.assets);
   vkr_standard_scene_runtime_unload_scene_system(&application);
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
     sample_additive_remove(&application, i);

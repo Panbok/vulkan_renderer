@@ -633,6 +633,30 @@ cleanup:
   return ok;
 }
 
+/* Whether the rule's copies draw: its entity is visible and the editor's
+   Hide and Isolate leave it shown (vkr_scene_editor_shown). */
+static bool8_t population_visible(const VkrScene *scene,
+                                  const PopulationRule *rule) {
+  return vkr_scene_entity_visible(scene, rule->entity) &&
+         vkr_scene_editor_shown(scene, rule->entity);
+}
+
+/* Shows or hides the placed copies where they stand. */
+static void population_show(VkrScene *scene, PopulationRule *rule,
+                            bool8_t visible) {
+  VkrMeshManager *manager = &scene->assets->mesh_manager;
+  rule->visible = visible;
+  for (uint32_t i = 0; i < rule->instance_count; ++i) {
+    const VkrMeshInstance *instance =
+        vkr_mesh_manager_get_instance(manager, rule->instances[i]);
+    if (instance) {
+      vkr_mesh_manager_instance_sync_render_state(manager, rule->instances[i],
+                                                  instance->model,
+                                                  instance->render_id, visible);
+    }
+  }
+}
+
 /* Places the rule's copies anew. */
 static void population_build(VkrScene *scene, PopulationRule *rule,
                              uint64_t signature) {
@@ -640,7 +664,7 @@ static void population_build(VkrScene *scene, PopulationRule *rule,
   VkrScenePopulation *state = scene->population;
   rule->signature = signature;
   rule->status[0] = '\0';
-  rule->visible = vkr_scene_entity_visible(scene, rule->entity);
+  rule->visible = population_visible(scene, rule);
   if (!rule->instances) {
     rule->instances = vkr_allocator_alloc(
         scene->alloc,
@@ -738,6 +762,11 @@ void vkr_scene_population_update(VkrScene *scene) {
     PopulationRule *rule = &state->rules[i];
     const uint64_t signature = population_signature(scene, rule);
     if (signature == rule->signature) {
+      /* Hide and Isolate only change what draws, not where. */
+      const bool8_t visible = population_visible(scene, rule);
+      if (visible != rule->visible) {
+        population_show(scene, rule, visible);
+      }
       continue;
     }
     /* A scatter rests on collision, so it waits for terrain to settle. */

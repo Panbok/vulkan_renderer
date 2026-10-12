@@ -18,9 +18,9 @@ static const ViewInfo s_views[VKR_EDITOR_VIEW_COUNT] = {
     [VKR_EDITOR_VIEW_SCENE] = {"scene", "Scene", VKR_UI_ICON_SCENE,
                                "The scene viewport"},
     [VKR_EDITOR_VIEW_MODEL] = {"model", "Model", VKR_UI_ICON_MESH,
-                               "The selection alone under the scene's "
-                               "light: drag the orbit ring or middle-drag "
-                               "to turn it, scroll to zoom"},
+                               "The selection's meshes alone on a neutral "
+                               "stage: drag the orbit ring or middle-drag "
+                               "to turn them, scroll to zoom"},
     [VKR_EDITOR_VIEW_GRAPH] = {"graph", "Graph", VKR_UI_ICON_GRAPH,
                                "The open material's node graph and "
                                "inspector"},
@@ -211,8 +211,9 @@ static bool8_t model_grow_box(const VkrSampleUiFrame *frame, VkrEntityId entity,
   return true_v;
 }
 
-/* Centres the orbit on the selection's box and backs off until the box
-   fills the Scene's narrower side, as Frame selected does. */
+/* Stands the selection's box on the stage's ground at its origin, centres
+   the orbit on it and backs off until it fills the Scene's narrower side,
+   as Frame selected does. */
 static void model_frame(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   VkrEditorModelView *model = &editor->model;
   VkrBrushGeometry *scratch =
@@ -220,15 +221,14 @@ static void model_frame(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
   Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
-  bool8_t found = model_grow_box(frame, model->subject, scratch, &lo, &hi);
-  for (uint32_t i = 0u; i < editor->selection_extra_count; ++i) {
-    found |=
-        model_grow_box(frame, editor->selection_extra[i], scratch, &lo, &hi);
-  }
+  const bool8_t found =
+      model_grow_box(frame, model->subject, scratch, &lo, &hi);
   if (!found) {
     return;
   }
-  model->pivot = vec3_scale(vec3_add(lo, hi), 0.5f);
+  const Vec3 center = vec3_scale(vec3_add(lo, hi), 0.5f);
+  model->offset = vec3_new(-center.x, -lo.y, -center.z);
+  model->pivot = vec3_new(0.0f, (hi.y - lo.y) * 0.5f, 0.0f);
   const float32_t radius = Max(0.25f, vec3_length(vec3_sub(hi, lo)) * 0.5f);
   const Vec4 panel = frame->mapping.panel_rect_px;
   const float32_t aspect = panel.w > 0.0f ? panel.z / panel.w : 1.0f;
@@ -257,28 +257,28 @@ static void model_enter(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   model->scene_yaw = frame->scene_recall.yaw;
   model->scene_pitch = frame->scene_recall.pitch;
   model->scene_generation = frame->scene_generation;
-  MemCopy(model->hidden, editor->hidden,
-          editor->hidden_count * sizeof(editor->hidden[0]));
-  model->hidden_count = editor->hidden_count;
-  model->hidden_isolate = editor->hidden_isolate;
   model->subject = VKR_ENTITY_ID_INVALID;
-  model->subject_extra = 0u;
   model->orbiting = false_v;
+  /* Until a subject comes, the orbit looks at the stage's origin from a
+     person's height; a selection frames itself in the same build. */
+  model->offset = vec3_zero();
+  model->pivot = vec3_new(0.0f, 0.5f, 0.0f);
+  model->distance = 5.0f;
+  if (!model->framed) {
+    model->yaw = -90.0f;
+    model->pitch = MODEL_PITCH_START;
+  }
+  model_apply(editor, frame);
 }
 
-/* Puts the Scene's Hide set and camera back. A scene opened meanwhile has
-   its own camera, and the objects it hid are gone. */
+/* Puts the Scene camera back; a scene opened meanwhile has its own. The
+   stage closes once the editor stops asking for it. */
 static void model_leave(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   VkrEditorModelView *model = &editor->model;
   model->orbiting = false_v;
   if (frame->scene_generation != model->scene_generation) {
     return;
   }
-  MemCopy(editor->hidden, model->hidden,
-          model->hidden_count * sizeof(editor->hidden[0]));
-  editor->hidden_count = model->hidden_count;
-  editor->hidden_isolate = model->hidden_isolate;
-  editor->hidden_dirty = true_v;
   if (model->camera_saved && frame->editor_state_request) {
     VkrSampleEditorStateRequest *request = frame->editor_state_request;
     request->move_camera = true_v;
@@ -288,8 +288,9 @@ static void model_leave(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   }
 }
 
-/* A new selection becomes the subject: it alone draws and the orbit
-   frames it. An empty selection keeps the last subject. */
+/* A new selection becomes the subject the stage shows, and the orbit
+   frames it; an empty selection keeps the last subject. The stage is asked
+   for every build the view shows. */
 static void model_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   VkrEditorModelView *model = &editor->model;
   if (frame->scene_generation != model->scene_generation) {
@@ -297,12 +298,13 @@ static void model_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     model->camera_saved = false_v;
   }
   const VkrEntityId selected = frame->selected_entity;
-  if (selected.u64 && (selected.u64 != model->subject.u64 ||
-                       editor->selection_extra_count != model->subject_extra)) {
+  if (selected.u64 && selected.u64 != model->subject.u64) {
     model->subject = selected;
-    model->subject_extra = editor->selection_extra_count;
-    vkr_editor_hide_selection(editor, frame, true_v);
     model_frame(editor, frame);
+  }
+  if (frame->model_stage) {
+    *frame->model_stage = (VkrSampleModelStageRequest){
+        .active = true_v, .subject = model->subject, .offset = model->offset};
   }
   if (model->orbiting &&
       (frame->mouse_captured ||
@@ -375,11 +377,15 @@ static void model_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       scene && vkr_scene_entity_alive(scene, model->subject);
   char caption[160];
   if (subject) {
+    /* The stage copies meshes; brushes, shapes and terrain stay in the
+       level. */
     const String8 name = vkr_scene_get_name(scene, model->subject);
-    const uint32_t extra = editor->selection_extra_count;
     snprintf(caption, sizeof(caption), "%.*s%s", (int)Min(name.length, 96u),
              name.length ? (const char *)name.str : "Object",
-             extra ? " and the rest of the selection" : "");
+             frame->model_stage_copies
+                 ? ""
+                 : " has no meshes to show; brushes and terrain show in "
+                   "the Scene");
   } else {
     snprintf(caption, sizeof(caption),
              "Select an object in the Outliner or the Scene to see it alone");

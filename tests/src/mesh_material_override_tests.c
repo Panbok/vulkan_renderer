@@ -414,9 +414,48 @@ static void test_caster_bounds_follow_box(void) {
   override_test_shutdown(&ctx);
 }
 
+/* A clone (the Model view's stage) draws its source's override materials
+   without picking, keeps its own references once the source is gone, and
+   returns them when destroyed. */
+static void test_clone_keeps_overrides(void) {
+  OverrideTestContext ctx;
+  override_test_init(&ctx);
+
+  const VkrMeshInstanceHandle source =
+      override_test_instance(&ctx, vec3_new(0.0f, 0.0f, 0.0f));
+  const VkrMaterialHandle overrides[2] = {{0}, ctx.red};
+  assert(vkr_mesh_manager_instance_set_materials(&ctx.meshes, source, overrides,
+                                                 2u));
+  const uint32_t red_refs = override_test_refs(&ctx, ctx.red);
+
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrMeshInstanceHandle copy = vkr_mesh_manager_instance_clone(
+      &ctx.meshes, source, mat4_translate(vec3_new(0.0f, 2.0f, 0.0f)), &error);
+  assert(copy.id != 0u && error == VKR_RENDERER_ERROR_NONE);
+  const VkrMeshInstance *instance =
+      vkr_mesh_manager_get_instance(&ctx.meshes, copy);
+  assert(instance->render_id == 0u && instance->visible);
+  assert(override_test_refs(&ctx, ctx.red) == red_refs + 1u);
+  assert(override_test_same(override_test_drawn(&ctx, copy, 0u), ctx.stone));
+  assert(override_test_same(override_test_drawn(&ctx, copy, 1u), ctx.red));
+
+  assert(vkr_mesh_manager_destroy_instance(&ctx.meshes, source));
+  assert(override_test_same(override_test_drawn(&ctx, copy, 1u), ctx.red));
+  assert(override_test_refs(&ctx, ctx.red) == red_refs);
+  assert(vkr_mesh_manager_destroy_instance(&ctx.meshes, copy));
+  assert(override_test_refs(&ctx, ctx.red) == red_refs - 1u);
+
+  /* A stale source copies nothing. */
+  const VkrMeshInstanceHandle none = vkr_mesh_manager_instance_clone(
+      &ctx.meshes, source, mat4_identity(), &error);
+  assert(none.id == 0u && error == VKR_RENDERER_ERROR_INVALID_HANDLE);
+  override_test_shutdown(&ctx);
+}
+
 bool32_t run_mesh_material_override_tests(void) {
   printf("--- Starting Mesh Material Override Tests ---\n");
   test_override_is_per_instance();
+  test_clone_keeps_overrides();
   test_override_invalidates_by_mobility();
   test_caster_bounds_follow_box();
   printf("--- Mesh Material Override Tests Completed ---\n");

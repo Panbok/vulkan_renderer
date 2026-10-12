@@ -205,7 +205,8 @@ A successful configure or build does not establish sanitizer runtime coverage.
 The application and editor are independent targets over `vkr_runtime` and the
 optional `vkr_sample_runtime`. The app owns its F6 debug overlay; the editor owns its
 dock composition with task workbenches and the Views panel that switches the
-Scene with the Model, Graph and Script views (ADR-089), startup `--scene-only` mode,
+Scene with the Model, Graph and Script views, the Model view rendering a
+runtime-owned model stage scene in place of the level (ADR-089), startup `--scene-only` mode,
 a transient maximized Scene (ADR-027)
 and windowless `--headless` scripted runs (ADR-075), and an agent channel: a per-user socket of typed
 operations that apply as journal groups with designer review, and the

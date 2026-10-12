@@ -440,6 +440,21 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
     bool8_t visible, VkrRendererError *out_error);
 
 /**
+ * @brief Creates a picking-free, visible instance of `source`'s asset at
+ * `model`, with `source`'s submesh material overrides.
+ *
+ * The copy takes its own asset and material references, so it outlives the
+ * source; it has no lightmap slot and no skinning (a skinned asset shows its
+ * bind pose) and is DYNAMIC. The caller destroys it.
+ * @return VKR_MESH_INSTANCE_HANDLE_INVALID with `out_error` for a stale
+ * source or a failed asset.
+ */
+VkrMeshInstanceHandle
+vkr_mesh_manager_instance_clone(VkrMeshManager *manager,
+                                VkrMeshInstanceHandle source, Mat4 model,
+                                VkrRendererError *out_error);
+
+/**
  * @brief Sets a mesh instance's shadow-caster mobility contract.
  *
  * Declaring STATIC asserts that the transform, visibility, geometry, and

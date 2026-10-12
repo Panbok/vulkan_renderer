@@ -462,8 +462,13 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_material_canvas_build(editor, frame);
   const bool8_t preparing_scene =
       frame->scene_backdrop_blur && *frame->scene_backdrop_blur;
-  vkr_editor_grid_build(editor, frame);
-  if (!preparing_scene) {
+  /* The Model view's stage replaces the level, so the level's grid, icons,
+     shapes and outlines stay off it. */
+  const bool8_t level_shown = editor->view_shown != VKR_EDITOR_VIEW_MODEL;
+  if (level_shown) {
+    vkr_editor_grid_build(editor, frame);
+  }
+  if (!preparing_scene && level_shown) {
     vkr_editor_physics_build(editor, frame);
     vkr_editor_labels_build(editor, frame);
     vkr_editor_session_names_build(editor, frame);
@@ -471,7 +476,9 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_windows_build_navigation(editor, frame);
   vkr_editor_workbench_build_row(editor, frame);
   if (!preparing_scene) {
-    vkr_editor_scene_overlays_build(editor, frame);
+    if (level_shown) {
+      vkr_editor_scene_overlays_build(editor, frame);
+    }
     vkr_editor_orientation_gizmo_build(editor, frame);
     vkr_editor_viewport_build(editor, frame);
   }

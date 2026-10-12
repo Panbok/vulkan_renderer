@@ -439,8 +439,8 @@ typedef enum VkrEditorContextKind {
   VKR_EDITOR_CONTEXT_WORKBENCH,
 } VkrEditorContextKind;
 
-/* The Model view (editor_views.c): the Scene's camera and Hide set it puts
-   aside while it shows, and its orbit about the selection. */
+/* The Model view (editor_views.c): the Scene camera it puts aside while it
+   shows the model stage, and its orbit about the subject. */
 typedef struct VkrEditorModelView {
   /* Restored on leaving while the same scene stays loaded. */
   bool8_t camera_saved;
@@ -448,15 +448,13 @@ typedef struct VkrEditorModelView {
   float32_t scene_yaw;
   float32_t scene_pitch;
   uint64_t scene_generation;
-  VkrEntityId hidden[VKR_SCENE_EDITOR_HIDDEN_MAX];
-  uint32_t hidden_count;
-  bool8_t hidden_isolate;
-  /* The primary selection it isolates; a change isolates and frames the
-     new one. */
+  /* The primary selection the stage shows; a new one is framed. */
   VkrEntityId subject;
-  uint32_t subject_extra;
-  /* The camera looks at `pivot`, the centre of the subject's box, from
-     `distance` metres along yaw and pitch in degrees. */
+  /* Moves the subject from the level onto the stage: its box centred on
+     the origin and standing on the ground (VkrSampleModelStageRequest). */
+  Vec3 offset;
+  /* The camera looks at `pivot`, the centre of the subject's box on the
+     stage, from `distance` metres along yaw and pitch in degrees. */
   Vec3 pivot;
   float32_t yaw;
   float32_t pitch;

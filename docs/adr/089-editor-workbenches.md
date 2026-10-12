@@ -51,8 +51,10 @@ as Blender's local view does, and a graph view in place of the Material panel
 docked under the Scene; to give Scripting a Scene view and a Script editor
 view, with visual scripting to follow; to scroll the Tools panels; and for a
 usability review of the palettes. The owner chose a switcher inside the Views
-panel over plain dock tabs, and Isolate with the Model view's own orbit
-camera under the scene's light over a separate studio stage.
+panel over plain dock tabs. The first Model view isolated the selection in
+the open level under its light; the owner then asked for a default empty
+scene with simple lighting instead, because the level's terrain and baked
+light still surrounded the model.
 
 ## Decision
 
@@ -150,16 +152,44 @@ Script view, the window stays closed and opening it shows the view; other
 workbenches open the floating window. Maximize (G) is unavailable under
 Graph and Script.
 
-The **Model view** puts aside the Scene's camera and Hide set on entry. Each
-new non-empty selection becomes its subject: the primary selection and its
-companions are isolated, and an orbit about the centre of their world box
-frames them at the Scene's lens, keeping the orbit's angles after the first
-subject. An emptied selection keeps the last subject. A drag on the orbit
-ring or a middle drag over the image turns the orbit, the wheel moves in and
-out, and Frame frames the subject again; a caption names it. Leaving the
-view restores the Scene's camera and Hide set unless another scene opened
-meanwhile. Object icons of objects that Hide or Isolate leaves undrawn no
-longer show, in any view.
+The **Model view** shows the **model stage**
+([vkr_model_stage.c](../../runtime/src/application/vkr_model_stage.c)): an
+in-memory scene (container id `0x7FFE`) the runtime loads from a built-in
+document - a uniform grey constant sky, a warm sun with shadows and a 400 m
+grey ground whose top is y = 0 - with no atmosphere, fog, probe, lightmap,
+time of day or World inheritance. The editor asks for it every build the
+view shows (`VkrSampleModelStageRequest`); the runtime closes it once the
+editor stops asking, and Play shows the level. While it shows:
+
+- `vkr_standard_scene_runtime_render_scene` returns the stage, so its sky,
+  sun and IBL light the frame; added scenes' lights and decals and world
+  text are left out.
+- Every loaded container isolates an id none of them holds, so none of the
+  level's meshes, shapes, terrain or scatter copies draws; the level stays
+  loaded and unchanged.
+- The primary selection's mesh instances, and its descendants', are cloned
+  (`vkr_mesh_manager_instance_clone`, at most 1,024) with their material
+  overrides and without picking ids, lightmap slots or skinning, moved so
+  the subject's box stands on the ground centred on the origin. A copy whose
+  source asset or overrides change is copied again, so an Assign shows at
+  once. Brushes, shapes and terrain are generated per scene and are not
+  copied; the caption says so.
+- Picking, the gizmo, the selection outline, the ground grid and the
+  editor's level overlays (icons, physics shapes, brush outlines) rest.
+- A switch to or from the stage starts temporal history and the shadow
+  fits afresh.
+
+Each new non-empty selection becomes the subject and an orbit about the
+centre of its box frames it at the Scene's lens, keeping the orbit's angles
+after the first subject; with none, the orbit looks at the stage's origin.
+An emptied selection keeps the last subject. A drag on the orbit ring or a
+middle drag over the image turns the orbit, the wheel moves in and out, and
+Frame frames the subject again; a caption names it. Leaving the view puts
+the Scene camera back unless another scene opened meanwhile.
+
+Object icons of objects that Hide or Isolate leaves undrawn no longer show,
+and scatter and spline-mesh copies follow Hide and Isolate as their entity
+does, by visibility alone, without placing them again.
 
 Cmd `views` lists, shows (`views graph`) or takes out (`views -model`) a
 view of the active workbench, and `ui.view` reads the shown view.
@@ -388,7 +418,10 @@ level, or the code and the level, no longer show side by side in the built-in
 Art and Scripting layouts; a switch back to the Scene costs one click and
 resizes the Scene image as a tab switch does. While they show, the GPU
 renders no Scene. The Model view moves the one Scene camera, so a capture
-taken in it frames the subject, and leaving it puts the camera back.
+taken in it frames the subject, and leaving it puts the camera back. The
+stage holds its constant sky's cubemaps and one asset and material reference
+per copy while it shows; each switch re-renders retained static shadows once,
+as Hide and Isolate already do.
 Layouts saved with `script` or `material` tabs fall back to their built-in
 trees once.
 
@@ -409,9 +442,14 @@ tabs; shared geometry keeps each window in one place. A Tools palette for
 Terrain would build the terrain body a second time; the Terrain panel hosts
 the body itself. Plain dock tabs for Model, Graph and Script would have let
 them dock anywhere, but Model and the Scene share one image and could then
-show at once; the owner chose the switcher. A neutral studio stage for the
-Model view would swap and restore the environment on every switch; Isolate
-under the scene's light reuses existing state.
+show at once; the owner chose the switcher. Isolating the selection in the
+level kept the level's sky, fog and terrain and the subject's baked
+lightmap and probe light, so a model looked as it does in place, under
+terrain when terrain is above it; the owner rejected it. Overriding the
+level's lighting in every frame builder would scatter conditions through
+the frame and still leave the lightmap slot; a stage scene uses the existing
+render-scene choice. The animation preview's 512-pixel unlit pass draws no
+materials.
 
 ## Revisit when
 
@@ -509,11 +547,17 @@ Release editor, macOS/Metal (M1), headless 1680 x 1050 with isolated
   2509 across 20 s of the Script view, and rose by 1150 in 10 s of the Model
   view. `layout.maximize` is refused under Graph.
 - `window script` in General opens the floating window with the Scene shown.
-- Captures show the "Views" tab with the Scene, Model and Graph switcher;
-  the Graph view's header in place of the Scene; the Model view with
-  `paris_bistroawning_5` alone, framed, captioned and without other objects'
-  icons; a `ui.drag` on the orbit ring turning it about its centre; and
-  `views scene` returning the earlier camera with every object drawn.
+- Captures show the "Views" tab with the Scene, Model and Graph switcher and
+  the Graph view's header in place of the Scene. The Model view shows the
+  grey stage alone before a selection, then `paris_bistroawning_5` and
+  `paris_ceilingfan_01a_blades8` alone on the stage ground with their
+  materials, the sun's shading and no level sky, terrain, icons or outline;
+  a `ui.drag` on the orbit ring turns the awning about its centre; and
+  `views scene` returns the earlier camera with the level and the selection
+  outline drawn.
+- CPU: `vulkan_renderer_tester --suite mesh_material_override` passes,
+  including the clone's materials, missing picking id and references.
+  Scatter copies following Hide ran on no scene: Bistro has no scatter.
 - Level Design: the Stairs section appears only with `brush.stairs_tool on`
   and Select stays unlit then; a click on DRAW AND CREATE folds it; a
   `ui.drag` on the Tools scrollbar scrolls the palette to CHECK.
