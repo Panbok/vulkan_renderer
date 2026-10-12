@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-28
+updated: 2026-10-12
 authority: adr
 ---
 # ADR-070: Portable path boundaries
@@ -48,7 +48,12 @@ the application returns and uses CRT allocation before project allocators exist.
 `file_fopen` supplies UTF-8/extended-path access to stdio consumers and closes via
 ordinary `fclose`. Cgltf file callbacks and KTX stdio bridges reuse this boundary;
 vendor implementations are not patched. Process working-directory and redirected
-log paths use the filesystem's native conversion too.
+log paths use the filesystem's native conversion too. A path in an environment
+variable crosses the same boundary: `vkr_platform_environment_variable` reads
+the wide Windows environment as UTF-8, since `getenv` returns the active code
+page, and the process launcher widens the variables it sets for a child. The
+Bakery reads `VKR_BAKERY_CACHE`, its tools' usage-report path and its compiler
+paths this way.
 
 Windows process working directories have a separate `CreateProcessW` length
 limit. For a deep directory the launcher uses its existing short-name spelling
