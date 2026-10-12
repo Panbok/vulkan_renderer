@@ -321,7 +321,8 @@ vkr_internal bool8_t vkr_bakery_flush_file(FILE *file) {
 }
 
 static bool8_t bakery_write_replacing(const char *path, const void *data,
-                                      uint64_t length, bool8_t flush) {
+                                      uint64_t length, bool8_t flush,
+                                      bool8_t owner_only) {
   char directory[VKR_BAKERY_PATH_CAPACITY];
   char temporary[VKR_BAKERY_PATH_CAPACITY];
   vkr_bakery_path_parent(directory, sizeof(directory), path);
@@ -335,6 +336,16 @@ static bool8_t bakery_write_replacing(const char *path, const void *data,
   if (!file) {
     return false_v;
   }
+#if !defined(_WIN32)
+  /* Before any byte lands: a secret is never readable by others. */
+  if (owner_only && fchmod(fileno(file), S_IRUSR | S_IWUSR) != 0) {
+    (void)fclose(file);
+    (void)vkr_bakery_remove_file(temporary);
+    return false_v;
+  }
+#else
+  (void)owner_only;
+#endif
   bool8_t ok = (length == 0u ||
                 fwrite(data, 1u, (size_t)length, file) == (size_t)length) &&
                (!flush || vkr_bakery_flush_file(file));
@@ -356,12 +367,17 @@ static bool8_t bakery_write_replacing(const char *path, const void *data,
 
 bool8_t vkr_bakery_write_file_atomic(const char *path, const void *data,
                                      uint64_t length) {
-  return bakery_write_replacing(path, data, length, true_v);
+  return bakery_write_replacing(path, data, length, true_v, false_v);
+}
+
+bool8_t vkr_bakery_write_private_file_atomic(const char *path, const void *data,
+                                             uint64_t length) {
+  return bakery_write_replacing(path, data, length, true_v, true_v);
 }
 
 bool8_t vkr_bakery_replace_file(const char *path, const void *data,
                                 uint64_t length) {
-  return bakery_write_replacing(path, data, length, false_v);
+  return bakery_write_replacing(path, data, length, false_v, false_v);
 }
 
 bool8_t vkr_bakery_append_file(const char *path, const void *data,

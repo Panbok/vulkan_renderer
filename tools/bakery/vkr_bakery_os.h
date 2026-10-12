@@ -38,6 +38,11 @@ bool8_t vkr_bakery_read_file(const char *path, uint64_t max_bytes,
 /** Writes a sibling temporary, flushes it, then replaces `path`. */
 bool8_t vkr_bakery_write_file_atomic(const char *path, const void *data,
                                      uint64_t length);
+/** As vkr_bakery_write_file_atomic for a secret such as a key: on POSIX the
+    file is readable and writable by its owner only (0600). On Windows it
+    takes the folder's permissions; `%LOCALAPPDATA%` is the user's own. */
+bool8_t vkr_bakery_write_private_file_atomic(const char *path, const void *data,
+                                             uint64_t length);
 /** Writes a sibling temporary and replaces `path` without flushing the
     file or the rename: a crash may leave `path` empty, torn or missing, so
     a caller checks what it reads. On a hard disk this saves seeks per file. */
