@@ -4,6 +4,8 @@
 #include "core/vkr_threads.h"
 #include "platform/vkr_platform.h"
 
+#include <time.h>
+
 /* Datagrams moved per system-call batch. */
 #define NET_HOST_BATCH 32u
 /* Datagrams one pump receives before it runs timers and sends. */
@@ -57,7 +59,19 @@ VkrNetHost *vkr_net_host_create(VkrAllocator *allocator,
                                  VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
   host->tx = vkr_allocator_alloc(allocator, buffer_size,
                                  VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-  host->core = vkr_net_core_create(allocator, &config->core);
+  /* Handshake timestamps run on Unix time, so a restarted client's stamps
+     stay newer than the ones a server remembers from its last run. */
+  VkrNetCoreConfig core_config = config->core;
+  struct timespec unix_time = {0};
+  if (core_config.clock_to_unix_us == 0u &&
+      timespec_get(&unix_time, TIME_UTC) == TIME_UTC) {
+    const uint64_t unix_us = (uint64_t)unix_time.tv_sec * 1000000u +
+                             (uint64_t)unix_time.tv_nsec / 1000u;
+    const uint64_t now = vkr_net_host_now(host);
+    core_config.clock_to_unix_us = unix_us > now ? unix_us - now : 0u;
+  }
+  host->core = vkr_net_core_create(allocator, &core_config);
+  vkr_net_random(&core_config.static_keys, sizeof(core_config.static_keys));
   if (!host->rx || !host->tx || !host->core ||
       !vkr_udp_socket_open(&config->bind, &config->socket, &host->socket) ||
       !vkr_udp_socket_local_address(host->socket, &host->local)) {

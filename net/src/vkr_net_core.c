@@ -33,6 +33,11 @@
 #define NET_SHORT_PN_OFFSET (1u + NET_CID_SIZE)
 #define NET_HP_SAMPLE_OFFSET (NET_SHORT_PN_OFFSET + 4u)
 #define NET_SHORT_PACKET_MIN (NET_HP_SAMPLE_OFFSET + VKR_NET_HP_SAMPLE_SIZE)
+/* The first handshake message's payload starts with the client's 64-bit
+   little-endian timestamp in Unix microseconds, then the credential. */
+#define NET_STAMP_SIZE 8u
+/* Static keys whose latest handshake timestamp a server remembers. */
+#define NET_STAMP_CAPACITY 1024u
 /* flags, version, destination and source connection IDs. */
 #define NET_LONG_HEADER_SIZE (1u + 4u + NET_CID_SIZE + NET_CID_SIZE)
 
@@ -217,6 +222,8 @@ typedef struct NetChannel {
   NetReassembly *reassembly;
   uint32_t reassembly_mask;
   uint32_t reassembly_count;
+  /* Bytes the live entries hold, counted in the core's total too. */
+  uint64_t reassembly_bytes;
 } NetChannel;
 
 typedef struct NetSentPacket {
@@ -256,6 +263,14 @@ typedef struct NetConnection {
   bool8_t is_client;
   bool8_t validated;
   bool8_t closed_reported;
+  /* A message passed the core's reassembly cap; the violation it causes
+     closes with VKR_NET_CLOSE_RESOURCES. */
+  bool8_t reassembly_refused;
+  /* The application saw CONNECTED; a server connection that never proved
+     its keys reports nothing. */
+  bool8_t connected_reported;
+  /* Counted in the core's half-open handshakes. */
+  bool8_t half_open;
   bool8_t in_ready;
   bool8_t in_dirty;
   bool8_t has_keys;
@@ -346,10 +361,18 @@ typedef struct NetConnection {
   uint8_t probe_failures;
   uint64_t probe_next_time;
 
-  /* Path validation. */
+  /* Path validation. A newest packet from another address makes it the
+     candidate; the connection moves there only once a PATH_RESPONSE from
+     it answers the challenge the candidate was sent. */
   uint8_t challenge[8];
   bool8_t challenge_pending;
   bool8_t challenge_waiting;
+  bool8_t has_candidate;
+  /* The packet being built carries the challenge: send it to the
+     candidate. */
+  bool8_t to_candidate;
+  VkrNetAddress candidate;
+  uint64_t challenge_sent;
   uint8_t response[8];
   bool8_t response_pending;
 
@@ -396,6 +419,11 @@ typedef struct NetEventEntry {
   bool8_t counts;
 } NetEventEntry;
 
+typedef struct NetStamp {
+  uint8_t key[VKR_NET_KEY_SIZE];
+  uint64_t stamp;
+} NetStamp;
+
 struct VkrNetCore {
   VkrAllocator *allocator;
   VkrNetCoreConfig config;
@@ -434,6 +462,16 @@ struct VkrNetCore {
 
   uint8_t cookie_secret[VKR_NET_KEY_SIZE];
   uint8_t scratch[VKR_NET_CREDENTIAL_MAX + 64u];
+
+  /* Client: the last handshake timestamp sent. Server: the latest one
+     accepted per static key, and the newest stamp evicted from the full
+     table, which an unknown key must exceed. */
+  uint64_t handshake_stamp;
+  /* Bytes of partly received messages over every connection. */
+  uint64_t reassembly_bytes;
+  NetStamp *stamps;
+  uint32_t stamp_count;
+  uint64_t stamp_floor;
 };
 
 // =============================================================================
@@ -604,6 +642,11 @@ static void net_report_closed(VkrNetCore *core, NetConnection *conn,
     return;
   }
   conn->closed_reported = true_v;
+  /* The application never learned of a server connection that did not
+     prove its keys. */
+  if (!conn->is_client && !conn->connected_reported) {
+    return;
+  }
   NetEventEntry *entry = net_event_push(core);
   if (entry) {
     entry->event.type = VKR_NET_EVENT_CLOSED;
@@ -614,6 +657,7 @@ static void net_report_closed(VkrNetCore *core, NetConnection *conn,
 
 static void net_report_connected(VkrNetCore *core, NetConnection *conn,
                                  const uint8_t *payload, uint32_t size) {
+  conn->connected_reported = true_v;
   NetEventEntry *entry = net_event_push(core);
   if (!entry) {
     return;
@@ -840,10 +884,17 @@ static void net_handshake_release(VkrNetCore *core, NetConnection *conn) {
   }
 }
 
-static void net_connection_free(VkrNetCore *core, NetConnection *conn) {
-  if (conn->state == NET_STATE_SERVER_HANDSHAKE && core->half_open > 0u) {
-    core->half_open -= 1u;
+/* The connection stops counting as a half-open handshake: it proved its
+   keys, closed or was freed. */
+static void net_half_open_end(VkrNetCore *core, NetConnection *conn) {
+  if (conn->half_open) {
+    conn->half_open = false_v;
+    core->half_open -= Min(core->half_open, 1u);
   }
+}
+
+static void net_connection_free(VkrNetCore *core, NetConnection *conn) {
+  net_half_open_end(core, conn);
   net_handshake_release(core, conn);
   for (uint32_t i = 0u; i < VKR_NET_CHANNEL_MAX; ++i) {
     if (conn->channels[i]) {
@@ -883,6 +934,7 @@ static void net_close_local(VkrNetCore *core, NetConnection *conn,
     net_connection_drop(core, conn, code);
     return;
   }
+  net_half_open_end(core, conn);
   conn->state = NET_STATE_CLOSING;
   conn->close_code = code;
   conn->close_pending = true_v;
@@ -958,6 +1010,9 @@ static void net_reassembly_release(VkrNetCore *core, NetChannel *channel,
   if (!delivered) {
     channel->rx_buffered -= Min(channel->rx_buffered, (uint64_t)entry->size);
   }
+  channel->reassembly_bytes -=
+      Min(channel->reassembly_bytes, (uint64_t)entry->size);
+  core->reassembly_bytes -= Min(core->reassembly_bytes, (uint64_t)entry->size);
   MemZero(entry, sizeof(*entry));
   channel->reassembly_count -= 1u;
 }
@@ -1034,6 +1089,20 @@ static bool8_t net_open_channel(VkrNetCore *core, NetConnection *conn,
   }
   VkrNetChannelConfig normalized = *config;
   if (!net_channel_normalize(&normalized)) {
+    return false_v;
+  }
+  /* Each channel holds at most its window plus one message in reassembly;
+     together they must fit the connection's cap. */
+  uint64_t bound =
+      (uint64_t)normalized.receive_window + normalized.max_message_size;
+  for (uint32_t i = 0u; i < VKR_NET_CHANNEL_MAX; ++i) {
+    const NetChannel *open = conn->channels[i];
+    if (open) {
+      bound +=
+          (uint64_t)open->config.receive_window + open->config.max_message_size;
+    }
+  }
+  if (bound > core->config.max_reassembly_bytes) {
     return false_v;
   }
   conn->channels[index] = net_channel_create(core, &normalized);
@@ -1966,7 +2035,9 @@ static uint32_t net_pn_length(const NetConnection *conn) {
 static uint32_t net_build_packet(VkrNetCore *core, NetConnection *conn,
                                  uint64_t now, uint8_t *buffer,
                                  uint32_t capacity) {
-  if (!conn->has_keys || conn->state == NET_STATE_DRAINING) {
+  /* A server connection gets its packet tables once the client proves its
+     keys; until then only the handshake reply goes out. */
+  if (!conn->has_keys || !conn->sent || conn->state == NET_STATE_DRAINING) {
     return 0u;
   }
   if (conn->next_pn - conn->sent_tail > conn->sent_mask) {
@@ -2105,6 +2176,8 @@ static uint32_t net_build_packet(VkrNetCore *core, NetConnection *conn,
       builder.ack_eliciting = true_v;
       conn->challenge_pending = false_v;
       conn->challenge_waiting = true_v;
+      conn->challenge_sent = now;
+      conn->to_candidate = conn->has_candidate;
     }
     for (uint32_t i = 0u; i < VKR_NET_CHANNEL_MAX; ++i) {
       NetChannel *channel = conn->channels[i];
@@ -2306,6 +2379,47 @@ static uint32_t net_write_handshake(VkrNetCore *core, VkrNetNoise *noise,
   return (uint32_t)(cursor - out);
 }
 
+/* True, recording `stamp`, when it is newer than the last stamp accepted
+   for `key`. A key the full table evicted falls back to the newest stamp
+   evicted so far, so an old message of an evicted key stays refused. */
+static bool8_t net_stamp_accept(VkrNetCore *core,
+                                const uint8_t key[VKR_NET_KEY_SIZE],
+                                uint64_t stamp) {
+  if (!core->stamps) {
+    return false_v;
+  }
+  uint32_t oldest = 0u;
+  for (uint32_t i = 0u; i < core->stamp_count; ++i) {
+    NetStamp *entry = &core->stamps[i];
+    if (MemCompare(entry->key, key, VKR_NET_KEY_SIZE) == 0) {
+      if (stamp <= entry->stamp) {
+        return false_v;
+      }
+      entry->stamp = stamp;
+      return true_v;
+    }
+    if (entry->stamp < core->stamps[oldest].stamp) {
+      oldest = i;
+    }
+  }
+  if (stamp <= core->stamp_floor) {
+    return false_v;
+  }
+  uint32_t slot = core->stamp_count;
+  if (slot == NET_STAMP_CAPACITY) {
+    core->stamp_floor = Max(core->stamp_floor, core->stamps[oldest].stamp);
+    if (stamp <= core->stamp_floor) {
+      return false_v;
+    }
+    slot = oldest;
+  } else {
+    core->stamp_count += 1u;
+  }
+  MemCopy(core->stamps[slot].key, key, VKR_NET_KEY_SIZE);
+  core->stamps[slot].stamp = stamp;
+  return true_v;
+}
+
 static NetConnection *net_find_handshake(VkrNetCore *core,
                                          const VkrNetAddress *address,
                                          uint32_t client_cid) {
@@ -2378,29 +2492,35 @@ static void net_receive_initial(VkrNetCore *core, const VkrNetAddress *from,
   VkrNetNoise noise;
   vkr_net_noise_init(&noise, false_v, net_prologue, sizeof(net_prologue) - 1u,
                      &core->config.static_keys, NULL);
-  uint32_t credential_size = 0u;
+  uint32_t payload_size = 0u;
   if (!vkr_net_noise_read_message1(&noise, message, (uint32_t)message_size,
                                    core->scratch, sizeof(core->scratch),
-                                   &credential_size)) {
+                                   &payload_size) ||
+      payload_size < NET_STAMP_SIZE) {
     vkr_net_noise_wipe(&noise);
     return;
   }
+  /* A replayed first message, even with a fresh connection ID or from
+     another address, carries a stamp the server already accepted. */
+  if (!net_stamp_accept(core, noise.rs, vkr_load_le_u64(core->scratch))) {
+    vkr_net_noise_wipe(&noise);
+    return;
+  }
+  const uint8_t *credential = core->scratch + NET_STAMP_SIZE;
+  const uint32_t credential_size = payload_size - NET_STAMP_SIZE;
 
   VkrNetAcceptResult result = {0};
   if (core->config.accept) {
-    core->config.accept(core->config.accept_context, from, noise.rs,
-                        core->scratch, credential_size, &result);
+    core->config.accept(core->config.accept_context, from, noise.rs, credential,
+                        credential_size, &result);
   }
+  /* The packet tables and the session channel wait for the client's
+     proof of the keys (net_receive_short). */
   NetConnection *conn = NULL;
   if (result.code == 0u) {
     conn = net_connection_alloc(core);
     if (!conn) {
       result.code = VKR_NET_CLOSE_SERVER_FULL;
-    } else if (!net_connection_alloc_rings(core, conn) ||
-               !net_open_session_channel(core, conn)) {
-      net_connection_free(core, conn);
-      conn = NULL;
-      result.code = VKR_NET_CLOSE_INTERNAL;
     }
   }
 
@@ -2448,8 +2568,8 @@ static void net_receive_initial(VkrNetCore *core, const VkrNetAddress *from,
       core->config.max_datagram > conn->mtu
           ? Min(core->config.max_datagram, VKR_NET_DATAGRAM_ETHERNET)
           : 0u;
+  conn->half_open = true_v;
   core->half_open += 1u;
-  net_report_connected(core, conn, NULL, 0u);
   net_mark_ready(core, conn);
   net_schedule(core, conn);
 }
@@ -2550,6 +2670,9 @@ static void net_receive_retry(VkrNetCore *core, const VkrNetAddress *from,
 
 typedef struct NetFrameResult {
   bool8_t ack_eliciting;
+  bool8_t acked;
+  /* A PATH_RESPONSE answered the outstanding challenge. */
+  bool8_t path_validated;
   bool8_t violation;
   uint16_t close_code;
 } NetFrameResult;
@@ -2735,6 +2858,27 @@ static bool8_t net_reassembly_reserve(VkrNetCore *core, NetChannel *channel,
   return false_v;
 }
 
+/* False when a new message of `size` bytes would pass the connection's or
+   the core's reassembly cap. The channel checks already bound one
+   channel; these bound the sum over channels and connections. */
+static bool8_t net_reassembly_fits(VkrNetCore *core, NetConnection *conn,
+                                   uint64_t size) {
+  uint64_t held = 0u;
+  for (uint32_t i = 0u; i < VKR_NET_CHANNEL_MAX; ++i) {
+    if (conn->channels[i]) {
+      held += conn->channels[i]->reassembly_bytes;
+    }
+  }
+  if (held + size > core->config.max_reassembly_bytes) {
+    return false_v;
+  }
+  if (core->reassembly_bytes + size > core->config.max_reassembly_total) {
+    conn->reassembly_refused = true_v;
+    return false_v;
+  }
+  return true_v;
+}
+
 static NetReassembly *net_reassembly_add(VkrNetCore *core, NetChannel *channel,
                                          uint64_t seq, uint32_t size,
                                          uint32_t fragment_size,
@@ -2766,6 +2910,8 @@ static NetReassembly *net_reassembly_add(VkrNetCore *core, NetChannel *channel,
   entry->live = true_v;
   channel->reassembly_count += 1u;
   channel->rx_buffered += size;
+  channel->reassembly_bytes += size;
+  core->reassembly_bytes += size;
   return entry;
 }
 
@@ -2902,8 +3048,9 @@ static bool8_t net_process_message(VkrNetCore *core, NetConnection *conn,
       return true_v;
     }
     if (channel->rx_buffered + length >
-        (uint64_t)channel->config.receive_window +
-            channel->config.max_message_size) {
+            (uint64_t)channel->config.receive_window +
+                channel->config.max_message_size ||
+        !net_reassembly_fits(core, conn, length)) {
       return false_v;
     }
     NetReassembly *entry =
@@ -2935,8 +3082,9 @@ static bool8_t net_process_message(VkrNetCore *core, NetConnection *conn,
   NetReassembly *entry = net_reassembly_find(channel, seq);
   if (!entry) {
     if (channel->rx_buffered + total >
-        (uint64_t)channel->config.receive_window +
-            channel->config.max_message_size) {
+            (uint64_t)channel->config.receive_window +
+                channel->config.max_message_size ||
+        !net_reassembly_fits(core, conn, total)) {
       return false_v;
     }
     entry = net_reassembly_add(core, channel, seq, (uint32_t)total,
@@ -3042,10 +3190,14 @@ static void net_process_frames(VkrNetCore *core, NetConnection *conn,
       result->ack_eliciting = true_v;
       break;
     case FRAME_ACK:
-      if (!net_process_ack(core, conn, &cursor, end, now)) {
+      /* One ACK frame per packet, as this side sends: each may walk the
+         whole sent-packet window, so many in one packet would cost
+         millions of steps. */
+      if (result->acked || !net_process_ack(core, conn, &cursor, end, now)) {
         result->violation = true_v;
         return;
       }
+      result->acked = true_v;
       break;
     case FRAME_WINDOW: {
       if (cursor >= end) {
@@ -3108,7 +3260,7 @@ static void net_process_frames(VkrNetCore *core, NetConnection *conn,
       if (conn->challenge_waiting &&
           vkr_net_equal_secret(cursor, conn->challenge, 8u)) {
         conn->challenge_waiting = false_v;
-        conn->validated = true_v;
+        result->path_validated = true_v;
       }
       cursor += 8u;
       result->ack_eliciting = true_v;
@@ -3189,27 +3341,42 @@ static void net_receive_short(VkrNetCore *core, const VkrNetAddress *from,
 
   if (conn->state == NET_STATE_SERVER_HANDSHAKE) {
     /* Only the client holds these keys: the handshake is confirmed and
-       the client's address is proven. */
+       the client's address is proven. Only now does the connection get
+       its packet tables and session channel, and the application hear
+       of it, so first messages that never complete cost a slot and no
+       more. */
+    net_half_open_end(core, conn);
+    net_handshake_release(core, conn);
+    if (!net_connection_alloc_rings(core, conn) ||
+        !net_open_session_channel(core, conn)) {
+      net_connection_drop(core, conn, VKR_NET_CLOSE_INTERNAL);
+      return;
+    }
     conn->state = NET_STATE_ESTABLISHED;
     conn->validated = true_v;
     conn->probe_next_time = now;
-    if (core->half_open > 0u) {
-      core->half_open -= 1u;
-    }
-    net_handshake_release(core, conn);
+    net_report_connected(core, conn, NULL, 0u);
   }
 
   if (!vkr_net_address_equal(&conn->peer, from)) {
     if (!newest) {
       return;
     }
-    /* A NAT rebinding or a migration: validate the new path. */
-    conn->peer = *from;
-    conn->validated = false_v;
-    conn->amp_received = 0u;
-    conn->amp_sent = 0u;
-    vkr_net_random(conn->challenge, sizeof(conn->challenge));
-    conn->challenge_pending = true_v;
+    /* A NAT rebinding, a migration or a copy an attacker sent first: the
+       connection keeps its path until the new address answers a
+       challenge, sent again at most once per probe timeout. */
+    const bool8_t same_candidate =
+        conn->has_candidate && vkr_net_address_equal(&conn->candidate, from);
+    const bool8_t challenge_due = !conn->challenge_pending &&
+                                  (!conn->challenge_waiting ||
+                                   now - conn->challenge_sent >= net_pto(conn));
+    if (!same_candidate || challenge_due) {
+      conn->candidate = *from;
+      conn->has_candidate = true_v;
+      vkr_net_random(conn->challenge, sizeof(conn->challenge));
+      conn->challenge_pending = true_v;
+      conn->challenge_waiting = false_v;
+    }
   }
   conn->amp_received += size;
 
@@ -3222,8 +3389,16 @@ static void net_receive_short(VkrNetCore *core, const VkrNetAddress *from,
 
   NetFrameResult result = {0};
   net_process_frames(core, conn, payload, payload + payload_size, now, &result);
+  if (result.path_validated && conn->has_candidate &&
+      vkr_net_address_equal(&conn->candidate, from)) {
+    conn->peer = conn->candidate;
+    conn->has_candidate = false_v;
+  }
   if (result.violation) {
-    net_close_local(core, conn, VKR_NET_CLOSE_PROTOCOL_VIOLATION, now);
+    net_close_local(core, conn,
+                    conn->reassembly_refused ? VKR_NET_CLOSE_RESOURCES
+                                             : VKR_NET_CLOSE_PROTOCOL_VIOLATION,
+                    now);
     return;
   }
   if (result.close_code) {
@@ -3295,8 +3470,14 @@ VkrNetCore *vkr_net_core_create(VkrAllocator *allocator,
                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
     return NULL;
   }
+  if (c->max_reassembly_bytes == 0u) {
+    c->max_reassembly_bytes = 256ull << 20;
+  }
+  if (c->max_reassembly_total == 0u) {
+    c->max_reassembly_total = 1ull << 30;
+  }
   if (c->retry_threshold == 0u) {
-    c->retry_threshold = 256u;
+    c->retry_threshold = Max(c->max_connections / 8u, 4u);
   }
 
   core->slot_count = c->max_connections + 1u;
@@ -3319,6 +3500,14 @@ VkrNetCore *vkr_net_core_create(VkrAllocator *allocator,
   /* Free slots pop from the end, so slot 1 is used first. */
   for (uint32_t slot = core->slot_count - 1u; slot >= 1u; --slot) {
     core->free_slots[core->free_count++] = slot;
+  }
+  if (c->accept_incoming) {
+    core->stamps =
+        net_alloc_zero(core, (uint64_t)NET_STAMP_CAPACITY * sizeof(NetStamp));
+    if (!core->stamps) {
+      vkr_net_core_destroy(core);
+      return NULL;
+    }
   }
   vkr_net_random(core->cookie_secret, sizeof(core->cookie_secret));
   return core;
@@ -3354,8 +3543,11 @@ void vkr_net_core_destroy(VkrNetCore *core) {
   net_free(core, core->free_slots,
            (uint64_t)core->slot_count * sizeof(uint32_t));
   net_free(core, core->slots, (uint64_t)core->slot_count * sizeof(void *));
+  net_free(core, core->stamps, (uint64_t)NET_STAMP_CAPACITY * sizeof(NetStamp));
   pool_destroy(&core->pool);
   vkr_net_random(core->cookie_secret, sizeof(core->cookie_secret));
+  /* The static secret key, copied from the configuration at create. */
+  vkr_net_random(&core->config.static_keys, sizeof(core->config.static_keys));
   VkrAllocator *allocator = core->allocator;
   vkr_allocator_free(allocator, core, sizeof(VkrNetCore),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
@@ -3377,8 +3569,9 @@ bool8_t vkr_net_core_connect(VkrNetCore *core, const VkrNetAddress *address,
     return false_v;
   }
   conn->noise = net_alloc_zero(core, sizeof(VkrNetNoise));
+  const uint32_t payload_size = NET_STAMP_SIZE + credential_size;
   const uint32_t message_capacity =
-      VKR_NET_NOISE_MESSAGE1_OVERHEAD + credential_size;
+      VKR_NET_NOISE_MESSAGE1_OVERHEAD + payload_size;
   conn->hs_bytes = pool_alloc(&core->pool, message_capacity);
   if (!conn->noise || !conn->hs_bytes) {
     net_connection_free(core, conn);
@@ -3387,9 +3580,18 @@ bool8_t vkr_net_core_connect(VkrNetCore *core, const VkrNetAddress *address,
   vkr_net_noise_init(conn->noise, true_v, net_prologue,
                      sizeof(net_prologue) - 1u, &core->config.static_keys,
                      server_key);
-  conn->hs_size = vkr_net_noise_write_message1(conn->noise, NULL, credential,
-                                               credential_size, conn->hs_bytes,
-                                               message_capacity);
+  /* Each first message carries a newer stamp than the last. */
+  core->handshake_stamp =
+      Max(core->handshake_stamp + 1u, now_us + core->config.clock_to_unix_us);
+  uint8_t *payload = core->scratch;
+  vkr_store_le_u64(payload, core->handshake_stamp);
+  if (credential_size > 0u) {
+    MemCopy(payload + NET_STAMP_SIZE, credential, credential_size);
+  }
+  conn->hs_size =
+      vkr_net_noise_write_message1(conn->noise, NULL, payload, payload_size,
+                                   conn->hs_bytes, message_capacity);
+  MemZero(payload, payload_size);
   if (conn->hs_size == 0u) {
     net_connection_free(core, conn);
     return false_v;
@@ -3567,7 +3769,8 @@ uint32_t vkr_net_core_transmit(VkrNetCore *core, uint64_t now_us,
 
     size = net_build_packet(core, conn, now_us, buffer, capacity);
     if (size > 0u) {
-      *out_address = conn->peer;
+      *out_address = conn->to_candidate ? conn->candidate : conn->peer;
+      conn->to_candidate = false_v;
       /* Round robin: the connection may have more to send. */
       net_mark_ready(core, conn);
       net_schedule(core, conn);

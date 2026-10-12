@@ -63,6 +63,8 @@ typedef struct FuzzCore {
   uint32_t connection_count;
   uint8_t cookie[VKR_NET_COOKIE_SIZE];
   bool8_t has_cookie;
+  /* The last handshake timestamp a forged first message carried. */
+  uint64_t stamp;
   /* ESTABLISHED: the next packet number the injected sender uses and the
      largest message each server channel accepts now. */
   uint64_t next_pn;
@@ -225,15 +227,26 @@ static void fuzz_core_forge_initial(FuzzCore *fuzz, uint8_t op,
   uint32_t credential_size = 0u;
   const uint8_t *credential =
       fuzz_bytes(&input, VKR_NET_CREDENTIAL_MAX, &credential_size);
+  /* The payload is the timestamp, then the credential. Bit 0x20 repeats
+     the last stamp, as a replay would. */
+  uint8_t payload[NET_STAMP_SIZE + VKR_NET_CREDENTIAL_MAX];
+  if (!(op & 0x20u) || fuzz->stamp == 0u) {
+    fuzz->stamp += 1u;
+  }
+  vkr_store_le_u64(payload, fuzz->stamp);
+  if (credential_size > 0u) {
+    MemCopy(payload + NET_STAMP_SIZE, credential, credential_size);
+  }
 
   const VkrNetKeyPair *keys =
       (op & 0x10u) ? &fuzz_core_extra_client : &fuzz->pair.client_keys;
   VkrNetNoise noise;
   vkr_net_noise_init(&noise, true_v, net_prologue, sizeof(net_prologue) - 1u,
                      keys, fuzz->pair.server_keys.public_key);
-  uint8_t message[VKR_NET_NOISE_MESSAGE1_OVERHEAD + VKR_NET_CREDENTIAL_MAX];
+  uint8_t message[VKR_NET_NOISE_MESSAGE1_OVERHEAD + sizeof(payload)];
   const uint32_t message_size = vkr_net_noise_write_message1(
-      &noise, NULL, credential, credential_size, message, sizeof(message));
+      &noise, NULL, payload, NET_STAMP_SIZE + credential_size, message,
+      sizeof(message));
   vkr_net_noise_wipe(&noise);
   FUZZ_CHECK(message_size > 0u);
 

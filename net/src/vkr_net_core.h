@@ -16,7 +16,8 @@
  *
  * Times are microseconds of one monotonic clock chosen by the caller. */
 
-#define VKR_NET_PROTOCOL_VERSION 1u
+/* 2: header protection and the handshake timestamp. */
+#define VKR_NET_PROTOCOL_VERSION 2u
 #define VKR_NET_CHANNEL_MAX 64u
 /* The first UDP payload size of every path: it fits IPv6's 1,280-byte
    minimum MTU and common tunnels. */
@@ -67,6 +68,8 @@ typedef enum VkrNetCloseCode {
   VKR_NET_CLOSE_SCHEMA_VIOLATION = 10,
   VKR_NET_CLOSE_SERVICE_REFUSED = 11,
   VKR_NET_CLOSE_INTERNAL = 12,
+  /* The receiver reached its cap on bytes of messages in reassembly. */
+  VKR_NET_CLOSE_RESOURCES = 13,
   VKR_NET_CLOSE_SERVICE_BASE = 0x100,
 } VkrNetCloseCode;
 
@@ -120,7 +123,9 @@ typedef enum VkrNetSendStatus {
 
 typedef enum VkrNetEventType {
   VKR_NET_EVENT_NONE = 0,
-  /* A handshake completed. Servers report it when they accept a client. */
+  /* A handshake completed. A server reports it once the client's first
+     packet proves it holds the session keys; a connection that never
+     proves it is freed without any event. */
   VKR_NET_EVENT_CONNECTED,
   /* The connection ended; `code` says why. The ID is invalid afterwards. */
   VKR_NET_EVENT_CLOSED,
@@ -155,9 +160,11 @@ typedef struct VkrNetAcceptResult {
   uint64_t user;
 } VkrNetAcceptResult;
 
-/* Called during vkr_net_core_receive for each authenticated first message.
-   `peer_key` is the client's static key and `credential` its first-message
-   payload, both borrowed for the call. */
+/* Called during vkr_net_core_receive for each authenticated first message
+   with a fresh timestamp. `peer_key` is the client's static key and
+   `credential` its first-message payload, both borrowed for the call. The
+   client has not yet proven it holds the session keys: decide, but keep
+   per-peer state for CONNECTED. */
 typedef void (*VkrNetAcceptFn)(void *context, const VkrNetAddress *address,
                                const uint8_t peer_key[VKR_NET_KEY_SIZE],
                                const uint8_t *credential,
@@ -186,12 +193,29 @@ typedef struct VkrNetCoreConfig {
   /** Demand a retry cookie from every client. */
   bool8_t require_retry;
   /** Demand a cookie once this many handshakes are half-open; zero means
-      256. */
+      an eighth of `max_connections`, at least 4, so spoofed handshakes
+      meet the cookie long before they could fill the slots. */
   uint32_t retry_threshold;
   /** Yield to other traffic: keep queueing delay below 25 ms. */
   bool8_t background;
   /** Top four bits of every local connection ID. */
   uint8_t shard;
+  /** Bytes of partly received messages one connection may hold; zero
+      means 256 MiB. A channel opens only while every channel's receive
+      window plus largest message fits it, so a peer that keeps to the
+      windows never reaches it. */
+  uint64_t max_reassembly_bytes;
+  /** Bytes of partly received messages all connections together may hold;
+      zero means 1 GiB. A message that would pass it closes its connection
+      with VKR_NET_CLOSE_RESOURCES. */
+  uint64_t max_reassembly_total;
+  /** Microseconds from the caller's clock to Unix time (vkr_net_host sets
+      it). A client stamps its first handshake message with the sum, and a
+      server accepts a static key's first message only with a newer stamp
+      than the last it accepted for that key, so a captured message cannot
+      be replayed. Zero leaves stamps on the caller's clock, which suits
+      one process (tests, the simulator). */
+  uint64_t clock_to_unix_us;
   VkrNetAcceptFn accept;
   void *accept_context;
 } VkrNetCoreConfig;
@@ -251,7 +275,8 @@ uint64_t vkr_net_core_next_deadline(const VkrNetCore *core);
 
 /* Opens `channel` (1 to 63; channel 0 is the session channel, reliable and
    ordered) on a connection. Both peers must open it with the same
-   configuration before either sends on it. */
+   configuration before either sends on it. False when the channels' receive
+   windows and largest messages would pass `max_reassembly_bytes`. */
 bool8_t vkr_net_core_open_channel(VkrNetCore *core,
                                   VkrNetConnectionId connection,
                                   uint8_t channel,

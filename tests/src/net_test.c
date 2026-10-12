@@ -753,8 +753,107 @@ static void test_net_retry(void) {
   printf("  test_net_retry PASSED\n");
 }
 
+/* A client core outside the simulator; its first datagram is its
+   Initial. */
+static VkrNetCore *net_test_lone_client(NetTestWorld *world, uint8_t *initial,
+                                        uint32_t *out_size) {
+  VkrNetCoreConfig config = {0};
+  vkr_net_keypair_generate(&config.static_keys);
+  VkrNetCore *core = vkr_net_core_create(&world->allocator, &config);
+  assert(core);
+  VkrNetConnectionId connection = VKR_NET_CONNECTION_NONE;
+  assert(vkr_net_core_connect(core, &world->server.address,
+                              world->server.keys.public_key, NULL, 0u,
+                              world->now, &connection));
+  VkrNetAddress to;
+  *out_size = vkr_net_core_transmit(core, world->now, initial,
+                                    VKR_NET_DATAGRAM_INITIAL, &to);
+  assert(*out_size == VKR_NET_DATAGRAM_INITIAL);
+  return core;
+}
+
+/* Fails when a replayed first handshake message, with a fresh connection
+   ID or from another address, reaches the accept callback or takes a
+   slot; when a server reports CONNECTED (or CLOSED) for a client that
+   never proved it holds the session keys; when a newer handshake from the
+   same key is refused; or when half-open handshakes from fresh keys do not
+   meet the retry cookie at an eighth of the connection limit. */
+static void test_net_handshake_replay(void) {
+  printf("  Running test_net_handshake_replay...\n");
+  NetTestWorld world;
+  net_world_init(&world, 23u, NULL, NULL);
+  net_world_link(&world, &(VkrNetSimLink){.latency_us = 5000u});
+
+  /* The client's Initial, taken before the simulator moves it. */
+  assert(vkr_net_core_connect(world.client.core, &world.server.address,
+                              world.server.keys.public_key, NULL, 0u, world.now,
+                              &world.client.connection));
+  static uint8_t initial[VKR_NET_DATAGRAM_INITIAL];
+  static uint8_t copy[VKR_NET_DATAGRAM_INITIAL];
+  VkrNetAddress to;
+  const uint32_t size = vkr_net_core_transmit(world.client.core, world.now,
+                                              initial, sizeof(initial), &to);
+  assert(size == VKR_NET_DATAGRAM_INITIAL);
+  memcpy(copy, initial, size);
+  vkr_net_core_receive(world.server.core, &world.client.address, copy, size,
+                       world.now);
+  assert(world.accept.calls == 1u);
+
+  /* Replays: a new connection ID, then a new address too. */
+  VkrNetAddress elsewhere;
+  assert(vkr_net_address_parse("10.0.0.7:7000", 0u, &elsewhere));
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    memcpy(copy, initial, size);
+    copy[9] ^= (uint8_t)(0x10u + i);
+    vkr_net_core_receive(world.server.core,
+                         i == 0u ? &world.client.address : &elsewhere, copy,
+                         size, world.now);
+  }
+  assert(world.accept.calls == 1u);
+  net_side_poll(&world.server, world.now);
+  assert(world.server.connected_events == 0u);
+
+  /* The client completes the handshake: only now does the server report
+     it. */
+  const uint64_t limit = world.now + 5u * NET_TEST_SECOND;
+  while (!(world.client.connected && world.server.connected) &&
+         world.now < limit) {
+    net_world_step(&world, limit);
+  }
+  assert(world.client.connected && world.server.connected_events == 1u);
+
+  /* A newer handshake from the same key is accepted. */
+  VkrNetConnectionId second = VKR_NET_CONNECTION_NONE;
+  assert(vkr_net_core_connect(world.client.core, &world.server.address,
+                              world.server.keys.public_key, NULL, 0u, world.now,
+                              &second));
+  net_world_run(&world, NET_TEST_SECOND);
+  assert(world.accept.calls == 2u && world.server.connected_events == 2u);
+
+  /* Half-open handshakes from fresh keys at addresses the server cannot
+     reach: none is reported, not even when it times out, and past an
+     eighth of the 64-connection limit each meets the cookie instead of
+     the accept callback. */
+  enum { LONE = 9 };
+  VkrNetCore *lone[LONE];
+  for (uint32_t i = 0u; i < LONE; ++i) {
+    lone[i] = net_test_lone_client(&world, copy, &(uint32_t){0});
+    vkr_net_core_receive(world.server.core, &elsewhere, copy,
+                         VKR_NET_DATAGRAM_INITIAL, world.now);
+  }
+  assert(world.accept.calls == 2u + 8u);
+  net_world_run(&world, 15u * NET_TEST_SECOND);
+  assert(world.server.connected_events == 2u && !world.server.closed);
+  for (uint32_t i = 0u; i < LONE; ++i) {
+    vkr_net_core_destroy(lone[i]);
+  }
+  net_world_destroy(&world);
+  printf("  test_net_handshake_replay PASSED\n");
+}
+
 /* Fails when a server sends more than three times the bytes it received to
-   a client address it has not validated. */
+   a client address it has not validated, or tells the application about a
+   client that never confirmed the handshake. */
 static void test_net_amplification(void) {
   printf("  Running test_net_amplification...\n");
   const VkrNetCoreConfig config = {.handshake_timeout_ms = 3000u};
@@ -768,18 +867,11 @@ static void test_net_amplification(void) {
   net_world_step(&world, world.now);
   vkr_net_sim_set_link(world.sim, world.client.endpoint, world.server.endpoint,
                        &(VkrNetSimLink){.latency_us = 5000u, .loss = 1.0f});
-  /* The server sends data to the unvalidated client meanwhile. */
-  net_world_run(&world, 20000u);
-  assert(world.server.connected);
-  const VkrNetChannelConfig channel = {.delivery = VKR_NET_RELIABLE_UNORDERED};
-  assert(vkr_net_core_open_channel(world.server.core, world.server.connection,
-                                   1u, &channel));
-  uint8_t data[30000];
-  memset(data, 7, sizeof(data));
-  assert(vkr_net_core_send(world.server.core, world.server.connection, 1u, data,
-                           sizeof(data), NULL, world.now) == VKR_NET_SEND_OK);
-  vkr_net_core_flush(world.server.core);
+  /* The client never confirms: the server keeps the connection from the
+     application, sends nothing past its handshake reply and repeats that
+     only within the limit. */
   net_world_run(&world, 5u * NET_TEST_SECOND);
+  assert(!world.server.connected && !world.server.closed);
   const VkrNetSimStats up = vkr_net_sim_stats(world.sim, world.client.endpoint,
                                               world.server.endpoint);
   const VkrNetSimStats down = vkr_net_sim_stats(
@@ -1117,6 +1209,103 @@ static void test_net_migration(void) {
   assert(peer.port == 6000u);
   net_world_destroy(&world);
   printf("  test_net_migration PASSED\n");
+}
+
+/* Fails when a newest authenticated packet that an attacker copies and
+   sends first from another address moves the connection there before
+   that address answers a path challenge, or when the connection stops
+   working after it. */
+static void test_net_path_spoof(void) {
+  printf("  Running test_net_path_spoof...\n");
+  NetTestWorld world;
+  net_world_init(&world, 24u, NULL, NULL);
+  net_world_link(&world, &(VkrNetSimLink){.latency_us = 5000u});
+  net_world_connect(&world);
+  const VkrNetChannelConfig channel = {.delivery = VKR_NET_RELIABLE_ORDERED};
+  net_open_both(&world, 1u, &channel);
+
+  uint8_t data[64];
+  net_test_fill(data, sizeof(data), 0u);
+  const VkrNetSendOptions now_flag = {.flags = VKR_NET_SEND_IMMEDIATE};
+  assert(vkr_net_core_send(world.client.core, world.client.connection, 1u, data,
+                           sizeof(data), &now_flag,
+                           world.now) == VKR_NET_SEND_OK);
+  static uint8_t packet[VKR_NET_DATAGRAM_ETHERNET];
+  static uint8_t copy[VKR_NET_DATAGRAM_ETHERNET];
+  VkrNetAddress to;
+  const uint32_t size = vkr_net_core_transmit(world.client.core, world.now,
+                                              packet, sizeof(packet), &to);
+  assert(size > 0u);
+  VkrNetAddress attacker;
+  assert(vkr_net_address_parse("10.6.6.6:6666", 0u, &attacker));
+  memcpy(copy, packet, size);
+  vkr_net_core_receive(world.server.core, &attacker, copy, size, world.now);
+  vkr_net_core_receive(world.server.core, &world.client.address, packet, size,
+                       world.now);
+  VkrNetAddress peer;
+  assert(vkr_net_core_peer_address(world.server.core, world.server.connection,
+                                   &peer));
+  assert(vkr_net_address_equal(&peer, &world.client.address));
+
+  /* The challenge goes to the attacker, who cannot answer; the path and
+     the channel keep working. */
+  for (uint32_t i = 1u; i < 20u; ++i) {
+    net_test_fill(data, sizeof(data), i);
+    assert(vkr_net_core_send(world.client.core, world.client.connection, 1u,
+                             data, sizeof(data), NULL,
+                             world.now) == VKR_NET_SEND_OK);
+    vkr_net_core_flush(world.client.core);
+    net_world_run(&world, 20000u);
+  }
+  net_world_run(&world, NET_TEST_SECOND);
+  assert(vkr_net_core_peer_address(world.server.core, world.server.connection,
+                                   &peer));
+  assert(vkr_net_address_equal(&peer, &world.client.address));
+  assert(world.server.received[1] == 20u && !world.server.out_of_order);
+  assert(!world.client.closed && !world.server.closed);
+  net_world_destroy(&world);
+  printf("  test_net_path_spoof PASSED\n");
+}
+
+/* Fails when a channel opens past the connection's reassembly cap, or when
+   messages in reassembly pass the core's total cap instead of closing
+   their connection with VKR_NET_CLOSE_RESOURCES; a message within the
+   caps still arrives. */
+static void test_net_reassembly_caps(void) {
+  printf("  Running test_net_reassembly_caps...\n");
+  const VkrNetCoreConfig server_config = {.max_reassembly_bytes = 4u << 20,
+                                          .max_reassembly_total = 256u << 10};
+  NetTestWorld world;
+  net_world_init(&world, 25u, &server_config, NULL);
+  net_world_link(&world, &(VkrNetSimLink){.latency_us = 5000u});
+  net_world_connect(&world);
+  const VkrNetChannelConfig channel = {.delivery = VKR_NET_RELIABLE_UNORDERED,
+                                       .max_message_size = 1u << 20,
+                                       .receive_window = 2u << 20};
+  net_open_both(&world, 1u, &channel);
+  /* 2 + 1 MiB on channel 1 and the session channel fit 4 MiB; another
+     3 MiB do not. */
+  assert(!vkr_net_core_open_channel(world.server.core, world.server.connection,
+                                    2u, &channel));
+
+  static uint8_t data[1u << 20];
+  net_test_fill(data, 100000u, 0u);
+  assert(vkr_net_core_send(world.client.core, world.client.connection, 1u, data,
+                           100000u, NULL, world.now) == VKR_NET_SEND_OK);
+  vkr_net_core_flush(world.client.core);
+  net_world_run(&world, NET_TEST_SECOND);
+  assert(world.server.received[1] == 1u && !world.server.closed);
+
+  net_test_fill(data, sizeof(data), 1u);
+  assert(vkr_net_core_send(world.client.core, world.client.connection, 1u, data,
+                           sizeof(data), NULL, world.now) == VKR_NET_SEND_OK);
+  vkr_net_core_flush(world.client.core);
+  net_world_run(&world, 2u * NET_TEST_SECOND);
+  assert(world.server.received[1] == 1u);
+  assert(world.client.closed &&
+         world.client.close_code == VKR_NET_CLOSE_RESOURCES);
+  net_world_destroy(&world);
+  printf("  test_net_reassembly_caps PASSED\n");
 }
 
 /* Fails when large fragmented messages on a low-priority unordered channel
@@ -2082,6 +2271,7 @@ bool32_t run_net_tests(void) {
   test_net_handshake_wrong_key();
   test_net_header_protection();
   test_net_retry();
+  test_net_handshake_replay();
   test_net_amplification();
   test_net_reliable_ordered();
   test_net_reliable_unordered();
@@ -2096,6 +2286,8 @@ bool32_t run_net_tests(void) {
   test_net_idle();
   test_net_close();
   test_net_migration();
+  test_net_path_spoof();
+  test_net_reassembly_caps();
   test_net_large_tail();
   test_net_garbage();
   test_net_udp_loopback();
