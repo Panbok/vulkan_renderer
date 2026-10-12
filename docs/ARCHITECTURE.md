@@ -381,9 +381,12 @@ back/forward/up navigate folders; one toolbar row holds actions, navigation,
 the search and sorting. Virtualized tiles or a sortable
 Name/Type/Location/Tags list show subfolders, then items: assets, scenes,
 presets, the World and one built-in item per creatable object. Dragging onto a
-folder moves an item; dropping on the viewport opens a scene, adds an object or
-places a mesh; OS files dropped on the window open the import window for the
-folder under the pointer. The right Details panel contains selection and folder
+folder moves an item; dropping on the viewport opens a scene, adds an object,
+places a mesh or assigns a material or texture to the object under the pointer
+by its asset reference; OS files dropped on the window open the import window
+for the folder under the pointer. Edited sources and edited or removed build
+files rebuild their assets, which swap into the open scene in place
+([ADR-112](adr/112-asset-references-and-live-asset-swaps.md)). The right Details panel contains selection and folder
 actions; narrow docks hide side panels. This follows Epic's
 [Content Browser organization](https://dev.epicgames.com/documentation/en-us/unreal-engine/content-browser-interface-in-unreal-engine)
 without exposing generated build directories as content folders.

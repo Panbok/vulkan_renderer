@@ -29,6 +29,11 @@ vkr_internal void vkr_mesh_manager_record_static_change(VkrMeshManager *manager,
                                                         bool8_t bounded,
                                                         Vec3 min, Vec3 max);
 
+/* Completes settled asset path swaps; vkr_mesh_manager_pump_async calls it
+   and it is defined with the swap API below. */
+vkr_internal void
+vkr_mesh_manager_complete_asset_swaps(VkrMeshManager *manager);
+
 /* vkr_mesh_manager_load delegates to the batch loader defined below it. */
 vkr_internal uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
                                                   const VkrMeshLoadDesc *descs,
@@ -1256,9 +1261,14 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   manager->instance_generation_counter = 1;
   manager->mesh_temporal_generation_counter = 1u;
 
+  manager->instance_content_revisions =
+      array_create_filled_uint32_t(&manager->allocator, max_instances);
+
   if (!manager->mesh_instances.data || !manager->instance_live_indices.data ||
       !manager->instance_free_indices.data ||
-      !manager->instance_asset_next.data || !manager->instance_asset_prev.data)
+      !manager->instance_asset_next.data ||
+      !manager->instance_asset_prev.data ||
+      !manager->instance_content_revisions.data)
     goto allocation_failure;
 
   for (uint32_t i = 0; i < manager->mesh_instances.length; ++i) {
@@ -1266,6 +1276,7 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
     array_set_VkrMeshInstance(&manager->mesh_instances, i, empty);
     array_set_uint32_t(&manager->instance_asset_next, i, VKR_INVALID_ID);
     array_set_uint32_t(&manager->instance_asset_prev, i, VKR_INVALID_ID);
+    array_set_uint32_t(&manager->instance_content_revisions, i, 0u);
   }
 
   return true_v;
@@ -1321,11 +1332,22 @@ void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
   manager->mesh_count = 0;
   manager->next_free_index = 0;
 
+  /* The swaps' references on their new assets go with the asset slots
+     below; only their pair arrays need freeing. */
+  for (uint32_t i = 0u; i < manager->asset_swap_count; ++i) {
+    VkrMeshAssetSwap *swap = &manager->asset_swaps[i];
+    vkr_allocator_free(&manager->asset_allocator, swap->pairs,
+                       (uint64_t)swap->pair_capacity * sizeof(*swap->pairs),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  manager->asset_swap_count = 0u;
+
   array_destroy_VkrMeshInstance(&manager->mesh_instances);
   array_destroy_uint32_t(&manager->instance_live_indices);
   array_destroy_uint32_t(&manager->instance_free_indices);
   array_destroy_uint32_t(&manager->instance_asset_next);
   array_destroy_uint32_t(&manager->instance_asset_prev);
+  array_destroy_uint32_t(&manager->instance_content_revisions);
 
   for (uint32_t i = 0; i < manager->mesh_assets.length; ++i) {
     vkr_mesh_manager_destroy_asset_slot(manager, i, false_v);
@@ -2565,15 +2587,23 @@ vkr_internal void vkr_mesh_manager_release_asset(VkrMeshManager *manager,
   }
 }
 
-/* A loaded asset that at least one instance draws. The reverse index lists
-   an asset's instances, so an asset only a hold keeps has no head. */
-vkr_internal bool8_t
-vkr_mesh_manager_asset_is_drawn(const VkrMeshManager *manager, uint32_t slot) {
+/* A live asset at least one instance references, in any loading state. The
+   reverse index lists an asset's instances, so an asset only a hold or a
+   swap keeps has no head. */
+vkr_internal bool8_t vkr_mesh_manager_asset_has_instances(
+    const VkrMeshManager *manager, uint32_t slot) {
   const VkrMeshAsset *asset = &manager->mesh_assets.data[slot];
   return asset->id != 0u &&
-         asset->loading_state == VKR_MESH_LOADING_STATE_LOADED &&
          manager->asset_instance_generations.data[slot] == asset->generation &&
          manager->asset_instance_heads.data[slot] != VKR_INVALID_ID;
+}
+
+/* A loaded asset that at least one instance draws. */
+vkr_internal bool8_t
+vkr_mesh_manager_asset_is_drawn(const VkrMeshManager *manager, uint32_t slot) {
+  return vkr_mesh_manager_asset_has_instances(manager, slot) &&
+         manager->mesh_assets.data[slot].loading_state ==
+             VKR_MESH_LOADING_STATE_LOADED;
 }
 
 bool8_t vkr_mesh_manager_hold_drawn_assets(VkrMeshManager *manager,
@@ -2680,6 +2710,10 @@ void vkr_mesh_manager_pump_async(VkrMeshManager *manager) {
                 string8_cstr(&message));
     }
   }
+
+  /* After the asset loop, so a swap whose new assets settled this pump
+     shows in the frame being prepared. */
+  vkr_mesh_manager_complete_asset_swaps(manager);
 }
 
 /* Returns NULL for an invalid or stale handle. */
@@ -2759,6 +2793,7 @@ vkr_internal VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
   MemZero(inst, sizeof(*inst));
   array_set_uint32_t(&manager->instance_asset_next, slot, VKR_INVALID_ID);
   array_set_uint32_t(&manager->instance_asset_prev, slot, VKR_INVALID_ID);
+  array_set_uint32_t(&manager->instance_content_revisions, slot, 0u);
 
   inst->asset = asset_handle;
   inst->generation = manager->instance_generation_counter++;
@@ -2829,6 +2864,92 @@ vkr_mesh_manager_instance_clone(VkrMeshManager *manager,
   return handle;
 }
 
+/** Bytes of one formatted asset cache key, terminator included. */
+#define VKR_MESH_ASSET_KEY_MAX 512u
+
+/* Formats the asset cache key of `desc` under `normalized_domain`:
+ * "mesh_path|domain|shader_override", then "|source:N" for source mesh N.
+ * False when the path and shader override do not fit the key. */
+vkr_internal bool8_t vkr_mesh_manager_format_asset_key(
+    const VkrMeshLoadDesc *desc, VkrPipelineDomain normalized_domain,
+    char key_buf[VKR_MESH_ASSET_KEY_MAX]) {
+  if (desc->mesh_path.length > 448u || desc->shader_override.length > 448u ||
+      desc->mesh_path.length + desc->shader_override.length > 448u) {
+    return false_v;
+  }
+
+  const char *shader_str =
+      desc->shader_override.str ? (const char *)desc->shader_override.str : "";
+  string_format(key_buf, VKR_MESH_ASSET_KEY_MAX, "%.*s|%u|%.*s",
+                (int)desc->mesh_path.length, desc->mesh_path.str,
+                (uint32_t)normalized_domain, (int)desc->shader_override.length,
+                shader_str);
+
+  if (desc->source_mesh_index_plus_one != 0u) {
+    const uint64_t length = string_length(key_buf);
+    string_format(key_buf + length, VKR_MESH_ASSET_KEY_MAX - length,
+                  "|source:%u", desc->source_mesh_index_plus_one - 1u);
+  }
+  return true_v;
+}
+
+/* Starts loading `desc->mesh_path` through the resource system and creates
+ * its asset under `key_buf`: a PENDING asset that owns the request when the
+ * load is asynchronous, else an asset built from the loaded result, whose
+ * request is released. The asset has no references yet. */
+vkr_internal VkrMeshAssetHandle vkr_mesh_manager_load_asset_by_path(
+    VkrMeshManager *manager, const VkrMeshLoadDesc *desc, const char *key_buf,
+    VkrRendererError *out_error) {
+  VkrMeshAssetHandle asset_handle = VKR_MESH_ASSET_HANDLE_INVALID;
+  *out_error = VKR_RENDERER_ERROR_NONE;
+
+  VkrAllocatorScope scope =
+      vkr_allocator_begin_scope(&manager->scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return asset_handle;
+  }
+
+  VkrResourceHandleInfo owned_request = {0};
+  bool8_t release_owned_request = false_v;
+  VkrRendererError request_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, desc->mesh_path,
+                                &manager->scratch_allocator, &owned_request,
+                                &request_error)) {
+    *out_error = request_error != VKR_RENDERER_ERROR_NONE
+                     ? request_error
+                     : VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+  } else if (owned_request.request_id != 0) {
+    asset_handle = vkr_mesh_manager_create_pending_asset_slot(
+        manager, desc, key_buf, owned_request.request_id, out_error);
+    if (asset_handle.id != 0) {
+      uint32_t slot = asset_handle.id - 1;
+      VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets, slot);
+      if (asset && asset->id == asset_handle.id) {
+        asset->loading_state = VKR_MESH_LOADING_STATE_PENDING;
+        asset->last_error = VKR_RENDERER_ERROR_NONE;
+        asset->pending_request_id = owned_request.request_id;
+        (void)vkr_mesh_manager_sync_pending_asset(manager, slot, asset);
+      }
+    } else {
+      release_owned_request = true_v;
+    }
+  } else if (owned_request.as.mesh) {
+    asset_handle = vkr_mesh_manager_create_asset_from_handle_info(
+        manager, &owned_request, desc, key_buf, out_error);
+    release_owned_request = true_v;
+  } else {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  }
+
+  if (release_owned_request) {
+    vkr_resource_system_unload(&owned_request, desc->mesh_path);
+  }
+
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return asset_handle;
+}
+
 VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
     VkrMeshManager *manager, const VkrMeshLoadDesc *desc,
     const VkrResourceHandleInfo *handle_info, uint32_t render_id,
@@ -2848,24 +2969,11 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
 
   VkrPipelineDomain normalized_domain =
       vkr_mesh_manager_resolve_domain(desc->pipeline_domain, 0);
-  const char *shader_str =
-      desc->shader_override.str ? (const char *)desc->shader_override.str : "";
 
-  if (desc->mesh_path.length > 448u || desc->shader_override.length > 448u ||
-      desc->mesh_path.length + desc->shader_override.length > 448u) {
+  char key_buf[VKR_MESH_ASSET_KEY_MAX];
+  if (!vkr_mesh_manager_format_asset_key(desc, normalized_domain, key_buf)) {
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return VKR_MESH_INSTANCE_HANDLE_INVALID;
-  }
-  char key_buf[512];
-  string_format(key_buf, sizeof(key_buf), "%.*s|%u|%.*s",
-                (int)desc->mesh_path.length, desc->mesh_path.str,
-                (uint32_t)normalized_domain, (int)desc->shader_override.length,
-                shader_str);
-
-  if (desc->source_mesh_index_plus_one != 0u) {
-    const uint64_t length = string_length(key_buf);
-    string_format(key_buf + length, sizeof(key_buf) - length, "|source:%u",
-                  desc->source_mesh_index_plus_one - 1u);
   }
 
   VkrMeshAssetHandle asset_handle = VKR_MESH_ASSET_HANDLE_INVALID;
@@ -2938,51 +3046,8 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
         vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       }
     } else {
-      VkrAllocatorScope scope =
-          vkr_allocator_begin_scope(&manager->scratch_allocator);
-      if (!vkr_allocator_scope_is_valid(&scope)) {
-        asset_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      } else {
-        VkrResourceHandleInfo owned_request = {0};
-        bool8_t release_owned_request = false_v;
-        VkrRendererError request_error = VKR_RENDERER_ERROR_NONE;
-        if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, desc->mesh_path,
-                                      &manager->scratch_allocator,
-                                      &owned_request, &request_error)) {
-          asset_error = request_error != VKR_RENDERER_ERROR_NONE
-                            ? request_error
-                            : VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
-        } else if (owned_request.request_id != 0) {
-          asset_handle = vkr_mesh_manager_create_pending_asset_slot(
-              manager, &normalized_desc, key_buf, owned_request.request_id,
-              &asset_error);
-          if (asset_handle.id != 0) {
-            uint32_t slot = asset_handle.id - 1;
-            VkrMeshAsset *asset =
-                array_get_VkrMeshAsset(&manager->mesh_assets, slot);
-            if (asset && asset->id == asset_handle.id) {
-              asset->loading_state = VKR_MESH_LOADING_STATE_PENDING;
-              asset->last_error = VKR_RENDERER_ERROR_NONE;
-              asset->pending_request_id = owned_request.request_id;
-              (void)vkr_mesh_manager_sync_pending_asset(manager, slot, asset);
-            }
-          } else {
-            release_owned_request = true_v;
-          }
-        } else if (owned_request.as.mesh) {
-          asset_handle = vkr_mesh_manager_create_asset_from_handle_info(
-              manager, &owned_request, &normalized_desc, key_buf, &asset_error);
-          release_owned_request = true_v;
-        } else {
-          asset_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        }
-
-        if (release_owned_request) {
-          vkr_resource_system_unload(&owned_request, desc->mesh_path);
-        }
-
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
+      asset_handle = vkr_mesh_manager_load_asset_by_path(
+          manager, &normalized_desc, key_buf, &asset_error);
     }
     if (asset_handle.id == 0) {
       *out_error = asset_error != VKR_RENDERER_ERROR_NONE
@@ -3843,5 +3908,435 @@ void vkr_mesh_manager_instance_set_skinning(VkrMeshManager *manager,
   }
   if (changed) {
     vkr_mesh_manager_note_content_change(manager, instance->shadow_mobility);
+  }
+}
+
+uint32_t
+vkr_mesh_manager_instance_content_revision(const VkrMeshManager *manager,
+                                           VkrMeshInstanceHandle handle) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (handle.id == 0u || handle.id > manager->mesh_instances.length) {
+    return 0u;
+  }
+
+  const uint32_t slot = handle.id - 1u;
+  const VkrMeshInstance *instance = &manager->mesh_instances.data[slot];
+  if (instance->asset.id == 0u || instance->generation != handle.generation) {
+    return 0u;
+  }
+
+  return manager->instance_content_revisions.data[slot];
+}
+
+// ============================================================================
+// Asset Path Swaps
+// ============================================================================
+
+/* The world box around `instance`'s bounding sphere; false when it has no
+   bounds. */
+vkr_internal bool8_t vkr_mesh_manager_instance_world_box(
+    const VkrMeshInstance *instance, Vec3 *out_min, Vec3 *out_max) {
+  if (!instance->bounds_valid) {
+    *out_min = vec3_zero();
+    *out_max = vec3_zero();
+    return false_v;
+  }
+
+  const float32_t radius = instance->bounds_world_radius;
+  const Vec3 extent = vec3_new(radius, radius, radius);
+  *out_min = vec3_sub(instance->bounds_world_center, extent);
+  *out_max = vec3_add(instance->bounds_world_center, extent);
+  return true_v;
+}
+
+/* Takes one reference on the asset that loads `new_path` with `from`'s
+ * domain, shader override and source mesh: the cached asset of that key, or
+ * a new one that starts loading. */
+vkr_internal VkrMeshAssetHandle vkr_mesh_manager_acquire_swap_target(
+    VkrMeshManager *manager, VkrMeshAssetHandle from_handle, String8 new_path,
+    VkrRendererError *out_error) {
+  *out_error = VKR_RENDERER_ERROR_NONE;
+
+  /* Asset slots never move, so `from` stays valid while another slot is
+     created below. */
+  const VkrMeshAsset *from = &manager->mesh_assets.data[from_handle.id - 1u];
+  const VkrMeshLoadDesc desc = {
+      .source_mesh_index_plus_one = from->source_mesh_index_plus_one,
+      .mesh_path = new_path,
+      .pipeline_domain = from->domain,
+      .shader_override = from->shader_override,
+  };
+
+  char key_buf[VKR_MESH_ASSET_KEY_MAX];
+  if (!vkr_mesh_manager_format_asset_key(&desc, desc.pipeline_domain,
+                                         key_buf)) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return VKR_MESH_ASSET_HANDLE_INVALID;
+  }
+
+  VkrMeshAssetHandle handle = VKR_MESH_ASSET_HANDLE_INVALID;
+  VkrMeshAssetEntry *cached =
+      vkr_hash_table_get_VkrMeshAssetEntry(&manager->asset_by_key, key_buf);
+  VkrMeshAsset *asset = cached ? array_get_VkrMeshAsset(&manager->mesh_assets,
+                                                        cached->asset_index)
+                               : NULL;
+  if (asset && asset->id != 0u) {
+    (void)vkr_mesh_manager_sync_pending_asset(manager, cached->asset_index,
+                                              asset);
+    handle =
+        (VkrMeshAssetHandle){.id = asset->id, .generation = asset->generation};
+  } else {
+    handle =
+        vkr_mesh_manager_load_asset_by_path(manager, &desc, key_buf, out_error);
+    if (handle.id == 0u) {
+      if (*out_error == VKR_RENDERER_ERROR_NONE) {
+        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      }
+      return VKR_MESH_ASSET_HANDLE_INVALID;
+    }
+  }
+
+  manager->mesh_assets.data[handle.id - 1u].ref_count++;
+  return handle;
+}
+
+/* Drops swap `index`'s references on its new assets, frees its pairs and
+   removes it, keeping the remaining swaps in request order. */
+vkr_internal void vkr_mesh_manager_end_asset_swap(VkrMeshManager *manager,
+                                                  uint32_t index) {
+  VkrMeshAssetSwap *swap = &manager->asset_swaps[index];
+  for (uint32_t i = 0u; i < swap->pair_count; ++i) {
+    vkr_mesh_manager_release_asset(manager, swap->pairs[i].to);
+  }
+  vkr_allocator_free(&manager->asset_allocator, swap->pairs,
+                     (uint64_t)swap->pair_capacity * sizeof(*swap->pairs),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  const uint32_t after = manager->asset_swap_count - index - 1u;
+  if (after > 0u) {
+    MemCopy(&manager->asset_swaps[index], &manager->asset_swaps[index + 1u],
+            (uint64_t)after * sizeof(manager->asset_swaps[0]));
+  }
+  manager->asset_swap_count--;
+  manager->asset_swaps[manager->asset_swap_count] = (VkrMeshAssetSwap){0};
+}
+
+/* Whether `pairs` (`count` of them) already name `from` as a source. */
+vkr_internal bool8_t
+vkr_mesh_manager_swap_pairs_contain(const VkrMeshAssetSwapPair *pairs,
+                                    uint32_t count, VkrMeshAssetHandle from) {
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (pairs[i].from.id == from.id &&
+        pairs[i].from.generation == from.generation) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_mesh_manager_swap_asset_path(VkrMeshManager *manager,
+                                         String8 old_path, String8 new_path,
+                                         VkrRendererError *out_error) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+
+  if (!old_path.str || old_path.length == 0u || !new_path.str ||
+      new_path.length == 0u || string8_equals(&old_path, &new_path)) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  /* An in-flight swap is superseded when it replaces assets of `old_path`
+     or is loading `old_path` itself; the sources of the latter join this
+     request, so the newest path wins. */
+  bool8_t superseded[VKR_MESH_ASSET_SWAP_MAX] = {0};
+  uint32_t capacity = 0u;
+  for (uint32_t s = 0u; s < manager->asset_swap_count; ++s) {
+    const VkrMeshAssetSwap *swap = &manager->asset_swaps[s];
+    for (uint32_t i = 0u; i < swap->pair_count && !superseded[s]; ++i) {
+      const VkrMeshAsset *from =
+          vkr_mesh_manager_get_asset(manager, swap->pairs[i].from);
+      const VkrMeshAsset *to =
+          vkr_mesh_manager_get_asset(manager, swap->pairs[i].to);
+      superseded[s] = (from && string8_equals(&from->mesh_path, &old_path)) ||
+                      (to && string8_equals(&to->mesh_path, &old_path));
+    }
+    if (superseded[s]) {
+      capacity += swap->pair_count;
+    }
+  }
+
+  for (uint32_t slot = 0u; slot < manager->next_asset_index; ++slot) {
+    const VkrMeshAsset *asset = &manager->mesh_assets.data[slot];
+    if (vkr_mesh_manager_asset_has_instances(manager, slot) &&
+        string8_equals(&asset->mesh_path, &old_path)) {
+      ++capacity;
+    }
+  }
+
+  const uint32_t remaining_swaps = manager->asset_swap_count;
+  uint32_t superseded_count = 0u;
+  for (uint32_t s = 0u; s < remaining_swaps; ++s) {
+    superseded_count += superseded[s] ? 1u : 0u;
+  }
+  if (remaining_swaps - superseded_count >= VKR_MESH_ASSET_SWAP_MAX) {
+    log_warn("MeshManager: %u mesh swaps in flight; swap of '%.*s' rejected",
+             VKR_MESH_ASSET_SWAP_MAX, (int)old_path.length, old_path.str);
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_BUSY;
+    return false_v;
+  }
+
+  if (capacity == 0u) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    return false_v;
+  }
+
+  VkrMeshAssetSwapPair *pairs = vkr_allocator_alloc(
+      &manager->asset_allocator, (uint64_t)capacity * sizeof(*pairs),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!pairs) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  /* Sources first, then targets: no target is acquired before every source
+     handle is known, so a failure releases exactly the acquired ones. */
+  uint32_t pair_count = 0u;
+  for (uint32_t slot = 0u; slot < manager->next_asset_index; ++slot) {
+    const VkrMeshAsset *asset = &manager->mesh_assets.data[slot];
+    if (vkr_mesh_manager_asset_has_instances(manager, slot) &&
+        string8_equals(&asset->mesh_path, &old_path)) {
+      pairs[pair_count++] = (VkrMeshAssetSwapPair){
+          .from = {.id = asset->id, .generation = asset->generation},
+      };
+    }
+  }
+  for (uint32_t s = 0u; s < remaining_swaps; ++s) {
+    if (!superseded[s]) {
+      continue;
+    }
+    const VkrMeshAssetSwap *swap = &manager->asset_swaps[s];
+    for (uint32_t i = 0u; i < swap->pair_count; ++i) {
+      const VkrMeshAssetHandle from = swap->pairs[i].from;
+      if (!vkr_mesh_manager_get_asset(manager, from) ||
+          !vkr_mesh_manager_asset_has_instances(manager, from.id - 1u) ||
+          vkr_mesh_manager_swap_pairs_contain(pairs, pair_count, from)) {
+        continue;
+      }
+      pairs[pair_count++] = (VkrMeshAssetSwapPair){.from = from};
+    }
+  }
+
+  uint32_t acquired = 0u;
+  if (pair_count == 0u) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    goto cleanup;
+  }
+
+  for (; acquired < pair_count; ++acquired) {
+    pairs[acquired].to = vkr_mesh_manager_acquire_swap_target(
+        manager, pairs[acquired].from, new_path, out_error);
+    if (pairs[acquired].to.id == 0u) {
+      String8 message = vkr_renderer_get_error_string(*out_error);
+      log_warn("MeshManager: mesh '%.*s' could not start loading (%s); "
+               "instances keep '%.*s'",
+               (int)new_path.length, new_path.str, string8_cstr(&message),
+               (int)old_path.length, old_path.str);
+      goto cleanup;
+    }
+  }
+
+  /* Superseded swaps end only now, so their new assets, which this request
+     may reuse, never dropped to zero references in between. Descending
+     keeps the lower indices valid while ending. */
+  for (uint32_t s = remaining_swaps; s > 0u; --s) {
+    if (superseded[s - 1u]) {
+      vkr_mesh_manager_end_asset_swap(manager, s - 1u);
+    }
+  }
+
+  manager->asset_swaps[manager->asset_swap_count++] = (VkrMeshAssetSwap){
+      .pairs = pairs,
+      .pair_count = pair_count,
+      .pair_capacity = capacity,
+  };
+  /* A swap whose new assets are cached may settle at the next pump. */
+  return true_v;
+
+cleanup:
+  for (uint32_t i = 0u; i < acquired; ++i) {
+    vkr_mesh_manager_release_asset(manager, pairs[i].to);
+  }
+  vkr_allocator_free(&manager->asset_allocator, pairs,
+                     (uint64_t)capacity * sizeof(*pairs),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return false_v;
+}
+
+/* Points every unskinned instance of `from_handle` at `to_handle`, keeping
+ * its handle and per-instance state, and drops the references the moved
+ * instances held on the old asset, the last of which destroys it. Returns
+ * the moved count; `out_skinned` counts the instances left behind. */
+vkr_internal uint32_t vkr_mesh_manager_move_asset_instances(
+    VkrMeshManager *manager, VkrMeshAssetHandle from_handle,
+    VkrMeshAssetHandle to_handle, uint32_t *out_skinned) {
+  *out_skinned = 0u;
+
+  VkrMeshAsset *to = vkr_mesh_manager_get_asset(manager, to_handle);
+  if (!to || !vkr_mesh_manager_get_asset(manager, from_handle)) {
+    return 0u;
+  }
+
+  const uint32_t from_slot = from_handle.id - 1u;
+  if (!vkr_mesh_manager_asset_has_instances(manager, from_slot)) {
+    return 0u;
+  }
+
+  uint32_t moved = 0u;
+  uint32_t instance_slot = manager->asset_instance_heads.data[from_slot];
+  while (instance_slot != VKR_INVALID_ID) {
+    const uint32_t next_slot = manager->instance_asset_next.data[instance_slot];
+    VkrMeshInstance *instance = &manager->mesh_instances.data[instance_slot];
+    if (instance->asset.id != from_handle.id ||
+        instance->asset.generation != from_handle.generation) {
+      instance_slot = next_slot;
+      continue;
+    }
+
+    /* The animator's skin binding (influences, bind vertices) was derived
+       from the old file; new geometry under it would skin out of range. */
+    if (instance->skinning) {
+      ++*out_skinned;
+      instance_slot = next_slot;
+      continue;
+    }
+
+    const bool8_t was_drawn =
+        instance->visible &&
+        instance->loading_state == VKR_MESH_LOADING_STATE_LOADED;
+    Vec3 old_min = vec3_zero();
+    Vec3 old_max = vec3_zero();
+    const bool8_t old_bounded =
+        vkr_mesh_manager_instance_world_box(instance, &old_min, &old_max);
+
+    vkr_mesh_manager_asset_instance_index_remove_instance(
+        manager, instance_slot, from_handle);
+    instance->asset = to_handle;
+    vkr_mesh_manager_asset_instance_index_add_instance(manager, instance_slot,
+                                                       to_handle);
+    to->ref_count++;
+    instance->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+    vkr_mesh_manager_update_instance_bounds(instance, to, instance->model);
+    manager->instance_content_revisions.data[instance_slot]++;
+
+    /* The submesh set changed, so this is a topology change; it reaches
+       only the old and new extent, so retained shadows elsewhere hold. */
+    if (instance->visible) {
+      Vec3 new_min = vec3_zero();
+      Vec3 new_max = vec3_zero();
+      const bool8_t new_bounded =
+          vkr_mesh_manager_instance_world_box(instance, &new_min, &new_max);
+      if (was_drawn) {
+        new_min = vec3_new(Min(old_min.x, new_min.x), Min(old_min.y, new_min.y),
+                           Min(old_min.z, new_min.z));
+        new_max = vec3_new(Max(old_max.x, new_max.x), Max(old_max.y, new_max.y),
+                           Max(old_max.z, new_max.z));
+      }
+      const bool8_t bounded = new_bounded && (!was_drawn || old_bounded);
+      vkr_mesh_manager_note_topology_change_within(manager, bounded, new_min,
+                                                   new_max);
+    }
+
+    ++moved;
+    instance_slot = next_slot;
+  }
+
+  /* Each moved instance held one reference; the last release destroys the
+     asset, whose geometry the backends retire after their last GPU use. */
+  for (uint32_t i = 0u; i < moved; ++i) {
+    vkr_mesh_manager_release_asset(manager, from_handle);
+  }
+  return moved;
+}
+
+/* Whether every new asset of `swap` finished loading or failed. */
+vkr_internal bool8_t vkr_mesh_manager_asset_swap_settled(
+    VkrMeshManager *manager, const VkrMeshAssetSwap *swap) {
+  for (uint32_t i = 0u; i < swap->pair_count; ++i) {
+    const VkrMeshAsset *to =
+        vkr_mesh_manager_get_asset(manager, swap->pairs[i].to);
+    if (to && to->loading_state == VKR_MESH_LOADING_STATE_PENDING) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+vkr_internal void
+vkr_mesh_manager_complete_asset_swaps(VkrMeshManager *manager) {
+  uint32_t index = 0u;
+  while (index < manager->asset_swap_count) {
+    const VkrMeshAssetSwap *swap = &manager->asset_swaps[index];
+    if (!vkr_mesh_manager_asset_swap_settled(manager, swap)) {
+      ++index;
+      continue;
+    }
+
+    /* Every instance of the request moves in this pump, so a frame never
+       mixes the old and new revision of one file. */
+    uint32_t moved = 0u;
+    uint32_t skinned = 0u;
+    uint32_t failed = 0u;
+    VkrRendererError first_error = VKR_RENDERER_ERROR_NONE;
+    String8 failed_path = {0};
+    for (uint32_t i = 0u; i < swap->pair_count; ++i) {
+      const VkrMeshAssetSwapPair pair = swap->pairs[i];
+      const VkrMeshAsset *to = vkr_mesh_manager_get_asset(manager, pair.to);
+      if (!to || to->loading_state != VKR_MESH_LOADING_STATE_LOADED ||
+          to->submeshes.length == 0u) {
+        if (failed == 0u) {
+          first_error = to && to->last_error != VKR_RENDERER_ERROR_NONE
+                            ? to->last_error
+                            : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+          failed_path = to ? to->mesh_path : (String8){0};
+        }
+        ++failed;
+        continue;
+      }
+
+      uint32_t pair_skinned = 0u;
+      moved += vkr_mesh_manager_move_asset_instances(manager, pair.from,
+                                                     pair.to, &pair_skinned);
+      skinned += pair_skinned;
+    }
+
+    if (failed > 0u) {
+      String8 message = vkr_renderer_get_error_string(first_error);
+      log_warn("MeshManager: %u of %u swapped mesh assets of '%.*s' did not "
+               "load (%s); their instances keep the old mesh",
+               failed, swap->pair_count, (int)failed_path.length,
+               failed_path.str ? (const char *)failed_path.str : "",
+               string8_cstr(&message));
+    }
+    if (skinned > 0u) {
+      log_warn("MeshManager: %u skinned instances keep their old mesh; "
+               "reload their model to show the rebuilt one",
+               skinned);
+    }
+    if (moved > 0u) {
+      manager->asset_swap_generation++;
+      const VkrMeshAsset *to =
+          vkr_mesh_manager_get_asset(manager, swap->pairs[0].to);
+      log_info("MeshManager: %u instances now draw '%.*s'", moved,
+               to ? (int)to->mesh_path.length : 0,
+               to ? (const char *)to->mesh_path.str : "");
+    }
+
+    /* The swap's references on its new assets go last, so a new asset no
+       instance moved to, and the path `failed_path` borrows, end here. */
+    vkr_mesh_manager_end_asset_swap(manager, index);
   }
 }

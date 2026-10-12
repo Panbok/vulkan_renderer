@@ -127,9 +127,10 @@ consumer that chose a shader or pipeline.
    (`add`, `remove`, `connect`, `disconnect`, `set`, `settings`, all or
    nothing), `material.set_param`, `material.compile`, `material.open` and
    `material.assign` (a face, a brush's faces or a mesh's submeshes; an
-   empty material clears). A material dropped from Content on the Scene is
-   assigned to the brush or mesh under it, and the Art palette's Assign
-   does the same for the selection. `face.set_material` assigns materials
+   empty material clears). A material or texture dropped from Content on the
+   Scene is assigned to the brush or mesh under it by its asset reference
+   ([ADR-112](112-asset-references-and-live-asset-swaps.md)), and the Art
+   palette's Assign does the same for the selection. `face.set_material` assigns materials
    to brush faces
    ([ADR-084](084-agent-channel-and-level-design-toolkit.md)). The
    [vkr-art skill](../../.codex/skills/vkr-art/SKILL.md) teaches agents the

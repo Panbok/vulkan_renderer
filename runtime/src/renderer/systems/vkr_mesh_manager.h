@@ -141,6 +141,27 @@ typedef struct VkrMeshManagerGenerations {
 /** Static changes a mesh manager remembers for retained shadows. */
 #define VKR_MESH_STATIC_CHANGE_MAX 256u
 
+/** Asset path swaps one mesh manager keeps in flight
+    (vkr_mesh_manager_swap_asset_path). */
+#define VKR_MESH_ASSET_SWAP_MAX 16u
+
+/** One asset a swap replaces and the asset that replaces it. The swap owns
+    one reference on `to` until it completes or is superseded; it holds no
+    reference on `from`, so instances destroyed meanwhile still free it. */
+typedef struct VkrMeshAssetSwapPair {
+  VkrMeshAssetHandle from;
+  VkrMeshAssetHandle to;
+} VkrMeshAssetSwapPair;
+
+/** A swap waiting for every `to` asset to settle. `pairs` comes from the
+    manager's asset allocator with room for `pair_capacity` pairs and is
+    freed with that size when the swap ends. */
+typedef struct VkrMeshAssetSwap {
+  VkrMeshAssetSwapPair *pairs;
+  uint32_t pair_count;
+  uint32_t pair_capacity;
+} VkrMeshAssetSwap;
+
 /** @brief Owns mesh instances, shared assets, and their shadow generations. */
 typedef struct VkrMeshManager {
   Arena *arena;
@@ -198,6 +219,17 @@ typedef struct VkrMeshManager {
   uint32_t next_instance_index;
   uint32_t instance_generation_counter;
   uint32_t mesh_temporal_generation_counter;
+  /* Per instance slot: how many times the instance's asset was swapped
+     since its creation (vkr_mesh_manager_instance_content_revision). */
+  Array_uint32_t instance_content_revisions;
+
+  /* Asset path swaps in flight, oldest first. */
+  VkrMeshAssetSwap asset_swaps[VKR_MESH_ASSET_SWAP_MAX];
+  uint32_t asset_swap_count;
+  /** Raised each time a completed swap moved at least one instance to
+      another asset; a consumer caching per-asset data compares it once per
+      frame before checking instance content revisions. */
+  uint64_t asset_swap_generation;
 } VkrMeshManager;
 
 // ============================================================================
@@ -379,8 +411,9 @@ VkrSubMesh *vkr_mesh_manager_get_submesh(VkrMeshManager *manager,
 /**
  * @brief Progress pending mesh asset requests on the render thread.
  *
- * Finalizes assets whose mesh resource requests reached READY state and updates
- * dependent instances from `PENDING` to `LOADED`.
+ * Finalizes assets whose mesh resource requests reached READY state, updates
+ * dependent instances from `PENDING` to `LOADED`, and completes asset path
+ * swaps whose new assets settled (vkr_mesh_manager_swap_asset_path).
  *
  * @param manager The mesh manager.
  */
@@ -410,6 +443,49 @@ bool8_t vkr_mesh_manager_hold_drawn_assets(VkrMeshManager *manager,
     hold uses is destroyed. */
 void vkr_mesh_manager_release_hold(VkrMeshManager *manager,
                                    VkrMeshAssetHold *hold);
+
+/**
+ * @brief Starts loading the mesh at `new_path` for every live asset loaded
+ * from `old_path` that an instance draws, and once all of them settle,
+ * points those instances at the new assets.
+ *
+ * `old_path` must equal the path the instances were created with
+ * (VkrMeshAsset.mesh_path). Each new asset keeps its old asset's pipeline
+ * domain, shader override and source mesh index. The request does not block:
+ * vkr_mesh_manager_pump_async completes it at a frame-preparation boundary,
+ * all instances of the request in the same pump. A moved instance keeps its
+ * handle, transform, visibility, render id, shadow mobility, lightmap slot
+ * and material overrides (an override past the new asset's submesh count is
+ * kept and not drawn), and its content revision rises. An instance still
+ * loading the old asset, or one created on it before completion, moves too.
+ * A skinned instance stays on the old asset, because its animator's skin
+ * binding was derived from the old file. Each old asset is released once its
+ * last instance moved, through the asset reference count and the backends'
+ * GPU-completion retirement. A new asset that fails to load leaves its
+ * instances on the old asset and logs a warning.
+ *
+ * A request supersedes an in-flight swap of the same old assets, or of the
+ * assets that swap is loading from `old_path`, so repeated rebuilds settle
+ * on the latest path.
+ * @return false, changing nothing, when no instance draws an asset of
+ * `old_path`, the paths are equal or empty, VKR_MESH_ASSET_SWAP_MAX swaps are
+ * in flight, or a new asset cannot start loading.
+ */
+bool8_t vkr_mesh_manager_swap_asset_path(VkrMeshManager *manager,
+                                         String8 old_path, String8 new_path,
+                                         VkrRendererError *out_error);
+
+/**
+ * @brief How many times `handle`'s asset was swapped since the instance was
+ * created; zero for a stale handle.
+ *
+ * A swap keeps the handle, so a consumer caching data derived from the
+ * instance's asset (submesh counts, bounds, triangles) stores the revision
+ * with its cache and rebuilds when it differs.
+ */
+uint32_t
+vkr_mesh_manager_instance_content_revision(const VkrMeshManager *manager,
+                                           VkrMeshInstanceHandle handle);
 
 // ============================================================================
 // Mesh Instance API

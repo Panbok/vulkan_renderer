@@ -473,6 +473,18 @@ bool8_t vkr_project_index_bundle(VkrProjectJob *job, const char *bundle,
                                  const char *import_id);
 bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
                                          const VkrProjectStrings *materials);
+/** Places a standalone source image in `<revision>/textures/<digest>.<ext>`
+ * (`out_image`) and cooks its `<image>.vkt` sidecar, which the texture system
+ * loads for the image path, with a recipe beside it so recook_textures can
+ * cook it again on another host. A standalone texture does not know its use,
+ * so it is encoded as colour sRGB, the base colour it most often becomes.
+ * Preview and deferred jobs cook it at the preview tier. */
+bool8_t vkr_project_import_image(VkrProjectJob *job, const char *source,
+                                 const char *revision, char *out_image);
+/** Marks a standalone texture record cooked at the preview tier
+ * (`texture_tier` "preview") so a finalize cooks it at the final tier, or
+ * clears the mark at the final tier. */
+void vkr_project_mark_image_tier(VkrProjectJob *job, VkrBakeryJson *record);
 /** Points a material's source-image texture lines at their packed .vkt. */
 bool8_t vkr_project_point_material(VkrProjectJob *job, const char *material);
 /** Cooks a model into `bundle` with `tool mesh` at the job's texture tier,

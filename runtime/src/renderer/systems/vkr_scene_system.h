@@ -2238,9 +2238,17 @@ VkrEntityId vkr_scene_find_entity_ref(const VkrScene *scene,
                                       const VkrEntityRef *id);
 /** Loads the material file `path` for generated geometry, adding one
     reference the caller releases when `*out_owned`; the default material,
-    not owned, when it does not load. */
+    not owned, when it does not load. `path` may be a managed asset
+    reference ("asset:<scope>/<id>"), which loads the revision published for
+    it: its material file, or a texture drawn as a plain PBR material. */
 VkrMaterialHandle vkr_scene_material_load(VkrScene *scene, const char *path,
                                           bool8_t *out_owned);
+/** Points the material a texture asset reference `ref` draws as at the
+    texture file `texture_path`, as when a rebuild moves the texture to a new
+    revision; false when no material of that reference is live. */
+bool8_t vkr_scene_texture_material_apply(struct VkrRenderAssets *assets,
+                                         const char *ref,
+                                         const char *texture_path);
 
 /** Whether `entity` is a part of its parent rather than an object of its
     own: a brush face or an IO connection. Lists hide parts, and deleting

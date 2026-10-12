@@ -1,6 +1,7 @@
 #include "editor_content.h"
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
+#include "core/vkr_hash.h"
 #include "core/vkr_json.h"
 #include "core/vkr_threads.h"
 #include "editor_install.h"
@@ -13,6 +14,7 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/systems/vkr_scene_system.h"
 #include <ctype.h>
 #include <limits.h>
 #include <math.h>
@@ -48,6 +50,8 @@
 #define CONTENT_SCOPE_BUILTIN 3u
 /* A scene's folder path is this byte and its id; users cannot type it. */
 #define CONTENT_SCENE_MARK '\x01'
+/* Assets whose files changed on disk, waiting for the rebuild slot. */
+#define CONTENT_PENDING_REBUILDS 32u
 #define CONTENT_SYSTEM "System"
 
 typedef enum ContentKind {
@@ -283,6 +287,19 @@ struct VkrEditorContent {
   uint32_t watch;
   char watched[CONTENT_PATH];
   int64_t listed_at;
+  /* Rebuilds the change reports queued, oldest first; each starts once no
+     other action waits and the editor's own jobs are done. `artifact` names
+     the build file whose edit or removal queued it, empty for a source
+     edit. */
+  struct {
+    char id[37];
+    uint32_t scope;
+    char artifact[CONTENT_PATH];
+  } pending_rebuilds[CONTENT_PENDING_REBUILDS];
+  uint32_t pending_rebuild_count;
+  /* A project job or depot sync is writing the project: queued rebuilds
+     wait, since the build files it replaces or retires are its own. */
+  bool8_t busy;
   /* The project's labels and presets documents; the arrays live as long as
      the browser. */
   VkrEditorContentLabels labels;
@@ -858,13 +875,35 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
     if (vkr_editor_project_json_member(record, "artifacts", &artifacts,
                                        &error) &&
         artifacts.length && artifacts.str[0] == '[') {
+      /* The primary artifact is the one whose role is the record's kind,
+         as lowering publishes it (ADR-112); otherwise the first. */
+      char record_kind[64] = {0};
+      (void)vkr_editor_project_json_string(record, "kind", record_kind,
+                                           sizeof(record_kind), NULL);
       VkrJsonReader artifact_list = vkr_json_reader_from_string(artifacts);
       artifact_list.pos = 1;
       VkrJsonReader artifact = {0};
-      if (vkr_json_next_array_element(&artifact_list) &&
-          vkr_json_enter_object(&artifact_list, &artifact)) {
-        String8 artifact_object = {.str = (uint8_t *)artifact.data,
+      bool8_t found = false_v;
+      String8 artifact_object = {0};
+      while (vkr_json_next_array_element(&artifact_list) &&
+             vkr_json_enter_object(&artifact_list, &artifact)) {
+        const String8 candidate = {.str = (uint8_t *)artifact.data,
                                    .length = artifact.length};
+        char role[64] = {0};
+        const bool8_t primary =
+            record_kind[0] &&
+            vkr_editor_project_json_string(candidate, "role", role,
+                                           sizeof(role), NULL) &&
+            !strcmp(role, record_kind);
+        if (!found || primary) {
+          artifact_object = candidate;
+          found = true_v;
+        }
+        if (primary) {
+          break;
+        }
+      }
+      if (found) {
         if (vkr_editor_project_json_string(artifact_object, "path", relative,
                                            sizeof(relative), &error)) {
           /* Artifacts live in builds/<revision>/ below their owner. */
@@ -1627,17 +1666,108 @@ static bool8_t content_real_path(const char *path, char *out,
 #endif
 }
 
-/* Marks the entries whose source or artifact the change names. A deleted
-   artifact is Missing; an edited source queues a rebuild of a scene-owned
-   asset of the open scene when no other action waits. */
+/* Whether `kind` is an asset a build job makes from a source; scenes,
+   bakes, objects, presets and scripts change through their own tools. */
+static bool8_t content_built_kind(ContentKind kind) {
+  switch (kind) {
+  case CONTENT_SCENE:
+  case CONTENT_PROBE:
+  case CONTENT_ENTITY:
+  case CONTENT_OBJECT:
+  case CONTENT_PRESET:
+  case CONTENT_SCRIPT:
+  case CONTENT_OTHER:
+    return false_v;
+  default:
+    return true_v;
+  }
+}
+
+/* Whether a build job can rebuild `entry` from its source: an asset of
+   the project or of the open scene, while a scene is open to publish it. */
+static bool8_t content_rebuildable(const VkrEditorContent *content,
+                                   const ContentAsset *entry,
+                                   const char *resolved_scene) {
+  if (content->read_only || !content->scene[0] || !entry->source[0] ||
+      !content_built_kind(entry->kind)) {
+    return false_v;
+  }
+  if (entry->scope == 1u) {
+    return true_v;
+  }
+  char source[CONTENT_PATH];
+  return entry->scope == 0u &&
+         content_real_path(entry->source, source, sizeof(source)) &&
+         !strncmp(source, resolved_scene, strlen(resolved_scene));
+}
+
+/* Queues a rebuild of `entry` once; a full queue drops it with a warning,
+   leaving the asset marked for a manual Rebuild. A source edit outranks a
+   queued build-file report, which a job may since have made moot. */
+static void content_queue_rebuild(VkrEditorContent *content,
+                                  const ContentAsset *entry,
+                                  const char *artifact) {
+  for (uint32_t i = 0u; i < content->pending_rebuild_count; ++i) {
+    if (!strcmp(content->pending_rebuilds[i].id, entry->id)) {
+      if (!artifact[0]) {
+        content->pending_rebuilds[i].artifact[0] = '\0';
+      }
+      return;
+    }
+  }
+  if (content->pending_rebuild_count >= CONTENT_PENDING_REBUILDS) {
+    log_warn("Content: too many changed assets; Rebuild %s to update it",
+             entry->name);
+    return;
+  }
+  uint32_t slot = content->pending_rebuild_count++;
+  content_copy(content->pending_rebuilds[slot].id,
+               sizeof(content->pending_rebuilds[slot].id), entry->id);
+  content->pending_rebuilds[slot].scope = entry->scope;
+  content_copy(content->pending_rebuilds[slot].artifact,
+               sizeof(content->pending_rebuilds[slot].artifact), artifact);
+}
+
+/* Whether the file at `path` still holds the bytes `fingerprint`
+   ("sha256:<hex>", an inventory record's) names. */
+static bool8_t content_file_matches(const char *path, const char *fingerprint) {
+  static const char prefix[] = "sha256:";
+  const uint64_t prefix_length = sizeof(prefix) - 1u;
+  if (strncmp(fingerprint, prefix, prefix_length) != 0) {
+    return false_v;
+  }
+  FILE *file = file_fopen(path, "rb");
+  if (!file) {
+    return false_v;
+  }
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  uint8_t chunk[16384];
+  size_t read = 0u;
+  while ((read = fread(chunk, 1u, sizeof(chunk), file)) > 0u) {
+    vkr_sha256_update(&hash, chunk, read);
+  }
+  const bool8_t failed = ferror(file) != 0;
+  fclose(file);
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  vkr_sha256_final(&hash, digest);
+  char hex[VKR_SHA256_HEX_SIZE];
+  vkr_sha256_hex(digest, hex);
+  return !failed && strcmp(hex, fingerprint + prefix_length) == 0;
+}
+
+/* Marks the entries whose source or artifact the change names. An edited
+   source, or an edited or removed build file, queues a rebuild of a project
+   asset or one of the open scene (ADR-077); the rebuild swaps into the open
+   scene in place. */
 static void content_apply_change(VkrEditorContent *content, const char *path) {
   FileStats stats = {0};
   FilePath file = {.path = content_string(path),
                    .type = FILE_PATH_TYPE_ABSOLUTE};
   const bool8_t exists = file_stats(&file, &stats) == FILE_ERROR_NONE;
-  if (exists && (int64_t)stats.last_modified <= content->listed_at) {
-    return;
-  }
+  /* A job publishes files before the listing that shows them is read. */
+  const bool8_t listed =
+      exists && (int64_t)stats.last_modified <= content->listed_at;
   /* Real path of the open scene's directory with a trailing separator. */
   char scene_root[CONTENT_PATH];
   snprintf(scene_root, sizeof(scene_root), "%s/scenes/%s", content->watched,
@@ -1654,50 +1784,118 @@ static void content_apply_change(VkrEditorContent *content, const char *path) {
         content_real_path(entry->source, source, sizeof(source)) &&
         !strcmp(source, path);
     const bool8_t is_artifact =
+        !is_source &&
         content_real_path(entry->path, artifact, sizeof(artifact)) &&
         !strcmp(artifact, path);
     /* One report per file until the listing is read again: an editor can
        save one file as several writes. */
-    if ((!is_source && !is_artifact) || entry->changed || entry->missing) {
+    if ((!is_source && !is_artifact) || entry->changed || entry->missing ||
+        !content_built_kind(entry->kind)) {
       continue;
     }
-    if (!exists) {
-      entry->missing = is_artifact;
-      entry->changed = !is_artifact;
+    /* The record's own build file (a texture's source is one) proves an
+       edit by its bytes, even one a late report brings after the listing
+       was read again; another file by its time. */
+    const bool8_t recorded =
+        exists && entry->fingerprint[0] &&
+        (is_artifact ||
+         (content_real_path(entry->path, artifact, sizeof(artifact)) &&
+          !strcmp(artifact, path)));
+    if (recorded ? content_file_matches(path, entry->fingerprint) : listed) {
+      continue;
+    }
+    /* A running job or sync may be replacing its own build files: the
+       rebuild waits for them to end and then checks the file again
+       (content_start_pending_rebuild). */
+    if (is_artifact && content->busy) {
+      if (content_rebuildable(content, entry, resolved_scene)) {
+        content_queue_rebuild(content, entry, artifact);
+      }
+      continue;
+    }
+    entry->missing = is_artifact && !exists;
+    entry->changed = !entry->missing;
+    if (is_source && !exists) {
+      snprintf(entry->diagnostic, sizeof(entry->diagnostic),
+               "Source removed on disk. Reimport to update.");
+      continue;
+    }
+    if (!content_rebuildable(content, entry, resolved_scene)) {
       snprintf(entry->diagnostic, sizeof(entry->diagnostic), "%s",
-               is_artifact ? "Artifact removed on disk. Rebuild or Reimport."
-                           : "Source removed on disk. Reimport to update.");
-      continue;
-    }
-    entry->changed = true_v;
-    if (!is_source) {
-      snprintf(entry->diagnostic, sizeof(entry->diagnostic),
-               "Artifact changed on disk. Rebuild or Reimport.");
-      continue;
-    }
-    const uint64_t scene_length = strlen(resolved_scene);
-    if (content->read_only || content->action.kind || entry->scope != 0u ||
-        entry->kind == CONTENT_SCENE || !content->scene[0] ||
-        strncmp(source, resolved_scene, scene_length)) {
-      snprintf(entry->diagnostic, sizeof(entry->diagnostic),
-               "Source changed on disk. Rebuild to update.");
+               is_source ? "Source changed on disk. Rebuild to update."
+               : exists  ? "Artifact changed on disk. Rebuild or Reimport."
+                         : "Artifact removed on disk. Rebuild or Reimport.");
       log_warn("Content: %s changed on disk; Rebuild to update it",
                entry->name);
       continue;
     }
-    snprintf(entry->diagnostic, sizeof(entry->diagnostic),
-             "Source changed on disk.");
-    content->action = (VkrEditorContentAction){
-        .kind = VKR_EDITOR_CONTENT_ACTION_REBUILD,
-        .automatic = true_v,
-    };
-    content_copy(content->action.asset_id, sizeof(content->action.asset_id),
-                 entry->id);
-    content_copy(content->action.source, sizeof(content->action.source),
-                 entry->source);
-    content_copy(content->action.name, sizeof(content->action.name),
-                 entry->name);
-    content_copy(content->action.scope, sizeof(content->action.scope), "scene");
+    snprintf(entry->diagnostic, sizeof(entry->diagnostic), "%s",
+             is_source ? "Source changed on disk; rebuilding."
+             : exists  ? "Artifact changed on disk; rebuilding from source."
+                       : "Artifact removed on disk; rebuilding from source.");
+    content_queue_rebuild(content, entry, is_artifact ? artifact : "");
+  }
+}
+
+/* Starts the oldest queued rebuild once the action slot is free and the
+   editor's jobs are idle. One queued by a build file starts only while the
+   listing still names that file and it is still gone or differs from the
+   record, so a job that replaced it since queues nothing. */
+static void content_start_pending_rebuild(VkrEditorContent *content) {
+  while (content->pending_rebuild_count && !content->action.kind &&
+         !content->busy && !content->read_only) {
+    const uint32_t pending = 0u;
+    const ContentAsset *entry = NULL;
+    for (uint32_t i = 0u; i < content->asset_count && !entry; ++i) {
+      if (content->entries[i].scope ==
+              content->pending_rebuilds[pending].scope &&
+          !strcmp(content->entries[i].id,
+                  content->pending_rebuilds[pending].id)) {
+        entry = &content->entries[i];
+      }
+    }
+    /* The open scene may have changed since the report. */
+    char scene_root[CONTENT_PATH];
+    snprintf(scene_root, sizeof(scene_root), "%s/scenes/%s", content->watched,
+             content->scene);
+    char resolved_scene[CONTENT_PATH];
+    (void)content_real_path(scene_root, resolved_scene,
+                            sizeof(resolved_scene) - 1u);
+    strcat(resolved_scene, "/");
+    bool8_t start =
+        entry != NULL && content_rebuildable(content, entry, resolved_scene);
+    const char *artifact = content->pending_rebuilds[pending].artifact;
+    if (start && artifact[0]) {
+      char current[CONTENT_PATH];
+      start = content_real_path(entry->path, current, sizeof(current)) &&
+              !strcmp(current, artifact) &&
+              !content_file_matches(artifact, entry->fingerprint);
+    }
+    if (start) {
+      static const char *const owners[] = {"scene", "project"};
+      content->action = (VkrEditorContentAction){
+          .kind = VKR_EDITOR_CONTENT_ACTION_REBUILD,
+          .automatic = true_v,
+      };
+      content_copy(content->action.asset_id, sizeof(content->action.asset_id),
+                   entry->id);
+      content_copy(content->action.source, sizeof(content->action.source),
+                   entry->source);
+      content_copy(content->action.name, sizeof(content->action.name),
+                   entry->name);
+      content_copy(content->action.scope, sizeof(content->action.scope),
+                   owners[entry->scope]);
+    }
+    --content->pending_rebuild_count;
+    MemCopy(&content->pending_rebuilds[0], &content->pending_rebuilds[1],
+            content->pending_rebuild_count *
+                sizeof(content->pending_rebuilds[0]));
+  }
+}
+
+void vkr_editor_content_set_busy(VkrEditorContent *content, bool8_t busy) {
+  if (content) {
+    content->busy = busy;
   }
 }
 
@@ -1785,6 +1983,48 @@ void vkr_editor_content_set_service(VkrEditorContent *content,
   content_watch_project(content);
 }
 
+/* Points every listed managed asset's reference at its current artifact,
+   so scene values naming it resolve to the revision the listing shows
+   (ADR-076). A texture a job, finalize or sync moved to a new revision
+   moves the material it draws as, and a mesh moves the instances drawing
+   the revision published before. */
+static void content_publish_references(VkrEditorContent *content) {
+  static const char *const owners[] = {"scene", "project", "editor"};
+  for (uint32_t i = 0u; i < content->asset_count; ++i) {
+    const ContentAsset *entry = &content->entries[i];
+    if (entry->scope >= ArrayCount(owners) || !entry->path[0] ||
+        entry->missing || entry->stale) {
+      continue;
+    }
+    char ref[VKR_ASSET_REF_CAPACITY];
+    const int32_t length =
+        snprintf(ref, sizeof(ref), VKR_ASSET_REF_PREFIX "%s/%s",
+                 owners[entry->scope], entry->id);
+    if (length <= 0 || (uint32_t)length >= sizeof(ref)) {
+      continue;
+    }
+    char previous[CONTENT_PATH];
+    const bool8_t published_before = vkr_render_assets_resolve_asset_ref(
+        content->assets, content_string(ref), previous, sizeof(previous));
+    bool8_t changed = false_v;
+    if (!vkr_render_assets_publish_asset_ref(
+            content->assets, content_string(ref), content_string(entry->path),
+            &changed) ||
+        !changed) {
+      continue;
+    }
+    if (entry->kind == CONTENT_TEXTURE) {
+      (void)vkr_scene_texture_material_apply(content->assets, ref, entry->path);
+    } else if (entry->kind == CONTENT_MESH && published_before) {
+      /* No instance drawing the earlier revision leaves nothing to move. */
+      VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+      (void)vkr_mesh_manager_swap_asset_path(
+          &content->assets->mesh_manager, content_string(previous),
+          content_string(entry->path), &error);
+    }
+  }
+}
+
 void vkr_editor_content_refresh(VkrEditorContent *content) {
   if (!content) {
     return;
@@ -1837,6 +2077,7 @@ void vkr_editor_content_refresh(VkrEditorContent *content) {
   content_presets_load(content);
   content_labels_load(content);
   content->asset_count = content->count;
+  content_publish_references(content);
   /* Loaded containers' objects follow on the next sync. */
   content->objects_key = 0u;
   content->objects_gate = 0u;
@@ -2069,18 +2310,20 @@ void vkr_editor_content_sync_objects(
   content_reveal_created(content, frame);
 }
 
-void vkr_editor_content_set_project(VkrEditorContent *content,
-                                    const char *workspace_root,
-                                    const char *project_id,
-                                    const char *scene_id) {
+bool8_t vkr_editor_content_set_project(VkrEditorContent *content,
+                                       const char *workspace_root,
+                                       const char *project_id,
+                                       const char *scene_id) {
   if (!content || !workspace_root || !project_id || !scene_id) {
-    return;
+    return false_v;
   }
   if (!strcmp(content->workspace, workspace_root) &&
       !strcmp(content->project, project_id) &&
       !strcmp(content->scene, scene_id)) {
-    return;
+    return false_v;
   }
+  /* Queued rebuilds belong to the scene and project they were reported in. */
+  content->pending_rebuild_count = 0u;
   if (strcmp(content->project, project_id)) {
     content->folder[0] = '\0';
     content->selected_folder[0] = '\0';
@@ -2095,9 +2338,10 @@ void vkr_editor_content_set_project(VkrEditorContent *content,
       !content_copy(content->scene, sizeof(content->scene), scene_id)) {
     snprintf(content->diagnostic, sizeof(content->diagnostic),
              "Content context path or ID exceeds supported capacity.");
-    return;
+    return false_v;
   }
   vkr_editor_content_refresh(content);
+  return true_v;
 }
 
 void vkr_editor_content_set_read_only(VkrEditorContent *content,
@@ -2214,6 +2458,7 @@ void vkr_editor_content_update(VkrEditorContent *content) {
   ++content->frame;
   content->uploads_this_frame = 0;
   content_poll_changes(content);
+  content_start_pending_rebuild(content);
   if (content->scripts && content->project[0] &&
       content->scripts_revision !=
           vkr_editor_scripts_revision(content->scripts)) {
@@ -3650,8 +3895,35 @@ static String8 content_description(const VkrEditorContent *content,
 /* Whether the viewport accepts a dropped item: object types, scripts and
    built meshes. A scene folder dropped there opens. */
 static bool8_t content_viewport_accepts(const ContentAsset *entry) {
+  const bool8_t built = !entry->missing && !entry->stale;
+  /* A texture draws as a material only through its asset reference, so
+     built-in textures stay out. */
+  const bool8_t texture =
+      entry->kind == CONTENT_TEXTURE && entry->scope != CONTENT_SCOPE_BUILTIN;
   return entry->kind == CONTENT_OBJECT || entry->kind == CONTENT_SCRIPT ||
-         (entry->kind == CONTENT_MESH && !entry->missing && !entry->stale);
+         ((entry->kind == CONTENT_MESH || entry->kind == CONTENT_MATERIAL ||
+           texture) &&
+          built);
+}
+
+/* What a scene names a dropped material or texture by. A managed asset is
+   its reference, which follows its rebuilds (ADR-076) and which the listing
+   published (content_publish_references). A built-in asset is its
+   content-root path. */
+static bool8_t content_scene_reference(const ContentAsset *entry, char *out,
+                                       uint32_t capacity) {
+  static const char *const owners[] = {"scene", "project", "editor"};
+  if (entry->scope < ArrayCount(owners)) {
+    const int32_t length = snprintf(out, capacity, VKR_ASSET_REF_PREFIX "%s/%s",
+                                    owners[entry->scope], entry->id);
+    return length > 0 && (uint32_t)length < capacity;
+  }
+  const char *root = vkr_content_root();
+  const uint64_t root_length = root ? strlen(root) : 0u;
+  if (root_length && !strncmp(entry->path, root, root_length)) {
+    return content_copy(out, capacity, entry->path + root_length);
+  }
+  return entry->path[0] != '/' && content_copy(out, capacity, entry->path);
 }
 
 /* The dragged item follows the pointer. Releasing it over a folder moves
@@ -3695,10 +3967,18 @@ static void content_drag_update(VkrEditorContent *content, VkrUiSystem *ui) {
       content->selected = shown;
       content_action(content, VKR_EDITOR_CONTENT_ACTION_PLACE_ASSET);
       content->action.drop_px = (Vec2){x, y};
-    } else if (over_viewport && entry->kind == CONTENT_MATERIAL) {
-      /* The editor picks under the drop and assigns the material there. */
+    } else if (over_viewport && (entry->kind == CONTENT_MATERIAL ||
+                                 entry->kind == CONTENT_TEXTURE)) {
+      /* The editor picks under the drop and assigns the material there; a
+         texture draws as a material of its own. */
       content->selected = shown;
       content_action(content, VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL);
+      if (!content_scene_reference(entry, content->action.source,
+                                   sizeof(content->action.source))) {
+        snprintf(content->diagnostic, sizeof(content->diagnostic),
+                 "%.200s cannot be assigned from here.", entry->name);
+        content->action = (VkrEditorContentAction){0};
+      }
       content->action.drop_px = (Vec2){x, y};
       content->action.dropped = true_v;
     } else if (over_viewport && entry->kind == CONTENT_SCRIPT) {
@@ -4418,15 +4698,16 @@ static void content_build_asset_actions(VkrEditorContent *content,
                               content_worker, content);
     }
     VkrUiWidgetConfig reimport = content_widget(0, 1);
-    /* Reimport and rebuild run as jobs on scene-owned records. */
+    /* Reimport and rebuild run as jobs on the open scene's or the project's
+       records, and swap the result into the open scene. */
     reimport.disabled = content->read_only || !entry->source[0] ||
-                        entry->scope != 0 || content_locked(content, entry);
+                        entry->scope > 1u || content_locked(content, entry);
     if (vkr_ui_button(ui, string8_lit("reimport"), string8_lit("Reimport"),
                       &reimport)) {
       content_action(content, VKR_EDITOR_CONTENT_ACTION_REIMPORT);
     }
     VkrUiWidgetConfig rebuild = content_widget(1, 1);
-    rebuild.disabled = content->read_only || scene || entry->scope != 0 ||
+    rebuild.disabled = content->read_only || scene || entry->scope > 1u ||
                        content_locked(content, entry);
     if (vkr_ui_button(ui, string8_lit("rebuild"), string8_lit("Rebuild"),
                       &rebuild)) {

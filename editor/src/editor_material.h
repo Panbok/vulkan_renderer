@@ -120,9 +120,9 @@ const char *vkr_editor_material_open_path(const VkrEditorMaterials *materials);
 void vkr_editor_material_panel_build(struct VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect rect);
-/* Assigns material `path` (a `.mt`), dropped at `drop_px`, to the brush
-   or mesh the Scene picks there once the pick answers
-   (vkr_editor_material_finish_drop). */
+/* Assigns material `path` (a `.mt`, or an asset reference that may name a
+   texture), dropped at `drop_px`, to the brush or mesh the Scene picks there
+   once the pick answers (vkr_editor_material_finish_drop). */
 void vkr_editor_material_drop(VkrEditorMaterials *materials,
                               const VkrSampleUiFrame *frame, const char *path,
                               Vec2 drop_px);

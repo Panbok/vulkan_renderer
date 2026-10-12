@@ -237,11 +237,12 @@ from it.
     `VKR-MAT-0001`, and a project past the Custom graph budget is
     `VKR-MAT-0002`.
   - The open project's directory marks a Content item Changed or Missing when
-    its source or artifact changes on disk after the listing was read. An
-    edited source of an asset in the open scene queues that asset's Rebuild
-    job without a user request; with unsaved scene edits the item stays
-    Changed and the Console asks for a save and Rebuild. The Content browser
-    has no per-action `status` state: a project job owns publication.
+    its source or artifact changes on disk. An edited source, or an edited or
+    removed build file, of an asset of the project or the open scene queues
+    that asset's Rebuild job without a user request, and the result swaps into
+    the open scene in place
+    ([ADR-112](112-asset-references-and-live-asset-swaps.md)). The Content
+    browser has no per-action `status` state: a project job owns publication.
 - **Content root and archives.** Relative asset paths resolve against one
   content root ([mounts](../../lib/src/filesystem/vkr_vfs.h)): the repository
   by default, or a bundle's `content/` directory. `.vkpak` archives mounted
@@ -354,8 +355,9 @@ from it.
   them as mesh side products and managed imports reuse the content-addressed
   directory; child actions would need dynamic graph expansion and a second
   mesh pass.
-- A Rebuild queued by a source edit republishes the scene and reloads it like
-  a clicked Rebuild.
+- A Rebuild or Reimport republishes the scene and swaps the changed assets
+  into it without a reload; a kind without a live swap reloads a clean scene
+  ([ADR-112](112-asset-references-and-live-asset-swaps.md)).
 - A bundle is a directory that runs from anywhere; a patch archive mounted
   ahead of the base overrides it by identity.
 

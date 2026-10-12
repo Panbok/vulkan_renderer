@@ -2073,7 +2073,10 @@ void vkr_editor_material_assign(VkrEditorUi *editor,
 void vkr_editor_material_drop(VkrEditorMaterials *materials,
                               const VkrSampleUiFrame *frame, const char *path,
                               Vec2 drop_px) {
-  if (!materials || !frame->pick_request || !material_ends_with(path, ".mt")) {
+  const bool8_t reference = vkr_asset_ref_is(
+      string8_create_from_cstr((const uint8_t *)path, strlen(path)));
+  if (!materials || !frame->pick_request ||
+      (!reference && !material_ends_with(path, ".mt"))) {
     return;
   }
   snprintf(materials->panel.drop, sizeof(materials->panel.drop), "%s", path);

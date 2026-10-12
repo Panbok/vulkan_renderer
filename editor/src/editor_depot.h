@@ -64,6 +64,10 @@ void vkr_editor_depot_trust_scripts(VkrEditorDepot *depot, VkrEditorUi *editor);
    it. */
 bool8_t vkr_editor_depot_dialog_open(const VkrEditorDepot *depot);
 
+/* Whether a depot step (sync, submit, clone) is running and may be writing
+   the open project's files. */
+bool8_t vkr_editor_depot_busy(const VkrEditorDepot *depot);
+
 // =============================================================================
 // Agent operations (editor_ops.c)
 // =============================================================================

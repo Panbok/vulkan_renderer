@@ -129,6 +129,20 @@ bool8_t vkr_render_assets_initialize(
     return false_v;
   }
   assets->mesh_manager.loader_context = &assets->mesh_loader;
+  if (!vkr_dmemory_create(KB(64), MB(16), &assets->asset_ref_memory)) {
+    return false_v;
+  }
+  assets->asset_ref_allocator =
+      (VkrAllocator){.ctx = &assets->asset_ref_memory};
+  vkr_dmemory_allocator_create(&assets->asset_ref_allocator);
+  if (!vkr_mutex_create(&assets->allocator, &assets->asset_ref_mutex)) {
+    return false_v;
+  }
+  assets->asset_refs =
+      vkr_hash_table_create_VkrAssetRefPath(&assets->asset_ref_allocator, 256u);
+  if (!assets->asset_refs.entries) {
+    return false_v;
+  }
 
   if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &assets->allocator,
                              &assets->bitmap_font_arena_pool) ||
@@ -216,6 +230,116 @@ VkrMeshRaycastCache *vkr_render_assets_mesh_raycast(VkrRenderAssets *assets) {
   return assets->mesh_raycast;
 }
 
+bool8_t vkr_asset_ref_is(String8 value) {
+  const uint64_t prefix = sizeof(VKR_ASSET_REF_PREFIX) - 1u;
+  return value.length > prefix &&
+         MemCompare(value.str, VKR_ASSET_REF_PREFIX, prefix) == 0;
+}
+
+/* `ref` with a terminator in `out`, the table's key form; false when it is
+   not a reference that fits. */
+vkr_internal bool8_t
+render_assets_asset_ref_key(String8 ref, char out[VKR_ASSET_REF_CAPACITY]) {
+  if (!vkr_asset_ref_is(ref) || ref.length >= VKR_ASSET_REF_CAPACITY) {
+    return false_v;
+  }
+  MemCopy(out, ref.str, ref.length);
+  out[ref.length] = '\0';
+  return true_v;
+}
+
+bool8_t vkr_render_assets_publish_asset_ref(VkrRenderAssets *assets,
+                                            String8 ref, String8 path,
+                                            bool8_t *out_changed) {
+  if (out_changed) {
+    *out_changed = false_v;
+  }
+  char key[VKR_ASSET_REF_CAPACITY];
+  if (!assets || !path.length || !render_assets_asset_ref_key(ref, key)) {
+    return false_v;
+  }
+  VkrAllocator *allocator = &assets->asset_ref_allocator;
+  bool8_t published = false_v;
+  vkr_mutex_lock(assets->asset_ref_mutex);
+  VkrAssetRefPath *current =
+      vkr_hash_table_get_VkrAssetRefPath(&assets->asset_refs, key);
+  if (current && current->size == path.length + 1u &&
+      MemCompare(current->path, path.str, path.length) == 0) {
+    vkr_mutex_unlock(assets->asset_ref_mutex);
+    return true_v;
+  }
+  char *copy = vkr_allocator_alloc(allocator, path.length + 1u,
+                                   VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (copy) {
+    MemCopy(copy, path.str, path.length);
+    copy[path.length] = '\0';
+  }
+  if (copy && current) {
+    vkr_allocator_free(allocator, current->path, current->size,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    *current = (VkrAssetRefPath){.path = copy, .size = path.length + 1u};
+    published = true_v;
+    if (out_changed) {
+      *out_changed = true_v;
+    }
+  } else if (copy) {
+    /* A new entry borrows its key from the heap until shutdown. */
+    char *owned_key = vkr_allocator_alloc(allocator, ref.length + 1u,
+                                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    if (owned_key) {
+      MemCopy(owned_key, key, ref.length + 1u);
+      published = vkr_hash_table_insert_VkrAssetRefPath(
+          &assets->asset_refs, owned_key,
+          (VkrAssetRefPath){.path = copy, .size = path.length + 1u});
+    }
+    if (!published) {
+      if (owned_key) {
+        vkr_allocator_free(allocator, owned_key, ref.length + 1u,
+                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      }
+      vkr_allocator_free(allocator, copy, path.length + 1u,
+                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    }
+  }
+  vkr_mutex_unlock(assets->asset_ref_mutex);
+  if (!published) {
+    log_warn("Assets: cannot record the path of '%.*s'", (int)ref.length,
+             ref.str);
+  }
+  return published;
+}
+
+bool8_t vkr_render_assets_asset_ref_known(VkrRenderAssets *assets,
+                                          String8 ref) {
+  char key[VKR_ASSET_REF_CAPACITY];
+  if (!assets || !render_assets_asset_ref_key(ref, key)) {
+    return false_v;
+  }
+  vkr_mutex_lock(assets->asset_ref_mutex);
+  const bool8_t known =
+      vkr_hash_table_get_VkrAssetRefPath(&assets->asset_refs, key) != NULL;
+  vkr_mutex_unlock(assets->asset_ref_mutex);
+  return known;
+}
+
+bool8_t vkr_render_assets_resolve_asset_ref(VkrRenderAssets *assets,
+                                            String8 ref, char *out,
+                                            uint64_t capacity) {
+  char key[VKR_ASSET_REF_CAPACITY];
+  if (!assets || !out || !capacity || !render_assets_asset_ref_key(ref, key)) {
+    return false_v;
+  }
+  vkr_mutex_lock(assets->asset_ref_mutex);
+  const VkrAssetRefPath *current =
+      vkr_hash_table_get_VkrAssetRefPath(&assets->asset_refs, key);
+  const bool8_t fits = current && current->size <= capacity;
+  if (fits) {
+    MemCopy(out, current->path, current->size);
+  }
+  vkr_mutex_unlock(assets->asset_ref_mutex);
+  return fits;
+}
+
 void vkr_render_assets_shutdown(VkrRenderAssets *assets) {
   if (!assets)
     return;
@@ -251,6 +375,11 @@ void vkr_render_assets_shutdown(VkrRenderAssets *assets) {
     vkr_arena_pool_destroy(&assets->allocator, &assets->mtsdf_font_arena_pool);
   if (assets->scene_async_mutex)
     vkr_mutex_destroy(&assets->allocator, &assets->scene_async_mutex);
+  /* The heap holds every reference key and path; it goes as one. */
+  if (assets->asset_ref_mutex)
+    vkr_mutex_destroy(&assets->allocator, &assets->asset_ref_mutex);
+  if (assets->asset_ref_allocator.ctx)
+    vkr_dmemory_allocator_destroy(&assets->asset_ref_allocator);
   if (assets->scene_async_allocator.ctx)
     vkr_dmemory_allocator_destroy(&assets->scene_async_allocator);
   if (assets->mesh_loader.async_mutex)

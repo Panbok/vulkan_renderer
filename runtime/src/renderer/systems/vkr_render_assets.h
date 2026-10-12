@@ -22,6 +22,21 @@
  * and must outlive this object. Do not move it after initialization: loaders
  * and systems borrow its fields. Scratch views last until their explicit scope
  * ends. */
+
+/* The prefix of a managed asset reference, "asset:<scope>/<id>" (ADR-076):
+ * the project asset a scene names without a revision path. */
+#define VKR_ASSET_REF_PREFIX "asset:"
+/* Bytes of a reference with its terminator: "asset:editor/" and a UUID fit. */
+#define VKR_ASSET_REF_CAPACITY 64u
+
+/* The current artifact path of one managed asset reference; the table owns
+ * `path` (and the entry's key) in its own heap. */
+typedef struct VkrAssetRefPath {
+  char *path;
+  uint64_t size;
+} VkrAssetRefPath;
+VkrHashTable(VkrAssetRefPath);
+
 typedef struct VkrRenderAssets {
   Arena *arena;
   VkrAllocator allocator;
@@ -66,6 +81,15 @@ typedef struct VkrRenderAssets {
     char path[1024];
     uint16_t world_id;
   } scene_container_requests[8];
+  /* Managed asset references to their current artifact paths: scene loads
+     publish their `asset_refs` and the editor publishes a rebuilt asset's
+     new revision. An entry stays until shutdown, so the table is bounded by
+     the distinct references loaded. Guarded by asset_ref_mutex, because
+     scene loads publish from loader workers. */
+  VkrDMemory asset_ref_memory;
+  VkrAllocator asset_ref_allocator;
+  VkrMutex asset_ref_mutex;
+  VkrHashTable_VkrAssetRefPath asset_refs;
 } VkrRenderAssets;
 
 /* CPU triangle memory the mesh ray cache keeps before it evicts. */
@@ -73,6 +97,22 @@ typedef struct VkrRenderAssets {
 
 /* The mesh ray cache, created on first use; NULL when it cannot be. */
 VkrMeshRaycastCache *vkr_render_assets_mesh_raycast(VkrRenderAssets *assets);
+
+/* Whether `value` is a managed asset reference ("asset:<scope>/<id>"). */
+bool8_t vkr_asset_ref_is(String8 value);
+/* Points `ref` at artifact `path`, replacing an earlier path; sets
+ * `*out_changed` (optional) when the path differs from the published one.
+ * Any thread; false when `ref` is not a reference or storage runs out. */
+bool8_t vkr_render_assets_publish_asset_ref(VkrRenderAssets *assets,
+                                            String8 ref, String8 path,
+                                            bool8_t *out_changed);
+/* Whether a load, listing or rebuild published `ref`. */
+bool8_t vkr_render_assets_asset_ref_known(VkrRenderAssets *assets, String8 ref);
+/* Writes the current path of `ref` with a terminator into `out`; false when
+ * no load or rebuild published it, or `capacity` cannot hold it. */
+bool8_t vkr_render_assets_resolve_asset_ref(VkrRenderAssets *assets,
+                                            String8 ref, char *out,
+                                            uint64_t capacity);
 
 /* On failure, partial ownership remains in assets for shutdown after the caller
  * joins workers and proves GPU idle. The native publisher stays alive

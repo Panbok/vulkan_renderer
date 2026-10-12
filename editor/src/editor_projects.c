@@ -334,6 +334,8 @@ struct VkrEditorProjects {
   char result_path[1024];
   char operation[32];
   char action_asset[37];
+  /* Owner of action_asset: "scene" or "project". */
+  char action_scope[8];
   char action_source[1024];
   /* Files dropped from the OS for the import step (ADR-076), and the
      Content folder imported assets are filed into. */
@@ -376,6 +378,9 @@ struct VkrEditorProjects {
   /* The running job imports project assets (ADR-076); the open scene stays
      loaded and no scene publishes. */
   bool8_t job_project_assets;
+  /* The running job rebuilds or reimports one asset while the open scene
+     stays loaded; its changed assets swap in place when it ends. */
+  bool8_t job_live_rebuild;
   /* Import preflight of the Create form's scene JSON: a read-only job whose
      summary gates creation. `legacy_root` is a located folder for missing
      dependencies, else the repository. */
@@ -1666,6 +1671,7 @@ static void project_reset_scene_draft(VkrEditorProjects *projects) {
   projects->include_scene = true_v;
   projects->operation[0] = '\0';
   projects->action_asset[0] = '\0';
+  projects->action_scope[0] = '\0';
   projects->action_source[0] = '\0';
   projects->import_scene = false_v;
   projects->job_imports_models = false_v;
@@ -1949,6 +1955,8 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
   if (projects->operation[0]) {
     ok = ok && project_json_text(writer, "name", projects->action_name) &&
          project_json_text(writer, "asset_id", projects->action_asset) &&
+         (!projects->action_scope[0] ||
+          project_json_text(writer, "asset_scope", projects->action_scope)) &&
          project_json_text(writer, "source", projects->action_source) &&
          project_json_bool(writer, "add_instances", false_v) &&
          vkr_json_writer_name(writer, string8_lit("sources")) &&
@@ -1997,6 +2005,8 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
   projects->job_creates_scene = create_scene && !projects->job_creates_project;
   projects->job_project_assets =
       !strcmp(projects->operation, "import_project_assets");
+  projects->job_live_rebuild = !strcmp(projects->operation, "rebuild_asset") ||
+                               !strcmp(projects->operation, "reimport_asset");
   projects->job_inspect = !strcmp(projects->operation, "inspect_scene");
   return true_v;
 }
@@ -2563,6 +2573,9 @@ static void project_finalize_complete(VkrEditorProjects *projects,
   if (!strcmp(projects->finalize_scene_id, scene_id)) {
     projects->finalize_scene_id[0] = '\0';
   }
+  /* The finalized revisions list in Content, which moves the open scene's
+     textures and meshes to them. */
+  vkr_editor_content_refresh(editor->content);
   const bool8_t active =
       projects->project &&
       projects->active_scene < projects->project->scene_count &&
@@ -2688,6 +2701,13 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
   if (projects->job_inspect) {
     /* A read-only preflight: the scene stays open and the form stays up. */
     projects->operation[0] = '\0';
+    return;
+  }
+  if (projects->job_live_rebuild) {
+    /* The scene and its edits stay; Content shows the asset building. */
+    log_info("Content: rebuilding %s", projects->action_name);
+    projects->view = PROJECT_VIEW_EDITOR;
+    projects->waiting_activation = false_v;
     return;
   }
   if (!projects->additive_job && !projects->job_project_assets) {
@@ -3386,6 +3406,171 @@ static bool8_t project_load_scene_fonts(VkrEditorProjects *projects,
   return true_v;
 }
 
+/* Swaps one asset a live rebuild changed into the loaded containers: its
+   reference names the new revision, a material replaces the live one of its
+   name, a texture moves the material it draws as, and a mesh moves the
+   instances drawing its previous revision to the new one once it loads.
+   The previous revision is the one its reference named, which instances
+   load and earlier swaps moved them to; `old_path`, null when the rebuild
+   found no build file, serves when nothing published it. False when the
+   kind has no live swap or the swap cannot start. */
+static bool8_t project_swap_changed_asset(const VkrSampleUiFrame *frame,
+                                          const char *scope, const char *id,
+                                          const char *kind,
+                                          const char *old_path,
+                                          const char *new_path) {
+  VkrRenderAssets *assets = frame->assets;
+  char ref[VKR_ASSET_REF_CAPACITY];
+  const int32_t length =
+      snprintf(ref, sizeof(ref), VKR_ASSET_REF_PREFIX "%s/%s", scope, id);
+  if (length <= 0 || (uint32_t)length >= sizeof(ref)) {
+    return false_v;
+  }
+  char previous[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!vkr_render_assets_resolve_asset_ref(assets, project_string(ref),
+                                           previous, sizeof(previous))) {
+    snprintf(previous, sizeof(previous), "%s", old_path);
+  }
+  if (!vkr_render_assets_publish_asset_ref(assets, project_string(ref),
+                                           project_string(new_path), NULL)) {
+    return false_v;
+  }
+  if (!strcmp(kind, "material")) {
+    VkrAllocator *allocator = frame->ui->frame_allocator;
+    VkrAllocatorScope scope_guard = vkr_allocator_begin_scope(allocator);
+    String8 definition = {0};
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    const bool8_t read = project_read_file(new_path, allocator, &definition);
+    const bool8_t replaced =
+        read && vkr_material_loader_replace_live(&assets->material_system,
+                                                 project_string(new_path),
+                                                 definition, allocator, &error);
+    vkr_allocator_end_scope(&scope_guard, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    /* A material no container draws has nothing to swap. */
+    return read &&
+           (replaced || error == VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED);
+  }
+  if (!strcmp(kind, "texture")) {
+    (void)vkr_scene_texture_material_apply(assets, ref, new_path);
+    return true_v;
+  }
+  if (!strcmp(kind, "mesh")) {
+    /* A container lowered before another moved the reference may still
+       draw the job's old revision. */
+    const char *sources[2] = {previous, old_path};
+    const uint32_t source_count =
+        old_path[0] && strcmp(old_path, previous) ? 2u : 1u;
+    bool8_t swapped = true_v;
+    for (uint32_t i = 0u; i < source_count; ++i) {
+      if (!sources[i][0]) {
+        continue;
+      }
+      VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+      const bool8_t started = vkr_mesh_manager_swap_asset_path(
+          &assets->mesh_manager, project_string(sources[i]),
+          project_string(new_path), &error);
+      /* A revision no instance draws has nothing to swap. */
+      if (!started && error != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
+        log_warn("Content: the rebuilt mesh %s cannot swap in (%d)", new_path,
+                 (int)error);
+        swapped = false_v;
+      }
+    }
+    return swapped;
+  }
+  return false_v;
+}
+
+/* Ends a rebuild or reimport the open scene stayed loaded for. Each changed
+   asset swaps into every loaded container in place and the scene adopts the
+   new publication, keeping its edits. An asset without a live swap reopens
+   a clean scene; with unsaved edits it shows the next time the scene
+   opens. */
+static void project_finish_live_rebuild(VkrEditorProjects *projects,
+                                        VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        String8 result) {
+  projects->job_id = 0;
+  projects->job_live_rebuild = false_v;
+  projects->operation[0] = '\0';
+  projects->view = PROJECT_VIEW_EDITOR;
+  VkrEditorProjectError error = {0};
+  if (!vkr_editor_project_save(projects->project, &error)) {
+    /* The project still names the old revisions, so nothing swaps. */
+    project_error(projects, &error);
+    vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING, vkr_ui_theme()->warning,
+                     projects->message);
+    vkr_editor_content_refresh(editor->content);
+    return;
+  }
+  uint32_t swapped = 0u;
+  uint32_t unswapped = 0u;
+  bool8_t project_scope = false_v;
+  VkrJsonReader reader = vkr_json_reader_from_string(result);
+  if (vkr_json_find_array(&reader, "changed_assets")) {
+    while (vkr_json_next_array_element(&reader)) {
+      VkrJsonReader record = {0};
+      if (!vkr_json_enter_object(&reader, &record)) {
+        break;
+      }
+      String8 record_text = {.str = (uint8_t *)record.data,
+                             .length = record.length};
+      char scope[8] = {0};
+      char id[37] = {0};
+      char kind[32] = {0};
+      char old_path[VKR_EDITOR_PROJECT_PATH_CAPACITY] = {0};
+      char new_path[VKR_EDITOR_PROJECT_PATH_CAPACITY] = {0};
+      /* An asset the rebuild added has a null old path. */
+      (void)vkr_editor_project_json_string(record_text, "old_path", old_path,
+                                           sizeof(old_path), NULL);
+      if (vkr_editor_project_json_string(record_text, "scope", scope,
+                                         sizeof(scope), NULL) &&
+          vkr_editor_project_json_string(record_text, "id", id, sizeof(id),
+                                         NULL) &&
+          vkr_editor_project_json_string(record_text, "kind", kind,
+                                         sizeof(kind), NULL) &&
+          vkr_editor_project_json_string(record_text, "new_path", new_path,
+                                         sizeof(new_path), NULL) &&
+          project_swap_changed_asset(frame, scope, id, kind, old_path,
+                                     new_path)) {
+        ++swapped;
+      } else {
+        ++unswapped;
+      }
+      project_scope |= !strcmp(scope, "project");
+    }
+  } else {
+    /* A result without the report cannot say what changed. */
+    ++unswapped;
+  }
+  /* World models name the rebuilt project revisions from now on; their
+     instances already moved. */
+  uint32_t moved = 0u;
+  if (project_scope && projects->world_path[0] &&
+      !vkr_editor_project_world_refresh(
+          projects->world_path, projects->project->assets,
+          frame->ui->frame_allocator, &moved, &error)) {
+    log_warn("Content: cannot point World models at %s's new build: %s",
+             projects->action_name, error.message);
+  }
+  vkr_editor_content_refresh(editor->content);
+  if (!unswapped) {
+    log_info("Content: %s rebuilt; %u asset%s updated in place",
+             projects->action_name, swapped, swapped == 1u ? "" : "s");
+    return;
+  }
+  if (!project_scene_dirty(frame) && !frame->scene_loading &&
+      projects->active_scene < projects->project->scene_count) {
+    log_info("Content: %s rebuilt; reopening the scene to show it",
+             projects->action_name);
+    projects->pending_scene = projects->active_scene;
+    project_start_job(projects, editor, frame, false_v);
+    return;
+  }
+  log_info("Content: %s rebuilt; it shows the next time the scene opens",
+           projects->action_name);
+}
+
 static void project_job_complete(VkrEditorProjects *projects,
                                  VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame) {
@@ -3461,7 +3646,7 @@ static void project_job_complete(VkrEditorProjects *projects,
     project_schedule_finalize(projects, result);
   }
   if (!unbuilt && !projects->job_creates_project &&
-      !projects->job_project_assets &&
+      !projects->job_project_assets && !projects->job_live_rebuild &&
       (!vkr_editor_project_json_string(
            result, "runtime_path", projects->runtime_path,
            sizeof(projects->runtime_path), &error) ||
@@ -3477,6 +3662,10 @@ static void project_job_complete(VkrEditorProjects *projects,
   }
   if (projects->job_project_assets) {
     project_publish_imported_assets(projects, editor, frame, result);
+    return;
+  }
+  if (projects->job_live_rebuild) {
+    project_finish_live_rebuild(projects, editor, frame, result);
     return;
   }
   if (projects->job_creates_project) {
@@ -4111,6 +4300,7 @@ static void project_import_assets(VkrEditorProjects *projects,
              vkr_editor_content_folder(editor->content));
   }
   projects->action_asset[0] = '\0';
+  projects->action_scope[0] = '\0';
   projects->action_name[0] = '\0';
   projects->action_source[0] = '\0';
   if (source) {
@@ -4196,13 +4386,15 @@ static void project_content_action(VkrEditorProjects *projects,
     project_import_assets(projects, editor, frame, NULL);
     return;
   }
-  /* A rebuild after a source edit never interrupts: with unsaved scene edits
-     the asset keeps its Changed state until the user rebuilds it. */
+  /* A rebuild or reimport swaps the asset into the open scene, so unsaved
+     edits stay and nothing asks to save first. */
+  const bool8_t live = action->kind == VKR_EDITOR_CONTENT_ACTION_REBUILD ||
+                       action->kind == VKR_EDITOR_CONTENT_ACTION_REIMPORT;
   if (action->automatic) {
     if (projects->read_only || !projects->project ||
-        projects->active_scene >= projects->project->scene_count ||
-        project_scene_dirty(frame)) {
-      log_warn("Content: %s changed on disk; save the scene, then Rebuild it",
+        projects->active_scene >= projects->project->scene_count) {
+      log_warn("Content: %s changed on disk; open a writable scene to "
+               "rebuild it",
                action->name);
       return;
     }
@@ -4226,6 +4418,8 @@ static void project_content_action(VkrEditorProjects *projects,
                : "rebuild_asset");
   snprintf(projects->action_asset, sizeof(projects->action_asset), "%s",
            action->asset_id);
+  snprintf(projects->action_scope, sizeof(projects->action_scope), "%s",
+           live ? action->scope : "");
   projects->action_source[0] = '\0';
   snprintf(projects->action_name, sizeof(projects->action_name), "%s",
            action->name);
@@ -4239,7 +4433,7 @@ static void project_content_action(VkrEditorProjects *projects,
                    projects->action_source, sizeof(projects->action_source));
   }
   if (!sourced || projects->action_source[0]) {
-    if (project_scene_dirty(frame)) {
+    if (!live && project_scene_dirty(frame)) {
       projects->resume_view = PROJECT_VIEW_SCENES;
       projects->view = PROJECT_VIEW_CONFIRM;
     } else {
@@ -4269,6 +4463,14 @@ static void project_take_content_action(VkrEditorProjects *projects,
       (void)vkr_editor_code_open(editor->code, editor, content_action.source);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT) {
       vkr_editor_code_new_script(editor->code, editor);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL) {
+      vkr_editor_material_drop(editor->materials, frame, content_action.source,
+                               content_action.drop_px);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL) {
+      (void)vkr_editor_material_open(editor->materials, frame,
+                                     content_action.source);
+      vkr_editor_view_show(editor, frame, editor->workbenches.active,
+                           VKR_EDITOR_VIEW_GRAPH);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT) {
       vkr_editor_drop_script(editor, frame, content_action.name,
                              content_action.drop_px);
@@ -4331,6 +4533,22 @@ static bool8_t project_job_failed(VkrEditorProjects *projects,
                                   VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame,
                                   VkrEditorProjectJobStatus status) {
+  if (projects->job_live_rebuild) {
+    /* The open scene never unloaded; the asset keeps its last build. */
+    projects->job_id = 0;
+    projects->job_live_rebuild = false_v;
+    projects->operation[0] = '\0';
+    projects->view = PROJECT_VIEW_EDITOR;
+    snprintf(projects->message, sizeof(projects->message),
+             "%s %s. It keeps its last build; see Bakery for details.",
+             status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Rebuild cancelled:"
+                                                        : "Rebuild failed:",
+             projects->action_name);
+    vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING, vkr_ui_theme()->warning,
+                     projects->message);
+    vkr_editor_content_refresh(editor->content);
+    return true_v;
+  }
   if (projects->job_inspect) {
     /* The scene JSON could not be read; the form shows why. */
     String8 result = {0};
@@ -4718,6 +4936,12 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
       projects->initial_scene[0] = '\0';
     }
   }
+  /* Build files the editor's own jobs or a depot sync write queue no
+     rebuilds in Content. */
+  vkr_editor_content_set_busy(editor->content,
+                              projects->job_id || projects->finalize_job ||
+                                  projects->waiting_activation ||
+                                  vkr_editor_depot_busy(editor->depot));
   if (projects->job_id) {
     const float64_t time = vkr_platform_get_absolute_time();
     if (time >= projects->next_progress_check) {
@@ -4740,6 +4964,17 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
         editor->bakery, projects->job_id, NULL);
     if (status == VKR_EDITOR_PROJECT_JOB_SUCCEEDED) {
       project_job_complete(projects, editor, frame);
+      if (projects->job_live_rebuild) {
+        /* The result could not be read or adopted before the swaps; the
+           scene keeps drawing the last build it loaded. */
+        projects->job_id = 0;
+        projects->job_live_rebuild = false_v;
+        projects->operation[0] = '\0';
+        projects->view = PROJECT_VIEW_EDITOR;
+        log_warn("Content: %s rebuilt but could not be shown: %s",
+                 projects->action_name, projects->message);
+        vkr_editor_content_refresh(editor->content);
+      }
       /* The runtime consumes this frame's selection after UI construction.
        * Its current scene/status snapshot still belongs to the old request. */
       return;
@@ -4757,9 +4992,12 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
       projects->active_scene = projects->pending_scene;
       snprintf(projects->content_scene, sizeof(projects->content_scene), "%s",
                projects->project->scenes[projects->active_scene].id);
-      vkr_editor_content_set_project(editor->content, projects->workspace.root,
-                                     projects->project->id,
-                                     projects->content_scene);
+      /* The job that prepared the scene may have changed its inventory. */
+      if (!vkr_editor_content_set_project(
+              editor->content, projects->workspace.root, projects->project->id,
+              projects->content_scene)) {
+        vkr_editor_content_refresh(editor->content);
+      }
       const String8 recall = project_member(
           projects->project->scene_editor_state, projects->content_scene);
       VkrSampleSceneRecall restored = {0};
@@ -7070,6 +7308,12 @@ bool8_t vkr_editor_projects_save_scene(VkrEditorProjects *projects,
              "No writable managed scene is active.");
     return false_v;
   }
+  /* The rebuild publishes the scene document; a save then would fail it. */
+  if (projects->job_id && projects->job_live_rebuild) {
+    snprintf(edits->status, sizeof(edits->status),
+             "Save after %.150s finishes rebuilding.", projects->action_name);
+    return false_v;
+  }
   VkrAllocatorScope scope =
       vkr_allocator_begin_scope(&projects->project_allocator);
   VkrEditorProjectError error = {0};
@@ -7367,6 +7611,7 @@ static bool8_t project_import_submit(VkrEditorProjects *projects,
   snprintf(projects->operation, sizeof(projects->operation),
            "import_project_assets");
   projects->action_asset[0] = '\0';
+  projects->action_scope[0] = '\0';
   projects->action_name[0] = '\0';
   snprintf(projects->action_source, sizeof(projects->action_source), "%s",
            projects->import_sources[0]);

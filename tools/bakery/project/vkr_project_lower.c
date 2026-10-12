@@ -128,6 +128,38 @@ vkr_internal bool8_t vkr_project_lowered_path(VkrProjectJob *job, char *path) {
   return true_v;
 }
 
+/* The resolved path of `record`'s primary artifact, the unique artifact whose
+   role is the record's kind, below `owner`. False, without failing the job,
+   when the record has no such artifact or it is not a file. */
+vkr_internal bool8_t vkr_project_primary_artifact(VkrProjectJob *job,
+                                                  const VkrBakeryJson *record,
+                                                  const char *owner,
+                                                  char *out_path) {
+  const char *kind = vkr_project_json_text(record, "kind");
+  const VkrBakeryJson *artifacts = vkr_bakery_json_get(record, "artifacts");
+  const VkrBakeryJson *product = NULL;
+  uint32_t products = 0u;
+  for (const VkrBakeryJson *item = artifacts ? artifacts->first : NULL; item;
+       item = item->next) {
+    if (kind &&
+        vkr_bakery_json_is_string(vkr_bakery_json_get(item, "role"), kind)) {
+      product = item;
+      products += 1u;
+    }
+  }
+  const char *relative =
+      product ? vkr_project_json_text(product, "path") : NULL;
+  if (products != 1u || !relative) {
+    return false_v;
+  }
+  const bool8_t failed_before = job->failed;
+  const bool8_t found =
+      vkr_project_contained(job, owner, relative, true_v, out_path) &&
+      vkr_bakery_is_file(out_path);
+  vkr_project_forgive(job, failed_before);
+  return found;
+}
+
 vkr_internal bool8_t vkr_project_lower_asset(
     VkrProjectLowering *lowering, const VkrBakeryJson *reference,
     const char *default_role, char *out_path, const VkrBakeryJson **out_record,
@@ -552,11 +584,13 @@ vkr_internal bool8_t vkr_project_portable_overlay(VkrProjectJob *job,
   return true_v;
 }
 
-vkr_internal bool8_t vkr_project_lower_overlay(VkrProjectJob *job,
-                                               const VkrBakeryJson *scene,
-                                               const char *root,
-                                               char *edit_path) {
+/* Validates the scene's selected overlay; a read-only preparation writes it
+   beside its runtime file and returns it in `out_selected`. */
+vkr_internal bool8_t vkr_project_lower_overlay(
+    VkrProjectJob *job, const VkrBakeryJson *scene, const char *root,
+    char *edit_path, const VkrBakeryJson **out_selected) {
   Arena *arena = job->arena;
+  *out_selected = NULL;
   const bool8_t has_overlay =
       vkr_project_truthy(vkr_bakery_json_get(scene, "edit_overlay"));
   if (has_overlay) {
@@ -593,6 +627,7 @@ vkr_internal bool8_t vkr_project_lower_overlay(VkrProjectJob *job,
     if (job->portable) {
       VKR_PROJECT_TRY(vkr_project_portable_overlay(job, selected, root));
     }
+    *out_selected = selected;
     (void)vkr_bakery_path_join(edit_path, VKR_PROJECT_PATH,
                                job->runtime_directory, "scene.editor.json");
     return vkr_project_atomic_json(job, edit_path, selected);
@@ -600,6 +635,96 @@ vkr_internal bool8_t vkr_project_lower_overlay(VkrProjectJob *job,
   char parent[VKR_PROJECT_PATH];
   vkr_bakery_path_parent(parent, sizeof(parent), edit_path);
   return vkr_project_make_dirs(job, parent);
+}
+
+/* Adds every string of `value` that names an asset by reference,
+   "asset:<scope>/<id>", to `refs`. */
+vkr_internal bool8_t vkr_project_collect_asset_refs(VkrProjectJob *job,
+                                                    const VkrBakeryJson *value,
+                                                    VkrProjectSet *refs) {
+  static const char prefix[] = "asset:";
+  if (!value) {
+    return true_v;
+  }
+  if (value->type == VKR_BAKERY_JSON_STRING) {
+    if (value->string.length < sizeof(prefix) ||
+        MemCompare(value->string.str, prefix, sizeof(prefix) - 1u) != 0) {
+      return true_v;
+    }
+    return vkr_project_set_add(
+        refs,
+        vkr_project_printf(job, "%.*s", (int)value->string.length,
+                           (const char *)value->string.str),
+        NULL);
+  }
+  for (const VkrBakeryJson *child = value->first; child; child = child->next) {
+    VKR_PROJECT_TRY(vkr_project_collect_asset_refs(job, child, refs));
+  }
+  return true_v;
+}
+
+vkr_internal int vkr_project_compare_refs(const void *lhs, const void *rhs) {
+  const VkrBakeryJson *a = *(const VkrBakeryJson *const *)lhs;
+  const VkrBakeryJson *b = *(const VkrBakeryJson *const *)rhs;
+  return strcmp(vkr_project_json_text(a, "ref"),
+                vkr_project_json_text(b, "ref"));
+}
+
+/* `asset_refs`: [{"ref": "asset:<scope>/<id>", "path"}], sorted by ref, the
+   lowered path of the primary artifact of every record of every inventory.
+   Runtime values that name an asset by reference resolve through it, so an
+   editor can name any record without lowering again. A record without a
+   primary artifact is left out. A portable preparation lists only the
+   references its runtime document or overlay names, so a package holds no
+   asset its scenes do not use. */
+vkr_internal bool8_t vkr_project_asset_refs(VkrProjectLowering *lowering,
+                                            VkrBakeryJson *runtime,
+                                            const VkrBakeryJson *overlay) {
+  VkrProjectJob *job = lowering->job;
+  Arena *arena = job->arena;
+  VkrProjectSet named = {0};
+  bool8_t ok =
+      !job->portable || (vkr_project_collect_asset_refs(job, runtime, &named) &&
+                         vkr_project_collect_asset_refs(job, overlay, &named));
+  VkrProjectNodes entries = {0};
+  for (uint32_t i = 0u; ok && i < lowering->inventory_count; ++i) {
+    const VkrProjectInventory *inventory = &lowering->inventories[i];
+    for (const VkrBakeryJson *record = inventory->records->first; ok && record;
+         record = record->next) {
+      /* vkr_project_check_inventory proved every id a unique string. */
+      const char *ref = vkr_project_printf(job, "asset:%s/%s", inventory->scope,
+                                           vkr_project_json_text(record, "id"));
+      char path[VKR_PROJECT_PATH];
+      if ((job->portable && !vkr_project_set_has(&named, ref)) ||
+          !vkr_project_primary_artifact(job, record, inventory->owner, path)) {
+        continue;
+      }
+      ok = vkr_project_lowered_path(job, path);
+      if (!ok) {
+        break;
+      }
+      VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+      vkr_bakery_json_set(arena, entry, "ref",
+                          vkr_bakery_json_cstr(arena, ref));
+      vkr_bakery_json_set(arena, entry, "path",
+                          vkr_bakery_json_cstr(arena, path));
+      ok = vkr_project_nodes_push(job, &entries, entry);
+    }
+  }
+  vkr_project_set_free(&named);
+  if (!ok) {
+    return job->failed ? false_v : vkr_project_fail(job, "Out of memory");
+  }
+  if (entries.count) {
+    qsort(entries.items, entries.count, sizeof(entries.items[0]),
+          vkr_project_compare_refs);
+  }
+  VkrBakeryJson *refs = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < entries.count; ++i) {
+    vkr_bakery_json_append(refs, entries.items[i]);
+  }
+  vkr_bakery_json_set(arena, runtime, "asset_refs", refs);
+  return true_v;
 }
 
 VkrBakeryJson *vkr_project_lower(VkrProjectJob *job, VkrBakeryJson *scene,
@@ -714,8 +839,10 @@ VkrBakeryJson *vkr_project_lower(VkrProjectJob *job, VkrBakeryJson *scene,
      instantiated. */
   const char *default_name = NULL;
   char edit_path[VKR_PROJECT_PATH];
+  const VkrBakeryJson *overlay = NULL;
   if (!vkr_project_lower_font(&lowering, NULL, &default_name) ||
-      !vkr_project_lower_overlay(job, scene, root, edit_path)) {
+      !vkr_project_lower_overlay(job, scene, root, edit_path, &overlay) ||
+      !vkr_project_asset_refs(&lowering, runtime, overlay)) {
     return NULL;
   }
   String8 canonical = {0};
@@ -1634,6 +1761,28 @@ vkr_internal bool8_t vkr_project_rebuild_asset(VkrProjectJob *job,
                                                VkrBakeryJson *record,
                                                const char *scene_root);
 
+/* Publishes the project records `job->assets` holds after a rebuild: records
+   the closures of those whose artifacts the job built into its stage, moves
+   the stage's revisions into the project and makes the records the project
+   inventory the job lowers against and returns in `project_assets`, which the
+   editor's store publishes. Other imports keep their published closures. */
+vkr_internal bool8_t vkr_project_publish_project_assets(VkrProjectJob *job) {
+  for (VkrBakeryJson *record = job->assets->first; record;
+       record = record->next) {
+    if (vkr_project_record_staged(job, record)) {
+      VKR_PROJECT_TRY(vkr_project_record_closure(job, record));
+    }
+  }
+  static const char *const folders[] = {"sources", "builds", "imports"};
+  VKR_PROJECT_TRY(vkr_project_publish_folders(
+      job, folders, ArrayCount(folders), job->project_root,
+      "Project asset revision already exists", &job->project_builds));
+  job->pending_project_assets = job->assets;
+  VkrBakeryJson *document = vkr_project_document(job);
+  return document && vkr_project_validate_document(
+                         job, document, VKR_PROJECT_MAX_MANIFEST_BYTES);
+}
+
 VkrBakeryJson *vkr_project_finalize_project_assets(VkrProjectJob *job) {
   Arena *arena = job->arena;
   if (job->read_only) {
@@ -1680,29 +1829,11 @@ VkrBakeryJson *vkr_project_finalize_project_assets(VkrProjectJob *job) {
         finalized, vkr_bakery_json_clone(
                        arena, vkr_bakery_json_get(pending.items[i], "id")));
   }
-  /* Only the records this job rebuilt have artifacts in its stage; other
-     imports of the project keep their published closures. */
-  for (VkrBakeryJson *record = job->assets->first; record;
-       record = record->next) {
-    if (vkr_project_record_staged(job, record) &&
-        !vkr_project_record_closure(job, record)) {
-      return NULL;
-    }
-  }
-  static const char *const folders[] = {"sources", "builds", "imports"};
-  if (!vkr_project_publish_folders(
-          job, folders, ArrayCount(folders), job->project_root,
-          "Project asset revision already exists", &job->project_builds)) {
+  if (!vkr_project_publish_project_assets(job)) {
     return NULL;
   }
-  job->pending_project_assets = job->assets;
   vkr_project_record_ready_remaining(job, pending.items, pending.count,
                                      job->project_root);
-  VkrBakeryJson *document = vkr_project_document(job);
-  if (!document || !vkr_project_validate_document(
-                       job, document, VKR_PROJECT_MAX_MANIFEST_BYTES)) {
-    return NULL;
-  }
   VkrBakeryJson *result = vkr_bakery_json_object(arena);
   vkr_bakery_json_set(arena, result, "version",
                       vkr_bakery_json_int(arena, VKR_PROJECT_VERSION));
@@ -2055,6 +2186,16 @@ vkr_internal bool8_t vkr_project_rebuild_asset(VkrProjectJob *job,
         vkr_project_managed_reference(job, output, job->stage, &reference));
     vkr_bakery_json_set(arena, record, "source",
                         vkr_bakery_json_cstr(arena, reference));
+  } else if (kind && strcmp(kind, "texture") == 0 &&
+             !vkr_project_is_cooked_texture(source)) {
+    /* A source image gets its cooked sidecar at the job's tier; finalize
+       rebuilds a preview one at the final tier. */
+    VKR_PROJECT_TRY(vkr_project_import_image(job, source, bundle, output));
+    VKR_PROJECT_TRY(
+        vkr_project_managed_reference(job, output, job->stage, &reference));
+    vkr_bakery_json_set(arena, record, "source",
+                        vkr_bakery_json_cstr(arena, reference));
+    vkr_project_mark_image_tier(job, record);
   } else if (kind && (strcmp(kind, "texture") == 0 ||
                       strcmp(kind, "environment") == 0)) {
     VKR_PROJECT_TRY(vkr_project_copy_blob(job, source, bundle, output));
@@ -2287,6 +2428,194 @@ vkr_project_rename_asset(VkrProjectJob *job, VkrBakeryJson *scene,
                                  "Scene changed during rename; retry", false_v);
 }
 
+vkr_internal int vkr_project_compare_ids(const void *lhs, const void *rhs) {
+  const VkrBakeryJson *a = *(const VkrBakeryJson *const *)lhs;
+  const VkrBakeryJson *b = *(const VkrBakeryJson *const *)rhs;
+  return strcmp(vkr_project_json_text(a, "id"), vkr_project_json_text(b, "id"));
+}
+
+/* Every record of `records` with an id as {"id", "kind", "path"}, sorted by
+   id, where `path` is the resolved path of its primary artifact below
+   `owner` or null. */
+vkr_internal bool8_t
+vkr_project_snapshot_artifacts(VkrProjectJob *job, const VkrBakeryJson *records,
+                               const char *owner, VkrProjectNodes *out) {
+  Arena *arena = job->arena;
+  for (const VkrBakeryJson *record = records->first; record;
+       record = record->next) {
+    const VkrBakeryJson *id = vkr_bakery_json_get(record, "id");
+    if (!id || id->type != VKR_BAKERY_JSON_STRING) {
+      continue;
+    }
+    const VkrBakeryJson *kind = vkr_bakery_json_get(record, "kind");
+    char path[VKR_PROJECT_PATH];
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, entry, "id", vkr_bakery_json_clone(arena, id));
+    vkr_bakery_json_set(arena, entry, "kind",
+                        kind ? vkr_bakery_json_clone(arena, kind)
+                             : vkr_bakery_json_null(arena));
+    vkr_bakery_json_set(arena, entry, "path",
+                        vkr_project_primary_artifact(job, record, owner, path)
+                            ? vkr_bakery_json_cstr(arena, path)
+                            : vkr_bakery_json_null(arena));
+    VKR_PROJECT_TRY(vkr_project_nodes_push(job, out, entry));
+  }
+  if (out->count) {
+    qsort(out->items, out->count, sizeof(out->items[0]),
+          vkr_project_compare_ids);
+  }
+  return true_v;
+}
+
+vkr_internal const VkrBakeryJson *
+vkr_project_snapshot_find(const VkrProjectNodes *snapshot, const char *id) {
+  uint32_t low = 0u;
+  uint32_t high = snapshot->count;
+  while (low < high) {
+    const uint32_t middle = low + (high - low) / 2u;
+    const int order =
+        strcmp(id, vkr_project_json_text(snapshot->items[middle], "id"));
+    if (order == 0) {
+      return snapshot->items[middle];
+    }
+    if (order < 0) {
+      high = middle;
+    } else {
+      low = middle + 1u;
+    }
+  }
+  return NULL;
+}
+
+/* Adds to `result` what a rebuild or reimport changed in the inventory of
+   `scope`, compared with the snapshot `before` it took: `changed_assets`,
+   [{"scope", "id", "kind", "old_path", "new_path"}] for every record whose
+   primary artifact moved or that it added (old_path null), and
+   `retired_assets`, [{"scope", "id", "kind", "path"}] for every record it
+   removed. Paths are resolved, as a non-portable runtime file names them. */
+vkr_internal bool8_t vkr_project_report_changes(VkrProjectJob *job,
+                                                VkrBakeryJson *result,
+                                                const char *scope,
+                                                const char *owner,
+                                                const VkrProjectNodes *before) {
+  Arena *arena = job->arena;
+  VkrProjectNodes after = {0};
+  VKR_PROJECT_TRY(
+      vkr_project_snapshot_artifacts(job, job->assets, owner, &after));
+  VkrBakeryJson *changed = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < after.count; ++i) {
+    const VkrBakeryJson *current = after.items[i];
+    const VkrBakeryJson *prior =
+        vkr_project_snapshot_find(before, vkr_project_json_text(current, "id"));
+    const VkrBakeryJson *old_path =
+        prior ? vkr_bakery_json_get(prior, "path") : NULL;
+    const VkrBakeryJson *new_path = vkr_bakery_json_get(current, "path");
+    if (old_path && vkr_bakery_json_equal(old_path, new_path)) {
+      continue;
+    }
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, entry, "scope",
+                        vkr_bakery_json_cstr(arena, scope));
+    vkr_bakery_json_set(
+        arena, entry, "id",
+        vkr_bakery_json_clone(arena, vkr_bakery_json_get(current, "id")));
+    vkr_bakery_json_set(
+        arena, entry, "kind",
+        vkr_bakery_json_clone(arena, vkr_bakery_json_get(current, "kind")));
+    vkr_bakery_json_set(arena, entry, "old_path",
+                        old_path ? vkr_bakery_json_clone(arena, old_path)
+                                 : vkr_bakery_json_null(arena));
+    vkr_bakery_json_set(arena, entry, "new_path",
+                        vkr_bakery_json_clone(arena, new_path));
+    vkr_bakery_json_append(changed, entry);
+  }
+  VkrBakeryJson *retired = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < before->count; ++i) {
+    const VkrBakeryJson *prior = before->items[i];
+    if (vkr_project_snapshot_find(&after, vkr_project_json_text(prior, "id"))) {
+      continue;
+    }
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, entry, "scope",
+                        vkr_bakery_json_cstr(arena, scope));
+    static const char *const fields[] = {"id", "kind", "path"};
+    for (uint32_t f = 0u; f < ArrayCount(fields); ++f) {
+      vkr_bakery_json_set(
+          arena, entry, fields[f],
+          vkr_bakery_json_clone(arena, vkr_bakery_json_get(prior, fields[f])));
+    }
+    vkr_bakery_json_append(retired, entry);
+  }
+  vkr_bakery_json_set(arena, result, "changed_assets", changed);
+  vkr_bakery_json_set(arena, result, "retired_assets", retired);
+  return true_v;
+}
+
+/* The single record of `records` whose id is the request's `asset_id`. */
+vkr_internal VkrBakeryJson *
+vkr_project_requested_record(VkrProjectJob *job, VkrBakeryJson *records) {
+  const VkrBakeryJson *requested_id =
+      vkr_bakery_json_get(job->request, "asset_id");
+  VkrBakeryJson *record = NULL;
+  uint32_t matches = 0u;
+  for (VkrBakeryJson *item = records->first; item; item = item->next) {
+    const VkrBakeryJson *id = vkr_bakery_json_get(item, "id");
+    if ((id && requested_id && vkr_bakery_json_equal(id, requested_id)) ||
+        (!id && !requested_id)) {
+      record = item;
+      matches += 1u;
+    }
+  }
+  return matches == 1u ? record : NULL;
+}
+
+/* Rebuilds or reimports one project asset as finalize_project_assets
+   rebuilds them, then lowers the requested scene against the new inventory
+   so its runtime file names the new revision, and commits the scene as a
+   scene-owned rebuild does. It retires no record, as finalize retires none:
+   other scenes may name any project record, including a texture the new
+   revision no longer holds. A superseded revision stays until workspace
+   cleanup finds no published document naming it past the grace period. */
+vkr_internal VkrBakeryJson *
+vkr_project_rebuild_project_asset(VkrProjectJob *job, VkrBakeryJson *scene,
+                                  const char *path, const char *scene_root,
+                                  const char *fingerprint) {
+  Arena *arena = job->arena;
+  VkrBakeryJson *project = vkr_project_document(job);
+  if (!project) {
+    return NULL;
+  }
+  job->assets =
+      vkr_bakery_json_clone(arena, vkr_bakery_json_get(project, "assets"));
+  if (!job->assets) {
+    job->assets = vkr_bakery_json_array(arena);
+  }
+  job->asset_scope = "project";
+  VkrBakeryJson *record = vkr_project_requested_record(job, job->assets);
+  if (!record) {
+    vkr_project_fail(job, "Select one project asset to rebuild or reimport");
+    return NULL;
+  }
+  VkrProjectNodes before = {0};
+  if (!vkr_project_snapshot_artifacts(job, job->assets, job->project_root,
+                                      &before) ||
+      !vkr_project_rebuild_asset(job, job->operation, record,
+                                 job->project_root) ||
+      !vkr_project_publish_project_assets(job)) {
+    return NULL;
+  }
+  VkrBakeryJson *result = vkr_project_commit_edit(
+      job, scene, path, scene_root, fingerprint,
+      "Scene changed during rebuild; retry without losing the previous "
+      "revision",
+      true_v);
+  if (!result || !vkr_project_report_changes(job, result, "project",
+                                             job->project_root, &before)) {
+    return NULL;
+  }
+  return result;
+}
+
 VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
   Arena *arena = job->arena;
   char path[VKR_PROJECT_PATH];
@@ -2344,6 +2673,10 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
   bool8_t added = false_v;
   /* Records a finalize rebuilt, which the job then reports as ready. */
   VkrProjectNodes finalized = {0};
+  /* A rebuild or reimport reports the records it changed against this
+     snapshot of the inventory before it. */
+  VkrProjectNodes before = {0};
+  bool8_t report_changes = false_v;
   int64_t added_entity = 0;
   if (strcmp(operation, "add_entities") == 0) {
     if (!vkr_project_truthy(vkr_bakery_json_get(job->request, "models")) &&
@@ -2384,19 +2717,24 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
       }
     }
   } else {
-    const VkrBakeryJson *requested_id =
-        vkr_bakery_json_get(job->request, "asset_id");
-    VkrBakeryJson *record = NULL;
-    uint32_t matches = 0u;
-    for (VkrBakeryJson *item = job->assets->first; item; item = item->next) {
-      const VkrBakeryJson *id = vkr_bakery_json_get(item, "id");
-      if ((id && requested_id && vkr_bakery_json_equal(id, requested_id)) ||
-          (!id && !requested_id)) {
-        record = item;
-        matches += 1u;
-      }
+    /* `asset_scope` names the inventory of the asset a rebuild or reimport
+       edits; the scene's own when absent. */
+    const VkrBakeryJson *scope =
+        vkr_bakery_json_get(job->request, "asset_scope");
+    const bool8_t rebuild = strcmp(operation, "rebuild_asset") == 0 ||
+                            strcmp(operation, "reimport_asset") == 0;
+    if (scope && !vkr_bakery_json_is_string(scope, "scene") &&
+        !(rebuild && vkr_bakery_json_is_string(scope, "project"))) {
+      vkr_project_fail(job, "asset_scope must be \"scene\", or \"project\" "
+                            "for a rebuild or reimport");
+      return NULL;
     }
-    if (matches != 1u) {
+    if (scope && vkr_bakery_json_is_string(scope, "project")) {
+      return vkr_project_rebuild_project_asset(job, scene, path, scene_root,
+                                               fingerprint);
+    }
+    VkrBakeryJson *record = vkr_project_requested_record(job, job->assets);
+    if (!record) {
       vkr_project_fail(job,
                        "Select one scene-owned asset to rebuild or reimport");
       return NULL;
@@ -2409,10 +2747,13 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
       return vkr_project_rename_asset(job, scene, record, path, scene_root,
                                       fingerprint);
     }
-    if (!vkr_project_rebuild_asset(job, operation, record, scene_root) ||
+    if (!vkr_project_snapshot_artifacts(job, job->assets, scene_root,
+                                        &before) ||
+        !vkr_project_rebuild_asset(job, operation, record, scene_root) ||
         !vkr_project_retire_textures(job, scene, scene_root, record)) {
       return NULL;
     }
+    report_changes = true_v;
   }
   vkr_bakery_json_set(arena, scene, "assets", job->assets);
   static const char *const folders[] = {"sources", "builds", "imports"};
@@ -2429,6 +2770,10 @@ VkrBakeryJson *vkr_project_edit_assets(VkrProjectJob *job) {
   if (result && added) {
     vkr_bakery_json_set(arena, result, "added_scene_entity",
                         vkr_bakery_json_int(arena, added_entity));
+  }
+  if (result && report_changes &&
+      !vkr_project_report_changes(job, result, "scene", scene_root, &before)) {
+    return NULL;
   }
   if (result) {
     vkr_project_record_ready_remaining(job, finalized.items, finalized.count,

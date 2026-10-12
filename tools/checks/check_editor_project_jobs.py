@@ -611,6 +611,153 @@ def main():
         assert mesh_paths and all(path.is_file() and
                                   path.resolve().is_relative_to((project / 'builds').resolve())
                                   for path in mesh_paths)
+
+        # Every runtime file lists the primary artifact of every record of
+        # its inventories under "asset:<scope>/<id>", sorted by reference;
+        # the same input lowers to the same content-addressed file.
+        def asset_refs(runtime_document):
+            entries = runtime_document['asset_refs']
+            names = [entry['ref'] for entry in entries]
+            assert names == sorted(set(names)), names
+            return {entry['ref']: entry['path'] for entry in entries}
+
+        def primary(owner, record):
+            products = [item for item in record['artifacts'] if item['role'] == record['kind']]
+            assert len(products) == 1, record
+            return str((owner / products[0]['path']).resolve())
+
+        assert jobs.Job(local_prepare, result_path).execute() == 0
+        first_lowering = jobs.load_json(result_path)['runtime_path']
+        first_bytes = Path(first_lowering).read_bytes()
+        assert jobs.Job(local_prepare, result_path).execute() == 0
+        assert jobs.load_json(result_path)['runtime_path'] == first_lowering
+        assert Path(first_lowering).read_bytes() == first_bytes, 'Lowering is not deterministic'
+        local_refs = asset_refs(jobs.load_json(first_lowering))
+        local_mesh = next(item for item in jobs.read_managed_scene(scene_path)['assets']
+                          if item['id'] == mesh_record['id'])
+        assert local_refs['asset:scene/' + mesh_record['id']] == primary(scene_path.parent, local_mesh)
+        assert local_refs['asset:project/' + shared_mesh['id']] == primary(project, shared_mesh)
+        if args.font_cooker:
+            # A portable preparation lists only the references its documents
+            # name, as package identities, so a package holds no unused asset.
+            # Any string naming "asset:<scope>/<id>" counts; a name is the
+            # simplest field to carry one. A read-only preparation needs the
+            # editor bundle the font cooker prepares.
+            named_scene = jobs.read_managed_scene(shared_path)
+            named_texture = next(item for item in imported['project_assets'] if item['kind'] == 'texture')
+            named_scene['entities'][-1]['name'] = 'asset:project/' + named_texture['id']
+            jobs.write_managed_scene(shared_path, named_scene)
+            portable = dict(shared_prepare, read_only=True, portable=True,
+                            runtime_directory=str(root / 'portable-runtime'))
+            job = jobs.Job(portable, result_path)
+            assert job.execute() == 0, (job.output, result_path.read_text())
+            portable_refs = jobs.load_json(jobs.load_json(result_path)['runtime_path'])['asset_refs']
+            assert portable_refs == [{'ref': 'asset:project/' + named_texture['id'],
+                                      'path': 'project/' + named_texture['artifacts'][0]['path']}], portable_refs
+            named_scene['entities'][-1]['name'] = 'Shared'
+            jobs.write_managed_scene(shared_path, named_scene)
+        # A project-scope reimport publishes its revision under the project,
+        # returns the inventory for the editor's store to publish, and lowers
+        # the requested scene so its asset_refs name the new revision.
+        shared_texture = next(item for item in imported['project_assets'] if item['kind'] == 'texture')
+        old_texture = primary(project, shared_texture)
+        assert asset_refs(shared_runtime)['asset:project/' + shared_texture['id']] == old_texture
+        write_png(shared_source / 'replacement.png', 2, 2, (0, 0, 255))
+        project_rebuild = dict(shared_prepare, operation='reimport_asset', asset_id=shared_texture['id'],
+                               asset_scope='project', source=str(shared_source / 'replacement.png'))
+        before_rebuild = manifest.read_bytes()
+        job = jobs.Job(project_rebuild, result_path)
+        assert job.execute() == 0, (job.output, result_path.read_text())
+        rebuilt = jobs.load_json(result_path)
+        assert manifest.read_bytes() == before_rebuild, 'Job published project membership'
+        new_texture = primary(project, next(item for item in rebuilt['project_assets']
+                                            if item['id'] == shared_texture['id']))
+        assert new_texture != old_texture and Path(new_texture).is_file() and Path(old_texture).is_file()
+        assert asset_refs(jobs.load_json(rebuilt['runtime_path']))[
+            'asset:project/' + shared_texture['id']] == new_texture
+        assert rebuilt['changed_assets'] == [{'scope': 'project', 'id': shared_texture['id'], 'kind': 'texture',
+                                              'old_path': old_texture, 'new_path': new_texture}]
+        assert rebuilt['retired_assets'] == []
+        document = jobs.load_json(manifest)
+        document['assets'] = rebuilt['project_assets']
+        manifest.write_text(json.dumps(document))
+        # A project mesh rebuild also reports the generated records it moved.
+        old_mesh = primary(project, next(item for item in rebuilt['project_assets']
+                                         if item['id'] == shared_mesh['id']))
+        job = jobs.Job(dict(project_rebuild, operation='rebuild_asset', asset_id=shared_mesh['id']), result_path)
+        assert job.execute() == 0, (job.output, result_path.read_text())
+        mesh_rebuilt = jobs.load_json(result_path)
+        changed = {item['id']: item for item in mesh_rebuilt['changed_assets']}
+        shared_material = next(item for item in imported['project_assets'] if item['kind'] == 'material')
+        assert changed[shared_mesh['id']]['old_path'] == old_mesh
+        assert shared_material['id'] in changed, changed
+        assert all(item['scope'] == 'project' and item['new_path'] != item['old_path'] and
+                   Path(item['new_path']).is_file() for item in changed.values())
+        assert mesh_rebuilt['retired_assets'] == []
+        document['assets'] = mesh_rebuilt['project_assets']
+        manifest.write_text(json.dumps(document))
+        # A standalone image imports with the cooked sidecar the texture
+        # system loads for its path, `<image>.vkt`, and a recipe beside it
+        # for other hosts. A deferred import cooks it at the preview tier and
+        # leaves it for finalize; a final-tier rebuild cooks a new one.
+        def cooked_sidecar(image):
+            sidecar = Path(image + '.vkt')
+            assert sidecar.is_file(), sidecar
+            assert sidecar.read_bytes()[:12] == b'\xabKTX 20\xbb\r\n\x1a\n', sidecar
+            recipes = jobs.load_json(sidecar.parent / 'recipes.json')['textures']
+            return recipes[sidecar.name]
+
+        write_png(shared_source / 'standalone.png', 4, 4, (200, 100, 50))
+        job = jobs.Job(dict(project_import, sources=[str(shared_source / 'standalone.png')],
+                            texture_tier='deferred'), result_path)
+        assert job.execute() == 0, (job.output, result_path.read_text())
+        standalone_result = jobs.load_json(result_path)
+        standalone = next(item for item in standalone_result['project_assets']
+                          if item['id'] in standalone_result['imported_assets'])
+        assert standalone['kind'] == 'texture' and standalone['texture_tier'] == 'preview', standalone
+        assert standalone_result['preview_assets'] >= 1
+        standalone_image = primary(project, standalone)
+        assert cooked_sidecar(standalone_image) == {'source': Path(standalone_image).name, 'class': 'color-srgb',
+                                                    'tier': 'preview', 'speed': 'final'}
+        document['assets'] = standalone_result['project_assets']
+        manifest.write_text(json.dumps(document))
+        job = jobs.Job(dict(project_rebuild, operation='rebuild_asset', asset_id=standalone['id']), result_path)
+        assert job.execute() == 0, (job.output, result_path.read_text())
+        standalone_rebuilt = jobs.load_json(result_path)
+        rebuilt_standalone = next(item for item in standalone_rebuilt['project_assets']
+                                  if item['id'] == standalone['id'])
+        assert 'texture_tier' not in rebuilt_standalone
+        new_image = primary(project, rebuilt_standalone)
+        assert new_image != standalone_image and cooked_sidecar(new_image)['tier'] == 'final'
+        assert standalone_rebuilt['changed_assets'] == [{'scope': 'project', 'id': standalone['id'],
+                                                         'kind': 'texture', 'old_path': standalone_image,
+                                                         'new_path': new_image}]
+        document['assets'] = standalone_rebuilt['project_assets']
+        manifest.write_text(json.dumps(document))
+        # A host without the sidecar, as a shared project arrives, cooks it
+        # again from its recipe.
+        Path(new_image + '.vkt').unlink()
+        recook = {'version': 1, 'operation': 'recook_textures', 'workspace_root': str(workspace),
+                  'project_path': str(manifest)}
+        job = jobs.Job(recook, result_path)
+        assert job.execute() == 0, (job.output, result_path.read_text())
+        assert jobs.load_json(result_path)['recooked'] >= 1
+        cooked_sidecar(new_image)
+        # A request without asset_scope reimports a scene-owned record; any
+        # other operation accepts only the scene scope.
+        local_texture = next(item for item in jobs.read_managed_scene(scene_path)['assets']
+                             if item['kind'] == 'texture')
+        old_local = primary(scene_path.parent, local_texture)
+        job = jobs.Job(dict(local_prepare, operation='reimport_asset', asset_id=local_texture['id'],
+                            source=str(shared_source / 'replacement.png')), result_path)
+        assert job.execute() == 0, (job.output, result_path.read_text())
+        local_rebuilt = jobs.load_json(result_path)
+        assert [(item['scope'], item['id'], item['old_path']) for item in local_rebuilt['changed_assets']] == \
+            [('scene', local_texture['id'], old_local)]
+        assert asset_refs(jobs.load_json(local_rebuilt['runtime_path']))[
+            'asset:scene/' + local_texture['id']] == local_rebuilt['changed_assets'][0]['new_path']
+        assert jobs.Job(dict(asset_operation, asset_scope='project'), result_path).execute() == 1
+        assert 'asset_scope' in jobs.load_json(result_path)['error']
         # A Content drop places the existing project mesh by reference at its
         # drop point without copying it into the scene; a stale reference
         # fails and leaves the scene untouched.
@@ -735,7 +882,7 @@ def main():
         placed = jobs.load_json(result_path)
         assert any('absent.png was replaced by a placeholder' in item for item in placed['warnings'])
         print('Project jobs: copied source closure, cooked-only remap, relocation, missing-input rollback, '
-              'traversal rejection, project-scoped import, placement by reference, prefab instances, asset deletion, import preflight and image placeholders passed')
+              'traversal rejection, project-scoped import, placement by reference, prefab instances, asset deletion, import preflight, image placeholders, asset references, project-scope rebuilds and change reports passed')
 
 
 if __name__ == '__main__':

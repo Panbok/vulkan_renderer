@@ -4976,6 +4976,48 @@ static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
    environment and probe textures, and requests every mesh, animation and shape
    material dependency. `out_scene_error`, when given, receives a parser
    error. */
+/* Publishes the lowered scene's `asset_refs`, [{"ref","path"}], so the
+   managed asset references its materials name resolve (ADR-112). Only an
+   unknown reference is added: the editor publishes rebuilds and listings,
+   and a container lowered earlier must not move a reference back to an
+   older revision. An entry that does not parse is skipped: its reference
+   then loads the default material, as an unreadable path does. */
+vkr_internal void
+scene_loader_publish_asset_refs(struct VkrRenderAssets *assets, String8 json,
+                                VkrAllocator *temp_alloc) {
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  if (!vkr_json_find_root_field(&reader, "asset_refs")) {
+    return;
+  }
+  vkr_json_skip_whitespace(&reader);
+  if (reader.pos >= reader.length || reader.data[reader.pos] != '[') {
+    return;
+  }
+  ++reader.pos;
+  uint32_t published = 0u;
+  while (vkr_json_next_array_element(&reader)) {
+    VkrJsonReader entry = {0};
+    if (!vkr_json_enter_object(&reader, &entry)) {
+      break;
+    }
+    VkrJsonReader ref_reader = entry;
+    VkrJsonReader path_reader = entry;
+    String8 ref = {0};
+    String8 path = {0};
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(temp_alloc);
+    if (vkr_json_find_field(&ref_reader, "ref") &&
+        vkr_json_parse_string(&ref_reader, &ref) &&
+        !vkr_render_assets_asset_ref_known(assets, ref) &&
+        vkr_json_find_field(&path_reader, "path") &&
+        vkr_json_parse_string_decoded(&path_reader, temp_alloc, &path) &&
+        vkr_render_assets_publish_asset_ref(assets, ref, path, NULL)) {
+      ++published;
+    }
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  log_debug("Scene loader: %u asset references", published);
+}
+
 vkr_internal bool8_t scene_loader_prepare_payload(
     struct VkrRenderAssets *assets, VkrAllocator *allocator, VkrMutex mutex,
     String8 json, String8 owner, VkrAllocator *temp_alloc,
@@ -4995,6 +5037,7 @@ vkr_internal bool8_t scene_loader_prepare_payload(
   payload->assets = assets;
   payload->allocator = allocator;
   payload->mutex = mutex;
+  scene_loader_publish_asset_refs(assets, json, temp_alloc);
   payload->environment_import = scene_environment_import_defaults();
   payload->atmosphere_import = scene_atmosphere_import_defaults();
   payload->fog_import = scene_fog_import_defaults();

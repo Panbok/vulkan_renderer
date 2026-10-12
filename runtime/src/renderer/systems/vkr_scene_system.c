@@ -20,6 +20,7 @@
 #include "math/vkr_math.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
+#include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/world/vkr_text_3d.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_ids.h"
@@ -5475,11 +5476,86 @@ VkrEntityId vkr_scene_find_entity_ref(const VkrScene *scene,
   return VKR_ENTITY_ID_INVALID;
 }
 
+/* The material a texture asset reference draws as: opaque PBR with the
+   texture at `texture_path` as its base color, named after `ref` so every
+   user of the reference shares it. Its texture streams in; until then it
+   draws white. */
+vkr_internal VkrMaterialHandle
+scene_texture_material_load(VkrScene *scene, const char *ref,
+                            const char *texture_path, bool8_t *out_owned) {
+  struct VkrRenderAssets *assets = scene->assets;
+  VkrMaterialSystem *materials = &assets->material_system;
+  const bool8_t live = vkr_hash_table_get_VkrMaterialEntry(
+                           &materials->material_by_name, ref) != NULL;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrMaterialHandle handle = vkr_material_system_create_colored(
+      materials, ref, vec4_new(1.0f, 1.0f, 1.0f, 1.0f), &error);
+  if (!handle.id) {
+    log_warn("Scene: texture material '%s' could not be created (%d)", ref,
+             (int)error);
+    *out_owned = false_v;
+    return materials->default_material;
+  }
+  *out_owned = true_v;
+  if (!live && !vkr_scene_texture_material_apply(assets, ref, texture_path)) {
+    log_warn("Scene: texture '%s' did not apply to its material; drawing it "
+             "white",
+             texture_path);
+  }
+  return handle;
+}
+
+bool8_t vkr_scene_texture_material_apply(struct VkrRenderAssets *assets,
+                                         const char *ref,
+                                         const char *texture_path) {
+  /* A base color texture is sRGB color, as a cooked material names it. */
+  char definition[VKR_MATERIAL_PATH_MAX + 256u];
+  const int32_t length = snprintf(
+      definition, sizeof(definition),
+      "name=%s\ntype=pbr\nbase_color_colorspace=srgb\nbase_color=1,1,1,1\n"
+      "metallic=0\nroughness=0.5\nbase_color_texture=%s%s\n",
+      ref, texture_path,
+      strchr(texture_path, '?') ? "" : "?cs=srgb&tc=color_srgb");
+  if (length <= 0 || (uint64_t)length >= sizeof(definition)) {
+    return false_v;
+  }
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  VkrAllocatorScope scope =
+      vkr_allocator_begin_scope(&assets->scratch_allocator);
+  const bool8_t applied = vkr_material_loader_replace_live(
+      &assets->material_system,
+      string8_create_from_cstr((const uint8_t *)texture_path,
+                               strlen(texture_path)),
+      string8_create((uint8_t *)definition, (uint64_t)length),
+      &assets->scratch_allocator, &error);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return applied;
+}
+
 VkrMaterialHandle vkr_scene_material_load(VkrScene *scene, const char *path,
                                           bool8_t *out_owned) {
   struct VkrRenderAssets *assets = scene->assets;
   VkrMaterialHandle handle = assets->material_system.default_material;
   *out_owned = false_v;
+  /* A managed asset reference loads the revision it names now: a material
+     file, or a texture drawn as a material. */
+  char resolved[VKR_MATERIAL_PATH_MAX];
+  const String8 value =
+      string8_create_from_cstr((const uint8_t *)path, strlen(path));
+  if (vkr_asset_ref_is(value)) {
+    if (!vkr_render_assets_resolve_asset_ref(assets, value, resolved,
+                                             sizeof(resolved))) {
+      log_warn("Scene: asset '%s' is not in this project; using the default "
+               "material",
+               path);
+      return handle;
+    }
+    const uint64_t length = strlen(resolved);
+    if (length < 3u || strcmp(resolved + length - 3u, ".mt") != 0) {
+      return scene_texture_material_load(scene, path, resolved, out_owned);
+    }
+    path = resolved;
+  }
   VkrResourceHandleInfo info = {0};
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   const String8 name =

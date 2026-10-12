@@ -1358,7 +1358,8 @@ vkr_internal bool8_t vkr_project_texture_line(VkrProjectJob *job,
    tier and speed (VKR_PROJECT_RECIPES_FILE). */
 vkr_internal void
 vkr_project_note_image_recipe(VkrProjectJob *job, VkrBakeryJson *recipes,
-                              const VkrProjectTextureLine *texture) {
+                              const VkrProjectTextureLine *texture,
+                              bool8_t preview) {
   Arena *arena = job->arena;
   char directory[VKR_PROJECT_PATH];
   vkr_bakery_path_parent(directory, sizeof(directory), texture->destination);
@@ -1377,11 +1378,38 @@ vkr_project_note_image_recipe(VkrProjectJob *job, VkrBakeryJson *recipes,
                       vkr_bakery_json_cstr(arena, texture->texture_class));
   vkr_bakery_json_set(
       arena, entry, "tier",
-      vkr_bakery_json_cstr(arena, job->texture_preview ? "preview" : "final"));
+      vkr_bakery_json_cstr(arena, preview ? "preview" : "final"));
   vkr_bakery_json_set(arena, entry, "speed",
                       vkr_bakery_json_cstr(arena, fast ? "fast" : "final"));
   vkr_bakery_json_set(arena, folder, vkr_bakery_path_name(texture->destination),
                       entry);
+}
+
+/* Plans the cook of one source image into its texture at `preview` or the
+   final tier, seeded by a `.vkt` the user's source folder held. */
+vkr_internal bool8_t vkr_project_plan_texture(
+    VkrProjectJob *job, VkrBakeryGraph *graph,
+    const VkrProjectTextureLine *texture, bool8_t preview) {
+  VkrBakeryJson *recipe = vkr_bakery_json_object(graph->arena);
+  vkr_bakery_json_set(
+      graph->arena, recipe, "class",
+      vkr_bakery_json_cstr(graph->arena, texture->texture_class));
+  vkr_bakery_json_set(
+      graph->arena, recipe, "tier",
+      vkr_bakery_json_cstr(graph->arena, preview ? "preview" : "final"));
+  vkr_bakery_json_set(
+      graph->arena, recipe, "encoding",
+      vkr_bakery_json_cstr(graph->arena,
+                           vkr_project_texture_encoding_name(job)));
+  VkrBakeryAction *action =
+      vkr_bakery_graph_add(graph, vkr_bakery_producer_find("texture"),
+                           texture->source, recipe, texture->destination);
+  if (!action) {
+    return vkr_project_fail(job, "Texture packer did not publish its artifact");
+  }
+  const char *seed = vkr_project_json_text(job->texture_seeds, texture->hash);
+  action->seed_path = seed ? vkr_bakery_graph_strdup(graph, seed) : NULL;
+  return true_v;
 }
 
 /* Merges each folder's noted recipes into its VKR_PROJECT_RECIPES_FILE. */
@@ -1463,7 +1491,8 @@ bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
       ok = vkr_project_texture_line(job, materials->items[m], key, value,
                                     &texture);
       if (ok) {
-        vkr_project_note_image_recipe(job, recipes, &texture);
+        vkr_project_note_image_recipe(job, recipes, &texture,
+                                      job->texture_preview);
       }
       if (!ok || vkr_bakery_is_file(texture.destination) ||
           vkr_bakery_json_get(planned, texture.destination)) {
@@ -1471,30 +1500,9 @@ bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
       }
       vkr_bakery_json_set(job->arena, planned, texture.destination,
                           vkr_bakery_json_bool(job->arena, true_v));
-      VkrBakeryJson *recipe = vkr_bakery_json_object(graph.arena);
-      vkr_bakery_json_set(
-          graph.arena, recipe, "class",
-          vkr_bakery_json_cstr(graph.arena, texture.texture_class));
-      vkr_bakery_json_set(graph.arena, recipe, "tier",
-                          vkr_bakery_json_cstr(graph.arena, job->texture_preview
-                                                                ? "preview"
-                                                                : "final"));
-      vkr_bakery_json_set(
-          graph.arena, recipe, "encoding",
-          vkr_bakery_json_cstr(graph.arena,
-                               vkr_project_texture_encoding_name(job)));
-      VkrBakeryAction *action =
-          vkr_bakery_graph_add(&graph, vkr_bakery_producer_find("texture"),
-                               texture.source, recipe, texture.destination);
-      if (!action) {
-        ok = vkr_project_fail(job,
-                              "Texture packer did not publish its artifact");
-        break;
-      }
-      const char *seed =
-          vkr_project_json_text(job->texture_seeds, texture.hash);
-      action->seed_path = seed ? vkr_bakery_graph_strdup(&graph, seed) : NULL;
-      pending += 1u;
+      ok =
+          vkr_project_plan_texture(job, &graph, &texture, job->texture_preview);
+      pending += ok ? 1u : 0u;
     }
   }
   if (ok && pending) {
@@ -1510,6 +1518,53 @@ bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
   }
   vkr_bakery_graph_shutdown(&graph);
   return ok && vkr_project_write_image_recipes(job, recipes);
+}
+
+bool8_t vkr_project_import_image(VkrProjectJob *job, const char *source,
+                                 const char *revision, char *out_image) {
+  char textures[VKR_PROJECT_PATH];
+  (void)snprintf(textures, sizeof(textures), "%s/textures", revision);
+  VKR_PROJECT_TRY(vkr_project_make_dirs(job, textures));
+  VKR_PROJECT_TRY(vkr_project_copy_blob(job, source, textures, out_image));
+  /* Preview and deferred jobs cook at the preview tier, so the texture
+     draws as soon as the job publishes. */
+  const bool8_t preview = job->texture_preview || job->texture_deferred;
+  VkrProjectTextureLine texture = {.key = "texture"};
+  (void)snprintf(texture.source, sizeof(texture.source), "%s", out_image);
+  (void)snprintf(texture.texture_class, sizeof(texture.texture_class), "%s",
+                 "color-srgb");
+  (void)snprintf(texture.destination, sizeof(texture.destination), "%s.vkt",
+                 out_image);
+  VKR_PROJECT_TRY(vkr_project_digest(job, out_image, texture.hash));
+  VkrBakeryGraph graph;
+  if (!vkr_bakery_graph_init(&graph, job->config)) {
+    return vkr_project_fail(job, "Cannot start the texture graph");
+  }
+  vkr_bakery_graph_use_index(&graph, vkr_project_index(job));
+  bool8_t ok = vkr_project_progress(job, "Preparing texture", -1.0,
+                                    vkr_bakery_path_name(source)) &&
+               vkr_project_plan_texture(job, &graph, &texture, preview);
+  if (ok && !vkr_bakery_cache_prepare(job->config)) {
+    ok = vkr_project_fail(job, "The bakery cache is not writable");
+  }
+  if (ok && !vkr_bakery_graph_execute(&graph)) {
+    ok = vkr_project_check_cancel(job) &&
+         vkr_project_fail(job, "Preparing texture failed; see the job log");
+  }
+  vkr_bakery_graph_shutdown(&graph);
+  VKR_PROJECT_TRY(ok);
+  VkrBakeryJson *recipes = vkr_bakery_json_object(job->arena);
+  vkr_project_note_image_recipe(job, recipes, &texture, preview);
+  return vkr_project_write_image_recipes(job, recipes);
+}
+
+void vkr_project_mark_image_tier(VkrProjectJob *job, VkrBakeryJson *record) {
+  if (job->texture_preview || job->texture_deferred) {
+    vkr_bakery_json_set(job->arena, record, "texture_tier",
+                        vkr_bakery_json_cstr(job->arena, "preview"));
+  } else {
+    (void)vkr_bakery_json_remove(record, "texture_tier");
+  }
 }
 
 /* Records in the index the digests the cook reported for files of
@@ -2403,10 +2458,20 @@ VkrBakeryJson *vkr_project_import_source(VkrProjectJob *job,
                    revision);
     char stem[512];
     vkr_project_stem(source, stem, sizeof(stem));
-    if (!vkr_project_copy_blob(job, source, directory, imported) ||
-        !vkr_project_artifact(job, "texture", stem, imported, NULL, NULL,
+    /* A cooked `.vkt` is loaded as it is; a source image gets its cooked
+       sidecar (vkr_project_import_image). */
+    const bool8_t image = strcmp(suffix, ".vkt") != 0;
+    if (image ? !vkr_project_import_image(job, source, directory, imported)
+              : !vkr_project_copy_blob(job, source, directory, imported)) {
+      return NULL;
+    }
+    if (!vkr_project_artifact(job, "texture", stem, imported, NULL, NULL,
                               imported, NULL)) {
       return NULL;
+    }
+    /* vkr_project_artifact appended the record. */
+    if (image) {
+      vkr_project_mark_image_tier(job, job->assets->last);
     }
     return none;
   }

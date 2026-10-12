@@ -46,8 +46,9 @@ typedef enum VkrEditorContentActionKind {
   /* A material file or graph (`source` is its path): show it in the
      Material panel. */
   VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL,
-  /* A material (`source`) dropped on the viewport at `drop_px`: assign it
-     to the brush or mesh there. */
+  /* A material or texture dropped on the viewport at `drop_px`: assign it
+     to the brush or mesh there. `source` is what the scene names it by: an
+     asset reference ("asset:<scope>/<id>") or a content-root path. */
   VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL,
 } VkrEditorContentActionKind;
 
@@ -91,12 +92,17 @@ VkrEditorContent *vkr_editor_content_create(VkrAllocator *allocator,
                                             VkrRenderAssets *assets);
 void vkr_editor_content_destroy(VkrEditorContent *content);
 /** workspace_root is the selected .vkreditor directory. IDs may be empty.
- * Copies context, cancels old jobs, and refreshes the managed inventories. */
-void vkr_editor_content_set_project(VkrEditorContent *content,
-                                    const char *workspace_root,
-                                    const char *project_id,
-                                    const char *scene_id);
+ * Copies context, cancels old jobs, and refreshes the managed inventories;
+ * false, refreshing nothing, when the context is unchanged. */
+bool8_t vkr_editor_content_set_project(VkrEditorContent *content,
+                                       const char *workspace_root,
+                                       const char *project_id,
+                                       const char *scene_id);
 void vkr_editor_content_refresh(VkrEditorContent *content);
+/** While a project job or a depot sync writes the project, queued rebuilds
+ * wait; one a build file queued then starts only if the file still differs
+ * from its record. */
+void vkr_editor_content_set_busy(VkrEditorContent *content, bool8_t busy);
 struct VkrSampleUiFrame;
 /** Objects of the loaded containers (ADR-076): the World's at the Content
  * root and each project scene's in that scene's folder. `scene_ids[0]` names

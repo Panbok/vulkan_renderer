@@ -17,11 +17,12 @@
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
-#include "level/vkr_brush.h"
-#include "renderer/resources/loaders/material_loader.h"
 #include "filesystem/vkr_asset_path.h"
+#include "level/vkr_brush.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
+#include "renderer/resources/loaders/material_loader.h"
+#include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_partition.h"
@@ -12429,11 +12430,37 @@ static bool8_t ops_build_material_assign(OpsContext *ctx,
   if (!ops_arg_string(ctx, args, "material", material, sizeof(material))) {
     return false_v;
   }
-  if (material[0] && (!ops_material_ends(material, ".mt") ||
-                      material[0] == '/' || strstr(material, ".."))) {
+  /* A managed asset reference names a project material or texture and
+     follows its rebuilds (ADR-076). */
+  const bool8_t reference = vkr_asset_ref_is(
+      string8_create_from_cstr((const uint8_t *)material, strlen(material)));
+  if (material[0] && !reference &&
+      (!ops_material_ends(material, ".mt") || material[0] == '/' ||
+       strstr(material, ".."))) {
     return ops_fail(ctx, OPS_INVALID,
-                    "'material' is a content-root relative .mt, or empty to "
-                    "clear");
+                    "'material' is a content-root relative .mt, an "
+                    "asset:<scope>/<id> reference, or empty to clear");
+  }
+  if (reference) {
+    /* A reference draws as a material only when it names a material file
+       or a texture image. */
+    static const char *const drawable[] = {".mt",   ".png", ".jpg",
+                                           ".jpeg", ".tga", ".vkt"};
+    char resolved[VKR_MATERIAL_PATH_MAX];
+    bool8_t known = vkr_render_assets_resolve_asset_ref(
+        ctx->frame->assets,
+        string8_create_from_cstr((const uint8_t *)material, strlen(material)),
+        resolved, sizeof(resolved));
+    bool8_t accepted = false_v;
+    for (uint32_t i = 0u; known && i < ArrayCount(drawable); ++i) {
+      accepted |= ops_material_ends(resolved, drawable[i]);
+    }
+    if (!accepted) {
+      return ops_fail(ctx, OPS_INVALID,
+                      known ? "'%s' names neither a material nor a texture"
+                            : "'%s' is not an asset of the open project",
+                      material);
+    }
   }
   if (vkr_bakery_json_get(args, "face") || vkr_bakery_json_get(args, "brush")) {
     return ops_build_face_look(ctx, args, batch, true_v);

@@ -2139,6 +2139,10 @@ bool8_t vkr_editor_depot_dialog_open(const VkrEditorDepot *depot) {
   return depot && depot->dialog_open;
 }
 
+bool8_t vkr_editor_depot_busy(const VkrEditorDepot *depot) {
+  return depot && depot->job && depot_busy(depot);
+}
+
 // =============================================================================
 // Widgets
 // =============================================================================
