@@ -1768,17 +1768,31 @@ vkr_internal void vkr_renderer_metrics_collect_assets(
       context->application.material_texture_stream_automatic_pressure_active);
 }
 
-vkr_internal void
-vkr_renderer_metrics_collect_shadows(VkrMetrics *metrics,
-                                     const VkrRendererMetricIds *ids,
-                                     const VkrShadowMetrics *shadow) {
+vkr_internal void vkr_renderer_metrics_collect_shadows(
+    VkrMetrics *metrics, const VkrRendererMetricIds *ids,
+    const VkrShadowMetrics *shadow, bool8_t gpu_diagnostics_valid) {
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
-    vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_draws_opaque[i],
-                              shadow->shadow_indirect_draws_opaque[i]);
-    vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_calls_opaque[i],
-                              shadow->shadow_indirect_calls_opaque[i]);
-    vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_overflow[i],
-                              shadow->shadow_indirect_overflow[i]);
+    /* The indirect counts come from a completed GPU readback; a frame with
+       none has no sample, as for the visibility counts. */
+    if (gpu_diagnostics_valid) {
+      vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_draws_opaque[i],
+                                shadow->shadow_indirect_draws_opaque[i]);
+      vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_calls_opaque[i],
+                                shadow->shadow_indirect_calls_opaque[i]);
+      vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_overflow[i],
+                                shadow->shadow_indirect_overflow[i]);
+    } else {
+      const VkrMetricId indirect_ids[] = {
+          ids->shadow_indirect_draws_opaque[i],
+          ids->shadow_indirect_calls_opaque[i],
+          ids->shadow_indirect_overflow[i],
+      };
+      for (uint32_t id = 0u; id < ArrayCount(indirect_ids); ++id) {
+        vkr_metrics_mark(metrics, indirect_ids[id],
+                         VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                         VKR_METRIC_REASON_NOT_SAMPLED);
+      }
+    }
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_rendered[i],
                               shadow->rendered[i]);
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_reused[i],
@@ -2119,7 +2133,8 @@ void vkr_renderer_metrics_collect(
                                           visibility);
   vkr_renderer_metrics_collect_assets(metrics, ids, context, world);
 
-  vkr_renderer_metrics_collect_shadows(metrics, ids, shadow);
+  vkr_renderer_metrics_collect_shadows(metrics, ids, shadow,
+                                       world->gpu_diagnostics_valid);
 
   vkr_renderer_metrics_collect_backend(metrics, ids, renderer);
 
