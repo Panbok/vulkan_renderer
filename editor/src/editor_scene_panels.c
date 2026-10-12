@@ -2015,10 +2015,8 @@ static uint32_t selection_depth(const VkrScene *scene, VkrEntityId entity) {
 }
 
 /* Whether an ancestor of `entity` is among `list`. */
-static bool8_t selection_has_ancestor(const VkrScene *scene,
-                                      VkrEntityId entity,
-                                      const VkrEntityId *list,
-                                      uint32_t count) {
+static bool8_t selection_has_ancestor(const VkrScene *scene, VkrEntityId entity,
+                                      const VkrEntityId *list, uint32_t count) {
   const SceneTransform *t =
       vkr_entity_get_component(scene->world, entity, scene->comp_transform);
   for (uint32_t guard = 0u; t && t->parent.u64 && guard < 64u; ++guard) {
@@ -2106,9 +2104,9 @@ bool8_t vkr_editor_selection_apply(VkrEditorUi *editor,
       .count = count,
       .container = container,
   };
-  snprintf(message, capacity, "%s %u objects%s", duplicate ? "Duplicating"
-                                                          : "Deleting",
-           count, skipped ? "; others in another scene stay" : "");
+  snprintf(message, capacity, "%s %u objects%s",
+           duplicate ? "Duplicating" : "Deleting", count,
+           skipped ? "; others in another scene stay" : "");
   return true_v;
 }
 

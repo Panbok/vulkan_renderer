@@ -1298,13 +1298,13 @@ vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
           volume->sh_scale > 0.0f;
       for (uint32_t i = 0u; valid && i < volume->active_layer_count; ++i) {
         const uint32_t direct = volume->active_direct_bands[i];
-        valid = volume->active_layers[i] < volume->layer_count &&
-                isfinite(volume->active_weights[i]) &&
-                volume->active_weights[i] >= 0.0f &&
-                (direct == VKR_DIFFUSE_VOLUME_NO_BAND ||
-                 ((volume->active_lamp_mask & (1u << i)) != 0u &&
-                  direct >= volume->layer_count &&
-                  direct < volume->band_count));
+        valid =
+            volume->active_layers[i] < volume->layer_count &&
+            isfinite(volume->active_weights[i]) &&
+            volume->active_weights[i] >= 0.0f &&
+            (direct == VKR_DIFFUSE_VOLUME_NO_BAND ||
+             ((volume->active_lamp_mask & (1u << i)) != 0u &&
+              direct >= volume->layer_count && direct < volume->band_count));
       }
       if (!valid)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,

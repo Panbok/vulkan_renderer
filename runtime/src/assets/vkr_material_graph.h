@@ -295,9 +295,8 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
                                            uint32_t capacity);
 
 /* Whether `.mt` text names a graph, and its instance fields. */
-bool8_t vkr_material_instance_read(String8 definition,
-                                   VkrMaterialInstance *out, char *error,
-                                   uint32_t capacity);
+bool8_t vkr_material_instance_read(String8 definition, VkrMaterialInstance *out,
+                                   char *error, uint32_t capacity);
 /* Writes `instance` as `.mt` text into `allocator`: name, graph, its own
    world size and surface, then the parameters. */
 bool8_t vkr_material_instance_write(const VkrMaterialInstance *instance,

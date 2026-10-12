@@ -931,8 +931,8 @@ _Static_assert(sizeof(VkrVulkanDiffuseVolumeSampleRoot) == 144u &&
                    offsetof(VkrVulkanDiffuseVolumeSampleRoot,
                             vbuffer_texture) == 80u &&
                    offsetof(VkrVulkanDiffuseVolumeSampleRoot, extent) == 96u &&
-                   offsetof(VkrVulkanDiffuseVolumeSampleRoot,
-                            output_texture) == 112u,
+                   offsetof(VkrVulkanDiffuseVolumeSampleRoot, output_texture) ==
+                       112u,
                "Vulkan diffuse-volume sample root ABI drift");
 
 /** A baked lamp whose moving casters Shadow.LocalMask shadows: its light
@@ -3589,9 +3589,10 @@ bool8_t vkr_vk_resolve_sampled_pair(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_resolve_diffuse_volume(VkrVulkanRenderer *renderer,
                                       const VkrDiffuseVolumeBinding *volume,
                                       VkrVulkanFrameSlot *slot);
-bool8_t vkr_vk_prepare_diffuse_volume_compose(
-    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
-    const VkrRgPass *pass);
+bool8_t
+vkr_vk_prepare_diffuse_volume_compose(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass);
 void vkr_vk_record_diffuse_volume_compose(
     VkrVulkanRenderer *renderer, VkCommandBuffer command,
     const VkrVulkanPreparedCompute *prepared);
@@ -3651,9 +3652,10 @@ typedef enum VkrVulkanDiffuseVolumeStage {
   VKR_VULKAN_DIFFUSE_VOLUME_FALLBACK,
 } VkrVulkanDiffuseVolumeStage;
 
-bool8_t vkr_vk_prepare_diffuse_volume_sample(
-    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
-    const VkrRgPass *pass, VkrVulkanDiffuseVolumeStage stage);
+bool8_t vkr_vk_prepare_diffuse_volume_sample(VkrVulkanRenderer *renderer,
+                                             VkrVulkanPreparedCompute *prepared,
+                                             const VkrRgPass *pass,
+                                             VkrVulkanDiffuseVolumeStage stage);
 bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass);

@@ -472,8 +472,8 @@ Array(VkrRgPassExecutor);
  */
 typedef struct VkrRgExecutorRegistry {
   VkrAllocator *allocator; /**< Allocator for entries; must outlive registry */
-  Array_VkrRgPassExecutor entries;  /**< Registered executors */
-  bool8_t initialized;              /**< True after init */
+  Array_VkrRgPassExecutor entries; /**< Registered executors */
+  bool8_t initialized;             /**< True after init */
 } VkrRgExecutorRegistry;
 
 /**

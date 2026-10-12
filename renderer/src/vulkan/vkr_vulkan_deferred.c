@@ -1511,15 +1511,13 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(
   VkrVulkanGraphBufferInstance *arguments =
       vkr_vk_deferred_buffer(renderer, pass, 22u);
   VkrVulkanGraphBufferInstance *pixels =
-      fallback || upsample ? vkr_vk_deferred_buffer(renderer, pass, 23u)
-                           : NULL;
+      fallback || upsample ? vkr_vk_deferred_buffer(renderer, pass, 23u) : NULL;
   if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 16u, &output) ||
-      (!fallback &&
-       !vkr_vk_deferred_storage_index(renderer, pass, upsample ? 21u : 17u,
-                                      &guide)) ||
+      (!fallback && !vkr_vk_deferred_storage_index(
+                        renderer, pass, upsample ? 21u : 17u, &guide)) ||
       (upsample &&
        !vkr_vk_deferred_storage_index(renderer, pass, 20u, &half)) ||
       (vkr_rg_pass_find_image_use(&pass->desc, 18u, 0u) &&

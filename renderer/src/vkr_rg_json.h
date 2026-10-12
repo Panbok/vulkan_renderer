@@ -381,9 +381,9 @@ Array(VkrRgJsonAttachment);
  * @note: The attachments are only used to describe the attachments of a pass.
  */
 typedef struct VkrRgJsonAttachments {
-  Array_VkrRgJsonAttachment colors;  // The color attachments.
-  bool8_t has_depth;                 // Whether the pass has a depth attachment.
-  VkrRgJsonAttachment depth;         // The depth attachment.
+  Array_VkrRgJsonAttachment colors; // The color attachments.
+  bool8_t has_depth;                // Whether the pass has a depth attachment.
+  VkrRgJsonAttachment depth;        // The depth attachment.
   bool8_t depth_read_only; // Whether the depth attachment is read only.
 } VkrRgJsonAttachments;
 
@@ -402,20 +402,20 @@ typedef enum VkrRgJsonPassType {
  * @note: The pass is only used to describe a pass.
  */
 typedef struct VkrRgJsonPass {
-  String8 name;                       // The name of the pass.
-  VkrRgJsonPassType type;             // The type of the pass.
-  VkrRgPassFlags flags;               // The flags of the pass.
-  bool8_t has_domain;                 // Whether the pass has a domain.
-  VkrPipelineDomain domain;           // The domain of the pass.
-  VkrRgJsonCondition condition;       // The condition of the pass.
-  VkrRgJsonRepeat repeat;             // The repeat of the pass.
-  Array_VkrRgJsonResourceUse reads;   // The reads of the pass.
-  Array_VkrRgJsonResourceUse writes;  // The writes of the pass.
-  VkrRgJsonAttachments attachments;   // The attachments of the pass.
-  VkrRgComputeDispatchDesc dispatch;  // Optional typed compute dispatch.
-  String8 execute;                    // The execute of the pass.
-  uint32_t executor_id;               // Stable backend-local executor kind.
-  bool8_t executor_resolved;          // Whether the typed binding succeeded.
+  String8 name;                      // The name of the pass.
+  VkrRgJsonPassType type;            // The type of the pass.
+  VkrRgPassFlags flags;              // The flags of the pass.
+  bool8_t has_domain;                // Whether the pass has a domain.
+  VkrPipelineDomain domain;          // The domain of the pass.
+  VkrRgJsonCondition condition;      // The condition of the pass.
+  VkrRgJsonRepeat repeat;            // The repeat of the pass.
+  Array_VkrRgJsonResourceUse reads;  // The reads of the pass.
+  Array_VkrRgJsonResourceUse writes; // The writes of the pass.
+  VkrRgJsonAttachments attachments;  // The attachments of the pass.
+  VkrRgComputeDispatchDesc dispatch; // Optional typed compute dispatch.
+  String8 execute;                   // The execute of the pass.
+  uint32_t executor_id;              // Stable backend-local executor kind.
+  bool8_t executor_resolved;         // Whether the typed binding succeeded.
 } VkrRgJsonPass;
 Array(VkrRgJsonPass);
 
@@ -424,9 +424,9 @@ Array(VkrRgJsonPass);
  * @note: The outputs are only used to describe the outputs of a graph.
  */
 typedef struct VkrRgJsonOutputs {
-  String8 present;               // The present output.
-  Array_String8 export_images;   // The export images.
-  Array_String8 export_buffers;  // The export buffers.
+  String8 present;              // The present output.
+  Array_String8 export_images;  // The export images.
+  Array_String8 export_buffers; // The export buffers.
 } VkrRgJsonOutputs;
 
 /**
@@ -434,13 +434,13 @@ typedef struct VkrRgJsonOutputs {
  * @note: The graph is only used to describe a graph.
  */
 typedef struct VkrRgJsonGraph {
-  uint32_t version;                   // The version of the graph.
-  String8 name;                       // The name of the graph.
-  Array_VkrRgJsonResource resources;  // The resources of the graph.
-  Array_VkrRgJsonPass passes;         // The passes of the graph.
-  VkrRgJsonOutputs outputs;           // The outputs of the graph.
-  String8 source;                     // The source of the graph.
-  VkrAllocator *allocator;            // The allocator of the graph.
+  uint32_t version;                  // The version of the graph.
+  String8 name;                      // The name of the graph.
+  Array_VkrRgJsonResource resources; // The resources of the graph.
+  Array_VkrRgJsonPass passes;        // The passes of the graph.
+  VkrRgJsonOutputs outputs;          // The outputs of the graph.
+  String8 source;                    // The source of the graph.
+  VkrAllocator *allocator;           // The allocator of the graph.
 } VkrRgJsonGraph;
 
 /**

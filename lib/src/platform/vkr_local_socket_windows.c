@@ -38,8 +38,7 @@ static BOOL CALLBACK winsock_startup(PINIT_ONCE once, PVOID parameter,
 }
 
 bool8_t vkr_winsock_ready(void) {
-  (void)InitOnceExecuteOnce(&winsock_startup_once, winsock_startup, NULL,
-                            NULL);
+  (void)InitOnceExecuteOnce(&winsock_startup_once, winsock_startup, NULL, NULL);
   if (!winsock_started) {
     WSASetLastError(WSANOTINITIALISED);
   }

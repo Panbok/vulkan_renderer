@@ -4775,6 +4775,179 @@ static bool8_t sample_grid_fit_update(VkrStandardSceneRuntime *application) {
   return true_v;
 }
 
+/* Applies a finished click or context pick: the picked object's text, the
+   selection, a gizmo drag, or the context menu's target. */
+vkr_internal void vkr_standard_scene_runtime_apply_click_pick(
+    VkrStandardSceneRuntime *application, const VkrPickResult *result,
+    const VkrViewportHitInfo *viewport_info) {
+  state->gizmo_drag.pending_pick = false_v;
+  const bool8_t context = state->context_pick;
+  state->context_pick = false_v;
+
+  VkrAllocator *frame_alloc = application->frame_allocator;
+  String8 picked_text = {0};
+  VkrEntityId picked_entity = VKR_ENTITY_ID_INVALID;
+  bool8_t picked_entity_valid = false_v;
+  bool8_t update_selection = state->gizmo_drag.pending_select;
+
+  if (result->hit) {
+    VkrPickingDecodedId decoded = vkr_picking_decode_id(result->object_id);
+    if (!decoded.valid) {
+      picked_text = string8_lit("Picked: unknown");
+    } else if (decoded.kind == VKR_PICKING_ID_KIND_SCENE) {
+      VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+      VkrSceneHandle picked_handle = state->scene_resource.as.scene;
+      entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
+                                                       result->object_id);
+      /* Each additive container, and the World, owns its own picking
+         range. */
+      for (uint32_t i = 0; !entity.u64 && i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+        if (state->additive_handles[i]) {
+          picked_handle = state->additive_handles[i];
+          entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
+                                                           result->object_id);
+        }
+      }
+      if (!entity.u64 && state->world_handle) {
+        picked_handle = state->world_handle;
+        entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
+                                                         result->object_id);
+      }
+
+      if (entity.u64 != VKR_ENTITY_ID_INVALID.u64) {
+        picked_entity = entity;
+        picked_entity_valid = true_v;
+        VkrScene *scene = vkr_scene_handle_get_scene(picked_handle);
+        String8 name = scene ? vkr_scene_get_name(scene, entity) : (String8){0};
+        if (name.length > 0) {
+          picked_text = string8_create_formatted(frame_alloc, "Picked: %.*s",
+                                                 (int)name.length, name.str);
+        } else {
+          picked_text = string8_create_formatted(
+              frame_alloc, "Picked: entity %u", entity.parts.index);
+        }
+      } else {
+        picked_text = string8_create_formatted(
+            frame_alloc, "Picked: render id #%u (no entity)", decoded.value);
+      }
+    } else if (decoded.kind == VKR_PICKING_ID_KIND_UI_TEXT) {
+      picked_text = string8_create_formatted(frame_alloc, "Picked: UI text #%u",
+                                             decoded.value);
+    } else if (decoded.kind == VKR_PICKING_ID_KIND_WORLD_TEXT) {
+      VkrScene *scene =
+          vkr_scene_handle_get_scene(state->scene_resource.as.scene);
+      VkrEntityId text_entity = VKR_ENTITY_ID_INVALID;
+      if (scene && vkr_standard_scene_runtime_world_text_entity_from_id(
+                       application, scene, decoded.value, &text_entity)) {
+        picked_entity = text_entity;
+        picked_entity_valid = true_v;
+        String8 name =
+            scene ? vkr_scene_get_name(scene, text_entity) : (String8){0};
+        if (name.length > 0) {
+          picked_text = string8_create_formatted(frame_alloc, "Picked: %.*s",
+                                                 (int)name.length, name.str);
+        } else {
+          picked_text = string8_create_formatted(
+              frame_alloc, "Picked: world text #%u", decoded.value);
+        }
+      } else {
+        picked_text = string8_create_formatted(
+            frame_alloc, "Picked: world text #%u", decoded.value);
+      }
+    } else if (decoded.kind == VKR_PICKING_ID_KIND_GIZMO) {
+      picked_text = string8_lit("Picked: gizmo");
+      update_selection = false_v;
+
+      VkrGizmoHandle handle = vkr_gizmo_decode_picking_id(result->object_id);
+      state->gizmo_hot_handle = handle;
+      vkr_gizmo_system_set_hot_handle(&application->gizmo_system, handle);
+      bool8_t drag_button_down =
+          input_is_button_down(state->input_state, BUTTON_LEFT);
+      /* A right click on a handle opens the selection's menu. */
+      if (context && state->has_selection) {
+        picked_entity = state->selected_entity;
+        picked_entity_valid = true_v;
+      }
+      if (!context && (drag_button_down || state->gizmo_drag.released) &&
+          handle != VKR_GIZMO_HANDLE_NONE) {
+        if (vkr_standard_scene_runtime_begin_gizmo_drag(application, handle)) {
+          vkr_gizmo_system_set_active_handle(&application->gizmo_system,
+                                             handle);
+          application->gizmo_system.mode = state->gizmo_drag.mode;
+          if (state->gizmo_drag.released) {
+            const VkrViewportHitInfo release_info = {
+                .position = state->gizmo_drag.release_position,
+                .has_target_coords =
+                    state->gizmo_drag.release_has_target_coords,
+            };
+            vkr_standard_scene_runtime_update_gizmo_drag(application,
+                                                         &release_info);
+            vkr_standard_scene_runtime_finish_gizmo_edit(application);
+          } else {
+            vkr_standard_scene_runtime_update_gizmo_drag(application,
+                                                         viewport_info);
+          }
+          update_selection = false_v;
+        }
+      }
+    } else {
+      picked_text = string8_create_formatted(frame_alloc, "Picked: light #%u",
+                                             decoded.value);
+    }
+  } else {
+    picked_text = string8_lit("Picked: none");
+  }
+
+  /* A rendered gizmo keeps priority. In collision display mode, an eligible
+     CPU ray hit selects its collider child even when the rendered mesh hit
+     has no picking ID for the debug wireframe. */
+  /* The model stage's copies are not the level's objects: there a pick
+     takes the gizmo's handles and never selects; the editor selects. */
+  if (application->stage_scene) {
+    update_selection = false_v;
+    if (!context) {
+      picked_entity_valid = false_v;
+    }
+  }
+  if (update_selection && state->picked_collider.u64 &&
+      vkr_scene_entity_alive(application->active_scene,
+                             state->picked_collider)) {
+    picked_entity = state->picked_collider;
+    picked_entity_valid = true_v;
+    picked_text = string8_create_formatted(frame_alloc, "Picked: collider %u",
+                                           picked_entity.parts.index);
+  }
+  if (update_selection) {
+    if (picked_entity_valid) {
+      state->selected_entity = picked_entity;
+      state->has_selection = true_v;
+    } else {
+      state->selected_entity = VKR_ENTITY_ID_INVALID;
+      state->has_selection = false_v;
+    }
+  }
+  if (!context && update_selection && picked_entity_valid) {
+    sample_begin_select_drag(application, viewport_info);
+  }
+  if (context) {
+    state->context_ready = true_v;
+    state->context_ready_purpose = state->context_pick_purpose;
+    state->context_entity =
+        picked_entity_valid ? picked_entity : VKR_ENTITY_ID_INVALID;
+    state->context_position_px = (Vec2){(float32_t)state->context_press_x,
+                                        (float32_t)state->context_press_y};
+  }
+
+  if (picked_text.length > 0 &&
+      result->object_id != state->last_picked_object_id) {
+    state->last_picked_object_id = result->object_id;
+    vkr_standard_scene_runtime_ui_text_set(&state->picked_object_text,
+                                           picked_text);
+  }
+
+  state->gizmo_drag.pending_select = false_v;
+}
+
 vkr_internal void vkr_standard_scene_runtime_update_picking(
     VkrStandardSceneRuntime *application) {
   if (!application || !state || !state->input_state) {
@@ -4896,174 +5069,8 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
       vkr_picking_get_result(&application->renderer, picking);
 
   if (state->gizmo_drag.pending_pick && !vkr_picking_is_pending(picking)) {
-    state->gizmo_drag.pending_pick = false_v;
-    const bool8_t context = state->context_pick;
-    state->context_pick = false_v;
-
-    VkrAllocator *frame_alloc = application->frame_allocator;
-    String8 picked_text = {0};
-    VkrEntityId picked_entity = VKR_ENTITY_ID_INVALID;
-    bool8_t picked_entity_valid = false_v;
-    bool8_t update_selection = state->gizmo_drag.pending_select;
-
-    if (result.hit) {
-      VkrPickingDecodedId decoded = vkr_picking_decode_id(result.object_id);
-      if (!decoded.valid) {
-        picked_text = string8_lit("Picked: unknown");
-      } else if (decoded.kind == VKR_PICKING_ID_KIND_SCENE) {
-        VkrEntityId entity = VKR_ENTITY_ID_INVALID;
-        VkrSceneHandle picked_handle = state->scene_resource.as.scene;
-        entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
-                                                         result.object_id);
-        /* Each additive container, and the World, owns its own picking
-           range. */
-        for (uint32_t i = 0; !entity.u64 && i < VKR_SCENE_ADDITIVE_MAX; ++i) {
-          if (state->additive_handles[i]) {
-            picked_handle = state->additive_handles[i];
-            entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
-                                                             result.object_id);
-          }
-        }
-        if (!entity.u64 && state->world_handle) {
-          picked_handle = state->world_handle;
-          entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
-                                                           result.object_id);
-        }
-
-        if (entity.u64 != VKR_ENTITY_ID_INVALID.u64) {
-          picked_entity = entity;
-          picked_entity_valid = true_v;
-          VkrScene *scene = vkr_scene_handle_get_scene(picked_handle);
-          String8 name =
-              scene ? vkr_scene_get_name(scene, entity) : (String8){0};
-          if (name.length > 0) {
-            picked_text = string8_create_formatted(frame_alloc, "Picked: %.*s",
-                                                   (int)name.length, name.str);
-          } else {
-            picked_text = string8_create_formatted(
-                frame_alloc, "Picked: entity %u", entity.parts.index);
-          }
-        } else {
-          picked_text = string8_create_formatted(
-              frame_alloc, "Picked: render id #%u (no entity)", decoded.value);
-        }
-      } else if (decoded.kind == VKR_PICKING_ID_KIND_UI_TEXT) {
-        picked_text = string8_create_formatted(
-            frame_alloc, "Picked: UI text #%u", decoded.value);
-      } else if (decoded.kind == VKR_PICKING_ID_KIND_WORLD_TEXT) {
-        VkrScene *scene =
-            vkr_scene_handle_get_scene(state->scene_resource.as.scene);
-        VkrEntityId text_entity = VKR_ENTITY_ID_INVALID;
-        if (scene && vkr_standard_scene_runtime_world_text_entity_from_id(
-                         application, scene, decoded.value, &text_entity)) {
-          picked_entity = text_entity;
-          picked_entity_valid = true_v;
-          String8 name =
-              scene ? vkr_scene_get_name(scene, text_entity) : (String8){0};
-          if (name.length > 0) {
-            picked_text = string8_create_formatted(frame_alloc, "Picked: %.*s",
-                                                   (int)name.length, name.str);
-          } else {
-            picked_text = string8_create_formatted(
-                frame_alloc, "Picked: world text #%u", decoded.value);
-          }
-        } else {
-          picked_text = string8_create_formatted(
-              frame_alloc, "Picked: world text #%u", decoded.value);
-        }
-      } else if (decoded.kind == VKR_PICKING_ID_KIND_GIZMO) {
-        picked_text = string8_lit("Picked: gizmo");
-        update_selection = false_v;
-
-        VkrGizmoHandle handle = vkr_gizmo_decode_picking_id(result.object_id);
-        state->gizmo_hot_handle = handle;
-        vkr_gizmo_system_set_hot_handle(&application->gizmo_system, handle);
-        bool8_t drag_button_down =
-            input_is_button_down(state->input_state, BUTTON_LEFT);
-        /* A right click on a handle opens the selection's menu. */
-        if (context && state->has_selection) {
-          picked_entity = state->selected_entity;
-          picked_entity_valid = true_v;
-        }
-        if (!context && (drag_button_down || state->gizmo_drag.released) &&
-            handle != VKR_GIZMO_HANDLE_NONE) {
-          if (vkr_standard_scene_runtime_begin_gizmo_drag(application,
-                                                          handle)) {
-            vkr_gizmo_system_set_active_handle(&application->gizmo_system,
-                                               handle);
-            application->gizmo_system.mode = state->gizmo_drag.mode;
-            if (state->gizmo_drag.released) {
-              const VkrViewportHitInfo release_info = {
-                  .position = state->gizmo_drag.release_position,
-                  .has_target_coords =
-                      state->gizmo_drag.release_has_target_coords,
-              };
-              vkr_standard_scene_runtime_update_gizmo_drag(application,
-                                                           &release_info);
-              vkr_standard_scene_runtime_finish_gizmo_edit(application);
-            } else {
-              vkr_standard_scene_runtime_update_gizmo_drag(application,
-                                                           &viewport_info);
-            }
-            update_selection = false_v;
-          }
-        }
-      } else {
-        picked_text = string8_create_formatted(frame_alloc, "Picked: light #%u",
-                                               decoded.value);
-      }
-    } else {
-      picked_text = string8_lit("Picked: none");
-    }
-
-    /* A rendered gizmo keeps priority. In collision display mode, an eligible
-       CPU ray hit selects its collider child even when the rendered mesh hit
-       has no picking ID for the debug wireframe. */
-    /* The model stage's copies are not the level's objects: there a pick
-       takes the gizmo's handles and never selects; the editor selects. */
-    if (application->stage_scene) {
-      update_selection = false_v;
-      if (!context) {
-        picked_entity_valid = false_v;
-      }
-    }
-    if (update_selection && state->picked_collider.u64 &&
-        vkr_scene_entity_alive(application->active_scene,
-                               state->picked_collider)) {
-      picked_entity = state->picked_collider;
-      picked_entity_valid = true_v;
-      picked_text = string8_create_formatted(frame_alloc, "Picked: collider %u",
-                                             picked_entity.parts.index);
-    }
-    if (update_selection) {
-      if (picked_entity_valid) {
-        state->selected_entity = picked_entity;
-        state->has_selection = true_v;
-      } else {
-        state->selected_entity = VKR_ENTITY_ID_INVALID;
-        state->has_selection = false_v;
-      }
-    }
-    if (!context && update_selection && picked_entity_valid) {
-      sample_begin_select_drag(application, &viewport_info);
-    }
-    if (context) {
-      state->context_ready = true_v;
-      state->context_ready_purpose = state->context_pick_purpose;
-      state->context_entity =
-          picked_entity_valid ? picked_entity : VKR_ENTITY_ID_INVALID;
-      state->context_position_px = (Vec2){(float32_t)state->context_press_x,
-                                          (float32_t)state->context_press_y};
-    }
-
-    if (picked_text.length > 0 &&
-        result.object_id != state->last_picked_object_id) {
-      state->last_picked_object_id = result.object_id;
-      vkr_standard_scene_runtime_ui_text_set(&state->picked_object_text,
-                                             picked_text);
-    }
-
-    state->gizmo_drag.pending_select = false_v;
+    vkr_standard_scene_runtime_apply_click_pick(application, &result,
+                                                &viewport_info);
   }
 
   if (state->gizmo_hover_pending && !vkr_picking_is_pending(picking)) {

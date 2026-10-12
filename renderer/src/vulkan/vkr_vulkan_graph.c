@@ -2030,12 +2030,10 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
         renderer, &prepared->compute, pass, VKR_VULKAN_DIFFUSE_VOLUME_SAMPLE);
   case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_UPSAMPLE:
     return vkr_vk_prepare_diffuse_volume_sample(
-        renderer, &prepared->compute, pass,
-        VKR_VULKAN_DIFFUSE_VOLUME_UPSAMPLE);
+        renderer, &prepared->compute, pass, VKR_VULKAN_DIFFUSE_VOLUME_UPSAMPLE);
   case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_FALLBACK:
     return vkr_vk_prepare_diffuse_volume_sample(
-        renderer, &prepared->compute, pass,
-        VKR_VULKAN_DIFFUSE_VOLUME_FALLBACK);
+        renderer, &prepared->compute, pass, VKR_VULKAN_DIFFUSE_VOLUME_FALLBACK);
   case VKR_RG_EXECUTOR_SDSM_REDUCE:
     return vkr_vk_prepare_deferred_sdsm(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:

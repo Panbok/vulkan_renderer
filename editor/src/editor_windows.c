@@ -1955,96 +1955,11 @@ static bool8_t editor_window_body_begin(VkrUiSystem *ui,
   return true_v;
 }
 
-static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
-                                InputState *input, VkrEditorWindowKind kind,
-                                const VkrSampleUiFrame *frame) {
-  VkrEditorWindowState *window = &editor->windows[kind];
-  const VkrUiTheme *theme = vkr_ui_theme();
-  String8 title_text = {0};
-  String8 body_text = {0};
-  VkrUiIcon title_icon = VKR_UI_ICON_WINDOW;
-  bool8_t monospace = true_v;
-  switch (kind) {
-  case VKR_EDITOR_WINDOW_PHYSICS:
-    title_text = string8_lit("Physics settings");
-    title_icon = VKR_UI_ICON_PHYSICS;
-    break;
-  case VKR_EDITOR_WINDOW_ANIMATION:
-    title_text = string8_lit("Animation editor");
-    title_icon = VKR_UI_ICON_ANIMATION;
-    break;
-  case VKR_EDITOR_WINDOW_SCRIPT:
-    title_text = string8_lit("Script editor");
-    title_icon = VKR_UI_ICON_CODE;
-    break;
-  case VKR_EDITOR_WINDOW_CHANGES:
-    title_text = string8_lit("Agent changes");
-    title_icon = VKR_UI_ICON_TERMINAL;
-    break;
-  case VKR_EDITOR_WINDOW_LEVEL:
-    title_text = string8_lit("Level checks");
-    title_icon = VKR_UI_ICON_PERSON_WALK;
-    break;
-  case VKR_EDITOR_WINDOW_TERRAIN:
-    title_text = string8_lit("Terrain");
-    title_icon = VKR_UI_ICON_WAVES;
-    break;
-  case VKR_EDITOR_WINDOW_PARTITION:
-    title_text = string8_lit("World partition");
-    title_icon = VKR_UI_ICON_GRID;
-    break;
-  case VKR_EDITOR_WINDOW_ENVIRONMENT:
-    title_text = string8_lit("Environment");
-    title_icon = VKR_UI_ICON_PLANET;
-    break;
-  case VKR_EDITOR_WINDOW_BAKE_SETTINGS:
-    title_text = string8_lit("Bake settings");
-    title_icon = VKR_UI_ICON_BAKERY;
-    break;
-  case VKR_EDITOR_WINDOW_LIGHTS:
-    title_text = string8_lit("Lights");
-    title_icon = VKR_UI_ICON_POINT_LIGHT;
-    break;
-  case VKR_EDITOR_WINDOW_SESSION:
-    title_text = string8_lit("Collaborative session");
-    title_icon = VKR_UI_ICON_CLOUD;
-    break;
-  case VKR_EDITOR_WINDOW_DEPOT:
-    title_text = string8_lit("Project sharing");
-    title_icon = VKR_UI_ICON_GIT_BRANCH;
-    break;
-  case VKR_EDITOR_WINDOW_CREATE:
-    title_text = string8_lit("Create or import");
-    title_icon = VKR_UI_ICON_ADD;
-    break;
-  case VKR_EDITOR_WINDOW_BUILD:
-    title_text = string8_lit("Build settings");
-    title_icon = VKR_UI_ICON_EXPORT;
-    break;
-  case VKR_EDITOR_WINDOW_GRAPHICS:
-    title_text = string8_lit("Preferences");
-    title_icon = VKR_UI_ICON_GRAPHICS;
-    break;
-  case VKR_EDITOR_WINDOW_DRAWS:
-    title_text = string8_lit("Draws and render graph");
-    title_icon = VKR_UI_ICON_DRAWS;
-    body_text = frame->text.metrics;
-    break;
-  case VKR_EDITOR_WINDOW_MEMORY:
-    title_text = string8_lit("Memory");
-    title_icon = VKR_UI_ICON_MEMORY;
-    body_text = frame->text.memory;
-    break;
-  case VKR_EDITOR_WINDOW_HELP:
-    title_text = string8_lit("Keyboard and mouse controls");
-    title_icon = VKR_UI_ICON_KEYBOARD;
-    body_text = editor_help_text(ui);
-    monospace = false_v;
-    break;
-  default:
-    return;
-  }
-
+/* Moves and resizes the window as the pointer drags its title or borders. */
+static void editor_window_track_pointer(VkrEditorUi *editor, VkrUiSystem *ui,
+                                        InputState *input,
+                                        VkrEditorWindowState *window,
+                                        const VkrSampleUiFrame *frame) {
   /* The pointer reaches this window when no window, menu or popup above it
      covers the point; only then do its title and borders take a press. */
   const bool8_t topmost = ui->mouse_input_layer == window->z_order + 2u;
@@ -2111,44 +2026,15 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   if (!down || frame->mouse_captured) {
     window->dragging = false_v;
   }
-  editor_window_clamp(ui, window);
-  (void)vkr_ui_input_layer_set(ui, window->z_order + 2u);
-  (void)vkr_ui_push_id_u64(ui, kind);
-  const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
-  const VkrUiTrack rows[] = {
-      {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
-      one_track,
-  };
-  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
-  panel.placement = (VkrUiPlacement){
-      .column = 0u,
-      .row = 0u,
-      .column_span = 1u,
-      .row_span = 1u,
-      .justify = VKR_UI_ALIGN_START,
-      .align = VKR_UI_ALIGN_START,
-      .margin_pt =
-          {
-              .top = window->position_pt.y,
-              .left = window->position_pt.x,
-          },
-  };
-  panel.columns = &one_track;
-  panel.column_count = 1u;
-  panel.rows = rows;
-  panel.row_count = ArrayCount(rows);
-  panel.style = vkr_editor_glass_style();
-  panel.style.background_color = theme->panel;
-  panel.style.padding_pt = (VkrUiEdges){0};
-  panel.style.min_size_pt = window->size_pt;
-  panel.style.max_size_pt = window->size_pt;
-  panel.clip_children = true_v;
-  panel.presence = VKR_UI_PRESENCE_WINDOW;
-  if (!vkr_ui_panel_begin(ui, string8_lit("window"), &panel)) {
-    (void)vkr_ui_pop_id(ui);
-    return;
-  }
+}
 
+/* The title bar: a drag handle under the title, and the close button. */
+static void editor_window_build_header(VkrEditorUi *editor, VkrUiSystem *ui,
+                                       VkrEditorWindowState *window,
+                                       String8 title_text,
+                                       VkrUiIcon title_icon) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack header_columns[] = {
       one_track,
       {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
@@ -2229,7 +2115,15 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
       window->visible = false_v;
     (void)vkr_ui_panel_end(ui);
   }
+}
 
+/* The window's content: a module's body, or its scrolling text. */
+static void editor_window_build_body(VkrEditorUi *editor, VkrUiSystem *ui,
+                                     const VkrEditorWindowState *window,
+                                     VkrEditorWindowKind kind,
+                                     const VkrSampleUiFrame *frame,
+                                     String8 body_text, bool8_t monospace) {
+  const VkrUiTheme *theme = vkr_ui_theme();
   if (kind == VKR_EDITOR_WINDOW_GRAPHICS) {
     VkrUiRect bounds = {0};
     if (editor_window_body_begin(ui, window, string8_lit("preferences.body"),
@@ -2359,6 +2253,141 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
       (void)vkr_ui_scroll_area_end(ui);
     }
   }
+}
+
+static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
+                                InputState *input, VkrEditorWindowKind kind,
+                                const VkrSampleUiFrame *frame) {
+  VkrEditorWindowState *window = &editor->windows[kind];
+  const VkrUiTheme *theme = vkr_ui_theme();
+  String8 title_text = {0};
+  String8 body_text = {0};
+  VkrUiIcon title_icon = VKR_UI_ICON_WINDOW;
+  bool8_t monospace = true_v;
+  switch (kind) {
+  case VKR_EDITOR_WINDOW_PHYSICS:
+    title_text = string8_lit("Physics settings");
+    title_icon = VKR_UI_ICON_PHYSICS;
+    break;
+  case VKR_EDITOR_WINDOW_ANIMATION:
+    title_text = string8_lit("Animation editor");
+    title_icon = VKR_UI_ICON_ANIMATION;
+    break;
+  case VKR_EDITOR_WINDOW_SCRIPT:
+    title_text = string8_lit("Script editor");
+    title_icon = VKR_UI_ICON_CODE;
+    break;
+  case VKR_EDITOR_WINDOW_CHANGES:
+    title_text = string8_lit("Agent changes");
+    title_icon = VKR_UI_ICON_TERMINAL;
+    break;
+  case VKR_EDITOR_WINDOW_LEVEL:
+    title_text = string8_lit("Level checks");
+    title_icon = VKR_UI_ICON_PERSON_WALK;
+    break;
+  case VKR_EDITOR_WINDOW_TERRAIN:
+    title_text = string8_lit("Terrain");
+    title_icon = VKR_UI_ICON_WAVES;
+    break;
+  case VKR_EDITOR_WINDOW_PARTITION:
+    title_text = string8_lit("World partition");
+    title_icon = VKR_UI_ICON_GRID;
+    break;
+  case VKR_EDITOR_WINDOW_ENVIRONMENT:
+    title_text = string8_lit("Environment");
+    title_icon = VKR_UI_ICON_PLANET;
+    break;
+  case VKR_EDITOR_WINDOW_BAKE_SETTINGS:
+    title_text = string8_lit("Bake settings");
+    title_icon = VKR_UI_ICON_BAKERY;
+    break;
+  case VKR_EDITOR_WINDOW_LIGHTS:
+    title_text = string8_lit("Lights");
+    title_icon = VKR_UI_ICON_POINT_LIGHT;
+    break;
+  case VKR_EDITOR_WINDOW_SESSION:
+    title_text = string8_lit("Collaborative session");
+    title_icon = VKR_UI_ICON_CLOUD;
+    break;
+  case VKR_EDITOR_WINDOW_DEPOT:
+    title_text = string8_lit("Project sharing");
+    title_icon = VKR_UI_ICON_GIT_BRANCH;
+    break;
+  case VKR_EDITOR_WINDOW_CREATE:
+    title_text = string8_lit("Create or import");
+    title_icon = VKR_UI_ICON_ADD;
+    break;
+  case VKR_EDITOR_WINDOW_BUILD:
+    title_text = string8_lit("Build settings");
+    title_icon = VKR_UI_ICON_EXPORT;
+    break;
+  case VKR_EDITOR_WINDOW_GRAPHICS:
+    title_text = string8_lit("Preferences");
+    title_icon = VKR_UI_ICON_GRAPHICS;
+    break;
+  case VKR_EDITOR_WINDOW_DRAWS:
+    title_text = string8_lit("Draws and render graph");
+    title_icon = VKR_UI_ICON_DRAWS;
+    body_text = frame->text.metrics;
+    break;
+  case VKR_EDITOR_WINDOW_MEMORY:
+    title_text = string8_lit("Memory");
+    title_icon = VKR_UI_ICON_MEMORY;
+    body_text = frame->text.memory;
+    break;
+  case VKR_EDITOR_WINDOW_HELP:
+    title_text = string8_lit("Keyboard and mouse controls");
+    title_icon = VKR_UI_ICON_KEYBOARD;
+    body_text = editor_help_text(ui);
+    monospace = false_v;
+    break;
+  default:
+    return;
+  }
+
+  editor_window_track_pointer(editor, ui, input, window, frame);
+  editor_window_clamp(ui, window);
+  (void)vkr_ui_input_layer_set(ui, window->z_order + 2u);
+  (void)vkr_ui_push_id_u64(ui, kind);
+  const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {
+      {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
+      one_track,
+  };
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_START,
+      .margin_pt =
+          {
+              .top = window->position_pt.y,
+              .left = window->position_pt.x,
+          },
+  };
+  panel.columns = &one_track;
+  panel.column_count = 1u;
+  panel.rows = rows;
+  panel.row_count = ArrayCount(rows);
+  panel.style = vkr_editor_glass_style();
+  panel.style.background_color = theme->panel;
+  panel.style.padding_pt = (VkrUiEdges){0};
+  panel.style.min_size_pt = window->size_pt;
+  panel.style.max_size_pt = window->size_pt;
+  panel.clip_children = true_v;
+  panel.presence = VKR_UI_PRESENCE_WINDOW;
+  if (!vkr_ui_panel_begin(ui, string8_lit("window"), &panel)) {
+    (void)vkr_ui_pop_id(ui);
+    return;
+  }
+
+  editor_window_build_header(editor, ui, window, title_text, title_icon);
+
+  editor_window_build_body(editor, ui, window, kind, frame, body_text,
+                           monospace);
   (void)vkr_ui_panel_end(ui);
   (void)vkr_ui_pop_id(ui);
 }

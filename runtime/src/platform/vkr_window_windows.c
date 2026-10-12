@@ -1370,9 +1370,7 @@ float32_t vkr_window_title_bar_inset(const VkrWindow *window) {
 }
 
 /* Per-Monitor V2 awareness sizes the client area in physical pixels. */
-bool8_t vkr_window_high_dpi_switchable(void) {
-  return false_v;
-}
+bool8_t vkr_window_high_dpi_switchable(void) { return false_v; }
 
 bool8_t vkr_window_set_high_dpi(VkrWindow *window, bool8_t enabled) {
   return window && window->platform_state && enabled;

@@ -313,7 +313,8 @@ const VkrMaterialNodeDesc *vkr_material_node_desc(VkrMaterialNodeKind kind) {
 
 static bool8_t graph_equals(String8 a, const char *b) {
   const uint64_t length = strlen(b);
-  return a.length == length && (length == 0 || MemCompare(a.str, b, length) == 0);
+  return a.length == length &&
+         (length == 0 || MemCompare(a.str, b, length) == 0);
 }
 
 bool8_t vkr_material_node_find(String8 name, VkrMaterialNodeKind *out) {
@@ -594,8 +595,8 @@ uint32_t vkr_material_graph_add(VkrMaterialGraph *graph,
   char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
   snprintf(id, sizeof(id), "%s", base);
   for (uint32_t n = 2u;
-       vkr_material_graph_find(graph, string8_create_from_cstr(
-                                          (const uint8_t *)id, strlen(id))) !=
+       vkr_material_graph_find(
+           graph, string8_create_from_cstr((const uint8_t *)id, strlen(id))) !=
        UINT32_MAX;
        ++n) {
     snprintf(id, sizeof(id), "%.24s_%u", base, n);
@@ -645,8 +646,10 @@ bool8_t vkr_material_graph_connect(VkrMaterialGraph *graph, uint32_t from,
   if (from >= graph->node_count || to >= graph->node_count) {
     return graph_fail(error, capacity, "No such node");
   }
-  const VkrMaterialNodeDesc *source = vkr_material_node_desc(graph->nodes[from].kind);
-  const VkrMaterialNodeDesc *target = vkr_material_node_desc(graph->nodes[to].kind);
+  const VkrMaterialNodeDesc *source =
+      vkr_material_node_desc(graph->nodes[from].kind);
+  const VkrMaterialNodeDesc *target =
+      vkr_material_node_desc(graph->nodes[to].kind);
   if (from_port >= source->output_count || to_port >= target->input_count) {
     return graph_fail(error, capacity, "No such port");
   }
@@ -689,11 +692,12 @@ static void text_append(GraphText *text, const char *format, ...) {
   const uint64_t needed = text->length + (uint64_t)written + 1u;
   if (needed > text->capacity) {
     const uint64_t next = Max(needed, Max(4096u, text->capacity * 2u));
-    char *grown = text->data ? vkr_allocator_realloc(
-                                   text->allocator, text->data, text->capacity,
-                                   next, VKR_ALLOCATOR_MEMORY_TAG_STRING)
-                             : vkr_allocator_alloc(text->allocator, next,
-                                                   VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    char *grown =
+        text->data
+            ? vkr_allocator_realloc(text->allocator, text->data, text->capacity,
+                                    next, VKR_ALLOCATOR_MEMORY_TAG_STRING)
+            : vkr_allocator_alloc(text->allocator, next,
+                                  VKR_ALLOCATOR_MEMORY_TAG_STRING);
     if (!grown) {
       text->failed = true_v;
       return;
@@ -741,8 +745,7 @@ static void text_json_string(GraphText *text, const char *value) {
 // JSON
 // =============================================================================
 
-static const char *const s_alpha_names[] = {"infer", "opaque", "mask",
-                                            "blend"};
+static const char *const s_alpha_names[] = {"infer", "opaque", "mask", "blend"};
 static const char *const s_color_space_names[] = {"auto", "srgb", "linear"};
 
 /* `out` at the value of `object`'s root member `name`. */
@@ -841,7 +844,8 @@ static bool8_t graph_parse_link(const VkrMaterialGraph *graph, String8 text,
       return false_v;
     }
   }
-  *out = (VkrMaterialLink){.node = (uint16_t)(node + 1u), .port = (uint8_t)port};
+  *out =
+      (VkrMaterialLink){.node = (uint16_t)(node + 1u), .port = (uint8_t)port};
   return true_v;
 }
 
@@ -1037,11 +1041,10 @@ bool8_t vkr_material_graph_write(const VkrMaterialGraph *graph,
                   (double)node->value.x, (double)node->value.y,
                   (double)node->value.z, (double)node->value.w);
     } else if (node->kind == VKR_MATERIAL_NODE_COLOR) {
-      text_append(&text,
-                  ", \"value\": [" GRAPH_FLOAT ", " GRAPH_FLOAT
-                  ", " GRAPH_FLOAT "]",
-                  (double)node->value.x, (double)node->value.y,
-                  (double)node->value.z);
+      text_append(
+          &text,
+          ", \"value\": [" GRAPH_FLOAT ", " GRAPH_FLOAT ", " GRAPH_FLOAT "]",
+          (double)node->value.x, (double)node->value.y, (double)node->value.z);
     } else if (node->kind == VKR_MATERIAL_NODE_TEXTURE) {
       text_append(&text, ", \"path\": ");
       text_json_string(&text, node->path);
@@ -1062,8 +1065,7 @@ bool8_t vkr_material_graph_write(const VkrMaterialGraph *graph,
         text_json_string(&text, node->path);
       }
     }
-    text_append(&text,
-                ", \"position\": [" GRAPH_FLOAT ", " GRAPH_FLOAT "]",
+    text_append(&text, ", \"position\": [" GRAPH_FLOAT ", " GRAPH_FLOAT "]",
                 (double)node->position.x, (double)node->position.y);
     bool8_t first = true_v;
     for (uint32_t port = 0; port < desc->input_count; ++port) {
@@ -1144,7 +1146,8 @@ static bool8_t lower_constant(LowerContext *context,
       string8_create_from_cstr((const uint8_t *)text, strlen(text));
   if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
     if (!string8_to_f32(&value, &out->x) || !isfinite(out->x)) {
-      return lower_fail(context, node, "Parameter '%s' needs a number, not '%s'",
+      return lower_fail(context, node,
+                        "Parameter '%s' needs a number, not '%s'",
                         node->parameter, text);
     }
     return true_v;
@@ -1201,14 +1204,13 @@ static bool8_t lower_source(LowerContext *context, VkrMaterialLink link,
       return false_v;
     }
     if (out->has_factor) {
-      out->factor = vec4_new(out->factor.x * value.x,
-                             out->factor.y * (node->kind == VKR_MATERIAL_NODE_SCALAR
-                                                  ? value.x
-                                                  : value.y),
-                             out->factor.z * (node->kind == VKR_MATERIAL_NODE_SCALAR
-                                                  ? value.x
-                                                  : value.z),
-                             0.0f);
+      out->factor = vec4_new(
+          out->factor.x * value.x,
+          out->factor.y *
+              (node->kind == VKR_MATERIAL_NODE_SCALAR ? value.x : value.y),
+          out->factor.z *
+              (node->kind == VKR_MATERIAL_NODE_SCALAR ? value.x : value.z),
+          0.0f);
     } else {
       out->factor = node->kind == VKR_MATERIAL_NODE_SCALAR
                         ? vec4_new(value.x, value.x, value.x, 0.0f)
@@ -1257,7 +1259,8 @@ static bool8_t lower_source(LowerContext *context, VkrMaterialLink link,
       out->port = 0u;
     }
     if (node->inputs[1].node) {
-      const VkrMaterialNode *strength = &graph->nodes[node->inputs[1].node - 1u];
+      const VkrMaterialNode *strength =
+          &graph->nodes[node->inputs[1].node - 1u];
       if (strength->kind != VKR_MATERIAL_NODE_SCALAR) {
         return lower_fail(context, node,
                           "A Standard normal map's strength is a scalar");
@@ -1280,8 +1283,8 @@ static bool8_t lower_source(LowerContext *context, VkrMaterialLink link,
 
 static void lower_sampled(LowerContext *context, const VkrMaterialNode *node) {
   for (uint32_t i = 0; i < context->sampled_count; ++i) {
-    if (context->sampled[i] == node || strcmp(context->sampled[i]->path,
-                                              node->path) == 0) {
+    if (context->sampled[i] == node ||
+        strcmp(context->sampled[i]->path, node->path) == 0) {
       return;
     }
   }
@@ -1628,8 +1631,8 @@ static bool8_t lower_standard(const VkrMaterialGraph *graph, String8 graph_path,
     }
     if (source->has_factor && input != SURFACE_BASE_COLOR) {
       if (!spec->factor) {
-        return lower_fail(&context, source->constant,
-                          "'%s' takes no constant", spec->port.label);
+        return lower_fail(&context, source->constant, "'%s' takes no constant",
+                          spec->port.label);
       }
       if (spec->port.type == VKR_MATERIAL_VALUE_COLOR) {
         text_append(&text,
@@ -1697,8 +1700,7 @@ static bool8_t lower_standard(const VkrMaterialGraph *graph, String8 graph_path,
   text_append(&text, "double_sided=%s\n",
               settings->double_sided ? "true" : "false");
   if (settings->subsurface_profile) {
-    text_append(&text, "subsurface_profile=%u\n",
-                settings->subsurface_profile);
+    text_append(&text, "subsurface_profile=%u\n", settings->subsurface_profile);
   }
   if (settings->temporal_reactivity >= 0.0f) {
     text_append(&text, "temporal_reactivity=" GRAPH_FLOAT "\n",
@@ -1728,8 +1730,8 @@ static bool8_t lower_standard(const VkrMaterialGraph *graph, String8 graph_path,
 
 /* Keys a PBR definition may carry beside the surface inputs' factors and
    textures: state, names the instance gives, and keys no material reads. */
-static const char *const s_definition_ignored[] = {"name", "shader",
-                                                   "pipeline", "type", NULL};
+static const char *const s_definition_ignored[] = {"name", "shader", "pipeline",
+                                                   "type", NULL};
 
 /* Aliases the loader accepts for slot keys, and the canonical key. */
 static const struct {
@@ -1811,9 +1813,9 @@ static bool8_t raise_key(void *opaque, String8 key, String8 value) {
   RaiseContext *context = opaque;
   for (uint32_t i = 0; i < ArrayCount(s_definition_aliases); ++i) {
     if (graph_equals(key, s_definition_aliases[i].alias)) {
-      key = string8_create_from_cstr(
-          (const uint8_t *)s_definition_aliases[i].key,
-          strlen(s_definition_aliases[i].key));
+      key =
+          string8_create_from_cstr((const uint8_t *)s_definition_aliases[i].key,
+                                   strlen(s_definition_aliases[i].key));
     }
   }
   for (uint32_t i = 0; s_definition_ignored[i]; ++i) {
@@ -1858,17 +1860,17 @@ static bool8_t raise_key(void *opaque, String8 key, String8 value) {
     }
     return true_v;
   }
-  float32_t *setting = graph_equals(key, "alpha_cutoff") ? &settings->alpha_cutoff
-                       : graph_equals(key, "temporal_reactivity")
-                           ? &settings->temporal_reactivity
-                       : graph_equals(key, "roughness_max")
-                           ? &settings->roughness_max
-                           : NULL;
+  float32_t *setting =
+      graph_equals(key, "alpha_cutoff") ? &settings->alpha_cutoff
+      : graph_equals(key, "temporal_reactivity")
+          ? &settings->temporal_reactivity
+      : graph_equals(key, "roughness_max") ? &settings->roughness_max
+                                           : NULL;
   if (setting) {
     if (!string8_to_f32(&value, setting) || !isfinite(*setting)) {
       return graph_fail(context->error, context->capacity,
-                        "%.*s '%.*s' is not a number", (int)key.length,
-                        key.str, (int)value.length, value.str);
+                        "%.*s '%.*s' is not a number", (int)key.length, key.str,
+                        (int)value.length, value.str);
     }
     return true_v;
   }
@@ -1921,7 +1923,8 @@ static bool8_t raise_key(void *opaque, String8 key, String8 value) {
   }
   for (uint32_t i = 0; i < SURFACE_INPUT_COUNT; ++i) {
     const SurfaceInput *spec = &s_surface[i];
-    if (spec->factor && i != SURFACE_BASE_COLOR && graph_equals(key, spec->factor)) {
+    if (spec->factor && i != SURFACE_BASE_COLOR &&
+        graph_equals(key, spec->factor)) {
       context->factors[i] = value;
       return true_v;
     }
@@ -2023,9 +2026,9 @@ static bool8_t raise_texture(RaiseContext *context, uint32_t input,
   const SurfaceInput *spec = &s_surface[input];
   /* The loader's own default colour space for the slot, when the definition
      names none: linear except sheen colour. */
-  VkrMaterialColorSpace color_space =
-      input == SURFACE_SHEEN_COLOR ? VKR_MATERIAL_COLOR_SPACE_SRGB
-                                   : VKR_MATERIAL_COLOR_SPACE_LINEAR;
+  VkrMaterialColorSpace color_space = input == SURFACE_SHEEN_COLOR
+                                          ? VKR_MATERIAL_COLOR_SPACE_SRGB
+                                          : VKR_MATERIAL_COLOR_SPACE_LINEAR;
   if (space.length) {
     color_space = graph_equals(space, "srgb") ? VKR_MATERIAL_COLOR_SPACE_SRGB
                                               : VKR_MATERIAL_COLOR_SPACE_LINEAR;
@@ -2038,8 +2041,8 @@ static bool8_t raise_texture(RaiseContext *context, uint32_t input,
   VkrMaterialGraph *graph = context->graph;
   for (uint32_t i = 0; i < graph->node_count; ++i) {
     const VkrMaterialNode *node = &graph->nodes[i];
-    if (node->kind == VKR_MATERIAL_NODE_TEXTURE && graph_equals(path, node->path) &&
-        node->color_space == color_space) {
+    if (node->kind == VKR_MATERIAL_NODE_TEXTURE &&
+        graph_equals(path, node->path) && node->color_space == color_space) {
       *out = i;
       return true_v;
     }
@@ -2146,9 +2149,8 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
     return graph_fail(error, capacity,
                       "Only PBR materials become graphs; add type=pbr");
   }
-  const uint32_t output =
-      raise_node(out, VKR_MATERIAL_NODE_SURFACE_OUTPUT, "output",
-                 vec2_new(680.0f, 0.0f));
+  const uint32_t output = raise_node(out, VKR_MATERIAL_NODE_SURFACE_OUTPUT,
+                                     "output", vec2_new(680.0f, 0.0f));
   float32_t row = 0.0f;
   for (uint32_t input = 0; input < SURFACE_INPUT_COUNT; ++input) {
     const SurfaceInput *spec = &s_surface[input];
@@ -2183,11 +2185,11 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
       if (shared) {
         char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
         snprintf(id, sizeof(id), "%s_value", spec->port.name);
-        constant_node = raise_node(
-            out,
-            input == SURFACE_BASE_COLOR ? VKR_MATERIAL_NODE_COLOR
-                                        : VKR_MATERIAL_NODE_SCALAR,
-            id, position);
+        constant_node =
+            raise_node(out,
+                       input == SURFACE_BASE_COLOR ? VKR_MATERIAL_NODE_COLOR
+                                                   : VKR_MATERIAL_NODE_SCALAR,
+                       id, position);
         if (constant_node == UINT32_MAX) {
           return graph_fail(error, capacity, "Too many nodes");
         }
@@ -2234,8 +2236,7 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
           out->nodes[normal].inputs[1] = link;
         }
         link = (VkrMaterialLink){.node = (uint16_t)(normal + 1u)};
-      } else if (constant_node != UINT32_MAX &&
-                 input != SURFACE_OPACITY) {
+      } else if (constant_node != UINT32_MAX && input != SURFACE_OPACITY) {
         char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
         snprintf(id, sizeof(id), "%s", spec->port.name);
         const uint32_t multiply = raise_node(out, VKR_MATERIAL_NODE_MULTIPLY,
@@ -2321,17 +2322,16 @@ static bool8_t instance_has_graph(void *opaque, String8 key, String8 value) {
   return true_v;
 }
 
-bool8_t vkr_material_instance_read(String8 definition,
-                                   VkrMaterialInstance *out, char *error,
-                                   uint32_t capacity) {
+bool8_t vkr_material_instance_read(String8 definition, VkrMaterialInstance *out,
+                                   char *error, uint32_t capacity) {
   MemZero(out, sizeof(*out));
   bool8_t found = false_v;
   (void)definition_each(definition, instance_has_graph, &found);
   if (!found) {
     return false_v;
   }
-  InstanceContext context = {.instance = out, .error = error,
-                             .capacity = capacity};
+  InstanceContext context = {
+      .instance = out, .error = error, .capacity = capacity};
   if (!definition_each(definition, instance_key, &context)) {
     out->graph[0] = '\0';
     return false_v;
@@ -2388,8 +2388,7 @@ bool8_t vkr_material_graph_describe(const VkrMaterialGraph *graph,
     if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
       text_append(&text, " value=" GRAPH_FLOAT, (double)node->value.x);
     } else if (node->kind == VKR_MATERIAL_NODE_COLOR) {
-      text_append(&text,
-                  " value=" GRAPH_FLOAT "," GRAPH_FLOAT "," GRAPH_FLOAT,
+      text_append(&text, " value=" GRAPH_FLOAT "," GRAPH_FLOAT "," GRAPH_FLOAT,
                   (double)node->value.x, (double)node->value.y,
                   (double)node->value.z);
     } else if (node->kind == VKR_MATERIAL_NODE_TEXTURE ||
@@ -2409,8 +2408,9 @@ bool8_t vkr_material_graph_describe(const VkrMaterialGraph *graph,
         continue;
       }
       const VkrMaterialNode *source = &graph->nodes[link.node - 1u];
-      text_append(&text, " %s<-%s.%s", desc->inputs[port].name, source->id,
-                  vkr_material_node_desc(source->kind)->outputs[link.port].name);
+      text_append(
+          &text, " %s<-%s.%s", desc->inputs[port].name, source->id,
+          vkr_material_node_desc(source->kind)->outputs[link.port].name);
     }
     text_append(&text, "\n");
   }

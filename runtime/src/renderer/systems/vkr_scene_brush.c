@@ -746,9 +746,8 @@ static void brush_set_mobility(VkrScene *scene, VkrEntityId entity) {
     return;
   }
   const VkrShadowCasterMobility mobility =
-      vkr_scene_entity_moves(scene, entity)
-          ? VKR_SHADOW_CASTER_MOBILITY_DYNAMIC
-          : VKR_SHADOW_CASTER_MOBILITY_STATIC;
+      vkr_scene_entity_moves(scene, entity) ? VKR_SHADOW_CASTER_MOBILITY_DYNAMIC
+                                            : VKR_SHADOW_CASTER_MOBILITY_STATIC;
   (void)vkr_mesh_manager_set_shadow_mobility(&scene->assets->mesh_manager,
                                              shape->mesh_index, mobility);
 }

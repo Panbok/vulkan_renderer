@@ -3,6 +3,7 @@
 #include "editor_blockout.h"
 #include "editor_brush_grid.h"
 #include "editor_content.h"
+#include "editor_depot.h"
 #include "editor_install.h"
 #include "editor_internal.h"
 #include "editor_level.h"
@@ -10,7 +11,6 @@
 #include "editor_material.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
-#include "editor_depot.h"
 #include "editor_session.h"
 
 #include "core/logger.h"

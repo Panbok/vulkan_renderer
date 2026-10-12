@@ -479,10 +479,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                                 VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_SAMPLE] = {"pass.diffuse_volume.sample",
                                                VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_UPSAMPLE] = {
-        "pass.diffuse_volume.upsample", VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_FALLBACK] = {
-        "pass.diffuse_volume.fallback", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_UPSAMPLE] = {"pass.diffuse_volume.upsample",
+                                                 VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_FALLBACK] = {"pass.diffuse_volume.fallback",
+                                                 VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TEMPORAL_RESOLVE] = {"pass.temporal.resolve",
                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM] = {"pass.exposure.histogram",

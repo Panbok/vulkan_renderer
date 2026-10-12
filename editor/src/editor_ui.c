@@ -1,4 +1,5 @@
 #include "editor_agent.h"
+#include "editor_depot.h"
 #include "editor_internal.h"
 #include "editor_io.h"
 #include "editor_level.h"
@@ -6,7 +7,6 @@
 #include "editor_physics.h"
 #include "editor_projects.h"
 #include "editor_scene_panels.h"
-#include "editor_depot.h"
 #include "editor_session.h"
 #include "editor_terrain.h"
 
@@ -379,6 +379,191 @@ static void vkr_editor_ui_build_camera(VkrUiSystem *ui, bool8_t scene_only,
   (void)vkr_ui_panel_end(ui);
 }
 
+/* Opens the context menu a right click asked for this build: on a text
+   field, a Content item, or the Scene. */
+static void vkr_editor_ui_open_context_menus(VkrEditorUi *editor,
+                                             const VkrSampleUiFrame *frame) {
+  /* A right click on a Content item opens its menu; on empty space, the
+     shown folder's menu. */
+  /* A right-clicked text field takes the click before the panel under it. */
+  VkrUiId text_field = VKR_UI_ID_NONE;
+  Vec2 text_menu_px = {0};
+  VkrUiTextFieldState text_state = {0};
+  const bool8_t text_menu = vkr_ui_text_context_take(
+      frame->ui, &text_field, &text_menu_px, &text_state);
+  if (text_menu) {
+    const float32_t scale = frame->ui->content_scale;
+    vkr_editor_context_open(
+        editor, VKR_EDITOR_CONTEXT_TEXT,
+        (Vec2){text_menu_px.x / scale, text_menu_px.y / scale});
+    editor->context_text_field = text_field;
+    editor->context_text_state = text_state;
+  }
+  Vec2 content_menu_pt;
+  bool8_t content_menu_folder = false_v;
+  if (editor->content &&
+      vkr_editor_content_take_menu(editor->content, &content_menu_pt,
+                                   &content_menu_folder) &&
+      !text_menu) {
+    vkr_editor_context_open(editor,
+                            content_menu_folder
+                                ? VKR_EDITOR_CONTEXT_CONTENT_FOLDER
+                                : VKR_EDITOR_CONTEXT_CONTENT,
+                            content_menu_pt);
+    editor->context_container = vkr_editor_create_container(frame);
+    editor->context_entity = vkr_editor_content_menu_entity(editor->content);
+  }
+  /* A right click in the Scene opens the menu of the object it picked, or
+     the creation menu over empty space. */
+  if (frame->context_requested &&
+      frame->context_purpose == VKR_SAMPLE_PICK_SCRIPT_DROP) {
+    vkr_editor_finish_script_drop(editor, frame);
+  } else if (frame->context_requested &&
+             frame->context_purpose == VKR_SAMPLE_PICK_MATERIAL_DROP) {
+    vkr_editor_material_finish_drop(editor, frame);
+  } else if (frame->context_requested &&
+             frame->context_purpose == VKR_SAMPLE_PICK_SELECT_TOGGLE) {
+    vkr_editor_selection_toggle(editor, frame, frame->context_entity);
+  } else if (frame->context_requested && !text_menu) {
+    const float32_t scale = frame->ui->content_scale;
+    const Vec2 point = {frame->context_position_px.x / scale,
+                        frame->context_position_px.y / scale};
+    const VkrScene *scene =
+        vkr_editor_entity_scene(frame, frame->context_entity);
+    if (scene && vkr_scene_entity_alive(scene, frame->context_entity)) {
+      vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_ENTITY, point);
+      editor->context_entity = frame->context_entity;
+    } else {
+      vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_CREATE, point);
+      editor->context_container = vkr_editor_create_container(frame);
+      editor->context_at_pixel = true_v;
+      editor->context_pixel = frame->context_position_px;
+    }
+  }
+}
+
+static void vkr_editor_ui_apply_content_actions(VkrEditorUi *editor,
+                                                const VkrSampleUiFrame *frame) {
+  /* Loaded objects act here in any mode. Without a project only object
+     types act too; Projects owns the rest. */
+  VkrEditorContentAction content_action;
+  if (editor->content &&
+      vkr_editor_content_take_object_action(editor->content, &content_action)) {
+    vkr_editor_apply_content_object(frame, &content_action);
+    /* Double-clicking a scripted object opens its script. */
+    if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_SELECT_ENTITY &&
+        content_action.activated)
+      (void)vkr_editor_open_entity_script(editor, frame, content_action.entity);
+  }
+  if (!frame->world && editor->content &&
+      vkr_editor_content_take_action(editor->content, &content_action)) {
+    if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
+      if (vkr_editor_request_create(
+              editor, frame, content_action.object,
+              vkr_editor_create_container(frame),
+              content_action.dropped ? &content_action.drop_px : NULL)) {
+        vkr_editor_content_reveal_created(editor->content,
+                                          frame->selected_entity);
+      }
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT) {
+      (void)vkr_editor_code_open(editor->code, editor, content_action.source);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT) {
+      vkr_editor_code_new_script(editor->code, editor);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL) {
+      vkr_editor_material_drop(editor->materials, frame, content_action.source,
+                               content_action.drop_px);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL) {
+      (void)vkr_editor_material_open(editor->materials, frame,
+                                     content_action.source);
+      vkr_editor_view_show(editor, frame, editor->workbenches.active,
+                           VKR_EDITOR_VIEW_GRAPH);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT) {
+      vkr_editor_drop_script(editor, frame, content_action.name,
+                             content_action.drop_px);
+    }
+  }
+}
+
+/* Gives the Scene keyboard focus on a click inside it, and takes it away
+   while the Scene cannot take keys. */
+static void
+vkr_editor_ui_update_scene_focus(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 VkrUiDockInputCapture dock_capture) {
+  if (frame->scene_keyboard_focus) {
+    VkrUiSystem *ui = frame->ui;
+    if (!frame->mapping_valid || frame->scene_rendering_stopped ||
+        editor->cmd_active ||
+        (ui->keyboard_layer_claimed && ui->keyboard_input_layer != 0u))
+      *frame->scene_keyboard_focus = false_v;
+    if (ui->mouse_pressed && !frame->mouse_captured) {
+      int32_t x = 0, y = 0;
+      input_get_button_press_position(frame->input, BUTTON_LEFT, &x, &y);
+      Vec4 rect = frame->mapping.panel_rect_px;
+      const float32_t top = vkr_editor_scene_top_pt(frame) * ui->content_scale;
+      rect.y += top;
+      rect.w = Max(0.0f, rect.w - top);
+      const bool8_t scene_click =
+          frame->mapping_valid && !frame->scene_rendering_stopped &&
+          (float32_t)x >= rect.x && (float32_t)x < rect.x + rect.z &&
+          (float32_t)y >= rect.y && (float32_t)y < rect.y + rect.w &&
+          !ui->capture.mouse && !dock_capture.mouse &&
+          ui->mouse_input_layer == 0u;
+      *frame->scene_keyboard_focus = scene_click;
+      if (scene_click) {
+        ui->focused_id = VKR_UI_ID_NONE;
+        ui->focused_is_text = false_v;
+        (void)vkr_ui_keyboard_layer_set(ui, 0u);
+      }
+    }
+    vkr_ui_keyboard_navigation_enabled(ui, !*frame->scene_keyboard_focus);
+  }
+}
+
+/* Shares the running tool and the pointer with the session. */
+static void vkr_editor_ui_publish_session_tool(VkrEditorUi *editor,
+                                               const VkrSampleUiFrame *frame) {
+  const VkrEditorSceneTool scene_tool = vkr_editor_scene_tool(editor);
+  uint32_t gizmo = 0u;
+  while (gizmo < 3u &&
+         vkr_editor_cmd_tool_modes[gizmo] != frame->view_state.gizmo_tool) {
+    ++gizmo;
+  }
+  vkr_editor_session_set_tool(editor->session,
+                              scene_tool != VKR_EDITOR_SCENE_TOOL_NONE
+                                  ? vkr_editor_scene_tool_name(scene_tool)
+                                  : vkr_editor_cmd_tools[gizmo]);
+  /* The pointer's ray and the nearest terrain or brush it meets, only
+     while a session shows it to other editors. */
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  const bool8_t cursor =
+      (vkr_editor_session_hosting(editor->session) ||
+       vkr_editor_session_forwards(editor->session)) &&
+      editor->scene_pointer_free && frame->mapping_valid &&
+      vkr_editor_viewport_ray(
+          frame,
+          (Vec2){(float32_t)frame->ui->mouse_x, (float32_t)frame->ui->mouse_y},
+          &origin, &direction);
+  float32_t distance = 0.0f;
+  if (cursor) {
+    VkrEntityId terrain = VKR_ENTITY_ID_INVALID;
+    Vec3 point = {0};
+    if (vkr_editor_terrain_ray(frame, origin, direction, &terrain, &point)) {
+      distance = vec3_length(vec3_sub(point, origin));
+    }
+    VkrEntityId face = VKR_ENTITY_ID_INVALID;
+    float32_t face_distance = 0.0f;
+    if (vkr_editor_brush_pick(frame, origin, direction,
+                              distance > 0.0f ? distance : 10000.0f, &face,
+                              &face_distance)) {
+      distance = face_distance;
+    }
+  }
+  vkr_editor_session_set_cursor(editor->session, cursor, origin, direction,
+                                distance);
+}
+
 VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame) {
   VkrUiDockInputCapture dock_capture = {0};
@@ -497,63 +682,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                &frame->text);
   vkr_editor_windows_build_floating(editor, frame->ui, frame->input, frame);
   vkr_editor_windows_build_menu(editor, frame->ui, frame);
-  /* A right click on a Content item opens its menu; on empty space, the
-     shown folder's menu. */
-  /* A right-clicked text field takes the click before the panel under it. */
-  VkrUiId text_field = VKR_UI_ID_NONE;
-  Vec2 text_menu_px = {0};
-  VkrUiTextFieldState text_state = {0};
-  const bool8_t text_menu = vkr_ui_text_context_take(
-      frame->ui, &text_field, &text_menu_px, &text_state);
-  if (text_menu) {
-    const float32_t scale = frame->ui->content_scale;
-    vkr_editor_context_open(
-        editor, VKR_EDITOR_CONTEXT_TEXT,
-        (Vec2){text_menu_px.x / scale, text_menu_px.y / scale});
-    editor->context_text_field = text_field;
-    editor->context_text_state = text_state;
-  }
-  Vec2 content_menu_pt;
-  bool8_t content_menu_folder = false_v;
-  if (editor->content &&
-      vkr_editor_content_take_menu(editor->content, &content_menu_pt,
-                                   &content_menu_folder) &&
-      !text_menu) {
-    vkr_editor_context_open(editor,
-                            content_menu_folder
-                                ? VKR_EDITOR_CONTEXT_CONTENT_FOLDER
-                                : VKR_EDITOR_CONTEXT_CONTENT,
-                            content_menu_pt);
-    editor->context_container = vkr_editor_create_container(frame);
-    editor->context_entity = vkr_editor_content_menu_entity(editor->content);
-  }
-  /* A right click in the Scene opens the menu of the object it picked, or
-     the creation menu over empty space. */
-  if (frame->context_requested &&
-      frame->context_purpose == VKR_SAMPLE_PICK_SCRIPT_DROP) {
-    vkr_editor_finish_script_drop(editor, frame);
-  } else if (frame->context_requested &&
-             frame->context_purpose == VKR_SAMPLE_PICK_MATERIAL_DROP) {
-    vkr_editor_material_finish_drop(editor, frame);
-  } else if (frame->context_requested &&
-             frame->context_purpose == VKR_SAMPLE_PICK_SELECT_TOGGLE) {
-    vkr_editor_selection_toggle(editor, frame, frame->context_entity);
-  } else if (frame->context_requested && !text_menu) {
-    const float32_t scale = frame->ui->content_scale;
-    const Vec2 point = {frame->context_position_px.x / scale,
-                        frame->context_position_px.y / scale};
-    const VkrScene *scene =
-        vkr_editor_entity_scene(frame, frame->context_entity);
-    if (scene && vkr_scene_entity_alive(scene, frame->context_entity)) {
-      vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_ENTITY, point);
-      editor->context_entity = frame->context_entity;
-    } else {
-      vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_CREATE, point);
-      editor->context_container = vkr_editor_create_container(frame);
-      editor->context_at_pixel = true_v;
-      editor->context_pixel = frame->context_position_px;
-    }
-  }
+  vkr_editor_ui_open_context_menus(editor, frame);
   vkr_editor_context_menu_build(editor, frame);
   vkr_editor_color_picker_build(editor, frame);
   /* A dragged Content item draws above every panel and drops on the Scene. */
@@ -565,78 +694,12 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                          frame->mapping.panel_rect_px.w}
                            : (VkrUiRect){0});
   vkr_editor_content_build_drag(editor->content, frame->ui);
-  /* Loaded objects act here in any mode. Without a project only object
-     types act too; Projects owns the rest. */
-  VkrEditorContentAction content_action;
-  if (editor->content &&
-      vkr_editor_content_take_object_action(editor->content, &content_action)) {
-    vkr_editor_apply_content_object(frame, &content_action);
-    /* Double-clicking a scripted object opens its script. */
-    if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_SELECT_ENTITY &&
-        content_action.activated)
-      (void)vkr_editor_open_entity_script(editor, frame, content_action.entity);
-  }
-  if (!frame->world && editor->content &&
-      vkr_editor_content_take_action(editor->content, &content_action)) {
-    if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
-      if (vkr_editor_request_create(
-              editor, frame, content_action.object,
-              vkr_editor_create_container(frame),
-              content_action.dropped ? &content_action.drop_px : NULL)) {
-        vkr_editor_content_reveal_created(editor->content,
-                                          frame->selected_entity);
-      }
-    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT) {
-      (void)vkr_editor_code_open(editor->code, editor, content_action.source);
-    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT) {
-      vkr_editor_code_new_script(editor->code, editor);
-    } else if (content_action.kind ==
-               VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL) {
-      vkr_editor_material_drop(editor->materials, frame, content_action.source,
-                               content_action.drop_px);
-    } else if (content_action.kind ==
-               VKR_EDITOR_CONTENT_ACTION_OPEN_MATERIAL) {
-      (void)vkr_editor_material_open(editor->materials, frame,
-                                     content_action.source);
-      vkr_editor_view_show(editor, frame, editor->workbenches.active,
-                           VKR_EDITOR_VIEW_GRAPH);
-    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT) {
-      vkr_editor_drop_script(editor, frame, content_action.name,
-                             content_action.drop_px);
-    }
-  }
+  vkr_editor_ui_apply_content_actions(editor, frame);
   vkr_editor_build_status_build(editor->build, editor, frame);
   vkr_editor_depot_overlay_build(editor->depot, editor, frame);
   vkr_editor_toasts_build(editor, frame);
   vkr_editor_cmd_suggestions_build(editor, frame);
-  if (frame->scene_keyboard_focus) {
-    VkrUiSystem *ui = frame->ui;
-    if (!frame->mapping_valid || frame->scene_rendering_stopped ||
-        editor->cmd_active ||
-        (ui->keyboard_layer_claimed && ui->keyboard_input_layer != 0u))
-      *frame->scene_keyboard_focus = false_v;
-    if (ui->mouse_pressed && !frame->mouse_captured) {
-      int32_t x = 0, y = 0;
-      input_get_button_press_position(frame->input, BUTTON_LEFT, &x, &y);
-      Vec4 rect = frame->mapping.panel_rect_px;
-      const float32_t top = vkr_editor_scene_top_pt(frame) * ui->content_scale;
-      rect.y += top;
-      rect.w = Max(0.0f, rect.w - top);
-      const bool8_t scene_click =
-          frame->mapping_valid && !frame->scene_rendering_stopped &&
-          (float32_t)x >= rect.x && (float32_t)x < rect.x + rect.z &&
-          (float32_t)y >= rect.y && (float32_t)y < rect.y + rect.w &&
-          !ui->capture.mouse && !dock_capture.mouse &&
-          ui->mouse_input_layer == 0u;
-      *frame->scene_keyboard_focus = scene_click;
-      if (scene_click) {
-        ui->focused_id = VKR_UI_ID_NONE;
-        ui->focused_is_text = false_v;
-        (void)vkr_ui_keyboard_layer_set(ui, 0u);
-      }
-    }
-    vkr_ui_keyboard_navigation_enabled(ui, !*frame->scene_keyboard_focus);
-  }
+  vkr_editor_ui_update_scene_focus(editor, frame, dock_capture);
   /* Tab completes in the Cmd bar instead of moving focus. */
   if (editor->cmd_active)
     vkr_ui_keyboard_navigation_enabled(frame->ui, false_v);
@@ -654,47 +717,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
         allowed);
   }
   /* Last, after everything that may request an edit this build. */
-  {
-    const VkrEditorSceneTool scene_tool = vkr_editor_scene_tool(editor);
-    uint32_t gizmo = 0u;
-    while (gizmo < 3u &&
-           vkr_editor_cmd_tool_modes[gizmo] != frame->view_state.gizmo_tool) {
-      ++gizmo;
-    }
-    vkr_editor_session_set_tool(editor->session,
-                                scene_tool != VKR_EDITOR_SCENE_TOOL_NONE
-                                    ? vkr_editor_scene_tool_name(scene_tool)
-                                    : vkr_editor_cmd_tools[gizmo]);
-    /* The pointer's ray and the nearest terrain or brush it meets, only
-       while a session shows it to other editors. */
-    Vec3 origin = {0};
-    Vec3 direction = {0};
-    const bool8_t cursor =
-        (vkr_editor_session_hosting(editor->session) ||
-         vkr_editor_session_forwards(editor->session)) &&
-        editor->scene_pointer_free && frame->mapping_valid &&
-        vkr_editor_viewport_ray(frame,
-                                (Vec2){(float32_t)frame->ui->mouse_x,
-                                       (float32_t)frame->ui->mouse_y},
-                                &origin, &direction);
-    float32_t distance = 0.0f;
-    if (cursor) {
-      VkrEntityId terrain = VKR_ENTITY_ID_INVALID;
-      Vec3 point = {0};
-      if (vkr_editor_terrain_ray(frame, origin, direction, &terrain, &point)) {
-        distance = vec3_length(vec3_sub(point, origin));
-      }
-      VkrEntityId face = VKR_ENTITY_ID_INVALID;
-      float32_t face_distance = 0.0f;
-      if (vkr_editor_brush_pick(frame, origin, direction,
-                                distance > 0.0f ? distance : 10000.0f, &face,
-                                &face_distance)) {
-        distance = face_distance;
-      }
-    }
-    vkr_editor_session_set_cursor(editor->session, cursor, origin, direction,
-                                  distance);
-  }
+  vkr_editor_ui_publish_session_tool(editor, frame);
   vkr_editor_session_update(editor->session, frame);
   vkr_editor_depot_update(editor->depot, editor, frame);
   return dock_capture;

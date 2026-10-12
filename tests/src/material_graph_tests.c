@@ -48,8 +48,8 @@ static bool8_t graph_test_vec4(Vec4 a, Vec4 b) {
 
 /* Whether two parses give the same material, apart from its name. */
 static bool8_t graph_test_same(const VkrParsedMaterialData *a,
-                               const VkrParsedMaterialData *b,
-                               char *why, uint32_t capacity) {
+                               const VkrParsedMaterialData *b, char *why,
+                               uint32_t capacity) {
 #define SAME(field, test)                                                      \
   if (!(test)) {                                                               \
     snprintf(why, capacity, "%s", #field);                                     \
@@ -77,15 +77,16 @@ static bool8_t graph_test_same(const VkrParsedMaterialData *a,
                                  b->layers[layer].base_color) &&
                      a->layers[layer].roughness == b->layers[layer].roughness);
   }
-  SAME(roughness_max, a->roughness_max_set == b->roughness_max_set &&
-                          (!a->roughness_max_set ||
-                           a->roughness_max == b->roughness_max));
+  SAME(roughness_max,
+       a->roughness_max_set == b->roughness_max_set &&
+           (!a->roughness_max_set || a->roughness_max == b->roughness_max));
   SAME(base_color, graph_test_vec4(p->base_color, q->base_color));
   SAME(metallic, p->metallic == q->metallic);
   SAME(roughness, p->roughness == q->roughness);
   SAME(normal_scale, p->normal_scale == q->normal_scale);
   SAME(occlusion_strength, p->occlusion_strength == q->occlusion_strength);
-  SAME(emissive_factor, graph_test_vec3(p->emissive_factor, q->emissive_factor));
+  SAME(emissive_factor,
+       graph_test_vec3(p->emissive_factor, q->emissive_factor));
   SAME(dielectric_specular,
        graph_test_vec3(p->dielectric_specular, q->dielectric_specular));
   SAME(transmission_factor, p->transmission_factor == q->transmission_factor);
@@ -93,7 +94,8 @@ static bool8_t graph_test_same(const VkrParsedMaterialData *a,
   SAME(thickness_factor, p->thickness_factor == q->thickness_factor);
   SAME(attenuation_color,
        graph_test_vec3(p->attenuation_color, q->attenuation_color));
-  SAME(attenuation_distance, p->attenuation_distance == q->attenuation_distance);
+  SAME(attenuation_distance,
+       p->attenuation_distance == q->attenuation_distance);
   SAME(temporal_reactivity, p->temporal_reactivity == q->temporal_reactivity);
   SAME(clearcoat_factor, p->clearcoat_factor == q->clearcoat_factor);
   SAME(clearcoat_roughness, p->clearcoat_roughness == q->clearcoat_roughness);
@@ -105,8 +107,9 @@ static bool8_t graph_test_same(const VkrParsedMaterialData *a,
   SAME(anisotropy_rotation, p->anisotropy_rotation == q->anisotropy_rotation);
   SAME(diffuse_transmission_strength,
        p->diffuse_transmission_strength == q->diffuse_transmission_strength);
-  SAME(diffuse_transmission_color, graph_test_vec3(p->diffuse_transmission_color,
-                                                   q->diffuse_transmission_color));
+  SAME(diffuse_transmission_color,
+       graph_test_vec3(p->diffuse_transmission_color,
+                       q->diffuse_transmission_color));
   SAME(subsurface_strength, p->subsurface_strength == q->subsurface_strength);
   SAME(subsurface_profile, p->subsurface_profile == q->subsurface_profile);
   /* A colour space without a texture samples nothing, so only textured
@@ -151,17 +154,16 @@ static const char s_test_graph[] =
 
 /* The definition a person would write for s_test_graph at
    assets/materials/graphs/, as a material beside it. */
-static const char s_test_expected[] =
-    "type=pbr\n"
-    "base_color=0.5,0.25,1,0.5\n"
-    "base_color_texture=./albedo.png\n"
-    "base_color_colorspace=srgb\n"
-    "metallic_roughness_texture=./orm.png\n"
-    "roughness=0.8\n"
-    "normal_texture=./normal.png\n"
-    "normal_scale=2\n"
-    "emissive_factor=2,1,0\n"
-    "double_sided=true\n";
+static const char s_test_expected[] = "type=pbr\n"
+                                      "base_color=0.5,0.25,1,0.5\n"
+                                      "base_color_texture=./albedo.png\n"
+                                      "base_color_colorspace=srgb\n"
+                                      "metallic_roughness_texture=./orm.png\n"
+                                      "roughness=0.8\n"
+                                      "normal_texture=./normal.png\n"
+                                      "normal_scale=2\n"
+                                      "emissive_factor=2,1,0\n"
+                                      "double_sided=true\n";
 
 static void test_graph_lowering(VkrAllocator *allocator) {
   VkrMaterialGraph *graph = malloc(sizeof(*graph));
@@ -208,18 +210,19 @@ static void test_graph_lowering(VkrAllocator *allocator) {
       &lowering));
   graph_test_parse(allocator, "assets/materials/instance.mt", definition,
                    lowered);
-  graph_test_parse(allocator, "assets/materials/instance.mt",
-                   graph_test_str("type=pbr\n"
-                                  "base_color=1,0,0,0.5\n"
-                                  "base_color_texture=./red.png\n"
-                                  "base_color_colorspace=srgb\n"
-                                  "metallic_roughness_texture=./graphs/orm.png\n"
-                                  "roughness=0.8\n"
-                                  "normal_texture=./graphs/normal.png\n"
-                                  "normal_scale=2\n"
-                                  "emissive_factor=2,1,0\n"
-                                  "double_sided=true\n"),
-                   expected);
+  graph_test_parse(
+      allocator, "assets/materials/instance.mt",
+      graph_test_str("type=pbr\n"
+                     "base_color=1,0,0,0.5\n"
+                     "base_color_texture=./red.png\n"
+                     "base_color_colorspace=srgb\n"
+                     "metallic_roughness_texture=./graphs/orm.png\n"
+                     "roughness=0.8\n"
+                     "normal_texture=./graphs/normal.png\n"
+                     "normal_scale=2\n"
+                     "emissive_factor=2,1,0\n"
+                     "double_sided=true\n"),
+      expected);
   assert(graph_test_same(lowered, expected, why, sizeof(why)));
 
   /* Text without a graph is no instance; an instance setting material keys
@@ -228,9 +231,9 @@ static void test_graph_lowering(VkrAllocator *allocator) {
   assert(!vkr_material_instance_read(graph_test_str("type=pbr\nmetallic=0\n"),
                                      &instance, error, sizeof(error)));
   assert(!error[0]);
-  assert(!vkr_material_instance_read(
-      graph_test_str("graph=./g.mtg\nmetallic=0\n"), &instance, error,
-      sizeof(error)));
+  assert(
+      !vkr_material_instance_read(graph_test_str("graph=./g.mtg\nmetallic=0\n"),
+                                  &instance, error, sizeof(error)));
   assert(strstr(error, "metallic"));
 
   /* An unknown parameter does not lower. */
@@ -279,8 +282,8 @@ static void test_graph_tiers(VkrAllocator *allocator) {
   assert(graph);
   for (uint32_t i = 0; i < ArrayCount(cases); ++i) {
     char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
-    assert(vkr_material_graph_read(graph_test_str(cases[i].json), graph,
-                                   error, sizeof(error)));
+    assert(vkr_material_graph_read(graph_test_str(cases[i].json), graph, error,
+                                   sizeof(error)));
     VkrMaterialLowering lowering;
     String8 definition = {0};
     const bool8_t lowered =
@@ -329,8 +332,8 @@ static void test_graph_validation(void) {
   assert(graph);
   for (uint32_t i = 0; i < ArrayCount(cases); ++i) {
     char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
-    assert(!vkr_material_graph_read(graph_test_str(cases[i].json), graph,
-                                    error, sizeof(error)));
+    assert(!vkr_material_graph_read(graph_test_str(cases[i].json), graph, error,
+                                    sizeof(error)));
     if (!strstr(error, cases[i].reason)) {
       printf("  case %u: '%s' lacks '%s'\n", i, error, cases[i].reason);
       assert(false);

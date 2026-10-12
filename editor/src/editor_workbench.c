@@ -153,13 +153,13 @@ static void workbench_builtin_layout(uint32_t index, VkrUiDockTree *tree) {
     break;
   case VKR_EDITOR_WORKBENCH_TERRAIN:
     /* Wide enough for two columns of labelled mode buttons. */
-    workbench_side_layout(tree, VKR_UI_DOCK_PANEL_TERRAIN, 0.2f, 0.74f,
-                          terrain, ArrayCount(terrain), 0.42f);
+    workbench_side_layout(tree, VKR_UI_DOCK_PANEL_TERRAIN, 0.2f, 0.74f, terrain,
+                          ArrayCount(terrain), 0.42f);
     break;
   case VKR_EDITOR_WORKBENCH_LIGHTING:
     /* Lights are tuned in Details, so it takes most of the column. */
-    workbench_side_layout(tree, VKR_UI_DOCK_PANEL_TOOLS, 0.14f, 0.74f,
-                          lighting, ArrayCount(lighting), 0.32f);
+    workbench_side_layout(tree, VKR_UI_DOCK_PANEL_TOOLS, 0.14f, 0.74f, lighting,
+                          ArrayCount(lighting), 0.32f);
     break;
   case VKR_EDITOR_WORKBENCH_ART:
     /* The material graph and the Model view are views in the Views
@@ -215,9 +215,8 @@ void vkr_editor_workbench_init(VkrEditorWorkbenches *workbenches) {
       (VkrEditorWorkbenchMode){.gizmo_tool = VKR_GIZMO_MODE_TRANSLATE,
                                .snap = VKR_EDITOR_SNAP_SURFACE,
                                .grid = true_v};
-  workbenches->items[VKR_EDITOR_WORKBENCH_ART].mode =
-      (VkrEditorWorkbenchMode){.gizmo_tool = VKR_GIZMO_MODE_NONE,
-                               .snap = VKR_EDITOR_SNAP_SURFACE};
+  workbenches->items[VKR_EDITOR_WORKBENCH_ART].mode = (VkrEditorWorkbenchMode){
+      .gizmo_tool = VKR_GIZMO_MODE_NONE, .snap = VKR_EDITOR_SNAP_SURFACE};
   workbenches->active = VKR_EDITOR_WORKBENCH_GENERAL;
   workbenches->requested = UINT32_MAX;
   workbenches->renaming = UINT32_MAX;
@@ -1197,7 +1196,8 @@ static float32_t workbench_lighting_palette(VkrEditorUi *editor,
 static void workbench_selected_material(const VkrSampleUiFrame *frame,
                                         char *out, uint64_t capacity) {
   out[0] = '\0';
-  const VkrScene *scene = vkr_editor_entity_scene(frame, frame->selected_entity);
+  const VkrScene *scene =
+      vkr_editor_entity_scene(frame, frame->selected_entity);
   if (!scene || !vkr_scene_entity_alive(scene, frame->selected_entity)) {
     return;
   }
@@ -1223,10 +1223,10 @@ static void workbench_selected_material(const VkrSampleUiFrame *frame,
 /* face.set_material on the selected face, else on every face of the
    selected brush, through the agent channel so it journals as a scene
    edit. */
-static void workbench_assign(VkrEditorUi *editor,
-                             const VkrSampleUiFrame *frame,
+static void workbench_assign(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                              const char *material) {
-  const VkrScene *scene = vkr_editor_entity_scene(frame, frame->selected_entity);
+  const VkrScene *scene =
+      vkr_editor_entity_scene(frame, frame->selected_entity);
   if (!scene || !editor->agent) {
     return;
   }
@@ -1433,8 +1433,7 @@ static float32_t workbench_art_palette(VkrEditorUi *editor,
   vkr_editor_palette_heading(&palette, string8_lit("art.materials"),
                              string8_lit("MATERIALS"));
   if (vkr_editor_palette_button(
-          &palette, string8_lit("art.edit"), "Edit",
-          VKR_UI_ICON_MATERIAL,
+          &palette, string8_lit("art.edit"), "Edit", VKR_UI_ICON_MATERIAL,
           string8_lit("Open the selected face's or brush's material in the "
                       "Material panel"),
           false_v, !selected[0])) {
@@ -1443,8 +1442,7 @@ static float32_t workbench_art_palette(VkrEditorUi *editor,
                          VKR_EDITOR_VIEW_GRAPH);
   }
   if (vkr_editor_palette_button(
-          &palette, string8_lit("art.assign"), "Assign",
-          VKR_UI_ICON_MATERIAL,
+          &palette, string8_lit("art.assign"), "Assign", VKR_UI_ICON_MATERIAL,
           string8_lit("Give the selected face, every face of the selected "
                       "brush, or every submesh of the selected mesh the open "
                       "material"),
@@ -1452,8 +1450,7 @@ static float32_t workbench_art_palette(VkrEditorUi *editor,
     workbench_assign(editor, frame, open);
   }
   if (vkr_editor_palette_button(
-          &palette, string8_lit("art.clear"), "Reset",
-          VKR_UI_ICON_RESET,
+          &palette, string8_lit("art.clear"), "Reset", VKR_UI_ICON_RESET,
           string8_lit("Return the selected face or brush to its surface's "
                       "greybox look"),
           false_v, !selected[0])) {
@@ -1615,10 +1612,12 @@ void vkr_editor_workbench_tools_build(VkrEditorUi *editor,
   note.text.layout.word_wrap = true_v;
   note.text.layout.max_width =
       Max(1.0f, bounds.width / ui->content_scale - 20.0f);
-  vkr_ui_label(ui, string8_lit("tools.empty"),
-               string8_lit("This workbench has no tools. Level Design "
-                           "(Ctrl+2), Lighting (Ctrl+4) and Art (Ctrl+6) have palettes."),
-               &note);
+  vkr_ui_label(
+      ui, string8_lit("tools.empty"),
+      string8_lit(
+          "This workbench has no tools. Level Design "
+          "(Ctrl+2), Lighting (Ctrl+4) and Art (Ctrl+6) have palettes."),
+      &note);
 }
 
 // =============================================================================

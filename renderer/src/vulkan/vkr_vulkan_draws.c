@@ -454,9 +454,9 @@ vkr_internal bool8_t vkr_vk_upload_decals(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-vkr_internal bool8_t vkr_vk_upload_packet_tables(
-    VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
-    const VkrPreparedFrame *packet) {
+/* Clears the slot's packet table addresses and bindings before this frame's
+   upload. */
+vkr_internal void vkr_vk_reset_packet_tables(VkrVulkanFrameSlot *slot) {
   slot->point_light_data = 0u;
   slot->point_light_masks = 0u;
   slot->decals = 0u;
@@ -491,6 +491,252 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->sky = 0u;
   slot->sky_record = NULL;
   slot->sh_referenced_slot_count = 0u;
+}
+
+/* The LTC record and the frame's packed rectangle lights it points to. */
+vkr_internal bool8_t vkr_vk_upload_ltc(VkrVulkanRenderer *renderer,
+                                       VkrVulkanFrameSlot *slot,
+                                       const VkrPreparedFrame *packet,
+                                       const VkrFrameLighting *lighting) {
+  uint64_t ltc_address = 0u;
+  VkrVulkanLtc *ltc = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*ltc), _Alignof(VkrVulkanLtc), &ltc_address, NULL);
+  if (!ltc) {
+    return false_v;
+  }
+  const uint32_t rectangle_count =
+      lighting ? lighting->rectangle_light_count : 0u;
+  uint64_t rectangle_lights = 0u;
+  if (rectangle_count) {
+    VkrGpuRectangleLightRow *rows = vkr_vk_frame_upload_allocate(
+        slot, (uint64_t)rectangle_count * sizeof(*rows),
+        _Alignof(VkrGpuRectangleLightRow), &rectangle_lights, NULL);
+    if (!rows) {
+      return false_v;
+    }
+    for (uint32_t i = 0u; i < rectangle_count; ++i) {
+      vkr_rectangle_light_pack(&lighting->rectangle_lights[i],
+                               packet->exposure.pre_exposure, &rows[i]);
+    }
+  }
+  *ltc = (VkrVulkanLtc){
+      .lights = rectangle_lights,
+      .matrix_texture = renderer->ltc_texture_slots[0].index,
+      .amplitude_texture = renderer->ltc_texture_slots[1].index,
+      .count = rectangle_count,
+      .sampler = renderer->dfg_sampler_slot.index,
+  };
+  slot->ltc = ltc_address;
+  return true_v;
+}
+
+/* The frame's packed point lights, each with its first local shadow view,
+   and their grid masks. */
+vkr_internal bool8_t vkr_vk_upload_point_lights(
+    VkrVulkanFrameSlot *slot, const VkrPreparedFrame *packet,
+    const VkrFrameLighting *lighting) {
+  if (lighting && lighting->point_light_count) {
+    const uint64_t light_bytes =
+        (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow);
+    VkrGpuPointLightRow *packed = vkr_vk_frame_upload_allocate(
+        slot, light_bytes, _Alignof(VkrGpuPointLightRow),
+        &slot->point_light_data, NULL);
+    if (!packed) {
+      return false_v;
+    }
+    for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
+      vkr_point_light_pack(&lighting->point_lights[i],
+                           packet->exposure.pre_exposure, &packed[i]);
+      packed[i].p3.w =
+          packet->input.local_shadow
+              ? (float32_t)packet->input.local_shadow->light_first_view[i]
+              : 0.0f;
+    }
+    const uint64_t mask_bytes =
+        (uint64_t)lighting->point_light_grid->cell_count *
+        sizeof(VkrPointLightMask);
+    if (mask_bytes) {
+      void *masks = vkr_vk_frame_upload_allocate(
+          slot, mask_bytes, _Alignof(VkrPointLightMask),
+          &slot->point_light_masks, NULL);
+      if (!masks) {
+        return false_v;
+      }
+      MemCopy(masks, lighting->point_light_grid->masks, mask_bytes);
+    }
+  }
+  return true_v;
+}
+
+/* The subsurface profile bank's sampled slot, while frame preparation
+   enables subsurface; false when the bank is unavailable or invalid. */
+vkr_internal bool8_t
+vkr_vk_resolve_subsurface(VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
+                          const VkrFrameLighting *lighting) {
+  if (renderer->prepared_frame.subsurface_enabled) {
+    // Frame preparation enables subsurface only when lighting provides a bank.
+    assert_log(lighting != NULL, "Subsurface requires frame lighting");
+    const VkrSubsurfaceBinding *binding = &lighting->subsurface;
+    VkrVulkanPublishedTexture *texture =
+        vkr_vk_published_texture(renderer, binding->texture, NULL);
+    if (!texture || binding->profile_count == 0u ||
+        binding->profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
+        texture->image.format != VK_FORMAT_R32G32B32A32_SFLOAT ||
+        texture->image.width != VKR_SUBSURFACE_TABLE_WIDTH ||
+        texture->image.height != VKR_SUBSURFACE_TABLE_HEIGHT ||
+        texture->image.depth != 1u || texture->image.mip_levels != 1u ||
+        texture->image.array_layers != 1u) {
+      log_error("Vulkan subsurface profile bank is unavailable or invalid "
+                "(texture=%u:%u, resolved=%u, pending=%u, profiles=%u)",
+                binding->texture.id, binding->texture.generation,
+                texture != NULL, texture ? texture->initialization_pending : 0u,
+                binding->profile_count);
+      return false_v;
+    }
+    uint32_t ignored_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+    if (!vkr_vk_resolve_sampled_pair(renderer, binding->texture,
+                                     &slot->subsurface_texture,
+                                     &ignored_sampler)) {
+      log_error("Vulkan failed to resolve the subsurface profile bank "
+                "(pending=%u, sampler=%u, sampler_capacity=%u)",
+                texture->initialization_pending, texture->sampler_record_index,
+                renderer->config.sampler_capacity);
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* The lightmap pages, their optional direction pages and the frame's
+   lightmap rectangles; a pending page set leaves the lightmap unbound. */
+vkr_internal bool8_t vkr_vk_resolve_lightmap(VkrVulkanRenderer *renderer,
+                                             VkrVulkanFrameSlot *slot,
+                                             const VkrFrameLighting *lighting) {
+  slot->lightmap_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->lightmap_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->lightmap_direction_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->lightmap_rects = 0u;
+  if (lighting && lighting->lightmap.texture.id != 0u &&
+      lighting->lightmap.active_layer_count > 0u) {
+    /* The desktop pipeline samples only lamp-group planes in desktop
+       encodings (ADR-104). */
+    const VkrLightmapBinding *lightmap = &lighting->lightmap;
+    const VkrVulkanPublishedTexture *texture =
+        vkr_vk_published_texture(renderer, lightmap->texture, NULL);
+    if (!texture ||
+        (texture->image.format != VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 &&
+         texture->image.format != VK_FORMAT_BC6H_UFLOAT_BLOCK) ||
+        texture->image.width != lightmap->page_size ||
+        texture->image.array_layers % lightmap->layer_count != 0u) {
+      return false_v;
+    }
+    if (!texture->initialization_pending) {
+      const uint64_t rect_bytes =
+          (uint64_t)lightmap->rect_count * sizeof(VkrLightmapRect);
+      VkrLightmapRect *rects = vkr_vk_frame_upload_allocate(
+          slot, Max(rect_bytes, sizeof(VkrLightmapRect)),
+          _Alignof(VkrLightmapRect), &slot->lightmap_rects, NULL);
+      if (!rects || !vkr_vk_resolve_sampled_pair(renderer, lightmap->texture,
+                                                 &slot->lightmap_texture,
+                                                 &slot->lightmap_sampler)) {
+        return false_v;
+      }
+      MemCopy(rects, lightmap->rects, rect_bytes);
+      /* Direction pages are optional; a pending or missing one leaves baked
+         lamps undirected. */
+      const VkrVulkanPublishedTexture *direction =
+          lightmap->direction.id != 0u
+              ? vkr_vk_published_texture(renderer, lightmap->direction, NULL)
+              : NULL;
+      uint32_t ignored_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+      if (direction && !direction->initialization_pending &&
+          (direction->image.format == VK_FORMAT_R8G8B8A8_UNORM ||
+           direction->image.format == VK_FORMAT_BC7_UNORM_BLOCK) &&
+          direction->image.array_layers == texture->image.array_layers &&
+          !vkr_vk_resolve_sampled_pair(renderer, lightmap->direction,
+                                       &slot->lightmap_direction_texture,
+                                       &ignored_sampler)) {
+        return false_v;
+      }
+    }
+  }
+  return true_v;
+}
+
+/* The global IBL source's prefiltered radiance and SH slot, then the
+   frame's packed IBL probes; a probe whose prefilter does not resolve is
+   left out. */
+vkr_internal bool8_t vkr_vk_resolve_ibl(VkrVulkanRenderer *renderer,
+                                        VkrVulkanFrameSlot *slot,
+                                        const VkrFrameLighting *lighting) {
+  if (lighting && lighting->ibl_enabled && lighting->ibl_source.id) {
+    VkrVulkanPublishedTexture *source =
+        vkr_vk_published_texture(renderer, lighting->ibl_source, NULL);
+    if (source && vkr_vk_resolve_sampled_pair(renderer, source->ibl_prefilter,
+                                              &slot->prefilter_texture,
+                                              &slot->prefilter_sampler)) {
+      slot->ibl_ready = true_v;
+      slot->sh_global_slot = source->ibl_sh_slot;
+      slot->ibl_source = source;
+      if (slot->sky_record) {
+        slot->sky_record->clear_sh_slot = source->ibl_sh_slot;
+      }
+      slot->ibl_radiance_stops = source->radiance_stops;
+      slot->sh_referenced_slots[slot->sh_referenced_slot_count++] =
+          source->ibl_sh_slot;
+    }
+  }
+
+  if (lighting && lighting->ibl_probe_count) {
+    const uint64_t probe_bytes =
+        (uint64_t)lighting->ibl_probe_count * sizeof(VkrVulkanPacketIblProbe);
+    VkrVulkanPacketIblProbe *probes = vkr_vk_frame_upload_allocate(
+        slot, probe_bytes, _Alignof(VkrVulkanPacketIblProbe), &slot->ibl_probes,
+        NULL);
+    if (!probes) {
+      return false_v;
+    }
+    for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
+      const VkrFrameIblProbe *probe = &lighting->ibl_probes[i];
+      VkrVulkanPacketIblProbe packed = {
+          .sh_slot = probe->sh_slot,
+          .center_blend = {probe->center.x, probe->center.y, probe->center.z,
+                           probe->blend_distance},
+          .extents_weight = {probe->extents.x, probe->extents.y,
+                             probe->extents.z, probe->weight},
+          .intensity_box = {probe->intensity, probe->diffuse_intensity,
+                            probe->specular_intensity,
+                            probe->box_projection_enabled ? 1.0f : 0.0f},
+      };
+      /* The frame gain carries pre-exposure over the global source's bake
+         scale; each probe exchanges that scale for its own. */
+      const VkrVulkanPublishedTexture *probe_prefilter =
+          vkr_vk_published_texture(renderer, probe->prefilter, NULL);
+      packed.intensity_box.x *= ldexpf(
+          1.0f, slot->ibl_radiance_stops -
+                    (probe_prefilter ? probe_prefilter->radiance_stops : 0));
+      if (!vkr_vk_resolve_sampled_pair(renderer, probe->prefilter,
+                                       &packed.prefilter_texture,
+                                       &packed.prefilter_sampler)) {
+        continue;
+      }
+      slot->sh_referenced_slots[slot->sh_referenced_slot_count++] =
+          probe->sh_slot;
+      probes[slot->ibl_probe_count++] = packed;
+    }
+    if (!slot->ibl_probe_count) {
+      slot->ibl_probes = 0u;
+    } else {
+      slot->ibl_ready = true_v;
+    }
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_vk_upload_packet_tables(
+    VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
+    const VkrPreparedFrame *packet) {
+  vkr_vk_reset_packet_tables(slot);
 
   uint64_t fog_address = 0u;
   VkrFogGpuParams *fog =
@@ -514,32 +760,9 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     return false_v;
 
   const VkrFrameLighting *lighting = packet->input.lighting;
-  uint64_t ltc_address = 0u;
-  VkrVulkanLtc *ltc = vkr_vk_frame_upload_allocate(
-      slot, sizeof(*ltc), _Alignof(VkrVulkanLtc), &ltc_address, NULL);
-  if (!ltc)
+  if (!vkr_vk_upload_ltc(renderer, slot, packet, lighting)) {
     return false_v;
-  const uint32_t rectangle_count =
-      lighting ? lighting->rectangle_light_count : 0u;
-  uint64_t rectangle_lights = 0u;
-  if (rectangle_count) {
-    VkrGpuRectangleLightRow *rows = vkr_vk_frame_upload_allocate(
-        slot, (uint64_t)rectangle_count * sizeof(*rows),
-        _Alignof(VkrGpuRectangleLightRow), &rectangle_lights, NULL);
-    if (!rows)
-      return false_v;
-    for (uint32_t i = 0u; i < rectangle_count; ++i)
-      vkr_rectangle_light_pack(&lighting->rectangle_lights[i],
-                               packet->exposure.pre_exposure, &rows[i]);
   }
-  *ltc = (VkrVulkanLtc){
-      .lights = rectangle_lights,
-      .matrix_texture = renderer->ltc_texture_slots[0].index,
-      .amplitude_texture = renderer->ltc_texture_slots[1].index,
-      .count = rectangle_count,
-      .sampler = renderer->dfg_sampler_slot.index,
-  };
-  slot->ltc = ltc_address;
 
   uint64_t sheen_address = 0u;
   VkrVulkanSheen *sheen = vkr_vk_frame_upload_allocate(
@@ -570,33 +793,8 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   };
   slot->anisotropy = anisotropy_address;
 
-  if (lighting && lighting->point_light_count) {
-    const uint64_t light_bytes =
-        (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow);
-    VkrGpuPointLightRow *packed = vkr_vk_frame_upload_allocate(
-        slot, light_bytes, _Alignof(VkrGpuPointLightRow),
-        &slot->point_light_data, NULL);
-    if (!packed)
-      return false_v;
-    for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
-      vkr_point_light_pack(&lighting->point_lights[i],
-                           packet->exposure.pre_exposure, &packed[i]);
-      packed[i].p3.w =
-          packet->input.local_shadow
-              ? (float32_t)packet->input.local_shadow->light_first_view[i]
-              : 0.0f;
-    }
-    const uint64_t mask_bytes =
-        (uint64_t)lighting->point_light_grid->cell_count *
-        sizeof(VkrPointLightMask);
-    if (mask_bytes) {
-      void *masks = vkr_vk_frame_upload_allocate(
-          slot, mask_bytes, _Alignof(VkrPointLightMask),
-          &slot->point_light_masks, NULL);
-      if (!masks)
-        return false_v;
-      MemCopy(masks, lighting->point_light_grid->masks, mask_bytes);
-    }
+  if (!vkr_vk_upload_point_lights(slot, packet, lighting)) {
+    return false_v;
   }
 
   if (!vkr_vk_upload_decals(renderer, slot, packet->input.world))
@@ -633,82 +831,11 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     MemCopy(views, packet->input.local_shadow->views, bytes);
   }
 
-  if (renderer->prepared_frame.subsurface_enabled) {
-    // Frame preparation enables subsurface only when lighting provides a bank.
-    assert_log(lighting != NULL, "Subsurface requires frame lighting");
-    const VkrSubsurfaceBinding *binding = &lighting->subsurface;
-    VkrVulkanPublishedTexture *texture =
-        vkr_vk_published_texture(renderer, binding->texture, NULL);
-    if (!texture || binding->profile_count == 0u ||
-        binding->profile_count > VKR_SUBSURFACE_PROFILE_COUNT ||
-        texture->image.format != VK_FORMAT_R32G32B32A32_SFLOAT ||
-        texture->image.width != VKR_SUBSURFACE_TABLE_WIDTH ||
-        texture->image.height != VKR_SUBSURFACE_TABLE_HEIGHT ||
-        texture->image.depth != 1u || texture->image.mip_levels != 1u ||
-        texture->image.array_layers != 1u) {
-      log_error("Vulkan subsurface profile bank is unavailable or invalid "
-                "(texture=%u:%u, resolved=%u, pending=%u, profiles=%u)",
-                binding->texture.id, binding->texture.generation,
-                texture != NULL, texture ? texture->initialization_pending : 0u,
-                binding->profile_count);
-      return false_v;
-    }
-    uint32_t ignored_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-    if (!vkr_vk_resolve_sampled_pair(renderer, binding->texture,
-                                     &slot->subsurface_texture,
-                                     &ignored_sampler)) {
-      log_error("Vulkan failed to resolve the subsurface profile bank "
-                "(pending=%u, sampler=%u, sampler_capacity=%u)",
-                texture->initialization_pending, texture->sampler_record_index,
-                renderer->config.sampler_capacity);
-      return false_v;
-    }
+  if (!vkr_vk_resolve_subsurface(renderer, slot, lighting)) {
+    return false_v;
   }
-  slot->lightmap_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-  slot->lightmap_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-  slot->lightmap_direction_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-  slot->lightmap_rects = 0u;
-  if (lighting && lighting->lightmap.texture.id != 0u &&
-      lighting->lightmap.active_layer_count > 0u) {
-    /* The desktop pipeline samples only lamp-group planes in desktop
-       encodings (ADR-104). */
-    const VkrLightmapBinding *lightmap = &lighting->lightmap;
-    const VkrVulkanPublishedTexture *texture =
-        vkr_vk_published_texture(renderer, lightmap->texture, NULL);
-    if (!texture ||
-        (texture->image.format != VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 &&
-         texture->image.format != VK_FORMAT_BC6H_UFLOAT_BLOCK) ||
-        texture->image.width != lightmap->page_size ||
-        texture->image.array_layers % lightmap->layer_count != 0u)
-      return false_v;
-    if (!texture->initialization_pending) {
-      const uint64_t rect_bytes =
-          (uint64_t)lightmap->rect_count * sizeof(VkrLightmapRect);
-      VkrLightmapRect *rects = vkr_vk_frame_upload_allocate(
-          slot, Max(rect_bytes, sizeof(VkrLightmapRect)),
-          _Alignof(VkrLightmapRect), &slot->lightmap_rects, NULL);
-      if (!rects ||
-          !vkr_vk_resolve_sampled_pair(renderer, lightmap->texture,
-                                       &slot->lightmap_texture,
-                                       &slot->lightmap_sampler))
-        return false_v;
-      MemCopy(rects, lightmap->rects, rect_bytes);
-      /* Direction pages are optional; a pending or missing one leaves baked
-         lamps undirected. */
-      const VkrVulkanPublishedTexture *direction =
-          lightmap->direction.id != 0u
-              ? vkr_vk_published_texture(renderer, lightmap->direction, NULL)
-              : NULL;
-      uint32_t ignored_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-      if (direction && !direction->initialization_pending &&
-          (direction->image.format == VK_FORMAT_R8G8B8A8_UNORM ||
-           direction->image.format == VK_FORMAT_BC7_UNORM_BLOCK) &&
-          direction->image.array_layers == texture->image.array_layers &&
-          !vkr_vk_resolve_sampled_pair(renderer, lightmap->direction,
-                                       &slot->lightmap_direction_texture,
-                                       &ignored_sampler))
-        return false_v;
-    }
+  if (!vkr_vk_resolve_lightmap(renderer, slot, lighting)) {
+    return false_v;
   }
   if (lighting && lighting->diffuse_volume.indirection.id != 0u) {
     if (!vkr_vk_resolve_diffuse_volume(renderer, &lighting->diffuse_volume,
@@ -716,64 +843,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
       return false_v;
   }
 
-  if (lighting && lighting->ibl_enabled && lighting->ibl_source.id) {
-    VkrVulkanPublishedTexture *source =
-        vkr_vk_published_texture(renderer, lighting->ibl_source, NULL);
-    if (source && vkr_vk_resolve_sampled_pair(renderer, source->ibl_prefilter,
-                                              &slot->prefilter_texture,
-                                              &slot->prefilter_sampler)) {
-      slot->ibl_ready = true_v;
-      slot->sh_global_slot = source->ibl_sh_slot;
-      slot->ibl_source = source;
-      if (slot->sky_record)
-        slot->sky_record->clear_sh_slot = source->ibl_sh_slot;
-      slot->ibl_radiance_stops = source->radiance_stops;
-      slot->sh_referenced_slots[slot->sh_referenced_slot_count++] =
-          source->ibl_sh_slot;
-    }
-  }
-
-  if (lighting && lighting->ibl_probe_count) {
-    const uint64_t probe_bytes =
-        (uint64_t)lighting->ibl_probe_count * sizeof(VkrVulkanPacketIblProbe);
-    VkrVulkanPacketIblProbe *probes = vkr_vk_frame_upload_allocate(
-        slot, probe_bytes, _Alignof(VkrVulkanPacketIblProbe), &slot->ibl_probes,
-        NULL);
-    if (!probes)
-      return false_v;
-    for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
-      const VkrFrameIblProbe *probe = &lighting->ibl_probes[i];
-      VkrVulkanPacketIblProbe packed = {
-          .sh_slot = probe->sh_slot,
-          .center_blend = {probe->center.x, probe->center.y, probe->center.z,
-                           probe->blend_distance},
-          .extents_weight = {probe->extents.x, probe->extents.y,
-                             probe->extents.z, probe->weight},
-          .intensity_box = {probe->intensity, probe->diffuse_intensity,
-                            probe->specular_intensity,
-                            probe->box_projection_enabled ? 1.0f : 0.0f},
-      };
-      /* The frame gain carries pre-exposure over the global source's bake
-         scale; each probe exchanges that scale for its own. */
-      const VkrVulkanPublishedTexture *probe_prefilter =
-          vkr_vk_published_texture(renderer, probe->prefilter, NULL);
-      packed.intensity_box.x *= ldexpf(
-          1.0f, slot->ibl_radiance_stops -
-                    (probe_prefilter ? probe_prefilter->radiance_stops : 0));
-      if (!vkr_vk_resolve_sampled_pair(renderer, probe->prefilter,
-                                       &packed.prefilter_texture,
-                                       &packed.prefilter_sampler))
-        continue;
-      slot->sh_referenced_slots[slot->sh_referenced_slot_count++] =
-          probe->sh_slot;
-      probes[slot->ibl_probe_count++] = packed;
-    }
-    if (!slot->ibl_probe_count)
-      slot->ibl_probes = 0u;
-    else
-      slot->ibl_ready = true_v;
-  }
-  return true_v;
+  return vkr_vk_resolve_ibl(renderer, slot, lighting);
 }
 
 vkr_internal bool8_t vkr_vk_candidate_graph_buffers(

@@ -99,7 +99,8 @@ uint32_t vkr_rgb9e5_from_float3(float32_t r, float32_t g, float32_t b) {
   float64_t scale = ldexp(1.0, exponent - VKR_RGB9E5_EXPONENT_BIAS -
                                    VKR_RGB9E5_MANTISSA_BITS);
   /* Rounding the brightest channel up to 2^9 needs the next exponent. */
-  if (floor(brightest / scale + 0.5) >= (float64_t)(1u << VKR_RGB9E5_MANTISSA_BITS)) {
+  if (floor(brightest / scale + 0.5) >=
+      (float64_t)(1u << VKR_RGB9E5_MANTISSA_BITS)) {
     exponent += 1;
     scale *= 2.0;
   }

@@ -358,7 +358,8 @@ static void scripts_scan(VkrEditorScripts *scripts,
   scripts->module_count = 0u;
   scripts->file_count = 0u;
   ScriptsScan scan = {.scripts = scripts};
-  vkr_editor_directory_list(scripts->scripts_directory, scripts_visit_module, &scan);
+  vkr_editor_directory_list(scripts->scripts_directory, scripts_visit_module,
+                            &scan);
   for (uint32_t i = 0; i < scripts->module_count; ++i) {
     VkrEditorScriptModule *module = &scripts->modules[i];
     module->status = scripts->status;

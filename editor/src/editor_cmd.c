@@ -62,10 +62,10 @@ static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_TERRAIN};
 
 static const char *const cmd_windows[] = {
-    "animation", "physics",     "preferences", "draws",   "memory",  "help",
-    "create",    "build",       "script",      "changes", "level",   "terrain",
-    "partition", "environment", "bake",        "lights",  "session", "depot",
-    NULL};
+    "animation", "physics", "preferences", "draws",       "memory",
+    "help",      "create",  "build",       "script",      "changes",
+    "level",     "terrain", "partition",   "environment", "bake",
+    "lights",    "session", "depot",       NULL};
 static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_ANIMATION,     VKR_EDITOR_WINDOW_PHYSICS,
     VKR_EDITOR_WINDOW_GRAPHICS,      VKR_EDITOR_WINDOW_DRAWS,

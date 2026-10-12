@@ -100,8 +100,7 @@ void vkr_editor_material_refresh(VkrEditorMaterials *materials,
 uint32_t vkr_editor_material_index(VkrEditorMaterials *materials,
                                    VkrAllocator *scratch,
                                    const char **out_paths,
-                                   const char **out_graphs,
-                                   uint32_t capacity);
+                                   const char **out_graphs, uint32_t capacity);
 /* Drops the index so the next use scans again, after the workspace changed
    or a pull brought other files. */
 void vkr_editor_material_index_reset(VkrEditorMaterials *materials);

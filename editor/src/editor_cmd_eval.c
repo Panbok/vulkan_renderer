@@ -597,6 +597,253 @@ static Vec3 eval_euler_degrees(VkrQuat rotation) {
                 (float32_t)(yaw * EVAL_DEGREES)};
 }
 
+/* The member of `view` named `name` into `out`; false when there is none. */
+static bool8_t eval_view_member(Eval *eval, String8 name, Value *out) {
+  const VkrSampleViewState *view = &eval->frame->view_state;
+  switch (eval_word_index(eval_view_members, name)) {
+  case 0:
+    *out = eval_string("%s", vkr_editor_cmd_camera_views[Min(
+                                 (uint32_t)view->camera_view,
+                                 (uint32_t)VKR_SAMPLE_CAMERA_VIEW_COUNT - 1u)]);
+    return true_v;
+  case 1:
+    for (uint32_t i = 0; vkr_editor_cmd_render_modes[i]; ++i) {
+      if (vkr_editor_cmd_render_mode_values[i] == view->render_mode) {
+        *out = eval_string("%s", vkr_editor_cmd_render_modes[i]);
+        return true_v;
+      }
+    }
+    *out = eval_number(view->render_mode);
+    return true_v;
+  case 2:
+    *out = eval_bool(view->grid_enabled);
+    return true_v;
+  case 3:
+    *out = eval_number(view->grid_spacing);
+    return true_v;
+  case 4:
+    *out = eval_number(view->camera_speed);
+    return true_v;
+  case 6:
+    *out = eval_bool(view->grid_labels);
+    return true_v;
+  case 7:
+    *out = eval_bool(view->grid_through_geometry);
+    return true_v;
+  case 8:
+    *out = eval_number(view->collision_display);
+    return true_v;
+  case 9:
+    *out = eval_string("%s", eval_snap_targets[eval->editor->placement.target]);
+    return true_v;
+  case 10:
+    *out = eval_number(eval->editor->placement.offset);
+    return true_v;
+  case 11:
+    *out = eval_number(eval->editor->placement.yaw_degrees);
+    return true_v;
+  case 12:
+    *out = eval_bool(eval->editor->placement.align_to_normal);
+    return true_v;
+  case 13:
+    *out = eval_bool(eval->editor->placement.cell_centers);
+    return true_v;
+  case 14:
+    *out = eval_number(view->camera_sensitivity);
+    return true_v;
+  case 15:
+    *out = eval_number(view->grid_height);
+    return true_v;
+  case 16:
+    *out = eval_bool(eval->editor->placement.magnet);
+    return true_v;
+  case 17:
+    *out = eval_bool(eval->editor->placement.move_grid);
+    return true_v;
+  case 18:
+    *out = eval_bool(eval->editor->placement.turn_steps);
+    return true_v;
+  case 5:
+    for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
+      if (vkr_editor_cmd_tool_modes[i] == view->gizmo_tool) {
+        *out = eval_string("%s", vkr_editor_cmd_tools[i]);
+        return true_v;
+      }
+    }
+    break;
+  default:
+    break;
+  }
+  return false_v;
+}
+
+static bool8_t eval_gfx_member(Eval *eval, String8 name, Value *out) {
+  const VkrSampleUiFrame *frame = eval->frame;
+  const VkrGraphicsSettings *settings = &frame->graphics->settings;
+  switch (eval_word_index(eval_gfx_members, name)) {
+  case 0:
+    *out = eval_number(settings->render_scale);
+    return true_v;
+  case 1:
+    *out = eval_bool(settings->dynamic_resolution);
+    return true_v;
+  case 2:
+    *out = eval_bool(settings->vsync);
+    return true_v;
+  case 3:
+    *out = eval_string(
+        "%s", eval_gfx_presets[vkr_graphics_settings_preset(settings)]);
+    return true_v;
+  case 4:
+    *out = eval_bool(frame->graphics->restart_required);
+    return true_v;
+  case 5:
+    *out = eval_bool(settings->invert_mouse_y);
+    return true_v;
+  case 6:
+    *out = eval_bool(settings->high_dpi);
+    return true_v;
+  case 7:
+    /* Texels; zero is full resolution. */
+    *out = eval_number(vkr_graphics_settings_texture_max_dimension(settings));
+    return true_v;
+  default:
+    break;
+  }
+  return false_v;
+}
+
+static bool8_t eval_ui_member(Eval *eval, String8 name, Value *out) {
+  const VkrSampleUiFrame *frame = eval->frame;
+  const int32_t index = eval_word_index(eval_ui_members, name);
+  if (index == 0) {
+    *out = eval_number(frame->ui->user_scale);
+    return true_v;
+  }
+  if (index == 1) {
+    *out = eval_bool(frame->ui->reduce_motion);
+    return true_v;
+  }
+  if (index == 8) {
+    *out = eval_bool(eval->editor->resolve_fights);
+    return true_v;
+  }
+  if (index == 9) {
+    *out = eval_string("%s", vkr_editor_view_id(eval->editor->view_shown));
+    return true_v;
+  }
+  if (index == 3) {
+    VkrEntityId selection[VKR_EDITOR_SELECTION_MAX];
+    *out = eval_number((float64_t)vkr_editor_selection_list(
+        eval->editor, frame, selection, ArrayCount(selection)));
+    return true_v;
+  }
+  if (index == 2) {
+    *out = eval_string(
+        "%s", vkr_editor_workbench_id(&eval->editor->workbenches,
+                                      eval->editor->workbenches.active));
+    return true_v;
+  }
+  if (index == 4) {
+    *out = eval_bool(frame->scene_maximized);
+    return true_v;
+  }
+  if (index >= 5 && index <= 7) {
+    const VkrEditorUi *editor = eval->editor;
+    const uint32_t counts[] = {editor->label_sights.icon_count,
+                               editor->label_sights.shown_count,
+                               editor->label_sights.occluded_count};
+    *out = eval_number((float64_t)counts[index - 5]);
+    return true_v;
+  }
+  return false_v;
+}
+
+static bool8_t eval_stats_member(Eval *eval, String8 name, Value *out) {
+  const VkrSampleUiFrame *frame = eval->frame;
+  const int32_t index = eval_word_index(eval_stats_members, name);
+  if (index == 9) {
+    /* The longest recent frame interval: a streaming hitch. */
+    const VkrEditorUi *editor = eval->editor;
+    float32_t longest = 0.0f;
+    for (uint32_t i = 0u; i < editor->frame_ms_count; ++i) {
+      longest = Max(longest, editor->frame_ms[i]);
+    }
+    *out = eval_number(longest);
+    return true_v;
+  }
+  if (index == 0 || index == 1) {
+    /* Median or 95th percentile of the recent frame intervals. */
+    const VkrEditorUi *editor = eval->editor;
+    float32_t sorted[ArrayCount(editor->frame_ms)];
+    const uint32_t count = editor->frame_ms_count;
+    MemCopy(sorted, editor->frame_ms, sizeof(float32_t) * count);
+    for (uint32_t i = 1u; i < count; ++i) {
+      const float32_t key = sorted[i];
+      uint32_t j = i;
+      while (j > 0u && sorted[j - 1u] > key) {
+        sorted[j] = sorted[j - 1u];
+        --j;
+      }
+      sorted[j] = key;
+    }
+    const uint32_t rank =
+        count
+            ? Min(count - 1u, (index == 0 ? count / 2u : (count * 95u) / 100u))
+            : 0u;
+    *out = eval_number(count ? sorted[rank] : 0.0);
+    return true_v;
+  }
+  bool8_t running = false_v;
+  uint32_t applied = 0u;
+  vkr_editor_projects_finalize_stats(eval->editor->projects, &running,
+                                     &applied);
+  if (index == 2) {
+    *out = eval_bool(running);
+    return true_v;
+  }
+  if (index == 3) {
+    *out = eval_number(applied);
+    return true_v;
+  }
+  if (index == 4) {
+    *out = eval_number(vkr_material_system_pending_replacements(
+        &frame->assets->material_system));
+    return true_v;
+  }
+  if (index == 5) {
+    *out = eval_number(frame->texture_pending_count);
+    return true_v;
+  }
+  if (index == 6 || index == 7) {
+    *out = eval_number(index == 6 ? frame->scene_render_width
+                                  : frame->scene_render_height);
+    return true_v;
+  }
+  if (index == 10 || index == 11) {
+    /* Custom graphs still creating pipelines, or the camera draws that
+       took their fallback so far (ADR-096). */
+    *out = eval_number(index == 10 ? (float64_t)frame->pipeline_pending_count
+                                   : (float64_t)frame->pipeline_late_draws);
+    return true_v;
+  }
+  if (index == 12 || index == 13) {
+    /* Frames that rendered a Scene, and frames that only presented the
+       UI over the newest finished one (ADR-111). */
+    *out = eval_number(index == 12 ? (float64_t)frame->scene_frames
+                                   : (float64_t)frame->present_frames);
+    return true_v;
+  }
+  if (index == 8) {
+    /* Resident material textures, in MiB. */
+    *out = eval_number((float64_t)frame->assets->material_system
+                           .texture_stream_resident_bytes /
+                       (1024.0 * 1024.0));
+    return true_v;
+  }
+  return false_v;
+}
+
 static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
                            Value *out) {
   const VkrSampleUiFrame *frame = eval->frame;
@@ -683,157 +930,16 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
     return eval_property_read(&base->type->properties[index], component, out);
   }
   case VKR_EDITOR_CMD_VALUE_OBJECT: {
-    const VkrSampleViewState *view = &frame->view_state;
     if (base->object == EVAL_OBJECT_VIEW) {
-      switch (eval_word_index(eval_view_members, name)) {
-      case 0:
-        *out = eval_string("%s",
-                           vkr_editor_cmd_camera_views[Min(
-                               (uint32_t)view->camera_view,
-                               (uint32_t)VKR_SAMPLE_CAMERA_VIEW_COUNT - 1u)]);
+      if (eval_view_member(eval, name, out)) {
         return true_v;
-      case 1:
-        for (uint32_t i = 0; vkr_editor_cmd_render_modes[i]; ++i) {
-          if (vkr_editor_cmd_render_mode_values[i] == view->render_mode) {
-            *out = eval_string("%s", vkr_editor_cmd_render_modes[i]);
-            return true_v;
-          }
-        }
-        *out = eval_number(view->render_mode);
-        return true_v;
-      case 2:
-        *out = eval_bool(view->grid_enabled);
-        return true_v;
-      case 3:
-        *out = eval_number(view->grid_spacing);
-        return true_v;
-      case 4:
-        *out = eval_number(view->camera_speed);
-        return true_v;
-      case 6:
-        *out = eval_bool(view->grid_labels);
-        return true_v;
-      case 7:
-        *out = eval_bool(view->grid_through_geometry);
-        return true_v;
-      case 8:
-        *out = eval_number(view->collision_display);
-        return true_v;
-      case 9:
-        *out = eval_string("%s",
-                           eval_snap_targets[eval->editor->placement.target]);
-        return true_v;
-      case 10:
-        *out = eval_number(eval->editor->placement.offset);
-        return true_v;
-      case 11:
-        *out = eval_number(eval->editor->placement.yaw_degrees);
-        return true_v;
-      case 12:
-        *out = eval_bool(eval->editor->placement.align_to_normal);
-        return true_v;
-      case 13:
-        *out = eval_bool(eval->editor->placement.cell_centers);
-        return true_v;
-      case 14:
-        *out = eval_number(view->camera_sensitivity);
-        return true_v;
-      case 15:
-        *out = eval_number(view->grid_height);
-        return true_v;
-      case 16:
-        *out = eval_bool(eval->editor->placement.magnet);
-        return true_v;
-      case 17:
-        *out = eval_bool(eval->editor->placement.move_grid);
-        return true_v;
-      case 18:
-        *out = eval_bool(eval->editor->placement.turn_steps);
-        return true_v;
-      case 5:
-        for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
-          if (vkr_editor_cmd_tool_modes[i] == view->gizmo_tool) {
-            *out = eval_string("%s", vkr_editor_cmd_tools[i]);
-            return true_v;
-          }
-        }
-        break;
-      default:
-        break;
       }
     } else if (base->object == EVAL_OBJECT_GFX && frame->graphics) {
-      const VkrGraphicsSettings *settings = &frame->graphics->settings;
-      switch (eval_word_index(eval_gfx_members, name)) {
-      case 0:
-        *out = eval_number(settings->render_scale);
+      if (eval_gfx_member(eval, name, out)) {
         return true_v;
-      case 1:
-        *out = eval_bool(settings->dynamic_resolution);
-        return true_v;
-      case 2:
-        *out = eval_bool(settings->vsync);
-        return true_v;
-      case 3:
-        *out = eval_string(
-            "%s", eval_gfx_presets[vkr_graphics_settings_preset(settings)]);
-        return true_v;
-      case 4:
-        *out = eval_bool(frame->graphics->restart_required);
-        return true_v;
-      case 5:
-        *out = eval_bool(settings->invert_mouse_y);
-        return true_v;
-      case 6:
-        *out = eval_bool(settings->high_dpi);
-        return true_v;
-      case 7:
-        /* Texels; zero is full resolution. */
-        *out =
-            eval_number(vkr_graphics_settings_texture_max_dimension(settings));
-        return true_v;
-      default:
-        break;
       }
     } else if (base->object == EVAL_OBJECT_UI) {
-      const int32_t index = eval_word_index(eval_ui_members, name);
-      if (index == 0) {
-        *out = eval_number(frame->ui->user_scale);
-        return true_v;
-      }
-      if (index == 1) {
-        *out = eval_bool(frame->ui->reduce_motion);
-        return true_v;
-      }
-      if (index == 8) {
-        *out = eval_bool(eval->editor->resolve_fights);
-        return true_v;
-      }
-      if (index == 9) {
-        *out = eval_string("%s", vkr_editor_view_id(eval->editor->view_shown));
-        return true_v;
-      }
-      if (index == 3) {
-        VkrEntityId selection[VKR_EDITOR_SELECTION_MAX];
-        *out = eval_number((float64_t)vkr_editor_selection_list(
-            eval->editor, frame, selection, ArrayCount(selection)));
-        return true_v;
-      }
-      if (index == 2) {
-        *out = eval_string(
-            "%s", vkr_editor_workbench_id(&eval->editor->workbenches,
-                                          eval->editor->workbenches.active));
-        return true_v;
-      }
-      if (index == 4) {
-        *out = eval_bool(frame->scene_maximized);
-        return true_v;
-      }
-      if (index >= 5 && index <= 7) {
-        const VkrEditorUi *editor = eval->editor;
-        const uint32_t counts[] = {editor->label_sights.icon_count,
-                                   editor->label_sights.shown_count,
-                                   editor->label_sights.occluded_count};
-        *out = eval_number((float64_t)counts[index - 5]);
+      if (eval_ui_member(eval, name, out)) {
         return true_v;
       }
     } else if (base->object == EVAL_OBJECT_SIM) {
@@ -847,85 +953,7 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         return true_v;
       }
     } else if (base->object == EVAL_OBJECT_STATS) {
-      const int32_t index = eval_word_index(eval_stats_members, name);
-      if (index == 9) {
-        /* The longest recent frame interval: a streaming hitch. */
-        const VkrEditorUi *editor = eval->editor;
-        float32_t longest = 0.0f;
-        for (uint32_t i = 0u; i < editor->frame_ms_count; ++i) {
-          longest = Max(longest, editor->frame_ms[i]);
-        }
-        *out = eval_number(longest);
-        return true_v;
-      }
-      if (index == 0 || index == 1) {
-        /* Median or 95th percentile of the recent frame intervals. */
-        const VkrEditorUi *editor = eval->editor;
-        float32_t sorted[ArrayCount(editor->frame_ms)];
-        const uint32_t count = editor->frame_ms_count;
-        MemCopy(sorted, editor->frame_ms, sizeof(float32_t) * count);
-        for (uint32_t i = 1u; i < count; ++i) {
-          const float32_t key = sorted[i];
-          uint32_t j = i;
-          while (j > 0u && sorted[j - 1u] > key) {
-            sorted[j] = sorted[j - 1u];
-            --j;
-          }
-          sorted[j] = key;
-        }
-        const uint32_t rank =
-            count ? Min(count - 1u,
-                        (index == 0 ? count / 2u : (count * 95u) / 100u))
-                  : 0u;
-        *out = eval_number(count ? sorted[rank] : 0.0);
-        return true_v;
-      }
-      bool8_t running = false_v;
-      uint32_t applied = 0u;
-      vkr_editor_projects_finalize_stats(eval->editor->projects, &running,
-                                         &applied);
-      if (index == 2) {
-        *out = eval_bool(running);
-        return true_v;
-      }
-      if (index == 3) {
-        *out = eval_number(applied);
-        return true_v;
-      }
-      if (index == 4) {
-        *out = eval_number(vkr_material_system_pending_replacements(
-            &frame->assets->material_system));
-        return true_v;
-      }
-      if (index == 5) {
-        *out = eval_number(frame->texture_pending_count);
-        return true_v;
-      }
-      if (index == 6 || index == 7) {
-        *out = eval_number(index == 6 ? frame->scene_render_width
-                                      : frame->scene_render_height);
-        return true_v;
-      }
-      if (index == 10 || index == 11) {
-        /* Custom graphs still creating pipelines, or the camera draws that
-           took their fallback so far (ADR-096). */
-        *out =
-            eval_number(index == 10 ? (float64_t)frame->pipeline_pending_count
-                                    : (float64_t)frame->pipeline_late_draws);
-        return true_v;
-      }
-      if (index == 12 || index == 13) {
-        /* Frames that rendered a Scene, and frames that only presented the
-           UI over the newest finished one (ADR-111). */
-        *out = eval_number(index == 12 ? (float64_t)frame->scene_frames
-                                       : (float64_t)frame->present_frames);
-        return true_v;
-      }
-      if (index == 8) {
-        /* Resident material textures, in MiB. */
-        *out = eval_number((float64_t)frame->assets->material_system
-                               .texture_stream_resident_bytes /
-                           (1024.0 * 1024.0));
+      if (eval_stats_member(eval, name, out)) {
         return true_v;
       }
     } else if (base->object == EVAL_OBJECT_SCENE ||

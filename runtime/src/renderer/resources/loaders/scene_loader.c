@@ -353,13 +353,14 @@ vkr_internal SceneDiffuseVolumeImport
 scene_diffuse_volume_import_defaults(void);
 vkr_internal SceneDiffuseVolumeImport
 scene_loader_parse_diffuse_volume_import(String8 json);
-vkr_internal bool8_t scene_loader_prepare_diffuse_volume(
-    String8 path, VkrAllocator *temp_alloc,
-    SceneDiffuseVolumePrepared *out_prepared);
-vkr_internal void scene_loader_apply_diffuse_volume_import(
-    VkrScene *scene, struct VkrRenderAssets *assets,
-    const SceneDiffuseVolumeImport *import,
-    SceneDiffuseVolumePrepared *prepared);
+vkr_internal bool8_t
+scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
+                                    SceneDiffuseVolumePrepared *out_prepared);
+vkr_internal void
+scene_loader_apply_diffuse_volume_import(VkrScene *scene,
+                                         struct VkrRenderAssets *assets,
+                                         const SceneDiffuseVolumeImport *import,
+                                         SceneDiffuseVolumePrepared *prepared);
 vkr_internal SceneSubsurfaceImport scene_subsurface_import_defaults(void);
 vkr_internal SceneSubsurfaceImport
 scene_loader_parse_subsurface_import(String8 json);
@@ -1390,9 +1391,8 @@ vkr_internal bool8_t scene_loader_volume_texture(
    VkrDiffuseVolumeBinding). Indirection, probe records and layer SH are
    row copies of the file's sections; each moment tile moves into its place
    in the atlas. */
-vkr_internal bool8_t
-scene_loader_volume_textures(const VkrDiffuseVolume *volume,
-                             SceneDiffuseVolumePrepared *out_prepared) {
+vkr_internal bool8_t scene_loader_volume_textures(
+    const VkrDiffuseVolume *volume, SceneDiffuseVolumePrepared *out_prepared) {
   /* Rows are always full width, so shaders address probes with constants. */
   const uint32_t probe_count = volume->probe_count;
   const uint32_t row_probes = VKR_DIFFUSE_VOLUME_ROW_PROBES;
@@ -1454,8 +1454,8 @@ scene_loader_volume_textures(const VkrDiffuseVolume *volume,
   if (layer_sh) {
     for (uint32_t band = 0u; band < bands; ++band) {
       MemCopy(layer_sh + band * band_bytes,
-              volume->layer_sh + (uint64_t)band * probe_count *
-                                     VKR_DIFFUSE_VOLUME_SH_BYTES,
+              volume->layer_sh +
+                  (uint64_t)band * probe_count * VKR_DIFFUSE_VOLUME_SH_BYTES,
               (uint64_t)probe_count * VKR_DIFFUSE_VOLUME_SH_BYTES);
     }
   }
@@ -1476,8 +1476,8 @@ scene_loader_volume_textures(const VkrDiffuseVolume *volume,
       &textures[SCENE_DIFFUSE_VOLUME_MOMENTS]);
   const bool8_t layer_sh_ready = scene_loader_volume_texture(
       layer_sh, band_bytes * bands, row_probes * 3u, rows * bands,
-      VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, 4u,
-      false_v, &textures[SCENE_DIFFUSE_VOLUME_LAYER_SH]);
+      VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, 4u, false_v,
+      &textures[SCENE_DIFFUSE_VOLUME_LAYER_SH]);
   if (!indirection_ready || !probes_ready || !moments_ready ||
       !layer_sh_ready) {
     scene_loader_release_diffuse_volume(out_prepared);
@@ -1486,9 +1486,9 @@ scene_loader_volume_textures(const VkrDiffuseVolume *volume,
   return true_v;
 }
 
-vkr_internal bool8_t scene_loader_prepare_diffuse_volume(
-    String8 path, VkrAllocator *temp_alloc,
-    SceneDiffuseVolumePrepared *out_prepared) {
+vkr_internal bool8_t
+scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
+                                    SceneDiffuseVolumePrepared *out_prepared) {
   if (!path.str || path.length == 0u || !temp_alloc || !out_prepared)
     return false_v;
   MemZero(out_prepared, sizeof(*out_prepared));
@@ -1571,10 +1571,11 @@ vkr_internal bool8_t scene_loader_prepare_diffuse_volume(
   return true_v;
 }
 
-vkr_internal void scene_loader_apply_diffuse_volume_import(
-    VkrScene *scene, struct VkrRenderAssets *assets,
-    const SceneDiffuseVolumeImport *import,
-    SceneDiffuseVolumePrepared *prepared) {
+vkr_internal void
+scene_loader_apply_diffuse_volume_import(VkrScene *scene,
+                                         struct VkrRenderAssets *assets,
+                                         const SceneDiffuseVolumeImport *import,
+                                         SceneDiffuseVolumePrepared *prepared) {
   if (!scene)
     return;
   vkr_scene_reset_diffuse_volume(scene, assets);
@@ -1815,17 +1816,15 @@ vkr_internal bool8_t scene_loader_lightmap_slices(const VkrLightmapSet *set,
    2D array of their own, copied from the set's payload. Leaves `out`
    empty, and returns true, when a sampled layer has no direction plane or
    the encodings differ; false only when the copy cannot be allocated. */
-vkr_internal bool8_t
-scene_loader_lightmap_directions(const VkrLightmapSet *set,
-                                 const VkrSceneLightmaps *lightmaps,
-                                 VkrTexturePreparedLoad *out) {
+vkr_internal bool8_t scene_loader_lightmap_directions(
+    const VkrLightmapSet *set, const VkrSceneLightmaps *lightmaps,
+    VkrTexturePreparedLoad *out) {
   MemZero(out, sizeof(*out));
   uint32_t planes[VKR_LIGHTMAP_SET_MAX_LAYERS];
   VkrLightmapPlaneFormat format = 0;
   for (uint32_t i = 0u; i < lightmaps->slice_layer_count; ++i) {
-    planes[i] = vkr_lightmap_set_find_plane(set, lightmaps->slice_layers[i],
-                                            VKR_LIGHTMAP_PLANE_DIRECTION,
-                                            true_v);
+    planes[i] = vkr_lightmap_set_find_plane(
+        set, lightmaps->slice_layers[i], VKR_LIGHTMAP_PLANE_DIRECTION, true_v);
     if (planes[i] == UINT32_MAX ||
         (format != 0 && set->planes[planes[i]].format != format)) {
       return true_v;
@@ -2205,8 +2204,8 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
   }
   /* Desktop direction planes of the same slices, when each sampled layer
      has one of one encoding (ADR-104). */
-  if (desktop && !scene_loader_lightmap_directions(&set, lightmaps,
-                                                   &out_prepared[1])) {
+  if (desktop &&
+      !scene_loader_lightmap_directions(&set, lightmaps, &out_prepared[1])) {
     log_warn("Scene loader: lightmap set '%.*s' direction upload failed; "
              "baked lamps shade without direction",
              (int)path.length, path.str);
@@ -2292,9 +2291,9 @@ scene_loader_apply_lightmaps(VkrScene *scene, struct VkrRenderAssets *assets,
 
   VkrTextureHandle texture = VKR_TEXTURE_HANDLE_INVALID;
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_texture_system_finalize_prepared_load(
-          &assets->texture_system, import->path, &prepared[0], &texture,
-          &error)) {
+  if (!vkr_texture_system_finalize_prepared_load(&assets->texture_system,
+                                                 import->path, &prepared[0],
+                                                 &texture, &error)) {
     String8 error_text = vkr_renderer_get_error_string(error);
     log_error("Scene loader: lightmap upload failed for '%.*s': %.*s",
               (int)import->path.length, import->path.str,

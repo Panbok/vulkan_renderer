@@ -8,7 +8,6 @@
 
 #define VKR_MATERIAL_EXTENSION "mt"
 
-
 typedef enum VkrMaterialTextureClass {
   VKR_MATERIAL_TEXTURE_CLASS_UNKNOWN = 0,
   VKR_MATERIAL_TEXTURE_CLASS_COLOR_SRGB,
@@ -31,7 +30,6 @@ typedef struct VkrMaterialSlotAlias {
   const char *token;
   VkrTextureSlot slot;
 } VkrMaterialSlotAlias;
-
 
 /**
  * @brief Job payload for parallel material file parsing.
@@ -2346,7 +2344,8 @@ vkr_internal bool8_t vkr_material_loader_expand_graph(
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle file = {0};
   String8 json = {0};
-  if (!graph_path.str || file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
+  if (!graph_path.str ||
+      file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
     log_error("Material '%.*s': graph '%s' does not open", (int)path.length,
               path.str, instance->graph);
     out_data->parse_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;

@@ -2897,6 +2897,327 @@ static void palette_paint(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
 }
 
+/* The Stairs and Corridor tools, and the options of the one running. */
+static void palette_build_shape_tools(VkrEditorUi *editor, VkrUiSystem *ui,
+                                      VkrEditorPalette *palette,
+                                      VkrEditorSceneTool running, bool8_t ops) {
+  if (vkr_editor_palette_button(
+          palette, string8_lit("palette.stairs"), "Stairs",
+          VKR_UI_ICON_CHART_BAR,
+          string8_lit("Click where stairs start, then where their run ends, "
+                      "then raise them to their height and click"),
+          running == VKR_EDITOR_SCENE_TOOL_STAIRS, !ops)) {
+    vkr_editor_scene_tool_set(editor, running == VKR_EDITOR_SCENE_TOOL_STAIRS
+                                          ? VKR_EDITOR_SCENE_TOOL_NONE
+                                          : VKR_EDITOR_SCENE_TOOL_STAIRS);
+  }
+  if (vkr_editor_palette_button(
+          palette, string8_lit("palette.corridor"), "Corridor",
+          VKR_UI_ICON_ARROW_RIGHT,
+          string8_lit("Click the corridor's points; click the last one again "
+                      "or press Enter to build it"),
+          running == VKR_EDITOR_SCENE_TOOL_CORRIDOR, !ops)) {
+    vkr_editor_scene_tool_set(editor, running == VKR_EDITOR_SCENE_TOOL_CORRIDOR
+                                          ? VKR_EDITOR_SCENE_TOOL_NONE
+                                          : VKR_EDITOR_SCENE_TOOL_CORRIDOR);
+  }
+
+  /* The kind of the next stairs and the shape of the next corridor, while
+     the tool that reads them runs. */
+  const bool8_t stairs_tool = running == VKR_EDITOR_SCENE_TOOL_STAIRS;
+  const bool8_t corridor_tool = running == VKR_EDITOR_SCENE_TOOL_CORRIDOR;
+  if (stairs_tool) {
+    vkr_editor_palette_heading(palette, string8_lit("palette.stairs_options"),
+                               string8_lit("STAIRS"));
+  } else if (corridor_tool) {
+    vkr_editor_palette_heading(palette, string8_lit("palette.corridor_options"),
+                               string8_lit("CORRIDOR"));
+  }
+  static const char *const stairs_labels[SCENE_STAIRS_KIND_COUNT] = {
+      "Straight", "L turn", "U turn", "Curved", "Spiral"};
+  static const VkrUiIcon stairs_icons[SCENE_STAIRS_KIND_COUNT] = {
+      VKR_UI_ICON_CHART_BAR, VKR_UI_ICON_ARROW_RIGHT, VKR_UI_ICON_ARROW_UP,
+      VKR_UI_ICON_WAVES, VKR_UI_ICON_CIRCLE};
+  for (uint32_t i = 0; stairs_tool && i < SCENE_STAIRS_KIND_COUNT; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_editor_palette_button(
+            palette, string8_lit("palette.stairs_kind"), stairs_labels[i],
+            stairs_icons[i],
+            string8_lit("Straight; two flights turning at a landing; two "
+                        "flights running back; steps along an arc; or steps "
+                        "around a pole"),
+            editor->stairs_kind == i, false_v)) {
+      editor->stairs_kind = i;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  /* Straight stairs do not turn. */
+  if (stairs_tool &&
+      vkr_editor_palette_button(
+          palette, string8_lit("palette.stairs_left"), "Turn left",
+          VKR_UI_ICON_ARROW_LEFT,
+          string8_lit("Turning and spiral stairs turn left instead of right"),
+          editor->stairs_left, editor->stairs_kind == SCENE_STAIRS_STRAIGHT)) {
+    editor->stairs_left = !editor->stairs_left;
+  }
+  if (corridor_tool &&
+      vkr_editor_palette_button(
+          palette, string8_lit("palette.corridor_curved"), "Round corners",
+          VKR_UI_ICON_WAVES,
+          string8_lit("New corridors round their corners with 2 m arcs; "
+                      "Details sets the radius afterwards"),
+          editor->corridor_curved, false_v)) {
+    editor->corridor_curved = !editor->corridor_curved;
+  }
+}
+
+/* The operations on the whole selection: Mover, Merge, Align to first
+   and Never snap. */
+static void palette_build_selection_ops(VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        VkrEditorPalette *palette,
+                                        bool8_t ops) {
+  /* Merge joins the selected brushes (Ctrl+click adds them). */
+  VkrEntityId selection[VKR_EDITOR_SELECTION_MAX];
+  const uint32_t selected = vkr_editor_selection_list(editor, frame, selection,
+                                                      ArrayCount(selection));
+  char brushes[VKR_EDITOR_SELECTION_MAX * 32u] = "";
+  char objects[VKR_EDITOR_SELECTION_MAX * 32u] = "";
+  uint32_t brush_count = 0u;
+  uint32_t free_count = 0u;
+  uint64_t used = 0u;
+  uint64_t objects_used = 0u;
+  for (uint32_t i = 0u; i < selected; ++i) {
+    const VkrScene *owner = vkr_editor_entity_scene(frame, selection[i]);
+    char id[32];
+    snprintf(id, sizeof(id), "\"%u:%u:%u\"", (unsigned)selection[i].parts.world,
+             (unsigned)selection[i].parts.index,
+             (unsigned)selection[i].parts.generation);
+    objects_used += (uint64_t)snprintf(objects + objects_used,
+                                       sizeof(objects) - objects_used, "%s%s",
+                                       i ? "," : "", id);
+    free_count += vkr_editor_entity_free(owner, selection[i]) ? 1u : 0u;
+    if (owner &&
+        vkr_scene_get_typed(owner, selection[i], &vkr_scene_brush_type)) {
+      used += (uint64_t)snprintf(brushes + used, sizeof(brushes) - used, "%s%s",
+                                 brush_count ? "," : "", id);
+      brush_count++;
+    }
+  }
+  /* Mover groups the selection under a new entity that opens and closes
+     it in play (ADR-084). */
+  if (vkr_editor_palette_button(
+          palette, string8_lit("palette.mover"), "Mover", VKR_UI_ICON_ARROW_UP,
+          string8_lit("Group the selected objects under a mover: in play its "
+                      "open and close inputs slide them along its direction, "
+                      "colliding as they go; Details sets how"),
+          false_v, !ops || !selected)) {
+    char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"palette\",\"op\":\"mover.create\",\"args\":"
+             "{\"objects\":[%s],\"review\":false,\"select\":true}}",
+             objects);
+    (void)vkr_editor_agent_submit(editor->agent, line);
+  }
+  if (vkr_editor_palette_button(
+          palette, string8_lit("palette.merge"), "Merge", VKR_UI_ICON_LAYERS,
+          string8_lit("Join 2 to 8 selected touching brushes into one when "
+                      "their union is convex; Ctrl+click selects more"),
+          false_v, !ops || brush_count < 2u || brush_count > 8u)) {
+    char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.merge\",\"args\":"
+             "{\"brushes\":[%s],\"review\":false,\"select\":true}}",
+             brushes);
+    (void)vkr_editor_agent_submit(editor->agent, line);
+  }
+  if (vkr_editor_palette_button(
+          palette, string8_lit("palette.snap_together"), "Align to first",
+          VKR_UI_ICON_SNAP,
+          string8_lit("Move the other selected objects flush against and "
+                      "lined up with the first one, free ones excepted; "
+                      "Ctrl+click selects more"),
+          false_v, !ops || selected < 2u)) {
+    char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.snap\",\"args\":"
+             "{\"brushes\":[%s],\"review\":false}}",
+             objects);
+    (void)vkr_editor_agent_submit(editor->agent, line);
+  }
+  /* Free marks the selection to stay out of every snap, or clears it. */
+  const bool8_t all_free = selected && free_count == selected;
+  if (vkr_editor_palette_button(
+          palette, string8_lit("palette.free"), "Never snap", VKR_UI_ICON_HAND,
+          string8_lit("The selected objects never snap: the magnet, Snap and "
+                      "parenting in the Outliner leave them where they are"),
+          all_free, !ops || !selected)) {
+    char line[VKR_EDITOR_SELECTION_MAX * 120u + 160u];
+    int written = snprintf(line, sizeof(line),
+                           "{\"v\":1,\"id\":\"palette\",\"op\":\"batch\","
+                           "\"args\":{\"review\":false,\"ops\":[");
+    uint32_t added = 0u;
+    for (uint32_t i = 0u;
+         i < selected && written > 0 && (size_t)written < sizeof(line); ++i) {
+      const VkrScene *owner = vkr_editor_entity_scene(frame, selection[i]);
+      const bool8_t has =
+          owner && vkr_scene_get_typed(owner, selection[i],
+                                       &vkr_scene_free_placement_type) != NULL;
+      /* Clearing removes the marker; marking adds it where it is missing
+         and enables it where it is off. */
+      const char *op = all_free ? "component.remove"
+                       : has    ? "component.set"
+                                : "component.add";
+      if (all_free && !has) {
+        continue;
+      }
+      written +=
+          snprintf(line + written, sizeof(line) - (size_t)written,
+                   "%s{\"op\":\"%s\",\"args\":{\"entity\":\"%u:%u:%u\","
+                   "\"type\":\"free_placement\"%s}}",
+                   added ? "," : "", op, (unsigned)selection[i].parts.world,
+                   (unsigned)selection[i].parts.index,
+                   (unsigned)selection[i].parts.generation,
+                   has && !all_free ? ",\"values\":{\"enabled\":true}" : "");
+      added++;
+    }
+    if (added && written > 0 && (size_t)written < sizeof(line)) {
+      snprintf(line + written, sizeof(line) - (size_t)written, "]}}");
+      (void)vkr_editor_agent_submit(editor->agent, line);
+    }
+  }
+}
+
+static void palette_build_paint(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame,
+                                VkrEditorPalette *palette,
+                                const VkrScene *scene,
+                                const SceneBrushFace *face, VkrEntityId brush,
+                                bool8_t ops) {
+  VkrUiSystem *ui = frame->ui;
+  /* A surface or mark paints the selected face alone, else every face of
+     the selected brush, and new brushes take it; without a selection it
+     only picks the look of new brushes. Each shows the selection's value,
+     or the new brushes' one. Faces show the fixed greybox look of their
+     surface and mark until the art pass gives them a material. */
+  uint32_t shown_surface = (uint32_t)editor->brush_surface;
+  uint32_t shown_mark = (uint32_t)editor->brush_mark;
+  if (face) {
+    shown_surface = (uint32_t)face->surface;
+    shown_mark = (uint32_t)face->mark;
+  } else if (brush.u64) {
+    palette_brush_look(scene, brush, &shown_surface, &shown_mark);
+  }
+  const String8 paint_tip =
+      face        ? string8_lit("Paint the selected face; new brushes take it "
+                                       "too")
+      : brush.u64 ? string8_lit("Paint every face of the selected brush; new "
+                                "brushes take it too")
+                  : string8_lit("New brushes take it; select a brush or face "
+                                "to paint it");
+  vkr_editor_palette_heading(palette, string8_lit("palette.surfaces"),
+                             string8_lit("SURFACE"));
+  for (uint32_t i = 0; i < VKR_SURFACE_COUNT; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    const bool8_t clicked = vkr_editor_palette_button(
+        palette, string8_lit("palette.surface"), vkr_surface_labels[i],
+        VKR_UI_ICON_MATERIAL, paint_tip, shown_surface == i,
+        brush.u64 && !face && !ops);
+    (void)vkr_ui_pop_id(ui);
+    if (clicked) {
+      editor->brush_surface = (VkrSurface)i;
+      palette_paint(editor, frame, face, brush, "surface",
+                    vkr_surface_names[i]);
+    }
+  }
+  vkr_editor_palette_heading(palette, string8_lit("palette.marks"),
+                             string8_lit("MARK"));
+  for (uint32_t i = 0; i < VKR_SURFACE_MARK_COUNT; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    const bool8_t clicked = vkr_editor_palette_button(
+        palette, string8_lit("palette.mark"), vkr_surface_mark_labels[i],
+        i == VKR_SURFACE_MARK_HAZARD ? VKR_UI_ICON_WARNING_FILL
+                                     : VKR_UI_ICON_MATERIAL,
+        paint_tip, shown_mark == i, brush.u64 && !face && !ops);
+    (void)vkr_ui_pop_id(ui);
+    if (clicked) {
+      editor->brush_mark = (VkrSurfaceMark)i;
+      palette_paint(editor, frame, face, brush, "mark",
+                    vkr_surface_mark_names[i]);
+    }
+  }
+  if (vkr_editor_palette_button(
+          palette, string8_lit("palette.greybox"), "Greybox view",
+          VKR_UI_ICON_VIEW_MODE,
+          string8_lit("Show every face in its surface's greybox look, over "
+                      "any material the art pass gave it"),
+          frame->view_state.greybox_view, !frame->view_request)) {
+    VkrSampleViewState next = frame->view_state;
+    next.greybox_view = !next.greybox_view;
+    *frame->view_request =
+        (VkrSampleViewRequest){.value = next, .apply = true_v};
+  }
+}
+
+static void palette_build_snapping(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   VkrEditorPalette *palette, float32_t grid) {
+  VkrUiSystem *ui = frame->ui;
+  vkr_editor_palette_heading(palette, string8_lit("palette.snap"),
+                             string8_lit("SNAPPING"));
+  static const char *const snap_labels[VKR_EDITOR_SNAP_COUNT] = {
+      "Free", "Surface", "Grid"};
+  static const VkrUiIcon snap_icons[VKR_EDITOR_SNAP_COUNT] = {
+      VKR_UI_ICON_HAND, VKR_UI_ICON_SNAP, VKR_UI_ICON_GRID};
+  for (uint32_t i = 0; i < VKR_EDITOR_SNAP_COUNT; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_editor_palette_button(
+            palette, string8_lit("palette.snap_target"), snap_labels[i],
+            snap_icons[i], string8_lit("Where drawn and created objects land"),
+            editor->placement.target == i, false_v)) {
+      editor->placement.target = (VkrEditorSnapTarget)i;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  if (vkr_editor_palette_button(
+          palette, string8_lit("palette.magnet"), "Magnet", VKR_UI_ICON_SNAP,
+          string8_lit("Moved and drawn brushes snap flush against and level "
+                      "with nearby brushes"),
+          editor->placement.magnet, false_v)) {
+    editor->placement.magnet = !editor->placement.magnet;
+  }
+  char step[48];
+  snprintf(step, sizeof(step), "GRID STEP %g M", grid);
+  vkr_editor_palette_heading(
+      palette, string8_lit("palette.grid_step"),
+      string8_create_from_cstr((const uint8_t *)step, strlen(step)));
+  if (vkr_editor_palette_button(
+          palette, string8_lit("palette.grid"), "Show grid", VKR_UI_ICON_EYE,
+          string8_lit("Show or hide the grid"), frame->view_state.grid_enabled,
+          !frame->view_request)) {
+    VkrSampleViewState next = frame->view_state;
+    next.grid_enabled = !next.grid_enabled;
+    *frame->view_request =
+        (VkrSampleViewRequest){.value = next, .apply = true_v};
+  }
+  /* Grid steps halve and double between 1/16 m and 64 m. */
+  const bool8_t finer = vkr_editor_palette_button(
+      palette, string8_lit("palette.finer"), "Finer", VKR_UI_ICON_ZOOM_IN,
+      string8_lit("Halve the grid step"), false_v,
+      !frame->view_request || grid <= 0.0625f);
+  const bool8_t coarser = vkr_editor_palette_button(
+      palette, string8_lit("palette.coarser"), "Coarser", VKR_UI_ICON_ZOOM_OUT,
+      string8_lit("Double the grid step"), false_v,
+      !frame->view_request || grid >= 64.0f);
+  if (finer || coarser) {
+    VkrSampleViewState next = frame->view_state;
+    next.grid_spacing =
+        vkr_clamp_f32(finer ? grid * 0.5f : grid * 2.0f, 0.0625f, 64.0f);
+    *frame->view_request =
+        (VkrSampleViewRequest){.value = next, .apply = true_v};
+  }
+}
+
 float32_t vkr_editor_level_palette_build(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          VkrUiRect bounds) {
@@ -2939,75 +3260,7 @@ float32_t vkr_editor_level_palette_build(VkrEditorUi *editor,
   vkr_editor_palette_create(&palette, string8_lit("palette.trigger"), "Trigger",
                             VKR_UI_ICON_LIGHTNING, "trigger_volume");
   const VkrEditorSceneTool running = vkr_editor_scene_tool(editor);
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.stairs"), "Stairs",
-          VKR_UI_ICON_CHART_BAR,
-          string8_lit("Click where stairs start, then where their run ends, "
-                      "then raise them to their height and click"),
-          running == VKR_EDITOR_SCENE_TOOL_STAIRS, !ops)) {
-    vkr_editor_scene_tool_set(editor, running == VKR_EDITOR_SCENE_TOOL_STAIRS
-                                          ? VKR_EDITOR_SCENE_TOOL_NONE
-                                          : VKR_EDITOR_SCENE_TOOL_STAIRS);
-  }
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.corridor"), "Corridor",
-          VKR_UI_ICON_ARROW_RIGHT,
-          string8_lit("Click the corridor's points; click the last one again "
-                      "or press Enter to build it"),
-          running == VKR_EDITOR_SCENE_TOOL_CORRIDOR, !ops)) {
-    vkr_editor_scene_tool_set(editor, running == VKR_EDITOR_SCENE_TOOL_CORRIDOR
-                                          ? VKR_EDITOR_SCENE_TOOL_NONE
-                                          : VKR_EDITOR_SCENE_TOOL_CORRIDOR);
-  }
-
-  /* The kind of the next stairs and the shape of the next corridor, while
-     the tool that reads them runs. */
-  const bool8_t stairs_tool = running == VKR_EDITOR_SCENE_TOOL_STAIRS;
-  const bool8_t corridor_tool = running == VKR_EDITOR_SCENE_TOOL_CORRIDOR;
-  if (stairs_tool) {
-    vkr_editor_palette_heading(&palette, string8_lit("palette.stairs_options"),
-                               string8_lit("STAIRS"));
-  } else if (corridor_tool) {
-    vkr_editor_palette_heading(&palette,
-                               string8_lit("palette.corridor_options"),
-                               string8_lit("CORRIDOR"));
-  }
-  static const char *const stairs_labels[SCENE_STAIRS_KIND_COUNT] = {
-      "Straight", "L turn", "U turn", "Curved", "Spiral"};
-  static const VkrUiIcon stairs_icons[SCENE_STAIRS_KIND_COUNT] = {
-      VKR_UI_ICON_CHART_BAR, VKR_UI_ICON_ARROW_RIGHT, VKR_UI_ICON_ARROW_UP,
-      VKR_UI_ICON_WAVES, VKR_UI_ICON_CIRCLE};
-  for (uint32_t i = 0; stairs_tool && i < SCENE_STAIRS_KIND_COUNT; ++i) {
-    (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_editor_palette_button(
-            &palette, string8_lit("palette.stairs_kind"), stairs_labels[i],
-            stairs_icons[i],
-            string8_lit("Straight; two flights turning at a landing; two "
-                        "flights running back; steps along an arc; or steps "
-                        "around a pole"),
-            editor->stairs_kind == i, false_v)) {
-      editor->stairs_kind = i;
-    }
-    (void)vkr_ui_pop_id(ui);
-  }
-  /* Straight stairs do not turn. */
-  if (stairs_tool &&
-      vkr_editor_palette_button(
-          &palette, string8_lit("palette.stairs_left"), "Turn left",
-          VKR_UI_ICON_ARROW_LEFT,
-          string8_lit("Turning and spiral stairs turn left instead of right"),
-          editor->stairs_left, editor->stairs_kind == SCENE_STAIRS_STRAIGHT)) {
-    editor->stairs_left = !editor->stairs_left;
-  }
-  if (corridor_tool &&
-      vkr_editor_palette_button(
-          &palette, string8_lit("palette.corridor_curved"), "Round corners",
-          VKR_UI_ICON_WAVES,
-          string8_lit("New corridors round their corners with 2 m arcs; "
-                      "Details sets the radius afterwards"),
-          editor->corridor_curved, false_v)) {
-    editor->corridor_curved = !editor->corridor_curved;
-  }
+  palette_build_shape_tools(editor, ui, &palette, running, ops);
 
   /* The role of the next box, wedge, cylinder or stairs. */
   vkr_editor_palette_heading(&palette, string8_lit("palette.role"),
@@ -3086,115 +3339,7 @@ float32_t vkr_editor_level_palette_build(VkrEditorUi *editor,
       !vkr_editor_brush_grid_patch_cut(editor)) {
     palette_op(editor, "blockout.doorway", "wall", brush, NULL);
   }
-  /* Merge joins the selected brushes (Ctrl+click adds them). */
-  VkrEntityId selection[VKR_EDITOR_SELECTION_MAX];
-  const uint32_t selected = vkr_editor_selection_list(editor, frame, selection,
-                                                      ArrayCount(selection));
-  char brushes[VKR_EDITOR_SELECTION_MAX * 32u] = "";
-  char objects[VKR_EDITOR_SELECTION_MAX * 32u] = "";
-  uint32_t brush_count = 0u;
-  uint32_t free_count = 0u;
-  uint64_t used = 0u;
-  uint64_t objects_used = 0u;
-  for (uint32_t i = 0u; i < selected; ++i) {
-    const VkrScene *owner = vkr_editor_entity_scene(frame, selection[i]);
-    char id[32];
-    snprintf(id, sizeof(id), "\"%u:%u:%u\"", (unsigned)selection[i].parts.world,
-             (unsigned)selection[i].parts.index,
-             (unsigned)selection[i].parts.generation);
-    objects_used += (uint64_t)snprintf(objects + objects_used,
-                                       sizeof(objects) - objects_used, "%s%s",
-                                       i ? "," : "", id);
-    free_count += vkr_editor_entity_free(owner, selection[i]) ? 1u : 0u;
-    if (owner &&
-        vkr_scene_get_typed(owner, selection[i], &vkr_scene_brush_type)) {
-      used += (uint64_t)snprintf(brushes + used, sizeof(brushes) - used, "%s%s",
-                                 brush_count ? "," : "", id);
-      brush_count++;
-    }
-  }
-  /* Mover groups the selection under a new entity that opens and closes
-     it in play (ADR-084). */
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.mover"), "Mover", VKR_UI_ICON_ARROW_UP,
-          string8_lit("Group the selected objects under a mover: in play its "
-                      "open and close inputs slide them along its direction, "
-                      "colliding as they go; Details sets how"),
-          false_v, !ops || !selected)) {
-    char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"palette\",\"op\":\"mover.create\",\"args\":"
-             "{\"objects\":[%s],\"review\":false,\"select\":true}}",
-             objects);
-    (void)vkr_editor_agent_submit(editor->agent, line);
-  }
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.merge"), "Merge", VKR_UI_ICON_LAYERS,
-          string8_lit("Join 2 to 8 selected touching brushes into one when "
-                      "their union is convex; Ctrl+click selects more"),
-          false_v, !ops || brush_count < 2u || brush_count > 8u)) {
-    char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.merge\",\"args\":"
-             "{\"brushes\":[%s],\"review\":false,\"select\":true}}",
-             brushes);
-    (void)vkr_editor_agent_submit(editor->agent, line);
-  }
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.snap_together"), "Align to first",
-          VKR_UI_ICON_SNAP,
-          string8_lit("Move the other selected objects flush against and "
-                      "lined up with the first one, free ones excepted; "
-                      "Ctrl+click selects more"),
-          false_v, !ops || selected < 2u)) {
-    char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.snap\",\"args\":"
-             "{\"brushes\":[%s],\"review\":false}}",
-             objects);
-    (void)vkr_editor_agent_submit(editor->agent, line);
-  }
-  /* Free marks the selection to stay out of every snap, or clears it. */
-  const bool8_t all_free = selected && free_count == selected;
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.free"), "Never snap", VKR_UI_ICON_HAND,
-          string8_lit("The selected objects never snap: the magnet, Snap and "
-                      "parenting in the Outliner leave them where they are"),
-          all_free, !ops || !selected)) {
-    char line[VKR_EDITOR_SELECTION_MAX * 120u + 160u];
-    int written = snprintf(line, sizeof(line),
-                           "{\"v\":1,\"id\":\"palette\",\"op\":\"batch\","
-                           "\"args\":{\"review\":false,\"ops\":[");
-    uint32_t added = 0u;
-    for (uint32_t i = 0u;
-         i < selected && written > 0 && (size_t)written < sizeof(line); ++i) {
-      const VkrScene *owner = vkr_editor_entity_scene(frame, selection[i]);
-      const bool8_t has =
-          owner && vkr_scene_get_typed(owner, selection[i],
-                                       &vkr_scene_free_placement_type) != NULL;
-      /* Clearing removes the marker; marking adds it where it is missing
-         and enables it where it is off. */
-      const char *op = all_free ? "component.remove"
-                       : has    ? "component.set"
-                                : "component.add";
-      if (all_free && !has) {
-        continue;
-      }
-      written +=
-          snprintf(line + written, sizeof(line) - (size_t)written,
-                   "%s{\"op\":\"%s\",\"args\":{\"entity\":\"%u:%u:%u\","
-                   "\"type\":\"free_placement\"%s}}",
-                   added ? "," : "", op, (unsigned)selection[i].parts.world,
-                   (unsigned)selection[i].parts.index,
-                   (unsigned)selection[i].parts.generation,
-                   has && !all_free ? ",\"values\":{\"enabled\":true}" : "");
-      added++;
-    }
-    if (added && written > 0 && (size_t)written < sizeof(line)) {
-      snprintf(line + written, sizeof(line) - (size_t)written, "]}}");
-      (void)vkr_editor_agent_submit(editor->agent, line);
-    }
-  }
+  palette_build_selection_ops(editor, frame, &palette, ops);
   const bool8_t shape_selected =
       alive && vkr_scene_get_typed(scene, frame->selected_entity,
                                    &vkr_scene_blockout_type) != NULL;
@@ -3220,122 +3365,9 @@ float32_t vkr_editor_level_palette_build(VkrEditorUi *editor,
   vkr_editor_palette_command(&palette, string8_lit("palette.delete"), "Delete",
                              VKR_UI_ICON_TRASH, CMD_DELETE, false_v);
 
-  /* A surface or mark paints the selected face alone, else every face of
-     the selected brush, and new brushes take it; without a selection it
-     only picks the look of new brushes. Each shows the selection's value,
-     or the new brushes' one. Faces show the fixed greybox look of their
-     surface and mark until the art pass gives them a material. */
-  uint32_t shown_surface = (uint32_t)editor->brush_surface;
-  uint32_t shown_mark = (uint32_t)editor->brush_mark;
-  if (face) {
-    shown_surface = (uint32_t)face->surface;
-    shown_mark = (uint32_t)face->mark;
-  } else if (brush.u64) {
-    palette_brush_look(scene, brush, &shown_surface, &shown_mark);
-  }
-  const String8 paint_tip =
-      face        ? string8_lit("Paint the selected face; new brushes take it "
-                                       "too")
-      : brush.u64 ? string8_lit("Paint every face of the selected brush; new "
-                                "brushes take it too")
-                  : string8_lit("New brushes take it; select a brush or face "
-                                "to paint it");
-  vkr_editor_palette_heading(&palette, string8_lit("palette.surfaces"),
-                             string8_lit("SURFACE"));
-  for (uint32_t i = 0; i < VKR_SURFACE_COUNT; ++i) {
-    (void)vkr_ui_push_id_u64(ui, i);
-    const bool8_t clicked = vkr_editor_palette_button(
-        &palette, string8_lit("palette.surface"), vkr_surface_labels[i],
-        VKR_UI_ICON_MATERIAL, paint_tip, shown_surface == i,
-        brush.u64 && !face && !ops);
-    (void)vkr_ui_pop_id(ui);
-    if (clicked) {
-      editor->brush_surface = (VkrSurface)i;
-      palette_paint(editor, frame, face, brush, "surface",
-                    vkr_surface_names[i]);
-    }
-  }
-  vkr_editor_palette_heading(&palette, string8_lit("palette.marks"),
-                             string8_lit("MARK"));
-  for (uint32_t i = 0; i < VKR_SURFACE_MARK_COUNT; ++i) {
-    (void)vkr_ui_push_id_u64(ui, i);
-    const bool8_t clicked = vkr_editor_palette_button(
-        &palette, string8_lit("palette.mark"), vkr_surface_mark_labels[i],
-        i == VKR_SURFACE_MARK_HAZARD ? VKR_UI_ICON_WARNING_FILL
-                                     : VKR_UI_ICON_MATERIAL,
-        paint_tip, shown_mark == i, brush.u64 && !face && !ops);
-    (void)vkr_ui_pop_id(ui);
-    if (clicked) {
-      editor->brush_mark = (VkrSurfaceMark)i;
-      palette_paint(editor, frame, face, brush, "mark",
-                    vkr_surface_mark_names[i]);
-    }
-  }
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.greybox"), "Greybox view",
-          VKR_UI_ICON_VIEW_MODE,
-          string8_lit("Show every face in its surface's greybox look, over "
-                      "any material the art pass gave it"),
-          frame->view_state.greybox_view, !frame->view_request)) {
-    VkrSampleViewState next = frame->view_state;
-    next.greybox_view = !next.greybox_view;
-    *frame->view_request =
-        (VkrSampleViewRequest){.value = next, .apply = true_v};
-  }
+  palette_build_paint(editor, frame, &palette, scene, face, brush, ops);
 
-  vkr_editor_palette_heading(&palette, string8_lit("palette.snap"),
-                             string8_lit("SNAPPING"));
-  static const char *const snap_labels[VKR_EDITOR_SNAP_COUNT] = {
-      "Free", "Surface", "Grid"};
-  static const VkrUiIcon snap_icons[VKR_EDITOR_SNAP_COUNT] = {
-      VKR_UI_ICON_HAND, VKR_UI_ICON_SNAP, VKR_UI_ICON_GRID};
-  for (uint32_t i = 0; i < VKR_EDITOR_SNAP_COUNT; ++i) {
-    (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_editor_palette_button(
-            &palette, string8_lit("palette.snap_target"), snap_labels[i],
-            snap_icons[i], string8_lit("Where drawn and created objects land"),
-            editor->placement.target == i, false_v)) {
-      editor->placement.target = (VkrEditorSnapTarget)i;
-    }
-    (void)vkr_ui_pop_id(ui);
-  }
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.magnet"), "Magnet", VKR_UI_ICON_SNAP,
-          string8_lit("Moved and drawn brushes snap flush against and level "
-                      "with nearby brushes"),
-          editor->placement.magnet, false_v)) {
-    editor->placement.magnet = !editor->placement.magnet;
-  }
-  char step[48];
-  snprintf(step, sizeof(step), "GRID STEP %g M", grid);
-  vkr_editor_palette_heading(
-      &palette, string8_lit("palette.grid_step"),
-      string8_create_from_cstr((const uint8_t *)step, strlen(step)));
-  if (vkr_editor_palette_button(
-          &palette, string8_lit("palette.grid"), "Show grid", VKR_UI_ICON_EYE,
-          string8_lit("Show or hide the grid"), frame->view_state.grid_enabled,
-          !frame->view_request)) {
-    VkrSampleViewState next = frame->view_state;
-    next.grid_enabled = !next.grid_enabled;
-    *frame->view_request =
-        (VkrSampleViewRequest){.value = next, .apply = true_v};
-  }
-  /* Grid steps halve and double between 1/16 m and 64 m. */
-  const bool8_t finer = vkr_editor_palette_button(
-      &palette, string8_lit("palette.finer"), "Finer", VKR_UI_ICON_ZOOM_IN,
-      string8_lit("Halve the grid step"), false_v,
-      !frame->view_request || grid <= 0.0625f);
-  const bool8_t coarser = vkr_editor_palette_button(
-      &palette, string8_lit("palette.coarser"), "Coarser", VKR_UI_ICON_ZOOM_OUT,
-      string8_lit("Double the grid step"), false_v,
-      !frame->view_request || grid >= 64.0f);
-  if (finer || coarser) {
-    VkrSampleViewState next = frame->view_state;
-    next.grid_spacing =
-        vkr_clamp_f32(finer ? grid * 0.5f : grid * 2.0f, 0.0625f, 64.0f);
-    *frame->view_request =
-        (VkrSampleViewRequest){.value = next, .apply = true_v};
-  }
+  palette_build_snapping(editor, frame, &palette, grid);
 
   vkr_editor_palette_heading(&palette, string8_lit("palette.check"),
                              string8_lit("CHECK"));

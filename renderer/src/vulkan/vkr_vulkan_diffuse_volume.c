@@ -40,9 +40,8 @@ vkr_vk_diffuse_volume_texture(VkrVulkanRenderer *renderer,
    binds a volume once its publications are confirmed, which precedes the
    GPU completion of their initialization; until then frames light without
    it and do not compose it. */
-vkr_internal bool8_t
-vkr_vk_diffuse_volume_ready(VkrVulkanRenderer *renderer,
-                            const VkrDiffuseVolumeBinding *volume) {
+vkr_internal bool8_t vkr_vk_diffuse_volume_ready(
+    VkrVulkanRenderer *renderer, const VkrDiffuseVolumeBinding *volume) {
   const VkrTextureHandle handles[5] = {volume->indirection, volume->probes,
                                        volume->moments, volume->layer_sh,
                                        volume->sh};
@@ -82,9 +81,10 @@ bool8_t vkr_vk_resolve_diffuse_volume(VkrVulkanRenderer *renderer,
   const uint32_t tile_rows =
       (volume->probe_count + VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES - 1u) /
       VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES;
-  if (!vkr_vk_diffuse_volume_texture(
-          renderer, volume->indirection, VK_FORMAT_R32_UINT,
-          volume->dimensions[0], volume->dimensions[1] * volume->dimensions[2]) ||
+  if (!vkr_vk_diffuse_volume_texture(renderer, volume->indirection,
+                                     VK_FORMAT_R32_UINT, volume->dimensions[0],
+                                     volume->dimensions[1] *
+                                         volume->dimensions[2]) ||
       !vkr_vk_diffuse_volume_texture(renderer, volume->probes,
                                      VK_FORMAT_R16G16B16A16_SFLOAT,
                                      VKR_DIFFUSE_VOLUME_ROW_PROBES, rows) ||
@@ -92,10 +92,9 @@ bool8_t vkr_vk_resolve_diffuse_volume(VkrVulkanRenderer *renderer,
           renderer, volume->moments, VK_FORMAT_R16G16_SFLOAT,
           VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES * VKR_DIFFUSE_VOLUME_MOMENT_TILE,
           tile_rows * VKR_DIFFUSE_VOLUME_MOMENT_TILE) ||
-      !vkr_vk_diffuse_volume_texture(renderer, volume->sh,
-                                     VK_FORMAT_R16G16B16A16_SFLOAT,
-                                     VKR_DIFFUSE_VOLUME_ROW_PROBES * 3u,
-                                     2u * rows))
+      !vkr_vk_diffuse_volume_texture(
+          renderer, volume->sh, VK_FORMAT_R16G16B16A16_SFLOAT,
+          VKR_DIFFUSE_VOLUME_ROW_PROBES * 3u, 2u * rows))
     return false_v;
   const VkrTextureHandle handles[4] = {volume->indirection, volume->probes,
                                        volume->moments, volume->sh};
@@ -121,9 +120,10 @@ bool8_t vkr_vk_resolve_diffuse_volume(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-bool8_t vkr_vk_prepare_diffuse_volume_compose(
-    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
-    const VkrRgPass *pass) {
+bool8_t
+vkr_vk_prepare_diffuse_volume_compose(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass) {
   (void)pass;
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
@@ -210,7 +210,8 @@ bool8_t vkr_vk_prepare_diffuse_volume_compose(
   prepared->image_barrier_count = 1u;
   prepared->root_address = root_address;
   prepared->pipelines[0] =
-      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_DIFFUSE_VOLUME_COMPOSE];
+      renderer->deferred_pipelines
+          [VKR_VULKAN_DEFERRED_PIPELINE_DIFFUSE_VOLUME_COMPOSE];
   prepared->groups[0][0] = (volume->probe_count + 63u) / 64u;
   prepared->groups[0][1] = 1u;
   prepared->groups[0][2] = 1u;

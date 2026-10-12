@@ -3329,6 +3329,258 @@ vkr_internal void vkr_ui_emit_code(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
   }
 }
 
+/* A cubic curve, as one quad per segment. */
+vkr_internal void vkr_ui_emit_bezier(const VkrUiSystem *system,
+                                     VkrUiDrawBuffer *buffer,
+                                     const VkrUiFrameNode *node,
+                                     VkrUiRect content) {
+  const float32_t scale = system->content_scale;
+  Vec2 previous = node->bezier_points[0];
+  const float32_t half_width = node->bezier_width * scale * 0.5f;
+  const Vec4 color = vkr_ui_linear_color(node->style.text_color);
+  const uint32_t segments = vkr_ui_bezier_segments(node);
+  for (uint32_t segment = 1; segment <= segments; ++segment) {
+    const float32_t t = (float32_t)segment / (float32_t)segments;
+    const float32_t u = 1 - t;
+    const float32_t weights[4] = {u * u * u, 3 * u * u * t, 3 * u * t * t,
+                                  t * t * t};
+    Vec2 next = {0};
+    for (uint32_t i = 0; i < 4; ++i) {
+      next.x += weights[i] * node->bezier_points[i].x;
+      next.y += weights[i] * node->bezier_points[i].y;
+    }
+    const float32_t dx = (next.x - previous.x) * scale;
+    const float32_t dy = (next.y - previous.y) * scale;
+    const float32_t length = sqrtf(dx * dx + dy * dy);
+    if (length > 0.001f) {
+      const Vec2 normal = {-dy * half_width / length, dx * half_width / length};
+      const Vec2 a = {content.x + previous.x * scale,
+                      content.y + previous.y * scale};
+      const Vec2 b = {content.x + next.x * scale, content.y + next.y * scale};
+      const Vec2 corners[4] = {{a.x + normal.x, a.y + normal.y},
+                               {b.x + normal.x, b.y + normal.y},
+                               {b.x - normal.x, b.y - normal.y},
+                               {a.x - normal.x, a.y - normal.y}};
+      (void)vkr_ui_draw_buffer_polygon(buffer, corners, color);
+    }
+    previous = next;
+  }
+}
+
+/* The image fitted into the content box over a checkerboard. */
+vkr_internal void vkr_ui_emit_image(VkrUiDrawBuffer *buffer,
+                                    const VkrUiFrameNode *node,
+                                    VkrUiRect content) {
+  const float32_t fit = Min(content.width / node->image_size.x,
+                            content.height / node->image_size.y);
+  VkrUiRect image = {
+      content.x + (content.width - node->image_size.x * fit) * 0.5f,
+      content.y + (content.height - node->image_size.y * fit) * 0.5f,
+      node->image_size.x * fit, node->image_size.y * fit};
+  for (uint32_t y = 0; y < 4; ++y) {
+    for (uint32_t x = 0; x < 4; ++x) {
+      float32_t shade = (x + y) % 2 ? 0.28f : 0.18f;
+      VkrUiRect tile = {image.x + image.width * (float32_t)x / 4,
+                        image.y + image.height * (float32_t)y / 4,
+                        image.width / 4, image.height / 4};
+      vkr_ui_emit_rect(buffer, tile, (Vec4){shade, shade, shade, 1}, (Vec4){0});
+    }
+  }
+  (void)vkr_ui_draw_buffer_image(buffer, image, (Vec4){0, 0, 1, 1},
+                                 (Vec4){1, 1, 1, 1}, node->image);
+}
+
+/* A label's or button's text with its leading and trailing icons. */
+vkr_internal void vkr_ui_emit_label(VkrUiSystem *system,
+                                    VkrUiDrawBuffer *buffer,
+                                    VkrUiFrameNode *node, VkrUiRect content,
+                                    const VkrUiTheme *theme) {
+  const float32_t scale = system->content_scale;
+  /* A trailing icon ends the content box; text and the leading icon lay
+     out in what remains. */
+  if (node->trailing_icon != VKR_UI_ICON_NONE) {
+    const float32_t size =
+        Min(node->trailing_icon_size_px, Min(content.width, content.height));
+    const VkrUiRect caret = {content.x + content.width - size,
+                             content.y + (content.height - size) * 0.5f, size,
+                             size};
+    Vec4 color = theme->text_secondary;
+    color.w *= node->disabled ? 0.45f : 1.0f;
+    if (size > 0.0f)
+      vkr_ui_emit_icon(system, buffer, node->trailing_icon, caret, color);
+    content.width =
+        Max(0.0f, content.width - size - VKR_UI_TRAILING_GAP_PT * scale);
+  }
+  /* A dropdown, a button with a trailing icon, reads from its leading
+     edge like a field; other buttons center. */
+  const bool8_t centered =
+      (node->kind == VKR_UI_NODE_BUTTON && !node->leading &&
+       node->trailing_icon == VKR_UI_ICON_NONE) ||
+      node->center;
+  /* Text never spills past its own box into neighbouring widgets. Wrapped
+   * or unconstrained text keeps the parent clip. */
+  const float32_t text_width =
+      node->retained->text_live
+          ? vkr_ui_text_get_bounds(&node->retained->text).size.x
+          : 0.0f;
+  const float32_t icon_extent =
+      node->icon != VKR_UI_ICON_NONE
+          ? node->icon_size_px + 6.0f * system->content_scale
+          : 0.0f;
+  const bool8_t clip_text =
+      text_width + icon_extent > content.width + 0.5f && content.width > 0.0f;
+  /* Overflowing text may use the padding, as the clip below allows; the
+   * ellipsis marks what still does not fit. */
+  VkrUiRect text_clip = vkr_ui_uniform_inset(node->rect, 1.0f);
+  if (node->trailing_icon != VKR_UI_ICON_NONE)
+    text_clip.width = Max(0.0f, content.x + content.width - text_clip.x);
+  const float32_t ellipsis_right =
+      clip_text ? text_clip.x + text_clip.width : 0.0f;
+  if (clip_text && !vkr_ui_draw_buffer_push_clip(buffer, text_clip))
+    return;
+  if (node->icon == VKR_UI_ICON_NONE) {
+    vkr_ui_emit_text(system, buffer, node, content, centered, 0.0f,
+                     ellipsis_right);
+    if (clip_text)
+      (void)vkr_ui_draw_buffer_pop_clip(buffer);
+    return;
+  }
+  const float32_t size =
+      Min(node->icon_size_px, Min(content.width, content.height));
+  const float32_t gap =
+      node->content.length ? 6.0f * system->content_scale : 0.0f;
+  const float32_t offset =
+      centered ? Max(0.0f, (content.width - size - gap - text_width) * 0.5f)
+               : 0.0f;
+  const VkrUiRect icon_rect = {content.x + offset,
+                               content.y + (content.height - size) * 0.5f, size,
+                               size};
+  if (size > 0.0f)
+    vkr_ui_emit_icon(system, buffer, node->icon, icon_rect, node->icon_color);
+  vkr_ui_emit_text(system, buffer, node, content, false_v, offset + size + gap,
+                   ellipsis_right);
+  if (clip_text)
+    (void)vkr_ui_draw_buffer_pop_clip(buffer);
+}
+
+vkr_internal void vkr_ui_emit_checkbox(VkrUiSystem *system,
+                                       VkrUiDrawBuffer *buffer,
+                                       VkrUiFrameNode *node, VkrUiRect content,
+                                       const VkrUiTheme *theme) {
+  const VkrUiRetainedState *retained = node->retained;
+  const float32_t scale = system->content_scale;
+  const VkrUiRect box = vkr_ui_checkbox_box(content, scale);
+  const float32_t size = box.width;
+  const float32_t radius = VKR_UI_CHECKBOX_RADIUS_PT * scale;
+  const Vec4 radii = {radius, radius, radius, radius};
+  Vec4 fill = node->checked
+                  ? vkr_ui_color_mix(theme->accent, theme->accent_hover,
+                                     retained->hover_t)
+                  : theme->field;
+  Vec4 edge = node->checked
+                  ? fill
+                  : vkr_ui_color_mix(theme->border_strong,
+                                     theme->text_secondary, retained->hover_t);
+  if (node->disabled) {
+    fill.w *= 0.45f;
+    edge.w *= 0.45f;
+  }
+  vkr_ui_emit_box(buffer, box, fill, radii, edge, Max(1.0f, scale));
+  if (node->checked) {
+    Vec4 mark = theme->text_on_accent;
+    mark.w *= node->disabled ? 0.6f : 1.0f;
+    vkr_ui_emit_icon(system, buffer, VKR_UI_ICON_CHECK,
+                     vkr_ui_uniform_inset(box, size * 0.12f), mark);
+  }
+  vkr_ui_emit_text(system, buffer, node, content, false_v, size + 7.0f * scale,
+                   0.0f);
+}
+
+vkr_internal void vkr_ui_emit_slider(const VkrUiSystem *system,
+                                     VkrUiDrawBuffer *buffer,
+                                     const VkrUiFrameNode *node,
+                                     VkrUiRect content,
+                                     const VkrUiTheme *theme) {
+  const VkrUiRetainedState *retained = node->retained;
+  const float32_t scale = system->content_scale;
+  const float32_t track_height = Max(2.0f, 4.0f * scale);
+  const float32_t knob =
+      Min(content.height, (12.0f + 2.0f * retained->hover_t) * scale);
+  const float32_t travel = Max(0.0f, content.width - knob);
+  const float32_t knob_x = content.x + node->slider_fraction * travel;
+  const float32_t track_y = content.y + (content.height - track_height) * 0.5f;
+  const Vec4 track_radii = {track_height * 0.5f, track_height * 0.5f,
+                            track_height * 0.5f, track_height * 0.5f};
+  vkr_ui_emit_rect(buffer,
+                   (VkrUiRect){content.x, track_y, content.width, track_height},
+                   theme->border, track_radii);
+  Vec4 accent =
+      vkr_ui_color_mix(theme->accent, theme->accent_hover, retained->hover_t);
+  if (node->disabled)
+    accent = theme->text_disabled;
+  const float32_t filled = knob_x + knob * 0.5f - content.x;
+  if (filled > 0.0f)
+    vkr_ui_emit_rect(buffer,
+                     (VkrUiRect){content.x, track_y, filled, track_height},
+                     accent, track_radii);
+  const VkrUiRect knob_rect = {
+      knob_x, content.y + (content.height - knob) * 0.5f, knob, knob};
+  const Vec4 knob_radii = {knob * 0.5f, knob * 0.5f, knob * 0.5f, knob * 0.5f};
+  vkr_ui_emit_shadow(buffer, knob_rect, knob_radii, theme->shadow,
+                     (Vec2){0.0f, 1.0f * scale}, 3.0f * scale);
+  vkr_ui_emit_box(buffer, knob_rect,
+                  node->disabled ? theme->text_disabled : theme->text,
+                  knob_radii, accent, Max(1.0f, 2.0f * scale));
+}
+
+/* A text field's selection, text and caret, clipped to its content box. */
+vkr_internal void vkr_ui_emit_text_field(VkrUiSystem *system,
+                                         VkrUiDrawBuffer *buffer,
+                                         VkrUiFrameNode *node,
+                                         VkrUiRect content,
+                                         const VkrUiTheme *theme) {
+  if (!vkr_ui_draw_buffer_push_clip(buffer, content))
+    return;
+  VkrUiText *text = &node->retained->text;
+  const float32_t height = vkr_ui_text_line_height(text);
+  const Vec2 origin = {content.x - node->retained->scroll_offset.x,
+                       content.y - node->retained->scroll_offset.y};
+  if (system->focused_id == node->id) {
+    const uint32_t begin =
+        Min(node->retained->text_cursor, node->retained->text_selection);
+    const uint32_t end =
+        Max(node->retained->text_cursor, node->retained->text_selection);
+    uint32_t glyph = 0u;
+    for (uint32_t offset = 0u; offset < text->content.length;) {
+      const VkrCodepoint cp = vkr_utf8_decode(text->content.str + offset,
+                                              text->content.length - offset);
+      if (!cp.byte_length)
+        break;
+      if (cp.value != '\n' && glyph < text->layout.glyphs.length) {
+        const VkrTextGlyph *item = &text->layout.glyphs.data[glyph++];
+        if (offset >= begin && offset < end)
+          vkr_ui_emit_rect(
+              buffer,
+              (VkrUiRect){origin.x + item->position.x,
+                          origin.y + item->position.y - text->bounds.ascent,
+                          item->advance, height},
+              vkr_ui_color_alpha(theme->selection, 0.9f), (Vec4){0});
+      }
+      offset += cp.byte_length;
+    }
+  }
+  vkr_ui_emit_text(system, buffer, node, content, false_v, 0.0f, 0.0f);
+  if (system->focused_id == node->id && vkr_ui_caret_visible(system)) {
+    const Vec2 caret =
+        vkr_ui_text_cursor_position(text, node->retained->text_cursor);
+    vkr_ui_emit_rect(buffer,
+                     (VkrUiRect){origin.x + caret.x, origin.y + caret.y,
+                                 Max(1.0f, system->content_scale), height},
+                     node->style.text_color, (Vec4){0});
+  }
+  (void)vkr_ui_draw_buffer_pop_clip(buffer);
+}
+
 vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
                                    VkrUiDrawBuffer *buffer) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
@@ -3373,237 +3625,28 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   }
   VkrUiRect content = vkr_ui_style_content_rect(node->rect, &node->style);
   switch (node->kind) {
-  case VKR_UI_NODE_BEZIER: {
-    Vec2 previous = node->bezier_points[0];
-    const float32_t half_width = node->bezier_width * scale * 0.5f;
-    const Vec4 color = vkr_ui_linear_color(node->style.text_color);
-    const uint32_t segments = vkr_ui_bezier_segments(node);
-    for (uint32_t segment = 1; segment <= segments; ++segment) {
-      const float32_t t = (float32_t)segment / (float32_t)segments;
-      const float32_t u = 1 - t;
-      const float32_t weights[4] = {u * u * u, 3 * u * u * t, 3 * u * t * t,
-                                    t * t * t};
-      Vec2 next = {0};
-      for (uint32_t i = 0; i < 4; ++i) {
-        next.x += weights[i] * node->bezier_points[i].x;
-        next.y += weights[i] * node->bezier_points[i].y;
-      }
-      const float32_t dx = (next.x - previous.x) * scale;
-      const float32_t dy = (next.y - previous.y) * scale;
-      const float32_t length = sqrtf(dx * dx + dy * dy);
-      if (length > 0.001f) {
-        const Vec2 normal = {-dy * half_width / length,
-                             dx * half_width / length};
-        const Vec2 a = {content.x + previous.x * scale,
-                        content.y + previous.y * scale};
-        const Vec2 b = {content.x + next.x * scale, content.y + next.y * scale};
-        const Vec2 corners[4] = {{a.x + normal.x, a.y + normal.y},
-                                 {b.x + normal.x, b.y + normal.y},
-                                 {b.x - normal.x, b.y - normal.y},
-                                 {a.x - normal.x, a.y - normal.y}};
-        (void)vkr_ui_draw_buffer_polygon(buffer, corners, color);
-      }
-      previous = next;
-    }
+  case VKR_UI_NODE_BEZIER:
+    vkr_ui_emit_bezier(system, buffer, node, content);
     break;
-  }
   case VKR_UI_NODE_CODE:
     vkr_ui_emit_code(system, buffer, node, content);
     break;
-  case VKR_UI_NODE_IMAGE: {
-    const float32_t fit = Min(content.width / node->image_size.x,
-                              content.height / node->image_size.y);
-    VkrUiRect image = {
-        content.x + (content.width - node->image_size.x * fit) * 0.5f,
-        content.y + (content.height - node->image_size.y * fit) * 0.5f,
-        node->image_size.x * fit, node->image_size.y * fit};
-    for (uint32_t y = 0; y < 4; ++y) {
-      for (uint32_t x = 0; x < 4; ++x) {
-        float32_t shade = (x + y) % 2 ? 0.28f : 0.18f;
-        VkrUiRect tile = {image.x + image.width * (float32_t)x / 4,
-                          image.y + image.height * (float32_t)y / 4,
-                          image.width / 4, image.height / 4};
-        vkr_ui_emit_rect(buffer, tile, (Vec4){shade, shade, shade, 1},
-                         (Vec4){0});
-      }
-    }
-    (void)vkr_ui_draw_buffer_image(buffer, image, (Vec4){0, 0, 1, 1},
-                                   (Vec4){1, 1, 1, 1}, node->image);
+  case VKR_UI_NODE_IMAGE:
+    vkr_ui_emit_image(buffer, node, content);
     break;
-  }
   case VKR_UI_NODE_LABEL:
-  case VKR_UI_NODE_BUTTON: {
-    /* A trailing icon ends the content box; text and the leading icon lay
-       out in what remains. */
-    if (node->trailing_icon != VKR_UI_ICON_NONE) {
-      const float32_t size =
-          Min(node->trailing_icon_size_px, Min(content.width, content.height));
-      const VkrUiRect caret = {content.x + content.width - size,
-                               content.y + (content.height - size) * 0.5f, size,
-                               size};
-      Vec4 color = theme->text_secondary;
-      color.w *= node->disabled ? 0.45f : 1.0f;
-      if (size > 0.0f)
-        vkr_ui_emit_icon(system, buffer, node->trailing_icon, caret, color);
-      content.width =
-          Max(0.0f, content.width - size - VKR_UI_TRAILING_GAP_PT * scale);
-    }
-    /* A dropdown, a button with a trailing icon, reads from its leading
-       edge like a field; other buttons center. */
-    const bool8_t centered =
-        (node->kind == VKR_UI_NODE_BUTTON && !node->leading &&
-         node->trailing_icon == VKR_UI_ICON_NONE) ||
-        node->center;
-    /* Text never spills past its own box into neighbouring widgets. Wrapped
-     * or unconstrained text keeps the parent clip. */
-    const float32_t text_width =
-        node->retained->text_live
-            ? vkr_ui_text_get_bounds(&node->retained->text).size.x
-            : 0.0f;
-    const float32_t icon_extent =
-        node->icon != VKR_UI_ICON_NONE
-            ? node->icon_size_px + 6.0f * system->content_scale
-            : 0.0f;
-    const bool8_t clip_text =
-        text_width + icon_extent > content.width + 0.5f && content.width > 0.0f;
-    /* Overflowing text may use the padding, as the clip below allows; the
-     * ellipsis marks what still does not fit. */
-    VkrUiRect text_clip = vkr_ui_uniform_inset(node->rect, 1.0f);
-    if (node->trailing_icon != VKR_UI_ICON_NONE)
-      text_clip.width = Max(0.0f, content.x + content.width - text_clip.x);
-    const float32_t ellipsis_right =
-        clip_text ? text_clip.x + text_clip.width : 0.0f;
-    if (clip_text && !vkr_ui_draw_buffer_push_clip(buffer, text_clip))
-      break;
-    if (node->icon == VKR_UI_ICON_NONE) {
-      vkr_ui_emit_text(system, buffer, node, content, centered, 0.0f,
-                       ellipsis_right);
-      if (clip_text)
-        (void)vkr_ui_draw_buffer_pop_clip(buffer);
-      break;
-    }
-    const float32_t size =
-        Min(node->icon_size_px, Min(content.width, content.height));
-    const float32_t gap =
-        node->content.length ? 6.0f * system->content_scale : 0.0f;
-    const float32_t offset =
-        centered ? Max(0.0f, (content.width - size - gap - text_width) * 0.5f)
-                 : 0.0f;
-    const VkrUiRect icon_rect = {content.x + offset,
-                                 content.y + (content.height - size) * 0.5f,
-                                 size, size};
-    if (size > 0.0f)
-      vkr_ui_emit_icon(system, buffer, node->icon, icon_rect, node->icon_color);
-    vkr_ui_emit_text(system, buffer, node, content, false_v,
-                     offset + size + gap, ellipsis_right);
-    if (clip_text)
-      (void)vkr_ui_draw_buffer_pop_clip(buffer);
+  case VKR_UI_NODE_BUTTON:
+    vkr_ui_emit_label(system, buffer, node, content, theme);
     break;
-  }
-  case VKR_UI_NODE_CHECKBOX: {
-    const VkrUiRect box = vkr_ui_checkbox_box(content, scale);
-    const float32_t size = box.width;
-    const float32_t radius = VKR_UI_CHECKBOX_RADIUS_PT * scale;
-    const Vec4 radii = {radius, radius, radius, radius};
-    Vec4 fill = node->checked
-                    ? vkr_ui_color_mix(theme->accent, theme->accent_hover,
-                                       retained->hover_t)
-                    : theme->field;
-    Vec4 edge = node->checked ? fill
-                              : vkr_ui_color_mix(theme->border_strong,
-                                                 theme->text_secondary,
-                                                 retained->hover_t);
-    if (node->disabled) {
-      fill.w *= 0.45f;
-      edge.w *= 0.45f;
-    }
-    vkr_ui_emit_box(buffer, box, fill, radii, edge, Max(1.0f, scale));
-    if (node->checked) {
-      Vec4 mark = theme->text_on_accent;
-      mark.w *= node->disabled ? 0.6f : 1.0f;
-      vkr_ui_emit_icon(system, buffer, VKR_UI_ICON_CHECK,
-                       vkr_ui_uniform_inset(box, size * 0.12f), mark);
-    }
-    vkr_ui_emit_text(system, buffer, node, content, false_v,
-                     size + 7.0f * scale, 0.0f);
+  case VKR_UI_NODE_CHECKBOX:
+    vkr_ui_emit_checkbox(system, buffer, node, content, theme);
     break;
-  }
-  case VKR_UI_NODE_SLIDER: {
-    const float32_t track_height = Max(2.0f, 4.0f * scale);
-    const float32_t knob =
-        Min(content.height, (12.0f + 2.0f * retained->hover_t) * scale);
-    const float32_t travel = Max(0.0f, content.width - knob);
-    const float32_t knob_x = content.x + node->slider_fraction * travel;
-    const float32_t track_y =
-        content.y + (content.height - track_height) * 0.5f;
-    const Vec4 track_radii = {track_height * 0.5f, track_height * 0.5f,
-                              track_height * 0.5f, track_height * 0.5f};
-    vkr_ui_emit_rect(
-        buffer, (VkrUiRect){content.x, track_y, content.width, track_height},
-        theme->border, track_radii);
-    Vec4 accent =
-        vkr_ui_color_mix(theme->accent, theme->accent_hover, retained->hover_t);
-    if (node->disabled)
-      accent = theme->text_disabled;
-    const float32_t filled = knob_x + knob * 0.5f - content.x;
-    if (filled > 0.0f)
-      vkr_ui_emit_rect(buffer,
-                       (VkrUiRect){content.x, track_y, filled, track_height},
-                       accent, track_radii);
-    const VkrUiRect knob_rect = {
-        knob_x, content.y + (content.height - knob) * 0.5f, knob, knob};
-    const Vec4 knob_radii = {knob * 0.5f, knob * 0.5f, knob * 0.5f,
-                             knob * 0.5f};
-    vkr_ui_emit_shadow(buffer, knob_rect, knob_radii, theme->shadow,
-                       (Vec2){0.0f, 1.0f * scale}, 3.0f * scale);
-    vkr_ui_emit_box(buffer, knob_rect,
-                    node->disabled ? theme->text_disabled : theme->text,
-                    knob_radii, accent, Max(1.0f, 2.0f * scale));
+  case VKR_UI_NODE_SLIDER:
+    vkr_ui_emit_slider(system, buffer, node, content, theme);
     break;
-  }
-  case VKR_UI_NODE_TEXT_FIELD: {
-    if (!vkr_ui_draw_buffer_push_clip(buffer, content))
-      break;
-    VkrUiText *text = &node->retained->text;
-    const float32_t height = vkr_ui_text_line_height(text);
-    const Vec2 origin = {content.x - node->retained->scroll_offset.x,
-                         content.y - node->retained->scroll_offset.y};
-    if (system->focused_id == node->id) {
-      const uint32_t begin =
-          Min(node->retained->text_cursor, node->retained->text_selection);
-      const uint32_t end =
-          Max(node->retained->text_cursor, node->retained->text_selection);
-      uint32_t glyph = 0u;
-      for (uint32_t offset = 0u; offset < text->content.length;) {
-        const VkrCodepoint cp = vkr_utf8_decode(text->content.str + offset,
-                                                text->content.length - offset);
-        if (!cp.byte_length)
-          break;
-        if (cp.value != '\n' && glyph < text->layout.glyphs.length) {
-          const VkrTextGlyph *item = &text->layout.glyphs.data[glyph++];
-          if (offset >= begin && offset < end)
-            vkr_ui_emit_rect(
-                buffer,
-                (VkrUiRect){origin.x + item->position.x,
-                            origin.y + item->position.y - text->bounds.ascent,
-                            item->advance, height},
-                vkr_ui_color_alpha(theme->selection, 0.9f), (Vec4){0});
-        }
-        offset += cp.byte_length;
-      }
-    }
-    vkr_ui_emit_text(system, buffer, node, content, false_v, 0.0f, 0.0f);
-    if (system->focused_id == node->id && vkr_ui_caret_visible(system)) {
-      const Vec2 caret =
-          vkr_ui_text_cursor_position(text, node->retained->text_cursor);
-      vkr_ui_emit_rect(buffer,
-                       (VkrUiRect){origin.x + caret.x, origin.y + caret.y,
-                                   Max(1.0f, system->content_scale), height},
-                       node->style.text_color, (Vec4){0});
-    }
-    (void)vkr_ui_draw_buffer_pop_clip(buffer);
+  case VKR_UI_NODE_TEXT_FIELD:
+    vkr_ui_emit_text_field(system, buffer, node, content, theme);
     break;
-  }
   default:
     break;
   }
