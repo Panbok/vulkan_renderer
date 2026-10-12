@@ -1523,6 +1523,50 @@ vkr_internal VkrShadowCascadeHistory vkr_shadow_drawn_history(
   };
 }
 
+/* Marks each cascade whose kept fit or guarded fit a dynamic caster's
+   bounding sphere reaches, and counts the tests per cascade. False when
+   the dynamic casters exceed the scan budget or one has no valid bounds:
+   the scan then cannot place them, and stops at that caster. */
+vkr_internal bool8_t vkr_shadow_scan_dynamic_casters(
+    const VkrShadowSystem *system, const VkrWorldPassPayload *candidates,
+    uint32_t static_count, uint32_t shadow_count,
+    const VkrShadowCascadeHistory
+        *const fit_history[VKR_SHADOW_CASCADE_COUNT_MAX],
+    const VkrShadowFit guarded_fits[VKR_SHADOW_CASCADE_COUNT_MAX],
+    VkrShadowFrameData *out_data,
+    bool8_t fit_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX],
+    bool8_t guarded_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX]) {
+  const uint32_t dynamic_count = shadow_count - static_count;
+  if (dynamic_count > system->config.reuse_dynamic_scan_budget) {
+    return false_v;
+  }
+  const uint32_t cascade_count = system->config.cascade_count;
+  for (uint32_t index = static_count; index < shadow_count; ++index) {
+    const VkrWorldDrawCandidate *candidate = &candidates->gpu_candidates[index];
+    if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID) == 0u) {
+      return false_v;
+    }
+    Vec3 center = vec3_zero();
+    float32_t radius = 0.0f;
+    vkr_shadow_candidate_world_sphere(candidate, &center, &radius);
+    for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
+      out_data->dynamic_candidates_tested[cascade]++;
+      const VkrShadowCascadeHistory *history = fit_history[cascade];
+      if (history && vkr_shadow_sphere_intersects_fit(
+                         center, radius, &history->rendered_light_view,
+                         &history->rendered_fit)) {
+        fit_dynamic_overlap[cascade] = true_v;
+      }
+      if (vkr_shadow_sphere_intersects_fit(
+              center, radius, &system->cascades[cascade].light_view,
+              &guarded_fits[cascade])) {
+        guarded_dynamic_overlap[cascade] = true_v;
+      }
+    }
+  }
+  return true_v;
+}
+
 void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
                                      uint32_t image_index,
                                      VkrRetainedShadowToken retained_token,
@@ -1650,33 +1694,9 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
 
   bool8_t fit_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   bool8_t guarded_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
-  bool8_t dynamic_scan_failed =
-      dynamic_count > system->config.reuse_dynamic_scan_budget;
-  if (!dynamic_scan_failed) {
-    for (uint32_t index = static_count; index < shadow_count; ++index) {
-      const VkrWorldDrawCandidate *candidate =
-          &candidates->gpu_candidates[index];
-      if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID) == 0u) {
-        dynamic_scan_failed = true_v;
-        break;
-      }
-      Vec3 center = vec3_zero();
-      float32_t radius = 0.0f;
-      vkr_shadow_candidate_world_sphere(candidate, &center, &radius);
-      for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
-        out_data->dynamic_candidates_tested[cascade]++;
-        const VkrShadowCascadeHistory *history = fit_history[cascade];
-        if (history && vkr_shadow_sphere_intersects_fit(
-                           center, radius, &history->rendered_light_view,
-                           &history->rendered_fit))
-          fit_dynamic_overlap[cascade] = true_v;
-        if (vkr_shadow_sphere_intersects_fit(
-                center, radius, &system->cascades[cascade].light_view,
-                &guarded_fits[cascade]))
-          guarded_dynamic_overlap[cascade] = true_v;
-      }
-    }
-  }
+  const bool8_t dynamic_scan_failed = !vkr_shadow_scan_dynamic_casters(
+      system, candidates, static_count, shadow_count, fit_history, guarded_fits,
+      out_data, fit_dynamic_overlap, guarded_dynamic_overlap);
   /* A failed scan cannot place the dynamic casters; every cascade draws
      whole as without the static image. */
   const bool8_t composed = compose && !dynamic_scan_failed;

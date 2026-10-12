@@ -50,6 +50,79 @@ vkr_render_graph_local_shadow_mask_lights(const VkrPreparedFrame *packet) {
   return mask;
 }
 
+/* Local shadow views, render slots, atlas layers and mask lights of the
+   frame, from the packet's local shadow payload when it has one. */
+vkr_internal void
+vkr_render_graph_prepare_local_shadow(const VkrPreparedFrame *packet,
+                                      VkrRenderGraphFrameInfo *frame) {
+  const VkrLocalShadowPassPayload *local_shadow = packet->input.local_shadow;
+  frame->local_shadow_view_count = local_shadow ? local_shadow->view_count : 0u;
+  /* The tiled pipeline's glass casts no local shadow, so its faces draw no
+     transmission layers (ADR-087). */
+  frame->local_shadow_refractive_casters = !packet->tiled_pipeline &&
+                                           local_shadow &&
+                                           local_shadow->refractive_casters;
+  frame->local_shadow_contact = local_shadow && local_shadow->contact_shadows;
+  frame->local_shadow_transmission_layer_count =
+      frame->local_shadow_refractive_casters
+          ? local_shadow->transmission_layer_count
+          : 0u;
+  frame->local_shadow_render_count =
+      local_shadow ? local_shadow->render_count : 0u;
+  frame->local_shadow_transmission_render_count =
+      frame->local_shadow_transmission_layer_count > 0u
+          ? local_shadow->transmission_render_count
+          : 0u;
+  frame->local_shadow_dynamic_render_count =
+      local_shadow ? local_shadow->dynamic_render_count : 0u;
+  frame->local_shadow_baked_lamp_count = local_shadow && !packet->tiled_pipeline
+                                             ? local_shadow->baked_lamp_count
+                                             : 0u;
+  /* The tiled pipeline has no mask pass. */
+  frame->local_shadow_mask_lights =
+      !packet->tiled_pipeline && frame->local_shadow_view_count > 0u
+          ? vkr_render_graph_local_shadow_mask_lights(packet)
+          : (VkrPointLightMask){0};
+  bool8_t mask_lights = false_v;
+  for (uint32_t word = 0u; word < VKR_POINT_LIGHT_GRID_MASK_WORDS; ++word) {
+    if (frame->local_shadow_mask_lights.words[word] != 0u) {
+      mask_lights = true_v;
+    }
+  }
+  frame->local_shadow_mask_active =
+      frame->local_shadow_view_count > 0u &&
+      (mask_lights || frame->local_shadow_baked_lamp_count > 0u);
+  frame->local_shadow_static_render_count =
+      frame->local_shadow_render_count -
+      frame->local_shadow_dynamic_render_count;
+  for (uint32_t i = 0u; i < frame->local_shadow_dynamic_render_count; ++i) {
+    const uint32_t source =
+        local_shadow
+            ->dynamic_source_views[frame->local_shadow_static_render_count + i];
+    frame->local_shadow_copy_source_layers[i] =
+        (uint32_t)local_shadow->views[source].atlas_rect.w;
+  }
+  for (uint32_t slot = 0u; slot < frame->local_shadow_render_count; ++slot) {
+    frame->local_shadow_render_atlas_layers[slot] =
+        vkr_local_shadow_render_atlas_layer(local_shadow, slot);
+    frame->local_shadow_render_transmission_layers[slot] =
+        slot < frame->local_shadow_transmission_render_count
+            ? vkr_local_shadow_render_transmission_layer(local_shadow, slot)
+            : 0u;
+  }
+  frame->local_shadow_atlas_clear_mask =
+      local_shadow ? local_shadow->atlas_clear_mask : 0u;
+  frame->local_shadow_atlas_layer_count =
+      local_shadow ? Max(local_shadow->atlas_layer_count, 1u) : 1u;
+  frame->local_shadow_map_size =
+      local_shadow ? local_shadow->map_size : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT;
+  frame->local_shadow_map_layer_count =
+      local_shadow ? Max(local_shadow->face_budget, 1u) : 1u;
+  frame->local_shadow_transmission_map_size =
+      vkr_local_shadow_transmission_map_size(
+          frame->local_shadow_map_size, frame->local_shadow_map_layer_count);
+}
+
 void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     const VkrBloomConfig *bloom_config,
                                     const VkrGtaoConfig *gtao_config,
@@ -185,72 +258,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     ? Min(packet->input.shadow->cascade_count,
                                           VKR_SHADOW_CASCADE_COUNT_MAX)
                                     : 0u;
-  const VkrLocalShadowPassPayload *local_shadow = packet->input.local_shadow;
-  frame->local_shadow_view_count = local_shadow ? local_shadow->view_count : 0u;
-  /* The tiled pipeline's glass casts no local shadow, so its faces draw no
-     transmission layers (ADR-087). */
-  frame->local_shadow_refractive_casters = !packet->tiled_pipeline &&
-                                           local_shadow &&
-                                           local_shadow->refractive_casters;
-  frame->local_shadow_contact = local_shadow && local_shadow->contact_shadows;
-  frame->local_shadow_transmission_layer_count =
-      frame->local_shadow_refractive_casters
-          ? local_shadow->transmission_layer_count
-          : 0u;
-  frame->local_shadow_render_count =
-      local_shadow ? local_shadow->render_count : 0u;
-  frame->local_shadow_transmission_render_count =
-      frame->local_shadow_transmission_layer_count > 0u
-          ? local_shadow->transmission_render_count
-          : 0u;
-  frame->local_shadow_dynamic_render_count =
-      local_shadow ? local_shadow->dynamic_render_count : 0u;
-  frame->local_shadow_baked_lamp_count = local_shadow && !packet->tiled_pipeline
-                                             ? local_shadow->baked_lamp_count
-                                             : 0u;
-  /* The tiled pipeline has no mask pass. */
-  frame->local_shadow_mask_lights =
-      !packet->tiled_pipeline && frame->local_shadow_view_count > 0u
-          ? vkr_render_graph_local_shadow_mask_lights(packet)
-          : (VkrPointLightMask){0};
-  bool8_t mask_lights = false_v;
-  for (uint32_t word = 0u; word < VKR_POINT_LIGHT_GRID_MASK_WORDS; ++word) {
-    if (frame->local_shadow_mask_lights.words[word] != 0u) {
-      mask_lights = true_v;
-    }
-  }
-  frame->local_shadow_mask_active =
-      frame->local_shadow_view_count > 0u &&
-      (mask_lights || frame->local_shadow_baked_lamp_count > 0u);
-  frame->local_shadow_static_render_count =
-      frame->local_shadow_render_count -
-      frame->local_shadow_dynamic_render_count;
-  for (uint32_t i = 0u; i < frame->local_shadow_dynamic_render_count; ++i) {
-    const uint32_t source =
-        local_shadow
-            ->dynamic_source_views[frame->local_shadow_static_render_count + i];
-    frame->local_shadow_copy_source_layers[i] =
-        (uint32_t)local_shadow->views[source].atlas_rect.w;
-  }
-  for (uint32_t slot = 0u; slot < frame->local_shadow_render_count; ++slot) {
-    frame->local_shadow_render_atlas_layers[slot] =
-        vkr_local_shadow_render_atlas_layer(local_shadow, slot);
-    frame->local_shadow_render_transmission_layers[slot] =
-        slot < frame->local_shadow_transmission_render_count
-            ? vkr_local_shadow_render_transmission_layer(local_shadow, slot)
-            : 0u;
-  }
-  frame->local_shadow_atlas_clear_mask =
-      local_shadow ? local_shadow->atlas_clear_mask : 0u;
-  frame->local_shadow_atlas_layer_count =
-      local_shadow ? Max(local_shadow->atlas_layer_count, 1u) : 1u;
-  frame->local_shadow_map_size =
-      local_shadow ? local_shadow->map_size : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT;
-  frame->local_shadow_map_layer_count =
-      local_shadow ? Max(local_shadow->face_budget, 1u) : 1u;
-  frame->local_shadow_transmission_map_size =
-      vkr_local_shadow_transmission_map_size(
-          frame->local_shadow_map_size, frame->local_shadow_map_layer_count);
+  vkr_render_graph_prepare_local_shadow(packet, frame);
   const VkrShadowPassPayload *shadow = packet->input.shadow;
   frame->shadow_cascade_render_mask = shadow ? shadow->cascade_render_mask : 0u;
   frame->shadow_cascade_static_active = shadow && shadow->static_active;
