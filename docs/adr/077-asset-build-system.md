@@ -219,6 +219,10 @@ from it.
   socket; a stale socket is replaced; SIGINT/SIGTERM cancel the running
   command and stop the daemon. `vkr_bakery send` is the command-line client.
   FSEvents feeds the watcher on macOS and ReadDirectoryChangesW on Windows.
+  A `watch` reply means the watcher is armed. On macOS the daemon also
+  rescans watched trees every 2 s for files whose status changed, because
+  a saturated fseventsd can drop an edit outright; matching skips history,
+  the daemon's own outputs and file states a report already covered.
 - **Editor daemon.** Each editor process
   ([service](../../editor/src/editor_bakery_service.c)) starts one daemon on a
   per-process socket under the temporary directory when the first watch

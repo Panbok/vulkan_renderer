@@ -55,6 +55,10 @@
    after the last change before it reports and rebuilds. */
 #define VKR_SERVE_SETTLE_SECONDS 0.3
 #define VKR_SERVE_SEND_TIMEOUT_MS 2000u
+/* FSEvents can drop an edit outright while fseventsd is saturated by build
+   churn, so watched trees are also scanned this often for changed files. */
+#define VKR_SERVE_RESCAN_SECONDS 2.0
+#define VKR_SERVE_RESCAN_MAX_DEPTH 32u
 
 // =============================================================================
 // State
@@ -95,13 +99,14 @@ typedef struct VkrServeWatch {
   /* Wall-clock nanoseconds at registration: a file whose status last changed
      earlier is history a late event reports, not an edit. */
   int64_t started_ns;
-  /* The last report's paths, as hashes, with each file's status change time
-     when it fired: FSEvents can deliver one edit in batches further apart
-     than the settle time, and a late batch for a reported state is not
-     another edit. */
+  /* Recently reported paths, as hashes, with each file's status change time
+     when its report fired, oldest replaced first: FSEvents can deliver one
+     edit in batches further apart than the settle time, and the rescan sees
+     reported files again, so a reported state is not another edit. */
   uint64_t reported_hash[VKR_SERVE_MAX_CHANGED];
   int64_t reported_ns[VKR_SERVE_MAX_CHANGED];
   uint32_t reported_count;
+  uint32_t reported_next;
 } VkrServeWatch;
 
 /* A file one of the daemon's runs published, as it was when published. */
@@ -139,6 +144,10 @@ typedef struct VkrServe {
   uint32_t next_watch;
   VkrServeWatch watches[VKR_SERVE_MAX_WATCHES];
   bool8_t watches_changed;
+  /* Wall-clock nanoseconds at the start of the last rescan; zero while no
+     watch exists. */
+  int64_t rescan_since_ns;
+  float64_t next_rescan;
 
   /* Shared with the builder thread under `mutex`. */
   VkrMutex mutex;
@@ -935,6 +944,88 @@ vkr_internal bool8_t vkr_serve_reported(const VkrServeWatch *watch,
   return false_v;
 }
 
+#if defined(__APPLE__)
+
+typedef struct VkrServeRescan {
+  VkrServe *serve;
+  int64_t since_ns;
+  char path[VKR_BAKERY_PATH_CAPACITY];
+  uint32_t depth;
+} VkrServeRescan;
+
+vkr_internal bool8_t vkr_serve_rescan_visit(void *context, const char *name,
+                                            bool8_t is_directory) {
+  VkrServeRescan *scan = (VkrServeRescan *)context;
+  VkrServeRescan child = {.serve = scan->serve,
+                          .since_ns = scan->since_ns,
+                          .depth = scan->depth + 1u};
+  if (!vkr_bakery_path_join(child.path, sizeof(child.path), scan->path, name)) {
+    return true_v;
+  }
+  if (is_directory) {
+    /* Hidden directories hold tool state, not watched sources. */
+    if (name[0] != '.' && child.depth < VKR_SERVE_RESCAN_MAX_DEPTH) {
+      (void)vkr_bakery_list_directory(child.path, vkr_serve_rescan_visit,
+                                      &child);
+    }
+    return true_v;
+  }
+  if (vkr_serve_status_changed_ns(child.path) >= scan->since_ns) {
+    vkr_serve_note_change(scan->serve, child.path);
+  }
+  return true_v;
+}
+
+/* Notes every watched file whose status changed since the previous scan
+   began; matching then drops history, the daemon's own outputs and states a
+   report already covered, so only edits FSEvents lost remain. */
+vkr_internal void vkr_serve_rescan(VkrServe *serve, float64_t now) {
+  bool8_t any = false_v;
+  int64_t earliest_ns = INT64_MAX;
+  for (uint32_t w = 0u; w < VKR_SERVE_MAX_WATCHES; ++w) {
+    if (serve->watches[w].id) {
+      any = true_v;
+      earliest_ns = Min(earliest_ns, serve->watches[w].started_ns);
+    }
+  }
+  if (!any) {
+    serve->rescan_since_ns = 0;
+    return;
+  }
+  if (now < serve->next_rescan) {
+    return;
+  }
+  serve->next_rescan = now + VKR_SERVE_RESCAN_SECONDS;
+  const int64_t started_ns = vkr_serve_wall_clock_ns();
+  const int64_t since_ns =
+      serve->rescan_since_ns ? serve->rescan_since_ns : earliest_ns;
+  serve->rescan_since_ns = started_ns;
+  for (uint32_t w = 0u; w < VKR_SERVE_MAX_WATCHES; ++w) {
+    const VkrServeWatch *watch = &serve->watches[w];
+    for (uint32_t p = 0u; watch->id && p < watch->path_count; ++p) {
+      VkrServeRescan scan = {.serve = serve, .since_ns = since_ns};
+      (void)snprintf(scan.path, sizeof(scan.path), "%s", watch->paths[p]);
+      if (vkr_bakery_is_directory(scan.path)) {
+        (void)vkr_bakery_list_directory(scan.path, vkr_serve_rescan_visit,
+                                        &scan);
+      } else if (vkr_serve_status_changed_ns(scan.path) >= since_ns) {
+        vkr_serve_note_change(serve, scan.path);
+      }
+    }
+  }
+}
+
+#else
+
+/* ReadDirectoryChangesW reports a lost buffer as an overflow, and other hosts
+   have no watcher, so only macOS rescans. */
+vkr_internal void vkr_serve_rescan(VkrServe *serve, float64_t now) {
+  (void)serve;
+  (void)now;
+}
+
+#endif
+
 /* Matches drained changes against watches; returns the earliest due time. */
 vkr_internal void vkr_serve_match_changes(VkrServe *serve, float64_t now) {
   static char changes[256][VKR_BAKERY_PATH_CAPACITY];
@@ -1024,13 +1115,15 @@ vkr_internal void vkr_serve_fire_watch(VkrServe *serve, VkrServeWatch *watch) {
                    (const char *)line.data, line.length);
   }
   vkr_bakery_buffer_free(&line);
-  watch->reported_count = 0u;
   for (uint32_t i = 0u; i < watch->changed_count; ++i) {
     const int64_t changed_ns = vkr_serve_status_changed_ns(watch->changed[i]);
     if (changed_ns >= 0) {
-      watch->reported_hash[watch->reported_count] =
-          vkr_hash_table_hash_cstr(watch->changed[i]);
-      watch->reported_ns[watch->reported_count++] = changed_ns;
+      const uint32_t slot = watch->reported_next;
+      watch->reported_hash[slot] = vkr_hash_table_hash_cstr(watch->changed[i]);
+      watch->reported_ns[slot] = changed_ns;
+      watch->reported_next = (slot + 1u) % VKR_SERVE_MAX_CHANGED;
+      watch->reported_count =
+          Min(watch->reported_count + 1u, VKR_SERVE_MAX_CHANGED);
     }
   }
   watch->pending = false_v;
@@ -1451,6 +1544,7 @@ vkr_internal void vkr_serve_loop(VkrServe *serve, uint64_t idle_exit_seconds) {
       }
     }
     const float64_t after = vkr_bakery_monotonic_seconds();
+    vkr_serve_rescan(serve, after);
     vkr_serve_match_changes(serve, after);
     for (uint32_t w = 0u; w < VKR_SERVE_MAX_WATCHES; ++w) {
       VkrServeWatch *watch = &serve->watches[w];
