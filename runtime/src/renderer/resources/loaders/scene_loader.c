@@ -180,6 +180,9 @@ typedef struct SceneReflectionProbeImport {
   String8 cubemap_extension;
   /* The entry's index in the document's `reflection_probes`. */
   uint32_t source;
+  /* The probe entity's name, which the editor writes back on save; empty
+     takes "Reflection Probe <n>". */
+  String8 name;
   /* A project probe waiting for its first bake: without a cubemap it stays
      off instead of reflecting the scene environment (ADR-103). */
   bool8_t bake_pending;
@@ -2557,6 +2560,7 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
     SceneReflectionProbeImport import =
         scene_reflection_probe_import_defaults();
     (void)scene_json_read_bool_field(&probe_object, "enabled", &import.enabled);
+    (void)scene_json_read_string_field(&probe_object, "name", &import.name);
     (void)scene_json_read_bool_field(&probe_object, "bake_pending",
                                      &import.bake_pending);
     (void)scene_json_read_float_field(&probe_object, "blend_distance",
@@ -5637,8 +5641,12 @@ scene_loader_create_world_entities(VkrSceneLoaderAsyncPayload *payload) {
                                  ? import->cubemap_path
                                  : import->cubemap_base_path);
     }
-    char name[48];
-    snprintf(name, sizeof(name), "Reflection Probe %u", i + 1u);
+    char name[256];
+    if (import->name.length) {
+      scene_loader_copy_text(name, sizeof(name), import->name);
+    } else {
+      snprintf(name, sizeof(name), "Reflection Probe %u", i + 1u);
+    }
     if (!scene_loader_world_entity(payload, &ordinal, name,
                                    &vkr_scene_reflection_probe_type, &probe)) {
       return false_v;

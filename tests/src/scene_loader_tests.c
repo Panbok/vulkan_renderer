@@ -637,8 +637,8 @@ vkr_internal void test_scene_loader_reflection_probes_parse_valid_block(void) {
   String8 json = string8_lit(
       "{\"version\":2,"
       "\"reflection_probes\":["
-      "{\"enabled\":false,\"center\":[1,2,3],\"extents\":[4,5,6],"
-      "\"blend_distance\":2.5,\"intensity\":1.5,"
+      "{\"enabled\":false,\"name\":\"Hall probe\",\"center\":[1,2,3],"
+      "\"extents\":[4,5,6],\"blend_distance\":2.5,\"intensity\":1.5,"
       "\"diffuse_intensity\":0.5,\"specular_intensity\":0.25,"
       "\"box_projection\":false},"
       "{\"enabled\":false,\"center\":[-1,0,1],\"extents\":[2,2,2]}],"
@@ -673,6 +673,14 @@ vkr_internal void test_scene_loader_reflection_probes_parse_valid_block(void) {
   assert(fabsf(probe1->diffuse_intensity - 1.0f) < 0.001f);
   assert(fabsf(probe1->specular_intensity - 1.0f) < 0.001f);
   assert(probe1->bake_state == VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE);
+
+  /* A probe entity takes the name its entry carries, which an editor save
+     writes back; one without takes its place in the list. */
+  assert(vkr_scene_find_entity_by_name(&ctx.scene, string8_lit("Hall probe"))
+             .u64 != 0u);
+  assert(vkr_scene_find_entity_by_name(&ctx.scene,
+                                       string8_lit("Reflection Probe 2"))
+             .u64 != 0u);
 
   /* An outdoor probe keeps the plain reflection lookup through the world
      update, which rewrites the runtime probes from their components; a probe

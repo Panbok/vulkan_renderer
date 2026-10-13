@@ -2428,6 +2428,7 @@ uint32_t vkr_editor_project_world_meshes(const char *world_path,
    rewritten `reflection_probes`. */
 typedef struct ProjectProbePlace {
   SceneReflectionProbeSettings *probe;
+  VkrEntityId entity;
   uint32_t index;
 } ProjectProbePlace;
 
@@ -2439,13 +2440,18 @@ typedef struct ProjectProbePlan {
 } ProjectProbePlan;
 
 /* One document entry: `previous`'s other members, such as its baked
-   `asset`, under the probe's values. */
+   `asset`, under the probe's values and its entity's `name`, which the
+   loader gives the entity back. */
 static VkrBakeryJson *
 project_probe_entry(Arena *arena, const VkrBakeryJson *previous,
-                    const SceneReflectionProbeSettings *probe) {
+                    const SceneReflectionProbeSettings *probe, String8 name) {
   VkrBakeryJson *entry = previous && previous->type == VKR_BAKERY_JSON_OBJECT
                              ? vkr_bakery_json_clone(arena, previous)
                              : vkr_bakery_json_object(arena);
+  if (name.length) {
+    vkr_bakery_json_set(arena, entry, "name",
+                        vkr_bakery_json_string(arena, name));
+  }
   const Vec3 vectors[2] = {probe->center, probe->extents};
   const char *const vector_names[2] = {"center", "extents"};
   for (uint32_t v = 0; v < 2u; ++v) {
@@ -2523,6 +2529,7 @@ static bool8_t project_probes_json(String8 document, VkrScene *scene,
   for (uint32_t i = 0; i < found; ++i) {
     places[i] = (ProjectProbePlace){
         .probe = vkr_entity_get_component_mut(scene->world, ids[i], id),
+        .entity = ids[i],
         .index = UINT32_MAX};
   }
   VkrBakeryJson *array = vkr_bakery_json_array(arena);
@@ -2540,7 +2547,9 @@ static bool8_t project_probes_json(String8 document, VkrScene *scene,
         places[i].index = array->count;
         stands |= array->count < 64u ? 1ull << array->count : 0u;
         vkr_bakery_json_append(
-            array, project_probe_entry(arena, previous, places[i].probe));
+            array,
+            project_probe_entry(arena, previous, places[i].probe,
+                                vkr_scene_get_name(scene, places[i].entity)));
         break;
       }
     }
@@ -2549,8 +2558,10 @@ static bool8_t project_probes_json(String8 document, VkrScene *scene,
     if (places[i].probe && places[i].index == UINT32_MAX) {
       places[i].index = array->count;
       stands |= array->count < 64u ? 1ull << array->count : 0u;
-      vkr_bakery_json_append(array,
-                             project_probe_entry(arena, NULL, places[i].probe));
+      vkr_bakery_json_append(
+          array,
+          project_probe_entry(arena, NULL, places[i].probe,
+                              vkr_scene_get_name(scene, places[i].entity)));
     }
   }
   String8 text = {0};
