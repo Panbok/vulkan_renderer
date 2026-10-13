@@ -323,11 +323,12 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
                       indirectBuffer:draw->arguments +
                                      (uint64_t)bucket * 2u * sizeof(uint32_t)];
   }
-  /* A camera pass draws the Custom graphs' buckets with its own pipeline:
-     it writes no shading. */
-  for (uint32_t slot = 1u;
+  /* A camera pass draws the Custom graphs' buckets, and slot 0's extended
+     Standard draws, with its own pipeline: it writes no shading. */
+  for (uint32_t slot = 0u;
        draw->custom_arguments && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
-    if ((draw->custom_ready_mask & (1u << (slot - 1u))) == 0u)
+    if (slot == 0u ? !draw->brdf_ready
+                   : (draw->custom_ready_mask & (1u << (slot - 1u))) == 0u)
       continue;
     for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
          ++bucket) {
@@ -374,6 +375,25 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
             executeCommandsInBuffer:draw->commands
                      indirectBuffer:draw->arguments +
                                     (uint64_t)bucket * 2u * sizeof(uint32_t)];
+      }
+      /* Slot 0's extended Standard draws shade with the extension variant
+         of the frame's forward pipelines (ADR-113). */
+      if (draw->custom_arguments && draw->brdf_ready) {
+        const uint32_t decals = pass->tiled.decals;
+        const uint32_t probes = pass->tiled.probes;
+        const uint32_t lighting = pass->tiled.lighting;
+        [encoder
+            setRenderPipelineState:
+                cutout ? renderer->tiled_coverage_pipelines[1][decals][probes]
+                                                           [lighting]
+                       : renderer->tiled_forward_pipelines[1][decals][probes]
+                                                          [lighting]];
+        for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+             ++bucket) {
+          if (((bucket & 2u) != 0u) != (cutout != 0u))
+            continue;
+          vkr_metal_packet_record_custom_bucket(encoder, draw, 0u, bucket);
+        }
       }
       /* Each ready Custom graph shades its buckets with its own pipelines
          of the frame's forward variant, in the same order. */
@@ -451,7 +471,8 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     const VkrMetalPacketDirectPass *direct = &pass->world.direct;
     if (direct->count)
       vkr_metal_packet_record_prepared_draws(
-          renderer, encoder, direct->pipeline, direct->depth, direct->draws,
+          renderer, encoder, direct->pipeline, direct->extended_pipeline,
+          direct->depth, direct->draws,
           direct->count, direct->width, direct->height, direct->root_gpu);
     const VkrMetalPacketTextPass *text = &pass->world.text;
     if (text->count)
@@ -467,7 +488,8 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     const VkrMetalPacketDirectPass *direct = &pass->world.direct;
     if (direct->count)
       vkr_metal_packet_record_prepared_draws(
-          renderer, encoder, direct->pipeline, direct->depth, direct->draws,
+          renderer, encoder, direct->pipeline, direct->extended_pipeline,
+          direct->depth, direct->draws,
           direct->count, direct->width, direct->height, direct->root_gpu);
     break;
   }

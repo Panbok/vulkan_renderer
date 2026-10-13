@@ -12,6 +12,9 @@ typedef struct VkrMetalPacketDispatch {
 
 typedef struct VkrMetalPacketDirectPass {
   id<MTLRenderPipelineState> pipeline;
+  /* The tiled blend pass's extension variant for extended draws, nil
+     otherwise (ADR-113). */
+  id<MTLRenderPipelineState> extended_pipeline;
   id<MTLDepthStencilState> depth;
   const VkrMetalPacketPreparedDraw *draws;
   uint32_t count;
@@ -53,6 +56,8 @@ typedef struct VkrMetalPacketIndirectPass {
      zero without Custom graphs (ADR-096). */
   uint64_t custom_arguments;
   uint32_t custom_ready_mask;
+  /* Slot 0 holds the extended Standard draws this frame (ADR-113). */
+  bool8_t brdf_ready;
 } VkrMetalPacketIndirectPass;
 
 typedef struct VkrMetalPacketGpuEncodeGroup {

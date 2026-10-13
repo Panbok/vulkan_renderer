@@ -111,23 +111,36 @@ not take it.
 
 With every value at identity, runtime-gated extension state cost the tiled
 forward pass 15% of `gpu.submission` on Bistro (see Evidence): it kept about
-twenty values live through the light loops and lowered occupancy. The user
-chose a per-frame variant, as for decals and probes:
+twenty values live through the light loops and lowered occupancy. The
+extension code therefore runs only where an extended material shades:
 
 - `vkr_pbr_brdf_extensions_active` sets
   `VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION` in the world's material
   feature mask. The bit counts opaque, blended and transmissive sources;
   the other bits count opaque sources only.
-- **Tiled (Metal).** The bool function constant
+- **Tiled (Metal), per draw.** The bool function constant
   `vkr_tiled_brdf_extension_constant` (index 0) gates the extension block
   in `vkr_metal_tiled_shade`. The forward, alpha-tested and blend pipelines
   gain a BRDF dimension. The first publication of an extended material
-  starts creating the extended set on the custom group's background queue;
-  frames take it when the feature bit is set and the set is READY. Until
-  then, and after a failure, extended materials shade with the base model.
+  starts creating the extended set on the custom group's background queue.
   `vkr_renderer_get_pipeline_stats` counts the pending set as one graph, so
-  harness and runtime readiness wait for it. Custom graph pipelines take the
-  base constant and do not draw the extensions.
+  harness and runtime readiness wait for it; until it is READY, and after a
+  failure, extended materials shade with the base model. A frame whose
+  feature bit is set while the set is READY (`tiled_brdf_draws`) buckets
+  draws by material:
+  - The camera classify kernel sends a Standard draw whose material row is
+    extended to the Custom compaction's slot 0, marked with classification
+    bit 5 (`VKR_METAL_BRDF_CLASS_BIT`); `brdf_ready` in the compaction
+    enables it. Prefix and encode place slot 0 like the graph slots.
+  - The tiled opaque pass draws the Standard buckets with the base
+    pipelines and slot 0's buckets with the extension pipelines of the
+    same lighting, probe and decal variant. Picking and other camera passes
+    draw slot 0 with their own pipeline.
+  - The blend pass draws each blended draw whose Standard material is
+    extended with the extension pipeline, and the others with the base
+    one.
+  Custom graph pipelines take the base constant and do not draw the
+  extensions.
 - **Desktop (Vulkan).** `brdf_extensions_enabled` joins
   `lighting_layers_enabled`. Bit 1 of the lighting root's `layered_tiles`
   makes tile classification also give the layered kernel pixels whose
@@ -164,15 +177,16 @@ baker material records grow from 96 to 112 bytes.
 
 - The DFG table is RGBA16F, 512 KiB, in both renderers and both GPU bakers
   ([ADR-053](053-energy-compensated-ggx.md)).
-- A scene without an extended material shades with the base variants on
-  both classes. A scene with one pays the extended variant on every tiled
-  pixel and on every desktop deferred tile that holds an extended pixel.
+- Only extended materials' draws pay the extended variant on the tiled
+  pipeline, and only desktop deferred tiles that hold an extended pixel
+  pay it there. A scene without an extended material shades as before.
   Each enabled extension adds its own table samples: one for F82, one for
   the dual lobe, plus a second environment fetch and LTC sample when the
   dual lobe is active.
 - The tiled pipeline holds up to twice its forward, alpha-tested and blend
   pipeline states. The extended set exists only after an extended material
-  is published.
+  is published. While it is READY and a scene uses it, the camera's Custom
+  compaction table exists every frame, even without Custom graphs.
 - `.mt` keys that start with `smooth_terminator`, `dual_specular`,
   `specular_f82` or `diffuse_roughness` but are misspelt reject the material.
 
@@ -206,10 +220,24 @@ baker material records grow from 96 to 112 bytes.
   | Extensions, all four on every Bistro material | 38.22 ms | 62.93 ms | 41.41 ms |
 
   The runtime-gated row approximates the extended variant's cost when its
-  terms are inactive: a scene with one extended material pays about 15% on
-  every tiled pixel. Per-draw partitioning would confine it to extended
-  draws. The runs predate b0a36418, so each tree reverted the KTX patches
-  that the build applies to `vendor/ktx-software` before profiling.
+  terms are inactive. The runs predate b0a36418, so each tree reverted the
+  KTX patches that the build applies to `vendor/ktx-software` before
+  profiling.
+- Per-material split, Metal, M1 Pro, Release, same case and profile, on
+  44750566's scene (upstream 9459923a removed its diffuse volume, which
+  lowers every time below). "Mixed" enables all four terms on every tenth
+  Bistro material (26 of 254), which changes 34% of the pixels in the
+  tiled snapshot. `gpu.submission` p50, alternating runs:
+
+  | Scene | Per-frame variant (44750566) | Per-material split |
+  |---|---|---|
+  | Identity values | 22.88 ms | 22.74 ms |
+  | Mixed (two runs each) | 26.94 / 27.02 ms | 23.42 / 23.54 ms |
+
+  The workload fingerprint does not cover `.mt` content, so mixed and
+  identity runs share it; each run's material edit is recorded here. Split
+  snapshots match the per-frame build within 1/255: identity byte-identical,
+  each term on every material and the mixed scene.
 - Vulkan: the SPIR-V compiles and the host row asserts pass. The runtime
   reflection checks run at pipeline creation on a Vulkan device; they, native
   execution, a desktop furnace and Vulkan timing are not recorded.
@@ -233,8 +261,6 @@ baker material records grow from 96 to 112 bytes.
 
 - Native Vulkan runs are available: record a desktop furnace with the dual
   lobe and F82, and a Bistro snapshot at identity values.
-- A scene uses extended materials widely enough that the tiled variant's
-  per-pixel cost matters: partition draws per material instead of per frame.
 - Skin or characters need the retroreflection or diffuse-Fresnel lobes, or
   texture-driven values.
 - glTF `KHR_materials_diffuse_roughness` is ratified: map it to

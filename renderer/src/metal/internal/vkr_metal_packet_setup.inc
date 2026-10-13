@@ -961,6 +961,23 @@ vkr_internal void vkr_metal_packet_request_tiled_brdf_pipelines(
       });
 }
 
+/* Whether this frame buckets its extended Standard draws for the tiled
+   extension variant (ADR-113): a scene material uses a BRDF extension and
+   the variant's pipelines are READY. Other draws keep the base variant. */
+vkr_internal bool8_t
+vkr_metal_packet_tiled_brdf_frame(VkrMetalPacketRenderer *renderer,
+                                  const VkrPreparedFrame *packet)
+    API_AVAILABLE(macos(26.0)) {
+  const VkrWorldPassPayload *world = packet->input.world;
+  if (!world || !world->opaque_material_features_valid ||
+      (world->opaque_material_features &
+       VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION) == 0u)
+    return false_v;
+  return vkr_atomic_uint32_load(&renderer->tiled_brdf_state,
+                                VKR_MEMORY_ORDER_ACQUIRE) ==
+         VKR_METAL_CUSTOM_GRAPH_READY;
+}
+
 /* Creates the tiled pipeline's raster pipelines (ADR-087): forward shading
    and the clear sky, multisampled; the atmosphere draw over the resolved
    image, which reads the destination and lays the clouds, aerial perspective

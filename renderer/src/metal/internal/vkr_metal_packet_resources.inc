@@ -2166,6 +2166,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_direct_draws(
               material->double_sided ? MTLCullModeNone : MTLCullModeBack,
           .winding =
               mirrored ? MTLWindingClockwise : MTLWindingCounterClockwise,
+          .brdf_extended = material->custom_slot == 0u &&
+                           vkr_pbr_brdf_extensions_active(&material->pbr),
       };
       offset += run_length;
     }
@@ -2450,10 +2452,14 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
          VKR_METAL_PACKET_DRAW_ROOT_STRIDE - 1u) /
         VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
     /* The camera's Custom compaction table spans its own cells, while any
-       material names a Custom graph. */
-    const uint32_t custom_cells = renderer->custom_graph_count
-                                      ? VKR_METAL_CUSTOM_COMPACTION_CELL_COUNT
-                                      : 0u;
+       material names a Custom graph or the frame buckets its extended
+       Standard draws (ADR-113). */
+    renderer->tiled_brdf_draws =
+        vkr_metal_packet_tiled_brdf_frame(renderer, packet);
+    const uint32_t custom_cells =
+        renderer->custom_graph_count || renderer->tiled_brdf_draws
+            ? VKR_METAL_CUSTOM_COMPACTION_CELL_COUNT
+            : 0u;
     plan->root_count += 10u + draw_root_slots +
                         renderer->prepared_frame.hzb_reduce_pass_count +
                         gpu_draw_icb_group_count + custom_cells;

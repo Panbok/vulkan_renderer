@@ -319,6 +319,9 @@ typedef struct VkrMetalPacketPreparedDraw {
   uint32_t instance_count;
   MTLCullMode cull_mode;
   MTLWinding winding;
+  /* The draw's Standard material uses a BRDF extension (ADR-113): a pass
+     with an extension pipeline draws it with that one. */
+  bool8_t brdf_extended;
 } VkrMetalPacketPreparedDraw;
 
 typedef struct VkrMetalPacketFrameUpload {
@@ -854,6 +857,11 @@ struct VkrMetalPacketRenderer {
   VkrMetalCustomCompaction *custom_compaction;
   uint64_t custom_compaction_gpu;
   uint32_t custom_ready_mask;
+  /* This frame buckets extended Standard draws into Custom slot 0, which the
+     tiled pipeline shades with its extension variant (ADR-113): a scene
+     material uses an extension and the variant's pipelines are READY. The
+     upload plan sets it. */
+  bool8_t tiled_brdf_draws;
   id<MTLDepthStencilState> tiled_shade_state;
   id<MTLDepthStencilState> tiled_sky_state;
   id<MTLTexture> tiled_msaa_color;

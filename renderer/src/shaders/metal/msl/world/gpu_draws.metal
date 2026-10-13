@@ -36,14 +36,17 @@ struct VkrMetalPacketGpuDrawRoot {
   uint reserved_3;
 };
 
-// The camera view's draw buckets per Custom graph slot (ADR-096); slot 0 is
-// the Standard tier and stays empty.
+// The camera view's draw buckets per Custom graph slot (ADR-096). Slot 0
+// holds the Standard draws whose material uses a BRDF extension, which the
+// tiled pipeline shades with its extension variant (ADR-113).
 #define VKR_METAL_CUSTOM_GRAPH_SLOTS 33u
 #define VKR_METAL_MATERIAL_CUSTOM_SHIFT 24u
 #define VKR_METAL_MATERIAL_CUSTOM_MASK 63u
 // A camera classification of a Custom draw: this bit, and its slot - 1 in the
 // bits the probe takes later.
 #define VKR_METAL_CUSTOM_CLASS_BIT 16u
+// A camera classification of an extended Standard draw, bucketed in slot 0.
+#define VKR_METAL_BRDF_CLASS_BIT 32u
 #define VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT 27u
 struct VkrMetalCustomCompaction {
   uint2 execution_ranges[VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
@@ -54,7 +57,9 @@ struct VkrMetalCustomCompaction {
   // bit slot - 1.
   uint ready_mask;
   uint pending_mask;
-  uint reserved;
+  // Nonzero when the tiled BRDF extension pipelines exist this frame; slot 0
+  // then takes the extended Standard draws.
+  uint brdf_ready;
   // The frame's material table; row flags carry each material's slot.
   const device VkrMetalPacketMaterial *materials;
 };
@@ -80,6 +85,20 @@ static uint vkr_metal_packet_custom_slot(constant VkrMetalPacketGpuDrawRoot &roo
     return 0u;
   }
   return slot;
+}
+
+// Whether a camera-view Standard candidate's material uses a BRDF extension
+// while the tiled extension pipelines exist (ADR-113).
+static bool vkr_metal_packet_brdf_extended(
+    constant VkrMetalPacketGpuDrawRoot &root,
+    const device VkrGpuCandidateDrawRow &candidate) {
+  if (root.custom_compaction == nullptr ||
+      root.custom_compaction->brdf_ready == 0u)
+    return false;
+  const device VkrMetalPacketMaterial &material =
+      root.custom_compaction->materials[candidate.material_index];
+  return vkr_brdf_extension_active(vkr_brdf_extension_unpack(
+      material.material_brdf, material.material_specular_tint));
 }
 
 struct VkrMetalPacketGpuDrawView {
@@ -271,6 +290,16 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
         memory_order_relaxed);
     return;
   }
+  /* ...and a Standard draw whose material uses a BRDF extension into slot
+     0, which the tiled pipeline shades with its extension variant. */
+  if (view_index == 0u && vkr_metal_packet_brdf_extended(root, candidate)) {
+    root.classifications[classification_index] =
+        (bucket + 1u) | lod_state | VKR_METAL_BRDF_CLASS_BIT;
+    atomic_fetch_add_explicit(
+        &root.custom_compaction->bucket_counts[0][bucket], 1u,
+        memory_order_relaxed);
+    return;
+  }
   root.classifications[classification_index] = (bucket + 1u) | lod_state;
   atomic_fetch_add_explicit(&state.bucket_counts[bucket], 1u,
                             memory_order_relaxed);
@@ -305,7 +334,7 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
      remaining capacity. */
   if (view_index == 0u && root.custom_compaction != nullptr) {
     device VkrMetalCustomCompaction &custom = *root.custom_compaction;
-    for (uint slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+    for (uint slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
       for (uint bucket = 0u; bucket < 8u; ++bucket) {
         uint bucket_count = atomic_load_explicit(
             &custom.bucket_counts[slot][bucket], memory_order_relaxed);
@@ -362,9 +391,13 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   uint command_base =
       (view_index % root.icb_view_group_size) * root.candidate_count;
   uint visible_index = 0u;
-  if ((classification & VKR_METAL_CUSTOM_CLASS_BIT) != 0u) {
-    /* A Custom draw fills its graph's bucket after the Standard ones. */
-    uint slot = (classification >> VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT) + 1u;
+  if ((classification &
+       (VKR_METAL_CUSTOM_CLASS_BIT | VKR_METAL_BRDF_CLASS_BIT)) != 0u) {
+    /* A Custom or extended draw fills its slot's bucket after the Standard
+       ones. */
+    uint slot = (classification & VKR_METAL_CUSTOM_CLASS_BIT) != 0u
+                    ? (classification >> VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT) + 1u
+                    : 0u;
     device VkrMetalCustomCompaction &custom = *root.custom_compaction;
     uint local_index = atomic_fetch_add_explicit(
         &custom.bucket_cursors[slot][bucket], 1u, memory_order_relaxed);
@@ -384,6 +417,7 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   /* The LOD state, without the bucket and the Custom slot. */
   uint lod_state = classification & ~(VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK |
                                       VKR_METAL_CUSTOM_CLASS_BIT |
+                                      VKR_METAL_BRDF_CLASS_BIT |
                                       (31u << VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT));
 
   const device VkrGpuCandidateDrawRow &candidate = root.candidates[index];

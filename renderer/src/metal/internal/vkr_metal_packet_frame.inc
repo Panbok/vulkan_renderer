@@ -251,7 +251,9 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
 
 vkr_internal void vkr_metal_packet_record_prepared_draws(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
-    id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
+    id<MTLRenderPipelineState> pipeline,
+    id<MTLRenderPipelineState> extended_pipeline,
+    id<MTLDepthStencilState> depth_state,
     const VkrMetalPacketPreparedDraw *draws, uint32_t draw_count,
     uint32_t target_width, uint32_t target_height, uint64_t root_gpu)
     API_AVAILABLE(macos(26.0)) {
@@ -261,8 +263,17 @@ vkr_internal void vkr_metal_packet_record_prepared_draws(
   [encoder setCullMode:active_cull_mode];
   [encoder setDepthStencilState:depth_state];
   [encoder setRenderPipelineState:pipeline];
+  id<MTLRenderPipelineState> bound_pipeline = pipeline;
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrMetalPacketPreparedDraw *draw = &draws[i];
+    /* An extended draw takes the extension variant (ADR-113). */
+    id<MTLRenderPipelineState> draw_pipeline =
+        extended_pipeline && draw->brdf_extended ? extended_pipeline
+                                                 : pipeline;
+    if (draw_pipeline != bound_pipeline) {
+      [encoder setRenderPipelineState:draw_pipeline];
+      bound_pipeline = draw_pipeline;
+    }
     [encoder setFrontFacingWinding:draw->winding];
     if (draw->cull_mode != active_cull_mode) {
       [encoder setCullMode:draw->cull_mode];
@@ -1076,7 +1087,7 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
                                    VkrMetalPacketFrameUpload *upload,
                                    uint64_t *out_gpu_address) {
   *out_gpu_address = 0u;
-  if (renderer->custom_graph_count == 0u)
+  if (renderer->custom_graph_count == 0u && !renderer->tiled_brdf_draws)
     return;
   if (!renderer->custom_compaction) {
     uint64_t gpu_address = 0u;
@@ -1089,6 +1100,7 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
     compaction->ready_mask = renderer->custom_ready_mask;
     compaction->pending_mask = vkr_metal_packet_custom_state_mask(
         renderer, VKR_METAL_CUSTOM_GRAPH_PENDING);
+    compaction->brdf_ready = renderer->tiled_brdf_draws ? 1u : 0u;
     compaction->materials =
         vkr_metal_material_table_device_gpu_address(renderer->materials);
     renderer->custom_compaction = compaction;
@@ -1899,6 +1911,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draws(
         renderer->custom_compaction_gpu +
         offsetof(VkrMetalCustomCompaction, execution_ranges);
     prepared->indirect.custom_ready_mask = renderer->custom_ready_mask;
+    prepared->indirect.brdf_ready = renderer->tiled_brdf_draws;
   }
   prepared->indirect.viewport =
       (MTLViewport){0.0,
@@ -2135,24 +2148,6 @@ vkr_metal_packet_tiled_decal_variant(const VkrPreparedFrame *packet) {
   return 0u;
 }
 
-/* Whether the frame takes the tiled shading variants with the BRDF material
-   extensions (ADR-113): a scene material uses one and the variant's
-   pipelines are READY. */
-vkr_internal uint32_t
-vkr_metal_packet_tiled_brdf_variant(VkrMetalPacketRenderer *renderer,
-                                    const VkrPreparedFrame *packet) {
-  const VkrWorldPassPayload *world = packet->input.world;
-  if (!world || !world->opaque_material_features_valid ||
-      (world->opaque_material_features &
-       VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION) == 0u)
-    return 0u;
-  return vkr_atomic_uint32_load(&renderer->tiled_brdf_state,
-                                VKR_MEMORY_ORDER_ACQUIRE) ==
-                 VKR_METAL_CUSTOM_GRAPH_READY
-             ? 1u
-             : 0u;
-}
-
 /* Prepares the tiled pipeline's opaque pass (ADR-087): the camera's culled
    opaque draws, the clear sky's root, and multisampled targets in place of
    the pass's graph colour and depth, which they resolve into. Depth resolves
@@ -2166,11 +2161,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
       vkr_metal_packet_tiled_lighting(packet);
   const uint32_t probes = vkr_metal_packet_tiled_probe_variant(packet);
   const uint32_t decals = vkr_metal_packet_tiled_decal_variant(packet);
-  const uint32_t brdf = vkr_metal_packet_tiled_brdf_variant(renderer, packet);
+  /* Standard draws take the base variant; slot 0's extended ones take the
+     extension variant as they record (ADR-113). */
   if (!vkr_metal_packet_prepare_gpu_draws(
           renderer, pass, prepared,
-          renderer->tiled_coverage_pipelines[brdf][decals][probes][lighting],
-          renderer->tiled_forward_pipelines[brdf][decals][probes][lighting])) {
+          renderer->tiled_coverage_pipelines[0][decals][probes][lighting],
+          renderer->tiled_forward_pipelines[0][decals][probes][lighting])) {
     return false_v;
   }
   VkrMetalPacketIndirectPass draws = prepared->indirect;
@@ -2328,16 +2324,20 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
                  packet->input.globals.view));
     const VkrMetalTiledLighting lighting =
         vkr_metal_packet_tiled_lighting(packet);
+    const uint32_t probes = vkr_metal_packet_tiled_probe_variant(packet);
     if (!vkr_metal_packet_prepare_draws(
             renderer, &prepared->world.direct,
-            renderer->tiled_blend_pipelines
-                [vkr_metal_packet_tiled_brdf_variant(renderer, packet)]
-                [vkr_metal_packet_tiled_probe_variant(packet)][lighting],
+            renderer->tiled_blend_pipelines[0][probes][lighting],
             renderer->depth_read_state, upload->direct_draws,
             upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,
             packet, true_v, upload, &result->blend_draw_count, result))
       return false_v;
+    /* Extended blended draws take the extension variant (ADR-113). */
+    prepared->world.direct.extended_pipeline =
+        renderer->tiled_brdf_draws
+            ? renderer->tiled_blend_pipelines[1][probes][lighting]
+            : nil;
     return vkr_metal_packet_prepare_text_draws(
         renderer, &prepared->world.text, renderer->tiled_text_pipeline,
         renderer->depth_read_state, packet->input.world->text_draws,

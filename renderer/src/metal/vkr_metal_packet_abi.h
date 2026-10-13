@@ -519,7 +519,9 @@ typedef struct VkrMetalCustomCompaction {
   uint32_t late_count;
   uint32_t ready_mask;
   uint32_t pending_mask;
-  uint32_t reserved;
+  /* Nonzero when slot 0 takes the Standard draws whose material uses a BRDF
+     extension (ADR-113). */
+  uint32_t brdf_ready;
   uint64_t materials;
 } VkrMetalCustomCompaction;
 

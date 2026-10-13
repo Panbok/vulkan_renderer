@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-09
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -98,7 +98,9 @@ The owner settled three points on 2026-10-09:
    in its upload ring.
    - The classify kernel sorts the camera view's draws of ready slots into
      per-slot buckets. It marks them in the classification word with bit 4
-     and the slot in bits 27 to 31, which the encode kernel clears.
+     and the slot in bits 27 to 31, which the encode kernel clears. Slot 0
+     holds the Standard draws of materials that use a BRDF extension, marked
+     with bit 5 ([ADR-113](113-brdf-material-extensions.md)).
    - The prefix kernel places each slot's ranges after the Standard buckets,
      within the view's capacity.
    - The tiled opaque pass executes each ready slot's ranges with its
