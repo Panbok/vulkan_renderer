@@ -8,10 +8,11 @@ authority: adr
 
 ## Status
 
-Accepted (partial). Rooms hide the camera's draws that no open portal shows,
-and sealed rooms keep their draws out of every cascade, on both pipeline
-classes. Light, local-face and probe gating, `room.probes`, `room.derive`
-and the `rooms` lint check of the
+Accepted (partial). Rooms hide the camera's draws, lights and reflection
+probes that no open portal shows, and sealed rooms keep their draws out of
+every cascade, on both pipeline classes; `room.probes` gives rooms their
+probes. `room.derive`, the `rooms` lint check and portals closed by movers
+from the
 [large-level rendering](../proposals/large-level-rendering.md) proposal are
 not built. The tiled pipeline has native Metal evidence; the desktop
 pipeline has compiled SPIR-V only.
@@ -68,8 +69,24 @@ along a corridor.
    caster. The CPU blend list applies the hidden bit too. A change of what
    the sealed rooms keep out notes one caster change, so retained shadows
    redraw once.
-6. **Switches.** A probe capture, the editor Scene's "All" and the
-   `VKR_ROOMS=0` diagnostic draw every room.
+6. **Lights.** Before the scene syncs, the runtime walks the rooms for the
+   camera and gives the lighting system a gate
+   (`VkrLightingSystem.point_light_hidden`, `vkr_scene_rooms_light_hidden`):
+   a point or spot light, or a baked lamp offered for its moving casters'
+   shadows, leaves the frame's candidates when its room, or the outside,
+   is hidden and its range sphere reaches no visible room's box nor, while
+   the outside shows, past its own room's box. Unshadowed light passes
+   through walls, so any reach keeps it. A light without a range is never
+   hidden. Its cached local faces stay, as for a light that leaves the
+   table by distance (ADR-019).
+7. **Probes.** A reflection probe whose box and blend distance hide by the
+   same rule leaves the frame's 16 slots to the probes the camera can see
+   (`vkr_scene_rooms_box_hidden`). A draw in a room keeps taking the
+   smallest probe box around its centre, so a probe on a room's box wins
+   over the hall around it. `room.probes` adds a box-projected probe on the
+   box of each room that holds none, up to the scene's 16 probes.
+8. **Switches.** A probe capture, the editor Scene's "All" and the
+   `VKR_ROOMS=0` diagnostic draw every room, light and probe.
 
 ## Consequences
 
@@ -85,6 +102,15 @@ along a corridor.
   camera's visible rows fell from a median of 3,433 to 2,741 and a mean of
   3,359 to 2,658; `Tiled.Opaque` stayed at 4.6 ms, since the hidden draws
   covered no pixels. Indicative, not a timing claim.
+- With the light and probe gates (2026-10-13), the café bar view matched
+  `VKR_ROOMS=0` within one level of 255 and the overview's depth matched
+  exactly; its colour moved 1% of pixels by up to 21 levels, all in the sky,
+  through the automatic exposure the warm-up frames feed.
+- `blockout.room` and `blockout.doorway` made a room box on the interior and
+  a portal in the opening on Bistro through the agent channel.
+  `room.probes` was run only on a scene outside a project, where it refuses
+  as `probe.create` does; its probe creation in a project scene is not
+  exercised.
 - Metal API validation of the café bar and overview captures
   (`local-metal-offscreen-validation-serial`, `MTL_DEBUG_LAYER=1`) reported
   no error.

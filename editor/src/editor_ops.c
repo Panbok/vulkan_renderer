@@ -28,6 +28,7 @@
 #include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_population.h"
+#include "renderer/systems/vkr_scene_rooms.h"
 #include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_io_router.h"
@@ -2625,6 +2626,90 @@ static bool8_t ops_build_probe_create(OpsContext *ctx,
   values->component_type = &vkr_scene_reflection_probe_type;
   MemCopy(values->component, &probe, sizeof(probe));
   batch->op_item[batch->op_count] = batch->count - 1u;
+  return true_v;
+}
+
+/* room.probes: a reflection probe on the box of each room that holds none
+   (ADR-115), box-projected so its surfaces reflect the room, up to the
+   scene's probe limit. Probes are load-baked like probe.create's. */
+static bool8_t ops_build_room_probes(OpsContext *ctx, const VkrBakeryJson *args,
+                                     OpsBatch *batch) {
+  (void)args;
+  const VkrSampleUiFrame *frame = ctx->frame;
+  if (!vkr_editor_projects_managed_scene(ctx->editor->projects, frame)) {
+    return ops_fail(ctx, OPS_REJECTED,
+                    "Reflection probes are baked into a project scene: open "
+                    "one to add room probes");
+  }
+  VkrEntityId *rooms =
+      arena_alloc(ops_arena(ctx), sizeof(VkrEntityId) * VKR_SCENE_ROOM_MAX,
+                  ARENA_MEMORY_TAG_ARRAY);
+  Vec3 *mins = arena_alloc(ops_arena(ctx), sizeof(Vec3) * VKR_SCENE_ROOM_MAX,
+                           ARENA_MEMORY_TAG_ARRAY);
+  Vec3 *maxs = arena_alloc(ops_arena(ctx), sizeof(Vec3) * VKR_SCENE_ROOM_MAX,
+                           ARENA_MEMORY_TAG_ARRAY);
+  if (!rooms || !mins || !maxs) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  const uint32_t room_count =
+      vkr_scene_rooms_list(frame->scene, rooms, mins, maxs, VKR_SCENE_ROOM_MAX);
+  if (!room_count) {
+    return ops_fail(ctx, OPS_INVALID, "The scene has no room");
+  }
+  /* A room holds a probe when an existing probe's centre lies in its box. */
+  VkrEntityId probes[VKR_SCENE_REFLECTION_PROBE_MAX];
+  const uint32_t probe_count =
+      Min(vkr_scene_find_typed(frame->scene, &vkr_scene_reflection_probe_type,
+                               probes, VKR_SCENE_REFLECTION_PROBE_MAX),
+          VKR_SCENE_REFLECTION_PROBE_MAX);
+  uint32_t free_slots = VKR_SCENE_REFLECTION_PROBE_MAX - probe_count;
+  const uint32_t first_item = batch->count;
+  for (uint32_t r = 0; r < room_count; ++r) {
+    const Vec3 lo = mins[r];
+    const Vec3 hi = maxs[r];
+    bool8_t held = false_v;
+    for (uint32_t p = 0; p < probe_count && !held; ++p) {
+      const SceneReflectionProbeSettings *existing = vkr_scene_get_typed(
+          frame->scene, probes[p], &vkr_scene_reflection_probe_type);
+      held = existing && existing->center.x >= lo.x &&
+             existing->center.x <= hi.x && existing->center.y >= lo.y &&
+             existing->center.y <= hi.y && existing->center.z >= lo.z &&
+             existing->center.z <= hi.z;
+    }
+    if (held) {
+      continue;
+    }
+    if (!free_slots) {
+      return ops_fail(ctx, OPS_LIMIT,
+                      "A scene holds at most %u probes; %u rooms still have "
+                      "none",
+                      VKR_SCENE_REFLECTION_PROBE_MAX, room_count - r);
+    }
+    SceneReflectionProbeSettings probe;
+    vkr_type_defaults(&vkr_scene_reflection_probe_type, &probe);
+    probe.center = vec3_scale(vec3_add(lo, hi), 0.5f);
+    probe.extents = vec3_scale(vec3_sub(hi, lo), 0.5f);
+    probe.box_projection = true_v;
+    VkrSampleEditBatchItem *item =
+        ops_batch_add(ctx, batch, 0u, VKR_SCENE_EDIT_CREATE);
+    if (!item) {
+      return false_v;
+    }
+    VkrSceneEditValues *values = &item->request.values;
+    values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_COMPONENT;
+    const String8 room_name = vkr_scene_get_name(frame->scene, rooms[r]);
+    snprintf(
+        values->name, sizeof(values->name), "%.*s probe",
+        (int)Min(room_name.length, (uint64_t)VKR_SCENE_EDIT_NAME_CAPACITY - 8u),
+        room_name.length ? (const char *)room_name.str : "Room");
+    values->component_type = &vkr_scene_reflection_probe_type;
+    MemCopy(values->component, &probe, sizeof(probe));
+    free_slots--;
+  }
+  if (batch->count == first_item) {
+    return ops_fail(ctx, OPS_INVALID, "Every room already holds a probe");
+  }
+  batch->op_item[batch->op_count] = first_item;
   return true_v;
 }
 
@@ -14434,6 +14519,13 @@ static const OpsDef s_ops[] = {
      "\"name\":{\"type\":\"string\"}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"center\"]}",
      NULL, ops_build_probe_create},
+    {"room.probes",
+     "Add a box-projected reflection probe on the box of each room that "
+     "holds none, so its surfaces reflect the room instead of the sky. They "
+     "reflect after the scene is saved and Bake lighting captures them; a "
+     "scene holds at most 16 probes.",
+     "{\"type\":\"object\",\"properties\":{" OPS_REVIEW_SCHEMA "}}", NULL,
+     ops_build_room_probes},
     {"decal.place",
      "Place a decal facing a surface: centred on 'position' with the "
      "surface's 'normal', or where a ray from 'origin' along 'direction' "

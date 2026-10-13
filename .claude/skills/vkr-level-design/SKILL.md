@@ -292,6 +292,9 @@ them by hand:
   opening between two rooms or a room and the outside: doors, windows,
   stairwells. A missing portal hides real content behind it. `open: false`
   hides what lies behind a shut door.
+- Lights and reflection probes in rooms the camera cannot see leave the
+  frame too. `room.probes` puts a box-projected probe on each room that has
+  none (a scene holds 16); save and bake lighting so they reflect.
 - Prove a level by capturing the same views with `VKR_ROOMS=0` set before
   starting the editor and without it: the images must match.
 

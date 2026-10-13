@@ -244,6 +244,19 @@ static void test_room_visibility_against_rays(void) {
     /* The closed door and the room without a portal hide theirs. */
     assert(!((frame->visible[0] >> 3u) & 1u));
     assert(!((frame->visible[0] >> 4u) & 1u));
+    /* A light in room D lights only D while its range stays inside it; one
+       crossing the wall into A, the camera's room, shows, and so does one
+       in A. Unshadowed light leaks through walls, so reaching any visible
+       room or the outside keeps it. */
+    assert(
+        vkr_scene_rooms_light_hidden(frame, vec3_new(12.0f, 2.0f, 0.0f), 1.5f));
+    assert(
+        !vkr_scene_rooms_light_hidden(frame, vec3_new(6.0f, 2.0f, 0.0f), 3.0f));
+    assert(
+        !vkr_scene_rooms_light_hidden(frame, vec3_new(0.0f, 2.0f, 0.0f), 1.0f));
+    /* A light without a range reaches everywhere. */
+    assert(!vkr_scene_rooms_light_hidden(frame, vec3_new(12.0f, 2.0f, 0.0f),
+                                         0.0f));
   }
   /* The views do reach through both doors, the window and the outside
      portal, so the assertions above are not vacuous. */

@@ -454,6 +454,13 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
 
     // Get world position from transform
     Vec3 world_position = mat4_position(transforms[i].world);
+    /* A light in a hidden room lights nothing the camera sees; a baked
+       lamp's moving-caster shadows go with it. */
+    if (system->point_light_hidden &&
+        system->point_light_hidden(system->point_light_hidden_context,
+                                   world_position, lights[i].range)) {
+      continue;
+    }
     uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
     const Vec3 direction =
         vkr_quat_rotate_vec3(transforms[i].rotation, lights[i].direction_local);

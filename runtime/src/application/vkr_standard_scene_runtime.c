@@ -73,6 +73,9 @@ typedef struct VkrStandardSceneRuntimeDrawContext {
      casters' shadows; none on the tiled pipeline. */
   const VkrPointLight *baked_lamps;
   uint32_t baked_lamp_count;
+  /* The rooms the camera sees this frame (vkr_scene_rooms.h), or NULL:
+     reflection probes in hidden rooms leave the frame's slots. */
+  const VkrSceneRoomFrame *room_frame;
   VkrAnimationPreviewInput animation_preview;
   bool8_t has_animation_preview;
 } VkrStandardSceneRuntimeDrawContext;
@@ -1050,6 +1053,7 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
               : vkr_scene_rooms_frame(scene, application->globals.view_position,
                                       mat4_mul(application->globals.projection,
                                                application->globals.view));
+      draw->room_frame = gate.rooms;
       /* Every rendered scene's far cells, the added ones too, since each
          draws both a cell and its copies unless marked; drawing
          everything keeps the copies. */
@@ -1789,6 +1793,13 @@ vkr_internal uint32_t vkr_standard_scene_runtime_order_probes(
   return count;
 }
 
+/* vkr_scene_rooms_light_hidden as the lighting system's gate. */
+vkr_internal bool8_t vkr_standard_scene_runtime_light_hidden(
+    const void *context, Vec3 position, float32_t range) {
+  return vkr_scene_rooms_light_hidden((const VkrSceneRoomFrame *)context,
+                                      position, range);
+}
+
 /* Packs ready reflection probes and lowers the lighting system into the
    frame lighting. */
 vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
@@ -1807,6 +1818,16 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
          ++i) {
       const VkrSceneReflectionProbe *probe =
           &active_scene->reflection_probes[i];
+      /* A probe whose box reaches no room the camera sees leaves its slot
+         to one that does (ADR-115). */
+      if (vkr_scene_rooms_box_hidden(
+              draw->room_frame,
+              vec3_sub(probe->center, active_scene->origin_offset),
+              vec3_add(probe->extents,
+                       vec3_new(probe->blend_distance, probe->blend_distance,
+                                probe->blend_distance)))) {
+        continue;
+      }
       if (!probe->enabled ||
           probe->bake_state != VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY ||
           !vkr_texture_system_publication_confirmed(
@@ -2950,6 +2971,17 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
         application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
     application->lighting_system.static_lights_baked =
         vkr_standard_scene_runtime_static_lights_baked(render_scene);
+    /* Lights in rooms the camera does not see leave the frame (ADR-115);
+       a probe capture and the Scene's "All" keep every light. */
+    const VkrSceneRoomFrame *rooms =
+        camera && !application->static_capture &&
+                !application->draw_distance_off && !application->rooms_off
+            ? vkr_scene_rooms_frame(render_scene, camera->position,
+                                    mat4_mul(camera->projection, camera->view))
+            : NULL;
+    application->lighting_system.point_light_hidden =
+        rooms ? vkr_standard_scene_runtime_light_hidden : NULL;
+    application->lighting_system.point_light_hidden_context = rooms;
     /* The scene table keeps the point lights nearest the camera (ADR-019);
        without a camera they rank from the origin. */
     vkr_lighting_system_sync_from_scene(
@@ -2983,6 +3015,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
           &application->lighting_system, camera->position, (float32_t)delta,
           VKR_STANDARD_SCENE_TILED_LIGHT_MAX,
           VKR_STANDARD_SCENE_TILED_SHADOWED_LIGHT_MAX);
+    /* The room frame is borrowed for these syncs only. */
+    application->lighting_system.point_light_hidden = NULL;
+    application->lighting_system.point_light_hidden_context = NULL;
   }
 
   vkr_standard_scene_runtime_choose_presentation(application);

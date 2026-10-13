@@ -297,15 +297,12 @@ pipeline only, as the planar reflections proposal scopes it.
 
 Implemented in part: [ADR-115](../adr/115-rooms-and-portals.md) records the
 `room` and `portal` components, the membership of static draws, the portal
-walk and the camera and cascade bits, and `blockout.room` and
-`blockout.doorway` create rooms and portals. Remaining, in order:
+walk, the camera and cascade bits, the light and probe gates and
+`room.probes`, and `blockout.room` and `blockout.doorway` create rooms and
+portals. Remaining, in order:
 
-1. **Light, local-face and probe gating.** A light whose room is hidden,
-   and whose range sphere reaches no visible room, leaves the frame's light
-   grid ([vkr_standard_scene_runtime.c](../../runtime/src/application/vkr_standard_scene_runtime.c));
-   its cached faces stay. Each room may own a reflection probe with its box,
-   a draw in a room takes that room's probe, and only probes of visible
-   rooms fill the 16 slots. `room.probes` creates one probe per room.
+1. **`room.probes` in a project scene**, captured by Bakery and shown to
+   reflect the room instead of the sky.
 2. **`room.derive`** floods the empty space of a region on a coarse grid
    and proposes rooms and portals in the Agent changes window.
 3. **A `rooms` check in `level.lint`**: portals that do not touch two

@@ -52,6 +52,8 @@ typedef struct VkrSceneRoomFrame {
   const uint64_t *sealed;
   uint32_t room_count;
   bool8_t outside_visible;
+  /* The rooms' boxes, for vkr_scene_rooms_light_hidden and _box_hidden. */
+  const VkrSceneRooms *owner;
 } VkrSceneRoomFrame;
 
 /** The room state of `scene` for a camera at `camera` with
@@ -67,6 +69,24 @@ const VkrSceneRoomFrame *vkr_scene_rooms_frame(VkrScene *scene, Vec3 camera,
 uint32_t vkr_scene_room_cull_bits(const VkrSceneRoomFrame *frame,
                                   bool8_t instance, uint32_t slot,
                                   uint32_t submesh);
+
+/** Whether a light at `position` reaching `range` metres lights nothing the
+    camera sees under `frame`: its room, or the outside, is hidden, and its
+    sphere reaches no visible room's box nor, while the outside shows, past
+    its own room's box. A range of zero or infinity never hides. */
+bool8_t vkr_scene_rooms_light_hidden(const VkrSceneRoomFrame *frame,
+                                     Vec3 position, float32_t range);
+
+/** Whether an axis-aligned box of `center` and `half_extents`, such as a
+    reflection probe's influence, overlaps nothing the camera sees under
+    `frame`, by the same rule as a light's sphere. */
+bool8_t vkr_scene_rooms_box_hidden(const VkrSceneRoomFrame *frame, Vec3 center,
+                                   Vec3 half_extents);
+
+/** The rooms of `scene`, up to `capacity`: each one's owner entity and the
+    world box around its boxes. Returns how many it wrote. */
+uint32_t vkr_scene_rooms_list(const VkrScene *scene, VkrEntityId *out_entities,
+                              Vec3 *out_min, Vec3 *out_max, uint32_t capacity);
 
 /** Index of the room holding `point`, the smallest when boxes overlap, or
     VKR_SCENE_ROOM_OUTSIDE. */

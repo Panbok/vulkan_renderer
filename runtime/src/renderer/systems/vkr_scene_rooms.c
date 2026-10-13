@@ -58,8 +58,9 @@ typedef struct RoomWalk {
 } RoomWalk;
 
 struct s_VkrSceneRooms {
-  /* The graph. */
+  /* The graph: each room's owner entity, its first box's. */
   uint32_t room_count;
+  VkrEntityId owners[VKR_SCENE_ROOM_MAX];
   uint64_t sealed[ROOM_WORDS(VKR_SCENE_ROOM_MAX)];
   RoomBox *boxes;
   uint32_t box_count;
@@ -228,7 +229,7 @@ static bool8_t rooms_rebuild_graph(VkrScene *scene, VkrSceneRooms *rooms) {
   }
 
   /* Rooms are numbered by their owner entity's first box. */
-  VkrEntityId owners[VKR_SCENE_ROOM_MAX];
+  VkrEntityId *owners = rooms->owners;
   rooms->room_count = 0u;
   rooms->box_count = 0u;
   rooms->source_count = 0u;
@@ -760,6 +761,7 @@ const VkrSceneRoomFrame *vkr_scene_rooms_frame(VkrScene *scene, Vec3 camera,
       .sealed = rooms->sealed,
       .room_count = rooms->room_count,
       .outside_visible = rooms->frame.outside_visible,
+      .owner = rooms,
   };
   return &rooms->frame;
 }
@@ -812,6 +814,95 @@ uint32_t vkr_scene_room_cull_bits(const VkrSceneRoomFrame *frame,
     bits |= VKR_GPU_DRAW_CULL_SEALED_BIT;
   }
   return bits;
+}
+
+/* Whether a sphere around `center` of `radius` lies inside one box of
+   `room`, never reaching past it. */
+static bool8_t rooms_sphere_inside(const VkrSceneRooms *rooms, uint32_t room,
+                                   Vec3 center, float32_t radius) {
+  for (uint32_t i = 0; i < rooms->box_count; ++i) {
+    const RoomBox *box = &rooms->boxes[i];
+    if (box->room != room) {
+      continue;
+    }
+    const Vec3 local = mat4_mul_vec3(box->inverse, center);
+    /* The distance to each pair of faces, in metres along the box's axes. */
+    const float32_t sx = vec3_length(box->world.cols[0]);
+    const float32_t sy = vec3_length(box->world.cols[1]);
+    const float32_t sz = vec3_length(box->world.cols[2]);
+    if ((0.5f - fabsf(local.x)) * sx >= radius &&
+        (0.5f - fabsf(local.y)) * sy >= radius &&
+        (0.5f - fabsf(local.z)) * sz >= radius) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_scene_rooms_light_hidden(const VkrSceneRoomFrame *frame,
+                                     Vec3 position, float32_t range) {
+  const VkrSceneRooms *rooms = frame ? frame->owner : NULL;
+  if (!rooms || !(range > 0.0f) || !isfinite(range)) {
+    return false_v;
+  }
+  const uint32_t room = room_at(rooms, position, 0.0f);
+  if (rooms_entry_visible(frame, room)) {
+    return false_v;
+  }
+  /* Light through a wall still reaches a visible room's surfaces. */
+  for (uint32_t i = 0; i < rooms->box_count; ++i) {
+    if (rooms_entry_visible(frame, rooms->boxes[i].room) &&
+        room_box_distance(&rooms->boxes[i], position) <= range) {
+      return false_v;
+    }
+  }
+  return !frame->outside_visible ||
+         (room != VKR_SCENE_ROOM_OUTSIDE &&
+          rooms_sphere_inside(rooms, room, position, range));
+}
+
+bool8_t vkr_scene_rooms_box_hidden(const VkrSceneRoomFrame *frame, Vec3 center,
+                                   Vec3 half_extents) {
+  /* The box's bounding sphere stands in for it. */
+  return vkr_scene_rooms_light_hidden(frame, center, vec3_length(half_extents));
+}
+
+uint32_t vkr_scene_rooms_list(const VkrScene *scene, VkrEntityId *out_entities,
+                              Vec3 *out_min, Vec3 *out_max, uint32_t capacity) {
+  VkrEntityId boxes[VKR_SCENE_ROOM_BOX_MAX];
+  const uint32_t box_count =
+      scene ? Min(vkr_scene_find_typed(scene, &vkr_scene_room_type, boxes,
+                                       VKR_SCENE_ROOM_BOX_MAX),
+                  VKR_SCENE_ROOM_BOX_MAX)
+            : 0u;
+  uint32_t room_count = 0u;
+  for (uint32_t i = 0; i < box_count; ++i) {
+    const VkrEntityId owner = rooms_owner(scene, boxes[i]);
+    uint32_t room = 0u;
+    while (room < Min(room_count, capacity) &&
+           out_entities[room].u64 != owner.u64) {
+      ++room;
+    }
+    if (room == room_count) {
+      if (room_count == capacity) {
+        continue;
+      }
+      out_entities[room] = owner;
+      out_min[room] = vec3_new(INFINITY, INFINITY, INFINITY);
+      out_max[room] = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+      room_count++;
+    }
+    const Mat4 world = rooms_entity_world(scene, boxes[i]);
+    for (uint32_t corner = 0; corner < 8u; ++corner) {
+      const Vec3 point =
+          mat4_mul_vec3(world, vec3_new(corner & 1u ? 0.5f : -0.5f,
+                                        corner & 2u ? 0.5f : -0.5f,
+                                        corner & 4u ? 0.5f : -0.5f));
+      out_min[room] = vkr_simd_min_f32x4(out_min[room], point);
+      out_max[room] = vkr_simd_max_f32x4(out_max[room], point);
+    }
+  }
+  return room_count;
 }
 
 uint32_t vkr_scene_room_at(const VkrScene *scene, Vec3 point) {

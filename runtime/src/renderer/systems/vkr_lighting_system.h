@@ -127,6 +127,13 @@ typedef struct VkrLightingSystem {
      scene syncs leave it alone. */
   VkrPointLightSelection point_light_limit;
 
+  /* Leaves out of the frame the scene lights that light nothing the camera
+     sees, as rooms decide (vkr_scene_rooms_light_hidden); NULL keeps every
+     light. Set by the runtime before the scene syncs. */
+  bool8_t (*point_light_hidden)(const void *context, Vec3 position,
+                                float32_t range);
+  const void *point_light_hidden_context;
+
   // Dirty tracking
   bool8_t dirty;
 } VkrLightingSystem;
