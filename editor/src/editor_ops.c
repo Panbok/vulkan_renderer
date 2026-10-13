@@ -3700,6 +3700,50 @@ static bool8_t ops_build_corridor(OpsContext *ctx, const VkrBakeryJson *args,
 /* Objects one mover.create gathers. */
 #define OPS_MOVER_OBJECTS_MAX 64u
 
+/* Makes the mover of batch item `door_item` the door of `portal`, an
+   existing portal or one the batch creates: the portal closes while the
+   mover rests shut (ADR-115). */
+static bool8_t ops_portal_door(OpsContext *ctx, OpsBatch *batch,
+                               const OpsRef *portal, uint32_t door_item) {
+  VkrSceneEditValues values;
+  if (!ops_current_values(ctx, portal, &values)) {
+    return false_v;
+  }
+  ScenePortal value;
+  const bool8_t present =
+      portal->item >= 0
+          ? values.component_type == &vkr_scene_portal_type
+          : ops_component_get(ops_scene(ctx->frame, portal->container),
+                              portal->entity, &vkr_scene_portal_type, 0u,
+                              &value);
+  if (!present) {
+    return ops_fail(ctx, OPS_INVALID, "'portal' names no portal");
+  }
+  if (portal->item >= 0) {
+    MemCopy(&value, values.component, sizeof(value));
+  }
+  value.door = ctx->ops->items[door_item].request.values.ref;
+  if (portal->item >= 0) {
+    MemCopy(ctx->ops->items[portal->item].request.values.component, &value,
+            sizeof(value));
+    return true_v;
+  }
+  values.component_type = &vkr_scene_portal_type;
+  MemCopy(values.component, &value, sizeof(value));
+  values.fields = VKR_SCENE_EDIT_COMPONENT;
+  if (!ops_validate_values(ctx, &values)) {
+    return false_v;
+  }
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, portal->container, VKR_SCENE_EDIT_APPLY);
+  if (!item) {
+    return false_v;
+  }
+  ops_item_target(item, portal);
+  item->request.values = values;
+  return true_v;
+}
+
 /* mover.create: a group carrying a mover (ADR-084) with `values` over its
    defaults, holding `objects`, as one batch. The group sits at the center
    of their world box under the parent they share, and they keep their world
@@ -3753,6 +3797,17 @@ static bool8_t ops_build_mover_create(OpsContext *ctx,
   char name[128] = "Mover";
   if (!ops_arg_string(ctx, args, "name", name, sizeof(name))) {
     return false_v;
+  }
+  const VkrBakeryJson *portal_arg = vkr_bakery_json_get(args, "portal");
+  OpsRef portal = {.item = -1};
+  if (portal_arg) {
+    if (!ops_ref(ctx, batch, portal_arg, "portal", &portal)) {
+      return false_v;
+    }
+    if (portal.container != refs[0].container) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "A mover's portal is in the scene of its objects");
+    }
   }
   _Alignas(16) uint8_t mover[VKR_TYPE_VALUE_MAX];
   vkr_type_defaults(&vkr_scene_mover_type, mover);
@@ -3836,6 +3891,9 @@ static bool8_t ops_build_mover_create(OpsContext *ctx,
     pose.fields = VKR_SCENE_EDIT_TRANSFORM;
     pose.position = vec3_sub(pose.position, center);
     place->request.values = pose;
+  }
+  if (portal_arg && !ops_portal_door(ctx, batch, &portal, group)) {
+    return false_v;
   }
   batch->op_item[batch->op_count] = group;
   return true_v;
@@ -14822,9 +14880,12 @@ static const OpsDef s_ops[] = {
      "the vertical line through the middle of that side of their box, 90 "
      "degrees unless 'values' gives an angle. 'values' sets the mover "
      "component (direction, distance, lip, angle, axis, pivot, spin, speed, "
-     "acceleration, wait, start_open, loop, locked).",
+     "acceleration, wait, start_open, loop, locked). 'portal' names the "
+     "portal in its opening, which then closes while the mover rests shut, "
+     "for room visibility.",
      "{\"type\":\"object\",\"properties\":{\"objects\":{\"type\":\"array\","
      "\"items\":" OPS_ENTITY_SCHEMA ",\"minItems\":1,\"maxItems\":64},"
+     "\"portal\":" OPS_ENTITY_SCHEMA ","
      "\"hinge\":{\"type\":\"string\",\"enum\":[\"+x\",\"-x\",\"+z\","
      "\"-z\"]},"
      "\"name\":{\"type\":\"string\"},\"values\":" OPS_VALUES_SCHEMA
@@ -15128,9 +15189,10 @@ static const OpsDef s_ops[] = {
      "light_overflow: the scene has more enabled point lights than "
      "the renderer's 128-light table, which keeps those nearest the "
      "camera ('value' the count, 'position' their centroid), "
-     "and rooms: a portal with one space on both sides, or a gap in a "
-     "room's walls, floor or ceiling that no solid, other room or portal "
-     "closes ('entity' the portal or room box, 'value' the gap's square "
+     "and rooms: a portal with one space on both sides or whose door is "
+     "no mover, or a gap in a room's walls, floor or ceiling that no solid, "
+     "other room or portal closes ('entity' the portal or room box, 'value' "
+     "the gap's square "
      "metres). "
      "'kinds' reports only the named kinds; "
      "'found' above the issues returned means 'limit' cut the list.",

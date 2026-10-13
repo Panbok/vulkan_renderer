@@ -266,9 +266,87 @@ static void test_room_visibility_against_rays(void) {
   vkr_dmemory_allocator_destroy(&test.allocator);
 }
 
+/* Whether room `index` is visible from room A looking east at the doorway
+   to room D. */
+static bool8_t room_test_east_visible(VkrScene *scene, uint32_t index) {
+  vkr_scene_update_transforms(scene);
+  const Vec3 eye = vec3_new(0.0f, 1.7f, 0.0f);
+  const Mat4 view_projection =
+      mat4_mul(mat4_perspective_reversed(1.7f, 16.0f / 9.0f, 0.1f, 1000.0f),
+               mat4_look_at(eye, vec3_new(10.0f, 1.7f, 0.0f), vec3_up()));
+  const VkrSceneRoomFrame *frame =
+      vkr_scene_rooms_frame(scene, eye, view_projection);
+  assert(frame && frame->room_count == 2u);
+  return (frame->visible[0] >> index) & 1u;
+}
+
+/* A portal whose door is a mover closes while the door rests at its saved
+   pose and opens when play moves it; a door that is no mover leaves the
+   portal open. */
+static void test_room_portal_door(void) {
+  RoomTest test;
+  assert(vkr_dmemory_create(MB(8), MB(64), &test.memory));
+  test.allocator = (VkrAllocator){.ctx = &test.memory};
+  vkr_dmemory_allocator_create(&test.allocator);
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, &test.allocator, 0, 8, NULL));
+
+  const SceneRoom room = {0};
+  for (uint32_t r = 0; r < 2u; ++r) {
+    const uint32_t source = r == 0u ? 0u : 3u;
+    const VkrEntityId entity =
+        room_test_box(&scene, s_rooms[source].center, s_rooms[source].size,
+                      vkr_quat_identity());
+    assert(vkr_scene_set_typed(&scene, entity, &vkr_scene_room_type, &room));
+  }
+  const VkrQuat across_x =
+      vkr_quat_from_axis_angle(vec3_up(), 0.5f * 3.14159265f);
+  const RoomTestPortal *doorway = &s_portals[2];
+  const VkrEntityId door = room_test_box(
+      &scene, doorway->center, vec3_new(0.2f, 3.0f, 2.0f), vkr_quat_identity());
+  VkrEntityRef door_ref;
+  vkr_scene_entity_ref_generate(&door_ref);
+  assert(vkr_scene_set_entity_ref(&scene, door, &door_ref));
+  const VkrEntityId portal =
+      room_test_box(&scene, doorway->center,
+                    vec3_new(doorway->width, doorway->height, 1.0f), across_x);
+  const ScenePortal value = {.open = true_v, .door = door_ref};
+  assert(vkr_scene_set_typed(&scene, portal, &vkr_scene_portal_type, &value));
+
+  /* Not a mover yet: the portal stays open, and the check reports it. */
+  assert(room_test_east_visible(&scene, 1u));
+  VkrSceneRoomIssue issues[4];
+  assert(vkr_scene_rooms_check(&scene, NULL, NULL, issues, 4u) == 1u &&
+         issues[0].kind == VKR_SCENE_ROOM_ISSUE_DOOR &&
+         issues[0].entity.u64 == portal.u64);
+  const SceneMover mover = {.direction = vec3_up(), .speed = 1.0f};
+  assert(vkr_scene_set_typed(&scene, door, &vkr_scene_mover_type, &mover));
+  assert(vkr_scene_rooms_check(&scene, NULL, NULL, issues, 4u) == 0u);
+  /* At its saved pose, as outside play, it shuts the portal. */
+  assert(!room_test_east_visible(&scene, 1u));
+  /* Play poses it 2.5 m up: open. */
+  const Mat4 raised = mat4_mul(mat4_translate(vec3_new(0.0f, 2.5f, 0.0f)),
+                               vkr_scene_get_transform(&scene, door)->world);
+  assert(vkr_scene_set_evaluated_transform(&scene, door, &raised));
+  assert(room_test_east_visible(&scene, 1u));
+  /* Back at rest under an evaluated pose: shut again. */
+  const Mat4 rest = vkr_scene_get_transform(&scene, door)->local;
+  assert(vkr_scene_set_evaluated_transform(&scene, door, &rest));
+  assert(!room_test_east_visible(&scene, 1u));
+  /* A closed portal stays closed whatever the door does. */
+  assert(vkr_scene_set_evaluated_transform(&scene, door, &raised));
+  const ScenePortal closed = {.open = false_v, .door = door_ref};
+  assert(vkr_scene_set_typed(&scene, portal, &vkr_scene_portal_type, &closed));
+  assert(!room_test_east_visible(&scene, 1u));
+
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_allocator_destroy(&test.allocator);
+}
+
 bool32_t run_room_tests(void) {
   printf("--- Running room tests... ---\n");
   test_room_visibility_against_rays();
+  test_room_portal_door();
   printf("--- Room tests completed. ---\n");
   return true;
 }

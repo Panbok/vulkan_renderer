@@ -89,11 +89,13 @@ uint32_t vkr_scene_rooms_list(const VkrScene *scene, VkrEntityId *out_entities,
                               Vec3 *out_min, Vec3 *out_max, uint32_t capacity);
 
 /* What a room check finds: a portal with one space on both sides, which
-   joins nothing, and a gap in a room's walls, floor or ceiling that no
-   solid, no other room and no portal closes, through which the camera sees
-   what the room hides. */
+   joins nothing; a portal whose door names no mover, which never shuts it;
+   and a gap in a room's walls, floor or ceiling that no solid, no other
+   room and no portal closes, through which the camera sees what the room
+   hides. */
 typedef enum VkrSceneRoomIssueKind {
   VKR_SCENE_ROOM_ISSUE_PORTAL = 0,
+  VKR_SCENE_ROOM_ISSUE_DOOR,
   VKR_SCENE_ROOM_ISSUE_GAP,
 } VkrSceneRoomIssueKind;
 

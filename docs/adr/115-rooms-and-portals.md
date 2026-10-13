@@ -10,9 +10,9 @@ authority: adr
 
 Accepted (partial). Rooms hide the camera's draws, lights and reflection
 probes that no open portal shows, and sealed rooms keep their draws out of
-every cascade, on both pipeline classes; `room.probes` gives rooms their
-probes and the `rooms` lint check finds leaks. `room.derive`, linting
-objects no room holds and portals closed by movers from the
+every cascade, on both pipeline classes; doors shut their portals,
+`room.probes` gives rooms their probes and the `rooms` lint check finds
+leaks. `room.derive` and linting objects no room holds from the
 [large-level rendering](../proposals/large-level-rendering.md) proposal are
 not built. The tiled pipeline has native Metal evidence; the desktop
 pipeline has compiled SPIR-V only.
@@ -38,6 +38,9 @@ along a corridor.
    opening; `open` false hides what lies behind it. `blockout.room` adds a
    room box on the room's interior (and takes `sealed`); `blockout.doorway`
    adds an open portal in the opening.
+   An open portal's `door` names a mover
+   ([ADR-084](084-agent-channel-and-level-design-toolkit.md)); `mover.create` with `portal`
+   sets it.
 2. **Graph.** [vkr_scene_rooms.c](../../runtime/src/renderer/systems/vkr_scene_rooms.c)
    rebuilds the graph when the scene's world or structure revision changes
    or a room or portal moves: up to 1,024 rooms of 4,096 boxes and 2,048
@@ -57,7 +60,13 @@ along a corridor.
    screen rectangle to its projected corners (a portal crossing the near
    plane, or around a camera in it, keeps the whole rectangle). A node is
    walked again only through a rectangle wider than any it was walked with,
-   so cycles end.
+   so cycles end. A portal whose door rests at its saved pose, the closed
+   one, counts as closed: the door has no evaluated pose (movers move only
+   in play), or its pose and the pose it draws from both equal its parent's
+   world times its local transform within 1 mm. Door poses are read each
+   frame and change no revision, so a moving door rebuilds no graph or
+   membership. The graph resolves the door once per rebuild and ignores
+   one that is no mover, which would never open.
 5. **Candidate bits.** The emission ORs two bits into the cull word of
    [ADR-114](114-per-object-draw-distance.md): bit 20 when all of a draw's
    entries are hidden this frame, bit 21 when all are sealed rooms. A change
@@ -86,7 +95,7 @@ along a corridor.
    over the hall around it. `room.probes` adds a box-projected probe on the
    box of each room that holds none, up to the scene's 16 probes.
 8. **Lint.** `vkr_scene_rooms_check` reports a portal with one space on
-   both sides, and a gap in a room box's face: samples 0.5 m apart, 0.1 m
+   both sides, a portal whose door names no mover, and a gap in a room box's face: samples 0.5 m apart, 0.1 m
    past the face, that no solid (the editor's collision), other room box or
    portal opening closes, kept when their area reaches 0.25 m².
    `level.lint` reports them as `rooms`
@@ -119,6 +128,12 @@ along a corridor.
   `level.lint` with `kinds` [`rooms`] then reported nothing. With the
   portal deleted it reported the doorway's 2 m² gap, and a stray portal in
   open space as joining nothing.
+  `mover.create` with `portal` set the portal's door to the new mover.
+  The room suite's door test (`test_room_portal_door`,
+  [room_test.c](../../tests/src/room_test.c)) checks the walk hides the
+  room behind a resting door, shows it with the door posed 2.5 m up and
+  again hides it at rest under an evaluated pose; no level with movers
+  between rooms has been captured.
   `room.probes` was run only on a scene outside a project, where it refuses
   as `probe.create` does; its probe creation in a project scene is not
   exercised.

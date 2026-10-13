@@ -16,6 +16,9 @@
 /* Inside a box with this tolerance in metres, so a corner on a wall's face
    counts as inside the room it bounds. */
 #define ROOM_INSIDE_EPSILON 0.02f
+/* How far a door's pose may lie from its saved one, per matrix element
+   (metres for the translation), and still count as shut. */
+#define ROOM_DOOR_REST_EPSILON 1e-3f
 /* Steps of one portal walk. A node is walked again only through a wider
    rectangle than it was, so the walk ends; this bounds it besides. */
 #define ROOM_WALK_STEP_MAX 8192u
@@ -46,6 +49,10 @@ typedef struct RoomPortal {
   /* The rooms on its two sides: room indices or VKR_SCENE_ROOM_OUTSIDE. */
   uint32_t sides[2];
   bool8_t open;
+  /* The mover that closes it while at rest, or invalid; and whether it
+     rests this frame. */
+  VkrEntityId door;
+  bool8_t shut;
 } RoomPortal;
 
 /* A room or portal entity and the world matrix the graph was built from. */
@@ -313,6 +320,14 @@ static bool8_t rooms_rebuild_graph(VkrScene *scene, VkrSceneRooms *rooms) {
     portal->sides[1] =
         room_at(rooms, vec3_sub(portal->center, probe), ROOM_INSIDE_EPSILON);
     portal->open = value && value->open;
+    /* A door that is no mover never moves, and would close it for good. */
+    portal->door = value ? vkr_scene_find_entity_ref(scene, &value->door)
+                         : VKR_ENTITY_ID_INVALID;
+    if (portal->door.u64 &&
+        !vkr_scene_get_typed(scene, portal->door, &vkr_scene_mover_type)) {
+      portal->door = VKR_ENTITY_ID_INVALID;
+    }
+    portal->shut = false_v;
     rooms->sources[rooms->source_count++] =
         (RoomSource){.entity = portal_entities[i], .world = world};
     /* A portal with one room on both sides, or the outside on both, joins
@@ -651,6 +666,44 @@ static bool8_t rooms_in_opening(const RoomPortal *portal, Vec3 camera) {
          fabsf(vec3_dot(offset, portal->axis_v)) <= portal->half_v + reach;
 }
 
+/* Whether two poses match within ROOM_DOOR_REST_EPSILON on every
+   element. */
+static bool8_t rooms_pose_equal(Mat4 a, Mat4 b) {
+  for (uint32_t i = 0; i < 16u; ++i) {
+    if (fabsf(a.elements[i] - b.elements[i]) > ROOM_DOOR_REST_EPSILON) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Whether a door mover rests at its saved, closed pose: it has no
+   evaluated pose, since movers move only in play, or that pose and the one
+   it draws from both equal the saved one, as the router composes it
+   (io_mover_rest). A deleted door shuts nothing. */
+static bool8_t rooms_door_shut(const VkrScene *scene, VkrEntityId door) {
+  const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+      scene->world, door, scene->comp_transform);
+  if (!transform) {
+    return false_v;
+  }
+  const SceneEvaluatedTransform *pose = vkr_entity_get_component_if_alive_const(
+      scene->world, door, scene->comp_evaluated_transform);
+  if (!pose) {
+    return true_v;
+  }
+  const SceneTransform *parent =
+      transform->parent.u64
+          ? vkr_entity_get_component_if_alive_const(
+                scene->world, transform->parent, scene->comp_transform)
+          : NULL;
+  const Mat4 rest =
+      parent ? mat4_mul(parent->world, transform->local) : transform->local;
+  /* A pose a tick wrote draws from the one before it until the next. */
+  return rooms_pose_equal(pose->world, rest) &&
+         (!pose->tick || rooms_pose_equal(pose->previous, rest));
+}
+
 static void rooms_walk(VkrSceneRooms *rooms, uint32_t start, Vec3 camera,
                        Mat4 view_projection) {
   const VkrFrustum frustum = vkr_frustum_from_matrix(view_projection);
@@ -671,7 +724,7 @@ static void rooms_walk(VkrSceneRooms *rooms, uint32_t start, Vec3 camera,
       const uint32_t side = portal->sides[0] == at.node   ? 1u
                             : portal->sides[1] == at.node ? 0u
                                                           : 2u;
-      if (side == 2u || !portal->open ||
+      if (side == 2u || !portal->open || portal->shut ||
           !vkr_frustum_test_sphere(&frustum, portal->center, portal->radius)) {
         continue;
       }
@@ -756,6 +809,10 @@ const VkrSceneRoomFrame *vkr_scene_rooms_frame(VkrScene *scene, Vec3 camera,
     }
   }
 
+  for (uint32_t i = 0; i < rooms->portal_count; ++i) {
+    RoomPortal *portal = &rooms->portals[i];
+    portal->shut = portal->door.u64 && rooms_door_shut(scene, portal->door);
+  }
   MemZero(rooms->visible, sizeof(rooms->visible));
   rooms->frame.outside_visible = false_v;
   rooms_walk(rooms, room_at(rooms, camera, 0.0f), camera, view_projection);
@@ -1021,6 +1078,21 @@ uint32_t vkr_scene_rooms_check(const VkrScene *scene,
                                          .entity = portal_entities[i]};
       }
       found++;
+    }
+    /* A door that names no mover never shuts it. */
+    const ScenePortal *value =
+        vkr_scene_get_typed(scene, portal_entities[i], &vkr_scene_portal_type);
+    if (value && !vkr_entity_ref_empty(&value->door)) {
+      const VkrEntityId door = vkr_scene_find_entity_ref(scene, &value->door);
+      if (!door.u64 ||
+          !vkr_scene_get_typed(scene, door, &vkr_scene_mover_type)) {
+        if (found < capacity) {
+          out[found] = (VkrSceneRoomIssue){.kind = VKR_SCENE_ROOM_ISSUE_DOOR,
+                                           .position = center,
+                                           .entity = portal_entities[i]};
+        }
+        found++;
+      }
     }
   }
 

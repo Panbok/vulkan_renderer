@@ -291,7 +291,9 @@ them by hand:
 - A `portal` rectangle (X and Y of its transform, facing Z) sits in every
   opening between two rooms or a room and the outside: doors, windows,
   stairwells. A missing portal hides real content behind it. `open: false`
-  hides what lies behind a shut door.
+  hides what lies behind it for good; for a door, `mover.create` with
+  `portal` naming the opening's portal closes it while the door rests shut.
+  Keep the portal outside the mover's group.
 - Lights and reflection probes in rooms the camera cannot see leave the
   frame too. `room.probes` puts a box-projected probe on each room that has
   none (a scene holds 16); save and bake lighting so they reflect.

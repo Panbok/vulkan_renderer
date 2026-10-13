@@ -2852,6 +2852,12 @@ static const VkrPropertyDesc s_portal_properties[] = {
                 "what lies behind it",
      .offset = TYPE_OFFSET(ScenePortal, open),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "door",
+     .label = "Door",
+     .tooltip = "A mover in the opening; the portal closes while it rests "
+                "shut",
+     .offset = TYPE_OFFSET(ScenePortal, door),
+     .kind = VKR_PROPERTY_ENTITY},
 };
 
 static void portal_defaults(void *value) {

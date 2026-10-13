@@ -483,9 +483,13 @@ typedef struct SceneRoom {
 
 /* A `portal` component: the entity's transform places a rectangle,
    [-0.5, 0.5] in X and Y, facing along Z, in an opening between two rooms
-   or a room and the outside. A closed portal hides what lies behind it. */
+   or a room and the outside. A closed portal hides what lies behind it. An
+   open portal whose `door` names a mover closes while that mover rests at
+   its saved pose, which is its closed one; keep the portal out from under
+   the door, which moves. */
 typedef struct ScenePortal {
   bool8_t open;
+  VkrEntityRef door;
 } ScenePortal;
 
 /* The default draw distances of a draw that no draw_distance component
