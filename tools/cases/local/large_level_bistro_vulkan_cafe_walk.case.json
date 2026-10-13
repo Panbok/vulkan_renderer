@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "id": "local.large_level.vulkan.cafe_walk",
+  "suite": "local",
+  "description": "Large-level fixture on the desktop pipeline: a 12 s walk through the caf\u00e9 room, whose two wall portals open onto the street, so rooms hide the town, terrain and forests when no portal is in view; capture-free.",
+  "scene": "assets/scenes/fixtures/bistro_tiled_large_level_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "automation",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 3,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 240,
+    "measure": 720
+  },
+  "renderer": {
+    "backend": "vulkan",
+    "render_scale": 1.0,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4294967295,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 20000,
+    "keys": [
+      {
+        "t": 0.0,
+        "position": [
+          -8.0,
+          1.7,
+          13.0
+        ],
+        "yaw": -26.565,
+        "pitch": 0.0
+      },
+      {
+        "t": 3.0,
+        "position": [
+          -6.0,
+          1.7,
+          10.0
+        ],
+        "yaw": -68.199,
+        "pitch": 0.0
+      },
+      {
+        "t": 6.0,
+        "position": [
+          -6.0,
+          1.7,
+          6.0
+        ],
+        "yaw": 153.435,
+        "pitch": 0.0
+      },
+      {
+        "t": 9.0,
+        "position": [
+          -9.0,
+          1.7,
+          9.0
+        ],
+        "yaw": 135.0,
+        "pitch": 0.0
+      },
+      {
+        "t": 12.0,
+        "position": [
+          -9.0,
+          1.7,
+          12.0
+        ],
+        "yaw": -8.746,
+        "pitch": 0.0
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ],
+  "target_image_count": 3
+}
