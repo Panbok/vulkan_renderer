@@ -295,6 +295,10 @@ them by hand:
 - Lights and reflection probes in rooms the camera cannot see leave the
   frame too. `room.probes` puts a box-projected probe on each room that has
   none (a scene holds 16); save and bake lighting so they reflect.
+- `level.lint` with `kinds` [`rooms`] reports a portal that joins nothing
+  and a gap in a room's walls, floor or ceiling that no solid, room or
+  portal closes (`value` its square metres); a gap is where the camera
+  sees through a hidden room. Expect none.
 - Prove a level by capturing the same views with `VKR_ROOMS=0` set before
   starting the editor and without it: the images must match.
 

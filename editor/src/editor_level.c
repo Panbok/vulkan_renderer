@@ -10,6 +10,7 @@
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_rooms.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_io_router.h"
 
@@ -96,7 +97,7 @@ const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind) {
       "step_too_high",     "too_steep",   "low_ceiling", "too_narrow",
       "void_edge",         "unreachable", "overlap",     "invalid_brush",
       "broken_connection", "crouch_only", "z_fight",     "mover_timing",
-      "light_overflow"};
+      "light_overflow",    "rooms"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? names[kind] : "unknown";
 }
 
@@ -890,6 +891,26 @@ static void level_lint_lights(LevelGrid *grid, LevelIssues *issues) {
   }
 }
 
+/* vkr_scene_rooms_check's solid test: collision fills a small sphere. */
+static bool8_t level_room_solid(void *context, Vec3 point) {
+  return level_blocked((VkrScene *)context, point, 0.05f);
+}
+
+/* Portals that join nothing and gaps in rooms that lie in the region. */
+static void level_lint_rooms(LevelGrid *grid, LevelIssues *issues) {
+  VkrSceneRoomIssue found[64];
+  const uint32_t count =
+      Min(vkr_scene_rooms_check(grid->scene, level_room_solid, grid->scene,
+                                found, ArrayCount(found)),
+          (uint32_t)ArrayCount(found));
+  for (uint32_t i = 0; i < count; ++i) {
+    if (level_in_region(grid, found[i].position)) {
+      level_issue_pair(issues, VKR_EDITOR_LEVEL_ROOMS, found[i].position,
+                       found[i].entity, VKR_ENTITY_ID_INVALID, found[i].value);
+    }
+  }
+}
+
 /* Seconds a mover takes from one end to the other: its length over its
    speed, plus the time its acceleration spends speeding up and slowing down
    (vkr_io_router's io_mover_advance). A spinning mover never arrives. */
@@ -1653,6 +1674,9 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
   }
   if (level_wants(&issues, VKR_EDITOR_LEVEL_LIGHT_OVERFLOW)) {
     level_lint_lights(&grid, &issues);
+  }
+  if (level_wants(&issues, VKR_EDITOR_LEVEL_ROOMS)) {
+    level_lint_rooms(&grid, &issues);
   }
   uint32_t reachable = 0u;
   int32_t *queue = malloc(total * sizeof(*queue));
@@ -2553,7 +2577,8 @@ static const char *level_issue_label(VkrEditorLevelIssueKind kind) {
       "Step too high",   "Too steep",           "Low ceiling",
       "Gap too narrow",  "Edge into void",      "Unreachable area",
       "Brushes overlap", "Brush did not build", "Connection does not route",
-      "Crouch only",     "Faces z-fight",       "Mover overruns its stay"};
+      "Crouch only",     "Faces z-fight",       "Mover overruns its stay",
+      "Too many lights", "Room leaks"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? labels[kind] : "Issue";
 }
 

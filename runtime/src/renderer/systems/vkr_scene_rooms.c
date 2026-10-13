@@ -13,8 +13,8 @@
 #define ROOMS_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 /* A portal's sides are sampled this far along its normal. */
 #define ROOM_PORTAL_PROBE 0.3f
-/* Inside a box with this tolerance, so a corner on a wall's face counts as
-   inside the room it bounds. */
+/* Inside a box with this tolerance in metres, so a corner on a wall's face
+   counts as inside the room it bounds. */
 #define ROOM_INSIDE_EPSILON 0.02f
 /* Steps of one portal walk. A node is walked again only through a wider
    rectangle than it was, so the walk ends; this bounds it besides. */
@@ -24,6 +24,8 @@
 typedef struct RoomBox {
   Mat4 world;
   Mat4 inverse;
+  /* The box's side lengths in metres. */
+  Vec3 size;
   Vec3 min;
   Vec3 max;
   float32_t volume;
@@ -106,12 +108,13 @@ struct s_VkrSceneRooms {
 // Boxes
 // =============================================================================
 
+/* Whether `point` lies in the box grown by `epsilon` metres. */
 static bool8_t room_box_contains(const RoomBox *box, Vec3 point,
                                  float32_t epsilon) {
   const Vec3 local = mat4_mul_vec3(box->inverse, point);
-  const float32_t half = 0.5f + epsilon;
-  return fabsf(local.x) <= half && fabsf(local.y) <= half &&
-         fabsf(local.z) <= half;
+  return fabsf(local.x) * box->size.x <= 0.5f * box->size.x + epsilon &&
+         fabsf(local.y) * box->size.y <= 0.5f * box->size.y + epsilon &&
+         fabsf(local.z) * box->size.z <= 0.5f * box->size.z + epsilon;
 }
 
 /* Distance in metres from `point` to the box, zero inside. */
@@ -123,19 +126,25 @@ static float32_t room_box_distance(const RoomBox *box, Vec3 point) {
   return vec3_distance(mat4_mul_vec3(box->world, nearest), point);
 }
 
-/* The room of the smallest box holding `point`, or the outside. */
-static uint32_t room_at(const VkrSceneRooms *rooms, Vec3 point,
-                        float32_t epsilon) {
+/* The room of the smallest of `count` boxes holding `point`, or the
+   outside. */
+static uint32_t room_at_boxes(const RoomBox *boxes, uint32_t count, Vec3 point,
+                              float32_t epsilon) {
   uint32_t found = VKR_SCENE_ROOM_OUTSIDE;
   float32_t volume = INFINITY;
-  for (uint32_t i = 0; i < rooms->box_count; ++i) {
-    const RoomBox *box = &rooms->boxes[i];
+  for (uint32_t i = 0; i < count; ++i) {
+    const RoomBox *box = &boxes[i];
     if (box->volume < volume && room_box_contains(box, point, epsilon)) {
       found = box->room;
       volume = box->volume;
     }
   }
   return found;
+}
+
+static uint32_t room_at(const VkrSceneRooms *rooms, Vec3 point,
+                        float32_t epsilon) {
+  return room_at_boxes(rooms->boxes, rooms->box_count, point, epsilon);
 }
 
 // =============================================================================
@@ -256,8 +265,9 @@ static bool8_t rooms_rebuild_graph(VkrScene *scene, VkrSceneRooms *rooms) {
     box->world = world;
     box->inverse = mat4_inverse_affine(world);
     box->room = room;
-    box->volume = vec3_length(world.cols[0]) * vec3_length(world.cols[1]) *
-                  vec3_length(world.cols[2]);
+    box->size = vec3_new(vec3_length(world.cols[0]), vec3_length(world.cols[1]),
+                         vec3_length(world.cols[2]));
+    box->volume = box->size.x * box->size.y * box->size.z;
     box->min = vec3_new(INFINITY, INFINITY, INFINITY);
     box->max = vec3_new(-INFINITY, -INFINITY, -INFINITY);
     for (uint32_t corner = 0; corner < 8u; ++corner) {
@@ -903,6 +913,189 @@ uint32_t vkr_scene_rooms_list(const VkrScene *scene, VkrEntityId *out_entities,
     }
   }
   return room_count;
+}
+
+/* A portal as a room check tests it: its inverse world and the metres one
+   local unit along its normal spans. */
+typedef struct RoomCheckPortal {
+  Mat4 inverse;
+  float32_t normal_scale;
+} RoomCheckPortal;
+
+/* How far from a portal's plane a gap sample still lies in its opening: a
+   portal stands within its wall, up to the probe distance from the room's
+   face, and samples lie the gap depth past that face. */
+#define ROOM_CHECK_PORTAL_DEPTH                                                \
+  (ROOM_PORTAL_PROBE + 2.0f * VKR_SCENE_ROOM_GAP_DEPTH)
+
+/* Whether `point` lies in the opening of one of `count` portals. */
+static bool8_t rooms_in_any_portal(const RoomCheckPortal *portals,
+                                   uint32_t count, Vec3 point) {
+  for (uint32_t i = 0; i < count; ++i) {
+    const Vec3 local = mat4_mul_vec3(portals[i].inverse, point);
+    if (fabsf(local.x) <= 0.5f && fabsf(local.y) <= 0.5f &&
+        fabsf(local.z) * portals[i].normal_scale <= ROOM_CHECK_PORTAL_DEPTH) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+uint32_t vkr_scene_rooms_check(const VkrScene *scene,
+                               bool8_t (*solid)(void *context, Vec3 point),
+                               void *context, VkrSceneRoomIssue *out,
+                               uint32_t capacity) {
+  if (!scene) {
+    return 0u;
+  }
+  VkrEntityId *entities = vkr_allocator_alloc(
+      scene->alloc,
+      sizeof(VkrEntityId) * (VKR_SCENE_ROOM_BOX_MAX + VKR_SCENE_PORTAL_MAX),
+      ROOMS_TAG);
+  RoomBox *boxes = vkr_allocator_alloc(
+      scene->alloc, sizeof(RoomBox) * VKR_SCENE_ROOM_BOX_MAX, ROOMS_TAG);
+  RoomCheckPortal *portals = vkr_allocator_alloc(
+      scene->alloc, sizeof(RoomCheckPortal) * VKR_SCENE_PORTAL_MAX, ROOMS_TAG);
+  uint32_t found = 0u;
+  if (!entities || !boxes || !portals) {
+    goto cleanup;
+  }
+  VkrEntityId *portal_entities = entities + VKR_SCENE_ROOM_BOX_MAX;
+  const uint32_t box_count =
+      Min(vkr_scene_find_typed(scene, &vkr_scene_room_type, entities,
+                               VKR_SCENE_ROOM_BOX_MAX),
+          VKR_SCENE_ROOM_BOX_MAX);
+  const uint32_t portal_count =
+      Min(vkr_scene_find_typed(scene, &vkr_scene_portal_type, portal_entities,
+                               VKR_SCENE_PORTAL_MAX),
+          VKR_SCENE_PORTAL_MAX);
+  /* Boxes of one owner entity share a room number: the first such box. */
+  for (uint32_t i = 0; i < box_count; ++i) {
+    const Mat4 world = rooms_entity_world(scene, entities[i]);
+    const VkrEntityId owner = rooms_owner(scene, entities[i]);
+    uint32_t room = i;
+    for (uint32_t k = 0; k < i; ++k) {
+      if (rooms_owner(scene, entities[k]).u64 == owner.u64) {
+        room = boxes[k].room;
+        break;
+      }
+    }
+    boxes[i] = (RoomBox){
+        .world = world,
+        .inverse = mat4_inverse_affine(world),
+        .size = vec3_new(vec3_length(world.cols[0]), vec3_length(world.cols[1]),
+                         vec3_length(world.cols[2])),
+        .room = room,
+    };
+    boxes[i].volume = boxes[i].size.x * boxes[i].size.y * boxes[i].size.z;
+  }
+  for (uint32_t i = 0; i < portal_count; ++i) {
+    Mat4 world = rooms_entity_world(scene, portal_entities[i]);
+    /* A rectangle flattened along its normal still inverts. */
+    if (vec3_length(world.cols[2]) < 1e-4f) {
+      world.cols[2] = vec3_normalize(vec3_cross(world.cols[0], world.cols[1]));
+    }
+    portals[i] = (RoomCheckPortal){
+        .inverse = mat4_inverse_affine(world),
+        .normal_scale = vec3_length(world.cols[2]),
+    };
+  }
+
+  /* Portals that join nothing. */
+  for (uint32_t i = 0; i < portal_count; ++i) {
+    const Mat4 world = rooms_entity_world(scene, portal_entities[i]);
+    const Vec3 center = mat4_position(world);
+    const Vec3 normal = vec3_normalize(vec3_cross(
+        vec3_sub(mat4_mul_vec3(world, vec3_new(0.5f, -0.5f, 0.0f)),
+                 mat4_mul_vec3(world, vec3_new(-0.5f, -0.5f, 0.0f))),
+        vec3_sub(mat4_mul_vec3(world, vec3_new(-0.5f, 0.5f, 0.0f)),
+                 mat4_mul_vec3(world, vec3_new(-0.5f, -0.5f, 0.0f)))));
+    const Vec3 probe = vec3_scale(normal, ROOM_PORTAL_PROBE);
+    if (room_at_boxes(boxes, box_count, vec3_add(center, probe),
+                      ROOM_INSIDE_EPSILON) ==
+        room_at_boxes(boxes, box_count, vec3_sub(center, probe),
+                      ROOM_INSIDE_EPSILON)) {
+      if (found < capacity) {
+        out[found] = (VkrSceneRoomIssue){.kind = VKR_SCENE_ROOM_ISSUE_PORTAL,
+                                         .position = center,
+                                         .entity = portal_entities[i]};
+      }
+      found++;
+    }
+  }
+
+  /* Gaps: samples just past each face that no solid, room or portal
+     closes. */
+  for (uint32_t i = 0; i < box_count && solid; ++i) {
+    const RoomBox *box = &boxes[i];
+    for (uint32_t face = 0; face < 6u; ++face) {
+      const uint32_t axis = face / 2u;
+      const float32_t sign = face % 2u ? 1.0f : -1.0f;
+      const uint32_t u_axis = (axis + 1u) % 3u;
+      const uint32_t v_axis = (axis + 2u) % 3u;
+      const float32_t size_u = vec3_length(box->world.cols[u_axis]);
+      const float32_t size_v = vec3_length(box->world.cols[v_axis]);
+      const float32_t size_n = vec3_length(box->world.cols[axis]);
+      if (size_u < 1e-3f || size_v < 1e-3f || size_n < 1e-3f) {
+        continue;
+      }
+      const uint32_t steps_u =
+          Max((uint32_t)(size_u / VKR_SCENE_ROOM_GAP_STEP), 1u);
+      const uint32_t steps_v =
+          Max((uint32_t)(size_v / VKR_SCENE_ROOM_GAP_STEP), 1u);
+      uint32_t open = 0u;
+      Vec3 open_sum = vec3_zero();
+      for (uint32_t a = 0; a < steps_u; ++a) {
+        for (uint32_t b = 0; b < steps_v; ++b) {
+          float32_t unit[3];
+          unit[axis] = sign * (0.5f + VKR_SCENE_ROOM_GAP_DEPTH / size_n);
+          unit[u_axis] = ((float32_t)a + 0.5f) / (float32_t)steps_u - 0.5f;
+          unit[v_axis] = ((float32_t)b + 0.5f) / (float32_t)steps_v - 0.5f;
+          const Vec3 point =
+              mat4_mul_vec3(box->world, vec3_new(unit[0], unit[1], unit[2]));
+          if (room_at_boxes(boxes, box_count, point, 0.0f) !=
+                  VKR_SCENE_ROOM_OUTSIDE ||
+              rooms_in_any_portal(portals, portal_count, point) ||
+              solid(context, point)) {
+            continue;
+          }
+          open++;
+          open_sum = vec3_add(open_sum, point);
+        }
+      }
+      const float32_t area = (float32_t)open * (size_u / (float32_t)steps_u) *
+                             (size_v / (float32_t)steps_v);
+      if (area >= VKR_SCENE_ROOM_GAP_AREA_MIN) {
+        if (found < capacity) {
+          out[found] = (VkrSceneRoomIssue){
+              .kind = VKR_SCENE_ROOM_ISSUE_GAP,
+              .position = vec3_scale(open_sum, 1.0f / (float32_t)open),
+              .entity = entities[i],
+              .value = area,
+          };
+        }
+        found++;
+      }
+    }
+  }
+
+cleanup:
+  if (entities) {
+    vkr_allocator_free(scene->alloc, entities,
+                       sizeof(VkrEntityId) *
+                           (VKR_SCENE_ROOM_BOX_MAX + VKR_SCENE_PORTAL_MAX),
+                       ROOMS_TAG);
+  }
+  if (boxes) {
+    vkr_allocator_free(scene->alloc, boxes,
+                       sizeof(RoomBox) * VKR_SCENE_ROOM_BOX_MAX, ROOMS_TAG);
+  }
+  if (portals) {
+    vkr_allocator_free(scene->alloc, portals,
+                       sizeof(RoomCheckPortal) * VKR_SCENE_PORTAL_MAX,
+                       ROOMS_TAG);
+  }
+  return found;
 }
 
 uint32_t vkr_scene_room_at(const VkrScene *scene, Vec3 point) {

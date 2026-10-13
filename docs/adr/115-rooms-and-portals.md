@@ -11,8 +11,8 @@ authority: adr
 Accepted (partial). Rooms hide the camera's draws, lights and reflection
 probes that no open portal shows, and sealed rooms keep their draws out of
 every cascade, on both pipeline classes; `room.probes` gives rooms their
-probes. `room.derive`, the `rooms` lint check and portals closed by movers
-from the
+probes and the `rooms` lint check finds leaks. `room.derive`, linting
+objects no room holds and portals closed by movers from the
 [large-level rendering](../proposals/large-level-rendering.md) proposal are
 not built. The tiled pipeline has native Metal evidence; the desktop
 pipeline has compiled SPIR-V only.
@@ -85,7 +85,15 @@ along a corridor.
    smallest probe box around its centre, so a probe on a room's box wins
    over the hall around it. `room.probes` adds a box-projected probe on the
    box of each room that holds none, up to the scene's 16 probes.
-8. **Switches.** A probe capture, the editor Scene's "All" and the
+8. **Lint.** `vkr_scene_rooms_check` reports a portal with one space on
+   both sides, and a gap in a room box's face: samples 0.5 m apart, 0.1 m
+   past the face, that no solid (the editor's collision), other room box or
+   portal opening closes, kept when their area reaches 0.25 m².
+   `level.lint` reports them as `rooms`
+   ([editor_level.c](../../editor/src/editor_level.c)) with the portal or
+   room box and the open area. Box containment takes its tolerance in
+   metres, so a long box does not swallow a nearby sample.
+9. **Switches.** A probe capture, the editor Scene's "All" and the
    `VKR_ROOMS=0` diagnostic draw every room, light and probe.
 
 ## Consequences
@@ -107,7 +115,10 @@ along a corridor.
   exactly; its colour moved 1% of pixels by up to 21 levels, all in the sky,
   through the automatic exposure the warm-up frames feed.
 - `blockout.room` and `blockout.doorway` made a room box on the interior and
-  a portal in the opening on Bistro through the agent channel.
+  a portal in the opening on Bistro through the agent channel, and
+  `level.lint` with `kinds` [`rooms`] then reported nothing. With the
+  portal deleted it reported the doorway's 2 m² gap, and a stray portal in
+  open space as joining nothing.
   `room.probes` was run only on a scene outside a project, where it refuses
   as `probe.create` does; its probe creation in a project scene is not
   exercised.

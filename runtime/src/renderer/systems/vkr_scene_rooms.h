@@ -88,6 +88,40 @@ bool8_t vkr_scene_rooms_box_hidden(const VkrSceneRoomFrame *frame, Vec3 center,
 uint32_t vkr_scene_rooms_list(const VkrScene *scene, VkrEntityId *out_entities,
                               Vec3 *out_min, Vec3 *out_max, uint32_t capacity);
 
+/* What a room check finds: a portal with one space on both sides, which
+   joins nothing, and a gap in a room's walls, floor or ceiling that no
+   solid, no other room and no portal closes, through which the camera sees
+   what the room hides. */
+typedef enum VkrSceneRoomIssueKind {
+  VKR_SCENE_ROOM_ISSUE_PORTAL = 0,
+  VKR_SCENE_ROOM_ISSUE_GAP,
+} VkrSceneRoomIssueKind;
+
+typedef struct VkrSceneRoomIssue {
+  VkrSceneRoomIssueKind kind;
+  /* The portal, or the middle of the gap's open samples. */
+  Vec3 position;
+  /* The portal entity, or the room box whose face has the gap. */
+  VkrEntityId entity;
+  /* The gap's open area in square metres; zero for a portal. */
+  float32_t value;
+} VkrSceneRoomIssue;
+
+/* Spacing of the samples a room check takes over each face, the depth past
+   the face they lie at (inside a wall), and the smallest open area that
+   counts as a gap. */
+#define VKR_SCENE_ROOM_GAP_STEP 0.5f
+#define VKR_SCENE_ROOM_GAP_DEPTH 0.1f
+#define VKR_SCENE_ROOM_GAP_AREA_MIN 0.25f
+
+/** Checks `scene`'s rooms and portals into `out`, up to `capacity`, and
+    returns how many issues it found. `solid` answers whether collision
+    fills a point (the editor's physics). */
+uint32_t vkr_scene_rooms_check(const VkrScene *scene,
+                               bool8_t (*solid)(void *context, Vec3 point),
+                               void *context, VkrSceneRoomIssue *out,
+                               uint32_t capacity);
+
 /** Index of the room holding `point`, the smallest when boxes overlap, or
     VKR_SCENE_ROOM_OUTSIDE. */
 uint32_t vkr_scene_room_at(const VkrScene *scene, Vec3 point);
