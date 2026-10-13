@@ -235,23 +235,14 @@ Implemented 2026-10-13 ([ADR-043](../adr/043-presentation-dpi-and-color-transfer
 the shared kernel, the analytic path on both pipelines, the 250 cd/m² paper
 white, the display peak on extended-linear output, and a calibration of 2.984
 that keeps mid grey where AgX put it. The display transform setting is `gt7`
-in cases and frame input; `agx` is gone. Still open: the tiled pipeline's
-compile, captures and tonemap timing on the M1 Pro, which decide the LUT
-choice below, and an extended-linear run on each OS.
+in cases and frame input; `agx` is gone. The tiled pipeline compiles and runs
+it analytically; ADR-043 records its captures, timing and the declined LUT.
+Still open: an extended-linear run with real headroom on each OS.
 
 SMAA T2x runs after this operator, on the display-referred SDR result it
 expects. The exposure false-colour view
 ([ADR-099](../adr/099-artist-views-and-luminance-queries.md)) moves with the
 tonemap pass.
-
-### Open choices
-
-- **Analytic or LUT.** The sample costs about 33 to 36 transcendental calls
-  per pixel, mostly in the ICtCp and PQ conversions. The tiled pipeline's p95
-  is 0.1 ms above its M1 Pro budget, and its tonemap pass takes 1.75 ms
-  (ADR-087). Recommendation: analytic on the desktop pipeline; on the tiled
-  pipeline, a 3D LUT rebuilt when the display peak changes if the analytic
-  pass costs measurable time.
 
 ### Evidence
 

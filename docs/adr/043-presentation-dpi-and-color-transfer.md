@@ -82,8 +82,21 @@ local and non-authoritative: Bistro street, café and lamp-lit night captures
 saturated lamp light and earlier highlight clipping than AgX; at 2560×1440
 with TAA, `Post.Tonemap.Fullscreen` takes 0.226 ms against AgX's 0.164 ms
 (p50, 300 samples each over two alternated rounds, the AgX side from a shader
-catalog that differs only in that pass). The tiled pipeline's GT7 has not been
-compiled or run.
+catalog that differs only in that pass). Metal Release, M1 Pro, local
+(2026-10-13): the tiled pipeline compiles GT7 once the curve's interpolation
+uses MSL's `mix` (`VKR_GT7_LERP`), Metal API validation of
+`tiled_bistro_capture` reports no errors, and the street and café captures
+keep their depth and mid tones (mean 8-bit luma 106.5 to 105.6 and 100.0 to
+100.4 against AgX). No pixel turns black; about 3 % of each view reaches full
+white, where AgX reached none, the largest patch being a lantern-lit wall.
+On `tiled_bistro_baked_native` at 2560×1440 without sharpening,
+`Post.Tonemap.Fullscreen` takes 0.707 ms against AgX's 0.508 ms (p50 of 1,500
+samples in each of two alternated rounds, `performance-windowed-gpu`,
+authoritative), and the whole GPU frame 0.16 ms more
+(`performance-windowed-gpu-submission`). The tiled pipeline keeps the
+analytic operator (see Alternatives considered). An extended-linear run with
+real headroom is still missing: a hidden harness window, and a locked screen,
+report headroom 1.
 
 On the Metal desktop implementation, removed on 2026-10-06, a native Release
 emissive grid spanned six colors at radiance 0.01–64. AgX, then the default,
@@ -302,6 +315,16 @@ diagnostic report SHA-256 values are respectively
 
 ## Alternatives considered
 
+A 3D LUT of GT7 on the tiled pipeline, rebuilt when the display peak changes,
+was declined on 2026-10-13. The operator's chroma fade between 0.98 and 1.16
+of the peak intensity is steep across channels in a log2-shaped input, so a
+float64 model of the operator against trilinear lookups over 2⁻¹² to 2⁶ needs
+96³ RGBA16F texels (7 MB) to stay within 4/255 in SDR, and still errs up to
+14 % on saturated highlights at headroom 4; 64³ errs up to 15/255. The
+analytic pass costs 0.2 ms at 2560×1440 on the M1 Pro and runs once per output
+pixel whenever the final draw filters (display-linear preparation above), so
+sharpening does not multiply it.
+
 Shader gamma plus sRGB attachment encoding is double conversion. Scaling the
 physical target to reduce Scene cost also degrades native UI; the high-DPI
 switch accepts that loss only when the user turns it off. Blending authored
@@ -310,7 +333,9 @@ sRGB values directly treats encoded values as linear.
 ## Revisit when
 
 HDR display output, another surface format or a new DPI/presentation platform is
-authorised with explicit transfer and coordinate semantics.
+authorised with explicit transfer and coordinate semantics; or the tiled
+tonemap pass's cost decides the M1 Pro budget, which would reopen a GT7 LUT
+or a cheaper intensity encoding.
 
 ## Implementation
 
