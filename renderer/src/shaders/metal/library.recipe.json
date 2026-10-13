@@ -18,7 +18,7 @@
     "../shared/clearcoat_kernel.slangh",
     "../shared/sharpen_kernel.slangh",
     "../shared/scene_blur_kernel.slangh",
-    "../shared/agx_kernel.slangh",
+    "../shared/gt7_kernel.slangh",
     "../shared/display_output_kernel.slangh",
     "../shared/color_grading_kernel.slangh",
     "../shared/editor_view.slangh",

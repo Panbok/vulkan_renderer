@@ -1205,7 +1205,7 @@ Direct-light visibility remains shadow-owned. Direct lighting and the IBL PDF sh
 See [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)
 and [ADR-042](adr/042-scene-linear-post-processing.md).
 
-AgX is the default display transform; ACES fitted remains selectable. Temperature,
+GT7 is the default display transform on both pipelines; ACES fitted remains selectable. Temperature,
 tint, contrast and saturation apply after exposure and before the transform, leaving
 metering and scene-linear history unchanged. Neutral grading bypasses its arithmetic.
 [ADR-043](adr/043-presentation-dpi-and-color-transfer.md) owns the display contract.

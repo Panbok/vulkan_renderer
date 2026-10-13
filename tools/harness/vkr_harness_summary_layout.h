@@ -797,7 +797,7 @@ typedef struct VkrHarnessRendererConfigV9 {
   uint32_t editor_resume_frame;
   /** Image-space sharpness after reconstruction. Zero disables the control. */
   float32_t image_sharpness;
-  /** `agx` is the default; `aces_fitted` preserves the prior presentation. */
+  /** `gt7` is the default; `aces_fitted` preserves the prior presentation. */
   char display_transform[16];
   float32_t white_balance_temperature;
   float32_t white_balance_tint;
@@ -933,7 +933,7 @@ typedef struct VkrHarnessRendererConfigV10 {
   uint32_t editor_resume_frame;
   /** Image-space sharpness after reconstruction. Zero disables the control. */
   float32_t image_sharpness;
-  /** `agx` is the default; `aces_fitted` preserves the prior presentation. */
+  /** `gt7` is the default; `aces_fitted` preserves the prior presentation. */
   char display_transform[16];
   float32_t white_balance_temperature;
   float32_t white_balance_tint;
@@ -1311,7 +1311,7 @@ typedef struct VkrHarnessRendererConfigV14 {
   uint32_t editor_resume_frame;
   /** Image-space sharpness after reconstruction. Zero disables the control. */
   float32_t image_sharpness;
-  /** `agx` is the default; `aces_fitted` preserves the prior presentation. */
+  /** `gt7` is the default; `aces_fitted` preserves the prior presentation. */
   char display_transform[16];
   float32_t white_balance_temperature;
   float32_t white_balance_tint;
@@ -1530,7 +1530,7 @@ typedef struct VkrHarnessRendererConfigV16 {
   uint32_t editor_resume_frame;
   /** Image-space sharpness after reconstruction. Zero disables the control. */
   float32_t image_sharpness;
-  /** `agx` is the default; `aces_fitted` preserves the prior presentation. */
+  /** `gt7` is the default; `aces_fitted` preserves the prior presentation. */
   char display_transform[16];
   float32_t white_balance_temperature;
   float32_t white_balance_tint;

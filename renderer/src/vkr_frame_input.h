@@ -82,7 +82,7 @@ typedef struct VkrFrameInfo {
 
 /** Presentation transform applied after scene-linear exposure. */
 typedef enum VkrDisplayTransform {
-  VKR_DISPLAY_TRANSFORM_AGX = 0,
+  VKR_DISPLAY_TRANSFORM_GT7 = 0,
   VKR_DISPLAY_TRANSFORM_ACES_FITTED = 1,
   VKR_DISPLAY_TRANSFORM_COUNT,
 } VkrDisplayTransform;

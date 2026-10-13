@@ -380,7 +380,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
       .ambient_color = vec4_new(0.1f, 0.1f, 0.1f, 1.0f),
       .exposure_mode = VKR_EXPOSURE_MODE_AUTOMATIC,
       .manual_exposure = VKR_DEFAULT_EXPOSURE,
-      .display_transform = VKR_DISPLAY_TRANSFORM_AGX,
+      .display_transform = VKR_DISPLAY_TRANSFORM_GT7,
       .white_balance_temperature = 0.0f,
       .white_balance_tint = 0.0f,
       .color_contrast = 1.0f,

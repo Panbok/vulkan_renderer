@@ -11,7 +11,7 @@ struct VkrVulkanFullscreenPush
 static const uint VKR_FULLSCREEN_ALREADY_OUTPUT_ENCODED = 1u << 0u;
 static const uint VKR_FULLSCREEN_TONEMAP = 1u << 1u;
 static const uint VKR_FULLSCREEN_FXAA = 1u << 2u;
-// The unset default is AgX. Bit 4 selects the retained ACES comparison path.
+// The unset default is GT7. Bit 4 selects the retained ACES comparison path.
 static const uint VKR_FULLSCREEN_ACES_FITTED = 1u << 4u;
 static const uint VKR_FULLSCREEN_SOURCE_DISPLAY_LINEAR = 1u << 5u;
 static const uint VKR_FULLSCREEN_PREPARE_DISPLAY_LINEAR = 1u << 6u;
@@ -33,15 +33,20 @@ float4 vkr_post_sample(uint texture_index, uint sampler_index, float2 uv,
         return source;
     }
     source.rgb = vkr_color_grade(max(source.rgb * exposure, 0.0f), grading);
-    float3 display_linear = tonemap
-                                ? (aces_fitted ? vkr_aces_fitted(source.rgb)
-                                               : vkr_agx_tonemap(source.rgb))
-                                : saturate(source.rgb);
-    source.rgb = tonemap
-                     ? vkr_display_output_scene_relative(source.rgb,
-                                                         display_linear,
-                                                         display_output)
-                     : display_linear;
+    if (!tonemap)
+    {
+        source.rgb = saturate(source.rgb);
+    }
+    else if (aces_fitted)
+    {
+        source.rgb = vkr_display_output_scene_relative(
+            source.rgb, vkr_aces_fitted(source.rgb), display_output);
+    }
+    else
+    {
+        source.rgb = vkr_gt7_tonemap(
+            source.rgb, vkr_display_output_headroom(display_output));
+    }
     return source;
 }
 

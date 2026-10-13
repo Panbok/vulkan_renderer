@@ -20,7 +20,7 @@
 #include "../../shared/cloud_kernel.slangh"
 #include "../../shared/sharpen_kernel.slangh"
 #include "../../shared/scene_blur_kernel.slangh"
-#include "../../shared/agx_kernel.slangh"
+#include "../../shared/gt7_kernel.slangh"
 #include "../../shared/display_output_kernel.slangh"
 #include "../../shared/color_grading_kernel.slangh"
 #include "../../shared/editor_view.slangh"

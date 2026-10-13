@@ -1701,7 +1701,7 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   application->globals.display_transform =
       string_equals(case_manifest->renderer.display_transform, "aces_fitted")
           ? VKR_DISPLAY_TRANSFORM_ACES_FITTED
-          : VKR_DISPLAY_TRANSFORM_AGX;
+          : VKR_DISPLAY_TRANSFORM_GT7;
   application->globals.white_balance_temperature =
       case_manifest->renderer.white_balance_temperature;
   application->globals.white_balance_tint =

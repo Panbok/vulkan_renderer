@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -38,11 +38,25 @@ from sRGB once on the CPU before blending. Texture color/data intent is resolved
 at loading/publication, not repaired by extra material shader gamma powers.
 
 
-AgX is the default display transform; ACES fitted remains selectable for comparison.
-The compact shared AgX kernel uses Rec.2020 inset/outset matrices, a 16.5-stop
-log range and a polynomial contrast curve. It follows Filament's compact transform,
-not the complete Blender OCIO configuration. It returns linear display RGB so the
-attachment still owns the single sRGB encoding step.
+GT7 is the default display transform since 2026-10-13, replacing AgX on both
+pipelines without an offline A/B comparison (owner decision,
+[Short-history rendering](../proposals/short-history-rendering.md)); ACES fitted
+remains selectable for comparison. The shared
+[`gt7_kernel.slangh`](../../renderer/src/shaders/shared/gt7_kernel.slangh) ports
+Polyphony Digital's MIT-licensed sample operator, version 1.0, with ICtCp as its
+uniform colour space, and keeps its licence notice. It converts sRGB to
+Rec.2020, scales the exposed value into the operator's frame buffer of
+100 cd/m² per unit (`VKR_GT7_SCENE_TO_FRAME_BUFFER` 2.984, which keeps mid grey
+0.18 at AgX's display value 0.215), applies the GT curve per channel
+(`alpha` 0.25, grey point 0.538, linear section 0.444, toe 1.280), blends it
+60 % toward the input's ICtCp chroma at the curve's intensity, with chroma
+fading between 0.98 and 1.16 of the peak, and clamps to the peak. SDR uses
+the 250 cd/m² paper white as display white, as the sample's `initializeAsSDR`
+does. The result returns to sRGB, clamped, as linear display RGB so the
+attachment still owns the single sRGB encoding step. Compared with AgX, GT7
+keeps the colour of lit areas, such as warm lamp light, and clips earlier:
+exposed 1.0 maps to 0.92 of white where AgX gave 0.58, and white is reached
+near exposed 1.6.
 
 Frame-input version 33 exposes normalized temperature/tint in [-1,1], contrast in
 [0.5,1.5], and saturation in [0,1.5]. Neutral values are 0,0,1,1. Runtime and harness
@@ -57,8 +71,21 @@ bypass grading.
 Capture summary version 9 preserves the controls; versions 2–8 migrate to neutral
 grading and ACES fitted to reproduce their historical presentation.
 
+GT7 port, 2026-10-13: a float32 transcription of the shader's formulas
+matched the unmodified reference program on 216 inputs (SDR and 1,000 and
+4,000 cd/m² peaks) within 1.6 × 10⁻⁴ relative. Vulkan Release, RX 6700 XT,
+local and non-authoritative: Bistro street, café and lamp-lit night captures
+(`local_shadow_bistro_street_capture`, `local_shadow_bistro_indoor_capture`,
+`bistro_lamps_baked_night_capture`) render with matched mid tones, more
+saturated lamp light and earlier highlight clipping than AgX; at 2560×1440
+with TAA, `Post.Tonemap.Fullscreen` takes 0.226 ms against AgX's 0.164 ms
+(p50, 300 samples each over two alternated rounds, the AgX side from a shader
+catalog that differs only in that pass). The tiled pipeline's GT7 has not been
+compiled or run.
+
 On the Metal desktop implementation, removed on 2026-10-06, a native Release
-emissive grid spanned six colors at radiance 0.01–64. AgX, ACES fitted and
+emissive grid spanned six colors at radiance 0.01–64. AgX, then the default,
+ACES fitted and
 non-neutral grading matched independent CPU references within one 8-bit code
 value, and their captured pre-display HDR bytes were identical. Neither the
 tiled pipeline nor native Vulkan has run this grid.
@@ -104,8 +131,8 @@ Default scene rendering filters an output-resolution RGBA16F intermediate
 whenever the final draw filters: FXAA on frames without temporal
 reconstruction, or nonzero sharpening. `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic reference
 path, which transforms every filter sample; unset, empty and other values
-select the intermediate. A preparation draw applies exposure, grading, AgX or
-ACES, and the scene-relative extended-linear mapping once per output pixel. It
+select the intermediate. A preparation draw applies exposure, grading, GT7 or
+ACES (with its scene-relative extended-linear mapping) once per output pixel. It
 omits FXAA, sharpening and the physical display scale. The final draw filters
 that image, then applies the physical output scale once. Editor.Resolve follows
 the same split; Editor.Composite continues sampling its already converted Scene
@@ -133,7 +160,7 @@ observations, not equivalent-work speedup evidence.
 [The Bistro comparison
 case](../../tools/cases/local/post_transform_cache_bistro.case.json), now
 pinned to Vulkan, uses bright opaque, blended and transmitting surfaces with
-AgX, non-neutral grading, FXAA and 0.4 sharpening at 640×360. On 2026-09-24, on
+the default transform (AgX when measured), non-neutral grading, FXAA and 0.4 sharpening at 640×360. On 2026-09-24, on
 the Metal desktop implementation removed on 2026-10-06, 13.91% of its final
 pixels differed from the analytic path, 0.8% by more than 32 codes and at most
 201/255: the analytic path's bright rim around emissive edges became an

@@ -39,7 +39,7 @@
     "shadow_pcf_early_out": true,
     "shadow_sdsm": false,
     "render_mode": "default",
-    "display_transform": "agx",
+    "display_transform": "gt7",
     "bloom_enabled": false,
     "gtao_enabled": false,
     "image_sharpness": 0.0

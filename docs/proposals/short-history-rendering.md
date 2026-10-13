@@ -62,10 +62,10 @@ previous frame.
   pipelines (`vkr_ggx_filter_roughness` in
   [`ggx_kernel.slangh`](../../renderer/src/shaders/shared/ggx_kernel.slangh),
   [ADR-012](../adr/012-texture-compression-pipeline.md)).
-- **Tone mapping**: compact AgX in
-  [`agx_kernel.slangh`](../../renderer/src/shaders/shared/agx_kernel.slangh),
-  followed on extended-linear output by the scene-relative headroom shoulder in
-  [`display_output_kernel.slangh`](../../renderer/src/shaders/shared/display_output_kernel.slangh)
+- **Tone mapping**: GT7 in
+  [`gt7_kernel.slangh`](../../renderer/src/shaders/shared/gt7_kernel.slangh)
+  since 2026-10-13 (section 4), mapping to the display's peak on
+  extended-linear output
   ([ADR-061](../adr/061-extended-linear-display-output.md)). The colour
   pipeline belongs to the shared art-level contract
   ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decision 3).
@@ -227,6 +227,14 @@ shared kernel replacing `agx_kernel.slangh`, used by both pipelines:
   SDR white, which replaces the scene-relative headroom shoulder in
   `display_output_kernel.slangh`.
 - The source keeps Polyphony's MIT notice.
+
+Implemented 2026-10-13 ([ADR-043](../adr/043-presentation-dpi-and-color-transfer.md)):
+the shared kernel, the analytic path on both pipelines, the 250 cd/m² paper
+white, the display peak on extended-linear output, and a calibration of 2.984
+that keeps mid grey where AgX put it. The display transform setting is `gt7`
+in cases and frame input; `agx` is gone. Still open: the tiled pipeline's
+compile, captures and tonemap timing on the M1 Pro, which decide the LUT
+choice below, and an extended-linear run on each OS.
 
 SMAA T2x runs after this operator, on the display-referred SDR result it
 expects. The exposure false-colour view
@@ -441,6 +449,7 @@ visibility and composition stay unchanged:
 3. Spatial GTAO (section 3); independent of AA once TAA no longer drives the
    noise. Done 2026-10-13 on the desktop pipeline (ADR-042).
 4. GT7 tone mapping (section 4); it fixes the colour space SMAA T2x reads.
+   Done 2026-10-13 on the desktop pipeline; Metal compile and timing open.
 5. SMAA T2x replacing portable TAA and FXAA (section 2).
 6. Tiled per-draw probes, room probes and planar water (section 5, items 2
    to 4).

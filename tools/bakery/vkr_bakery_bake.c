@@ -2326,7 +2326,7 @@ vkr_internal VkrBakeryJson *vkr_bake_probe_case(VkrBake *bake,
       "false, \"skybox\": true, \"shadow_preset\": \"balanced\", "
       "\"shadow_cascades\": 4, \"taa_enabled\": false, \"tonemap_enabled\": "
       "false, \"fxaa_enabled\": false, \"exposure_mode\": \"manual\", "
-      "\"manual_exposure\": 1, \"display_transform\": \"agx\", "
+      "\"manual_exposure\": 1, \"display_transform\": \"gt7\", "
       "\"bloom_enabled\": false, \"gtao_enabled\": false, \"image_sharpness\": "
       "0, \"ibl_probe_limit\": 0, \"render_mode\": \"default\"}, "
       "\"assertions\": [{\"metric\": \"visibility.gbuffer.resolve_invalid\", "
@@ -3853,7 +3853,7 @@ vkr_internal int vkr_bake_proxies_main(VkrBake *bake, int argc, char **argv) {
 
 /* Recipe 2: radius 1, 32 latitude/64 longitude intervals, neutral constant
  * ambient with two rectangular softboxes, 35 degree camera, manual exposure 1,
- * AgX, no temporal or post-process effects, rendered in an isolated harness.
+ * GT7, no temporal or post-process effects, rendered in an isolated harness.
  * The interactive renderer is never used; callers own the bounded thumbnail
  * cache. */
 #define VKR_PREVIEW_RECIPE "material-sphere-v2"
@@ -4061,7 +4061,7 @@ vkr_preview_case(VkrBake *bake, const char *scene_relative, int64_t size) {
       "false, \"skybox\": true, \"shadow_preset\": \"balanced\", "
       "\"shadow_cascades\": 4, \"taa_enabled\": false, \"tonemap_enabled\": "
       "true, \"fxaa_enabled\": true, \"exposure_mode\": \"manual\", "
-      "\"manual_exposure\": 1, \"display_transform\": \"agx\", "
+      "\"manual_exposure\": 1, \"display_transform\": \"gt7\", "
       "\"bloom_enabled\": false, \"gtao_enabled\": false, \"image_sharpness\": "
       "0, \"ibl_probe_limit\": 0, \"render_mode\": \"default\"}, \"camera\": "
       "{\"mode\": \"static\", \"position\": [0, 0, 4], \"yaw\": -90, "

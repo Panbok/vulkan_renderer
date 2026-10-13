@@ -565,7 +565,7 @@ _Static_assert(VKR_RENDER_MODE_COUNT == 19u,
 void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
   VKR_STRING_COPY_LITERAL(renderer->render_mode, "default");
   VKR_STRING_COPY_LITERAL(renderer->exposure_mode, "manual");
-  VKR_STRING_COPY_LITERAL(renderer->display_transform, "agx");
+  VKR_STRING_COPY_LITERAL(renderer->display_transform, "gt7");
   renderer->color_contrast = 1.0f;
   renderer->color_saturation = 1.0f;
   VKR_STRING_COPY_LITERAL(renderer->upscaler, "spatial");
@@ -795,7 +795,7 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
       string_equals(renderer->exposure_mode, "manual") ||
       string_equals(renderer->exposure_mode, "automatic");
   const bool8_t display_transform_valid =
-      string_equals(renderer->display_transform, "agx") ||
+      string_equals(renderer->display_transform, "gt7") ||
       string_equals(renderer->display_transform, "aces_fitted");
   const bool8_t automatic_exposure =
       string_equals(renderer->exposure_mode, "automatic");

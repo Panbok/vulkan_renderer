@@ -1,0 +1,243 @@
+// GT7 tone mapping for both pipelines: a port of Polyphony Digital's sample
+// implementation of the GT7 Tone Mapping operator, version 1.0 (2025-08-10),
+// published with "Driving Toward Reality: Physically Based Tone Mapping and
+// Perceptual Fidelity in Gran Turismo 7" (SIGGRAPH 2025, Physically Based
+// Shading course), with ICtCp as its uniform colour space:
+// https://blog.selfshadow.com/publications/s2025-shading-course/pdi/supplemental/gt7_tone_mapping.cpp
+//
+// -----
+// MIT License
+//
+// Copyright (c) 2025 Polyphony Digital Inc.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+// -----
+//
+// Contract: `vkr_gt7_tonemap` accepts exposed scene-linear sRGB / D65 and the
+// display's headroom over SDR white, and returns finite display-linear sRGB
+// in units of SDR white, in [0, max(headroom, 1)]. The operator's frame
+// buffer holds 100 cd/m^2 per unit, and SDR white is its 250 cd/m^2 paper
+// white, so SDR output keeps the reference's `initializeAsSDR` scale and an
+// extended-linear display of headroom H peaks at 250 H cd/m^2. The sanitizer
+// replaces negative, NaN and infinite input components with [0, 65504]; the
+// final clamp contains the Rec.2020-to-sRGB display-gamut conversion.
+
+#ifndef VKR_SHADER_GT7_KERNEL_SLANGH
+#define VKR_SHADER_GT7_KERNEL_SLANGH
+
+#define VKR_GT7_INPUT_MAX 65504.0f
+
+// Exposed scene-linear value to operator frame-buffer units. It keeps mid
+// grey (0.18) at the display value the previous AgX transform gave it.
+#define VKR_GT7_SCENE_TO_FRAME_BUFFER 2.984f
+
+// The SDR paper white in frame-buffer units: 250 cd/m^2 over 100 cd/m^2.
+#define VKR_GT7_PAPER_WHITE 2.5f
+
+// The reference's curve and blend parameters (`initializeParameters`).
+#define VKR_GT7_ALPHA 0.25f
+#define VKR_GT7_GRAY_POINT 0.538f
+#define VKR_GT7_LINEAR_SECTION 0.444f
+#define VKR_GT7_TOE_STRENGTH 1.280f
+#define VKR_GT7_BLEND_RATIO 0.6f
+#define VKR_GT7_FADE_START 0.98f
+#define VKR_GT7_FADE_END 1.16f
+
+// The curve's constants for one display peak, in frame-buffer units.
+struct VkrGt7Curve
+{
+    float peak;
+    float shoulder_a;
+    float shoulder_b;
+    float shoulder_c;
+    // The ICtCp intensity of a grey at the peak, where chroma starts to fade.
+    float peak_intensity;
+};
+
+float vkr_gt7_sanitize_component(float value)
+{
+    // The comparison rejects NaN and negative infinity. `min` turns positive
+    // infinity into the finite cap before the gamut matrix can form inf - inf.
+    return value > 0.0f ? min(value, VKR_GT7_INPUT_MAX) : 0.0f;
+}
+
+float3 vkr_gt7_sanitize(float3 color)
+{
+    return float3(vkr_gt7_sanitize_component(color.r),
+                  vkr_gt7_sanitize_component(color.g),
+                  vkr_gt7_sanitize_component(color.b));
+}
+
+// Linear sRGB / D65 to linear Rec.2020 / D65 and back. Coefficients are rows
+// so the component equations remain independent of Slang/MSL matrix layout.
+float3 vkr_gt7_srgb_to_rec2020(float3 color)
+{
+    return float3(0.627403895934699f * color.r + 0.329283038377884f * color.g +
+                      0.043313065687417f * color.b,
+                  0.069097289358232f * color.r + 0.919540395075459f * color.g +
+                      0.011362315566309f * color.b,
+                  0.016391438875151f * color.r + 0.088013307877226f * color.g +
+                      0.895595253247624f * color.b);
+}
+
+float3 vkr_gt7_rec2020_to_srgb(float3 color)
+{
+    return float3(1.660491002108434f * color.r - 0.587641138788550f * color.g -
+                      0.072849863319884f * color.b,
+                  -0.124550474521590f * color.r + 1.132899897125961f * color.g -
+                      0.008349422604371f * color.b,
+                  -0.018150763354905f * color.r - 0.100578898008007f * color.g +
+                      1.118729661362913f * color.b);
+}
+
+// The reference's smoothStep(x, edge0, edge1), which takes `x` first.
+float vkr_gt7_smooth_step(float x, float edge0, float edge1)
+{
+    float t = saturate((x - edge0) / (edge1 - edge0));
+    return t * t * (3.0f - 2.0f * t);
+}
+
+float3 vkr_gt7_smooth_step(float3 x, float edge0, float edge1)
+{
+    float3 t = saturate((x - edge0) / (edge1 - edge0));
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// SMPTE ST 2084 (PQ) between frame-buffer units and the PQ signal, as the
+// reference's inverseEotfSt2084 and eotfSt2084 with no exponent scale.
+#define VKR_GT7_PQ_M1 0.1593017578125f
+#define VKR_GT7_PQ_M2 78.84375f
+#define VKR_GT7_PQ_C1 0.8359375f
+#define VKR_GT7_PQ_C2 18.8515625f
+#define VKR_GT7_PQ_C3 18.6875f
+
+float3 vkr_gt7_pq_encode(float3 frame_buffer)
+{
+    // 100 cd/m^2 per unit over PQ's 10,000 cd/m^2 range.
+    float3 y = max(frame_buffer, 0.0f) * 0.01f;
+    float3 ym = pow(y, VKR_GT7_PQ_M1);
+    return exp2(VKR_GT7_PQ_M2 * (log2(VKR_GT7_PQ_C1 + VKR_GT7_PQ_C2 * ym) -
+                                 log2(1.0f + VKR_GT7_PQ_C3 * ym)));
+}
+
+float3 vkr_gt7_pq_decode(float3 signal)
+{
+    float3 np = pow(saturate(signal), 1.0f / VKR_GT7_PQ_M2);
+    float3 l = max(np - VKR_GT7_PQ_C1, 0.0f) /
+               (VKR_GT7_PQ_C2 - VKR_GT7_PQ_C3 * np);
+    return pow(l, 1.0f / VKR_GT7_PQ_M1) * 100.0f;
+}
+
+// ICtCp (ITU-T T.302) from and to linear Rec.2020 frame-buffer values.
+float3 vkr_gt7_rgb_to_ictcp(float3 rgb)
+{
+    float3 lms = float3(
+        (rgb.r * 1688.0f + rgb.g * 2146.0f + rgb.b * 262.0f) / 4096.0f,
+        (rgb.r * 683.0f + rgb.g * 2951.0f + rgb.b * 462.0f) / 4096.0f,
+        (rgb.r * 99.0f + rgb.g * 309.0f + rgb.b * 3688.0f) / 4096.0f);
+    float3 pq = vkr_gt7_pq_encode(lms);
+    return float3((2048.0f * pq.x + 2048.0f * pq.y) / 4096.0f,
+                  (6610.0f * pq.x - 13613.0f * pq.y + 7003.0f * pq.z) / 4096.0f,
+                  (17933.0f * pq.x - 17390.0f * pq.y - 543.0f * pq.z) / 4096.0f);
+}
+
+float3 vkr_gt7_ictcp_to_rgb(float3 ictcp)
+{
+    float3 pq = float3(
+        ictcp.x + 0.00860904f * ictcp.y + 0.11103f * ictcp.z,
+        ictcp.x - 0.00860904f * ictcp.y - 0.11103f * ictcp.z,
+        ictcp.x + 0.560031f * ictcp.y - 0.320627f * ictcp.z);
+    float3 lms = vkr_gt7_pq_decode(pq);
+    return max(float3(3.43661f * lms.x - 2.50645f * lms.y + 0.0698454f * lms.z,
+                      -0.79133f * lms.x + 1.9836f * lms.y - 0.192271f * lms.z,
+                      -0.0259499f * lms.x - 0.0989137f * lms.y +
+                          1.12486f * lms.z),
+               0.0f);
+}
+
+// The curve's constants for a display peak in frame-buffer units
+// (`GTToneMappingCurveV2::initializeCurve`). With a constant peak the
+// compiler folds this call.
+VkrGt7Curve vkr_gt7_prepare(float peak)
+{
+    float k = (VKR_GT7_LINEAR_SECTION - 1.0f) / (VKR_GT7_ALPHA - 1.0f);
+    VkrGt7Curve curve;
+    curve.peak = peak;
+    curve.shoulder_a = peak * VKR_GT7_LINEAR_SECTION + peak * k;
+    curve.shoulder_b = -peak * k * exp(VKR_GT7_LINEAR_SECTION / k);
+    curve.shoulder_c = -1.0f / (k * peak);
+    curve.peak_intensity = vkr_gt7_rgb_to_ictcp(float3(peak, peak, peak)).x;
+    return curve;
+}
+
+// The GT tone curve with its convergent shoulder, per channel
+// (`GTToneMappingCurveV2::evaluateCurve`); `x` is non-negative.
+float3 vkr_gt7_curve(float3 x, VkrGt7Curve curve)
+{
+    float3 weight_linear = vkr_gt7_smooth_step(x, 0.0f, VKR_GT7_GRAY_POINT);
+    float3 toe = VKR_GT7_GRAY_POINT *
+                 pow(x / VKR_GT7_GRAY_POINT, VKR_GT7_TOE_STRENGTH);
+    float3 below = (1.0f - weight_linear) * toe + weight_linear * x;
+    float3 shoulder = curve.shoulder_a +
+                      curve.shoulder_b * exp(x * curve.shoulder_c);
+    // `step` is one from the linear section's end on, where the reference
+    // switches to the shoulder; it selects per channel on both backends.
+    return lerp(below, shoulder, step(VKR_GT7_LINEAR_SECTION * curve.peak, x));
+}
+
+// `GT7ToneMapping::applyToneMapping` on linear Rec.2020 frame-buffer values,
+// without the SDR correction: the per-channel curve keeps its luminance and
+// blends 40/60 with the input's ICtCp chroma, which fades near the peak.
+float3 vkr_gt7_tonemap_rec2020(float3 rgb, VkrGt7Curve curve)
+{
+    float3 ucs = vkr_gt7_rgb_to_ictcp(rgb);
+    float3 skewed = vkr_gt7_curve(rgb, curve);
+    float3 skewed_ucs = vkr_gt7_rgb_to_ictcp(skewed);
+    float chroma_scale =
+        1.0f - vkr_gt7_smooth_step(ucs.x / curve.peak_intensity,
+                                   VKR_GT7_FADE_START, VKR_GT7_FADE_END);
+    float3 scaled = vkr_gt7_ictcp_to_rgb(float3(
+        skewed_ucs.x, ucs.y * chroma_scale, ucs.z * chroma_scale));
+    float3 blended = (1.0f - VKR_GT7_BLEND_RATIO) * skewed +
+                     VKR_GT7_BLEND_RATIO * scaled;
+    return min(blended, curve.peak);
+}
+
+// Exposed scene-linear sRGB to display-linear sRGB in units of SDR white. A
+// headroom of one or less is SDR, whose constant curve the compiler folds.
+float3 vkr_gt7_tonemap(float3 linear_srgb, float headroom)
+{
+    float3 rgb = vkr_gt7_srgb_to_rec2020(vkr_gt7_sanitize(linear_srgb)) *
+                 VKR_GT7_SCENE_TO_FRAME_BUFFER;
+    float relative_peak = max(headroom, 1.0f);
+    VkrGt7Curve curve;
+    if (headroom > 1.0f)
+    {
+        curve = vkr_gt7_prepare(VKR_GT7_PAPER_WHITE * headroom);
+    }
+    else
+    {
+        curve = vkr_gt7_prepare(VKR_GT7_PAPER_WHITE);
+    }
+    float3 mapped =
+        vkr_gt7_tonemap_rec2020(rgb, curve) * (1.0f / VKR_GT7_PAPER_WHITE);
+    return clamp(vkr_gt7_rec2020_to_srgb(mapped), 0.0f, relative_peak);
+}
+
+#endif

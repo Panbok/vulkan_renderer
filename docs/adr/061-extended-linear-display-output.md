@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -44,10 +44,14 @@ report current headroom 1 before a layer requests extended range. FP16 activatio
 is allowed then, while the shader preserves the SDR curve until current
 headroom rises. Potential headroom never substitutes for current shader limits.
 
-After exposure and grading, retain the selected AgX/ACES result through scene
-luminance 1. Above that anchor, raise highlights using a smooth shoulder whose
-remaining distance to current headroom halves every four stops. Apply one RGB
-scale to retain hue, bounded by the largest component. FXAA and sharpening
+After exposure and grading, GT7 maps to the display's peak itself: SDR
+white is its 250 cd/m² paper white, so a current headroom H gives the curve a
+peak of 250 H cd/m² and returns display-relative values in [0, H]
+(`vkr_display_output_headroom`, [ADR-043](043-presentation-dpi-and-color-transfer.md)).
+The ACES comparison transform retains its SDR result through scene luminance
+1; above that anchor, highlights rise along a smooth shoulder whose remaining
+distance to current headroom halves every four stops, with one RGB scale that
+retains hue, bounded by the largest component. FXAA and sharpening
 operate in display-relative units after this lift. Convert to native output
 units once at final output. UI white retains its SDR luminance; editor
 recomposition does not scale an already converted Scene image again.

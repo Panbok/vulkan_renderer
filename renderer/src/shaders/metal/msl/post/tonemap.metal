@@ -73,15 +73,15 @@ vkr_metal_packet_post_sample(texture2d<float, access::sample> source,
     return hdr;
   }
   float3 color = vkr_color_grade(max(hdr.rgb * exposure, 0.0), grading);
-  float3 display_linear =
-      (flags & 1u) != 0u
-          ? ((flags & 4u) != 0u ? vkr_metal_packet_aces_fitted(color)
-                                : vkr_agx_tonemap(color))
-          : clamp(color, 0.0, 1.0);
-  hdr.rgb = (flags & 1u) != 0u
-                ? vkr_display_output_scene_relative(color, display_linear,
-                                                    display_output)
-                : display_linear;
+  if ((flags & 1u) == 0u) {
+    hdr.rgb = clamp(color, 0.0, 1.0);
+  } else if ((flags & 4u) != 0u) {
+    hdr.rgb = vkr_display_output_scene_relative(
+        color, vkr_metal_packet_aces_fitted(color), display_output);
+  } else {
+    hdr.rgb =
+        vkr_gt7_tonemap(color, vkr_display_output_headroom(display_output));
+  }
   return hdr;
 }
 

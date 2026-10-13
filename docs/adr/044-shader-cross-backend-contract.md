@@ -752,7 +752,7 @@ domain under the [evidence rules](#evidence-rules).
 | GTAO | Desktop | `shared/gtao_kernel.slangh` | — | `vulkan/slang/post/gtao.slang` |
 | Temporal resolve | Desktop | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | — | `vulkan/slang/world/deferred.slang` |
 | Depth of field, motion blur, surface diffusion | Desktop | `shared/dof_kernel.slangh`, `motion_blur_kernel.slangh`, `subsurface_kernel.slangh` | — | `vulkan/slang/post/dof.slang`, `motion_blur.slang`, `subsurface.slang` |
-| Tonemap/sharpening/display output | Shared | shared exposure state, `shared/sharpen_kernel.slangh`, `agx_kernel.slangh`, `display_output_kernel.slangh`, `color_grading_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
+| Tonemap/sharpening/display output | Shared | shared exposure state, `shared/sharpen_kernel.slangh`, `gt7_kernel.slangh`, `display_output_kernel.slangh`, `color_grading_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
 | FXAA | Desktop | — | — | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
 | Text/UI | Shared | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 
@@ -1031,7 +1031,7 @@ prefiltered specular composites the chain in `world/default.slang` and in
 validation pass on the Windows host; native Metal execution of these kernels
 is not recorded.
 
-AgX and grading are shared production kernels. Metal's post root carries a
+GT7 and grading are shared production kernels. Metal's post root carries a
 grading-block pointer at byte 32; Vulkan's utility root is 560 bytes, with the
 pointer at byte 544. The 64-byte grading record contains three matrix rows followed
 by contrast, saturation, enable and reserved controls. Native ABI manifests and

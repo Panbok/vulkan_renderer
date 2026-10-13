@@ -262,7 +262,7 @@ Start with coarse feature gating rather than a complicated per-tile material arc
 
 One implementation detail matters: **a 1×1 fallback is not safe for arbitrary full-resolution `Load(pixel)` accesses**. Specialize those reads away or explicitly return the default material value.
 
-## 6. AgX and grading are evaluated repeatedly inside FXAA and sharpening
+## 6. The display transform and grading are evaluated repeatedly inside FXAA and sharpening
 
 **Priority: Medium–high — strong shader optimization candidate.**
 
@@ -279,7 +279,7 @@ Consequently, the current source evaluates that chain approximately:
 
 The Metal and Vulkan implementations follow this same structure.
 
-This was less costly with the simple rational ACES-style curve. Your AgX path now includes gamut transformations, logarithms, a polynomial, and display linearization, so repeating the whole chain deserves profiling.
+This was less costly with the simple rational ACES-style curve. The default transform, GT7 since 2026-10-13 (AgX when this was written), includes gamut transformations, two ICtCp round trips with PQ encodes and decodes, and its curve, so repeating the whole chain deserves profiling. The post-transform cache of ADR-043 already tonemaps once before filtering.
 
 ### Recommended correction
 

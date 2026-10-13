@@ -302,7 +302,7 @@ vkr_internal void test_harness_case_parser(void) {
   assert(parsed.renderer.shadow_split_lambda == 0.80f);
   assert(parsed.renderer.shadow_map_size == 2048u);
   assert(strcmp(parsed.renderer.exposure_mode, "manual") == 0);
-  assert(strcmp(parsed.renderer.display_transform, "agx") == 0);
+  assert(strcmp(parsed.renderer.display_transform, "gt7") == 0);
   assert(parsed.renderer.manual_exposure == VKR_DEFAULT_EXPOSURE);
   assert(parsed.renderer.exposure_compensation_ev == 0.0f);
   assert(parsed.renderer.white_balance_temperature == 0.0f);
@@ -1512,7 +1512,7 @@ vkr_internal void test_harness_report_shape(void) {
   snprintf(report.case_manifest.renderer.exposure_mode,
            sizeof(report.case_manifest.renderer.exposure_mode), "automatic");
   snprintf(report.case_manifest.renderer.display_transform,
-           sizeof(report.case_manifest.renderer.display_transform), "agx");
+           sizeof(report.case_manifest.renderer.display_transform), "gt7");
   report.case_manifest.renderer.manual_exposure = 0.25f;
   report.case_manifest.renderer.exposure_compensation_ev = 1.0f;
   report.case_manifest.renderer.white_balance_temperature = -0.25f;
@@ -1594,7 +1594,7 @@ vkr_internal void test_harness_report_shape(void) {
   assert(strstr(json, "\"shadow_split_lambda\":0.25") != NULL);
   assert(strstr(json, "\"shadow_map_size\":4096") != NULL);
   assert(strstr(json, "\"taa_enabled\":false") != NULL);
-  assert(strstr(json, "\"display_transform\":\"agx\"") != NULL);
+  assert(strstr(json, "\"display_transform\":\"gt7\"") != NULL);
   assert(strstr(json, "\"white_balance_temperature\":-0.25") != NULL);
   assert(strstr(json, "\"white_balance_tint\":0.125") != NULL);
   assert(strstr(json, "\"color_contrast\":1.1") != NULL);
@@ -2040,7 +2040,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.editor_stop_frame = 1u;
   report.case_manifest.renderer.editor_resume_frame = 4u;
   VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.display_transform,
-                          "agx");
+                          "gt7");
   report.case_manifest.renderer.white_balance_temperature = 6400.0f;
   report.case_manifest.renderer.white_balance_tint = 0.0625f;
   report.case_manifest.renderer.color_contrast = 1.05f;
@@ -2200,7 +2200,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.dynamic_resolution);
   assert(summary.case_manifest.renderer.dynamic_resolution_min_scale == 0.5f);
   assert(summary.case_manifest.renderer.dynamic_resolution_max_scale == 0.8f);
-  assert(strcmp(summary.case_manifest.renderer.display_transform, "agx") == 0);
+  assert(strcmp(summary.case_manifest.renderer.display_transform, "gt7") == 0);
   assert(summary.case_manifest.renderer.white_balance_temperature == 6400.0f);
   assert(summary.case_manifest.renderer.white_balance_tint == 0.0625f);
   assert(summary.case_manifest.renderer.color_contrast == 1.05f);

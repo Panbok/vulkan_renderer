@@ -13,16 +13,24 @@ struct VkrDisplayOutputParams
     uint reserved;
 };
 
+// The headroom a display transform maps into: the display's when the output
+// is extended-linear, otherwise SDR white.
+float vkr_display_output_headroom(VkrDisplayOutputParams output)
+{
+    return output.extended_linear != 0u ? max(output.headroom, 1.0f) : 1.0f;
+}
+
 float vkr_display_output_luminance(float3 color)
 {
     return dot(max(color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-// Preserve the selected SDR display transform through scene white. Above
-// scene-linear one, the four-stop shoulder approaches `headroom`; the final
-// component cap preserves hue while keeping the FP16 presentation value in
-// the display's relative range. This is deliberately after AgX/ACES and
-// before spatial post filters so their samples share one linear unit.
+// Extends the ACES comparison transform, which is SDR-only, into the
+// display's headroom. Above scene-linear one, the four-stop shoulder
+// approaches `headroom`; the final component cap preserves hue while keeping
+// the FP16 presentation value in the display's relative range. GT7 maps to
+// the display's peak itself (gt7_kernel.slangh). This is deliberately before
+// spatial post filters so their samples share one linear unit.
 float3 vkr_display_output_scene_relative(float3 scene_linear,
                                          float3 display_linear,
                                          VkrDisplayOutputParams output)

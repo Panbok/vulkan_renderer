@@ -175,7 +175,7 @@ Facts at commit `0d408fe6`.
   This covers atmosphere, sun and moon, clouds, height fog, volumetric fog
   and `post_process` (exposure, white balance, contrast, saturation, bloom,
   DoF, motion blur, GTAO). A scene can inherit the World's instance.
-  The display transform is AgX, and colour grading is analytic. No LUT
+  The display transform is GT7, and colour grading is analytic. No LUT
   exists.
 - **Spatial overrides.** The only one is `fog_density_box`, which affects
   volumetric fog on the desktop pipeline only. No post-process, exposure or
