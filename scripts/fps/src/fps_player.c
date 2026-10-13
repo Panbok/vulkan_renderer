@@ -36,6 +36,14 @@ static bool8_t player_fail(FpsPlayer *player, const char *message) {
   return false_v;
 }
 
+/* Records why the last SDK call failed. */
+static bool8_t player_fail_sdk(VkrCtx *ctx, FpsPlayer *player) {
+  const VkrStr reason = vkr_last_error(ctx);
+  snprintf(player->error, sizeof(player->error), VKR_STR_FMT,
+           VKR_STR_ARG(reason));
+  return false_v;
+}
+
 static bool8_t player_prepare_animation(VkrCtx *ctx, FpsPlayer *player,
                                         const char **error) {
   const uint64_t animation_id =
@@ -274,7 +282,7 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
   }
   VkrCharacterState motor;
   if (!vkr_character_state(ctx, player->entity, &motor)) {
-    return player_fail(player, vkr_last_error(ctx));
+    return player_fail_sdk(ctx, player);
   }
   const float32_t forward = !!(state->held & (1u << FPS_ACTION_FORWARD)) -
                             !!(state->held & (1u << FPS_ACTION_BACKWARD));
@@ -367,7 +375,7 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
     player->carried = (Vec2){0};
   }
   if (!vkr_character_move(ctx, player->entity, &move, &motor)) {
-    return player_fail(player, vkr_last_error(ctx));
+    return player_fail_sdk(ctx, player);
   }
   player->current_foot = motor.foot;
   state->velocity = motor.velocity;
@@ -596,20 +604,20 @@ bool8_t fps_player_before_physics(VkrCtx *ctx, FpsPlayer *player, uint64_t tick,
 }
 
 bool8_t fps_player_attach(VkrCtx *ctx, FpsPlayer *player,
-                          const FpsPlayerConfig *config, const char **error) {
+                          const FpsPlayerConfig *config, VkrStr *error) {
   if (!player || player->attached || !config || !config->instance_id ||
       config->instance_id == UINT64_MAX || !isfinite(config->yaw) ||
       !vkr_paused(ctx) || vkr_ticks(ctx) || vkr_sim_debt(ctx) ||
       !vkr_alive(ctx, config->entity)) {
     if (error)
-      *error = "Player requires an unbound paused/reset scene";
+      *error = VKR_STR("Player requires an unbound paused/reset scene");
     return false_v;
   }
   const VkrStateType state_type = VKR_STATE_TYPE(ctx, FpsPlayerState);
   if (!state_type.id || vkr_state_get(ctx, config->entity, state_type) ||
       vkr_character_state(ctx, config->entity, NULL)) {
     if (error)
-      *error = "Player behavior/motor is already attached";
+      *error = VKR_STR("Player behavior/motor is already attached");
     return false_v;
   }
   *player = (FpsPlayer){.entity = config->entity,
@@ -625,13 +633,14 @@ bool8_t fps_player_attach(VkrCtx *ctx, FpsPlayer *player,
   if (!vkr_state_add(ctx, config->entity, state_type, NULL)) {
     goto fail;
   }
-  player->button_type = vkr_component_named(ctx, "button");
+  player->button_type = vkr_component_named(ctx, VKR_STR("button"));
   if (player->button_type) {
-    player->press_input = vkr_io_input(ctx, player->button_type, "press");
+    player->press_input =
+        vkr_io_input(ctx, player->button_type, VKR_STR("press"));
   }
-  player->mover_type = vkr_component_named(ctx, "mover");
+  player->mover_type = vkr_component_named(ctx, VKR_STR("mover"));
   if (player->mover_type) {
-    player->use_input = vkr_io_input(ctx, player->mover_type, "use");
+    player->use_input = vkr_io_input(ctx, player->mover_type, VKR_STR("use"));
   }
   const VkrCharacterDesc motor = vkr_character_default(ctx);
   if (!vkr_character_create(ctx, config->entity, &motor,
@@ -652,14 +661,14 @@ bool8_t fps_player_attach(VkrCtx *ctx, FpsPlayer *player,
                                (FpsCameraRigMode)config->settings.camera_mode,
                                false_v)) {
     if (error) {
-      *error = "Player camera initialization failed";
+      *error = VKR_STR("Player camera initialization failed");
     }
     goto remove_motor;
   }
   fps_player_reset(ctx, player);
   if (player->commands.faulted) {
     if (error) {
-      *error = "Player animation initialization failed";
+      *error = VKR_STR("Player animation initialization failed");
     }
     goto remove_motor;
   }

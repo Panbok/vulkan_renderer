@@ -3,10 +3,10 @@
 #include <math.h>
 #include <string.h>
 
-static uint32_t animation_prefer(VkrCtx *ctx, VkrEntity entity,
-                                 const char *primary, const char *fallback) {
+static uint32_t animation_prefer(VkrCtx *ctx, VkrEntity entity, VkrStr primary,
+                                 VkrStr fallback) {
   const uint32_t clip = vkr_anim_clip_find(ctx, entity, primary);
-  return clip != VKR_CLIP_NONE || !fallback
+  return clip != VKR_CLIP_NONE || !fallback.length
              ? clip
              : vkr_anim_clip_find(ctx, entity, fallback);
 }
@@ -125,10 +125,10 @@ bool8_t fps_player_animation_initialize(VkrCtx *ctx,
   for (uint32_t i = 0; i < FPS_PLAYER_ANIMATION_MODE_COUNT; ++i) {
     next.clips[i] = VKR_CLIP_NONE;
   }
-  uint32_t idle =
-      animation_prefer(ctx, entity, "Rifle_Aim_Idle", "Pistol_Aim_Idle");
+  uint32_t idle = animation_prefer(ctx, entity, VKR_STR("Rifle_Aim_Idle"),
+                                   VKR_STR("Pistol_Aim_Idle"));
   if (idle == VKR_CLIP_NONE) {
-    idle = vkr_anim_clip_find(ctx, entity, "Idle");
+    idle = vkr_anim_clip_find(ctx, entity, VKR_STR("Idle"));
   }
   if (idle == VKR_CLIP_NONE) {
     if (error) {
@@ -137,14 +137,16 @@ bool8_t fps_player_animation_initialize(VkrCtx *ctx,
     return false_v;
   }
   next.clips[FPS_PLAYER_ANIMATION_IDLE] = idle;
-  uint32_t walk = animation_prefer(ctx, entity, "Rifle_Walk", "Walk_Forward");
+  uint32_t walk = animation_prefer(ctx, entity, VKR_STR("Rifle_Walk"),
+                                   VKR_STR("Walk_Forward"));
   if (walk != VKR_CLIP_NONE) {
     next.reference_speeds[FPS_PLAYER_ANIMATION_WALK] = 1.3f;
   } else {
     walk = idle;
   }
   next.clips[FPS_PLAYER_ANIMATION_WALK] = walk;
-  uint32_t run = animation_prefer(ctx, entity, "Rifle_Run", "Run_Forward");
+  uint32_t run = animation_prefer(ctx, entity, VKR_STR("Rifle_Run"),
+                                  VKR_STR("Run_Forward"));
   if (run != VKR_CLIP_NONE) {
     next.reference_speeds[FPS_PLAYER_ANIMATION_RUN] = 3.4f;
   } else {
@@ -153,11 +155,11 @@ bool8_t fps_player_animation_initialize(VkrCtx *ctx,
         next.reference_speeds[FPS_PLAYER_ANIMATION_WALK];
   }
   next.clips[FPS_PLAYER_ANIMATION_RUN] = run;
-  uint32_t crouch =
-      animation_prefer(ctx, entity, "Crouch_Rifle_Aim", "Crouch_Idle");
+  uint32_t crouch = animation_prefer(ctx, entity, VKR_STR("Crouch_Rifle_Aim"),
+                                     VKR_STR("Crouch_Idle"));
   next.clips[FPS_PLAYER_ANIMATION_CROUCH_IDLE] =
       crouch == VKR_CLIP_NONE ? idle : crouch;
-  crouch = vkr_anim_clip_find(ctx, entity, "Crouch_Walk");
+  crouch = vkr_anim_clip_find(ctx, entity, VKR_STR("Crouch_Walk"));
   if (crouch != VKR_CLIP_NONE) {
     next.reference_speeds[FPS_PLAYER_ANIMATION_CROUCH_WALK] = 0.6f;
   } else {
@@ -165,25 +167,25 @@ bool8_t fps_player_animation_initialize(VkrCtx *ctx,
   }
   next.clips[FPS_PLAYER_ANIMATION_CROUCH_WALK] = crouch;
   next.clips[FPS_PLAYER_ANIMATION_CROUCH_DOWN] =
-      vkr_anim_clip_find(ctx, entity, "Crouch_Down");
+      vkr_anim_clip_find(ctx, entity, VKR_STR("Crouch_Down"));
   next.clips[FPS_PLAYER_ANIMATION_CROUCH_UP] =
-      vkr_anim_clip_find(ctx, entity, "Crouch_Up");
+      vkr_anim_clip_find(ctx, entity, VKR_STR("Crouch_Up"));
   next.clips[FPS_PLAYER_ANIMATION_JUMP_START] =
-      vkr_anim_clip_find(ctx, entity, "Jump_Start");
+      vkr_anim_clip_find(ctx, entity, VKR_STR("Jump_Start"));
   next.clips[FPS_PLAYER_ANIMATION_JUMP_LOOP] =
-      vkr_anim_clip_find(ctx, entity, "Jump_Loop");
+      vkr_anim_clip_find(ctx, entity, VKR_STR("Jump_Loop"));
   next.clips[FPS_PLAYER_ANIMATION_JUMP_LAND] =
-      vkr_anim_clip_find(ctx, entity, "Jump_Land");
-  next.clips[FPS_PLAYER_ANIMATION_FIRE] =
-      animation_prefer(ctx, entity, "Rifle_Fire", "Pistol_Fire");
+      vkr_anim_clip_find(ctx, entity, VKR_STR("Jump_Land"));
+  next.clips[FPS_PLAYER_ANIMATION_FIRE] = animation_prefer(
+      ctx, entity, VKR_STR("Rifle_Fire"), VKR_STR("Pistol_Fire"));
   next.clips[FPS_PLAYER_ANIMATION_CROUCH_FIRE] =
-      vkr_anim_clip_find(ctx, entity, "Crouch_Rifle_Fire");
+      vkr_anim_clip_find(ctx, entity, VKR_STR("Crouch_Rifle_Fire"));
   if (next.clips[FPS_PLAYER_ANIMATION_CROUCH_FIRE] == VKR_CLIP_NONE) {
     next.clips[FPS_PLAYER_ANIMATION_CROUCH_FIRE] =
         next.clips[FPS_PLAYER_ANIMATION_FIRE];
   }
-  next.clips[FPS_PLAYER_ANIMATION_RELOAD] =
-      animation_prefer(ctx, entity, "Rifle_Reload", "Pistol_Reload");
+  next.clips[FPS_PLAYER_ANIMATION_RELOAD] = animation_prefer(
+      ctx, entity, VKR_STR("Rifle_Reload"), VKR_STR("Pistol_Reload"));
   for (uint32_t i = FPS_PLAYER_ANIMATION_CROUCH_DOWN;
        i < FPS_PLAYER_ANIMATION_MODE_COUNT; ++i) {
     if (next.clips[i] != VKR_CLIP_NONE &&

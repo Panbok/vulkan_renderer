@@ -68,9 +68,10 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 8u
+#define VKR_SDK_VERSION 9u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -82,6 +83,30 @@
 /** The calling script instance. Pass it to every SDK call; do not keep it
  * past the hook that received it. */
 typedef struct VkrCtx VkrCtx;
+
+/** A view of `length` bytes of text at `data`, with no terminating NUL
+ * required. Every string an SDK call takes or returns is one, except printf
+ * formats; the host copies what it keeps, so the bytes need only last for the
+ * call. Descriptor names (VKR_COMPONENT, VKR_MODULE and the port lists) stay
+ * string literals. */
+typedef struct VkrStr {
+  const char *data;
+  uint64_t length;
+} VkrStr;
+
+/** A view of a string literal; anything else fails to compile. */
+#define VKR_STR(literal)                                                       \
+  ((VkrStr){.data = "" literal "", .length = sizeof("" literal "") - 1u})
+
+/** printf arguments for a view: printf(VKR_STR_FMT "\n", VKR_STR_ARG(s)).
+ * VKR_STR_ARG evaluates `s` twice. */
+#define VKR_STR_FMT "%.*s"
+#define VKR_STR_ARG(s) (int)(s).length, (s).data
+
+/** A view of a NUL-terminated string; empty for NULL. */
+static inline VkrStr vkr_str_cstr(const char *text) {
+  return (VkrStr){.data = text, .length = text ? (uint64_t)strlen(text) : 0u};
+}
 
 /** An entity in any loaded container. Zero is no entity. */
 typedef struct VkrEntity {
@@ -130,8 +155,8 @@ typedef struct VkrTRS {
 } VkrTRS;
 
 typedef struct VkrSpawnDesc {
-  /** Optional display name. */
-  const char *name;
+  /** Optional display name; empty for none. */
+  VkrStr name;
   /** Optional parent in the same container. */
   VkrEntity parent;
   VkrTRS transform;
@@ -587,12 +612,12 @@ typedef uint32_t (*VkrProjectEntry)(VkrModuleEntry *entries, uint32_t capacity);
 
 typedef struct VkrSdkTable {
   /* Diagnostics and control. */
-  void (*log)(VkrCtx *ctx, VkrLogLevel level, const char *message);
-  void (*fail)(VkrCtx *ctx, const char *message);
-  const char *(*last_error)(VkrCtx *ctx);
+  void (*log)(VkrCtx *ctx, VkrLogLevel level, VkrStr message);
+  void (*fail)(VkrCtx *ctx, VkrStr message);
+  VkrStr (*last_error)(VkrCtx *ctx);
   void (*disable)(VkrCtx *ctx);
   void *(*temp_alloc)(VkrCtx *ctx, uint64_t size, uint64_t align);
-  bool8_t (*option)(VkrCtx *ctx, const char *name);
+  bool8_t (*option)(VkrCtx *ctx, VkrStr name);
 
   /* Containers. */
   VkrContainer (*container_self)(VkrCtx *ctx);
@@ -604,7 +629,7 @@ typedef struct VkrSdkTable {
   VkrEntity (*spawn)(VkrCtx *ctx, const VkrSpawnDesc *desc);
   void (*destroy)(VkrCtx *ctx, VkrEntity entity);
   bool8_t (*alive)(VkrCtx *ctx, VkrEntity entity);
-  bool8_t (*set_name)(VkrCtx *ctx, VkrEntity entity, const char *name);
+  bool8_t (*set_name)(VkrCtx *ctx, VkrEntity entity, VkrStr name);
   bool8_t (*set_parent)(VkrCtx *ctx, VkrEntity entity, VkrEntity parent);
   VkrEntity (*parent)(VkrCtx *ctx, VkrEntity entity);
   bool8_t (*set_visible)(VkrCtx *ctx, VkrEntity entity, bool8_t visible);
@@ -616,13 +641,13 @@ typedef struct VkrSdkTable {
   bool8_t (*has_visual)(VkrCtx *ctx, VkrEntity entity);
   bool8_t (*set_shape)(VkrCtx *ctx, VkrEntity entity,
                        const VkrShapeDesc *shape);
-  bool8_t (*spawn_model)(VkrCtx *ctx, VkrEntity entity, const char *mesh,
-                         const char *animation);
+  bool8_t (*spawn_model)(VkrCtx *ctx, VkrEntity entity, VkrStr mesh,
+                         VkrStr animation);
   void (*despawn_model)(VkrCtx *ctx, VkrEntity entity);
   VkrModelState (*model_state)(VkrCtx *ctx, VkrEntity entity);
 
   /* Components and runtime state. */
-  const VkrComponentDesc *(*component_named)(VkrCtx *ctx, const char *name);
+  const VkrComponentDesc *(*component_named)(VkrCtx *ctx, VkrStr name);
   const void *(*component_get)(VkrCtx *ctx, VkrEntity entity,
                                const VkrComponentDesc *type);
   void *(*component_get_mut)(VkrCtx *ctx, VkrEntity entity,
@@ -632,7 +657,7 @@ typedef struct VkrSdkTable {
   uint32_t (*component_find)(VkrCtx *ctx, VkrContainer container,
                              const VkrComponentDesc *type, VkrEntity *out,
                              uint32_t capacity);
-  VkrStateType (*state_type)(VkrCtx *ctx, const char *name, uint32_t size,
+  VkrStateType (*state_type)(VkrCtx *ctx, VkrStr name, uint32_t size,
                              uint32_t align);
   void *(*state_add)(VkrCtx *ctx, VkrEntity entity, VkrStateType type,
                      const void *value);
@@ -656,7 +681,7 @@ typedef struct VkrSdkTable {
   bool8_t (*camera_available)(VkrCtx *ctx);
   void (*set_camera)(VkrCtx *ctx, Vec3 position, float32_t yaw_degrees,
                      float32_t pitch_degrees);
-  void (*hud_text)(VkrCtx *ctx, const char *text);
+  void (*hud_text)(VkrCtx *ctx, VkrStr text);
 
   /* Physics. */
   VkrBodyDesc (*body_default)(VkrCtx *ctx);
@@ -683,7 +708,7 @@ typedef struct VkrSdkTable {
   uint64_t (*anim_id)(VkrCtx *ctx, VkrEntity entity);
   bool8_t (*anim_has_graph)(VkrCtx *ctx, VkrEntity entity);
   uint32_t (*anim_clip_count)(VkrCtx *ctx, VkrEntity entity);
-  uint32_t (*anim_clip_find)(VkrCtx *ctx, VkrEntity entity, const char *name);
+  uint32_t (*anim_clip_find)(VkrCtx *ctx, VkrEntity entity, VkrStr name);
   float32_t (*anim_clip_duration)(VkrCtx *ctx, VkrEntity entity, uint32_t clip);
   uint32_t (*anim_bone_count)(VkrCtx *ctx, VkrEntity entity);
   bool8_t (*anim_bone_pose)(VkrCtx *ctx, VkrEntity entity, uint32_t bone,
@@ -714,15 +739,14 @@ typedef struct VkrSdkTable {
   bool8_t (*io_fire)(VkrCtx *ctx, VkrEntity self, const VkrComponentDesc *type,
                      uint32_t output, const VkrIoValue *value);
   VkrIoInput (*io_input)(VkrCtx *ctx, const VkrComponentDesc *type,
-                         const char *name);
+                         VkrStr name);
   bool8_t (*io_send)(VkrCtx *ctx, VkrEntity target, VkrIoInput input,
                      const VkrIoValue *value);
 
   /* Time of day. */
   float64_t (*time_of_day)(VkrCtx *ctx);
   bool8_t (*set_time_of_day)(VkrCtx *ctx, float64_t hour);
-  bool8_t (*set_light_group)(VkrCtx *ctx, const char *name,
-                             float32_t intensity);
+  bool8_t (*set_light_group)(VkrCtx *ctx, VkrStr name, float32_t intensity);
 } VkrSdkTable;
 
 /* The host's context starts with this member. */
@@ -736,15 +760,27 @@ struct VkrCtx {
 
 #define VKR_SDK_MESSAGE_CAPACITY 512u
 
+/* Formats into `buffer`, truncating to its capacity, and views the result. */
+static inline VkrStr vkr_sdk_vformat_(char *buffer, uint64_t capacity,
+                                      const char *format, va_list args) {
+  const int length = vsnprintf(buffer, (size_t)capacity, format, args);
+  if (length < 0) {
+    return (VkrStr){.data = buffer, .length = 0u};
+  }
+  return (VkrStr){.data = buffer,
+                  .length = (uint64_t)length < capacity ? (uint64_t)length
+                                                        : capacity - 1u};
+}
+
 /** Logs one formatted message under the module's name. */
 static inline void vkr_log(VkrCtx *ctx, VkrLogLevel level, const char *format,
                            ...) {
   char message[VKR_SDK_MESSAGE_CAPACITY];
   va_list args;
   va_start(args, format);
-  (void)vsnprintf(message, sizeof(message), format, args);
+  const VkrStr text = vkr_sdk_vformat_(message, sizeof(message), format, args);
   va_end(args);
-  ctx->sdk->log(ctx, level, message);
+  ctx->sdk->log(ctx, level, text);
 }
 
 /** Fails the current hook. The host reports "<module>: <message>" and stops
@@ -754,13 +790,13 @@ static inline void vkr_fail(VkrCtx *ctx, const char *format, ...) {
   char message[VKR_SDK_MESSAGE_CAPACITY];
   va_list args;
   va_start(args, format);
-  (void)vsnprintf(message, sizeof(message), format, args);
+  const VkrStr text = vkr_sdk_vformat_(message, sizeof(message), format, args);
   va_end(args);
-  ctx->sdk->fail(ctx, message);
+  ctx->sdk->fail(ctx, text);
 }
 
 /** Why the last failed SDK call failed; valid until the next call. */
-static inline const char *vkr_last_error(VkrCtx *ctx) {
+static inline VkrStr vkr_last_error(VkrCtx *ctx) {
   return ctx->sdk->last_error(ctx);
 }
 
@@ -778,8 +814,9 @@ static inline void *vkr_temp_alloc(VkrCtx *ctx, uint64_t size, uint64_t align) {
   ((Type *)vkr_temp_alloc((ctx), sizeof(Type) * (uint64_t)(count),             \
                           AlignOf(Type)))
 
-/** A formatted string lasting until the hook returns; NULL when exhausted. */
-static inline const char *vkr_format(VkrCtx *ctx, const char *format, ...) {
+/** A formatted string lasting until the hook returns; a NULL view when
+ * exhausted. */
+static inline VkrStr vkr_format(VkrCtx *ctx, const char *format, ...) {
   va_list args;
   va_start(args, format);
   const int length = vsnprintf(NULL, 0, format, args);
@@ -787,16 +824,17 @@ static inline const char *vkr_format(VkrCtx *ctx, const char *format, ...) {
   char *text = length >= 0
                    ? (char *)vkr_temp_alloc(ctx, (uint64_t)length + 1u, 1u)
                    : NULL;
-  if (text) {
-    va_start(args, format);
-    (void)vsnprintf(text, (size_t)length + 1u, format, args);
-    va_end(args);
+  if (!text) {
+    return (VkrStr){0};
   }
-  return text;
+  va_start(args, format);
+  (void)vsnprintf(text, (size_t)length + 1u, format, args);
+  va_end(args);
+  return (VkrStr){.data = text, .length = (uint64_t)length};
 }
 
 /** A launch option, such as "gameplay" for the sample training content. */
-static inline bool8_t vkr_option(VkrCtx *ctx, const char *name) {
+static inline bool8_t vkr_option(VkrCtx *ctx, VkrStr name) {
   return ctx->sdk->option(ctx, name);
 }
 
@@ -843,8 +881,7 @@ static inline bool8_t vkr_alive(VkrCtx *ctx, VkrEntity entity) {
   return ctx->sdk->alive(ctx, entity);
 }
 
-static inline bool8_t vkr_set_name(VkrCtx *ctx, VkrEntity entity,
-                                   const char *name) {
+static inline bool8_t vkr_set_name(VkrCtx *ctx, VkrEntity entity, VkrStr name) {
   return ctx->sdk->set_name(ctx, entity, name);
 }
 
@@ -914,7 +951,7 @@ static inline bool8_t vkr_set_shape(VkrCtx *ctx, VkrEntity entity,
  * the loads. False when the request cannot start.
  */
 static inline bool8_t vkr_spawn_model(VkrCtx *ctx, VkrEntity entity,
-                                      const char *mesh, const char *animation) {
+                                      VkrStr mesh, VkrStr animation) {
   return ctx->sdk->spawn_model(ctx, entity, mesh, animation);
 }
 
@@ -936,7 +973,7 @@ static inline VkrModelState vkr_model_state(VkrCtx *ctx, VkrEntity entity) {
  * "player_start", or another module's. NULL when unknown. Look it up once,
  * outside per-frame loops. */
 static inline const VkrComponentDesc *vkr_component_named(VkrCtx *ctx,
-                                                          const char *name) {
+                                                          VkrStr name) {
   return ctx->sdk->component_named(ctx, name);
 }
 
@@ -994,7 +1031,7 @@ static inline bool8_t vkr_io_fire(VkrCtx *ctx, VkrEntity self,
 /** Input `name` of component `type`, or of every entity (`show`, `hide`,
  * `destroy`) when `type` is NULL. Resolve once, in `start`. */
 static inline VkrIoInput vkr_io_input(VkrCtx *ctx, const VkrComponentDesc *type,
-                                      const char *name) {
+                                      VkrStr name) {
   return ctx->sdk->io_input(ctx, type, name);
 }
 
@@ -1006,13 +1043,14 @@ static inline bool8_t vkr_io_send(VkrCtx *ctx, VkrEntity target,
 }
 
 /** A runtime-only per-entity data type, registered once by name. */
-static inline VkrStateType vkr_state_type(VkrCtx *ctx, const char *name,
+static inline VkrStateType vkr_state_type(VkrCtx *ctx, VkrStr name,
                                           uint32_t size, uint32_t align) {
   return ctx->sdk->state_type(ctx, name, size, align);
 }
 
 #define VKR_STATE_TYPE(ctx, Type)                                              \
-  vkr_state_type((ctx), #Type, (uint32_t)sizeof(Type), (uint32_t)AlignOf(Type))
+  vkr_state_type((ctx), VKR_STR(#Type), (uint32_t)sizeof(Type),                \
+                 (uint32_t)AlignOf(Type))
 
 /** Adds the entity's state, owned by the calling scope; NULL `value` zeroes
  * it. Returns the stored state, valid until the hook returns, or NULL. In a
@@ -1108,7 +1146,7 @@ static inline bool8_t vkr_set_time_of_day(VkrCtx *ctx, float64_t hour) {
 /** Scales the static lights of light group `name` ("" is the default group)
  * in every container until Play stops; zero switches them off. A night group
  * also fades with the sun. */
-static inline bool8_t vkr_set_light_group(VkrCtx *ctx, const char *name,
+static inline bool8_t vkr_set_light_group(VkrCtx *ctx, VkrStr name,
                                           float32_t intensity) {
   return ctx->sdk->set_light_group(ctx, name, intensity);
 }
@@ -1136,10 +1174,10 @@ static inline void vkr_set_camera(VkrCtx *ctx, Vec3 position,
 
 /** From late_update: adds formatted lines to this frame's overlay. */
 static inline void vkr_hud(VkrCtx *ctx, const char *format, ...) {
-  char text[VKR_SDK_MESSAGE_CAPACITY];
+  char buffer[VKR_SDK_MESSAGE_CAPACITY];
   va_list args;
   va_start(args, format);
-  (void)vsnprintf(text, sizeof(text), format, args);
+  const VkrStr text = vkr_sdk_vformat_(buffer, sizeof(buffer), format, args);
   va_end(args);
   ctx->sdk->hud_text(ctx, text);
 }
@@ -1228,7 +1266,7 @@ static inline uint32_t vkr_anim_clip_count(VkrCtx *ctx, VkrEntity entity) {
 
 /** Clip index by name, or VKR_CLIP_NONE. */
 static inline uint32_t vkr_anim_clip_find(VkrCtx *ctx, VkrEntity entity,
-                                          const char *name) {
+                                          VkrStr name) {
   return ctx->sdk->anim_clip_find(ctx, entity, name);
 }
 

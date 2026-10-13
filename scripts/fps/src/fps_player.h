@@ -151,7 +151,7 @@ typedef struct FpsPlayer {
  * at a reset boundary. Initializes an automatic weapon (10 shots/s, reload
  * matched to the available clip), movement and a first-person camera. */
 bool8_t fps_player_attach(VkrCtx *ctx, FpsPlayer *player,
-                          const FpsPlayerConfig *config, const char **error);
+                          const FpsPlayerConfig *config, VkrStr *error);
 void fps_player_shutdown(VkrCtx *ctx, FpsPlayer *player);
 
 /* The player entity's runtime state, or NULL. */

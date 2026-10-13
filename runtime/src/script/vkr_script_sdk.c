@@ -149,8 +149,30 @@ static void *sdk_command_copy(ScriptCtx *ctx, const void *data, uint64_t size,
   return copy;
 }
 
-static const char *sdk_command_text(ScriptCtx *ctx, const char *text) {
-  return text ? sdk_command_copy(ctx, text, strlen(text) + 1u, 1u) : NULL;
+/* A module's text borrowed as a String8; false with the context error set
+ * for a length without bytes. Empty text borrows a literal. */
+static bool8_t sdk_text(ScriptCtx *ctx, VkrStr text, String8 *out) {
+  if (!text.data && text.length) {
+    return script_ctx_error(ctx, "Text has a length but no bytes");
+  }
+  *out = string8_create_from_cstr((const uint8_t *)(text.data ? text.data : ""),
+                                  text.length);
+  return true_v;
+}
+
+/* Copies a module's text into the queue's arena; false with the context
+ * error set when it is invalid or memory runs out. */
+static bool8_t sdk_command_text(ScriptCtx *ctx, VkrStr text, VkrStr *out) {
+  String8 view;
+  if (!sdk_text(ctx, text, &view)) {
+    return false_v;
+  }
+  const char *copy = sdk_command_copy(ctx, view.str, view.length, 1u);
+  if (view.length && !copy) {
+    return script_ctx_error(ctx, "Queued text allocation failed");
+  }
+  *out = (VkrStr){.data = copy, .length = view.length};
+  return true_v;
 }
 
 /* Appends a call of the running scope to the queue; NULL with the context
@@ -176,22 +198,32 @@ static ScriptCommand *sdk_queue(ScriptCtx *ctx, ScriptCommandKind kind,
 // Diagnostics and control
 // =============================================================================
 
-static void sdk_log(VkrCtx *ctx, VkrLogLevel level, const char *message) {
-  _log_message((LogLevel)level, sdk_module_name(sdk_ctx(ctx)), 0u, "%s",
-               message ? message : "");
+static void sdk_log(VkrCtx *ctx, VkrLogLevel level, VkrStr message) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  String8 text;
+  if (!sdk_text(script, message, &text)) {
+    return;
+  }
+  _log_message((LogLevel)level, sdk_module_name(script), 0u, "%.*s",
+               (int)Min(text.length, (uint64_t)INT32_MAX),
+               (const char *)text.str);
 }
 
-static void sdk_fail(VkrCtx *ctx, const char *message) {
+static void sdk_fail(VkrCtx *ctx, VkrStr message) {
   ScriptCtx *script = sdk_ctx(ctx);
-  char text[VKR_SCRIPT_ERROR_CAPACITY];
-  snprintf(text, sizeof(text), "%s", message ? message : "script failed");
-  snprintf(script->host->error, sizeof(script->host->error), "%s: %s",
-           sdk_module_name(script), text);
+  String8 text = string8_lit("script failed");
+  if (message.data) {
+    (void)sdk_text(script, message, &text);
+  }
+  snprintf(script->host->error, sizeof(script->host->error), "%s: %.*s",
+           sdk_module_name(script),
+           (int)Min(text.length, (uint64_t)VKR_SCRIPT_ERROR_CAPACITY),
+           (const char *)text.str);
   script->instance->failed = true_v;
 }
 
-static const char *sdk_last_error(VkrCtx *ctx) {
-  return sdk_ctx(ctx)->last_error;
+static VkrStr sdk_last_error(VkrCtx *ctx) {
+  return vkr_str_cstr(sdk_ctx(ctx)->last_error);
 }
 
 static void sdk_disable(VkrCtx *ctx) {
@@ -209,9 +241,12 @@ static void *sdk_temp_alloc(VkrCtx *ctx, uint64_t size, uint64_t align) {
   return memory;
 }
 
-static bool8_t sdk_option(VkrCtx *ctx, const char *name) {
-  return name && !strcmp(name, "gameplay") &&
-         sdk_ctx(ctx)->host->session.sample_content;
+static bool8_t sdk_option(VkrCtx *ctx, VkrStr name) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  String8 word;
+  return sdk_text(script, name, &word) &&
+         vkr_string8_equals_cstr(&word, "gameplay") &&
+         script->host->session.sample_content;
 }
 
 // =============================================================================
@@ -246,6 +281,10 @@ static VkrContainer sdk_container_of(VkrCtx *ctx, VkrEntity entity) {
 static VkrEntity sdk_spawn_deferred(ScriptCtx *ctx, VkrScene *scene,
                                     uint32_t slot, const VkrSpawnDesc *spawn) {
   VkrScriptHost *host = ctx->host;
+  VkrStr name = {0};
+  if (!sdk_command_text(ctx, spawn->name, &name)) {
+    return VKR_ENTITY_NONE;
+  }
   const VkrEntityId reserved = vkr_scene_reserve_entity(scene);
   if (!reserved.u64) {
     (void)script_ctx_error(ctx, "No entity IDs are free in this tick");
@@ -263,7 +302,7 @@ static VkrEntity sdk_spawn_deferred(ScriptCtx *ctx, VkrScene *scene,
   }
   host->pending[host->pending_count++] = reserved.u64;
   command->as.spawn = *spawn;
-  command->as.spawn.name = sdk_command_text(ctx, spawn->name);
+  command->as.spawn.name = name;
   command->as.spawn.container = (VkrContainer){.id = slot + 1u};
   return entity;
 }
@@ -280,6 +319,10 @@ static VkrEntity sdk_spawn(VkrCtx *ctx, const VkrSpawnDesc *desc) {
   VkrScene *scene = host->containers[slot].scene;
   if (host->phase == VKR_SCRIPT_PHASE_TICK) {
     return sdk_spawn_deferred(script, scene, slot, &spawn);
+  }
+  String8 name;
+  if (!sdk_text(script, spawn.name, &name)) {
+    return VKR_ENTITY_NONE;
   }
   /* A replayed spawn creates the entity its reservation named. */
   const VkrEntityId reserved = {.u64 = host->replay_reserved};
@@ -307,11 +350,8 @@ static VkrEntity sdk_spawn(VkrCtx *ctx, const VkrSpawnDesc *desc) {
       scene, entity, transform->position,
       zero_rotation ? vkr_quat_identity() : transform->rotation,
       zero_scale ? vec3_one() : transform->scale);
-  if (ok && spawn.name) {
-    ok =
-        vkr_scene_set_name(scene, entity,
-                           string8_create_from_cstr((const uint8_t *)spawn.name,
-                                                    strlen(spawn.name)));
+  if (ok && name.length) {
+    ok = vkr_scene_set_name(scene, entity, name);
   }
   if (ok && vkr_entity_valid(spawn.parent)) {
     if (script_container_of(script->host, spawn.parent.id) !=
@@ -359,20 +399,23 @@ static bool8_t sdk_alive(VkrCtx *ctx, VkrEntity entity) {
   return container && vkr_scene_entity_alive(container->scene, sdk_id(entity));
 }
 
-static bool8_t sdk_set_name(VkrCtx *ctx, VkrEntity entity, const char *name) {
+static bool8_t sdk_set_name(VkrCtx *ctx, VkrEntity entity, VkrStr name) {
   ScriptCtx *script = sdk_ctx(ctx);
   if (sdk_deferred(script, entity, true_v)) {
+    VkrStr copy = {0};
+    if (!sdk_command_text(script, name, &copy)) {
+      return false_v;
+    }
     ScriptCommand *command = sdk_queue(script, SCRIPT_COMMAND_SET_NAME, entity);
     if (command) {
-      command->as.name = sdk_command_text(script, name);
+      command->as.name = copy;
     }
-    return command && command->as.name;
+    return command != NULL;
   }
   VkrScene *scene = sdk_scene_of(script, entity);
-  return scene && name &&
-         vkr_scene_set_name(
-             scene, sdk_id(entity),
-             string8_create_from_cstr((const uint8_t *)name, strlen(name)));
+  String8 text;
+  return scene && sdk_text(script, name, &text) &&
+         vkr_scene_set_name(scene, sdk_id(entity), text);
 }
 
 static VkrEntity sdk_parent(VkrCtx *ctx, VkrEntity entity) {
@@ -566,30 +609,37 @@ static bool8_t sdk_set_shape(VkrCtx *ctx, VkrEntity entity,
          script_ctx_error(script, "The shape could not be created");
 }
 
-static bool8_t sdk_spawn_model(VkrCtx *ctx, VkrEntity entity, const char *mesh,
-                               const char *animation) {
+static bool8_t sdk_spawn_model(VkrCtx *ctx, VkrEntity entity, VkrStr mesh,
+                               VkrStr animation) {
   ScriptCtx *script = sdk_ctx(ctx);
   if (sdk_deferred(script, entity, true_v)) {
+    VkrStr mesh_copy = {0};
+    VkrStr animation_copy = {0};
+    if (!sdk_command_text(script, mesh, &mesh_copy) ||
+        !sdk_command_text(script, animation, &animation_copy)) {
+      return false_v;
+    }
     ScriptCommand *command =
         sdk_queue(script, SCRIPT_COMMAND_SPAWN_MODEL, entity);
     if (command) {
-      command->as.model.mesh = sdk_command_text(script, mesh);
-      command->as.model.animation = sdk_command_text(script, animation);
+      command->as.model.mesh = mesh_copy;
+      command->as.model.animation = animation_copy;
     }
     return command != NULL;
   }
   VkrScene *scene = sdk_scene_of(script, entity);
-  if (!scene) {
+  String8 mesh_path;
+  String8 animation_path;
+  if (!scene || !sdk_text(script, mesh, &mesh_path) ||
+      !sdk_text(script, animation, &animation_path)) {
     return false_v;
   }
   VkrSceneModelDesc desc = {.animation = VKR_SCENE_ANIMATION_CONFIG_DEFAULT};
-  if (mesh) {
-    desc.mesh_path =
-        string8_create_from_cstr((const uint8_t *)mesh, strlen(mesh));
+  if (mesh_path.length) {
+    desc.mesh_path = mesh_path;
   }
-  if (animation) {
-    desc.animation_path =
-        string8_create_from_cstr((const uint8_t *)animation, strlen(animation));
+  if (animation_path.length) {
+    desc.animation_path = animation_path;
   }
   const char *error = NULL;
   if (!vkr_scene_request_model(scene, script->host->session.assets,
@@ -630,19 +680,19 @@ static void sdk_despawn_model(VkrCtx *ctx, VkrEntity entity) {
 // Components and runtime state
 // =============================================================================
 
-static const VkrComponentDesc *sdk_component_named(VkrCtx *ctx,
-                                                   const char *name) {
-  VkrScriptHost *host = sdk_ctx(ctx)->host;
-  if (!name) {
+static const VkrComponentDesc *sdk_component_named(VkrCtx *ctx, VkrStr name) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptHost *host = script->host;
+  String8 word;
+  if (!sdk_text(script, name, &word)) {
     return NULL;
   }
   for (uint32_t i = 0; i < host->named_type_count; ++i) {
-    if (!strcmp(host->named_types[i].name, name)) {
+    if (vkr_string8_equals_cstr(&word, host->named_types[i].name)) {
       return &host->named_types[i];
     }
   }
-  const VkrTypeDesc *type = vkr_scene_world_type_named(
-      string8_create_from_cstr((const uint8_t *)name, strlen(name)));
+  const VkrTypeDesc *type = vkr_scene_world_type_named(word);
   if (!type || host->named_type_count == ArrayCount(host->named_types)) {
     return NULL;
   }
@@ -760,10 +810,12 @@ static bool8_t sdk_io_fire(VkrCtx *ctx, VkrEntity self,
 }
 
 static VkrIoInput sdk_io_input(VkrCtx *ctx, const VkrComponentDesc *type,
-                               const char *name) {
+                               VkrStr name) {
   ScriptCtx *script = sdk_ctx(ctx);
-  const String8 word =
-      string8_create_from_cstr((const uint8_t *)name, name ? strlen(name) : 0);
+  String8 word;
+  if (!sdk_text(script, name, &word)) {
+    return (VkrIoInput){0};
+  }
   if (!type) {
     const uint32_t port = vkr_io_port_find(vkr_io_builtin_inputs, word);
     return (VkrIoInput){.id = port == UINT32_MAX ? 0u : port + 1u};
@@ -800,18 +852,26 @@ static bool8_t sdk_io_send(VkrCtx *ctx, VkrEntity target, VkrIoInput input,
          script_ctx_error(script, "The input could not be sent");
 }
 
-static VkrStateType sdk_state_type(VkrCtx *ctx, const char *name, uint32_t size,
+static VkrStateType sdk_state_type(VkrCtx *ctx, VkrStr name, uint32_t size,
                                    uint32_t align) {
   ScriptCtx *script = sdk_ctx(ctx);
   VkrScriptHost *host = script->host;
-  if (!name || !size || !align || (align & (align - 1u))) {
+  String8 word;
+  if (!sdk_text(script, name, &word)) {
+    return (VkrStateType){0};
+  }
+  if (!word.length || !size || !align || (align & (align - 1u))) {
     (void)script_ctx_error(script, "A state type needs a name, size and "
                                    "power-of-two alignment");
     return (VkrStateType){0};
   }
+  if (word.length >= sizeof(host->state_types[0].name)) {
+    (void)script_ctx_error(script, "A state type name is too long");
+    return (VkrStateType){0};
+  }
   for (uint32_t i = 0; i < host->state_type_count; ++i) {
     VkrScriptStateType *type = &host->state_types[i];
-    if (!strcmp(type->name, name)) {
+    if (vkr_string8_equals_cstr(&word, type->name)) {
       if (type->size != size || type->align != align) {
         (void)script_ctx_error(script, "A state type changed its layout");
         return (VkrStateType){0};
@@ -825,7 +885,7 @@ static VkrStateType sdk_state_type(VkrCtx *ctx, const char *name, uint32_t size,
   }
   VkrScriptStateType *type = &host->state_types[host->state_type_count];
   *type = (VkrScriptStateType){.size = size, .align = align};
-  snprintf(type->name, sizeof(type->name), "%s", name);
+  MemCopy(type->name, word.str, word.length);
   for (uint32_t c = 0; c < VKR_SCRIPT_CONTAINER_MAX; ++c) {
     type->ids[c] = VKR_COMPONENT_TYPE_INVALID;
   }
@@ -1004,13 +1064,22 @@ static bool8_t sdk_set_time_of_day(VkrCtx *ctx, float64_t hour) {
 
 /* Every attached container scales the group, so its lights follow wherever
    they load (ADR-090). */
-static bool8_t sdk_set_light_group(VkrCtx *ctx, const char *name,
+static bool8_t sdk_set_light_group(VkrCtx *ctx, VkrStr name,
                                    float32_t intensity) {
   ScriptCtx *script = sdk_ctx(ctx);
   VkrScriptHost *host = script->host;
-  bool8_t set = host->container_count > 0u;
-  for (uint32_t i = 0; i < host->container_count; ++i) {
-    set &= vkr_scene_set_light_group_intensity(host->containers[i].scene, name,
+  String8 word;
+  if (!sdk_text(script, name, &word)) {
+    return false_v;
+  }
+  /* The scene's groups take a NUL-terminated name shorter than the buffer. */
+  char group[VKR_LIGHT_GROUP_NAME_BYTES] = {0};
+  bool8_t set = host->container_count > 0u && word.length < sizeof(group);
+  if (set) {
+    MemCopy(group, word.str, word.length);
+  }
+  for (uint32_t i = 0; set && i < host->container_count; ++i) {
+    set &= vkr_scene_set_light_group_intensity(host->containers[i].scene, group,
                                                intensity);
   }
   if (!set) {
@@ -1042,14 +1111,17 @@ static void sdk_set_camera(VkrCtx *ctx, Vec3 position, float32_t yaw_degrees,
   view->camera_pitch_degrees = pitch_degrees;
 }
 
-static void sdk_hud_text(VkrCtx *ctx, const char *text) {
-  VkrScriptView *view = &sdk_ctx(ctx)->host->view;
-  if (!text || !text[0]) {
+static void sdk_hud_text(VkrCtx *ctx, VkrStr text) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptView *view = &script->host->view;
+  String8 line;
+  if (!sdk_text(script, text, &line) || !line.length) {
     return;
   }
   const uint32_t length = (uint32_t)strlen(view->hud);
-  snprintf(view->hud + length, sizeof(view->hud) - length, "%s%s",
-           length ? "\n" : "", text);
+  snprintf(view->hud + length, sizeof(view->hud) - length, "%s%.*s",
+           length ? "\n" : "", (int)Min(line.length, sizeof(view->hud)),
+           (const char *)line.str);
 }
 
 // =============================================================================
@@ -1361,13 +1433,15 @@ static uint32_t sdk_anim_clip_count(VkrCtx *ctx, VkrEntity entity) {
   return asset ? asset->clip_count : 0u;
 }
 
-static uint32_t sdk_anim_clip_find(VkrCtx *ctx, VkrEntity entity,
-                                   const char *name) {
+static uint32_t sdk_anim_clip_find(VkrCtx *ctx, VkrEntity entity, VkrStr name) {
   const VkrAnimationAsset *asset = sdk_asset(ctx, entity);
-  const uint64_t length = name ? strlen(name) : 0u;
-  for (uint32_t i = 0; asset && name && i < asset->clip_count; ++i) {
-    if (asset->clips[i].name.length == length &&
-        MemCompare(asset->clips[i].name.str, name, length) == 0) {
+  String8 word;
+  if (!sdk_text(sdk_ctx(ctx), name, &word)) {
+    return VKR_CLIP_NONE;
+  }
+  for (uint32_t i = 0; asset && i < asset->clip_count; ++i) {
+    if (asset->clips[i].name.length == word.length &&
+        MemCompare(asset->clips[i].name.str, word.str, word.length) == 0) {
       return i;
     }
   }

@@ -29,8 +29,7 @@ static const char *const s_direction_names[FPS_LOCOMOTION_DIRECTION_COUNT] = {
 // =============================================================================
 
 /* A clip with a positive duration by name, or VKR_CLIP_NONE. */
-static uint32_t locomotion_find(VkrCtx *ctx, VkrEntity entity,
-                                const char *name) {
+static uint32_t locomotion_find(VkrCtx *ctx, VkrEntity entity, VkrStr name) {
   const uint32_t clip = vkr_anim_clip_find(ctx, entity, name);
   return clip != VKR_CLIP_NONE &&
                  vkr_anim_clip_duration(ctx, entity, clip) > 0.0f
@@ -41,7 +40,8 @@ static uint32_t locomotion_find(VkrCtx *ctx, VkrEntity entity,
 /* A clip by name with its ground speed from the mannequin's clip table. */
 static FpsLocomotionClip locomotion_clip(VkrCtx *ctx, VkrEntity entity,
                                          const char *name) {
-  FpsLocomotionClip clip = {.clip = locomotion_find(ctx, entity, name)};
+  FpsLocomotionClip clip = {
+      .clip = locomotion_find(ctx, entity, vkr_str_cstr(name))};
   if (clip.clip == VKR_CLIP_NONE) {
     return clip;
   }
@@ -89,9 +89,9 @@ bool8_t fps_locomotion_supported(VkrCtx *ctx, VkrEntity entity) {
     return false_v;
   }
   const FpsLocomotionClip walk = locomotion_clip(ctx, entity, "Walk_Fwd");
-  return locomotion_find(ctx, entity, "Idle") != VKR_CLIP_NONE &&
+  return locomotion_find(ctx, entity, VKR_STR("Idle")) != VKR_CLIP_NONE &&
          locomotion_moving(&walk) &&
-         locomotion_find(ctx, entity, "Jump_Loop") != VKR_CLIP_NONE;
+         locomotion_find(ctx, entity, VKR_STR("Jump_Loop")) != VKR_CLIP_NONE;
 }
 
 // =============================================================================

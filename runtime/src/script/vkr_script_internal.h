@@ -64,7 +64,7 @@ typedef struct ScriptCommand {
   uint64_t entity;
   union {
     VkrSpawnDesc spawn;
-    const char *name;
+    VkrStr name;
     uint64_t parent;
     bool8_t visible;
     VkrTRS transform;
@@ -74,8 +74,8 @@ typedef struct ScriptCommand {
     } pose;
     VkrShapeDesc shape;
     struct {
-      const char *mesh;
-      const char *animation;
+      VkrStr mesh;
+      VkrStr animation;
     } model;
     struct {
       const VkrComponentDesc *type;

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-08
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -10,7 +10,7 @@ authority: adr
 
 Accepted (partial). Implemented:
 
-- the script SDK (`sdk.h`, version 5) and the runtime script host, with
+- the script SDK (`sdk.h`, version 9) and the runtime script host, with
   temp, scoped and persistent lifetimes released through ledgers, owner and
   timed lifetimes, behaviors per entity with destroy hooks, script instances
   per attached container, structural edits in fixed updates queued until
@@ -80,6 +80,17 @@ NULL when the version differs; there is no compatibility with older modules.
   `vkr_character_move`, `vkr_anim_blend`, `vkr_hud` and the rest) are static
   inline calls through a private `VkrSdkTable` the host fills, so a module
   imports no engine symbols and links statically or as a shared library.
+- **Strings.** Calls take and return `VkrStr` views, a pointer and a length
+  with no terminating NUL required. `VKR_STR` views a literal,
+  `vkr_str_cstr` a C string, and `VKR_STR_FMT` with `VKR_STR_ARG` prints a
+  view. The host borrows a view as a `String8` for the call and copies what
+  it keeps; a call queued in a tick copies its text into the command arena.
+  A length without bytes fails the call. printf formats and descriptor
+  names (components, fields, ports, modules) stay C string literals, as the
+  engine's `VkrTypeDesc` keeps them. The foundation's `String8` stays out of
+  the SDK: `str.h` needs the arena, the allocator and functions compiled into
+  `vkr_foundation`, which a module does not link. SDK version 9 made the
+  change.
 - **Handles and SDK types.** Entities are generational `VkrEntity` handles
   whose world id names their container, so one handle works across
   containers and a stale one fails the call. Physics, characters, input,

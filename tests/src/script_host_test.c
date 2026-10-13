@@ -42,6 +42,7 @@ typedef struct LifeData {
 static LifeMode s_life_mode;
 static LifeData *s_life;
 static VkrEntity s_life_spawned;
+static VkrEntity s_life_tick_spawned;
 static uint32_t s_life_stops;
 static bool8_t s_life_deferred_spawn;
 static bool8_t s_life_temp_zeroed;
@@ -50,8 +51,10 @@ static void life_start(VkrCtx *ctx, LifeData *data) {
   assert(data->starts == 0 && data->fixed == 0); // Zeroed for every start.
   data->starts++;
   s_life = data;
-  /* Persistent: released when the instance ends, or by a failed start. */
-  s_life_spawned = vkr_spawn(ctx, &(VkrSpawnDesc){.name = "LifeMarker"});
+  /* Persistent: released when the instance ends, or by a failed start. The
+     name is the view's first ten bytes, not the whole string. */
+  s_life_spawned = vkr_spawn(
+      ctx, &(VkrSpawnDesc){.name = {.data = "LifeMarker+tail", .length = 10u}});
   assert(vkr_entity_valid(s_life_spawned));
   if (s_life_mode == LIFE_FAIL) {
     vkr_fail(ctx, "refused %u", 7u);
@@ -81,7 +84,10 @@ static void life_fixed_update(VkrCtx *ctx, LifeData *data) {
      ends. */
   if (data->fixed == 1u) {
     Mat4 world;
-    const VkrEntity spawned = vkr_spawn(ctx, &(VkrSpawnDesc){0});
+    const VkrEntity spawned = vkr_spawn(
+        ctx,
+        &(VkrSpawnDesc){.name = {.data = "TickMarker+tail", .length = 10u}});
+    s_life_tick_spawned = spawned;
     s_life_deferred_spawn = vkr_entity_valid(spawned) &&
                             vkr_alive(ctx, spawned) &&
                             !vkr_world_matrix(ctx, spawned, &world);
@@ -140,6 +146,12 @@ static void test_script_host_lifecycle(VkrScriptHost *host) {
   assert(arena_pos(host->temp) == temp && s_life_temp_zeroed);
   assert(s_life->fixed == 2u && s_life->late_fixed == 2u);
   assert(s_life->last_tick == 2u && s_life_deferred_spawn);
+  // Names take exactly their views' bytes, in a hook and replayed after a tick.
+  const String8 marker_name = vkr_scene_get_name(&scene, marker);
+  assert(vkr_string8_equals_cstr(&marker_name, "LifeMarker"));
+  const String8 tick_name =
+      vkr_scene_get_name(&scene, (VkrEntityId){.u64 = s_life_tick_spawned.id});
+  assert(vkr_string8_equals_cstr(&tick_name, "TickMarker"));
 
   // A hook failure faults the simulation with the module's name.
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
@@ -192,8 +204,8 @@ static void spin_start(VkrCtx *ctx, VkrEntity self, Spin *spin) {
   assert(spin && spin->speed == 0.5f);
   s_spin_starts++;
   /* Scoped to this entity's behavior. */
-  s_spin_child =
-      vkr_spawn(ctx, &(VkrSpawnDesc){.name = "SpinChild", .parent = self});
+  s_spin_child = vkr_spawn(
+      ctx, &(VkrSpawnDesc){.name = VKR_STR("SpinChild"), .parent = self});
   assert(vkr_entity_valid(s_spin_child));
 }
 
@@ -308,7 +320,8 @@ static VkrEntity s_zone_spawned[2];
 static VkrEntity s_game_spawned;
 
 static void zone_start(VkrCtx *ctx, ZoneData *data) {
-  data->spawned = vkr_spawn(ctx, &(VkrSpawnDesc){.name = "ZoneMarker"});
+  data->spawned =
+      vkr_spawn(ctx, &(VkrSpawnDesc){.name = VKR_STR("ZoneMarker")});
   assert(vkr_container_of(ctx, data->spawned).id == vkr_container_self(ctx).id);
   /* The module stays registered for later suites; keep only the starts the
      container test reads. */
@@ -320,7 +333,8 @@ static void zone_start(VkrCtx *ctx, ZoneData *data) {
 
 static void game_start(VkrCtx *ctx, ZoneData *data) {
   assert(vkr_container_self(ctx).id == vkr_container_world(ctx).id);
-  data->spawned = vkr_spawn(ctx, &(VkrSpawnDesc){.name = "GameMarker"});
+  data->spawned =
+      vkr_spawn(ctx, &(VkrSpawnDesc){.name = VKR_STR("GameMarker")});
   s_game_spawned = data->spawned;
   s_game_starts++;
 }
@@ -389,10 +403,10 @@ static void burst_fixed_update(VkrCtx *ctx, BurstData *data) {
   data->ticks++;
   if (data->ticks == 1u) {
     /* A shot that lives 0.1 simulated seconds, and a trail it owns. */
-    s_burst_shot =
-        vkr_spawn(ctx, &(VkrSpawnDesc){.name = "Shot", .lifetime = 0.1f});
-    s_burst_trail = vkr_spawn(
-        ctx, &(VkrSpawnDesc){.name = "ShotTrail", .owner = s_burst_shot});
+    s_burst_shot = vkr_spawn(
+        ctx, &(VkrSpawnDesc){.name = VKR_STR("Shot"), .lifetime = 0.1f});
+    s_burst_trail = vkr_spawn(ctx, &(VkrSpawnDesc){.name = VKR_STR("ShotTrail"),
+                                                   .owner = s_burst_shot});
     BurstData *state =
         vkr_state_add(ctx, s_burst_shot, VKR_STATE_TYPE(ctx, BurstData), NULL);
     if (state) {

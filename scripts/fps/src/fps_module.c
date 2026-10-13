@@ -54,7 +54,7 @@ static float32_t fps_matrix_yaw(const Mat4 *world) {
 }
 
 /* An entity in the played container, released with the instance. */
-static VkrEntity fps_spawn(VkrCtx *ctx, const char *name, Vec3 position,
+static VkrEntity fps_spawn(VkrCtx *ctx, VkrStr name, Vec3 position,
                            VkrEntity parent) {
   return vkr_spawn(ctx, &(VkrSpawnDesc){
                             .name = name,
@@ -84,22 +84,24 @@ static bool8_t fps_create_training_platform(VkrCtx *ctx) {
       shape = (VkrShapeDesc){.size = vec3_new(1, 1.2f, 1),
                              .color = vec4_new(.85f, .3f, .12f, 1)};
     }
-    const VkrEntity entity = fps_spawn(
-        ctx, i == 0 ? "TrainingPlatform" : "Target", position, VKR_ENTITY_NONE);
+    const VkrEntity entity =
+        fps_spawn(ctx, i == 0 ? VKR_STR("TrainingPlatform") : VKR_STR("Target"),
+                  position, VKR_ENTITY_NONE);
     VkrBodyDesc body = vkr_body_default(ctx);
     body.motion = i == 0 || i == 3 ? VKR_MOTION_STATIC : VKR_MOTION_DYNAMIC;
     body.half_extent = vec3_scale(shape.size, .5f);
     if (!vkr_entity_valid(entity) || !vkr_set_shape(ctx, entity, &shape) ||
         !vkr_set_body(ctx, entity, &body)) {
-      vkr_fail(ctx, "Training platform allocation failed: %s",
-               vkr_last_error(ctx));
+      const VkrStr reason = vkr_last_error(ctx);
+      vkr_fail(ctx, "Training platform allocation failed: " VKR_STR_FMT,
+               VKR_STR_ARG(reason));
       return false_v;
     }
   }
   const VkrComponentDesc *player_start =
-      vkr_component_named(ctx, "player_start");
-  const VkrEntity start =
-      fps_spawn(ctx, "PlayerStart", vec3_new(-28, 20, 3), VKR_ENTITY_NONE);
+      vkr_component_named(ctx, VKR_STR("player_start"));
+  const VkrEntity start = fps_spawn(ctx, VKR_STR("PlayerStart"),
+                                    vec3_new(-28, 20, 3), VKR_ENTITY_NONE);
   if (!player_start || !vkr_entity_valid(start) ||
       !vkr_component_set(ctx, start, player_start, NULL)) {
     vkr_fail(ctx, "Training Player Start allocation failed");
@@ -124,17 +126,21 @@ static bool8_t fps_body_box(VkrCtx *ctx, VkrEntity body) {
 static VkrEntity fps_spawn_body(VkrCtx *ctx, VkrEntity parent,
                                 bool8_t *loading) {
   *loading = false_v;
-  const VkrEntity body = fps_spawn(ctx, "PlayerBody", vec3_zero(), parent);
+  const VkrEntity body =
+      fps_spawn(ctx, VKR_STR("PlayerBody"), vec3_zero(), parent);
   if (!vkr_entity_valid(body)) {
     return VKR_ENTITY_NONE;
   }
-  if (vkr_spawn_model(ctx, body, FPS_MANNEQUIN_MESH, FPS_MANNEQUIN_ANIMATION)) {
+  if (vkr_spawn_model(ctx, body, VKR_STR(FPS_MANNEQUIN_MESH),
+                      VKR_STR(FPS_MANNEQUIN_ANIMATION))) {
     *loading = true_v;
     return body;
   }
+  const VkrStr reason = vkr_last_error(ctx);
   vkr_log(ctx, VKR_LOG_WARN,
-          "Default mannequin unavailable (%s); the player uses a box",
-          vkr_last_error(ctx));
+          "Default mannequin unavailable (" VKR_STR_FMT
+          "); the player uses a box",
+          VKR_STR_ARG(reason));
   return fps_body_box(ctx, body) ? body : VKR_ENTITY_NONE;
 }
 
@@ -165,7 +171,7 @@ static void fps_start(VkrCtx *ctx, FpsModule *module) {
     vkr_fail(ctx, "An fps_weapon needs an fps_player entity");
     return;
   }
-  if (!player_count && vkr_option(ctx, "gameplay") &&
+  if (!player_count && vkr_option(ctx, VKR_STR("gameplay")) &&
       !fps_create_training_platform(ctx)) {
     return;
   }
@@ -206,8 +212,8 @@ static void fps_start(VkrCtx *ctx, FpsModule *module) {
   } else {
     /* No entity carries `fps_player`: a root the motor moves, at the Player
        Start, with the default body. */
-    config.entity =
-        fps_spawn(ctx, "Player", fps_matrix_position(&start), VKR_ENTITY_NONE);
+    config.entity = fps_spawn(ctx, VKR_STR("Player"),
+                              fps_matrix_position(&start), VKR_ENTITY_NONE);
     module->visual =
         vkr_entity_valid(config.entity)
             ? fps_spawn_body(ctx, config.entity, &module->body_loading)
@@ -240,9 +246,9 @@ static void fps_start(VkrCtx *ctx, FpsModule *module) {
     vkr_fail(ctx, "Player render pose failed");
     return;
   }
-  const char *failure = NULL;
+  VkrStr failure = VKR_STR("Player attach failed");
   if (!fps_player_attach(ctx, &module->player, &config, &failure)) {
-    vkr_fail(ctx, "%s", failure ? failure : "Player attach failed");
+    vkr_fail(ctx, VKR_STR_FMT, VKR_STR_ARG(failure));
     return;
   }
   vkr_log(ctx, VKR_LOG_INFO,
@@ -279,7 +285,9 @@ static void fps_update(VkrCtx *ctx, FpsModule *module, float32_t dt) {
       vkr_log(ctx, VKR_LOG_WARN,
               "Default mannequin failed to load; the player uses a box");
       if (!fps_body_box(ctx, module->visual)) {
-        vkr_fail(ctx, "Player body box failed: %s", vkr_last_error(ctx));
+        const VkrStr reason = vkr_last_error(ctx);
+        vkr_fail(ctx, "Player body box failed: " VKR_STR_FMT,
+                 VKR_STR_ARG(reason));
         return;
       }
     }
