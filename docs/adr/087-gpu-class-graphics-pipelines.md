@@ -196,16 +196,21 @@ pipeline rather than a backend mechanism.
    own light only. Reflection probes give one environment per surface: the
    camera view's encode kernel assigns each draw the first frame probe, in
    the host's smaller-box-first order
-   ([ADR-019](019-bounded-forward-spatial-lighting.md)), whose influence at
-   the draw's bounding-sphere centre reaches one half, in the visible row's
-   `state_flags` bits 27 to 31
+   ([ADR-019](019-bounded-forward-spatial-lighting.md)), whose influence
+   reaches one half over the draw's whole bounding sphere, in the visible
+   row's `state_flags` bits 27 to 31
    (`VKR_GPU_DRAW_PROBE_SHIFT`, `vkr_metal_packet_draw_probe` in
    [`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal)),
    and the surface takes that probe's box-projected prefiltered cube and
    SH diffuse, with the probe's own gains, in place of the global
-   environment; glass picks its probe per pixel by the same rule
+   environment. Influence reaches one half inside the probe's box shrunk by
+   half its blend band at the side and top faces; a draw whose sphere that
+   surface cuts, for an earlier probe, takes `VKR_GPU_DRAW_PROBE_PER_PIXEL`
+   and picks per pixel, as glass always does
    (`vkr_metal_tiled_pixel_probe` in
-   [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)).
+   [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)),
+   so a merged mesh that spans a room and the street takes the room's probe
+   only inside the room.
    The first probe past one half is the one the desktop pipeline's priority
    blend gives most of the point. A probe bound to a planar reflector
    (`owner_object_id`, [ADR-117](117-desktop-planar-reflections.md)) serves
@@ -771,6 +776,26 @@ A temporary interior view with the probe's specular intensity raised to one
 reflects the room's cubemap where the build before reflected the sky, and
 the baked street capture differs in at most 5 pixels by more than 2 of 255.
 A Metal API validation run of the interior view passed.
+
+Per-pixel choice for draws that straddle a probe's half-influence surface,
+Release, M1 Pro, 2026-10-13, `tiled_bistro_baked_native` with
+`performance-windowed-gpu` (authoritative, 5 × 300 frames), alternating the
+build before (`c04f329a`) with the change: `Tiled.Opaque` p50 rose from
+10.46 / 10.43 ms to 10.69 / 10.66 ms in one series and from 10.30 /
+10.33 ms to 10.61 / 10.67 ms in another, about +0.2 to +0.3 ms. A build
+that carries the per-pixel branch in the shader but never selects it
+measured 10.49 / 10.52 ms against the change's 10.65 ms, so about half the
+cost is the branch's register use and half the per-pixel work; Bistro's
+merged meshes straddle the café box and cover most of the frame, so a
+separate per-pixel variant would recover little. The café capture
+(`local_shadow_bistro_indoor_capture` on Metal) changes visibly: the café
+probe's box (x −13 to −2) covers only part of the room in view, and since
+`bistro.scene.json` lost its diffuse volume those interior surfaces carry no
+baked light, so outside the box they reflect the unscaled sky and automatic
+exposure darkens the frame by about half; per draw, the merged meshes had
+taken the café probe for every pixel. The street capture is unchanged
+beyond the sky's run-to-run variation, and a variant of the encode rule that
+sends fewer draws per pixel produced a byte-identical café capture.
 
 ### Refraction measurement
 

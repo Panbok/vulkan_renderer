@@ -270,9 +270,11 @@ light, `L = D + (E − D) · V` with `V = min(1, lum(D_sky) / lum(D_env))`
 reflections"), so an enclosed surface without a local probe reflects its
 surroundings' mean radiance instead of the sky. The desktop pipeline blends
 up to 16 probes per pixel in priority order; the tiled pipeline gives each
-opaque draw the first probe whose influence at its bounding-sphere centre
-reaches one half (`vkr_metal_packet_draw_probe` in
-[`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal)).
+opaque draw the first probe whose influence reaches one half over its whole
+bounding sphere, and a draw that a probe's half-influence surface cuts picks
+per pixel (`vkr_metal_packet_draw_probe` in
+[`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal),
+ADR-087).
 A probe is captured by `vkr_bakery bake probe` as six 256² RGBA16F faces of
 unexposed scene radiance at the box centre with their mip chain, then
 prefiltered at load into a 9-mip GGX cube and L2 SH
@@ -287,9 +289,9 @@ prefiltered at load into a 9-mip GGX cube and L2 SH
    and ran the 2026-10-12 fixes on the tiled pipeline (Metal validation clean,
    `tiled_bistro_baked_native` within the before run's spread); the R11 and
    B7 shader changes of 2026-10-13 still need a Metal compile and run.
-2. **Tiled probe choice for large draws.** A draw that spans rooms takes the
-   probe at its bounding-sphere centre (audit R10 fixed only the order); split
-   such draws or pick per pixel.
+2. **Tiled probe choice for large draws.** Implemented 2026-10-13
+   (ADR-087): a draw that a probe's half-influence surface cuts picks its
+   probe per pixel, the rest keep one probe per draw.
 3. **Probe placement for rooms.** Per-room probes with portals
    ([Large-level rendering](large-level-rendering.md), section 4) keep a
    surface from reading another room's probe.
@@ -309,7 +311,7 @@ prefiltered at load into a 9-mip GGX cube and L2 SH
 Item 3's `room.probes` exists
 ([ADR-115](../adr/115-rooms-and-portals.md)); its capture in a project
 scene is [Large-level rendering](large-level-rendering.md) section 4,
-item 1. Item 2 and the tiled part of item 4 need the Mac.
+item 1.
 
 ### Probe audit (2026-10-12)
 
@@ -338,7 +340,7 @@ roughness-to-mip mapping over 9 mips. The defects, most severe first:
 | R9 | Medium, suspected | The GTAO cone multiplies all specular above roughness 0.09; spatial-only GTAO noise reaches glossy metal. | `vkr_gtao_cone_specular` | Check in the section 3 evidence; soften the cone if visible. | Checked 2026-10-13: no grain on the café's metal and glossy surfaces with two denoise passes; cone unchanged |
 | B7 | Medium, suspected | A box edit moves the projection centre without a recapture or a staleness mark. | Editor probe handles (ADR-103) | Store the capture origin; mark probes stale on edits. | Fixed 2026-10-13 (the cube stores its capture origin; both pipelines project from it through a probe-record field; the runtime marks and logs a moved probe and the editor draws it orange; `--check` reports it stale) |
 | B8 | Low | `--size` accepts 2048 but the prefilter is fixed at 256; a 2048 source SH projection risks a Windows TDR. | `vkr_bakery_bake.c`, `vkr_world_resources.c` | Limit to 256, or downsample with mips (B3). | Fixed 2026-10-12 |
-| R10 | Low | Tiled: one probe per draw at its bounding-sphere centre; the blend pass picks per pixel without the smaller-box tie-break. | `gpu_draws.metal`, `tiled.metal` | Work item 2; the same tie-break in both places. | Fixed 2026-10-12 (order); per-pixel choice for large draws open (work item 2) |
+| R10 | Low | Tiled: one probe per draw at its bounding-sphere centre; the blend pass picks per pixel without the smaller-box tie-break. | `gpu_draws.metal`, `tiled.metal` | Work item 2; the same tie-break in both places. | Fixed 2026-10-12 (order) and 2026-10-13 (per-pixel choice for draws that cross a probe's half-influence surface) |
 | R11 | Low, suspected | Specular occlusion receives perceptual roughness where the references use α. | `packet_specular_ao`, `lighting.metalh` | Check against the reference and convert. | Fixed 2026-10-13 (one shared `vkr_specular_occlusion(ao, n·v, α)` in `ggx_kernel.slangh` for both pipelines, as in Frostbite and Filament) |
 | B9 | Low | Bistro's interior probe is six 4 × 4 flat-colour 8-bit placeholders with specular gain 0, so it reflects nothing. | `assets/textures/bistro_indoor_probe_*.png`, `bistro.scene.json` | Replace with a real bake after B1 to B3; Bistro probe evidence needs specular gain 1. | Fixed 2026-10-12 |
 
