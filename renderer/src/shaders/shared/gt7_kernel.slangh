@@ -59,6 +59,13 @@
 #define VKR_GT7_FADE_START 0.98f
 #define VKR_GT7_FADE_END 1.16f
 
+// MSL names linear interpolation `mix`; Slang and HLSL name it `lerp`.
+#if defined(__METAL_VERSION__)
+#define VKR_GT7_LERP(a, b, t) mix((a), (b), (t))
+#else
+#define VKR_GT7_LERP(a, b, t) lerp((a), (b), (t))
+#endif
+
 // The curve's constants for one display peak, in frame-buffer units.
 struct VkrGt7Curve
 {
@@ -198,7 +205,8 @@ float3 vkr_gt7_curve(float3 x, VkrGt7Curve curve)
                       curve.shoulder_b * exp(x * curve.shoulder_c);
     // `step` is one from the linear section's end on, where the reference
     // switches to the shoulder; it selects per channel on both backends.
-    return lerp(below, shoulder, step(VKR_GT7_LINEAR_SECTION * curve.peak, x));
+    return VKR_GT7_LERP(below, shoulder,
+                        step(VKR_GT7_LINEAR_SECTION * curve.peak, x));
 }
 
 // `GT7ToneMapping::applyToneMapping` on linear Rec.2020 frame-buffer values,
