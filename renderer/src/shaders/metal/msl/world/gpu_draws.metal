@@ -475,7 +475,26 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   }
   constant VkrMetalPacketDrawRoot &draw_root = root.draw_roots[view_index];
   uint probe_state = 0u;
-  if ((draw_root.flags & VKR_METAL_PACKET_DRAW_ROOT_PROBES) != 0u)
+  if (view_index == 0u && draw_root.frame->render_mode == 19u) {
+    /* The Draw reach view lights nothing, so the probe bits carry the
+       draw's reach code to its inspection instead (ADR-114). */
+    const device VkrMetalPacketInstance &instance =
+        root.instances[candidate.instance_index];
+    constant VkrGpuLodView &lod_view = root.lod_views[0];
+    const float radius =
+        candidate.local_bounding_sphere.w * instance.normal_column1.w;
+    probe_state =
+        vkr_gpu_draw_reach_code(
+            vkr_gpu_draw_cull_word(candidate.state_flags),
+            lod_view.position_scale.w, lod_view.flags, lod_view.distance_scale,
+            vkr_lod_distance(
+                lod_view.position_scale.xyz,
+                (instance.model *
+                 float4(candidate.local_bounding_sphere.xyz, 1.0)).xyz,
+                radius),
+            radius)
+        << VKR_GPU_DRAW_PROBE_SHIFT;
+  } else if ((draw_root.flags & VKR_METAL_PACKET_DRAW_ROOT_PROBES) != 0u)
     probe_state = vkr_metal_packet_draw_probe(
                       draw_root.frame, root.instances[candidate.instance_index],
                       candidate.local_bounding_sphere)

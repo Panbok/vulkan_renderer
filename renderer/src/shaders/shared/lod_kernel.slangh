@@ -126,6 +126,48 @@ bool vkr_gpu_draw_distance_culled(uint cull, float scale, uint flags,
                0.5f * float(half_pixels);
 }
 
+// How many times farther than now the camera would still draw a candidate,
+// for the editor's Draw reach view: the tighter of its draw distance and its
+// smallest drawn size, under `distance_scale` or the far setting's 1 when
+// the editor draws every object. As a 5-bit code: 1 already past a limit
+// (drawn only because the editor draws everything), 2 plus 4 per octave of
+// headroom up to 30, and 31 without a limit; 0 is left to draws the camera
+// view did not classify. A constant-size view has no size limit by
+// distance.
+uint vkr_gpu_draw_reach_code(uint cull, float scale, uint flags,
+                             float distance_scale, float distance,
+                             float radius)
+{
+    float game_scale = distance_scale > 0.0f ? distance_scale : 1.0f;
+    float reach = -1.0f;
+    uint far_code = cull & VKR_GPU_DRAW_CULL_CODE_MASK;
+    if (far_code != 0u)
+    {
+        reach = vkr_gpu_draw_cull_metres(far_code) * game_scale / distance;
+    }
+    uint half_pixels =
+        (cull >> VKR_GPU_DRAW_CULL_PIXELS_SHIFT) & VKR_GPU_DRAW_CULL_PIXELS_MASK;
+    if (half_pixels != 0u && scale > 0.0f)
+    {
+        float size = vkr_lod_projected(2.0f * radius, scale, flags, distance) *
+                     game_scale / (0.5f * float(half_pixels));
+        bool constant_size = (flags & VKR_GPU_LOD_VIEW_CONSTANT) != 0u;
+        if (!constant_size || size < 1.0f)
+        {
+            reach = reach < 0.0f ? size : min(reach, size);
+        }
+    }
+    if (reach < 0.0f)
+    {
+        return 31u;
+    }
+    if (reach < 1.0f)
+    {
+        return 1u;
+    }
+    return min(2u + uint(log2(reach) * 4.0f), 30u);
+}
+
 // Whether a cascade whose slice begins `shadow_near` metres from the camera
 // skips a caster of cull word `cull`: its rooms are sealed, or its shadow
 // distance ends before the slice. The test reads no camera position, so a

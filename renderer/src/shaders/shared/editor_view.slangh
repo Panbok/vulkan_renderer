@@ -47,11 +47,34 @@ float3 vkr_editor_triangle_barycentric(float3 point, float3 a, float3 b,
 
 // Artist view modes (ADR-099). The data views show one value per pixel
 // instead of light: 2 normals, 13 base colour, 14 roughness, 15 metallic,
-// 16 material cost and 17 texel density. Mode 18 shades as usual and false
-// colours the exposed image by stops.
+// 16 material cost, 17 texel density and 19 draw reach (ADR-114). Mode 18
+// shades as usual and false colours the exposed image by stops.
 bool vkr_editor_data_view(uint mode)
 {
-    return mode == 2u || (mode >= 13u && mode <= 17u);
+    return mode == 2u || (mode >= 13u && mode <= 17u) || mode == 19u;
+}
+
+// The draw reach view's colour of a vkr_gpu_draw_reach_code: grey for a
+// draw the camera view did not classify (blended surfaces), magenta past a
+// limit, red at the limit through yellow at 4x to green at 16x headroom or
+// more, and blue without a limit.
+float3 vkr_editor_reach_color(uint code)
+{
+    if (code == 0u)
+    {
+        return float3(0.35f);
+    }
+    if (code == 1u)
+    {
+        return float3(1.0f, 0.0f, 1.0f);
+    }
+    if (code >= 31u)
+    {
+        return float3(0.1f, 0.25f, 1.0f);
+    }
+    float t = saturate(float(code - 2u) / 16.0f);
+    return t < 0.5f ? float3(1.0f, 2.0f * t, 0.0f)
+                    : float3(2.0f - 2.0f * t, 1.0f, 0.0f);
 }
 
 bool vkr_editor_false_color(uint mode)

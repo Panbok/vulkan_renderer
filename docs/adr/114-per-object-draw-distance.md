@@ -100,6 +100,19 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
    through `vkr_gpu_draw_distance_reason`, the host mirror the kernels'
    test is split from) and answers with the counts per reason. It runs only
    on request, over the payload the frame built.
+7. **Draw reach view.** Render mode `DRAW_REACH` (19), an artist data view
+   of [ADR-099](099-artist-views-and-luminance-queries.md) on the tiled
+   pipeline, colours each object by how many times farther it could be
+   before the camera stops drawing it: magenta past a limit (shown only
+   when the chip draws All), red at 1x through yellow at 4x to green at
+   16x or more, blue without a limit, and grey for blended surfaces, which
+   the GPU does not classify. The shared `vkr_gpu_draw_reach_code`
+   ([lod_kernel.slangh](../../renderer/src/shaders/shared/lod_kernel.slangh))
+   takes the tighter of the draw distance and the smallest size under the
+   view's distance scale, or 1 when the chip draws All, as a 5-bit code;
+   in this mode the camera's encode writes it into the visible row's probe
+   bits, which a data view does not light with, and the inspection variant
+   colours it (`vkr_editor_reach_color`).
 
 ## Consequences
 
@@ -130,6 +143,12 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
   (on) and
   `sha256:a1c3fe26c7bec9ebbe7d2db359df7116df4fdc25d1c944cef9a290639e6ba5c6`
   (off). The fixture's distant draws are small, so the gain is too.
+- The Draw reach view on the fixture (editor, Metal, 2026-10-13) showed the
+  terrains blue, the near forest green and the far trees yellowing toward
+  their size limit; with the chip on All, the far rocks past their limit
+  showed magenta, and inside the café the walls showed green and the glasses
+  grey. The same captures under Metal API validation (`MTL_DEBUG_LAYER=1`,
+  one process) reported no error.
 - No per-reason GPU counter exists; the compaction state keeps its 144
   bytes. `view.cull_report` gives the counts from the CPU mirror. On the
   fixture's hill view in the editor (2026-10-13) it sorted 15,701 camera

@@ -905,7 +905,11 @@ Both classify kernels also apply the per-object draw distance
 flags of `state_flags` and `VkrGpuLodView`'s former reserved words
 `distance_scale` and `shadow_near` (bytes 36 and 40; the view keeps 48
 bytes). Both encode kernels keep only the bucket and candidate flags of the
-candidate state in the visible row. The host mirror
+candidate state in the visible row. In the Draw reach view (render mode 19)
+the Metal encode kernel writes the shared `vkr_gpu_draw_reach_code` into
+the camera rows' probe bits instead of a probe, and the tiled inspection
+variant colours it with `editor_view.slangh`'s `vkr_editor_reach_color`;
+the desktop pipeline does not draw the view. The host mirror
 `vkr_gpu_draw_distance_culled` in `vkr_gpu_abi.c` serves the blend list and
 editor ring. Bit 20 of the cull word hides a candidate from the camera (rooms,
 [ADR-115](115-rooms-and-portals.md); proxy cells,

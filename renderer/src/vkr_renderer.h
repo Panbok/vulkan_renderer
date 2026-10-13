@@ -923,6 +923,9 @@ typedef enum VkrRenderMode {
   /** The lit image false coloured by stops from middle grey after
    * exposure. */
   VKR_RENDER_MODE_EXPOSURE = 18,
+  /** How many times farther each draw could be before the camera stops
+   * drawing it (ADR-114), as a colour ramp; a data view. */
+  VKR_RENDER_MODE_DRAW_REACH = 19,
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 

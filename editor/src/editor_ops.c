@@ -8823,7 +8823,8 @@ static bool8_t ops_capture_view_parse(OpsContext *ctx,
       return ops_fail(ctx, OPS_INVALID,
                       "'mode' is lit, unlit, detail-lighting, lighting-only, "
                       "wireframe, base-color, roughness, metallic, normals, "
-                      "material-cost, texel-density or exposure");
+                      "material-cost, texel-density, exposure or "
+                      "draw-reach");
     }
     next.render_mode = vkr_editor_cmd_render_mode_values[i];
   }
@@ -11931,7 +11932,7 @@ static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
   "{\"type\":\"string\",\"enum\":[\"lit\",\"unlit\",\"detail-lighting\","      \
   "\"lighting-only\",\"wireframe\",\"base-color\",\"roughness\","              \
   "\"metallic\",\"normals\",\"material-cost\",\"texel-density\","              \
-  "\"exposure\"]}"
+  "\"exposure\",\"draw-reach\"]}"
 #define OPS_CAPTURE_FOCUS_SCHEMA                                               \
   "{\"oneOf\":[" OPS_ENTITY_SCHEMA ",{\"type\":\"object\",\"properties\":{"    \
   "\"min\":" OPS_VEC3_SCHEMA ",\"max\":" OPS_VEC3_SCHEMA "},\"required\":["    \
@@ -15738,7 +15739,9 @@ static const OpsDef s_ops[] = {
      "answers each one's pixel ('at') and 'hidden', or null where it lies "
      "outside the view. 'mode' renders a view in a render mode, such as the "
      "artist views base-color, roughness, metallic, normals, material-cost, "
-     "texel-density and exposure (false colour by stops).",
+     "texel-density and exposure (false colour by stops), and draw-reach "
+     "(how many times farther each object still draws: magenta past its "
+     "limit, red to green from 1x to 16x, blue without one).",
      "{\"type\":\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
      ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
      "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA

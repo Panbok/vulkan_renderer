@@ -80,6 +80,8 @@ static const struct {
     {"Material cost", VKR_RENDER_MODE_MATERIAL_COST},
     {"Texel density", VKR_RENDER_MODE_TEXEL_DENSITY},
     {"Exposure", VKR_RENDER_MODE_EXPOSURE},
+    /* How far each object still draws (ADR-114). */
+    {"Draw reach", VKR_RENDER_MODE_DRAW_REACH},
 };
 
 static const struct {

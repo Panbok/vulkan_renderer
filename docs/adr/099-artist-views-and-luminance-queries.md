@@ -39,7 +39,9 @@ asks for these views and a luminance query.
      `MATERIAL_COST` (16) and `TEXEL_DENSITY` (17), the data views;
    - `EXPOSURE` (18).
 
-   `NORMAL` (2) joins the data views on the tiled pipeline.
+   `NORMAL` (2) joins the data views on the tiled pipeline, and
+   `DRAW_REACH` (19) of [ADR-114](114-per-object-draw-distance.md) is one
+   too.
    `vkr_graphics_pipeline_draws_render_mode` reports them for the tiled
    pipeline only. The desktop pipeline draws the modes before 13.
 2. **Data views.** The tiled inspection variant writes the value instead of

@@ -1679,6 +1679,7 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
         {"material_cost", VKR_RENDER_MODE_MATERIAL_COST},
         {"texel_density", VKR_RENDER_MODE_TEXEL_DENSITY},
         {"exposure", VKR_RENDER_MODE_EXPOSURE},
+        {"draw_reach", VKR_RENDER_MODE_DRAW_REACH},
     };
     for (uint32_t i = 0; i < ArrayCount(artist_views); ++i) {
       if (string_equals(case_manifest->renderer.render_mode,

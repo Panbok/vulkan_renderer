@@ -144,8 +144,6 @@ per-view tests and the editor and agent surfaces. Remaining:
   candidate inside its band into the alpha-tested bucket of its state for
   that frame. Without temporal history the tiled pipeline shows the dither
   as stipple, so add it only if captures show pops above the smallest size.
-- **A `Draw distance` inspection mode** tinting each object by how far it
-  still draws; ADR-114's `view.cull_report` gives the counts per reason.
 - **Evidence.** Retained-cascade redraw counts on the glide matched against a
   build without the feature; a matched `gpu.submission` report on the
   overview; the Vulkan twins under validation on Windows.

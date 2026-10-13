@@ -609,13 +609,14 @@ vkr_metal_packet_subresource_texture(VkrMetalPacketRenderer *renderer,
 }
 
 /* The artist views that show a value per pixel instead of light (ADR-099):
-   normals, base colour, roughness, metallic, material cost and texel
-   density. The inspection variant writes them, and the tonemap shows them
-   without exposure, grading, bloom or the tone curve. */
+   normals, base colour, roughness, metallic, material cost, texel density
+   and draw reach (ADR-114). The inspection variant writes them, and the
+   tonemap shows them without exposure, grading, bloom or the tone curve. */
 vkr_internal bool8_t vkr_metal_packet_data_view(uint32_t mode) {
   return mode == VKR_RENDER_MODE_NORMAL ||
          (mode >= VKR_RENDER_MODE_BASE_COLOR &&
-          mode <= VKR_RENDER_MODE_TEXEL_DENSITY);
+          mode <= VKR_RENDER_MODE_TEXEL_DENSITY) ||
+         mode == VKR_RENDER_MODE_DRAW_REACH;
 }
 
 vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(

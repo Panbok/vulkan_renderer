@@ -558,8 +558,9 @@ static const char *const s_render_mode_names[VKR_RENDER_MODE_COUNT] = {
     [VKR_RENDER_MODE_MATERIAL_COST] = "material_cost",
     [VKR_RENDER_MODE_TEXEL_DENSITY] = "texel_density",
     [VKR_RENDER_MODE_EXPOSURE] = "exposure",
+    [VKR_RENDER_MODE_DRAW_REACH] = "draw_reach",
 };
-_Static_assert(VKR_RENDER_MODE_COUNT == 19u,
+_Static_assert(VKR_RENDER_MODE_COUNT == 20u,
                "Name every render mode a case can select");
 
 void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {

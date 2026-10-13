@@ -1063,15 +1063,16 @@ static float vkr_metal_tiled_texel_density(
 // one-pixel edges over a dark fill, as the visibility-buffer resolve does.
 // The artist data views (ADR-099) write their value pre-exposed, which the
 // tonemap shows without exposure or the tone curve: the shading normal,
-// base colour, roughness, metallic, the material's texture samples, and the
-// base colour texture's texels per metre against art.lint's default range.
+// base colour, roughness, metallic, the material's texture samples, the
+// base colour texture's texels per metre against art.lint's default range,
+// and the draw's reach before the camera stops drawing it (ADR-114).
 // A Custom graph's pixels show the cost of their fallback, tinted magenta.
 static bool vkr_metal_tiled_inspect(
     thread const VkrMetalTiledVertexOutput &input,
     constant VkrMetalPacketFrameRoot *frame,
     const device VkrMetalPacketMaterial &material,
     thread const VkrMetalTiledSurface &surface, float3 barycentric,
-    bool front_facing, thread float3 &out_color) {
+    bool front_facing, uint state_flags, thread float3 &out_color) {
   const uint mode = frame->render_mode;
   if (mode == 12u) {
     out_color = vkr_editor_wire_color(barycentric, dfdx(barycentric),
@@ -1105,6 +1106,10 @@ static bool vkr_metal_tiled_inspect(
     value = float3(surface.feedback_roughness);
   } else if (mode == 15u) {
     value = float3(surface.metallic);
+  } else if (mode == 19u) {
+    // The encode kernel left the draw's reach code in its probe bits.
+    value = vkr_editor_reach_color((state_flags >> VKR_GPU_DRAW_PROBE_SHIFT) &
+                                   VKR_GPU_DRAW_PROBE_MASK);
   } else if (mode == 16u) {
     value = vkr_editor_cost_color(vkr_metal_tiled_material_samples(material));
     if (((material.flags >> 24u) & 63u) != 0u) {
@@ -1148,7 +1153,7 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
   if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
     float3 inspected;
     if (vkr_metal_tiled_inspect(input, frame, material, surface, barycentric,
-                                front_facing, inspected))
+                                front_facing, visible.state_flags, inspected))
       return float4(inspected, coverage);
   }
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
@@ -1546,7 +1551,7 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
     float3 inspected;
     if (vkr_metal_tiled_inspect(input, frame, material, surface, barycentric,
-                                front_facing, inspected)) {
+                                front_facing, visible.state_flags, inspected)) {
       output.color = float4(inspected * alpha, 0.0f);
       output.behind = float4(1.0f - alpha);
       return output;
