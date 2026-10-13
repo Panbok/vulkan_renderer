@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-12
+updated: 2026-10-13
 authority: proposal
 ---
 
@@ -274,11 +274,12 @@ prefiltered at load into a 9-mip GGX cube and L2 SH
 ### Work
 
 1. **Probe audit fixes.** The audit below lists defects to fix before probes
-   carry every glossy surface. Partly done on 2026-10-12: B1 to B3, B6, B8,
-   B9 and R1 to R6 and R10 are fixed (ADR-019, ADR-038, ADR-054, ADR-058,
-   ADR-087); B4, B5, B7, R7, R8, R9 and R11 stay open. The tiled pipeline's
-   side was neither compiled nor run on Metal, and its matched
-   `tiled_bistro_baked_native` timing is still needed.
+   carry every glossy surface. B1 to B9, R1 to R6, R8, R10 and R11 are
+   fixed (2026-10-12 and 2026-10-13; ADR-019, ADR-038, ADR-042, ADR-054,
+   ADR-058, ADR-087), R9 is checked, and R7 stays open. The Mac compiled
+   and ran the 2026-10-12 fixes on the tiled pipeline (Metal validation clean,
+   `tiled_bistro_baked_native` within the before run's spread); the R11 and
+   B7 shader changes of 2026-10-13 still need a Metal compile and run.
 2. **Tiled probe choice for large draws.** A draw that spans rooms takes the
    probe at its bounding-sphere centre (audit R10 fixed only the order); split
    such draws or pick per pixel.
@@ -310,19 +311,19 @@ roughness-to-mip mapping over 9 mips. The defects, most severe first:
 | R3 | High | The frame takes the first 16 enabled probes in scene order; later probes vanish whatever the camera sees. | `frame_ibl_probe_cap` loop in `vkr_standard_scene_runtime.c` | Rank by camera distance and frustum like the 128-light table; a clustered probe list later. | Fixed 2026-10-12 (camera distance; no frustum test) |
 | B2 | High | The capture's sky includes the sun and moon discs, glow and stars; the global IBL leaves them out (ADR-058). Metal shows the sun highlight twice, and the disc drives fireflies and SH ringing. | `deferred.slang` sky pass; capture case in [`vkr_bakery_bake.c`](../../tools/bakery/vkr_bakery_bake.c) | A capture setting that omits discs, glow and stars, as the IBL source does. | Fixed 2026-10-12 |
 | B3 | High | Probe sources have one mip, so filtered importance sampling reads mip 0: 256 samples of a sharp 256² face per texel alias on rough metal and catch fireflies. | [`vkr_hdr_cube_packer.cpp`](../../tools/vkr_hdr_cube_packer.cpp); `vkr_vk_record_ibl_source_mips` only for the atmosphere | Build the source mip chain for probes too. | Fixed 2026-10-12 |
-| R4 | Medium | Box projection switches off 1 cm outside the box while the band still weighs the probe: a seam where a floor runs through a doorway. Influence and projection share one axis-aligned box; no capture offset, no rotation. | `packet_box_project` in `default.slang`; `lighting.metalh` | Project from the position clamped to the box; separate projection box and capture origin. | Fixed 2026-10-12 (seam); separate projection box and capture origin open |
+| R4 | Medium | Box projection switches off 1 cm outside the box while the band still weighs the probe: a seam where a floor runs through a doorway. Influence and projection share one axis-aligned box; no capture offset, no rotation. | `packet_box_project` in `default.slang`; `lighting.metalh` | Project from the position clamped to the box; separate projection box and capture origin. | Fixed 2026-10-12 (seam); capture origin fixed 2026-10-13 (B7); separate projection box open |
 | R5 | Medium | No roughness fade of parallax correction and no dominant specular direction, so rough reflections smear off-centre. | `default.slang`, `tiled.metal` | `lerp(N, R, (1 − α)(√(1 − α) + α))` and a roughness fade toward the unprojected direction, in a shared kernel. | Fixed 2026-10-12 |
 | R6 | Medium | The environment's intensity and specular gains also scale local probes, whose captures already hold sun, lamps and sky. Bistro uses 1, so it is unaffected today. | `ibl_controls` in `default.slang` | Apply only the probe's own gains to probe terms. | Fixed 2026-10-12 |
-| B4 | Medium | One capture per probe at the World's start hour; changing the hour keeps the old sky and sun in probes while volumes follow sun keys. | `vkr_bake_probe_case` | Capture per sun key and blend like volume layers, or scale by the ratio of current to captured baked light. | Open |
-| B5 | Medium | The capture renders SSR, SSGI, fog, dynamic entities and blended effects, 8 frames per face, without AA. | Probe case in `vkr_bakery_bake.c` | SSR and SSGI disappear in step 1; exclude non-static entities and blended effects; supersample faces. | Open |
+| B4 | Medium | One capture per probe at the World's start hour; changing the hour keeps the old sky and sun in probes while volumes follow sun keys. | `vkr_bake_probe_case` | Capture per sun key and blend like volume layers, or scale by the ratio of current to captured baked light. | Fixed 2026-10-12 (one luminance ratio of the diffuse volume's layers at the capture origin, clamped to [1/64, 16]; the reflected colour and sky stay the capture's; no volume, no ratio) |
+| B5 | Medium | The capture renders SSR, SSGI, fog, dynamic entities and blended effects, 8 frames per face, without AA. | Probe case in `vkr_bakery_bake.c` | SSR and SSGI disappear in step 1; exclude non-static entities and blended effects; supersample faces. | Fixed 2026-10-12 (static meshes only, no alpha-blended draws, faces rendered 4× wider and box-filtered; fog kept) |
 | B6 | Medium | Probes bake with `sh_deringing = 0`; L2 of a bright window rings and the zero clamp shows black lobes. | [`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c) | A non-zero window for baked probes. | Fixed 2026-10-12 |
 | R7 | Medium | Desktop: a lightmapped surface the volume does not cover reflects the full environment; SSR hid this indoors. | `deferred.slang` environment branch | Probes in such rooms, or a sky share from lightmap sun-key layers. | Open |
-| R8 | Medium | Desktop deferred passes the shading normal as the horizon normal, so the horizon fade is always one and bumpy metal reflects below its surface. | `packet_environment_specular(..., normal, normal, ...)` in `deferred.slang` | Pass the geometric normal from the visibility buffer's triangle. | Open |
-| R9 | Medium, suspected | The GTAO cone multiplies all specular above roughness 0.09; spatial-only GTAO noise reaches glossy metal. | `vkr_gtao_cone_specular` | Check in the section 3 evidence; soften the cone if visible. | Open |
-| B7 | Medium, suspected | A box edit moves the projection centre without a recapture or a staleness mark. | Editor probe handles (ADR-103) | Store the capture origin; mark probes stale on edits. | Open |
+| R8 | Medium | Desktop deferred passes the shading normal as the horizon normal, so the horizon fade is always one and bumpy metal reflects below its surface. | `packet_environment_specular(..., normal, normal, ...)` in `deferred.slang` | Pass the geometric normal from the visibility buffer's triangle. | Fixed 2026-10-13 (deferred lighting rebuilds the geometric normal from same-draw depth neighbours; transmission shading passes its surface's geometric normal) |
+| R9 | Medium, suspected | The GTAO cone multiplies all specular above roughness 0.09; spatial-only GTAO noise reaches glossy metal. | `vkr_gtao_cone_specular` | Check in the section 3 evidence; soften the cone if visible. | Checked 2026-10-13: no grain on the café's metal and glossy surfaces with two denoise passes; cone unchanged |
+| B7 | Medium, suspected | A box edit moves the projection centre without a recapture or a staleness mark. | Editor probe handles (ADR-103) | Store the capture origin; mark probes stale on edits. | Fixed 2026-10-13 (the cube stores its capture origin; both pipelines project from it through a probe-record field; the runtime marks and logs a moved probe and the editor draws it orange; `--check` reports it stale) |
 | B8 | Low | `--size` accepts 2048 but the prefilter is fixed at 256; a 2048 source SH projection risks a Windows TDR. | `vkr_bakery_bake.c`, `vkr_world_resources.c` | Limit to 256, or downsample with mips (B3). | Fixed 2026-10-12 |
 | R10 | Low | Tiled: one probe per draw at its bounding-sphere centre; the blend pass picks per pixel without the smaller-box tie-break. | `gpu_draws.metal`, `tiled.metal` | Work item 2; the same tie-break in both places. | Fixed 2026-10-12 (order); per-pixel choice for large draws open (work item 2) |
-| R11 | Low, suspected | Specular occlusion receives perceptual roughness where the references use α. | `packet_specular_ao`, `lighting.metalh` | Check against the reference and convert. | Open |
+| R11 | Low, suspected | Specular occlusion receives perceptual roughness where the references use α. | `packet_specular_ao`, `lighting.metalh` | Check against the reference and convert. | Fixed 2026-10-13 (one shared `vkr_specular_occlusion(ao, n·v, α)` in `ggx_kernel.slangh` for both pipelines, as in Frostbite and Filament) |
 | B9 | Low | Bistro's interior probe is six 4 × 4 flat-colour 8-bit placeholders with specular gain 0, so it reflects nothing. | `assets/textures/bistro_indoor_probe_*.png`, `bistro.scene.json` | Replace with a real bake after B1 to B3; Bistro probe evidence needs specular gain 1. | Fixed 2026-10-12 |
 
 Owner decisions on the audit (2026-10-12):
@@ -336,7 +337,8 @@ Owner decisions on the audit (2026-10-12):
 - **B4:** probes follow the time of day by a ratio: each probe's radiance
   scales by the current baked light at its capture point over the baked
   light captured with it, clamped. One capture per sun key (about 34 MB per
-  probe for eight keys at 256²) is not planned.
+  probe for eight keys at 256²) is not planned. Landed in ADR-019 on
+  2026-10-12 as a host-side factor on the probe's intensity.
 
 Pipelines each fix touches:
 
@@ -432,8 +434,8 @@ visibility and composition stay unchanged:
 
 1. Remove SSR, SSGI and FSR 3.1 (section 1). Done 2026-10-12.
 2. Probe audit fixes (section 5, item 1); probes become the only glossy
-   reflection source in step 1. Partly done 2026-10-12; the open audit rows
-   remain.
+   reflection source in step 1. Done 2026-10-13 except R7 and the separate
+   projection box of R4.
 3. Spatial GTAO (section 3); independent of AA once TAA no longer drives the
    noise.
 4. GT7 tone mapping (section 4); it fixes the colour space SMAA T2x reads.
@@ -447,7 +449,7 @@ visibility and composition stay unchanged:
 | Step | Documents |
 |---|---|
 | 1 | Done 2026-10-12: ADR-052, ADR-055 and ADR-060 declined; the other ADRs, `ARCHITECTURE.md` and the proposals lost their SSR, SSGI and FSR claims |
-| 2 | Fixed rows done 2026-10-12: ADR-019, ADR-038, ADR-044, ADR-054, ADR-058, ADR-075, ADR-081, ADR-087, `ARCHITECTURE.md`. With the open rows: ADR-019, ADR-103; [Tiled graphics pipeline](tiled-pipeline.md) remaining-work item 1, which lists per-surface probes that already exist |
+| 2 | Fixed rows done 2026-10-12: ADR-019, ADR-038, ADR-044, ADR-054, ADR-058, ADR-075, ADR-081, ADR-087, `ARCHITECTURE.md`; B4, B5 and B7 in ADR-019, ADR-054, ADR-090, ADR-103 and `ARCHITECTURE.md`. With the open rows: ADR-019; [Tiled graphics pipeline](tiled-pipeline.md) remaining-work item 1, which lists per-surface probes that already exist |
 | 3 | ADR-042 (GTAO) |
 | 4 | ADR-043, 044, 061 and 087 (colour pipeline), ADR-099 |
 | 5 | ADR-037 rewritten for SMAA T2x; ADR-043 (FXAA) |

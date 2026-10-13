@@ -183,6 +183,15 @@ typedef struct VkrHarnessChildContext {
   uint32_t resize_restore_pixel_height;
   VkrHarnessReport *capture_report;
   VkrHarnessError capture_error;
+  /* A probe capture's diffuse-volume layers and the weights the volume
+     composed for its first face; `light_layers_stable` turns false when a
+     later face saw another composition (vkr_bakery bake probe, ADR-019). */
+  bool8_t light_layers_recorded;
+  bool8_t light_layers_stable;
+  uint32_t light_layer_composition;
+  uint32_t light_layer_count;
+  VkrLightLayer light_layers[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
+  float32_t light_layer_weights[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
 } VkrHarnessChildContext;
 
 /**
@@ -1117,6 +1126,70 @@ vkr_harness_child_build_ui(VkrStandardSceneRuntime *application,
   (void)vkr_ui_end(&application->ui_system);
 }
 
+/* Records, for a probe capture's face, the diffuse-volume layers and the
+   weights the volume composes them with: the first face's set, and whether
+   every later face saw the same composition. */
+vkr_internal void vkr_harness_child_record_light_layers(
+    VkrHarnessChildContext *child, const VkrStandardSceneRuntime *application) {
+  const VkrScene *scene = application->active_scene;
+  const VkrSceneDiffuseVolume *volume = scene ? scene->diffuse_volume : NULL;
+  const uint32_t composition = volume ? volume->composition : 0u;
+  if (child->light_layers_recorded) {
+    child->light_layers_stable = child->light_layers_stable &&
+                                 child->light_layer_composition == composition;
+    return;
+  }
+  child->light_layers_recorded = true_v;
+  child->light_layers_stable = true_v;
+  child->light_layer_composition = composition;
+  child->light_layer_count = volume ? volume->layer_count : 0u;
+  for (uint32_t layer = 0u; layer < child->light_layer_count; ++layer) {
+    child->light_layers[layer] = volume->layers[layer];
+    child->light_layer_weights[layer] = volume->weights[layer];
+  }
+}
+
+/* Publishes the recorded light layers as the capture.light_layers artifact
+   (`light-layers.json` in the run directory) that `vkr_bakery bake probe`
+   reads into the cube's capture record. */
+vkr_internal bool8_t vkr_harness_child_write_light_layers(
+    const VkrHarnessChildContext *child, VkrHarnessReport *report) {
+  char path[VKR_HARNESS_PATH_MAX];
+  string_format(path, sizeof(path), "%s/light-layers.json", child->run_dir);
+  VkrJsonFileWriter file = {0};
+  if (!vkr_json_file_writer_begin(
+          &file, string8_create_from_cstr((const uint8_t *)path,
+                                          string_length(path)))) {
+    return false_v;
+  }
+  VkrJsonWriter *writer = &file.writer;
+  bool8_t ok = vkr_json_writer_begin_object(writer) &&
+               vkr_harness_json_emit_u64(writer, "schema_version", 1u) &&
+               vkr_harness_json_emit_bool(writer, "composition_stable",
+                                          child->light_layers_stable) &&
+               vkr_harness_json_emit_name(writer, "layers") &&
+               vkr_json_writer_begin_array(writer);
+  for (uint32_t layer = 0u; ok && layer < child->light_layer_count; ++layer) {
+    const VkrLightLayer *light_layer = &child->light_layers[layer];
+    ok = vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_u64(writer, "kind", light_layer->kind) &&
+         vkr_harness_json_emit_u64(writer, "index", light_layer->index) &&
+         vkr_harness_json_emit_string(writer, "name", light_layer->name) &&
+         vkr_harness_json_emit_f64(writer, "weight",
+                                   child->light_layer_weights[layer]) &&
+         vkr_json_writer_end_object(writer);
+  }
+  ok = ok && vkr_json_writer_end_array(writer) &&
+       vkr_json_writer_end_object(writer);
+  if (!ok || !vkr_json_file_writer_commit(&file)) {
+    vkr_json_file_writer_abort(&file);
+    return false_v;
+  }
+  return vkr_harness_report_add_artifact(report, "capture.light_layers",
+                                         "light-layers.json",
+                                         "application/json", path);
+}
+
 /* Bootstrap only: the number the next frame will get, exact once the frame
    the render thread holds has finished. The measured phase never waits. */
 vkr_internal uint64_t
@@ -1328,6 +1401,9 @@ vkr_internal void vkr_harness_child_update(void *state,
                 child->case_manifest->captures[child->capture_index].at_frame) {
       application->capture_request = &child->capture_request;
       child->capture_requested = true_v;
+      if (application->static_capture) {
+        vkr_harness_child_record_light_layers(child, application);
+      }
     }
   }
   if (!vkr_harness_child_apply_motion_entity(application)) {
@@ -1649,6 +1725,9 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   for (uint32_t i = 0u; i < case_manifest->capture_count; ++i)
     cubemap_capture |= case_manifest->captures[i].has_camera_mode;
   application->globals.sky_light_sources_hidden = cubemap_capture;
+  /* A probe holds the static world only: movers and alpha-blended surfaces
+     would stay frozen in it (ADR-019). */
+  application->static_capture = cubemap_capture;
   application->globals.dof_enabled = case_manifest->renderer.dof_enabled;
   application->globals.dof_focus_distance =
       case_manifest->renderer.dof_focus_distance;
@@ -2182,11 +2261,13 @@ vkr_internal bool8_t vkr_harness_child_init_capture_report(
   const uint32_t checkpoints = child->case_manifest->single_capture_session
                                    ? child->case_manifest->capture_count
                                    : 1u;
-  if (!vkr_harness_report_init_storage(child->capture_report,
-                                       child->arenas->persistent,
-                                       replay->channel_count * checkpoints,
-                                       replay->channel_count * checkpoints *
-                                           VKR_HARNESS_ARTIFACTS_PER_CAPTURE)) {
+  /* Each capture's artifacts, and a probe capture's light layers. */
+  if (!vkr_harness_report_init_storage(
+          child->capture_report, child->arenas->persistent,
+          replay->channel_count * checkpoints,
+          replay->channel_count * checkpoints *
+                  VKR_HARNESS_ARTIFACTS_PER_CAPTURE +
+              1u)) {
     vkr_harness_stderr("Unable to size the capture report tables\n");
     return false_v;
   }
@@ -2265,6 +2346,13 @@ vkr_internal bool8_t vkr_harness_child_complete_capture_report(
     VkrSubsystemMask subsystem_mask, const char *scene_content_digest,
     VkrHarnessError *error) {
   VkrHarnessReport *capture_report = child->capture_report;
+  if (child->light_layers_recorded &&
+      !vkr_harness_child_write_light_layers(child, capture_report)) {
+    vkr_harness_error_set(error, "artifact.light_layers", "$",
+                          "Unable to publish '%s/light-layers.json'",
+                          child->run_dir);
+    return false_v;
+  }
   capture_report->case_manifest = *child->case_manifest;
   capture_report->profile = *profile;
   capture_report->profile_compatible = true_v;

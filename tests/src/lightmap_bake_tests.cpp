@@ -3,10 +3,11 @@
 extern "C" {
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
+#include "assets/vkr_probe_capture.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
-#include "level/vkr_brush.h"
 #include "filesystem/filesystem.h"
+#include "level/vkr_brush.h"
 #include "memory/vkr_arena_allocator.h"
 }
 #include "bake/vkr_bake_bricks.h"
@@ -24,6 +25,8 @@ extern "C" {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <ktx.h>
 
 #include <string>
 #include <vector>
@@ -913,6 +916,176 @@ void test_diffuse_volume_v3_round_trip_and_rejects() {
   (void)ok;
   arena_destroy(arena);
   printf("  test_diffuse_volume_v3_round_trip_and_rejects PASSED\n");
+}
+
+/* A one-cube RGBA16F KTX2 file written by libktx, as the HDR cube packer
+   writes probes, with `record` as its vkr.probe_capture entry when given. */
+static std::vector<uint8_t> probe_capture_ktx2(const uint8_t *record,
+                                               uint32_t record_size) {
+  ktxTextureCreateInfo info = {};
+  info.vkFormat = 97u; /* VK_FORMAT_R16G16B16A16_SFLOAT */
+  info.baseWidth = 1u;
+  info.baseHeight = 1u;
+  info.baseDepth = 1u;
+  info.numDimensions = 2u;
+  info.numLevels = 1u;
+  info.numLayers = 1u;
+  info.numFaces = 6u;
+  ktxTexture2 *texture = NULL;
+  KTX_error_code result =
+      ktxTexture2_Create(&info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &texture);
+  assert(result == KTX_SUCCESS && texture);
+  const char writer[] = "probe capture test";
+  result = ktxHashList_AddKVPair(&ktxTexture(texture)->kvDataHead,
+                                 KTX_WRITER_KEY, sizeof(writer), writer);
+  assert(result == KTX_SUCCESS);
+  if (record) {
+    result = ktxHashList_AddKVPair(&ktxTexture(texture)->kvDataHead,
+                                   VKR_PROBE_CAPTURE_KEY, record_size, record);
+    assert(result == KTX_SUCCESS);
+  }
+  ktx_uint8_t *bytes = NULL;
+  ktx_size_t size = 0u;
+  result = ktxTexture_WriteToMemory(ktxTexture(texture), &bytes, &size);
+  assert(result == KTX_SUCCESS && bytes);
+  std::vector<uint8_t> file(bytes, bytes + size);
+  free(bytes);
+  ktxTexture_Destroy(ktxTexture(texture));
+  (void)result;
+  return file;
+}
+
+/* Audit B4 (ADR-019): a probe's radiance follows the time of day by the
+   light the volume composes at its capture origin over the light it was
+   captured under. One level-0 brick at 1 m spacing; its sun key's constant
+   term rises by one per probe along x, the lamp group holds 0.5 indirect
+   and 0.25 direct, and every linear term is 5 so reading a linear term in
+   place of the constant shows. */
+void test_probe_capture_follows_volume_light() {
+  printf("  test_probe_capture_follows_volume_light...\n");
+  VkrLightLayer layers[2] = {};
+  layers[0].kind = VKR_LIGHT_LAYER_SUN_KEY;
+  layers[0].sun_direction = vec3_new(0.0f, 1.0f, 0.0f);
+  layers[1].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
+  strcpy(layers[1].name, "street");
+  const VkrDiffuseVolumeBrick bricks[1] = {{{0u, 0u, 0u}, 0u}};
+  uint8_t entries[sizeof(uint32_t)];
+  vkr_store_le_u32(entries, 0u);
+  const uint32_t probe_count = VKR_DIFFUSE_VOLUME_BRICK_PROBES;
+  std::vector<uint8_t> aux(probe_count * VKR_DIFFUSE_VOLUME_AUX_BYTES);
+  std::vector<uint8_t> moments(probe_count * VKR_DIFFUSE_VOLUME_MOMENT_BYTES);
+  std::vector<uint8_t> sh(probe_count * 3u * VKR_DIFFUSE_VOLUME_SH_BYTES);
+  const float32_t constants[3] = {1.0f, 0.5f, 0.25f};
+  for (uint32_t p = 0u; p < probe_count; ++p) {
+    store_half_le(aux.data() + p * VKR_DIFFUSE_VOLUME_AUX_BYTES + 6u, 1.0f);
+    for (uint32_t band = 0u; band < 3u; ++band) {
+      uint8_t *rows =
+          sh.data() + (band * probe_count + p) * VKR_DIFFUSE_VOLUME_SH_BYTES;
+      const float32_t constant =
+          constants[band] + (band == 0u ? (float32_t)(p % 4u) : 0.0f);
+      for (uint32_t channel = 0u; channel < 3u; ++channel) {
+        for (uint32_t term = 0u; term < 3u; ++term) {
+          store_half_le(rows + channel * 8u + term * 2u, 5.0f);
+        }
+        store_half_le(rows + channel * 8u + 6u, constant);
+      }
+    }
+  }
+  VkrDiffuseVolume volume = {};
+  volume.origin = vec3_zero();
+  volume.spacing = 1.0f;
+  volume.sh_scale = 2.0f;
+  volume.level_count = 1u;
+  volume.dimensions[0] = volume.dimensions[1] = volume.dimensions[2] = 1u;
+  volume.entries = entries;
+  volume.entry_count = 1u;
+  volume.bricks = bricks;
+  volume.brick_count = 1u;
+  volume.probe_count = probe_count;
+  volume.probe_aux = aux.data();
+  volume.moments = moments.data();
+  volume.layer_sh = sh.data();
+  volume.layers = layers;
+  volume.layer_count = 2u;
+  volume.lamp_direct_count = 1u;
+
+  /* Halfway between the x = 0 and x = 1 probes: the sun key reads 1.5, the
+     lamp group 0.5 + 0.25, both times sh_scale. */
+  const Vec3 origin = vec3_new(0.5f, 0.5f, 0.5f);
+  float32_t luminance[VKR_DIFFUSE_VOLUME_MAX_LAYERS] = {};
+  bool8_t ok = vkr_diffuse_volume_layer_luminance(&volume, origin, luminance);
+  assert(ok && fabsf(luminance[0] - 3.0f) < 1.0e-5f &&
+         fabsf(luminance[1] - 1.5f) < 1.0e-5f);
+  /* Invalid probes drop out of the interpolation. */
+  for (uint32_t p = 1u; p < probe_count; p += 4u) {
+    store_half_le(aux.data() + p * VKR_DIFFUSE_VOLUME_AUX_BYTES + 6u, 0.0f);
+  }
+  float32_t valid_only[VKR_DIFFUSE_VOLUME_MAX_LAYERS] = {};
+  ok = vkr_diffuse_volume_layer_luminance(&volume, origin, valid_only);
+  assert(ok && fabsf(valid_only[0] - 2.0f) < 1.0e-5f);
+  ok = vkr_diffuse_volume_layer_luminance(&volume, vec3_new(-0.1f, 0.5f, 0.5f),
+                                          valid_only);
+  assert(!ok);
+  ok = vkr_diffuse_volume_layer_luminance(&volume, vec3_new(0.5f, 3.1f, 0.5f),
+                                          valid_only);
+  assert(!ok);
+
+  /* Captured at noon with the street lamps at 0.2: light 3 + 0.3. */
+  VkrProbeCapture capture = {};
+  capture.origin = origin;
+  capture.layer_count = 2u;
+  capture.layers[0] = layers[0];
+  capture.layers[1] = layers[1];
+  capture.luminance[0] = luminance[0];
+  capture.luminance[1] = luminance[1];
+  capture.weights[0] = 1.0f;
+  capture.weights[1] = 0.2f;
+  const float32_t evening[2] = {0.5f, 0.2f};
+  const float32_t night[2] = {0.0f, 4.0f};
+  const float32_t dark[2] = {0.0f, 0.0f};
+  const float32_t glare[2] = {100.0f, 0.0f};
+  assert(fabsf(vkr_probe_capture_ratio(&capture, evening) - 1.8f / 3.3f) <
+         1.0e-5f);
+  assert(fabsf(vkr_probe_capture_ratio(&capture, night) - 6.0f / 3.3f) <
+         1.0e-5f);
+  assert(vkr_probe_capture_ratio(&capture, dark) ==
+         VKR_PROBE_CAPTURE_RATIO_MIN);
+  assert(vkr_probe_capture_ratio(&capture, glare) ==
+         VKR_PROBE_CAPTURE_RATIO_MAX);
+  assert(vkr_probe_capture_matches(&capture, layers, 2u));
+  VkrLightLayer renamed[2] = {layers[0], layers[1]};
+  strcpy(renamed[1].name, "plaza");
+  assert(!vkr_probe_capture_matches(&capture, renamed, 2u));
+  assert(!vkr_probe_capture_matches(&capture, layers, 1u));
+
+  /* The record survives the cube the packer writes, beside other keys. */
+  uint8_t record[VKR_PROBE_CAPTURE_MAX_BYTES];
+  const uint32_t record_size = vkr_probe_capture_encode(&capture, record);
+  assert(record_size ==
+         VKR_PROBE_CAPTURE_HEADER_BYTES + 2u * VKR_PROBE_CAPTURE_LAYER_BYTES);
+  const std::vector<uint8_t> cube = probe_capture_ktx2(record, record_size);
+  VkrProbeCapture read = {};
+  assert(vkr_probe_capture_find_ktx2(cube.data(), cube.size(), &read) ==
+         VKR_PROBE_CAPTURE_FOUND);
+  assert(read.layer_count == 2u && read.origin.x == origin.x &&
+         read.origin.y == origin.y && read.origin.z == origin.z &&
+         read.luminance[0] == capture.luminance[0] &&
+         read.weights[1] == capture.weights[1] &&
+         vkr_probe_capture_matches(&read, layers, 2u));
+  assert(fabsf(vkr_probe_capture_ratio(&read, evening) - 1.8f / 3.3f) <
+         1.0e-5f);
+  const std::vector<uint8_t> plain = probe_capture_ktx2(NULL, 0u);
+  assert(vkr_probe_capture_find_ktx2(plain.data(), plain.size(), &read) ==
+         VKR_PROBE_CAPTURE_ABSENT);
+  /* A record cut short is refused rather than half read. */
+  const std::vector<uint8_t> cut = probe_capture_ktx2(record, record_size - 4u);
+  assert(vkr_probe_capture_find_ktx2(cut.data(), cut.size(), &read) ==
+         VKR_PROBE_CAPTURE_INVALID);
+  /* Without layers the probe keeps its captured light. */
+  capture.layer_count = 0u;
+  assert(vkr_probe_capture_ratio(&capture, night) == 1.0f);
+  (void)ok;
+  printf("  test_probe_capture_follows_volume_light PASSED\n");
 }
 
 /* Outlier rejection replaces a lone firefly on a smooth surface with its
@@ -1864,6 +2037,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_rgb9e5_round_trip();
   test_light_layer_sun_weights();
   test_diffuse_volume_v3_round_trip_and_rejects();
+  test_probe_capture_follows_volume_light();
   test_lightmap_denoise_stays_on_surfaces();
   test_lightmap_denoise_atrous_keeps_edges();
   test_lightmap_fill_buried_texels();

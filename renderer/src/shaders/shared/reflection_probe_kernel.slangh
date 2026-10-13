@@ -51,13 +51,14 @@ float3 vkr_specular_dominant_direction(float3 normal, float3 reflection,
 }
 
 // The cube direction of a reflection from `position` inside a probe's box:
-// toward where the reflection leaves the box, seen from the box centre, where
-// the probe was captured. A rough lobe spans much of the cube, so the
-// correction fades toward the plain reflection as `alpha` grows instead of
-// aiming the whole lobe at one wall point.
+// toward where the reflection leaves the box, seen from `capture_origin`,
+// where the cube was captured, so a box moved after its bake keeps correct
+// parallax. A rough lobe spans much of the cube, so the correction fades
+// toward the plain reflection as `alpha` grows instead of aiming the whole
+// lobe at one wall point.
 float3 vkr_reflection_probe_direction(float3 reflection, float3 position,
                                       float3 center, float3 extents,
-                                      float alpha)
+                                      float3 capture_origin, float alpha)
 {
     if (extents.x <= 1e-4f || extents.y <= 1e-4f || extents.z <= 1e-4f)
         return reflection;
@@ -75,7 +76,8 @@ float3 vkr_reflection_probe_direction(float3 reflection, float3 position,
     float3 t_max = (center + extents - inside) / safe_direction;
     float3 t_far = max(t_min, t_max);
     float t_hit = max(min(t_far.x, min(t_far.y, t_far.z)), 0.0f);
-    float3 projected = normalize(inside + safe_direction * t_hit - center);
+    float3 projected =
+        normalize(inside + safe_direction * t_hit - capture_origin);
     return normalize(projected + (reflection - projected) * saturate(alpha));
 }
 

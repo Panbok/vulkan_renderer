@@ -300,7 +300,10 @@ lamp-lit room's reflection to the flat colour `D` (audit R1 in
 [Short-history rendering](../proposals/short-history-rendering.md), owner
 decision 2026-10-12). The probes take their shares first
 ([ADR-019](019-bounded-forward-spatial-lighting.md)), and `V` applies to the
-share they leave.
+share they leave. A baked probe's radiance does follow the volume's layer
+weights through one factor: the luminance the current composition gives
+its capture origin over the luminance the capture's composition gave it
+(`vkr_diffuse_volume_layer_luminance`, audit B4 in ADR-019).
 
 Per backend:
 - **Tiled (Metal).** A lightmapped draw sums its sun-key layers beside its

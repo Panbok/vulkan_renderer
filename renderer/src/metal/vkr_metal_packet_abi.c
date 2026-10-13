@@ -507,6 +507,7 @@ vkr_global const VkrMetalPacketAbiField vkr_ibl_probe_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, center_blend, "center_blend", 16),
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, extents_weight, "extents_weight", 32),
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, intensity_box, "intensity_box", 48),
+    VKR_ABI_FIELD(VkrMetalPacketIblProbe, capture_origin, "capture_origin", 64),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_shadow_cascade_fields[] = {
@@ -883,7 +884,7 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 128,
                            16, vkr_tiled_sky_root_fields),
         [VKR_METAL_PACKET_ABI_IBL_PROBE] =
-            VKR_ABI_RECORD(VkrMetalPacketIblProbe, "VkrMetalPacketIblProbe", 64,
+            VKR_ABI_RECORD(VkrMetalPacketIblProbe, "VkrMetalPacketIblProbe", 80,
                            16, vkr_ibl_probe_fields),
         [VKR_METAL_PACKET_ABI_SHADOW_CASCADE] = VKR_ABI_RECORD(
             VkrMetalPacketShadowCascade, "VkrMetalPacketShadowCascade", 96, 16,

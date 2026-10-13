@@ -707,6 +707,8 @@ vkr_internal bool8_t vkr_vk_resolve_ibl(VkrVulkanRenderer *renderer,
           .intensity_box = {probe->intensity, probe->diffuse_intensity,
                             probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
+          .capture_origin = {probe->capture_origin.x, probe->capture_origin.y,
+                             probe->capture_origin.z, 0.0f},
       };
       /* A probe carries its own pre-exposed radiance scale: the
          environment's intensity and gains scale only the global share

@@ -2098,6 +2098,92 @@ float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot root, uint2 pixel,
     return vkr_ggx_filter_roughness(roughness, normal_variance);
 }
 
+float3 vkr_vk_deferred_pixel_world(VkrVkLightingRoot root, uint2 pixel,
+                                   float depth)
+{
+    // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
+    float2 ndc_xy =
+        (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
+    return vkr_vk_deferred_homogeneous(
+        mul(root.inverse_view_projection, float4(ndc_xy, depth, 1.0f)));
+}
+
+// The step from `world` to a neighbour along one screen axis on the same
+// visible draw. It takes the side whose depth changes less, so a silhouette
+// or a fold within the draw does not tilt it, and fails when neither
+// neighbour lies on the draw.
+bool vkr_vk_deferred_depth_axis(VkrVkLightingRoot root, uint2 pixel,
+                                uint2 pixel_step, uint visible_index,
+                                float depth, float3 world, out float3 axis)
+{
+    axis = 0.0f;
+    bool forward_valid = false;
+    bool backward_valid = false;
+    float forward_depth = 0.0f;
+    float backward_depth = 0.0f;
+    uint2 forward_pixel = pixel + pixel_step;
+    if (all(forward_pixel < root.extent) &&
+        g_storage_uint2_2d[root.vbuffer_texture][forward_pixel].x ==
+            visible_index)
+    {
+        forward_valid = true;
+        forward_depth = g_depth_textures[root.depth_texture].Load(
+            int3(forward_pixel, 0));
+    }
+    if (all(pixel >= pixel_step))
+    {
+        uint2 backward_pixel = pixel - pixel_step;
+        if (g_storage_uint2_2d[root.vbuffer_texture][backward_pixel].x ==
+            visible_index)
+        {
+            backward_valid = true;
+            backward_depth = g_depth_textures[root.depth_texture].Load(
+                int3(backward_pixel, 0));
+        }
+    }
+    if (!forward_valid && !backward_valid)
+        return false;
+    bool use_forward =
+        forward_valid &&
+        (!backward_valid ||
+         abs(forward_depth - depth) <= abs(backward_depth - depth));
+    if (use_forward)
+    {
+        axis = vkr_vk_deferred_pixel_world(root, forward_pixel, forward_depth) -
+               world;
+    }
+    else
+    {
+        axis = world - vkr_vk_deferred_pixel_world(root, pixel - pixel_step,
+                                                   backward_depth);
+    }
+    return true;
+}
+
+// The geometric normal for the environment's horizon fade. The G-buffer keeps
+// only the shading normal, so this reconstructs the surface's normal from
+// neighbouring depth on the same draw, facing the viewer. A pixel without a
+// neighbour on the draw along either axis keeps the shading normal.
+float3 vkr_vk_deferred_geometric_normal(VkrVkLightingRoot root, uint2 pixel,
+                                        uint visible_index, float depth,
+                                        float3 world, float3 normal,
+                                        float3 view)
+{
+    float3 axis_x;
+    float3 axis_y;
+    if (!vkr_vk_deferred_depth_axis(root, pixel, uint2(1u, 0u), visible_index,
+                                    depth, world, axis_x) ||
+        !vkr_vk_deferred_depth_axis(root, pixel, uint2(0u, 1u), visible_index,
+                                    depth, world, axis_y))
+        return normal;
+    float3 geometric = cross(axis_x, axis_y);
+    float length_squared = dot(geometric, geometric);
+    if (length_squared <= 1e-20f)
+        return normal;
+    geometric *= rsqrt(length_squared);
+    return dot(geometric, view) < 0.0f ? -geometric : geometric;
+}
+
 float3 vk_local_shadow_mask_world(VkrVkLocalShadowMaskRoot root, float2 ndc,
                                   float depth)
 {
@@ -2642,11 +2728,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     }
     float depth =
         g_depth_textures[root.depth_texture].Load(int3(thread_id.xy, 0));
-    // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
-    float2 ndc_xy =
-        (float2(thread_id.xy) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
-    float3 world = vkr_vk_deferred_homogeneous(
-        mul(root.inverse_view_projection, float4(ndc_xy, depth, 1.0f)));
+    float3 world = vkr_vk_deferred_pixel_world(root, thread_id.xy, depth);
     roughness = vkr_vk_deferred_filter_roughness(
         root, thread_id.xy, encoded.x, normal, roughness);
     if (frame.render_mode == 6u)
@@ -2872,20 +2954,23 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     bool environment_enabled = (frame.flags & 2u) != 0u;
     if ((frame.flags & 2u) != 0u)
     {
+        float3 horizon_normal = vkr_vk_deferred_geometric_normal(
+            root, thread_id.xy, encoded.x, depth, world, normal, view);
         if (volume_valid)
         {
             indirect_irradiance = volume_irradiance;
             indirect_diffuse = volume_diffuse;
             indirect_specular = packet_environment_specular(
-                frame, world, normal, normal, view, roughness, ao, energy,
-                baked) * gtao_cone;
+                frame, world, normal, horizon_normal, view, roughness, ao,
+                energy, baked) * gtao_cone;
         }
         else
         {
             VkrVulkanEnvironmentResult environment =
                 packet_environment_terms_with_diffuse_normal(
-                    frame, world, indirect_diffuse_normal, normal, normal, view,
-                    diffuse_albedo, 0.0f, roughness, ao, energy);
+                    frame, world, indirect_diffuse_normal, normal,
+                    horizon_normal, view, diffuse_albedo, 0.0f, roughness, ao,
+                    energy);
             indirect_irradiance = environment.irradiance;
             indirect_diffuse = environment.diffuse;
             indirect_specular = environment.specular * gtao_cone;
@@ -4138,17 +4223,19 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
                 {
                     VkrVulkanEnvironmentResult environment =
                         packet_environment_terms(
-                            frame, world, surface.normal, surface.normal, view,
-                            surface.base.rgb, surface.metallic,
-                            surface.roughness, surface.occlusion, energy);
+                            frame, world, surface.normal,
+                            surface.geometric_normal, view, surface.base.rgb,
+                            surface.metallic, surface.roughness,
+                            surface.occlusion, energy);
                     diffuse += environment.diffuse;
                     specular += environment.specular;
                 }
                 else
                 {
                     specular += packet_environment_specular(
-                        frame, world, surface.normal, surface.normal, view,
-                        surface.roughness, surface.occlusion, energy, baked);
+                        frame, world, surface.normal, surface.geometric_normal,
+                        view, surface.roughness, surface.occlusion, energy,
+                        baked);
                 }
             }
             else if (diffuse_enabled && !volume_valid)

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -103,6 +103,10 @@ component's property, which the Details slider and `vkr_component_set` edit.
 - Diffuse volumes take one SH set per probe per layer, about ten times the
   bake time of a single layer, and between two sun keys the blend
   approximates the bounce of a sun between them.
+- Baked reflection probes keep the sky and colours of the hour they were
+  captured at; only their brightness follows the layer weights, by the
+  ratio of the volume's baked light at their capture origin
+  ([ADR-019](019-bounded-forward-spatial-lighting.md), audit B4).
 - Volumetric clouds shadow the sun as it turns: a level can fall into cloud
   shadow at some hours.
 - A sun close to the celestial pole never sets, so its night groups never

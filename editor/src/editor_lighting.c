@@ -670,18 +670,28 @@ static void lighting_entity_lines(LightingLines *lines, const VkrScene *scene,
   const SceneReflectionProbeSettings *probe =
       vkr_scene_get_typed(scene, entity, &vkr_scene_reflection_probe_type);
   if (probe) {
-    const Vec4 color = {0.55f, 1.0f, 0.6f, 1.0f};
+    /* A probe moved off the origin its cube was captured at draws orange
+       until Bake lighting recaptures it (audit B7 in ADR-019). */
+    const bool8_t stale = probe->slot < scene->reflection_probe_count &&
+                          scene->reflection_probes[probe->slot].capture_moved;
+    const Vec4 color = stale ? (Vec4){1.0f, 0.55f, 0.15f, 1.0f}
+                             : (Vec4){0.55f, 1.0f, 0.6f, 1.0f};
     const Vec3 half[3] = {vec3_new(probe->extents.x, 0, 0),
                           vec3_new(0, probe->extents.y, 0),
                           vec3_new(0, 0, probe->extents.z)};
     lighting_box(lines, probe->center, half, color);
-    if (probe->blend_distance > 0.0f) {
-      const float32_t blend = probe->blend_distance;
-      const Vec3 grown[3] = {vec3_new(probe->extents.x + blend, 0, 0),
-                             vec3_new(0, probe->extents.y + blend, 0),
-                             vec3_new(0, 0, probe->extents.z + blend)};
-      lighting_box(lines, probe->center, grown,
-                   (Vec4){0.55f, 1.0f, 0.6f, 0.35f});
+    /* The blend band lies inside the box on its sides and top; the bottom
+       face takes none (ADR-019). */
+    const float32_t blend = probe->blend_distance;
+    if (blend > 0.0f && blend < probe->extents.x && blend < probe->extents.z &&
+        blend < 2.0f * probe->extents.y) {
+      const Vec3 inner_center =
+          vec3_sub(probe->center, vec3_new(0, 0.5f * blend, 0));
+      const Vec3 inner[3] = {vec3_new(probe->extents.x - blend, 0, 0),
+                             vec3_new(0, probe->extents.y - 0.5f * blend, 0),
+                             vec3_new(0, 0, probe->extents.z - blend)};
+      lighting_box(lines, inner_center, inner,
+                   (Vec4){color.x, color.y, color.z, 0.35f});
     }
   }
   const SceneTransform *transform = vkr_entity_get_component_if_alive_const(

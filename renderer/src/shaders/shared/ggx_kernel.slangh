@@ -144,6 +144,15 @@ float vkr_ggx_filter_roughness(float roughness, float normal_variance)
     return sqrt(sqrt(saturate(alpha * alpha + min(normal_variance, 0.25f))));
 }
 
+// Specular occlusion from ambient occlusion (Lagarde and de Rousiers, Moving
+// Frostbite to PBR, 2014): glossy lobes keep more of their light than the
+// cosine-weighted `ao` suggests. `alpha` is the squared perceptual roughness,
+// as in the reference.
+float vkr_specular_occlusion(float ao, float no_v, float alpha)
+{
+    return saturate(pow(no_v + ao, exp2(-16.0f * alpha - 1.0f)) - 1.0f + ao);
+}
+
 
 // At or below this roughness the IBL prefilter treats its GGX lobe as a
 // mirror: every importance sample is the normal, read at source mip zero.

@@ -165,6 +165,116 @@ uint32_t vkr_diffuse_volume_entry(const VkrDiffuseVolume *volume,
   return vkr_load_le_u32(volume->entries + (uint64_t)index * sizeof(uint32_t));
 }
 
+/* Rec. 709 luminance of the constant term of one probe's band; each of the
+   red, green and blue rows holds linear x, y, z, then the constant. */
+static float32_t
+vkr_diffuse_volume_band_luminance(const VkrDiffuseVolume *volume, uint32_t band,
+                                  uint32_t probe) {
+  const uint8_t *rows =
+      volume->layer_sh + ((uint64_t)band * volume->probe_count + probe) *
+                             VKR_DIFFUSE_VOLUME_SH_BYTES;
+  const uint32_t row_bytes = VKR_DIFFUSE_VOLUME_SH_BYTES / 3u;
+  const uint32_t constant = 3u * sizeof(uint16_t);
+  const float32_t red =
+      vkr_float16_to_float32(vkr_diffuse_volume_load_half(rows + constant));
+  const float32_t green = vkr_float16_to_float32(
+      vkr_diffuse_volume_load_half(rows + row_bytes + constant));
+  const float32_t blue = vkr_float16_to_float32(
+      vkr_diffuse_volume_load_half(rows + 2u * row_bytes + constant));
+  return 0.2126f * red + 0.7152f * green + 0.0722f * blue;
+}
+
+bool8_t vkr_diffuse_volume_layer_luminance(
+    const VkrDiffuseVolume *volume, Vec3 position,
+    float32_t out_luminance[VKR_DIFFUSE_VOLUME_MAX_LAYERS]) {
+  if (!volume || !out_luminance || !vkr_diffuse_volume_finite_vec3(position) ||
+      !(volume->spacing > 0.0f)) {
+    return false_v;
+  }
+
+  /* The indirection entry, as vkr_diffuse_volume_entry() in the shaders. */
+  const float32_t entry_size = 3.0f * volume->spacing;
+  uint32_t entry[3];
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    const float32_t cell = floorf(
+        (position.elements[axis] - volume->origin.elements[axis]) / entry_size);
+    if (!(cell >= 0.0f) || cell >= (float32_t)volume->dimensions[axis]) {
+      return false_v;
+    }
+    entry[axis] = (uint32_t)cell;
+  }
+  const uint32_t value = vkr_diffuse_volume_entry(
+      volume, entry[0] + volume->dimensions[0] *
+                             (entry[1] + volume->dimensions[1] * entry[2]));
+  if (value == VKR_DIFFUSE_VOLUME_ENTRY_EMPTY) {
+    return false_v;
+  }
+
+  /* The brick cell, as vkr_diffuse_volume_brick_cell(). */
+  const uint32_t span = vkr_diffuse_volume_level_span(
+      value >> VKR_DIFFUSE_VOLUME_ENTRY_LEVEL_SHIFT);
+  const uint32_t first_probe = (value & VKR_DIFFUSE_VOLUME_ENTRY_BRICK_MASK) *
+                               VKR_DIFFUSE_VOLUME_BRICK_PROBES;
+  const float32_t step = volume->spacing * (float32_t)span;
+  uint32_t base[3];
+  float32_t fraction[3];
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    const float32_t brick_origin =
+        volume->origin.elements[axis] +
+        entry_size * (float32_t)(entry[axis] - entry[axis] % span);
+    const float32_t offset = (position.elements[axis] - brick_origin) / step;
+    const float32_t local = Clamp(offset, 0.0f, 3.0f);
+    base[axis] = Min((uint32_t)floorf(local), 2u);
+    fraction[axis] = local - (float32_t)base[axis];
+  }
+
+  MemZero(out_luminance, sizeof(float32_t) * VKR_DIFFUSE_VOLUME_MAX_LAYERS);
+  float32_t total = 0.0f;
+  for (uint32_t corner = 0u; corner < 8u; ++corner) {
+    const uint32_t c[3] = {corner & 1u, (corner >> 1u) & 1u,
+                           (corner >> 2u) & 1u};
+    const uint32_t probe =
+        first_probe + (base[0] + c[0]) +
+        VKR_DIFFUSE_VOLUME_BRICK_SIZE *
+            ((base[1] + c[1]) +
+             VKR_DIFFUSE_VOLUME_BRICK_SIZE * (base[2] + c[2]));
+    const uint8_t *aux =
+        volume->probe_aux + (uint64_t)probe * VKR_DIFFUSE_VOLUME_AUX_BYTES;
+    float32_t weight =
+        vkr_float16_to_float32(vkr_diffuse_volume_load_half(aux + 6u));
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      weight *= c[axis] ? fraction[axis] : 1.0f - fraction[axis];
+    }
+    if (!(weight > 0.0f)) {
+      continue;
+    }
+    total += weight;
+
+    uint32_t lamp_group = 0u;
+    for (uint32_t layer = 0u; layer < volume->layer_count; ++layer) {
+      float32_t luminance =
+          vkr_diffuse_volume_band_luminance(volume, layer, probe);
+      if (volume->layers[layer].kind == VKR_LIGHT_LAYER_LAMP_GROUP) {
+        if (volume->lamp_direct_count != 0u) {
+          luminance += vkr_diffuse_volume_band_luminance(
+              volume, volume->layer_count + lamp_group, probe);
+        }
+        ++lamp_group;
+      }
+      out_luminance[layer] += weight * luminance;
+    }
+  }
+  if (!(total > 0.0f)) {
+    return false_v;
+  }
+
+  for (uint32_t layer = 0u; layer < volume->layer_count; ++layer) {
+    out_luminance[layer] =
+        Max(out_luminance[layer] / total, 0.0f) * volume->sh_scale;
+  }
+  return true_v;
+}
+
 static bool8_t vkr_diffuse_volume_bricks_valid(const VkrDiffuseVolume *volume) {
   for (uint32_t b = 0u; b < volume->brick_count; ++b) {
     const VkrDiffuseVolumeBrick *brick = &volume->bricks[b];

@@ -29,7 +29,13 @@ bake with source mips and without the sky's discs, glow and stars
 ([Short-history rendering](../proposals/short-history-rendering.md),
 section 5). Native Vulkan evidence covers the Bistro street view and the
 café probe bake; the Metal side of the change was neither compiled nor run
-(Evidence).
+(Evidence). Also since 2026-10-12 a baked probe follows the time of day by
+the ratio of the diffuse volume's baked light at its capture origin, its
+capture renders only the static world in supersampled faces, and its cube
+records where it was captured (audits B4, B5 and B7). Since 2026-10-13 box
+projection aims from that capture origin on both pipelines, and a probe an
+edit moved off it is marked for recapture. B4 and B5 are host-side; B7 adds
+a field to both pipelines' probe record. The Metal side was not run.
 
 ## Context
 
@@ -91,11 +97,19 @@ gives both pipelines one meaning for influence and lookup direction:
   as `box_projection` (default true); false looks up the dominant direction
   itself, as an outdoor probe needs, and does not change the influence. The
   shaded position is clamped to the box, a ray along the dominant direction
-  finds where it leaves the box, and the lookup points from the box centre,
-  where the probe was captured, to that point. The result then blends toward the unprojected
-  direction by `α`, because a rough lobe spans much of the cube. One
-  axis-aligned box serves influence and projection; there is no separate
-  projection box, capture-origin offset or rotation.
+  finds where it leaves the box, and the lookup points from the capture
+  origin, where the cube was captured, to that point. The result then blends
+  toward the unprojected direction by `α`, because a rough lobe spans much of
+  the cube. One axis-aligned box serves influence and projection; there is no
+  separate projection box or rotation. A baked cube records its capture
+  origin (below), and both pipelines' probe record carries it in
+  `capture_origin` (`VkrFrameIblProbe.capture_origin`; a probe without a
+  record uses its centre), so moving a box keeps the parallax right. Its cube
+  still shows the room from the old place: a probe whose centre lies more
+  than 1 cm from the origin (`VKR_PROBE_CAPTURE_ORIGIN_TOLERANCE`) is marked
+  `capture_moved`, logged once and drawn orange in the editor until Bake
+  lighting captures it again (audit B7). `vkr_bakery bake probe --check`
+  reports such a cube stale, because the move edits the scene it hashes.
 
 A probe's `intensity_box.x` carries its own intensity, the frame's
 pre-exposure P and its source's bake scale, `intensity × P × 2^−B_probe`
@@ -111,6 +125,28 @@ baked sky visibility scales only the global share
 ([ADR-054](054-baked-diffuse-volumes.md), "Baked sky in environment
 reflections"). The global environment remains the unbounded source.
 Diffuse uses ADR-038 coefficients and specular uses prefiltered cubemaps.
+
+**Time of day (audit B4).** A baked probe's intensity also carries a
+factor `r` for the hour, which the shared runtime multiplies in before
+either backend packs the probe (`vkr_standard_scene_runtime.c`), so both
+pipelines take it without a shader change. The cube's capture record
+([`vkr_probe_capture.h`](../../runtime/src/assets/vkr_probe_capture.h))
+holds, for each layer i of the scene's diffuse volume
+([ADR-054](054-baked-diffuse-volumes.md)), its baked luminance `E_i` at
+the capture origin and the weight `c_i` the volume composed it with
+while the faces rendered. With the volume's current weights `w_i`
+([ADR-090](090-time-of-day.md)),
+`r = clamp(Σ w_i·E_i / Σ c_i·E_i, 1/64, 16)`.
+`vkr_scene_update_reflection_probe_light` recomputes `r` when the
+volume's composition advances. The clamp is asymmetric: the ratio is one
+luminance at one point, so it extrapolates as it strays from one;
+darkening by up to 6 stops lets a noon capture fall into dusk, while
+brightening amplifies the capture's noise and its stale sky and stops at
+4 stops. A probe without a record, without a volume, captured outside the
+volume or with a volume whose layer table differs keeps `r = 1`; the last
+case logs once. The reflected colour and the sky seen through a window
+stay the capture's: a sunset tints the room only through the volume's
+diffuse light.
 Prepared scene metadata can override exact glTF light-definition ranges at the
 cold import boundary; malformed or unmatched overrides fail preparation.
 
@@ -508,6 +544,37 @@ array layer and the full mip chain, `log2(size) + 1` levels
 level is a 2×2 box filter of the level above, averaged in fp32 and rounded
 to the nearest even binary16. It has no orientation repair.
 
+The capture holds the static world only (audit B5). For a case with
+cubemap camera modes the harness child sets the runtime's
+`static_capture`, and `vkr_scene_build_world_draws`
+([`vkr_scene_frame.c`](../../runtime/src/renderer/systems/vkr_scene_frame.c))
+then leaves out meshes and instances of DYNAMIC mobility (movers, physics
+bodies, skinned and animated models) and every alpha-blended draw;
+anything that moves would stay frozen in the probe. Opaque, cutout and
+transmissive static surfaces stay, and so does fog, which lies between
+the probe and what it reflects. Faces render `--supersample` times
+wider than `--size` (1, 2 or 4, default 4, at most 1024 texels), and the
+packer box-filters each face down before it builds the mip chain, so a
+mirror-like surface reflects anti-aliased edges.
+
+The bake also writes the probe's capture record (time of day, above) into
+the cube as the KTX2 key/value entry `vkr.probe_capture`, so the cube
+carries it through project lowering and packaging and the scene loader
+reads it with the cube's first kilobytes. The harness child records the
+diffuse volume's layers and composed weights at the first face and checks
+that every later face saw the same composition; it publishes them as the
+run's `capture.light_layers` artifact. The bake decodes the one diffuse
+volume the capture's scene manifest names, checks that its layer table
+matches, and takes each layer's luminance at the capture origin with
+`vkr_diffuse_volume_layer_luminance`
+([`vkr_diffuse_volume.c`](../../runtime/src/assets/vkr_diffuse_volume.c)):
+the constant term of each layer's L1 SH, with a lamp group's direct band
+added, interpolated trilinearly over the valid probes of the brick cell,
+without relocation or visibility. The sidecar records the supersampling
+and a summary of the record under `capture_record`, and its probe recipe
+version is 2, so `--check` reports a cube baked before these changes as
+stale.
+
 A scene may name the bake's own output as its probe's cubemap, so a re-bake
 replaces the cube the scene uses. Captures turn local probes off, so that
 cube never feeds the capture. The scene-manifest check
@@ -557,8 +624,9 @@ light ([ADR-054](054-baked-diffuse-volumes.md)); the tracked
 
 `bistro.scene.json` and the 28 fixtures that keep Bistro's sky point their
 probe at this cube with `specular_intensity` 1. The 16 fixtures with another
-atmosphere or environment, such as night or another sun, have no probe until
-probes follow the time of day (audit B4).
+atmosphere or environment, such as night or another sun, still have no
+probe: the time-of-day ratio follows the baked light's brightness, not
+another sky's colour, and none of them was checked with the probe.
 
 Desktop receivers use nine comparison-PCF Poisson taps with a 1.5-texel radius,
 in texels of the face that owns each tap. Normal offset is two local shadow
@@ -736,9 +804,13 @@ chain; a 256² cube takes about 4.2 MB.
 
 Probes blend by box volume, not by authored priority, and the band reaches
 inward only, so a probe box must enclose the floor area it serves plus its
-band width. Probe light still ignores the hour: a capture holds the World's
-sky at bake time (audit B4 in
-[Short-history rendering](../proposals/short-history-rendering.md)).
+band width. Probe light follows the hour in brightness only: a capture holds
+the World's sky and colours at bake time, and a probe outside the diffuse
+volume does not follow it at all (audit B4 in
+[Short-history rendering](../proposals/short-history-rendering.md)). A
+probe moved off its capture origin keeps a correct projection but
+reflects the room as seen from the old place until it is baked again. A probe capture renders 16 times
+the texels of its cube and leaves movers and alpha-blended surfaces out.
 
 ## Alternatives considered
 
@@ -770,9 +842,9 @@ atlas budget shows popping lights or face-size churn. Scene scale exceeds
 these capacities, stored probe source requirements change,
 or local-light transport requires more crossings, refracted caustics, or a
 different memory or raster budget. A scene needs more than 16 probes, an
-authored probe priority, or probes that follow the hour, capture origins
-apart from the box centre, or captures without moving entities (audit B4,
-B5 and B7).
+authored probe priority, probes whose sky or colour follows the hour
+beyond one brightness ratio, or a projection box apart from the
+influence box (audits B4 and B7).
 
 ## Implementation
 
@@ -798,8 +870,46 @@ for [`lighting.metalh`](../../renderer/src/shaders/metal/msl/world/lighting.meta
 [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal) and
 [`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal).
 `vkr_standard_scene_runtime_order_probes` orders the frame's probes.
+[`vkr_probe_capture.c`](../../runtime/src/assets/vkr_probe_capture.c)
+defines the capture record, its KTX2 lookup and the time-of-day ratio;
+`vkr_scene_update_reflection_probe_light` in
+[`vkr_scene_system.c`](../../runtime/src/renderer/systems/vkr_scene_system.c)
+applies it and marks moved probes.
 
 ## Evidence
+
+Audits B4, B5 and B7, Vulkan, RX 6700 XT, Windows, 2026-10-12, local and
+non-authoritative:
+- Debug `build_test.bat` passed every CPU suite, including
+  `test_probe_capture_follows_volume_light`: on a one-brick volume the
+  sampler reads each layer's constant term, adds the lamp group's direct
+  band, interpolates and drops invalid probes; the ratio and both clamp
+  bounds match hand-computed values; a record written into a cube by
+  libktx, beside another key, reads back, and a cut record is refused.
+  Release `build_release.bat` passed.
+- The café probe was baked again with the release bakery
+  (`vkr_bakery bake probe --scene assets/scenes/bistro.scene.json --output
+  assets/textures/bistro_cafe_probe.vkt --position -7.5 2.2 9.0 --size 256
+  --harness build_release/tools/vkr_harness.exe`): 1024² faces, cube
+  `sha256:bdeee249…50d3`, capture report `sha256:cba6d61d…56c1`; `--check`
+  reports `current`, and reported `stale` for the cube of the previous
+  recipe. A first attempt failed because the harness child's report had
+  no room for the light-layers artifact; the child now sizes one more.
+- An independent Python reader of the KTX2 key/value data found the
+  record: origin (-7.5, 2.2, 9.0), nine layers. At the café's capture point
+  the default lamp group gives 98.6 % of the baked light, so a single sun
+  key changes the ratio by −1.1 % to +5.1 %; with the lamps off the
+  unclamped ratio is 0.0141 and the clamp holds it at 1/64.
+- Debug harness snapshots of `local_shadow_bistro_indoor_capture`: with
+  the probe as baked, no probe warning (record read, layer table matched,
+  not moved); with a scratch copy of the scene whose probe centre was moved
+  1 m, the runtime logged "reflection probe 0 is 1.00 m from where its
+  cubemap was captured".
+- The bake ran on the working tree's shaders, which held another session's
+  uncommitted desktop changes to `deferred.slang` and `default.slang`
+  (horizon normal and specular occlusion, audits R8 and R11).
+- Not run: Metal (no Mac available), any two-hour harness comparison
+  (Bistro has no World time of day), timing.
 
 Probe audit fixes, Vulkan, RX 6700 XT, Windows, 2026-10-12, local and
 non-authoritative:
@@ -828,7 +938,11 @@ non-authoritative:
   it replaces. On 2026-10-13 `bistro.scene.json` stopped naming the untracked
   volume and the cube was re-baked from
   `bistro_sparse_volume_local.scene.json` (sha256 `9ec73770…`, `--check`
-  `current`).
+  `current`), then once more with the B4 record and B5 capture: 1024² faces,
+  cube sha256 `d2b6b671…`, `--check` `current`. Its factor across the eight
+  sun keys with the lamps as captured is 0.989 to 1.051, and 1/64 (clamped
+  from 0.0141) with the lamps off. A café snapshot with it changes
+  `final_color` on 6.1 % of pixels by more than 2/255 (mean 0.78/255).
 - Café specular on both pipelines (2026-10-13, desktop capture at the indoor
   camera against the Mac's tiled capture): surfaces that turned grey or silver
   once the probe's specular gain went from 0 to 1 are authored as metal or as

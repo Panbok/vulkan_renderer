@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-11
+updated: 2026-10-12
 authority: adr
 ---
 
@@ -147,6 +147,14 @@ Probe capture also failed for any scene with saved edits:
 - Starter-scene projects can bake probes, and harness captures of project
   scenes with FPS components load.
 - Probes still cap at 16 in the runtime, below Bakery's 64.
+- A handle or Details edit that moves a baked probe's centre off the
+  capture origin its cube records leaves the cube in place. Box projection
+  keeps aiming from the capture origin, the runtime marks the probe moved
+  and logs it once, the editor draws its box orange, and Bake lighting
+  recaptures it (audit B7 in
+  [ADR-019](019-bounded-forward-spatial-lighting.md)). The editor draws the
+  probe's blend band inside its box, above the bottom face, where the
+  shaders weigh it.
 
 ## Evidence
 

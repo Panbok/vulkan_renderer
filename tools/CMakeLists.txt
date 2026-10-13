@@ -196,7 +196,7 @@ add_library(vkr_hdr_cube_packer STATIC vkr_hdr_cube_packer.cpp)
 vkr_configure_cooker_target(vkr_hdr_cube_packer)
 target_compile_features(vkr_hdr_cube_packer PRIVATE cxx_std_17)
 target_include_directories(vkr_hdr_cube_packer PRIVATE ${Vulkan_INCLUDE_DIRS})
-target_link_libraries(vkr_hdr_cube_packer PRIVATE ktx vkr_foundation)
+target_link_libraries(vkr_hdr_cube_packer PRIVATE ktx vkr_foundation vkr_asset_formats)
 
 # CPU-only indirect-lighting preparation and portable baked assets.
 add_library(vkr_bake_core STATIC

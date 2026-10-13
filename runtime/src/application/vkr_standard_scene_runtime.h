@@ -299,6 +299,9 @@ typedef struct VkrStandardSceneRuntime {
   uint32_t shadow_debug_mode;
   bool8_t transmission_depth_diagnostic_enabled;
   uint32_t ibl_probe_limit;
+  /** A reflection-probe capture (vkr_bakery bake probe, ADR-019): world
+      draws keep static meshes only and no alpha-blended surfaces. */
+  bool8_t static_capture;
   /* Optional user quality gates; zero preserves scene-authored rendering. */
   bool8_t disable_directional_shadows;
   bool8_t disable_local_shadows;

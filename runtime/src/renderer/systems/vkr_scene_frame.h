@@ -19,10 +19,13 @@ void vkr_scene_measure_caster_bounds(VkrMeshManager *meshes,
  * returns. Candidate identity, static/dynamic partitions, and encounter order
  * match the mesh owner's published generations. With `transmission_blended`
  * (the tiled pipeline, ADR-087), transmissive sources join the camera-culled,
- * back-to-front blend draws instead of the transmission candidates.
+ * back-to-front blend draws instead of the transmission candidates. With
+ * `static_only` (a reflection-probe capture, ADR-019), meshes and instances
+ * of DYNAMIC mobility and every alpha-blended draw stay out; glass stays.
  */
 VkrRendererError vkr_scene_build_world_draws(
     VkrMeshManager *meshes, VkrMaterialSystem *materials,
     bool8_t publication_pending, uint64_t publication_generation, Mat4 view,
-    Mat4 projection, bool8_t transmission_blended, VkrAllocator *scratch,
-    VkrWorldPassPayload *out_payload, VkrVisibilityStats *out_stats);
+    Mat4 projection, bool8_t transmission_blended, bool8_t static_only,
+    VkrAllocator *scratch, VkrWorldPassPayload *out_payload,
+    VkrVisibilityStats *out_stats);

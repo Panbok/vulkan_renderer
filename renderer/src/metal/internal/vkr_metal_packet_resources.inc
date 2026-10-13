@@ -3292,6 +3292,8 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
                                 ldexpf(1.0f, -prefilter->radiance_stops),
                             probe->diffuse_intensity, probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
+          .capture_origin = {probe->capture_origin.x, probe->capture_origin.y,
+                             probe->capture_origin.z, 0.0f},
       };
       const uint64_t pending_submit = renderer->submit_value + 1u;
       prefilter->last_use_submit_value = pending_submit;

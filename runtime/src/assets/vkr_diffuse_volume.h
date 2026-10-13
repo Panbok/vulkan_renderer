@@ -129,6 +129,21 @@ uint32_t vkr_diffuse_volume_entry(const VkrDiffuseVolume *volume,
                                   uint32_t index);
 
 /**
+ * Baked light of each layer at `position` in open space: the Rec. 709
+ * luminance of the constant term of each layer's L1 SH (E/pi averaged over
+ * normals, times `sh_scale`), interpolated trilinearly over the valid probes
+ * of the brick cell that holds `position`, as the shaders choose that cell.
+ * A lamp-group layer adds its direct band when the volume stores one, so the
+ * value holds all of its group's light. Relocation offsets and distance
+ * moments are left out: no receiver surface exists to test against.
+ * Writes `layer_count` values; false outside the volume, in an empty entry,
+ * or where no probe of the cell is valid.
+ */
+bool8_t vkr_diffuse_volume_layer_luminance(
+    const VkrDiffuseVolume *volume, Vec3 position,
+    float32_t out_luminance[VKR_DIFFUSE_VOLUME_MAX_LAYERS]);
+
+/**
  * Serializes a validated volume into caller-Arena bytes. Every scalar is
  * written explicitly in little-endian order; native structs are never
  * written.

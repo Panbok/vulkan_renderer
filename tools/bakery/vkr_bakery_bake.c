@@ -3,6 +3,7 @@
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
 #include "assets/vkr_material_graph.h"
+#include "assets/vkr_probe_capture.h"
 #include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
@@ -41,6 +42,17 @@
    (renderer/src/vkr_ibl_math.h); a larger capture only aliases its top
    level. */
 #define VKR_BAKE_PROBE_SIZE_MAX 256
+/* Probe bakes carry their own recipe version: version 2 renders the static
+   world only, supersamples its faces and stores the capture record
+   (ADR-019). */
+#define VKR_BAKE_PROBE_RECIPE_VERSION 2
+/* Faces render at this many texels per cube texel on each axis unless
+   --supersample says otherwise; the packer box-filters them down. */
+#define VKR_BAKE_PROBE_SUPERSAMPLE 4
+/* Widest face a capture renders, supersampling included. */
+#define VKR_BAKE_PROBE_FACE_MAX 1024
+/* The harness artifact naming the capture's diffuse-volume layer weights. */
+#define VKR_BAKE_PROBE_LIGHT_LAYERS_ROLE "capture.light_layers"
 #define VKR_BAKE_PROBE_CASE "local.probe_bake"
 /* Boot warmup before the first face, then frames each later face renders
    after the previous capture; both exceed the readback latency. */
@@ -1854,6 +1866,7 @@ typedef struct VkrBakeProbe {
   bool8_t has_position;
   float64_t position[3];
   int64_t size;
+  int64_t supersample;
   float64_t near_plane;
   float64_t far_plane;
   const char *output;
@@ -2304,7 +2317,8 @@ vkr_internal VkrBakeryJson *vkr_bake_probe_case(VkrBake *bake,
   static const char text[] =
       "{\"schema_version\": 1, \"suite\": \"local\", \"description\": \"Static "
       "HDR probe faces in one renderer session; global illumination retained, "
-      "local probes disabled.\", \"seed\": 1, \"boot\": \"full\", "
+      "local probes disabled, static world only.\", \"seed\": 1, \"boot\": "
+      "\"full\", "
       "\"target\": \"offscreen\", \"present\": \"none\", "
       "\"target_image_count\": 2, \"cache\": \"isolated_cold\", "
       "\"repetitions\": 1, \"repetition_timeout_ms\": 600000, "
@@ -2334,9 +2348,11 @@ vkr_internal VkrBakeryJson *vkr_bake_probe_case(VkrBake *bake,
   }
   vkr_bakery_json_set(arena, document, "scene",
                       vkr_bakery_json_cstr(arena, scene_relative));
+  /* Supersampled: the packer box-filters each face down to args->size. */
+  const int64_t face_size = args->size * args->supersample;
   VkrBakeryJson *resolution = vkr_bakery_json_array(arena);
-  vkr_bakery_json_append(resolution, vkr_bakery_json_int(arena, args->size));
-  vkr_bakery_json_append(resolution, vkr_bakery_json_int(arena, args->size));
+  vkr_bakery_json_append(resolution, vkr_bakery_json_int(arena, face_size));
+  vkr_bakery_json_append(resolution, vkr_bakery_json_int(arena, face_size));
   vkr_bakery_json_set(arena, document, "resolution", resolution);
   static const char *const middle[] = {"seed",
                                        "boot",
@@ -2443,13 +2459,227 @@ vkr_internal VkrBakeryJson *vkr_bake_publication(VkrBake *bake,
   return publication;
 }
 
+/* The capture's light-layers artifact: the diffuse-volume layers the faces
+   rendered with and the weights the volume composed them by, which must not
+   have changed between the first face and the last. */
+vkr_internal VkrBakeryJson *vkr_bake_light_layers(VkrBake *bake,
+                                                  const char *run,
+                                                  const VkrBakeryJson *report) {
+  const VkrBakeryJson *artifacts = vkr_bakery_json_get(report, "artifacts");
+  const VkrBakeryJson *artifact = NULL;
+  uint32_t matches = 0u;
+  for (const VkrBakeryJson *item =
+           artifacts && artifacts->type == VKR_BAKERY_JSON_ARRAY
+               ? artifacts->first
+               : NULL;
+       item; item = item->next) {
+    if (vkr_bakery_json_is_string(vkr_bakery_json_get(item, "role"),
+                                  VKR_BAKE_PROBE_LIGHT_LAYERS_ROLE)) {
+      artifact = item;
+      matches += 1u;
+    }
+  }
+  if (matches != 1u) {
+    vkr_bake_fail(bake, "Snapshot report must name one %s artifact",
+                  VKR_BAKE_PROBE_LIGHT_LAYERS_ROLE);
+    return NULL;
+  }
+  char path[VKR_BAKE_PATH];
+  char digest[72];
+  if (!vkr_bake_confined(bake, run, vkr_bake_text(artifact, "path"),
+                         "Light layers", path)) {
+    return NULL;
+  }
+  if (!vkr_bakery_is_file(path) || !vkr_bake_digest(bake, path, digest) ||
+      !vkr_bakery_json_is_string(vkr_bakery_json_get(artifact, "sha256"),
+                                 digest)) {
+    vkr_bake_fail(bake, "Light layers artifact digest mismatch");
+    return NULL;
+  }
+  VkrBakeryJson *layers = vkr_bake_load(bake, path, "Light layers");
+  if (!layers) {
+    return NULL;
+  }
+  int64_t schema = 0;
+  bool8_t stable = false_v;
+  const VkrBakeryJson *list = vkr_bakery_json_get(layers, "layers");
+  if (!vkr_bake_int(vkr_bakery_json_get(layers, "schema_version"), &schema) ||
+      schema != 1 ||
+      !vkr_bakery_json_get_bool(layers, "composition_stable", &stable) ||
+      !list || list->type != VKR_BAKERY_JSON_ARRAY ||
+      list->count > VKR_DIFFUSE_VOLUME_MAX_LAYERS) {
+    vkr_bake_fail(bake, "Unexpected light layers contract");
+    return NULL;
+  }
+  if (!stable) {
+    vkr_bake_fail(bake, "The time of day moved the diffuse volume's layer "
+                        "weights between the first and last face");
+    return NULL;
+  }
+  return layers;
+}
+
+/* The probe's capture record (vkr_probe_capture.h), written to
+   `record_path`: the capture origin, and for the one diffuse volume the
+   capture loaded, each layer's baked luminance at the origin and the weight
+   the faces rendered it with. A probe outside the volume, or where the
+   volume holds no light, records no layers and keeps its captured light at
+   every hour. Returns the record's summary for the bake metadata. */
+vkr_internal VkrBakeryJson *
+vkr_bake_probe_record(VkrBake *bake, const VkrBakeProbe *args, const char *root,
+                      const VkrBakeryJson *scene_manifest,
+                      const VkrBakeryJson *light_layers,
+                      const char *record_path) {
+  Arena *arena = bake->arena;
+  VkrProbeCapture capture = {
+      .origin =
+          vec3_new((float32_t)args->position[0], (float32_t)args->position[1],
+                   (float32_t)args->position[2]),
+  };
+  const VkrBakeryJson *captured = vkr_bakery_json_get(light_layers, "layers");
+  const char *volume_path = NULL;
+  const VkrBakeryJson *assets = vkr_bakery_json_get(scene_manifest, "assets");
+  for (const VkrBakeryJson *asset = assets ? assets->first : NULL; asset;
+       asset = asset->next) {
+    const char *path = vkr_bake_text(asset, "path");
+    const uint64_t length = path ? strlen(path) : 0u;
+    if (length < 5u || strcmp(path + length - 5u, ".vkdv") != 0) {
+      continue;
+    }
+    if (volume_path) {
+      vkr_bake_fail(bake, "The capture loaded more than one diffuse volume");
+      return NULL;
+    }
+    volume_path = path;
+  }
+  if (!volume_path && captured->count != 0u) {
+    vkr_bake_fail(bake, "The capture composed a diffuse volume its scene "
+                        "manifest does not name");
+    return NULL;
+  }
+
+  const char *note = NULL;
+  if (volume_path) {
+    char absolute[VKR_BAKE_PATH];
+    if (!vkr_bake_confined(bake, root, volume_path, "Diffuse volume",
+                           absolute)) {
+      return NULL;
+    }
+    uint8_t *data = NULL;
+    uint64_t length = 0u;
+    if (!vkr_bakery_read_file(absolute, 0u, &data, &length)) {
+      vkr_bake_fail(bake, "[Errno 2] No such file or directory: '%s'",
+                    absolute);
+      return NULL;
+    }
+    VkrDiffuseVolume volume = {0};
+    bool8_t valid = vkr_diffuse_volume_decode(data, length, arena, &volume) &&
+                    volume.layer_count == captured->count;
+    uint32_t layer = 0u;
+    for (const VkrBakeryJson *item = captured->first; valid && item;
+         item = item->next, ++layer) {
+      const VkrLightLayer *expected = &volume.layers[layer];
+      int64_t kind = -1;
+      int64_t index = -1;
+      float64_t weight = -1.0;
+      const char *name = vkr_bake_text(item, "name");
+      valid = vkr_bake_int(vkr_bakery_json_get(item, "kind"), &kind) &&
+              vkr_bake_int(vkr_bakery_json_get(item, "index"), &index) &&
+              vkr_bake_number(vkr_bakery_json_get(item, "weight"), &weight) &&
+              name && kind == (int64_t)expected->kind &&
+              index == (int64_t)expected->index &&
+              strcmp(name, expected->name) == 0 && isfinite(weight) &&
+              weight >= 0.0;
+      capture.layers[layer] = *expected;
+      capture.weights[layer] = (float32_t)weight;
+    }
+    const bool8_t inside =
+        valid && vkr_diffuse_volume_layer_luminance(&volume, capture.origin,
+                                                    capture.luminance);
+    if (inside) {
+      capture.layer_count = volume.layer_count;
+    }
+    free(data);
+    if (!valid) {
+      vkr_bake_fail(bake,
+                    "The capture's light layers differ from the "
+                    "diffuse volume '%s'",
+                    volume_path);
+      return NULL;
+    }
+    if (!inside) {
+      note = "outside the diffuse volume; the probe keeps its captured light "
+             "at every hour";
+    }
+  }
+  if (capture.layer_count != 0u && !vkr_probe_capture_valid(&capture)) {
+    note = "no baked light at the capture origin; the probe keeps its "
+           "captured light at every hour";
+    capture.layer_count = 0u;
+  }
+  uint8_t bytes[VKR_PROBE_CAPTURE_MAX_BYTES];
+  const uint32_t size = vkr_probe_capture_encode(&capture, bytes);
+  if (!size || !vkr_bakery_write_file_atomic(record_path, bytes, size)) {
+    vkr_bake_fail(bake, "Cannot write the probe capture record '%s'",
+                  record_path);
+    return NULL;
+  }
+  if (note) {
+    printf("Probe capture record: %s\n", note);
+    fflush(stdout);
+  }
+
+  VkrBakeryJson *summary = vkr_bakery_json_object(arena);
+  VkrBakeryJson *origin = vkr_bakery_json_array(arena);
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    vkr_bakery_json_append(
+        origin,
+        vkr_bakery_json_float(arena, (float64_t)capture.origin.elements[axis]));
+  }
+  vkr_bakery_json_set(arena, summary, "origin", origin);
+  if (volume_path) {
+    vkr_bakery_json_set(arena, summary, "diffuse_volume",
+                        vkr_bakery_json_cstr(arena, volume_path));
+  }
+  VkrBakeryJson *layers = vkr_bakery_json_array(arena);
+  for (uint32_t layer = 0u; layer < capture.layer_count; ++layer) {
+    VkrBakeryJson *item = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(
+        arena, item, "kind",
+        vkr_bakery_json_cstr(arena, capture.layers[layer].kind ==
+                                            VKR_LIGHT_LAYER_SUN_KEY
+                                        ? "sun_key"
+                                        : "lamp_group"));
+    vkr_bakery_json_set(
+        arena, item, "index",
+        vkr_bakery_json_int(arena, capture.layers[layer].index));
+    vkr_bakery_json_set(
+        arena, item, "name",
+        vkr_bakery_json_cstr(arena, capture.layers[layer].name));
+    vkr_bakery_json_set(
+        arena, item, "luminance",
+        vkr_bakery_json_float(arena, (float64_t)capture.luminance[layer]));
+    vkr_bakery_json_set(
+        arena, item, "weight",
+        vkr_bakery_json_float(arena, (float64_t)capture.weights[layer]));
+    vkr_bakery_json_append(layers, item);
+  }
+  vkr_bakery_json_set(arena, summary, "layers", layers);
+  if (note) {
+    vkr_bakery_json_set(arena, summary, "note",
+                        vkr_bakery_json_cstr(arena, note));
+  }
+  return summary;
+}
+
 /* Renders all six faces in one harness snapshot; validates its report,
    child run and scene manifest, then collects each face's raw capture. */
 vkr_internal bool8_t vkr_bake_capture_faces(
     VkrBake *bake, const VkrBakeProbe *args, const char *root,
     const char *scene, const char *job, const char *cases, const char *profile,
     const char *harness, VkrBakeryJson **scene_manifest,
-    VkrBakeryJson *captures, char raws[6][VKR_BAKE_PATH], char *out_run) {
+    VkrBakeryJson **light_layers, VkrBakeryJson *captures,
+    char raws[6][VKR_BAKE_PATH], char *out_run) {
   Arena *arena = bake->arena;
   VkrBakeryJson *document =
       vkr_bake_probe_case(bake, args, vkr_bake_relative(bake, root, scene));
@@ -2471,7 +2701,9 @@ vkr_internal bool8_t vkr_bake_capture_faces(
     arguments[count++] = "--repo-root";
     arguments[count++] = root;
   }
-  printf("Capturing six faces at %lldx%lld\n", (long long)args->size,
+  const int64_t face_size = args->size * args->supersample;
+  printf("Capturing six faces at %lldx%lld for a %lldx%lld cube\n",
+         (long long)face_size, (long long)face_size, (long long)args->size,
          (long long)args->size);
   fflush(stdout);
   /* Validation layers change timing and output; bakes run without them. */
@@ -2534,10 +2766,12 @@ vkr_internal bool8_t vkr_bake_capture_faces(
       vkr_bake_scene_manifest(bake, manifest, scene, root, NULL, paths));
   *scene_manifest = manifest;
   VKR_BAKE_TRY(vkr_bake_check_child(bake, out_run, report));
+  *light_layers = vkr_bake_light_layers(bake, out_run, report);
+  VKR_BAKE_TRY(*light_layers);
   for (uint32_t f = 0u; f < ArrayCount(vkr_bake_faces); ++f) {
     VkrBakeryJson *capture = vkr_bake_capture(
         bake, out_run, report, vkr_bake_faces[f],
-        (int64_t)VKR_BAKE_PROBE_FACE_FRAMES * f, args->size, raws[f]);
+        (int64_t)VKR_BAKE_PROBE_FACE_FRAMES * f, face_size, raws[f]);
     VKR_BAKE_TRY(capture);
     vkr_bakery_json_set(arena, capture, "report_sha256",
                         vkr_bakery_json_clone(
@@ -2584,6 +2818,14 @@ vkr_internal bool8_t vkr_bake_probe(VkrBake *bake, const VkrBakeProbe *args,
                          "--size must be a power of two from 1 to %d, "
                          "the runtime's prefilter size",
                          VKR_BAKE_PROBE_SIZE_MAX);
+  }
+  if ((args->supersample != 1 && args->supersample != 2 &&
+       args->supersample != 4) ||
+      args->size * args->supersample > VKR_BAKE_PROBE_FACE_MAX) {
+    return vkr_bake_fail(bake,
+                         "--supersample must be 1, 2 or 4, and --size times "
+                         "it at most %d",
+                         VKR_BAKE_PROBE_FACE_MAX);
   }
   if (!isfinite(args->near_plane) || !isfinite(args->far_plane) ||
       !(0.0 < args->near_plane && args->near_plane < args->far_plane)) {
@@ -2633,13 +2875,20 @@ vkr_internal bool8_t vkr_bake_probe(VkrBake *bake, const VkrBakeProbe *args,
   }
   VkrBakeryJson *captures = vkr_bakery_json_array(arena);
   VkrBakeryJson *scene_manifest = NULL;
+  VkrBakeryJson *light_layers = NULL;
   char raws[6][VKR_BAKE_PATH];
   char run[VKR_BAKE_PATH] = {0};
-  ok = ok &&
-       vkr_bake_capture_faces(bake, args, root, scene, job, cases, profile,
-                              harness, &scene_manifest, captures, raws, run);
+  ok = ok && vkr_bake_capture_faces(bake, args, root, scene, job, cases,
+                                    profile, harness, &scene_manifest,
+                                    &light_layers, captures, raws, run);
   ok = ok && vkr_bake_protect_scene(bake, output, sidecar, scene,
                                     scene_manifest, root);
+  const char *record_path = vkr_bake_printf(bake, "%s/probe-capture.bin", job);
+  VkrBakeryJson *capture_record =
+      ok ? vkr_bake_probe_record(bake, args, root, scene_manifest, light_layers,
+                                 record_path)
+         : NULL;
+  ok = ok && capture_record != NULL;
   if (ok) {
     char directory[VKR_BAKE_PATH];
     vkr_bakery_path_parent(directory, sizeof(directory), output);
@@ -2649,6 +2898,11 @@ vkr_internal bool8_t vkr_bake_probe(VkrBake *bake, const VkrBakeProbe *args,
     arguments[count++] = "hdr-cube";
     arguments[count++] = "--size";
     arguments[count++] = vkr_bake_printf(bake, "%lld", (long long)args->size);
+    arguments[count++] = "--supersample";
+    arguments[count++] =
+        vkr_bake_printf(bake, "%lld", (long long)args->supersample);
+    arguments[count++] = "--probe-capture";
+    arguments[count++] = record_path;
     arguments[count++] = "--output";
     arguments[count++] = output;
     for (uint32_t f = 0u; f < ArrayCount(vkr_bake_faces); ++f) {
@@ -2672,8 +2926,9 @@ vkr_internal bool8_t vkr_bake_probe(VkrBake *bake, const VkrBakeProbe *args,
     VkrBakeryJson *metadata = vkr_bakery_json_object(arena);
     vkr_bakery_json_set(arena, metadata, "schema_version",
                         vkr_bakery_json_int(arena, 1));
-    vkr_bakery_json_set(arena, metadata, "recipe_version",
-                        vkr_bakery_json_int(arena, VKR_BAKE_VERSION));
+    vkr_bakery_json_set(
+        arena, metadata, "recipe_version",
+        vkr_bakery_json_int(arena, VKR_BAKE_PROBE_RECIPE_VERSION));
     vkr_bakery_json_set(
         arena, metadata, "scene",
         vkr_bakery_json_cstr(arena, vkr_bake_relative(bake, root, scene)));
@@ -2685,15 +2940,18 @@ vkr_internal bool8_t vkr_bake_probe(VkrBake *bake, const VkrBakeProbe *args,
     vkr_bakery_json_set(arena, metadata, "position", position);
     vkr_bakery_json_set(arena, metadata, "size",
                         vkr_bakery_json_int(arena, args->size));
+    vkr_bakery_json_set(arena, metadata, "supersample",
+                        vkr_bakery_json_int(arena, args->supersample));
     vkr_bakery_json_set(arena, metadata, "near_plane",
                         vkr_bakery_json_float(arena, args->near_plane));
     vkr_bakery_json_set(arena, metadata, "far_plane",
                         vkr_bakery_json_float(arena, args->far_plane));
-    vkr_bakery_json_set(arena, metadata, "lighting",
-                        vkr_bakery_json_cstr(arena,
-                                             "direct + emissive + global "
-                                             "environment; local probes "
-                                             "disabled"));
+    vkr_bakery_json_set(
+        arena, metadata, "lighting",
+        vkr_bakery_json_cstr(arena,
+                             "direct + emissive + global environment; "
+                             "local probes disabled; static meshes "
+                             "only, no alpha-blended surfaces; fog kept"));
     vkr_bakery_json_set(arena, metadata, "source_channel",
                         vkr_bakery_json_cstr(arena, VKR_BAKE_PROBE_CHANNEL));
     vkr_bakery_json_set(
@@ -2702,6 +2960,7 @@ vkr_internal bool8_t vkr_bake_probe(VkrBake *bake, const VkrBakeProbe *args,
     vkr_bakery_json_set(arena, metadata, "capture_session",
                         vkr_bakery_json_cstr(arena, "single"));
     vkr_bakery_json_set(arena, metadata, "scene_manifest", scene_manifest);
+    vkr_bakery_json_set(arena, metadata, "capture_record", capture_record);
     vkr_bakery_json_set(arena, metadata, "output_sha256",
                         vkr_bakery_json_cstr(arena, output_digest));
     vkr_bakery_json_set(arena, metadata, "captures", captures);
@@ -2732,7 +2991,7 @@ vkr_internal bool8_t vkr_bake_probe_current(VkrBake *bake, const char *output,
       !vkr_bake_int(vkr_bakery_json_get(metadata, "schema_version"), &schema) ||
       schema != 1 ||
       !vkr_bake_int(vkr_bakery_json_get(metadata, "recipe_version"), &recipe) ||
-      recipe != VKR_BAKE_VERSION ||
+      recipe != VKR_BAKE_PROBE_RECIPE_VERSION ||
       !vkr_bakery_json_is_string(
           vkr_bakery_json_get(metadata, "source_channel"),
           VKR_BAKE_PROBE_CHANNEL) ||
@@ -2782,7 +3041,10 @@ vkr_internal bool8_t vkr_bake_probe_current(VkrBake *bake, const char *output,
 }
 
 vkr_internal int vkr_bake_probe_main(VkrBake *bake, int argc, char **argv) {
-  VkrBakeProbe args = {.size = 256, .near_plane = 0.1, .far_plane = 1000.0};
+  VkrBakeProbe args = {.size = 256,
+                       .supersample = VKR_BAKE_PROBE_SUPERSAMPLE,
+                       .near_plane = 0.1,
+                       .far_plane = 1000.0};
   for (int i = 1; i < argc; ++i) {
     const char *flag = argv[i];
     bool8_t ok = true_v;
@@ -2797,6 +3059,8 @@ vkr_internal int vkr_bake_probe_main(VkrBake *bake, int argc, char **argv) {
           vkr_bake_parse_numbers(argv, argc, &i, 3u, args.position);
     } else if (!strcmp(flag, "--size")) {
       ok = vkr_bake_parse_integer(argv, argc, &i, &args.size);
+    } else if (!strcmp(flag, "--supersample")) {
+      ok = vkr_bake_parse_integer(argv, argc, &i, &args.supersample);
     } else if (!strcmp(flag, "--near-plane")) {
       ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.near_plane);
     } else if (!strcmp(flag, "--far-plane")) {

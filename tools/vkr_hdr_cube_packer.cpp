@@ -1,5 +1,6 @@
-#include "filesystem/vkr_filesystem_cpp.h"
 #include "assets/vkr_ktx_file.h"
+#include "assets/vkr_probe_capture.h"
+#include "filesystem/vkr_filesystem_cpp.h"
 #include "vkr_tool_entry.h"
 #if defined(_WIN32) && !defined(NOMINMAX)
 #define NOMINMAX
@@ -36,6 +37,9 @@ namespace {
 constexpr uint32_t kFaceCount = 6u;
 constexpr uint32_t kMaxCubeSize = 2048u;
 constexpr uint32_t kBytesPerTexel = 8u;
+// Faces may be rendered at up to this many texels per output texel on each
+// axis; the packer box-filters them down before building the mip chain.
+constexpr uint32_t kMaxSupersample = 4u;
 
 enum class ParseResult { kOk, kHelp, kError };
 
@@ -44,6 +48,10 @@ struct Config {
   bool size_set = false;
   fs::path output;
   bool output_set = false;
+  uint32_t supersample = 1u;
+  bool supersample_set = false;
+  fs::path probe_capture;
+  bool probe_capture_set = false;
   std::vector<fs::path> faces;
 };
 
@@ -72,11 +80,15 @@ bool parse_size(const std::string &text, uint32_t *out_size) {
 void print_usage(const char *program) {
   std::cout << "Usage: " << program
             << " --size <1..2048 power-of-two> --output <path.vkt>"
+               " [--supersample <1|2|4>] [--probe-capture <record>]"
                " --face <raw-rgba16f> --face <raw-rgba16f>"
                " --face <raw-rgba16f> --face <raw-rgba16f>"
                " --face <raw-rgba16f> --face <raw-rgba16f>\n"
                "Faces are required in KTX order: +X, -X, +Y, -Y, +Z, -Z. Inputs"
-               " are tightly packed, little-endian, top-left RGBA16F.\n";
+               " are tightly packed, little-endian, top-left RGBA16F, each"
+               " size * supersample texels wide; supersampled faces are"
+               " box-filtered to size. A probe capture record is stored as"
+               " the vkr.probe_capture key/value entry.\n";
 }
 
 ParseResult parse_args(int argc, char **argv, Config *out_config) {
@@ -106,6 +118,26 @@ ParseResult parse_args(int argc, char **argv, Config *out_config) {
       out_config->output_set = true;
       continue;
     }
+    if (arg == "--supersample") {
+      if (out_config->supersample_set || index + 1 >= argc ||
+          !parse_size(argv[++index], &out_config->supersample) ||
+          out_config->supersample > kMaxSupersample) {
+        std::cerr << "--supersample must be 1, 2 or 4\n";
+        return ParseResult::kError;
+      }
+      out_config->supersample_set = true;
+      continue;
+    }
+    if (arg == "--probe-capture") {
+      if (out_config->probe_capture_set || index + 1 >= argc) {
+        std::cerr << "--probe-capture takes one record path\n";
+        return ParseResult::kError;
+      }
+      out_config->probe_capture =
+          vkr_filesystem_native_utf8_path(argv[++index]);
+      out_config->probe_capture_set = true;
+      continue;
+    }
     if (arg == "--face") {
       if (index + 1 >= argc) {
         std::cerr << "Missing path after --face\n";
@@ -120,6 +152,12 @@ ParseResult parse_args(int argc, char **argv, Config *out_config) {
   if (!out_config->size_set || !out_config->output_set ||
       out_config->faces.size() != kFaceCount) {
     std::cerr << "Expected --size, --output, and exactly six --face paths\n";
+    return ParseResult::kError;
+  }
+  if (static_cast<uint64_t>(out_config->size) * out_config->supersample >
+      kMaxCubeSize) {
+    std::cerr << "--size times --supersample must not exceed " << kMaxCubeSize
+              << "\n";
     return ParseResult::kError;
   }
   if (out_config->output.extension() != ".vkt") {
@@ -403,10 +441,37 @@ bool validate_written_ktx(const fs::path &path, uint32_t size,
   return true;
 }
 
+bool read_probe_capture(const fs::path &path, std::vector<uint8_t> *out_bytes) {
+  std::error_code error;
+  const uint64_t bytes = fs::file_size(path, error);
+  if (error || bytes == 0u || bytes > VKR_PROBE_CAPTURE_MAX_BYTES) {
+    std::cerr << "Probe capture record is missing or larger than "
+              << VKR_PROBE_CAPTURE_MAX_BYTES << " bytes: " << path << "\n";
+    return false;
+  }
+  out_bytes->resize(static_cast<size_t>(bytes));
+  std::ifstream input(path, std::ios::binary);
+  if (!input.read(reinterpret_cast<char *>(out_bytes->data()),
+                  static_cast<std::streamsize>(out_bytes->size()))) {
+    std::cerr << "Failed to read probe capture record: " << path << "\n";
+    return false;
+  }
+  VkrProbeCapture capture = {};
+  if (!vkr_probe_capture_decode(out_bytes->data(), out_bytes->size(),
+                                &capture)) {
+    std::cerr << "Probe capture record is invalid: " << path << "\n";
+    return false;
+  }
+  return true;
+}
+
 bool pack_hdr_cube(const Config &config) {
   const uint64_t texel_count = static_cast<uint64_t>(config.size) * config.size;
   const uint64_t image_bytes = texel_count * kBytesPerTexel;
-  if (image_bytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+  const uint32_t face_size = config.size * config.supersample;
+  const uint64_t face_bytes =
+      static_cast<uint64_t>(face_size) * face_size * kBytesPerTexel;
+  if (face_bytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
     std::cerr << "Requested cubemap exceeds addressable memory\n";
     return false;
   }
@@ -439,13 +504,34 @@ bool pack_hdr_cube(const Config &config) {
   const std::unique_ptr<ktxTexture2, decltype(&destroy_ktx_texture)> owner(
       texture, destroy_ktx_texture);
 
+  if (config.probe_capture_set) {
+    std::vector<uint8_t> record;
+    if (!read_probe_capture(config.probe_capture, &record)) {
+      return false;
+    }
+    result = ktxHashList_AddKVPair(
+        &ktxTexture(texture)->kvDataHead, VKR_PROBE_CAPTURE_KEY,
+        static_cast<unsigned int>(record.size()), record.data());
+    if (result != KTX_SUCCESS) {
+      std::cerr << "Failed to add the probe capture record: "
+                << ktxErrorString(result) << "\n";
+      return false;
+    }
+  }
+
   std::vector<uint8_t> source;
   std::vector<uint8_t> flipped;
   for (uint32_t face = 0u; face < kFaceCount; ++face) {
-    if (!read_face(config.faces[face], image_bytes, &source)) {
+    if (!read_face(config.faces[face], face_bytes, &source)) {
       return false;
     }
-    flip_rows(source, config.size, &flipped);
+    flip_rows(source, face_size, &flipped);
+    // Each 2x2 halving of a power-of-two supersample is one box filter of
+    // the whole supersample footprint.
+    for (uint32_t extent = face_size; extent > config.size; extent /= 2u) {
+      downsample_face(flipped, extent, &source);
+      flipped.swap(source);
+    }
     uint32_t extent = config.size;
     for (uint32_t level = 0u; level < create_info.numLevels; ++level) {
       if (level > 0u) {
@@ -493,7 +579,8 @@ bool pack_hdr_cube(const Config &config) {
     return false;
   }
   std::cout << "vkr_hdr_cube_packer: status=packed output=" << config.output
-            << " size=" << config.size << " faces=" << kFaceCount
+            << " size=" << config.size << " supersample=" << config.supersample
+            << " faces=" << kFaceCount
             << " levels=" << cube_level_count(config.size)
             << " format=R16G16B16A16_SFLOAT row_flip=vertical\n";
   return true;

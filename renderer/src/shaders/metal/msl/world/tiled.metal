@@ -821,7 +821,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
           local.intensity_box.w > 0.5f
               ? vkr_reflection_probe_direction(
                     dominant, input.world_position, local.center_blend.xyz,
-                    max(local.extents_weight.xyz, 0.0f), alpha)
+                    max(local.extents_weight.xyz, 0.0f),
+                    local.capture_origin.xyz, alpha)
               : dominant;
       prefiltered =
           local.prefilter.sample(environment_sampler, direction, level(lod))
@@ -855,7 +856,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     float horizon = saturate(1.0f + dot(reflection, geometric_normal));
     float specular_visibility =
         horizon * horizon *
-        vkr_metal_packet_specular_ao(ao * baked_occlusion, no_v, roughness);
+        vkr_specular_occlusion(ao * baked_occlusion, no_v, alpha);
     light.specular += incoming * energy.primary_reflectance *
                       specular_visibility * specular_gain;
     // The dual lobe (ADR-113) reads the same environment at its roughness,
@@ -875,7 +876,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                 ? vkr_reflection_probe_direction(
                       dual_dominant, input.world_position,
                       local.center_blend.xyz,
-                      max(local.extents_weight.xyz, 0.0f), dual_alpha)
+                      max(local.extents_weight.xyz, 0.0f),
+                      local.capture_origin.xyz, dual_alpha)
                 : dual_dominant;
         dual_incoming = local.prefilter
                             .sample(environment_sampler, direction,
@@ -894,8 +896,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
       }
       light.specular +=
           dual_incoming * energy.dual_reflectance * horizon * horizon *
-          vkr_metal_packet_specular_ao(ao * baked_occlusion, no_v,
-                                       energy.dual_roughness) *
+          vkr_specular_occlusion(ao * baked_occlusion, no_v, dual_alpha) *
           specular_gain;
     }
   } else if (environment_diffuse) {

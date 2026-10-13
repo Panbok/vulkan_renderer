@@ -11,6 +11,7 @@ add_library(vkr_asset_formats STATIC
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_material_graph.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_material_codegen.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_mesh_cooked_decode.c"
+    "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_probe_capture.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_mesh_decode.cpp")
 vkr_configure_library(vkr_asset_formats)
 target_include_directories(vkr_asset_formats PUBLIC "${CMAKE_SOURCE_DIR}/runtime/src")

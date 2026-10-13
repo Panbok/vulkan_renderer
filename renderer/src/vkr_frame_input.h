@@ -43,6 +43,10 @@ typedef struct VkrFrameIblProbe {
   uint32_t sh_slot;
   VkrTextureHandle prefilter;
   Vec3 center;
+  /** Where the cube was captured, in the same space as `center`: box
+      projection aims from it, so a box moved after its bake keeps correct
+      parallax. Equal to `center` for a probe without a capture record. */
+  Vec3 capture_origin;
   Vec3 extents;
   float32_t blend_distance;
   float32_t weight;

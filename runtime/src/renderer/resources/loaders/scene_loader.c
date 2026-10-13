@@ -9,7 +9,9 @@
 
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
+#include "assets/vkr_probe_capture.h"
 #include "core/logger.h"
+#include "core/vkr_byte_io.h"
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
 #include "math/vec.h"
@@ -181,6 +183,9 @@ typedef struct SceneReflectionProbeImport {
   /* A project probe waiting for its first bake: without a cubemap it stays
      off instead of reflecting the scene environment (ADR-103). */
   bool8_t bake_pending;
+  /* The capture record the baked cubemap carries, read with it. */
+  bool8_t has_capture;
+  VkrProbeCapture capture;
 } SceneReflectionProbeImport;
 
 typedef struct SceneEntityImport {
@@ -2643,6 +2648,72 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
   return import_count;
 }
 
+/* KTX2 places its key/value data after the header, level index and data
+   format descriptor and before any image; a probe cube's ends within a few
+   kilobytes of the start. */
+#define SCENE_PROBE_CAPTURE_PREFIX_MAX KB(16)
+#define SCENE_PROBE_CAPTURE_KTX2_HEADER_BYTES 80u
+
+/* Reads the capture record of a baked probe's KTX2 cubemap
+   (vkr_probe_capture.h) from the start of the file; a cubemap without one
+   keeps its captured light and has no capture origin. */
+vkr_internal void
+scene_loader_read_probe_capture(SceneReflectionProbeImport *probe,
+                                VkrAllocator *temp_alloc) {
+  probe->has_capture = false_v;
+  String8 path = probe->cubemap_path;
+  if (path.length < 4u ||
+      MemCompare(path.str + path.length - 4u, ".vkt", 4u) != 0) {
+    return;
+  }
+  String8 terminated_path = string8_duplicate(temp_alloc, &path);
+  if (!terminated_path.str) {
+    return;
+  }
+  FilePath file_path = vkr_asset_path_file(temp_alloc, terminated_path);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+  FileHandle handle = {0};
+  if (file_open(&file_path, mode, &handle) != FILE_ERROR_NONE) {
+    return;
+  }
+
+  uint8_t prefix[SCENE_PROBE_CAPTURE_PREFIX_MAX];
+  uint64_t prefix_size = 0u;
+  FileError error = file_read_into(
+      &handle, prefix, SCENE_PROBE_CAPTURE_KTX2_HEADER_BYTES, &prefix_size);
+  /* The key/value data's offset and length (KTX2 section 3.2). */
+  const bool8_t header_read =
+      error == FILE_ERROR_NONE &&
+      prefix_size == SCENE_PROBE_CAPTURE_KTX2_HEADER_BYTES;
+  const uint64_t kvd_length = header_read ? vkr_load_le_u32(prefix + 60u) : 0u;
+  const uint64_t needed =
+      header_read ? vkr_load_le_u32(prefix + 56u) + kvd_length : 0u;
+  if (header_read && kvd_length == 0u) {
+    file_close(&handle);
+    return;
+  }
+  if (needed > prefix_size && needed <= sizeof(prefix)) {
+    uint64_t rest = 0u;
+    error = file_read_into(&handle, prefix + prefix_size, needed - prefix_size,
+                           &rest);
+    prefix_size += error == FILE_ERROR_NONE ? rest : 0u;
+  }
+  file_close(&handle);
+
+  const VkrProbeCaptureStatus status =
+      header_read && prefix_size == needed
+          ? vkr_probe_capture_find_ktx2(prefix, prefix_size, &probe->capture)
+          : VKR_PROBE_CAPTURE_INVALID;
+  probe->has_capture = status == VKR_PROBE_CAPTURE_FOUND;
+  if (status == VKR_PROBE_CAPTURE_INVALID) {
+    log_warn("Scene loader: reflection probe cubemap '%.*s' has an unreadable "
+             "capture record; it keeps its captured light",
+             (int)path.length, path.str);
+  }
+}
+
 vkr_internal void
 scene_loader_reset_scene_environment(VkrScene *scene, VkrRenderAssets *assets) {
   if (!scene) {
@@ -2866,6 +2937,8 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
         .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
         .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
         .bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE,
+        .has_capture = import->has_capture,
+        .capture = import->capture,
     };
 
     if (probe.enabled) {
@@ -5204,6 +5277,7 @@ vkr_internal bool8_t scene_loader_prepare_payload(
       if (payload->reflection_probe_prepared[i].description.type ==
           VKR_TEXTURE_TYPE_CUBE_MAP) {
         payload->reflection_probe_prepared_ready[i] = true_v;
+        scene_loader_read_probe_capture(probe, temp_alloc);
         continue;
       }
       cubemap_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;

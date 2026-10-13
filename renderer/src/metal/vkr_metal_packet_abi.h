@@ -721,6 +721,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketIblProbe {
   Vec4 center_blend;
   Vec4 extents_weight;
   Vec4 intensity_box;
+  /** xyz: capture origin that box projection aims from; w: reserved. */
+  Vec4 capture_origin;
 } VkrMetalPacketIblProbe;
 
 /** Mirrors VkrShadowCascadePacketData; see vkr_frame_input.h for units. */

@@ -1015,8 +1015,13 @@ A scene document's `reflection_probes` array holds them; in a project scene
 the editor creates and edits probes as entities and rewrites that array on
 save, and Bake lighting captures new ones
 ([ADR-103](adr/103-probe-and-volume-authoring.md)).
-The offline baker captures six scene-linear views and records source provenance;
-normal scene loading uploads the cube and prepares SH/prefilter once. Ready local
+The offline baker captures six supersampled scene-linear views of the static
+world and records source provenance; the cube carries its capture origin and
+the diffuse volume's baked light there, by which the runtime scales the
+probe's brightness with the time of day; box projection aims from that
+origin, and a probe moved off it is flagged for recapture
+([ADR-019](adr/019-bounded-forward-spatial-lighting.md)).
+Normal scene loading uploads the cube and prepares SH/prefilter once. Ready local
 probes work without a global environment. Local shadows are a persistent
 cache: shadow-casting lights keep their faces resident in one 4096-squared
 D16 depth atlas array that all frames in flight share, within the preset's

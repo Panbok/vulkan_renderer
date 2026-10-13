@@ -19,6 +19,7 @@
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_light_layers.h"
 #include "assets/vkr_lightmap_set.h"
+#include "assets/vkr_probe_capture.h"
 #include "containers/str.h"
 #include "core/vkr_entity.h"
 #include "core/vkr_type_desc.h"
@@ -850,6 +851,20 @@ typedef struct VkrSceneReflectionProbe {
   VkrTextureHandle source_cubemap;
   VkrTextureHandle prefilter_cubemap;
   VkrSceneReflectionProbeBakeState bake_state;
+  /** The cubemap's capture record (vkr_probe_capture.h), read at load. */
+  bool8_t has_capture;
+  VkrProbeCapture capture;
+  /** `center` lies more than VKR_PROBE_CAPTURE_ORIGIN_TOLERANCE from the
+      capture origin: projection still aims from the capture origin, but the
+      cube needs a recapture to show the room from the new place (audit B7).
+   */
+  bool8_t capture_moved;
+  /** Radiance factor for the time of day (vkr_probe_capture_ratio), valid
+      while `light_resolved`; vkr_scene_update_reflection_probe_light()
+      recomputes it when the diffuse volume's composition advances. */
+  bool8_t light_resolved;
+  uint32_t light_composition;
+  float32_t light_ratio;
 } VkrSceneReflectionProbe;
 
 /**
@@ -1586,6 +1601,15 @@ void vkr_scene_light_layer_weights(const VkrScene *scene,
     VKR_SCENE_SUN_REFRESH_SECONDS; the renderer recomposes the volume's SH
     texture in place. Call once per frame after vkr_scene_sync_sun. */
 void vkr_scene_update_diffuse_volume(VkrScene *scene, float64_t delta_seconds);
+
+/** Follows the time of day in each baked reflection probe (audit B4,
+    ADR-019): when the volume's composition advances, a probe whose capture
+    record matches the volume's layer table takes the ratio of the light the
+    composition gives its capture origin over the light it was captured
+    under; any other probe keeps its captured radiance. Also marks probes
+    moved from their capture origin. Call once per frame after
+    vkr_scene_update_diffuse_volume. */
+void vkr_scene_update_reflection_probe_light(VkrScene *scene);
 
 /** The frame binding of the scene's diffuse volume: its textures once every
     one is published, its placement in document space, and the layers of its

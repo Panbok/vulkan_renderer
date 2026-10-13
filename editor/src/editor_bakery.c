@@ -1464,8 +1464,9 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
       "renderer after this recipe succeeds.",
       "Writes a checked diffuse volume and dependency metadata. Uses the "
       "existing bounded 4x4x4, 1M-photon recipe.",
-      "Captures six 256px HDR faces at the Bistro cafe probe's center and "
-      "rewrites the tracked reflection cubemap with its mip chain.",
+      "Captures the static scene in six 256px HDR faces, each rendered at "
+      "1024px and filtered, at the Bistro cafe probe's center, and rewrites "
+      "the tracked reflection cubemap with its mip chain.",
       "Cooks one convex hull from static glTF/GLB geometry into the .vkc "
       "output.\nSplit detailed sources into subtrees with the CLI.",
       "Cooks triangle collision from static glTF/GLB geometry into the .vkc "

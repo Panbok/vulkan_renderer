@@ -1030,7 +1030,8 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
           application->globals.view, application->globals.projection,
           application->renderer.graphics_pipeline ==
               VKR_GRAPHICS_PIPELINE_TILED,
-          draw->scratch, &draw->world_payload, &visibility_stats);
+          application->static_capture, draw->scratch, &draw->world_payload,
+          &visibility_stats);
   }
   if (world_error != VKR_RENDERER_ERROR_NONE) {
     return world_error;
@@ -1747,14 +1748,22 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
          acquired. */
       draw->frame_ibl_probe_sources[frame_ibl_probe_count] =
           probe->source_cubemap;
+      /* A baked probe follows the time of day by the ratio of the current
+         baked light at its capture origin to the light it was captured
+         under; both backends take it in the probe's intensity (ADR-019). */
+      const float32_t time_of_day_light =
+          probe->light_resolved ? probe->light_ratio : 1.0f;
       frame_ibl_probes[frame_ibl_probe_count++] = (VkrFrameIblProbe){
           .prefilter = probe->prefilter_cubemap,
           /* Probes are placed in document space (ADR-086). */
           .center = vec3_sub(probe->center, active_scene->origin_offset),
+          .capture_origin = vec3_sub(probe->has_capture ? probe->capture.origin
+                                                        : probe->center,
+                                     active_scene->origin_offset),
           .extents = probe->extents,
           .blend_distance = probe->blend_distance,
           .weight = 1.0f,
-          .intensity = probe->intensity,
+          .intensity = probe->intensity * time_of_day_light,
           .diffuse_intensity = probe->diffuse_intensity,
           .specular_intensity = probe->specular_intensity,
           .box_projection_enabled = probe->box_projection,
@@ -2860,6 +2869,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     /* The volume's sun keys and lamp groups follow the turned sun and the
        light group factors (ADR-090). */
     vkr_scene_update_diffuse_volume(render_scene, delta);
+    vkr_scene_update_reflection_probe_light(render_scene);
     (void)vkr_scene_bind_lightmaps(render_scene);
     (void)vkr_world_resources_prepare_scene_atmosphere(
         &application->assets, &application->assets.world_resources,

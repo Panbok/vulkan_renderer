@@ -1426,6 +1426,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketIblProbe {
   Vec4 center_blend;
   Vec4 extents_weight;
   Vec4 intensity_box;
+  /** xyz: capture origin that box projection aims from; w: reserved. */
+  Vec4 capture_origin;
 } VkrVulkanPacketIblProbe;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanLtc {
@@ -1987,7 +1989,7 @@ _Static_assert(offsetof(VkrVulkanIblShRoot, window_band_0) == 24u,
                "IBL SH-root window ABI drift");
 _Static_assert(sizeof(VkrVulkanPacketShadowCascade) == 96u,
                "Packet shadow-cascade ABI size drift");
-_Static_assert(sizeof(VkrVulkanPacketIblProbe) == 64u,
+_Static_assert(sizeof(VkrVulkanPacketIblProbe) == 80u,
                "Packet IBL-probe ABI size drift");
 _Static_assert(offsetof(VkrVulkanPacketIblProbe, sh_slot) == 0u,
                "Packet IBL-probe SH-slot ABI offset drift");

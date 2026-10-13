@@ -188,6 +188,7 @@ vkr_internal void temporal_scene_lighting(VkrTemporalSceneSignature *signature,
       temporal_scene_pair(signature, probe->prefilter.id,
                           probe->prefilter.generation);
       temporal_scene_vec3(signature, probe->center);
+      temporal_scene_vec3(signature, probe->capture_origin);
       temporal_scene_vec3(signature, probe->extents);
       temporal_scene_floats(signature, probe->blend_distance, probe->weight);
       temporal_scene_floats(signature, probe->intensity,

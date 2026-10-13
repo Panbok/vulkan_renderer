@@ -1066,9 +1066,11 @@ Direct-light helpers reject noncontributing light hemispheres before half-vector
 construction. Shared GGX math defines zero contribution when the half-vector's
 squared length is zero or subnormal; finite back-view diffuse behavior remains
 unchanged. Local probe influence bounds remain active independently of parallax
-projection. Box projection (`vkr_metal_packet_box_project`,
-`packet_box_project`) returns the plain reflection for a point more than
-1 cm outside the probe's box on both backends. Bloom gain follows ADR-042's
+projection. Box projection is the shared `vkr_reflection_probe_direction`: it
+clamps the shaded point to the probe's box and aims from the probe record's
+`capture_origin` on both backends, fading toward the plain reflection with
+`α`; influence is zero more than 1 cm outside the box. Specular occlusion is
+the shared `vkr_specular_occlusion` and takes `α`. Bloom gain follows ADR-042's
 maximum-chain normalization.
 
 Audit remediation changes visibility, HZB producer-grid metadata, Metal reset

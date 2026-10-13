@@ -135,6 +135,8 @@ struct VkrMetalPacketIblProbe {
   float4 center_blend;
   float4 extents_weight;
   float4 intensity_box;
+  // xyz: capture origin that box projection aims from; w: reserved.
+  float4 capture_origin;
 };
 
 struct VkrMetalPacketTemporalDrawState {
@@ -669,8 +671,8 @@ static_assert(sizeof(VkrMetalPacketDecals) == 48,
               "Metal decal record ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
-static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
-              "Metal packet IBL probe ABI must remain 64 bytes");
+static_assert(sizeof(VkrMetalPacketIblProbe) == 80,
+              "Metal packet IBL probe ABI must remain 80 bytes");
 static_assert(sizeof(VkrLocalShadowView) == 144,
               "Local shadow view Metal ABI must remain 144 bytes");
 static_assert(sizeof(VkrMetalPacketShadowCascade) == 96,

@@ -408,10 +408,6 @@ VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
   return result;
 }
 
-float vkr_metal_packet_specular_ao(float ao, float no_v, float roughness) {
-  return saturate(pow(no_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
-}
-
 
 float vkr_metal_packet_probe_influence(
     const device VkrMetalPacketIblProbe &probe, float3 world_position) {

@@ -255,6 +255,14 @@ typedef struct VkrSceneWorldClassification {
   uint32_t refractive_draw_count;
 } VkrSceneWorldClassification;
 
+/* Whether a loaded source of `mobility` joins the frame: a reflection-probe
+   capture (`static_only`) keeps static sources only, since anything that
+   moves would stay frozen in the probe (ADR-019). */
+vkr_internal INLINE bool8_t vkr_scene_world_source_kept(
+    VkrShadowCasterMobility mobility, bool8_t static_only) {
+  return !static_only || mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC;
+}
+
 /* Glass the tiled pipeline shades from its refraction copy (ADR-087): a
    volume, or a rough surface. */
 vkr_internal bool8_t vkr_scene_material_refracts(const VkrMaterial *material) {
@@ -266,8 +274,8 @@ vkr_internal bool8_t vkr_scene_material_refracts(const VkrMaterial *material) {
    and flags visible sources that are not loaded yet. */
 vkr_internal void vkr_scene_count_world_sources(
     VkrMeshManager *meshes, uint32_t mesh_count, uint32_t live_instance_count,
-    uint64_t *out_candidate_count, uint64_t *out_static_candidate_count,
-    bool8_t *publication_pending) {
+    bool8_t static_only, uint64_t *out_candidate_count,
+    uint64_t *out_static_candidate_count, bool8_t *publication_pending) {
   uint64_t candidate_count_64 = 0u;
   uint64_t static_candidate_count_64 = 0u;
   /* Missing visible casters disable retained shadow reuse until published. */
@@ -276,6 +284,9 @@ vkr_internal void vkr_scene_count_world_sources(
     VkrMesh *mesh =
         vkr_mesh_manager_get_mesh_by_live_index(meshes, i, &mesh_slot);
     if (mesh->visible && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
+      if (!vkr_scene_world_source_kept(mesh->shadow_mobility, static_only)) {
+        continue;
+      }
       const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
       candidate_count_64 += submesh_count;
       if (mesh->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC)
@@ -293,6 +304,9 @@ vkr_internal void vkr_scene_count_world_sources(
       *publication_pending = *publication_pending || instance->visible;
       continue;
     }
+    if (!vkr_scene_world_source_kept(instance->shadow_mobility, static_only)) {
+      continue;
+    }
     VkrMeshAsset *asset =
         vkr_mesh_manager_get_live_asset(meshes, instance->asset);
     candidate_count_64 += asset->submeshes.length;
@@ -304,12 +318,15 @@ vkr_internal void vkr_scene_count_world_sources(
 }
 
 /* Visibility pass: classifies each counted source and camera-tests the
-   blended ones into `transparent_visible`. */
+   blended ones into `transparent_visible`; a probe capture (`static_only`)
+   draws no alpha-blended surface, and keeps glass, which the tiled pipeline
+   blends too. */
 vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
     VkrMeshManager *meshes, VkrMaterialSystem *materials,
     const VkrFrustum *camera_frustum, uint32_t mesh_count,
     uint32_t live_instance_count, uint32_t gpu_candidate_count,
-    bool8_t transmission_blended, uint8_t *transparent_visible) {
+    bool8_t transmission_blended, bool8_t static_only,
+    uint8_t *transparent_visible) {
   VkrVisibilityStats stats = {0};
   uint32_t opaque_material_features = 0u;
   uint32_t gpu_camera_opaque_candidate_count = 0u;
@@ -322,7 +339,9 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
     uint32_t mesh_slot = 0;
     VkrMesh *mesh =
         vkr_mesh_manager_get_mesh_by_live_index(meshes, i, &mesh_slot);
-    if (!mesh->visible || mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+    if (!mesh->visible ||
+        mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED ||
+        !vkr_scene_world_source_kept(mesh->shadow_mobility, static_only))
       continue;
     const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
     for (uint32_t s = 0; s < submesh_count; ++s) {
@@ -346,8 +365,8 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
           transmissive, alpha.world_transparent, transmission_blended);
       transmission_gpu_candidate_count += route.transmission ? 1u : 0u;
       if (route.blended) {
-        bool8_t visible = true_v;
-        if (mesh->bounds_valid) {
+        bool8_t visible = !static_only || transmissive;
+        if (visible && mesh->bounds_valid) {
           Vec3 center = {0};
           float32_t radius = 0.0f;
           vkr_visibility_submesh_sphere(mesh->model, submesh->center,
@@ -372,7 +391,8 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
     VkrMeshInstance *instance =
         vkr_mesh_manager_get_instance_by_live_index(meshes, i, &instance_slot);
     if (!instance->visible ||
-        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED ||
+        !vkr_scene_world_source_kept(instance->shadow_mobility, static_only))
       continue;
     VkrMeshAsset *asset =
         vkr_mesh_manager_get_live_asset(meshes, instance->asset);
@@ -399,8 +419,8 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
           transmissive, alpha.world_transparent, transmission_blended);
       transmission_gpu_candidate_count += route.transmission ? 1u : 0u;
       if (route.blended) {
-        bool8_t visible = true_v;
-        if (instance->bounds_valid && !instance->skinning) {
+        bool8_t visible = !static_only || transmissive;
+        if (visible && instance->bounds_valid && !instance->skinning) {
           Vec3 center = {0};
           float32_t radius = 0.0f;
           vkr_visibility_submesh_sphere(instance->model, submesh->center,
@@ -435,7 +455,7 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
 vkr_internal void vkr_scene_emit_world_sources(
     VkrMeshManager *meshes, VkrMaterialSystem *materials, uint32_t mesh_count,
     uint32_t live_instance_count, uint32_t temporal_instance_offset,
-    VkrSkinningInput *skinning, uint32_t skinning_count,
+    VkrSkinningInput *skinning, uint32_t skinning_count, bool8_t static_only,
     const VkrSceneWorldEmitContext *initial) {
   VkrSceneWorldEmitContext emit = *initial;
   uint32_t skinning_cursor = 0;
@@ -446,7 +466,9 @@ vkr_internal void vkr_scene_emit_world_sources(
     uint32_t mesh_slot = 0;
     VkrMesh *mesh =
         vkr_mesh_manager_get_mesh_by_live_index(meshes, i, &mesh_slot);
-    if (!mesh->visible || mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+    if (!mesh->visible ||
+        mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED ||
+        !vkr_scene_world_source_kept(mesh->shadow_mobility, static_only))
       continue;
     const uint32_t object_id =
         mesh->render_id
@@ -494,7 +516,8 @@ vkr_internal void vkr_scene_emit_world_sources(
     VkrMeshInstance *instance =
         vkr_mesh_manager_get_instance_by_live_index(meshes, i, &instance_slot);
     if (!instance->visible ||
-        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED ||
+        !vkr_scene_world_source_kept(instance->shadow_mobility, static_only))
       continue;
     VkrMeshAsset *asset =
         vkr_mesh_manager_get_live_asset(meshes, instance->asset);
@@ -569,8 +592,9 @@ vkr_internal void vkr_scene_emit_world_sources(
 VkrRendererError vkr_scene_build_world_draws(
     VkrMeshManager *meshes, VkrMaterialSystem *materials,
     bool8_t publication_pending, uint64_t publication_generation, Mat4 view,
-    Mat4 projection, bool8_t transmission_blended, VkrAllocator *scratch,
-    VkrWorldPassPayload *out_payload, VkrVisibilityStats *out_stats) {
+    Mat4 projection, bool8_t transmission_blended, bool8_t static_only,
+    VkrAllocator *scratch, VkrWorldPassPayload *out_payload,
+    VkrVisibilityStats *out_stats) {
   *out_payload = (VkrWorldPassPayload){0};
   if (out_stats)
     *out_stats = (VkrVisibilityStats){0};
@@ -587,7 +611,8 @@ VkrRendererError vkr_scene_build_world_draws(
         vkr_mesh_manager_get_instance_by_live_index(meshes, i, &slot);
     if (instance->visible &&
         instance->loading_state == VKR_MESH_LOADING_STATE_LOADED &&
-        instance->skinning) {
+        instance->skinning &&
+        vkr_scene_world_source_kept(instance->shadow_mobility, static_only)) {
       skinning_count++;
     }
   }
@@ -613,9 +638,9 @@ VkrRendererError vkr_scene_build_world_draws(
   }
   uint64_t candidate_count_64 = 0u;
   uint64_t static_candidate_count_64 = 0u;
-  vkr_scene_count_world_sources(meshes, mesh_count, live_instance_count,
-                                &candidate_count_64, &static_candidate_count_64,
-                                &publication_pending);
+  vkr_scene_count_world_sources(
+      meshes, mesh_count, live_instance_count, static_only, &candidate_count_64,
+      &static_candidate_count_64, &publication_pending);
 
   if (candidate_count_64 > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
     return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
@@ -635,7 +660,8 @@ VkrRendererError vkr_scene_build_world_draws(
 
   const VkrSceneWorldClassification totals = vkr_scene_classify_world_sources(
       meshes, materials, &camera_frustum, mesh_count, live_instance_count,
-      gpu_candidate_count, transmission_blended, transparent_visible);
+      gpu_candidate_count, transmission_blended, static_only,
+      transparent_visible);
   const uint32_t transmission_gpu_candidate_count =
       totals.transmission_gpu_candidate_count;
   const uint32_t transparent_draw_count = totals.transparent_draw_count;
@@ -693,7 +719,7 @@ VkrRendererError vkr_scene_build_world_draws(
 
   vkr_scene_emit_world_sources(meshes, materials, mesh_count,
                                live_instance_count, temporal_instance_offset,
-                               skinning, skinning_count, &emit);
+                               skinning, skinning_count, static_only, &emit);
 
   if (transparent_draw_count > 1u)
     qsort(transparent_candidates, transparent_draw_count,

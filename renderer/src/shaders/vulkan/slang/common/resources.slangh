@@ -154,6 +154,8 @@ struct VkrVulkanIblProbe
     float4 center_blend;
     float4 extents_weight;
     float4 intensity_box;
+    // xyz: capture origin that box projection aims from; w: reserved.
+    float4 capture_origin;
 };
 // Mirrors VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV in vkr_gpu_abi.h.
 static const uint VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV = 2u;

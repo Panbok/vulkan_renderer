@@ -309,12 +309,6 @@ VkrVulkanDirectResult packet_layered_rectangle_lights(
     return result;
 }
 
-float packet_specular_ao(float ao, float no_v, float roughness)
-{
-    return saturate(pow(no_v + ao, exp2(-16.0f * roughness - 1.0f)) - 1.0f +
-                    ao);
-}
-
 VkrGgxMaterialEnergy packet_prepare_brdf(VkrVulkanPacketFrameRoot *frame,
                                          float no_v, float roughness, float3 f0)
 {
@@ -883,7 +877,8 @@ float3 packet_probe_direction(VkrVulkanIblProbe probe, float3 dominant,
     return probe.intensity_box.w > 0.5f
                ? vkr_reflection_probe_direction(
                      dominant, world_position, probe.center_blend.xyz,
-                     max(probe.extents_weight.xyz, 0.0f), alpha)
+                     max(probe.extents_weight.xyz, 0.0f),
+                     probe.capture_origin.xyz, alpha)
                : dominant;
 }
 
@@ -1516,8 +1511,8 @@ bool packet_diffuse_volume_terms(VkrVulkanPacketFrameRoot *frame,
 }
 
 // Global environment plus weighted local probes. `horizon_normal` is the
-// geometric normal where one survives; the deferred G-buffer keeps only the
-// shading normal and passes it for both.
+// geometric normal; deferred lighting reconstructs it from depth because the
+// G-buffer keeps only the shading normal.
 struct VkrVulkanEnvironmentResult
 {
     float3 diffuse;
@@ -1592,7 +1587,7 @@ packet_environment_terms_with_diffuse_normal(
         vkr_sh_l2_prepare_evaluation(diffuse_normal);
     float horizon = saturate(1.0f + dot(reflection, horizon_normal));
     float specular_visibility =
-        horizon * horizon * packet_specular_ao(ao, no_v, roughness);
+        horizon * horizon * vkr_specular_occlusion(ao, no_v, alpha);
     // Probes carry their own pre-exposed gains; the environment's gains
     // scale only the share the global environment fills.
     float3 irradiance = 0.0f;
@@ -1724,7 +1719,8 @@ float3 packet_environment_dual_specular(VkrVulkanPacketFrameRoot *frame,
                                                 view, energy.dual_roughness,
                                                 baked) *
            energy.dual_reflectance * horizon * horizon *
-           packet_specular_ao(ao, no_v, energy.dual_roughness);
+           vkr_specular_occlusion(ao, no_v,
+                                  energy.dual_roughness * energy.dual_roughness);
 }
 
 float3 packet_environment_specular_weight(float3 normal, float3 horizon_normal,
@@ -1736,7 +1732,7 @@ float3 packet_environment_specular_weight(float3 normal, float3 horizon_normal,
     float3 reflection = reflect(-view, vkr_anisotropy_environment_normal(normal, view, energy));
     float horizon = saturate(1.0f + dot(reflection, horizon_normal));
     return energy.primary_reflectance * horizon * horizon *
-           packet_specular_ao(ao, no_v, roughness);
+           vkr_specular_occlusion(ao, no_v, roughness * roughness);
 }
 
 float3 packet_environment_specular(VkrVulkanPacketFrameRoot *frame,

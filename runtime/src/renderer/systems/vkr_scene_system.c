@@ -189,6 +189,10 @@ void vkr_scene_reset_diffuse_volume(VkrScene *scene,
   }
   free(volume);
   scene->diffuse_volume = NULL;
+  /* Probe light ratios refer to the volume's layers and composition. */
+  for (uint32_t i = 0u; i < scene->reflection_probe_count; ++i) {
+    scene->reflection_probes[i].light_resolved = false_v;
+  }
 }
 
 /* Requests carry the unit sun and moon directions the bake uses, so later
@@ -2743,6 +2747,57 @@ void vkr_scene_update_diffuse_volume(VkrScene *scene, float64_t delta_seconds) {
   MemCopy(volume->weights, weights, sizeof(weights));
   volume->since_compose = 0.0;
   volume->composition++;
+}
+
+void vkr_scene_update_reflection_probe_light(VkrScene *scene) {
+  if (!scene) {
+    return;
+  }
+  const VkrSceneDiffuseVolume *volume = scene->diffuse_volume;
+  const uint32_t composition = volume ? volume->composition : 0u;
+  for (uint32_t i = 0u; i < scene->reflection_probe_count; ++i) {
+    VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
+    if (!probe->has_capture) {
+      continue;
+    }
+
+    /* Box projection aims from the capture origin, so parallax stays right
+       after an edit moves the center, but the cube still shows the room from
+       where it was captured until a recapture. */
+    const bool8_t moved =
+        vec3_length(vec3_sub(probe->center, probe->capture.origin)) >
+        VKR_PROBE_CAPTURE_ORIGIN_TOLERANCE;
+    if (moved && !probe->capture_moved) {
+      log_warn("Scene: reflection probe %u is %.2f m from where its cubemap "
+               "was captured; bake lighting again to recapture it",
+               i, vec3_length(vec3_sub(probe->center, probe->capture.origin)));
+    }
+    probe->capture_moved = moved;
+
+    if (probe->light_resolved && probe->light_composition == composition) {
+      continue;
+    }
+    const bool8_t first = !probe->light_resolved;
+    probe->light_resolved = true_v;
+    probe->light_composition = composition;
+    probe->light_ratio = 1.0f;
+    if (!volume || probe->capture.layer_count == 0u) {
+      continue;
+    }
+    if (!vkr_probe_capture_matches(&probe->capture, volume->layers,
+                                   volume->layer_count)) {
+      if (!first) {
+        continue;
+      }
+      log_warn("Scene: reflection probe %u was captured with other diffuse "
+               "volume layers; it keeps its captured light until it is baked "
+               "again",
+               i);
+      continue;
+    }
+    probe->light_ratio =
+        vkr_probe_capture_ratio(&probe->capture, volume->weights);
+  }
 }
 
 void vkr_scene_diffuse_volume_binding(const VkrScene *scene,
