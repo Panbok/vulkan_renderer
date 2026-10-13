@@ -3131,6 +3131,11 @@ vkr_internal bool8_t vkr_metal_packet_upload_lightmap(
   return true_v;
 }
 
+/* The encode kernel writes a draw's probe as frame probe index + 1 or the
+   per-pixel code, which must stay above every index. */
+_Static_assert(VKR_FRAME_IBL_PROBE_MAX < VKR_GPU_DRAW_PROBE_PER_PIXEL,
+               "The per-pixel probe code lies above every probe index");
+
 /* Writes fog, sky, diffuse-volume, lightmap and IBL probe data. */
 vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,

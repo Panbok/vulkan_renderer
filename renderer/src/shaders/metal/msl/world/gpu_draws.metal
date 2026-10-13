@@ -393,12 +393,36 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
                         memory_order_relaxed);
 }
 
+// Where a probe's influence reaches one half against a world sphere: 0 nowhere
+// in it, 1 everywhere in it, 2 in part of it. Influence reaches one half
+// inside the box shrunk by half the blend band at the side and top faces
+// (the bottom face takes no band; vkr_reflection_probe_influence), so the
+// per-pixel first-probe rule changes inside a sphere only where that box's
+// surface crosses it.
+static uint vkr_metal_packet_probe_sphere_reach(
+    const device VkrMetalPacketIblProbe &probe, float3 center, float radius) {
+  if (!(probe.extents_weight.w > 0.0f))
+    return 0u;
+  const float3 extents = max(probe.extents_weight.xyz, 0.0f);
+  const float half_band = 0.5f * max(probe.center_blend.w, 0.0f);
+  const float3 low = probe.center_blend.xyz - extents +
+                     float3(half_band, 0.0f, half_band);
+  const float3 high = probe.center_blend.xyz + extents - half_band;
+  const float3 outside = max(max(low - center, center - high), 0.0f);
+  if (any(low > high) || dot(outside, outside) > radius * radius)
+    return 0u;
+  return all(center - radius >= low) && all(center + radius <= high) ? 1u
+                                                                      : 2u;
+}
+
 // The reflection probe a camera-view draw shades with on the tiled pipeline
 // (ADR-087), as frame probe index + 1: the probe bound to the draw's object
 // (a planar reflector's baked plane probe), else the first unbound probe, in
-// the host's smaller-box-first order, whose influence at the draw's
-// bounding-sphere centre reaches one half. A bound probe serves its owner
-// only. Zero takes the global environment.
+// the host's smaller-box-first order, whose influence reaches one half over
+// the whole bounding sphere. A draw that an earlier unbound probe's half-
+// influence surface cuts takes VKR_GPU_DRAW_PROBE_PER_PIXEL, and its pixels
+// choose by the same rule (vkr_metal_tiled_pixel_probe). A bound probe
+// serves its owner only. Zero takes the global environment.
 static uint vkr_metal_packet_draw_probe(
     constant VkrMetalPacketFrameRoot *frame,
     const device VkrMetalPacketInstance &instance, float4 local_sphere) {
@@ -410,12 +434,17 @@ static uint vkr_metal_packet_draw_probe(
         frame->ibl_probes[i].owner_object_id == instance.object_id)
       return i + 1u;
   }
-  float3 center = (instance.model * float4(local_sphere.xyz, 1.0f)).xyz;
+  const float3 center = (instance.model * float4(local_sphere.xyz, 1.0f)).xyz;
+  const float radius = max(local_sphere.w * instance.normal_column1.w, 0.0f);
   for (uint i = 0u; i < count; ++i) {
-    if (frame->ibl_probes[i].owner_object_id == 0u &&
-        vkr_metal_packet_probe_influence(frame->ibl_probes[i], center) >=
-            0.5f)
+    if (frame->ibl_probes[i].owner_object_id != 0u)
+      continue;
+    const uint reach =
+        vkr_metal_packet_probe_sphere_reach(frame->ibl_probes[i], center, radius);
+    if (reach == 1u)
       return i + 1u;
+    if (reach == 2u)
+      return VKR_GPU_DRAW_PROBE_PER_PIXEL;
   }
   return 0u;
 }

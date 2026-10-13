@@ -344,6 +344,9 @@ VkrGpuLodView vkr_gpu_lod_view(Mat4 view_projection, float32_t image_rows,
    as frame probe index + 1; zero takes the global environment (ADR-087). */
 #define VKR_GPU_DRAW_PROBE_SHIFT 27u
 #define VKR_GPU_DRAW_PROBE_MASK 0x1Fu
+/* A draw that straddles a probe boundary picks its probe per pixel; above
+   every frame probe index + 1. */
+#define VKR_GPU_DRAW_PROBE_PER_PIXEL 0x1Fu
 _Static_assert(VKR_GPU_DRAW_PREVIOUS_MORPH_SHIFT + 8u ==
                    VKR_GPU_DRAW_PROBE_SHIFT,
                "The probe bits follow the previous morph factor");

@@ -574,11 +574,12 @@ struct VkrMetalTiledNoLocalShadow {
   void measure(uint, float) const {}
 };
 
-// The reflection probe a blended surface shades with, as frame probe index
-// + 1: the first probe, in the host's smaller-box-first order, whose
-// influence at the pixel reaches one half, as the desktop pipeline's priority
-// blend would give it most of the pixel. Opaque draws take the one their
-// encode chose for the whole draw (vkr_metal_packet_draw_probe).
+// The reflection probe a blended surface, or an opaque draw that straddles a
+// probe boundary, shades with at a pixel, as frame probe index + 1: the first
+// unbound probe, in the host's smaller-box-first order, whose influence at
+// the pixel reaches one half, as the desktop pipeline's priority blend would
+// give it most of the pixel. Other opaque draws take the one their encode
+// chose for the whole draw (vkr_metal_packet_draw_probe).
 static uint vkr_metal_tiled_pixel_probe(constant VkrMetalPacketFrameRoot *frame,
                                         float3 world_position) {
   const uint count = min(frame->ibl_probe_count, VKR_GPU_DRAW_PROBE_MASK - 1u);
@@ -1159,11 +1160,15 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
                                 front_facing, visible.state_flags, inspected))
       return float4(inspected, coverage);
   }
+  uint probe = Probes ? (visible.state_flags >> VKR_GPU_DRAW_PROBE_SHIFT) &
+                           VKR_GPU_DRAW_PROBE_MASK
+                     : 0u;
+  // A draw that straddles a probe boundary chooses per pixel
+  // (vkr_metal_packet_draw_probe).
+  if (Probes && probe == VKR_GPU_DRAW_PROBE_PER_PIXEL)
+    probe = vkr_metal_tiled_pixel_probe(frame, input.world_position);
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
-      input, frame, material, surface, front_facing,
-      Probes ? (visible.state_flags >> VKR_GPU_DRAW_PROBE_SHIFT) &
-                   VKR_GPU_DRAW_PROBE_MASK
-             : 0u);
+      input, frame, material, surface, front_facing, probe);
   return float4(light.diffuse + light.specular + light.emissive, coverage);
 }
 

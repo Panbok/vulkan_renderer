@@ -31,6 +31,8 @@
 // index + 1 above the morph bits; zero takes the global environment.
 #define VKR_GPU_DRAW_PROBE_SHIFT 27u
 #define VKR_GPU_DRAW_PROBE_MASK 31u
+// A draw that straddles a probe boundary picks its probe per pixel.
+#define VKR_GPU_DRAW_PROBE_PER_PIXEL 31u
 // Nearest distance a view measures, so a camera inside a bound stays finite.
 #define VKR_GPU_LOD_DISTANCE_MIN 1e-3f
 
