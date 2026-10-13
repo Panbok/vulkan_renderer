@@ -114,11 +114,20 @@ along a corridor.
   view matched a `VKR_ROOMS=0` run exactly; Bistro alternates between two
   outputs near a wall sconce from run to run (0.12% of pixels), with rooms
   on or off.
-- On the café walk (`large_level_bistro_metal_cafe_walk`,
-  `local-offscreen-gpu-single`, one non-authoritative run each) the
-  camera's visible rows fell from a median of 3,433 to 2,741 and a mean of
-  3,359 to 2,658; `Tiled.Opaque` stayed at 4.6 ms, since the hidden draws
-  covered no pixels. Indicative, not a timing claim.
+- Matched Release timing on the café walk (2026-10-13; M1 Pro, Metal 4,
+  tiled pipeline, 1280x720 hidden window with immediate presentation;
+  `large_level_bistro_metal_cafe_walk_windowed.case.json`,
+  `performance-windowed-gpu.json`, five children each, authoritative with
+  matching fingerprints, clean tree at `eb299c26`), against `VKR_ROOMS=0`
+  in the same binary: `frame.wall` 13.811 to 13.564 ms (child means'
+  standard deviation 0.014 and 0.015 ms), `Tiled.Opaque` 8.653 to
+  8.412 ms (0.011 and 0.012 ms), the camera's visible rows a mean of 3,360
+  to 2,659 and `cpu.world_payload_build` 1.31 to 1.16 ms; shadow cascades
+  did not change. Reports
+  `sha256:9bb0a56a7972c06fe3e2e96c1879f056e12496639ef7c14b013eb5b558edabc9`
+  (on) and
+  `sha256:80b64f25528eaf6eaf79411750456544181ff5fb280564a5b8c82d5473f2b792`
+  (off).
 - With the light and probe gates (2026-10-13), the café bar view matched
   `VKR_ROOMS=0` within one level of 255 and the overview's depth matched
   exactly; its colour moved 1% of pixels by up to 21 levels, all in the sky,

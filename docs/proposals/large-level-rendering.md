@@ -131,8 +131,8 @@ feature off in one build.
 Remaining:
 
 - A water plane in the square and its two eye heights (section 3).
-- Matched before/after Release reports per section; no report has yet
-  isolated `Cull.*` for a still and a moving camera on matched builds.
+- Matched Release reports for section 2 and the overview; ADR-114 and
+  ADR-115 record those of the glide and the café walk on Metal.
 
 ## 1. Per-object draw distance
 
@@ -148,9 +148,8 @@ per-view tests and the editor and agent surfaces. Remaining:
   CPU from the host mirror of the camera test (the GPU compaction state keeps
   its size), and a `Draw distance` inspection mode.
 - **Evidence.** Retained-cascade redraw counts on the glide matched against a
-  build without the feature; matched Release `local-windowed-gpu-single` and
-  `gpu.submission` reports on the overview and glide; one focused Metal API
-  validation run; the Vulkan twins under validation on Windows.
+  build without the feature; a matched `gpu.submission` report on the
+  overview; the Vulkan twins under validation on Windows.
 
 ## 2. Simpler distant trees and rocks
 
@@ -308,8 +307,7 @@ Remaining, in order:
    and proposes rooms and portals in the Agent changes window.
 3. **Drawn objects in an indoor region that no room holds**, added to the
    `rooms` lint check.
-4. **Evidence.** Matched Release timing on the moving café walk against a
-   build without rooms; the Vulkan twin under validation on Windows.
+4. **Evidence.** The Vulkan twin under validation on Windows.
 
 ## Order and dependencies
 

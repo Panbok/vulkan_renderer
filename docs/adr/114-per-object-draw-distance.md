@@ -111,6 +111,20 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
   visible rows fell from 8,481 to 5,224 and `Tiled.Opaque` from 5.42 to
   5.02 ms; on the glide from 6,818 to 4,490 and from 5.09 to 4.79 ms. These
   are indicative, not a timing claim.
+- Matched Release timing on the glide (2026-10-13; M1 Pro, Metal 4, tiled
+  pipeline, 1280x720 hidden window with immediate presentation;
+  `large_level_bistro_metal_glide_windowed.case.json`,
+  `performance-windowed-gpu.json`, five children each, authoritative with
+  matching fingerprints, clean tree at `eb299c26`), against
+  `VKR_DRAW_DISTANCE=0` in the same binary: `frame.wall` 14.901 to 14.834 ms
+  (child means' standard deviation 0.022 and 0.034 ms), `Tiled.Opaque`
+  9.865 to 9.745 ms (0.018 and 0.008 ms), the camera's visible rows a mean
+  of 6,313 to 4,247 and `cpu.world_payload_build` 1.14 to 0.99 ms. The
+  output differs by design, by the sub-pixel draws dropped. Reports
+  `sha256:55be311f92c131cfa1511529718a521a22fd4d06ef9b11c1e0009df39a82fcd9`
+  (on) and
+  `sha256:a1c3fe26c7bec9ebbe7d2db359df7116df4fdc25d1c944cef9a290639e6ba5c6`
+  (off). The fixture's distant draws are small, so the gain is too.
 - No per-reason GPU counter exists; the compaction state keeps its 144
   bytes. Counts per reason come from the CPU mirror
   (`vkr_gpu_draw_distance_culled` on the host).
