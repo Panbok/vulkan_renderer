@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -67,11 +67,16 @@ chain; firefly saturation and boundaries remain nonlinear limits of the DC rule.
 
 GTAO uses current-frame depth and normals before deferred lighting. A dedicated
 positive-view-depth R16 pyramid feeds full-resolution three-slice/three-step
-horizon evaluation and an edge-aware 3x3 denoise. Raw and denoised outputs are
-RGBA8: RGB encodes a world-space bent normal, and alpha holds scalar visibility.
-The existing R8 edge image remains separate. The graph owns these transient
-images per in-flight image; replacing two R8 outputs adds 5.27 MiB at 1280x720,
-or 15.82 MiB across three image sets. Pass scheduling and sample counts stay fixed.
+horizon evaluation and two edge-aware 3x3 denoise passes (`AO.Denoise` into
+`gtao_denoised`, `AO.DenoiseFinal` into `gtao_visibility`). The slice and step
+noise is one fixed spatial pattern (`vkr_gtao_spatial_noise`), the same every
+frame whether or not TAA runs, so no temporal filter has to average it; the two
+passes remove it ([Short-history rendering](../proposals/short-history-rendering.md),
+section 3). Raw, intermediate and denoised outputs are RGBA8: RGB encodes a
+world-space bent normal, and alpha holds scalar visibility. The existing R8
+edge image remains separate. The graph owns these transient images per
+in-flight image; the three RGBA8 images take 10.5 MiB at 1280x720, or 31.6 MiB
+across three image sets. Pass scheduling and sample counts stay fixed.
 Depth-pyramid horizon samples use nearest texel and nearest mip filtering.
 Slice directions use the signed view-space pixel scale, including projection Y,
 and the positive/negative horizon bounds share the integration sign convention.
@@ -114,6 +119,27 @@ volume fixture verified scalar AO across 201,629 covered pixels (maximum HDR
 error 0.0002432). Production Vulkan SPIR-V validation passes; native Vulkan
 GTAO output is not yet recorded. These checks establish local behavior, not a
 frame-time claim.
+
+Spatial GTAO, Vulkan Release, RX 6700 XT, Windows, 2026-10-13, local and
+non-authoritative, TAA off, Bistro street (`win_bistro_gtao_on`, 800×600) and
+café (`win_bistro_cafe_gtao_on`, 1280×720), `local-offscreen.json`:
+- Two identical runs give byte-identical `gtao_raw`, `gtao_visibility` and
+  `final_color` in both views.
+- Against one denoise pass, the second changes `gtao_visibility` on 46 % and
+  51 % of pixels by more than 2/255 (mean 4.1 and 4.0/255) and removes the
+  fine grain on floors and chairs; a third changes it by half as much (mean
+  2.1 and 1.8/255) and mainly softens small detail, so two passes ship.
+- `gtao_raw`, `gtao_view_depth` and `gbuffer_normal` are unchanged: without
+  TAA the noise index was already zero.
+- `profile` with `local-offscreen-gpu-repeated.json` at 2560×1440, 5 × 60
+  measured frames, two alternated rounds: `AO.Denoise` and `AO.DenoiseFinal`
+  each take 0.205 ms (p50; σ ≤ 0.012 ms); `AO.Evaluate` 0.92 ms and
+  `AO.PrefilterDepth` 0.073 ms, so the chain costs about 1.40 ms.
+- Bistro's materials carry no AO (the café's G-buffer AO is never below
+  248/255), so `min(material AO, GTAO)` and the product give the same image
+  there; the product stays until a scene with authored AO decides it.
+- No GTAO grain shows on the café's metal and glossy surfaces with two
+  passes, so the specular cone is unchanged (audit R9).
 
 ## Alternatives considered
 

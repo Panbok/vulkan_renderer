@@ -95,8 +95,7 @@ VkrGtaoFrame vkr_gtao_prepare(bool8_t enabled, float32_t radius,
 VkrGtaoGpuParams vkr_gtao_gpu_params(const VkrGtaoConfig *config,
                                      const VkrGtaoFrame *frame, Mat4 view,
                                      Mat4 projection, uint32_t width,
-                                     uint32_t height, uint32_t frame_index,
-                                     bool8_t temporal_enabled) {
+                                     uint32_t height) {
   const float32_t pixel_size_x = 1.0f / (float32_t)width;
   const float32_t pixel_size_y = 1.0f / (float32_t)height;
   const float32_t effective_radius = frame->radius * config->radius_multiplier;
@@ -134,7 +133,5 @@ VkrGtaoGpuParams vkr_gtao_gpu_params(const VkrGtaoConfig *config,
       .denoise_blur_beta = config->denoise_blur_beta,
       .slice_count = config->slice_count,
       .steps_per_slice = config->steps_per_slice,
-      .noise_index =
-          temporal_enabled ? frame_index % VKR_GTAO_NOISE_SEQUENCE_LENGTH : 0u,
   };
 }

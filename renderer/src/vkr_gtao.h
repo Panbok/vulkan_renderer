@@ -6,7 +6,6 @@
 #define VKR_GTAO_DEFAULT_RADIUS 0.5f
 #define VKR_GTAO_DEFAULT_POWER 2.2f
 #define VKR_GTAO_MAX_DEPTH_MIP_COUNT 5u
-#define VKR_GTAO_NOISE_SEQUENCE_LENGTH 64u
 #define VKR_GTAO_VIEW_DEPTH_MAX 65504.0f
 #define VKR_GTAO_RADIUS_MIN 0.0001f
 #define VKR_GTAO_RADIUS_MAX 10000.0f
@@ -77,8 +76,8 @@ typedef struct VkrGtaoGpuParams {
 
   uint32_t slice_count;
   uint32_t steps_per_slice;
-  uint32_t noise_index;
   uint32_t reserved0;
+  uint32_t reserved1;
 } VkrGtaoGpuParams;
 
 _Static_assert(sizeof(VkrGtaoGpuParams) == 192,
@@ -100,5 +99,4 @@ VkrGtaoFrame vkr_gtao_prepare(bool8_t enabled, float32_t radius,
 VkrGtaoGpuParams vkr_gtao_gpu_params(const VkrGtaoConfig *config,
                                      const VkrGtaoFrame *frame, Mat4 view,
                                      Mat4 projection, uint32_t width,
-                                     uint32_t height, uint32_t frame_index,
-                                     bool8_t temporal_enabled);
+                                     uint32_t height);

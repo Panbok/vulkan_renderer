@@ -998,8 +998,8 @@ vkr_vk_validate_gtao_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, reserved_float1),
       VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, slice_count),
       VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, steps_per_slice),
-      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, noise_index),
       VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, reserved0),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, reserved1),
   };
   for (uint32_t i = 0u; i < ArrayCount(root_fields); ++i) {
     SpvReflectBlockVariable **out_member = i == 0u ? &params : NULL;

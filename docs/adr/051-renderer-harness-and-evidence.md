@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-13
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -52,7 +52,12 @@ and SSGI sampled ([ADR-055](055-screen-space-reflections.md),
 [ADR-060](060-screen-space-diffuse-indirect-lighting.md)). Version 8
 (2026-10-12) follows the removal of SSR, SSGI and FSR: warmup aligns to the
 64-phase GTAO noise sequence alone, and the fingerprint no longer records
-their controls. Case manifests no longer accept the renderer keys
+their controls. Since 2026-10-13 GTAO uses the same spatial noise every frame
+([ADR-042](042-scene-linear-post-processing.md)), and warmup aligns to the
+64-frame period of the contact-shadow march pattern under TAA
+(`VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD`), which the eight raster phases
+divide. The period and the phase it selects are unchanged, so version 8
+stays. Case manifests no longer accept the renderer keys
 `ssr_enabled`, `ssgi_enabled` and `upscaler`; stored capture summaries keep
 those fields, always false and `spatial`, like the retired
 `metalfx_temporal`. The workload fingerprint includes the version, so

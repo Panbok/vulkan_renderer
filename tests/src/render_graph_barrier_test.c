@@ -2109,9 +2109,9 @@ vkr_internal void test_tiled_graph_topology(void) {
 vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   enum {
-    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 378u,
-    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 372u,
-    VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT = 394u,
+    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 379u,
+    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 373u,
+    VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT = 395u,
   };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};

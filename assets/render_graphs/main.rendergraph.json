@@ -1091,6 +1091,24 @@
       ]
     },
     {
+      "name": "gtao_denoised",
+      "type": "image",
+      "condition": "scene_rendering && gtao_enabled",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R8G8B8A8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
       "name": "gtao_visibility",
       "type": "image",
       "condition": "scene_rendering && gtao_enabled",
@@ -3725,6 +3743,34 @@
       "reads": [
         {
           "image": "gtao_raw",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "gtao_edges",
+          "access": "SAMPLED",
+          "binding": 1
+        }
+      ],
+      "writes": [
+        {
+          "image": "gtao_denoised",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        }
+      ],
+      "execute": "pass.gtao.denoise"
+    },
+    {
+      "name": "AO.DenoiseFinal",
+      "type": "compute",
+      "condition": "scene_rendering && gtao_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "gtao_denoised",
           "access": "SAMPLED",
           "binding": 0
         },

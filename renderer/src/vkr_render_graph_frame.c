@@ -343,11 +343,10 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->gtao_enabled = frame->gtao_depth_mip_count > 0u;
   *gtao_params =
       frame->gtao_enabled
-          ? vkr_gtao_gpu_params(
-                gtao_config, &packet->gtao, packet->input.globals.view,
-                packet->temporal.jittered_projection, frame->viewport_width,
-                frame->viewport_height, packet->input.frame.frame_index,
-                packet->temporal.enabled)
+          ? vkr_gtao_gpu_params(gtao_config, &packet->gtao,
+                                packet->input.globals.view,
+                                packet->temporal.jittered_projection,
+                                frame->viewport_width, frame->viewport_height)
           : (VkrGtaoGpuParams){0};
 }
 

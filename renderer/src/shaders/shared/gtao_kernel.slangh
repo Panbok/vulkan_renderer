@@ -55,8 +55,8 @@ struct VkrGtaoParams
 
     uint slice_count;
     uint steps_per_slice;
-    uint noise_index;
     uint reserved0;
+    uint reserved1;
 };
 
 float vkr_gtao_linearize_depth(VkrGtaoParams params, float device_depth)
@@ -176,12 +176,13 @@ uint vkr_gtao_hilbert_index(uint2 position)
     return index;
 }
 
-float2 vkr_gtao_spatiotemporal_noise(uint2 pixel, uint noise_index)
+// Fixed spatial noise: the same pattern every frame, so no temporal filter
+// has to average it away. The denoise passes remove it.
+float2 vkr_gtao_spatial_noise(uint2 pixel)
 {
     uint index = vkr_gtao_hilbert_index(
         uint2(pixel.x % VKR_GTAO_HILBERT_WIDTH,
               pixel.y % VKR_GTAO_HILBERT_WIDTH));
-    index += 288u * (noise_index % 64u);
     float2 sequence =
         0.5f + float(index) *
                    float2(0.75487766624669276005f, 0.56984029099805326591f);

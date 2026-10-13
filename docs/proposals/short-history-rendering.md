@@ -197,10 +197,12 @@ filter.
 
 ### Evidence
 
-- Bistro interior and street stills with one, two and three denoise passes,
-  and a camera move recorded as a clip.
-- Two identical runs that produce byte-identical `gtao_visibility`.
-- Release timing of `pass.gtao.*` for each pass count.
+Implemented 2026-10-13: fixed spatial noise and two denoise passes, recorded
+in [ADR-042](../adr/042-scene-linear-post-processing.md) with the Bistro
+street and café stills for one, two and three passes, byte-identical repeat
+runs and 1440p pass timing. Still open: a camera-move clip, and the
+`min(material_ao, gtao)` comparison, which needs a scene with authored AO
+(Bistro has none).
 
 ## 4. GT7 tone mapping
 
@@ -437,7 +439,7 @@ visibility and composition stay unchanged:
    reflection source in step 1. Done 2026-10-13 except R7 and the separate
    projection box of R4.
 3. Spatial GTAO (section 3); independent of AA once TAA no longer drives the
-   noise.
+   noise. Done 2026-10-13 on the desktop pipeline (ADR-042).
 4. GT7 tone mapping (section 4); it fixes the colour space SMAA T2x reads.
 5. SMAA T2x replacing portable TAA and FXAA (section 2).
 6. Tiled per-draw probes, room probes and planar water (section 5, items 2

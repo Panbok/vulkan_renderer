@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "id": "local.win.bistro.cafe.gtao.on",
+  "suite": "local",
+  "description": "Windows Vulkan Bistro cafe interior at the indoor owner camera with the indoor capture case renderer settings (automatic exposure, bloom, GTAO, no TAA); captures the AO chain and final color for spatial GTAO evidence.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 900000,
+  "asset_ready_timeout_ms": 600000,
+  "frames": {
+    "warmup": 120,
+    "measure": 60
+  },
+  "renderer": {
+    "backend": "vulkan",
+    "render_scale": 1.0,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4294967295,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "dynamic_resolution": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -5.19214678,
+      2.89391732,
+      11.0450354
+    ],
+    "yaw": 364.375854,
+    "pitch": -12.6190548,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 40,
+      "channels": [
+        "gtao_view_depth",
+        "gbuffer_normal",
+        "gtao_raw",
+        "gtao_visibility",
+        "final_color"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "draw.world.opaque_draws",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "packet.publication_omitted_candidates",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

@@ -147,8 +147,7 @@ void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
     float projected_radius =
         root.params.effect_radius * root.params.radius_multiplier /
         pixel_view_size;
-    float2 noise = vkr_gtao_spatiotemporal_noise(pixel,
-                                                  root.params.noise_index);
+    float2 noise = vkr_gtao_spatial_noise(pixel);
     float visibility = 0.0f;
     float3 bent_moment = 0.0f;
 

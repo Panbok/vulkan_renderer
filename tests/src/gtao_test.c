@@ -63,30 +63,24 @@ vkr_internal void test_gtao_gpu_params(void) {
       vkr_gtao_prepare(true_v, VKR_GTAO_DEFAULT_RADIUS, VKR_GTAO_DEFAULT_POWER);
   const Mat4 projection =
       mat4_perspective_reversed(vkr_to_radians(60.0f), 1.0f, 0.1f, 100.0f);
-  const VkrGtaoGpuParams temporal = vkr_gtao_gpu_params(
-      &config, &frame, mat4_identity(), projection, 1279u, 719u, 130u, true_v);
-  const VkrGtaoGpuParams static_noise = vkr_gtao_gpu_params(
-      &config, &frame, mat4_identity(), projection, 1279u, 719u, 130u, false_v);
+  const VkrGtaoGpuParams params = vkr_gtao_gpu_params(
+      &config, &frame, mat4_identity(), projection, 1279u, 719u);
 
-  assert(temporal.reserved_u32_0 == 0u);
-  assert(temporal.depth_mip_count == 5u);
-  assert(temporal.slice_count == 3u && temporal.steps_per_slice == 3u);
-  assert(temporal.noise_index == 2u);
-  assert(static_noise.noise_index == 0u);
-  assert(temporal.effect_radius == VKR_GTAO_DEFAULT_RADIUS);
-  assert(temporal.final_value_power == VKR_GTAO_DEFAULT_POWER);
-  assert(temporal.falloff_mul < 0.0f);
-  assert(temporal.falloff_add > 1.0f);
+  assert(params.reserved_u32_0 == 0u);
+  assert(params.depth_mip_count == 5u);
+  assert(params.slice_count == 3u && params.steps_per_slice == 3u);
+  assert(params.effect_radius == VKR_GTAO_DEFAULT_RADIUS);
+  assert(params.final_value_power == VKR_GTAO_DEFAULT_POWER);
+  assert(params.falloff_mul < 0.0f);
+  assert(params.falloff_add > 1.0f);
   const VkrGtaoFrame minimum_radius =
       vkr_gtao_prepare(true_v, VKR_GTAO_RADIUS_MIN, VKR_GTAO_DEFAULT_POWER);
-  const VkrGtaoGpuParams minimum_params =
-      vkr_gtao_gpu_params(&config, &minimum_radius, mat4_identity(), projection,
-                          1279u, 719u, 0u, false_v);
+  const VkrGtaoGpuParams minimum_params = vkr_gtao_gpu_params(
+      &config, &minimum_radius, mat4_identity(), projection, 1279u, 719u);
   const VkrGtaoFrame maximum_radius =
       vkr_gtao_prepare(true_v, VKR_GTAO_RADIUS_MAX, VKR_GTAO_DEFAULT_POWER);
-  const VkrGtaoGpuParams maximum_params =
-      vkr_gtao_gpu_params(&config, &maximum_radius, mat4_identity(), projection,
-                          1279u, 719u, 0u, false_v);
+  const VkrGtaoGpuParams maximum_params = vkr_gtao_gpu_params(
+      &config, &maximum_radius, mat4_identity(), projection, 1279u, 719u);
   assert(isfinite(minimum_params.falloff_mul));
   assert(isfinite(minimum_params.depth_mip_falloff_mul));
   assert(isfinite(maximum_params.falloff_mul));

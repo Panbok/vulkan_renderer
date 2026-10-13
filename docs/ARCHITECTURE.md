@@ -1195,7 +1195,9 @@ Automatic exposure adapts over elapsed time since its selected completed state,
 using a renderer-owned committed exposure clock and a bounded hitch policy.
 Defaults lower exposure at 8 EV/s and raise it at 1 EV/s with a +24 EV upper target
 limit, so physical night scenes are reachable. Exposure, bloom and GTAO have independent frame controls. GTAO's slice
-basis and horizon signs follow view reconstruction. RGBA8 outputs carry world
+basis and horizon signs follow view reconstruction; its noise is one fixed
+spatial pattern that two edge-aware denoise passes remove, with no temporal
+filter. RGBA8 outputs carry world
 bent normals and visibility: global/probe diffuse uses bent sampling and
 albedo-aware multi-bounce compensation, while baked volumes retain scalar AO.
 A derived visibility cone occludes indirect specular.
@@ -1342,8 +1344,8 @@ end. Transfer timing is not supported. Every Vulkan pass interval likewise
 starts no earlier than the previous timed pass's end.
 The harness owns case identity, artifacts, comparison and performance authority.
 After resource/bootstrap readiness it starts authored warmup at the common zero
-of raster jitter and GTAO noise, with temporal history invalidated; replay
-version 8 aligns to the 64-phase GTAO noise sequence alone.
+of raster jitter and the contact-shadow noise period, with temporal history
+invalidated; replay version 8 aligns to that 64-frame period.
 See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-and-evidence.md).
 
 ## Remaining implementation and evidence boundaries
