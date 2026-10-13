@@ -223,6 +223,8 @@ from it.
   rescans watched trees every 2 s for files whose status changed, because
   a saturated fseventsd can drop an edit outright; matching skips history,
   the daemon's own outputs and file states a report already covered.
+  A directory's own FSEvents event counts only when it was removed, moved
+  in or born after the stream started; a child's event reports the rest.
 - **Editor daemon.** Each editor process
   ([service](../../editor/src/editor_bakery_service.c)) starts one daemon on a
   per-process socket under the temporary directory when the first watch

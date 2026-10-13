@@ -144,6 +144,8 @@ typedef struct VkrServe {
   uint32_t next_watch;
   VkrServeWatch watches[VKR_SERVE_MAX_WATCHES];
   bool8_t watches_changed;
+  /* Wall-clock nanoseconds when the watcher stream last started. */
+  int64_t stream_started_ns;
   /* Wall-clock nanoseconds at the start of the last rescan; zero while no
      watch exists. */
   int64_t rescan_since_ns;
@@ -592,6 +594,12 @@ vkr_internal bool8_t vkr_serve_path_equal(const char *a, const char *b) {
   return strlen(a) == length && vkr_serve_path_prefix(a, b, length);
 }
 
+vkr_internal int64_t vkr_serve_wall_clock_ns(void) {
+  struct timespec now = {0};
+  (void)timespec_get(&now, TIME_UTC);
+  return (int64_t)now.tv_sec * 1000000000LL + (int64_t)now.tv_nsec;
+}
+
 #if defined(__APPLE__)
 
 vkr_internal void vkr_serve_fsevents(ConstFSEventStreamRef stream,
@@ -613,6 +621,28 @@ vkr_internal void vkr_serve_fsevents(ConstFSEventStreamRef stream,
       vkr_mutex_unlock(serve->changes_mutex);
       vkr_serve_wake(serve);
       continue;
+    }
+    /* A directory's own event is a child appearing or its metadata, which
+       the child's event already reports (the daemon's outputs included); only
+       a directory removed, moved in or created since the stream started is a
+       change by itself. A backlogged fseventsd can merge an older creation
+       into a later event, so the birth time decides. */
+    if (flags[i] & kFSEventStreamEventFlagItemIsDir) {
+      bool8_t structural = (flags[i] & (kFSEventStreamEventFlagItemRemoved |
+                                        kFSEventStreamEventFlagItemRenamed))
+                               ? true_v
+                               : false_v;
+      struct stat info;
+      if (!structural && (flags[i] & kFSEventStreamEventFlagItemCreated) &&
+          lstat(names[i], &info) == 0) {
+        const int64_t born_ns =
+            (int64_t)info.st_birthtimespec.tv_sec * 1000000000LL +
+            (int64_t)info.st_birthtimespec.tv_nsec;
+        structural = born_ns >= serve->stream_started_ns;
+      }
+      if (!structural) {
+        continue;
+      }
     }
     vkr_serve_note_change(serve, names[i]);
   }
@@ -656,6 +686,7 @@ vkr_internal bool8_t vkr_serve_restart_stream(VkrServe *serve) {
         kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer);
     ok = serve->stream != NULL;
     if (ok) {
+      serve->stream_started_ns = vkr_serve_wall_clock_ns();
       FSEventStreamSetDispatchQueue(serve->stream, serve->stream_queue);
       ok = FSEventStreamStart(serve->stream) ? true_v : false_v;
     }
@@ -895,12 +926,6 @@ vkr_internal bool8_t vkr_serve_restart_stream(VkrServe *serve) {
 }
 
 #endif
-
-vkr_internal int64_t vkr_serve_wall_clock_ns(void) {
-  struct timespec now = {0};
-  (void)timespec_get(&now, TIME_UTC);
-  return (int64_t)now.tv_sec * 1000000000LL + (int64_t)now.tv_nsec;
-}
 
 /* The file a run published is still there as the run left it. */
 vkr_internal bool8_t
