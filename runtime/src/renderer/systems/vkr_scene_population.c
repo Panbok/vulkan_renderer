@@ -39,7 +39,8 @@ typedef struct PopulationCell {
   float32_t radius;
   /* The merged mesh's mesh-manager slot, or VKR_INVALID_ID. */
   uint32_t mesh_index;
-  bool8_t far;
+  /* The merged mesh draws in place of the copies. */
+  bool8_t proxied;
 } PopulationCell;
 
 typedef struct PopulationRule {
@@ -1134,7 +1135,7 @@ static void population_build_cells(VkrScene *scene, PopulationRule *rule) {
       continue;
     }
     rule->cells[c].mesh_index = mesh_index;
-    rule->cells[c].far = false_v;
+    rule->cells[c].proxied = false_v;
     (void)vkr_mesh_manager_set_model(manager, mesh_index, mat4_identity());
     (void)vkr_mesh_manager_set_visible(manager, mesh_index, rule->visible);
     (void)vkr_mesh_manager_set_render_id(manager, mesh_index, picking_id);
@@ -1333,11 +1334,12 @@ void vkr_scene_population_mark_proxies(VkrScene *scene, Vec3 camera,
       }
       const float32_t distance =
           vec3_distance(cell->center, camera) - cell->radius;
-      cell->far = !copies_only &&
-                  (cell->far ? distance > rule->proxy_distance *
-                                              POPULATION_PROXY_NEAR_SHARE
-                             : distance > rule->proxy_distance);
-      if (!cell->far && cell->mesh_index < frame->mesh_slot_count) {
+      cell->proxied =
+          !copies_only &&
+          (cell->proxied
+               ? distance > rule->proxy_distance * POPULATION_PROXY_NEAR_SHARE
+               : distance > rule->proxy_distance);
+      if (!cell->proxied && cell->mesh_index < frame->mesh_slot_count) {
         frame->mesh_hidden[cell->mesh_index] = 1u;
       }
     }
@@ -1345,7 +1347,7 @@ void vkr_scene_population_mark_proxies(VkrScene *scene, Vec3 camera,
       const uint32_t cell = rule->copy_cells[i];
       const uint32_t slot = rule->instances[i].id - 1u;
       if (cell != UINT16_MAX && cell < rule->cell_count &&
-          rule->cells[cell].far && slot < frame->instance_slot_count) {
+          rule->cells[cell].proxied && slot < frame->instance_slot_count) {
         frame->instance_hidden[slot] = 1u;
       }
     }

@@ -1181,24 +1181,37 @@ void vkr_scene_rooms_shutdown(VkrScene *scene) {
   if (!rooms) {
     return;
   }
-  vkr_allocator_free(scene->alloc, rooms->boxes,
-                     (uint64_t)rooms->box_capacity * sizeof(RoomBox),
-                     ROOMS_TAG);
-  vkr_allocator_free(scene->alloc, rooms->portals,
-                     (uint64_t)rooms->portal_capacity * sizeof(RoomPortal),
-                     ROOMS_TAG);
-  vkr_allocator_free(scene->alloc, rooms->sources,
-                     (uint64_t)rooms->source_capacity * sizeof(RoomSource),
-                     ROOMS_TAG);
-  vkr_allocator_free(scene->alloc, rooms->mesh_first,
-                     (uint64_t)rooms->mesh_capacity * sizeof(uint32_t),
-                     ROOMS_TAG);
-  vkr_allocator_free(scene->alloc, rooms->instance_first,
-                     (uint64_t)rooms->instance_capacity * sizeof(uint32_t),
-                     ROOMS_TAG);
-  vkr_allocator_free(scene->alloc, rooms->words,
-                     (uint64_t)rooms->word_capacity * sizeof(uint32_t),
-                     ROOMS_TAG);
+  /* An array stays NULL until the first frame that needs it. */
+  if (rooms->boxes) {
+    vkr_allocator_free(scene->alloc, rooms->boxes,
+                       (uint64_t)rooms->box_capacity * sizeof(RoomBox),
+                       ROOMS_TAG);
+  }
+  if (rooms->portals) {
+    vkr_allocator_free(scene->alloc, rooms->portals,
+                       (uint64_t)rooms->portal_capacity * sizeof(RoomPortal),
+                       ROOMS_TAG);
+  }
+  if (rooms->sources) {
+    vkr_allocator_free(scene->alloc, rooms->sources,
+                       (uint64_t)rooms->source_capacity * sizeof(RoomSource),
+                       ROOMS_TAG);
+  }
+  if (rooms->mesh_first) {
+    vkr_allocator_free(scene->alloc, rooms->mesh_first,
+                       (uint64_t)rooms->mesh_capacity * sizeof(uint32_t),
+                       ROOMS_TAG);
+  }
+  if (rooms->instance_first) {
+    vkr_allocator_free(scene->alloc, rooms->instance_first,
+                       (uint64_t)rooms->instance_capacity * sizeof(uint32_t),
+                       ROOMS_TAG);
+  }
+  if (rooms->words) {
+    vkr_allocator_free(scene->alloc, rooms->words,
+                       (uint64_t)rooms->word_capacity * sizeof(uint32_t),
+                       ROOMS_TAG);
+  }
   vkr_allocator_free(scene->alloc, rooms, sizeof(*rooms),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   scene->rooms = NULL;

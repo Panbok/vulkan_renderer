@@ -83,8 +83,8 @@ static float32_t room_test_exit(const RoomTestBox *box, Vec3 origin, Vec3 dir) {
 /* Where a ray enters a box after `after`, or infinity. */
 static float32_t room_test_entry(const RoomTestBox *box, Vec3 origin, Vec3 dir,
                                  float32_t after) {
-  float32_t near = 0.0f;
-  float32_t far = INFINITY;
+  float32_t t_enter = 0.0f;
+  float32_t t_exit = INFINITY;
   for (uint32_t axis = 0; axis < 3u; ++axis) {
     const float32_t lo =
         box->center.elements[axis] - 0.5f * box->size.elements[axis];
@@ -99,10 +99,10 @@ static float32_t room_test_entry(const RoomTestBox *box, Vec3 origin, Vec3 dir,
     }
     float32_t t0 = (lo - origin.elements[axis]) / d;
     float32_t t1 = (hi - origin.elements[axis]) / d;
-    near = fmaxf(near, fminf(t0, t1));
-    far = fminf(far, fmaxf(t0, t1));
+    t_enter = fmaxf(t_enter, fminf(t0, t1));
+    t_exit = fminf(t_exit, fmaxf(t0, t1));
   }
-  return near <= far && near > after ? near : INFINITY;
+  return t_enter <= t_exit && t_enter > after ? t_enter : INFINITY;
 }
 
 /* Where a ray crosses a portal's opening, or infinity. */
