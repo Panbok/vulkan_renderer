@@ -41,22 +41,29 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
    (about 54 m); terrains no limit. The owner chose the 1 px object default on
    2026-10-13 although it changes existing output (below).
 2. **Resolution.** The render sync resolves the values when an entity syncs
-   and stores a 20-bit cull word on its `VkrMesh` or `VkrMeshInstance`
+   and stores a cull word on its `VkrMesh` or `VkrMeshInstance`
    ([vkr_resources.h](../../runtime/src/renderer/resources/vkr_resources.h));
    population applies its rule entity's word to every copy. A change to the
    component resyncs every draw. A change to what an object casts (its
    shadow distance or `cast_shadows`) is a topology change within its
    bounds, so retained shadows there redraw; camera-only changes need none.
 3. **Candidate data.** The word rides in the candidate row's `state_flags`
-   above the bucket and the four candidate flags, bits 7 to 26
+   above the bucket and the four candidate flags, from bit 7
    (`vkr_gpu_draw_state_flags`,
    [vkr_gpu_abi.h](../../renderer/src/vkr_gpu_abi.h)): an 8-bit draw
    distance code, a 4-bit smallest diameter in half pixels and an 8-bit
-   shadow distance code. A code c > 0 stands for 2^((c - 1) / 16) metres,
-   1 m to about 60 km in 4.4% steps, rounded up so a candidate never culls
-   before its authored distance. The candidate row keeps 48 bytes and no
-   binding is added. Encoding keeps only the low seven bits in the visible
-   row (`VKR_GPU_DRAW_CANDIDATE_STATE_MASK`).
+   shadow distance code, then the hidden and sealed bits of
+   [ADR-115](115-rooms-and-portals.md) and
+   [ADR-116](116-scatter-proxy-cells.md). A code c > 0 stands for
+   2^((c - 1) / 16) metres, 1 m to about 60 km in 4.4% steps, rounded up so
+   a candidate never culls before its authored distance. The candidate row
+   keeps 48 bytes and no binding is added. Encoding keeps only the low seven
+   bits in the visible row (`VKR_GPU_DRAW_CANDIDATE_STATE_MASK`). Both
+   backends keep static candidate rows resident across frames
+   ([vkr_candidate_residency.h](../../renderer/src/vkr_candidate_residency.h)),
+   so the payload carries `static_cull_generation`, a hash of the static
+   candidates' cull words; a change repacks the resident rows without a
+   static content change, which retained shadows would read.
 4. **Views.** `VkrGpuLodView` keeps 48 bytes; two former reserved words
    carry `distance_scale` and `shadow_near`
    (`vkr_packet_write_lod_views`). The shared kernels in

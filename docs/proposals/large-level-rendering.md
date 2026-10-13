@@ -9,8 +9,10 @@ authority: proposal
 Four features for large levels that mix a wide outdoor view with an indoor
 base: per-object draw distance, simpler distant trees and rocks, baked
 reflections for water planes, and room-by-room visibility indoors. Per-object
-draw distance is implemented ([ADR-114](../adr/114-per-object-draw-distance.md))
-and section 1 keeps only its remaining work. Each section gives the problem, the options, a recommendation,
+draw distance ([ADR-114](../adr/114-per-object-draw-distance.md)), rooms
+and portals ([ADR-115](../adr/115-rooms-and-portals.md)) and merged far
+scatter cells ([ADR-116](../adr/116-scatter-proxy-cells.md)) are
+implemented; sections 1, 2 and 4 keep only their remaining work. Each section gives the problem, the options, a recommendation,
 the data and owners, the cost, both pipeline classes, open questions,
 phases and the evidence needed to accept it.
 
@@ -117,16 +119,18 @@ The fixture exists:
 puts Bistro inside a 2,048 m terrain at 8 m spacing and a 16,384 m backdrop
 at 64 m, both written by
 [make_terrain.py](../../tests/fixtures/rendering/large_level/make_terrain.py),
-and four scatter rules of 2,048 copies each (fir, spruce, boulder, shrub;
-[large_level](../../tests/fixtures/rendering/large_level/)). Its cases,
-`tools/cases/local/large_level_bistro_{metal,vulkan}_{overview,glide}.case.json`
-and `large_level_bistro_metal_overview_capture.case.json`, hold a still hill
-view and a 12 s glide down over the town.
+four scatter rules of 2,048 copies each with a 250 m proxy distance (fir,
+spruce, boulder, shrub; [large_level](../../tests/fixtures/rendering/large_level/)),
+and a café room with door, window and south-wall portals. Its cases,
+`tools/cases/local/large_level_bistro_{metal,vulkan}_{overview,glide,cafe_walk}.case.json`
+and the Metal `overview`, `cafe_bar` and `cafe_west` capture cases, hold a
+still hill view, a 12 s glide down over the town and a 12 s walk through the
+café. `VKR_DRAW_DISTANCE=0`, `VKR_ROOMS=0` and `VKR_PROXIES=0` switch each
+feature off in one build.
 
 Remaining:
 
 - A water plane in the square and its two eye heights (section 3).
-- Rooms and portals in the café interior and the café walk (section 4).
 - Matched before/after Release reports per section; no report has yet
   isolated `Cull.*` for a still and a moving camera on matched builds.
 
@@ -150,135 +154,23 @@ per-view tests and the editor and agent surfaces. Remaining:
 
 ## 2. Simpler distant trees and rocks
 
-### Problem
+Implemented in part: [ADR-116](../adr/116-scatter-proxy-cells.md) merges
+each 64 m cell of a scatter's copies into one mesh of their coarsest level
+past the scatter's `proxy_distance`, while the copies keep casting shadows.
+Remaining:
 
-A far forest costs one candidate, one instance row and one draw per copy,
-whatever its screen size. The level's tree meshes are already small (48 to
-320 triangles), so ADR-085's cooked levels stop after one or two steps. Their
-cost at range is per copy: classification in every view, encoding, and many
-sub-pixel triangles. An 11 m fir at 1 km covers about 14 rows at 1440 rows and
-a 60-degree field of view, yet draws all of its levels' triangles. Production
-trees with thousands of alpha-tested triangles will add raster cost that
-cooked levels reduce only to their silhouette.
-
-The [mesh LOD](mesh-lod.md) draft predates the cooked levels that ADR-085
-records as implemented; its remaining items are thresholds and joint
-simplification. The [foliage](foliage.md) draft lists a far representation
-as gap G9 and orders octahedral impostors last (phase 7).
-
-### Options
-
-| Option | Fits | Cost and risk |
-|---|---|---|
-| A. Cooked LOD chain (ADR-085) | Heavy meshes | Exists. Gains little on small meshes; keeps one candidate per copy |
-| B. Per-copy impostor as a last level | Hero trees seen at middle range | A different geometry and material per level, which the LOD table cannot express: it switches index ranges of one vertex set. Needs a vertex path that faces the camera and an atlas sampler on both backends. Keeps one candidate per copy |
-| C. Cell proxies of scatters | Far forests and rock fields | One candidate per cell and material replaces hundreds. A swap per cell at a distance; the swap pops unless faded |
-| D. Dense instancing tier (foliage draft D1) | Grass and undergrowth | Expands copies on the GPU; still one classify thread per copy and view |
-
-### Recommendation
-
-1. **Draw distance first.** Section 1 removes shrubs and boulders by screen
-   size. It needs no new asset.
-2. **Cell proxies for far scatters (C).** Each scatter rule divides its
-   copies into 64 m cells. Past `proxy_distance` a cell draws one generated
-   mesh per material in place of its copies:
-   - Trees: two crossed quads per copy, placed by the copy's transform,
-     textured from a per-mesh impostor atlas.
-   - Rocks: the coarsest cooked level of each copy, merged and transformed.
-   The runtime builds the cell meshes on job workers when the rule rebuilds,
-   as brushes build generated meshes. They need no bake round trip and
-   follow every edit.
-3. **Per-copy octahedral impostors (B) later**, when a scene has trees whose
-   middle range costs raster time. This is the foliage draft's phase 7.
-
-`proxy_distance` must lie past the preset's `max_shadow_distance` (200 m on
-High) and the range of every shadow-casting local light. The swap is a static
-change listed with the cell's box (ADR-041, ADR-019):
-
-- A retained cascade or cached face whose volume that box misses stays
-  valid.
-- With a low sun, a far cell can lie inside a cascade's volume along the
-  light. That cascade then redraws once.
-- The cell mesh stays a shadow caster whose bounds enclose its copies, so
-  the measured caster box and its generation do not change.
-
-The CPU swaps a cell with hysteresis (in at `proxy_distance`, out at 90% of
-it) and at most 16 cells per frame.
-
-**Transition.** At 200 m and more a tree spans few pixels, and the crossed
-quads keep its silhouette and colour. The swap uses section 1's fade band
-when `fade` is on; otherwise it pops.
-
-**Bakery's role.** Bakery cooks one impostor atlas per tree mesh: base
-colour with alpha, and normal, from a fixed set of views, with mips that
-keep alpha coverage. The atlas is a cooked texture beside the `.vkb`, keyed
-by the mesh's content hash. Bakery does not bake cell meshes, because copies
-come from runtime placement and change with every terrain edit.
-
-### Data and ownership
-
-| Part | Owner |
-|---|---|
-| `proxy_distance`, cell size | Scatter rule (`SceneScatter`, [vkr_scene_system.h](../../runtime/src/renderer/systems/vkr_scene_system.h)) |
-| Cell meshes, their lifetime and swap state | Population ([vkr_scene_population.c](../../runtime/src/renderer/systems/vkr_scene_population.c)); released with the rule's copies |
-| Impostor atlas | Bakery and the cooker ([vkr_bakery_bake.c](../../tools/bakery/vkr_bakery_bake.c)); a cooked texture with the asset's lifetime |
-| Card material | A cutout material per tree mesh that samples the atlas |
-
-Copies past `proxy_distance` stay in the population's CPU state but leave the
-candidate stream. Their mesh-manager instances stay, so swapping back needs
-no allocation.
-
-### Cost and budget
-
-A cell past `proxy_distance` draws one candidate per material in place of
-its copies, and a cell without copies draws nothing. A stand of 100 trees in
-one 64 m cell becomes one candidate. On a 2 km terrain a rule has at most
-1,024 cells, so its far candidates never exceed its 2,048 copies, and dense
-stands gain the most.
-
-Crossed quads take 8 vertices and 4 triangles per copy: about 76,000
-vertices for 9,500 copies, a few MiB at most. An atlas texture of 2048² BC7
-with mips is about 5.3 MiB, and a tree mesh needs two (base colour and
-normal).
-
-Budget: per-copy candidates only inside `proxy_distance`, and far scatters
-below 1,000 candidates per scene.
-
-### Both pipeline classes
-
-Cards are an ordinary cutout material and generated mesh, so both pipelines
-draw them through existing buckets. On the tiled pipeline they pay the
-alpha-tested cost the foliage draft records (G8). Copies do not have
-lightmaps; cards take the baked diffuse volume or the environment, as copies
-do.
-
-### Open questions
-
-| Question | Recommendation | Tradeoff |
-|---|---|---|
-| Cell meshes built at runtime or baked | Runtime, with Bakery baking only the atlas | A bake fits large worlds better but goes stale at every terrain edit |
-| Crossed quads or octahedral impostors for cells | Crossed quads | Octahedral impostors look right from every angle but need a new vertex path and a view blend on both backends |
-| Cell size | 64 m | Smaller cells swap closer with smaller pops but add candidates |
-| Order against the foliage draft's dense tier (D1) | Independent; cells apply to both paths | None |
-
-### Phases
-
-1. Section 1's fields on scatter rules.
-2. Atlas cook for tree meshes; card material.
-3. Runtime cell meshes and the swap.
-4. Per-copy octahedral impostors, after evidence on a scene with heavy trees.
-
-### Evidence
-
-- On the fixture's outdoor glide: candidate count per view falls by the
-  copies past `proxy_distance`. Cascade redraw counts rise by at most one
-  per swapped cell at a low sun and are unchanged at a high sun.
-- Captures at the swap distance: the mean absolute change across the swap
-  frame stays below the change between two frames of the glide elsewhere.
-- Matched Release timing as in section 1; resident memory of cells and
-  atlases from the harness memory rows.
-- A CPU test that fails when a cell mesh holds a copy outside its cell or
-  misses a copy inside it.
+- **Impostor cards.** Trees whose coarsest level is still heavy want
+  crossed quads (or octahedral impostors) textured from a per-mesh atlas
+  that Bakery cooks: base colour with alpha and normal from fixed views,
+  with mips that keep alpha coverage, and a cutout material per mesh. The
+  merged cell would then take the cards in place of the coarse level. The
+  [foliage](foliage.md) draft orders octahedral impostors last (phase 7).
+- **Fade across the swap**, with section 1's fade band, if captures show
+  the swap.
+- **Cells on job workers** when a rule's build time shows in edits.
+- **Evidence.** Matched Release timing and resident memory against a build
+  without proxies on the fixture's glide; a capture series across the swap
+  distance.
 
 ## 3. Baked reflections for water planes
 
@@ -403,131 +295,26 @@ pipeline only, as the planar reflections proposal scopes it.
 
 ## 4. Room-by-room visibility indoors
 
-### Problem
+Implemented in part: [ADR-115](../adr/115-rooms-and-portals.md) records the
+`room` and `portal` components, the membership of static draws, the portal
+walk and the camera and cascade bits, and `blockout.room` and
+`blockout.doorway` create rooms and portals. Remaining, in order:
 
-Inside the base the camera sees one to three rooms, but every candidate of
-the level is classified in every view, and those inside the frustum are
-encoded and drawn unless the HZB rejects them. The HZB rejects nothing while
-the camera moves (ADR-028, ADR-032). The terrain, backdrop, scatters and
-water above the base all pass the frustum test when the camera looks up or
-along a corridor. Lights and moving-caster shadow faces in rooms behind
-walls stay in the frame. With no probes, indoor surfaces reflect the sky.
-
-### Options
-
-| Option | Works while moving | Gates lights and shadows | Authoring | Cost and risk |
-|---|---|---|---|---|
-| A. HZB only | No | No | None | Exists. Two-phase occlusion was declined for Bistro (ADR-032); an indoor scene might have the deferred set it lacked, but it adds a second classify, raster and pyramid |
-| B. Rooms and portals traversed each frame | Yes | Yes | Room volumes and portal quads | CPU traversal of tens of rooms per frame; a missing portal hides content |
-| C. Precomputed PVS per cell | Yes | Yes | Cells; a bake | Every brush edit invalidates the bake; doors must be assumed open; memory grows with cells squared |
-| D. Rooms derived from brushes | Yes | Yes | A flood fill of empty space | Leaks through gaps; poor fit for open halls; useful as an editor aid |
-
-### Recommendation
-
-Choose B, with D as an editor aid that proposes rooms and portals.
-
-**Authoring.**
-- A `room` component: its entity's transform places a box, as
-  `look_volume` and `terrain_cutout` do. A room may hold several boxes as
-  children for L-shaped spaces. A `sealed` flag marks a room no sunlight
-  reaches.
-- A `portal` component: its transform places a rectangle that touches two
-  rooms or a room and the outside. An optional mover reference closes it
-  while that mover rests at its closed pose.
-- `blockout.room` and `blockout.doorway` create the room and the portal with
-  the walls, because they already know the interior box and the opening.
-- `room.derive` floods the empty space of a region on a coarse grid and
-  proposes rooms and portals in the Agent changes window.
-- A `rooms` check in `level.lint` reports portals that do not touch two
-  spaces, gaps in room walls larger than a tolerance, and drawn objects in
-  an indoor region that no room holds.
-
-**Traversal.** Each frame the CPU finds the camera's room, or the outside,
-and walks open portals that pass the frustum, narrowing it to each portal's
-screen rectangle. The result is a bitset of visible rooms and a flag for the
-outside.
-
-**Membership.** At publication each object gets up to two rooms that its
-bounds touch within a 0.5 m margin, so a wall between two rooms belongs to
-both. An object that touches more than two rooms, or none inside an indoor
-region, is unassigned and tested by the frustum alone. Terrains, backdrops,
-scatters and water belong to the outside.
-
-**What rooms gate.**
-
-| Work | Rule | Retained state |
-|---|---|---|
-| Camera draws | Classify drops a candidate whose rooms are all hidden | None |
-| Cascades | An object whose rooms are all `sealed` skips every cascade; other objects are not gated | The `sealed` set changes only by edits, so retained layers stay valid |
-| Local lights | A light whose room is hidden, and whose range sphere reaches no visible room, leaves the frame's light grid | Its cached faces stay; they redraw only when stale |
-| Local faces | Dynamic squares only for lights that stay; static redraws of hidden lights wait | No change to the cache rules |
-| Reflection probes | Each room may own a probe with its box; a draw in a room takes that room's probe; only probes of visible rooms fill the 16 slots | Probe bakes unchanged |
-
-On the tiled pipeline static lamps are baked into the lightmap (ADR-108), so
-light gating there saves dynamic lights and the moving-caster faces of baked
-lamps. On the desktop pipeline it also removes unbaked lamps.
-
-**Probes per room.** This is the per-room probe placement the level lacks.
-`room.probes` creates one probe per room, with the room box as the probe box
-and `box_projection` on, and Bakery captures them. Indoor surfaces then
-reflect their room instead of the sky. A room-bound probe also stops an
-outdoor probe from reaching indoors through the largest-influence rule.
-
-### Data and ownership
-
-| Part | Owner |
-|---|---|
-| `room` and `portal` components | Scene types |
-| Room graph, traversal and the visible bitset | A new runtime module beside the scene frame; its graph rebuilds at edit time, its bitset per frame |
-| Per-candidate rooms | Two 16-bit room indices in the section 1 side array's second word |
-| Visible-room bitset | A per-frame buffer of up to 1,024 bits (128 bytes) beside the cull root |
-| Light and probe gating | The light and probe packing on the CPU ([vkr_standard_scene_runtime.c](../../runtime/src/application/vkr_standard_scene_runtime.c)) |
-
-### Cost and budget
-
-The side array grows to 8 bytes per candidate, at most 2 MiB at capacity,
-per frame slot. Traversal visits rooms and portals, not objects; at 1,024
-rooms it stays far below 0.1 ms of CPU. Classify adds one bit test before the
-frustum test. Indoors, the outside flag removes the terrain, backdrop,
-scatters and water from the camera view whenever no outside portal is
-visible.
-
-### Both pipeline classes
-
-Traversal, membership, light and probe gating are CPU work shared by both.
-The bit test is a shared kernel in both classify kernels. On the desktop
-pipeline, hidden lights also leave the light mask and transmission work.
-
-### Open questions
-
-| Question | Recommendation | Tradeoff |
-|---|---|---|
-| Explicit rooms or rooms derived from brushes | Explicit, created by the blockout operations, with `room.derive` as an aid | Derived rooms need no authoring but leak through gaps and fit open halls poorly |
-| Rooms per object | Two, else unassigned | More rooms per object cost bits per candidate |
-| `sealed` rooms skip cascades | Yes, as an authored flag | A wrong flag removes real sun shadows |
-| Rooms per scene | 1,024 | A larger base needs more bits per frame |
-| Two-phase occlusion for indoor scenes (reopening ADR-032) | Not now; revisit if rooms leave a large deferred set | Exact occlusion while moving, against a second raster |
-
-### Phases
-
-1. Components, membership, traversal and the camera gate; `blockout.room`
-   and `blockout.doorway` emit rooms and portals.
-2. Light, local face and probe gating; `room.probes`.
-3. `sealed` rooms in cascades.
-4. `room.derive` and the `rooms` lint check.
-
-### Evidence
-
-- A CPU test with an independent oracle: for a synthetic room graph and a
-  camera, cast rays through the portals' openings; the traversal must list
-  every room a ray reaches. It fails when a portal on the path is skipped.
-- On the fixture's café walk, captures with rooms on and off must match
-  within the default snapshot gate: rooms hide only what is not visible.
-- Matched Release timing on the moving café walk, where the HZB is off.
-  Report visible and drawn counts per view, `Cull.*`, `Tiled.Opaque` and
-  the local shadow passes.
-- On Windows, the Vulkan twin of the walk under validation with
-  synchronization checks, and its timing with the same counts.
+1. **Light, local-face and probe gating.** A light whose room is hidden,
+   and whose range sphere reaches no visible room, leaves the frame's light
+   grid ([vkr_standard_scene_runtime.c](../../runtime/src/application/vkr_standard_scene_runtime.c));
+   its cached faces stay. Each room may own a reflection probe with its box,
+   a draw in a room takes that room's probe, and only probes of visible
+   rooms fill the 16 slots. `room.probes` creates one probe per room.
+2. **`room.derive`** floods the empty space of a region on a coarse grid
+   and proposes rooms and portals in the Agent changes window.
+3. **A `rooms` check in `level.lint`**: portals that do not touch two
+   spaces, gaps in room walls larger than a tolerance, and drawn objects in
+   an indoor region that no room holds.
+4. **Portals closed by movers**: a portal referencing a mover closes while
+   that mover rests at its closed pose.
+5. **Evidence.** Matched Release timing on the moving café walk against a
+   build without rooms; the Vulkan twin under validation on Windows.
 
 ## Order and dependencies
 
@@ -545,9 +332,9 @@ Phase 0: fixture and attribution
                           after the planar pass
 ```
 
-Sections 1 and 4 share the per-candidate side array and the classify
-change, so they share one ABI revision. Section 3's baked probe needs only
-the reflector component and can ship early.
+Sections 1, 2 and 4 share the cull word in the candidate state and the
+classify test (ADR-114 to ADR-116). Section 3's baked probe needs only the
+reflector component and can ship early.
 
 ## Native checks per pipeline class
 

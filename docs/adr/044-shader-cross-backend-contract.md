@@ -907,8 +907,12 @@ flags of `state_flags` and `VkrGpuLodView`'s former reserved words
 bytes). Both encode kernels keep only the bucket and candidate flags of the
 candidate state in the visible row. The host mirror
 `vkr_gpu_draw_distance_culled` in `vkr_gpu_abi.c` serves the blend list and
-editor ring. Metal ran it on Bistro and the large-level fixture (2026-10-13);
-Vulkan has compiled SPIR-V only.
+editor ring. Bit 20 of the cull word hides a candidate from the camera (rooms,
+[ADR-115](115-rooms-and-portals.md); proxy cells,
+[ADR-116](116-scatter-proxy-cells.md)) and bit 21 keeps it out of every
+cascade; a cascade's `shadow_near` is at least 1 mm, other views' zero.
+Metal ran it on Bistro and the large-level fixture (2026-10-13); Vulkan has
+compiled SPIR-V only.
 
 Directional GTAO is desktop-only and keeps the existing 192-byte parameter
 record; Vulkan uses its existing 240-byte utility root. Raw and denoised graph

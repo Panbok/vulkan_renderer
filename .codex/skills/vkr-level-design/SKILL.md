@@ -277,6 +277,24 @@ structures, and put a cutout around a room before the ground reaches it.
   game's distances. With one object selected,
   an amber ring on the ground shows where the camera stops drawing it.
 
+## Rooms and portals
+
+Indoor spaces hide what the camera cannot see through their openings
+(ADR-115). `blockout.room` puts a `room` box on its interior and
+`blockout.doorway` an open `portal` in the opening; for other spaces add
+them by hand:
+
+- A `room` entity's box covers one interior and never a wall, or the
+  wall's outside face hides with the room. A child `room` adds a box for an
+  L-shaped space. `sealed` keeps its objects out of the sun's shadows; set
+  it only where no window lets sunlight in.
+- A `portal` rectangle (X and Y of its transform, facing Z) sits in every
+  opening between two rooms or a room and the outside: doors, windows,
+  stairwells. A missing portal hides real content behind it. `open: false`
+  hides what lies behind a shut door.
+- Prove a level by capturing the same views with `VKR_ROOMS=0` set before
+  starting the editor and without it: the images must match.
+
 ## Verify, cheapest first
 
 Put the checks in the same `level_run.py` plan as the writes, each with

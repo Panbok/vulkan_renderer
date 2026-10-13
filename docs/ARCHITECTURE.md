@@ -822,9 +822,11 @@ The active graph conditions select direct or editor presentation, optional picki
 post controls and the temporal consumer. The main dataflow is:
 
 1. Publish transforms/candidate tables, classify camera, cascade and local-shadow
-   views (the camera also by per-object draw distance and screen size, each
-   cascade by shadow distance;
-   [ADR-114](adr/114-per-object-draw-distance.md)), compact visible rows, and
+   views (the camera also by per-object draw distance and screen size, rooms
+   the portals do not show and far scatter cells, each cascade by shadow
+   distance and sealed rooms; [ADR-114](adr/114-per-object-draw-distance.md),
+   [ADR-115](adr/115-rooms-and-portals.md),
+   [ADR-116](adr/116-scatter-proxy-cells.md)), compact visible rows, and
    encode indirect-count commands. Local
    shadows raster opaque depth and, when refractive casters exist, two RGB
    transmission crossings plus a blocking overflow depth.

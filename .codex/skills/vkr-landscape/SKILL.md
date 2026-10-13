@@ -167,6 +167,9 @@ that reads the area back, reshapes it and stamps it in square crops.
   into cascades that start within 50 m. To change that for a rule,
   `draw_distance.set` its scatter or spline entity (see
   `vkr-level-design`, Draw distance); every copy takes the rule's values.
+- Set a forest's `proxy_distance` past the shadow distance (250 m and up):
+  past it each 64 m cell of copies draws as one merged mesh of their
+  coarsest level, while the copies keep casting shadows (ADR-116).
 
 ## Light and look
 
