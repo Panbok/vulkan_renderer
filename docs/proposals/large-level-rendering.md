@@ -297,17 +297,15 @@ pipeline only, as the planar reflections proposal scopes it.
 Implemented in part: [ADR-115](../adr/115-rooms-and-portals.md) records the
 `room` and `portal` components, the membership of static draws, the portal
 walk, the camera and cascade bits, the light and probe gates, doors that
-shut portals, `room.probes` and the `rooms` lint check, and
-`blockout.room` and `blockout.doorway` create rooms and portals.
+shut portals, `room.probes`, `room.derive` and the `rooms` lint check,
+and `blockout.room` and `blockout.doorway` create rooms and portals.
 Remaining, in order:
 
 1. **`room.probes` in a project scene**, captured by Bakery and shown to
    reflect the room instead of the sky.
-2. **`room.derive`** floods the empty space of a region on a coarse grid
-   and proposes rooms and portals in the Agent changes window.
-3. **Drawn objects in an indoor region that no room holds**, added to the
+2. **Drawn objects in an indoor region that no room holds**, added to the
    `rooms` lint check.
-4. **Evidence.** The Vulkan twin under validation on Windows.
+3. **Evidence.** The Vulkan twin under validation on Windows.
 
 ## Order and dependencies
 

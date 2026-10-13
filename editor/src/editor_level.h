@@ -195,6 +195,57 @@ void vkr_editor_level_job_end(VkrEditorLevelJob *job);
 void vkr_editor_level_reachable_region(Vec3 from, Vec3 to, Vec3 *out_min,
                                        Vec3 *out_max);
 
+/* What room.derive proposes (ADR-115): rooms of up to
+   VKR_EDITOR_ROOM_DERIVE_BOXES boxes each, and portals in the openings
+   between them and to the outside. */
+#define VKR_EDITOR_ROOM_DERIVE_ROOMS 64u
+#define VKR_EDITOR_ROOM_DERIVE_BOXES 4u
+#define VKR_EDITOR_ROOM_DERIVE_PORTALS 128u
+#define VKR_EDITOR_ROOM_DERIVE_OUTSIDE UINT32_MAX
+
+typedef struct VkrEditorDerivedRoom {
+  /* World boxes around its interior; the first is the room's own. */
+  Vec3 min[VKR_EDITOR_ROOM_DERIVE_BOXES];
+  Vec3 max[VKR_EDITOR_ROOM_DERIVE_BOXES];
+  uint32_t box_count;
+  /* Its walkable floor, square metres. */
+  float32_t area;
+} VkrEditorDerivedRoom;
+
+typedef struct VkrEditorDerivedPortal {
+  Vec3 center;
+  float32_t width;
+  float32_t height;
+  /* Its normal runs along X; otherwise along Z. */
+  bool8_t across_x;
+  /* The spaces on its sides: room indices or
+     VKR_EDITOR_ROOM_DERIVE_OUTSIDE. */
+  uint32_t rooms[2];
+} VkrEditorDerivedPortal;
+
+typedef struct VkrEditorRoomDerive {
+  VkrEditorDerivedRoom rooms[VKR_EDITOR_ROOM_DERIVE_ROOMS];
+  uint32_t room_count;
+  VkrEditorDerivedPortal portals[VKR_EDITOR_ROOM_DERIVE_PORTALS];
+  uint32_t portal_count;
+  /* Rooms and portals past the capacities. */
+  uint32_t dropped;
+} VkrEditorRoomDerive;
+
+/* Derives rooms from a sampled job's walkable floor: floor under a ceiling
+   within 8 m is indoor; indoor floor farther from its edge than half of
+   `opening` (metres) makes the cores of rooms, so openings up to that wide
+   split rooms; the cores grow back over the indoor floor. Spaces of under
+   4 m² or whose rim opens onto other floor for more than 30% are left
+   out, as awnings and open halls. Each room takes the largest rectangles
+   of its floor, up to four, raised to the ceiling with their sides moved
+   out to the walls; each run of steps between two spaces across one cell
+   boundary takes a portal as wide as its jambs and as high as its lintel.
+   False when out of memory. */
+bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
+                                   const VkrScene *scene, float32_t opening,
+                                   VkrEditorRoomDerive *out);
+
 const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind);
 /* The kind `name` names, or VKR_EDITOR_LEVEL_ISSUE_COUNT. */
 VkrEditorLevelIssueKind vkr_editor_level_issue_kind(String8 name);

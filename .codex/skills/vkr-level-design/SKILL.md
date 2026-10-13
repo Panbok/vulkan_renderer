@@ -281,8 +281,10 @@ structures, and put a cutout around a room before the ground reaches it.
 
 Indoor spaces hide what the camera cannot see through their openings
 (ADR-115). `blockout.room` puts a `room` box on its interior and
-`blockout.doorway` an open `portal` in the opening; for other spaces add
-them by hand:
+`blockout.doorway` an open `portal` in the opening. For other spaces,
+`room.derive` with a `region` proposes rooms and portals from collision as
+one change (`opening`, default 2 m, is the widest opening that still
+splits two rooms); review it, then lint it. Or add them by hand:
 
 - A `room` entity's box covers one interior and never a wall, or the
   wall's outside face hides with the room. A child `room` adds a box for an

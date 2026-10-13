@@ -8275,6 +8275,177 @@ static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* Openings room.derive splits rooms at, metres: its default and range. */
+#define OPS_ROOM_OPENING_DEFAULT 2.0
+#define OPS_ROOM_OPENING_MIN 0.8
+#define OPS_ROOM_OPENING_MAX 6.0
+
+/* Appends a derived room set as one group at `origin`: each room's first
+   box as a room entity, its other boxes as room children of it, and an open
+   portal per opening (ADR-115). The group is the operation's object. */
+static bool8_t ops_derived_rooms_add(OpsContext *ctx, OpsBatch *batch,
+                                     const VkrEditorRoomDerive *derive,
+                                     uint16_t container, Vec3 origin,
+                                     const char *name) {
+  const OpsBrushArgs brush = {.parent = {.item = -1, .container = container},
+                              .container = container};
+  uint32_t group = 0u;
+  if (!ops_group_add(ctx, batch, &brush, name, origin, vkr_quat_identity(),
+                     &group)) {
+    return false_v;
+  }
+  char item_name[VKR_SCENE_EDIT_NAME_CAPACITY];
+  const SceneRoom room_value = {0};
+  for (uint32_t r = 0; r < derive->room_count; ++r) {
+    const VkrEditorDerivedRoom *room = &derive->rooms[r];
+    const Vec3 size = vec3_sub(room->max[0], room->min[0]);
+    const Vec3 center = vec3_scale(vec3_add(room->min[0], room->max[0]), 0.5f);
+    snprintf(item_name, sizeof(item_name), "%s/Room %u", name, r + 1u);
+    if (!ops_marker_add(ctx, batch, &brush, (int32_t)group, item_name,
+                        vec3_sub(center, origin), vkr_quat_identity(), size,
+                        &vkr_scene_room_type, &room_value)) {
+      return false_v;
+    }
+    /* A room child adds its box to the room; its pose is in the scaled
+       space of the first box. */
+    const uint32_t room_item = batch->count - 1u;
+    for (uint32_t b = 1; b < room->box_count; ++b) {
+      const Vec3 box_size = vec3_sub(room->max[b], room->min[b]);
+      const Vec3 offset = vec3_sub(
+          vec3_scale(vec3_add(room->min[b], room->max[b]), 0.5f), center);
+      snprintf(item_name, sizeof(item_name), "%s/Room %u/Box %u", name, r + 1u,
+               b + 1u);
+      if (!ops_marker_add(
+              ctx, batch, &brush, (int32_t)room_item, item_name,
+              vec3_new(offset.x / size.x, offset.y / size.y, offset.z / size.z),
+              vkr_quat_identity(),
+              vec3_new(box_size.x / size.x, box_size.y / size.y,
+                       box_size.z / size.z),
+              &vkr_scene_room_type, &room_value)) {
+        return false_v;
+      }
+    }
+  }
+  const ScenePortal portal_value = {.open = true_v};
+  const VkrQuat across_x = vkr_quat_from_axis_angle(vec3_up(), 1.57079632679f);
+  for (uint32_t p = 0; p < derive->portal_count; ++p) {
+    const VkrEditorDerivedPortal *portal = &derive->portals[p];
+    snprintf(item_name, sizeof(item_name), "%s/Portal %u", name, p + 1u);
+    if (!ops_marker_add(ctx, batch, &brush, (int32_t)group, item_name,
+                        vec3_sub(portal->center, origin),
+                        portal->across_x ? across_x : vkr_quat_identity(),
+                        vec3_new(portal->width, portal->height, 1.0f),
+                        &vkr_scene_portal_type, &portal_value)) {
+      return false_v;
+    }
+  }
+  batch->op_item[batch->op_count] = group;
+  return true_v;
+}
+
+/* room.derive (ADR-115): samples the region's floor as level.lint does,
+   derives its rooms and portals (vkr_editor_level_job_rooms) and proposes
+   them as one change. Stage 2 samples; stage 1 waits for the batch. */
+static VkrEditorOpStatus ops_run_room_derive(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  const VkrBakeryJson *args = call->args;
+  if (call->stage == 1u) {
+    const VkrEditorOpStatus status = ops_batch_wait(ctx);
+    const OpsPendingBatch *pending = call->state;
+    if (status == VKR_EDITOR_OP_DONE && call->result && !call->error_code) {
+      uint32_t rooms = 0u;
+      uint32_t portals = 0u;
+      for (uint32_t i = 0; i < pending->batch.count; ++i) {
+        const VkrSampleEditBatchItem *item = &ctx->ops->items[i];
+        const VkrTypeDesc *type = item->request.values.component_type;
+        rooms += type == &vkr_scene_room_type &&
+                 item->parent_ref == (int32_t)pending->batch.op_item[0];
+        portals += type == &vkr_scene_portal_type;
+      }
+      ops_set(ctx, call->result, "rooms",
+              vkr_bakery_json_int(call->arena, rooms));
+      ops_set(ctx, call->result, "portals",
+              vkr_bakery_json_int(call->arena, portals));
+    }
+    return status;
+  }
+  float64_t opening = OPS_ROOM_OPENING_DEFAULT;
+  (void)ops_arg_number(args, "opening", &opening);
+  OpsPendingLevel *pending = call->state;
+  if (!call->stage) {
+    if (!(opening >= OPS_ROOM_OPENING_MIN && opening <= OPS_ROOM_OPENING_MAX)) {
+      ops_fail(ctx, OPS_INVALID, "'opening' is %.1f to %.1f metres",
+               OPS_ROOM_OPENING_MIN, OPS_ROOM_OPENING_MAX);
+      return VKR_EDITOR_OP_DONE;
+    }
+    pending =
+        arena_alloc(ops_arena(ctx), sizeof(*pending), ARENA_MEMORY_TAG_STRUCT);
+    if (!pending) {
+      ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+      return VKR_EDITOR_OP_DONE;
+    }
+    MemZero(pending, sizeof(*pending));
+    if (!ops_level_args(ctx, &pending->level) ||
+        !ops_level_begin(ctx, pending, pending->level.min, pending->level.max,
+                         0.0f)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    call->stage = 2u;
+  }
+  const OpsLevelStep step = ops_level_step(ctx, pending);
+  if (step != OPS_LEVEL_SAMPLED) {
+    return step == OPS_LEVEL_WAITING ? VKR_EDITOR_OP_WAIT : VKR_EDITOR_OP_DONE;
+  }
+
+  const OpsLevelArgs level = pending->level;
+  VkrEditorRoomDerive *derive =
+      arena_alloc(ops_arena(ctx), sizeof(*derive), ARENA_MEMORY_TAG_STRUCT);
+  const bool8_t derived =
+      derive && vkr_editor_level_job_rooms(ctx->ops->level_job, level.scene,
+                                           (float32_t)opening, derive);
+  ops_level_end(ctx->ops);
+  if (!derived) {
+    ops_fail(ctx, OPS_LIMIT, "Out of memory for the derivation");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!derive->room_count) {
+    call->result = vkr_bakery_json_object(call->arena);
+    ops_set(ctx, call->result, "rooms", vkr_bakery_json_int(call->arena, 0));
+    ops_set(ctx, call->result, "portals", vkr_bakery_json_int(call->arena, 0));
+    return VKR_EDITOR_OP_DONE;
+  }
+  char name[96] = "Rooms";
+  if (!ops_arg_string(ctx, args, "name", name, sizeof(name))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  OpsBatch *batch =
+      arena_alloc(call->arena, sizeof(*batch), ARENA_MEMORY_TAG_STRUCT);
+  if (!batch) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  MemZero(batch, sizeof(*batch));
+  batch->container = -1;
+  batch->review = ops_arg_bool(args, "review", true_v);
+  batch->select = ops_arg_bool(args, "select", false_v);
+  if (!vkr_bakery_json_get_string(args, "label", &batch->label) ||
+      !batch->label.length) {
+    batch->label = string8_lit("Derive rooms");
+  }
+  batch->op_item[0] = UINT32_MAX;
+  batch->op_target[0] = VKR_ENTITY_ID_INVALID;
+  batch->op_first[0] = 0u;
+  /* The group stands on the region's floor at its middle. */
+  const Vec3 origin = vec3_new(0.5f * (level.min.x + level.max.x), level.min.y,
+                               0.5f * (level.min.z + level.max.z));
+  if (!ops_derived_rooms_add(ctx, batch, derive, level.container, origin,
+                             name)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  batch->op_count = 1u;
+  return ops_submit(ctx, batch, ops_arg_bool(args, "dry_run", false_v));
+}
+
 /* Cells along a level map's longer side without `cell`, and the columns
    and rows one answers with at most. */
 #define OPS_MAP_SIDE_DEFAULT 96u
@@ -15205,6 +15376,23 @@ static const OpsDef s_ops[] = {
      ",\"kinds\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}"
      "," OPS_SETTLE_SCHEMA "},\"required\":[\"region\"]}",
      ops_run_lint, NULL, OPS_SETTLES},
+    {"room.derive",
+     "Propose rooms and portals for the indoor spaces of 'region' from its "
+     "walkable floor, as level.lint samples it: floor under a ceiling is "
+     "indoor, openings up to 'opening' metres wide (default 2) split rooms, "
+     "and spaces under 4 square metres or open on much of their rim, as "
+     "awnings, are left out. Each room takes up to four boxes on its "
+     "interior, their sides moved out to the walls, and each opening an "
+     "open portal, all in one group named 'name' (default Rooms). Review "
+     "the change, then check it with level.lint kinds [rooms].",
+     "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
+     "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
+     ",\"max\":" OPS_VEC3_SCHEMA "},\"required\":[\"min\",\"max\"]},"
+     "\"container\":" OPS_CONTAINER_SCHEMA "," OPS_CAPSULE_SCHEMA
+     ",\"opening\":{\"type\":\"number\",\"minimum\":0.8,\"maximum\":6},"
+     "\"name\":{\"type\":\"string\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"region\"]}",
+     ops_run_room_derive, NULL, 0u},
     {"level.resolve",
      "Part the z-fighting brush faces of a region: of two drawn faces "
      "facing the same way closer than 'gap' metres (default 0.01), the one "

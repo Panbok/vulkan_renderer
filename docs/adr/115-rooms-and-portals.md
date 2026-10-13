@@ -11,9 +11,10 @@ authority: adr
 Accepted (partial). Rooms hide the camera's draws, lights and reflection
 probes that no open portal shows, and sealed rooms keep their draws out of
 every cascade, on both pipeline classes; doors shut their portals,
-`room.probes` gives rooms their probes and the `rooms` lint check finds
-leaks. `room.derive` and linting objects no room holds from the
-[large-level rendering](../proposals/large-level-rendering.md) proposal are
+`room.probes` gives rooms their probes, `room.derive` proposes rooms and
+portals and the `rooms` lint check finds leaks. Linting objects no room
+holds, from the
+[large-level rendering](../proposals/large-level-rendering.md) proposal, is
 not built. The tiled pipeline has native Metal evidence; the desktop
 pipeline has compiled SPIR-V only.
 
@@ -102,7 +103,26 @@ along a corridor.
    ([editor_level.c](../../editor/src/editor_level.c)) with the portal or
    room box and the open area. Box containment takes its tolerance in
    metres, so a long box does not swallow a nearby sample.
-9. **Switches.** A probe capture, the editor Scene's "All" and the
+9. **Derivation.** `room.derive` proposes rooms and portals for a region
+   as one reviewable change (`vkr_editor_level_job_rooms`,
+   [editor_level.c](../../editor/src/editor_level.c)). It samples the
+   walkable floor as `level.lint` does; floor under a ceiling within 8 m is
+   indoor. Indoor floor farther from the indoor edge than half of
+   `opening` (default 2 m, less the capsule's radius the floor already
+   keeps from walls) forms room cores, which grow back over the indoor
+   floor, so openings up to that wide split rooms and wider ones join
+   them. Spaces under 4 m², or whose floor rim opens onto other floor for
+   more than 30% of an estimated rim, are left out as awnings and open
+   halls. Each room takes up to four largest rectangles of its floor
+   cells until they cover 90%, from its lowest floor to its lowest
+   ceiling; ray casts move each side out to the wall within 1 m, and a
+   side that finds none meets the room's next box within 1.5 m. Each run
+   of steps between two spaces across one cell boundary takes an open
+   portal on the room box's side, 5 cm out of it, or midway between two
+   rooms' sides, as wide as its jambs and as high as its lintel. The
+   result is an editor aid: rooms follow collision only, and a designer
+   reviews them and runs the lint.
+10. **Switches.** A probe capture, the editor Scene's "All" and the
    `VKR_ROOMS=0` diagnostic draw every room, light and probe.
 
 ## Consequences
@@ -137,13 +157,18 @@ along a corridor.
   `level.lint` with `kinds` [`rooms`] then reported nothing. With the
   portal deleted it reported the doorway's 2 m² gap, and a stray portal in
   open space as joining nothing.
-  `mover.create` with `portal` set the portal's door to the new mover.
+- `mover.create` with `portal` set the portal's door to the new mover.
   The room suite's door test (`test_room_portal_door`,
   [room_test.c](../../tests/src/room_test.c)) checks the walk hides the
   room behind a resting door, shows it with the door posed 2.5 m up and
   again hides it at rest under an evaluated pose; no level with movers
   between rooms has been captured.
-  `room.probes` was run only on a scene outside a project, where it refuses
+- `room.derive` on two blockout rooms on Bistro, joined by a 1.2 m doorway
+  with another to the outside, proposed two room boxes within 1 cm of the
+  interiors and two 1.2 m portals of the doorways' heights; with a 4 m
+  opening instead, one room of two boxes; a canopy without walls made no
+  room. `level.lint` `rooms` reported nothing on either result.
+- `room.probes` was run only on a scene outside a project, where it refuses
   as `probe.create` does; its probe creation in a project scene is not
   exercised.
 - Metal API validation of the café bar and overview captures
@@ -164,8 +189,9 @@ along a corridor.
   can resolve the bit there without a binding or side array.
 - **A precomputed PVS per cell.** Rejected: every brush edit invalidates
   the bake and doors must be assumed open.
-- **Rooms derived from brushes.** Kept for an editor aid (`room.derive`):
-  they leak through gaps and fit open halls poorly.
+- **Rooms derived at runtime.** Rejected: derivation follows collision
+  only, leaks through gaps and fits open halls poorly, so it stays an
+  editor aid (`room.derive`) whose result a designer reviews.
 - **Two-phase occlusion** (reopening ADR-032): not now.
 
 ## Revisit when

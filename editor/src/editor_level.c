@@ -1707,6 +1707,615 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
   return issues.found;
 }
 
+// =============================================================================
+// Room derivation (ADR-115)
+// =============================================================================
+
+/* The highest ceiling over a floor that still makes it indoor, metres. */
+#define LEVEL_ROOM_CEILING_MAX 8.0f
+/* The smallest floor a derived room keeps, square metres. */
+#define LEVEL_ROOM_AREA_MIN 4.0f
+/* The share of a space's floor edges that may lead onto other floor: past
+   it the space is an awning or an open hall, not a room. */
+#define LEVEL_ROOM_OPEN_SHARE 0.3f
+/* The share of a room's floor its boxes cover before they stop, and the
+   smallest box they add, square metres. */
+#define LEVEL_ROOM_COVER 0.9f
+#define LEVEL_ROOM_BOX_AREA_MIN 1.0f
+/* How far a box's side looks for its wall, metres, and how far it then
+   stays inside the wall's face. */
+#define LEVEL_ROOM_WALL_REACH 1.0f
+#define LEVEL_ROOM_WALL_INSET 0.01f
+/* How far a side facing an opening onto more of its room reaches for the
+   room's next box, metres. */
+#define LEVEL_ROOM_JOIN_REACH 1.5f
+/* How far a portal stands out of its room's box, metres: its probes
+   (ROOM_PORTAL_PROBE in vkr_scene_rooms.c, 0.3 m) land in the room on one
+   side and in the wall or past it on the other. */
+#define LEVEL_ROOM_PORTAL_OUT 0.05f
+#define LEVEL_ROOM_NONE UINT32_MAX
+
+/* One step between floors of two rooms, or a room and the outside, across
+   the cell boundary `plane` (an x boundary index for `axis` 0, z for 1) at
+   cell `along` on the other axis. */
+typedef struct LevelRoomEdge {
+  uint32_t rooms[2];
+  uint32_t axis;
+  uint32_t plane;
+  uint32_t along;
+  float32_t floor;
+} LevelRoomEdge;
+
+static int level_room_edge_order(const void *a, const void *b) {
+  const LevelRoomEdge *x = a;
+  const LevelRoomEdge *y = b;
+  const uint32_t kx[5] = {x->rooms[0], x->rooms[1], x->axis, x->plane,
+                          x->along};
+  const uint32_t ky[5] = {y->rooms[0], y->rooms[1], y->axis, y->plane,
+                          y->along};
+  for (uint32_t i = 0; i < 5u; ++i) {
+    if (kx[i] != ky[i]) {
+      return kx[i] < ky[i] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+/* The largest rectangle of set cells in a `w` x `h` mask, row-major, as
+   [x0, x1] x [z0, z1]; its cell count, zero when none is set. `heights`
+   holds `w` entries of scratch. */
+static uint32_t level_room_rect(const uint8_t *mask, uint32_t w, uint32_t h,
+                                uint32_t *heights, uint32_t out[4]) {
+  uint32_t best = 0u;
+  MemZero(heights, w * sizeof(*heights));
+  for (uint32_t z = 0; z < h; ++z) {
+    for (uint32_t x = 0; x < w; ++x) {
+      heights[x] = mask[(size_t)z * w + x] ? heights[x] + 1u : 0u;
+    }
+    /* Each column's run as the rectangle's lowest height, widened while
+       its neighbours are at least as tall: quadratic in `w`, which the
+       grid bounds. */
+    for (uint32_t x = 0; x < w; ++x) {
+      if (!heights[x]) {
+        continue;
+      }
+      uint32_t left = x;
+      uint32_t right = x;
+      while (left > 0u && heights[left - 1u] >= heights[x]) {
+        left--;
+      }
+      while (right + 1u < w && heights[right + 1u] >= heights[x]) {
+        right++;
+      }
+      const uint32_t area = (right - left + 1u) * heights[x];
+      if (area > best) {
+        best = area;
+        out[0] = left;
+        out[1] = right;
+        out[2] = z + 1u - heights[x];
+        out[3] = z;
+      }
+    }
+  }
+  return best;
+}
+
+/* Moves each side of a room box out to the wall a ray finds within reach
+   at most of nine points over it, and the top up to the ceiling. A side
+   most of whose rays find nothing faces an opening or more room and
+   stays. Returns the sides moved, a bit per face: -x, +x, -z, +z, +y. */
+static uint32_t level_room_snap(VkrScene *scene, Vec3 *min, Vec3 *max) {
+  uint32_t snapped = 0u;
+  for (uint32_t face = 0; face < 5u; ++face) {
+    /* 0 -x, 1 +x, 2 -z, 3 +z, 4 +y. */
+    const uint32_t axis = face < 2u ? 0u : face < 4u ? 2u : 1u;
+    const bool8_t plus = face == 1u || face == 3u || face == 4u;
+    const uint32_t u_axis = axis == 1u ? 0u : 1u;
+    const uint32_t v_axis = axis == 2u ? 0u : 2u;
+    float32_t hits[9];
+    uint32_t hit_count = 0u;
+    for (uint32_t a = 0; a < 3u; ++a) {
+      for (uint32_t b = 0; b < 3u; ++b) {
+        float32_t point[3] = {0.5f * (min->x + max->x),
+                              0.5f * (min->y + max->y),
+                              0.5f * (min->z + max->z)};
+        const float32_t lo[3] = {min->x, min->y, min->z};
+        const float32_t hi[3] = {max->x, max->y, max->z};
+        point[u_axis] = lo[u_axis] + (hi[u_axis] - lo[u_axis]) *
+                                         (0.2f + 0.3f * (float32_t)a);
+        point[v_axis] = lo[v_axis] + (hi[v_axis] - lo[v_axis]) *
+                                         (0.2f + 0.3f * (float32_t)b);
+        /* From just inside the side, outward. */
+        point[axis] = plus ? hi[axis] - 0.05f : lo[axis] + 0.05f;
+        float32_t direction[3] = {0.0f, 0.0f, 0.0f};
+        direction[axis] =
+            (plus ? 1.0f : -1.0f) * (LEVEL_ROOM_WALL_REACH + 0.05f);
+        VkrPhysicsRayHit hit = {0};
+        if (level_ray(scene, vec3_new(point[0], point[1], point[2]),
+                      vec3_new(direction[0], direction[1], direction[2]),
+                      &hit) &&
+            hit.fraction > 0.0f) {
+          hits[hit_count++] =
+              hit.fraction * (LEVEL_ROOM_WALL_REACH + 0.05f) - 0.05f;
+        }
+      }
+    }
+    if (hit_count < 5u) {
+      continue;
+    }
+    /* The nearest wall, so the side stays out of every one. */
+    float32_t reach = hits[0];
+    for (uint32_t i = 1; i < hit_count; ++i) {
+      reach = Min(reach, hits[i]);
+    }
+    const float32_t move = Max(reach - LEVEL_ROOM_WALL_INSET, 0.0f);
+    snapped |= 1u << face;
+    if (axis == 0u) {
+      plus ? (max->x += move) : (min->x -= move);
+    } else if (axis == 2u) {
+      plus ? (max->z += move) : (min->z -= move);
+    } else {
+      max->y += move;
+    }
+  }
+  return snapped;
+}
+
+/* The room a node belongs to, or the outside for floor no room holds. */
+static uint32_t level_room_of(const uint32_t *label, int32_t node) {
+  return label[node] == LEVEL_ROOM_NONE ? VKR_EDITOR_ROOM_DERIVE_OUTSIDE
+                                        : label[node];
+}
+
+/* Adds the portal across one run of edges between two spaces: in the
+   plane of the room's box side the run faces, out of it by
+   LEVEL_ROOM_PORTAL_OUT, or midway between the two rooms' sides; as wide
+   as the jambs rays find and as high as the lintel. */
+static void level_room_portal(LevelGrid *grid, VkrEditorRoomDerive *out,
+                              const LevelRoomEdge *first, uint32_t along_end,
+                              float32_t floor_y) {
+  const uint32_t axis = first->axis;
+  const float32_t cell = grid->cell;
+  /* The cell boundary between the two sides, and the run's middle along
+     it. */
+  const float32_t plane = (axis == 0u ? grid->min.x : grid->min.z) +
+                          (float32_t)(first->plane + 1u) * cell;
+  const float32_t along_lo =
+      (axis == 0u ? grid->min.z : grid->min.x) + (float32_t)first->along * cell;
+  const float32_t along_hi = (axis == 0u ? grid->min.z : grid->min.x) +
+                             (float32_t)(along_end + 1u) * cell;
+  const float32_t middle = 0.5f * (along_lo + along_hi);
+  const Vec3 base = axis == 0u ? vec3_new(plane, floor_y, middle)
+                               : vec3_new(middle, floor_y, plane);
+
+  /* Each room's box side nearest the boundary, facing it. */
+  float32_t sides[2] = {plane, plane};
+  bool8_t found[2] = {false_v, false_v};
+  for (uint32_t s = 0; s < 2u; ++s) {
+    const uint32_t room = first->rooms[s];
+    if (room == VKR_EDITOR_ROOM_DERIVE_OUTSIDE) {
+      continue;
+    }
+    const VkrEditorDerivedRoom *derived = &out->rooms[room];
+    float32_t best = INFINITY;
+    for (uint32_t b = 0; b < derived->box_count; ++b) {
+      const Vec3 lo = derived->min[b];
+      const Vec3 hi = derived->max[b];
+      const float32_t a_lo = axis == 0u ? lo.z : lo.x;
+      const float32_t a_hi = axis == 0u ? hi.z : hi.x;
+      if (middle < a_lo || middle > a_hi) {
+        continue;
+      }
+      /* Side 0 lies before the boundary, so its box's far side faces it. */
+      const float32_t side =
+          s == 0u ? (axis == 0u ? hi.x : hi.z) : (axis == 0u ? lo.x : lo.z);
+      if (fabsf(side - plane) < fabsf(best - plane)) {
+        best = side;
+      }
+    }
+    if (best != INFINITY) {
+      sides[s] = best;
+      found[s] = true_v;
+    }
+  }
+  float32_t at = plane;
+  if (found[0] && found[1]) {
+    at = 0.5f * (sides[0] + sides[1]);
+  } else if (found[0]) {
+    at = sides[0] + LEVEL_ROOM_PORTAL_OUT;
+  } else if (found[1]) {
+    at = sides[1] - LEVEL_ROOM_PORTAL_OUT;
+  }
+
+  /* The jambs at waist height and the lintel over the run's middle. */
+  const float32_t reach = 0.5f * (along_hi - along_lo) + 2.0f * cell + 1.0f;
+  const Vec3 waist = vec3_add(base, vec3_new(0.0f, 1.0f, 0.0f));
+  float32_t half[2] = {0.5f * (along_hi - along_lo) + grid->capsule->radius,
+                       0.5f * (along_hi - along_lo) + grid->capsule->radius};
+  for (uint32_t s = 0; s < 2u; ++s) {
+    const float32_t sign = s == 0u ? -1.0f : 1.0f;
+    const Vec3 direction = axis == 0u ? vec3_new(0.0f, 0.0f, sign * reach)
+                                      : vec3_new(sign * reach, 0.0f, 0.0f);
+    VkrPhysicsRayHit hit = {0};
+    if (level_ray(grid->scene, waist, direction, &hit) && hit.fraction > 0.0f) {
+      half[s] = hit.fraction * reach;
+    }
+  }
+  float32_t height = grid->capsule->height + 0.2f;
+  VkrPhysicsRayHit lintel = {0};
+  if (level_ray(grid->scene, vec3_add(base, vec3_new(0.0f, 0.05f, 0.0f)),
+                vec3_new(0.0f, LEVEL_ROOM_CEILING_MAX, 0.0f), &lintel) &&
+      lintel.fraction > 0.0f) {
+    height = lintel.fraction * LEVEL_ROOM_CEILING_MAX + 0.05f;
+  }
+
+  if (out->portal_count >= VKR_EDITOR_ROOM_DERIVE_PORTALS) {
+    out->dropped++;
+    return;
+  }
+  const float32_t center_along = middle + 0.5f * (half[1] - half[0]);
+  out->portals[out->portal_count++] = (VkrEditorDerivedPortal){
+      .center = axis == 0u
+                    ? vec3_new(at, floor_y + 0.5f * height, center_along)
+                    : vec3_new(center_along, floor_y + 0.5f * height, at),
+      .width = half[0] + half[1],
+      .height = height,
+      .across_x = axis == 0u,
+      .rooms = {first->rooms[0], first->rooms[1]},
+  };
+}
+
+/* Extends each side of a room's box that found no wall, facing an opening
+   onto more of the room, to the nearest other box of the room it faces
+   within LEVEL_ROOM_JOIN_REACH, so the boxes leave no gap in the opening
+   and the jambs between them lie inside the room. */
+static void level_room_join(VkrEditorDerivedRoom *room,
+                            const uint32_t *snapped) {
+  for (uint32_t b = 0; b < room->box_count; ++b) {
+    for (uint32_t face = 0; face < 4u; ++face) {
+      if (snapped[b] & (1u << face)) {
+        continue;
+      }
+      const uint32_t axis = face < 2u ? 0u : 2u;
+      const uint32_t other_axis = axis == 0u ? 2u : 0u;
+      const bool8_t plus = face == 1u || face == 3u;
+      float32_t *side =
+          plus ? &room->max[b].elements[axis] : &room->min[b].elements[axis];
+      float32_t best = INFINITY;
+      for (uint32_t o = 0; o < room->box_count; ++o) {
+        if (o == b ||
+            room->min[o].elements[other_axis] >=
+                room->max[b].elements[other_axis] ||
+            room->max[o].elements[other_axis] <=
+                room->min[b].elements[other_axis]) {
+          continue;
+        }
+        /* The other box's side that faces this one, ahead of it. */
+        const float32_t facing =
+            plus ? room->min[o].elements[axis] : room->max[o].elements[axis];
+        const float32_t ahead = plus ? facing - *side : *side - facing;
+        if (ahead > 0.0f && ahead <= LEVEL_ROOM_JOIN_REACH &&
+            ahead < fabsf(best - *side)) {
+          best = facing;
+        }
+      }
+      if (best != INFINITY) {
+        *side = best;
+      }
+    }
+  }
+}
+
+bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
+                                   const VkrScene *scene, float32_t opening,
+                                   VkrEditorRoomDerive *out) {
+  MemZero(out, sizeof(*out));
+  /* Physics queries take a mutable scene but change none of its state. */
+  LevelGrid grid = job->grid;
+  grid.scene = (VkrScene *)scene;
+  const uint32_t cells = grid.nx * grid.nz;
+  const size_t total = (size_t)cells * LEVEL_LAYER_MAX;
+  float32_t *ceiling = calloc(total, sizeof(*ceiling));
+  int32_t *next = malloc(total * 4u * sizeof(*next));
+  int32_t *depth = malloc(total * sizeof(*depth));
+  uint32_t *label = malloc(total * sizeof(*label));
+  int32_t *queue = malloc(total * sizeof(*queue));
+  LevelRoomEdge *edges = malloc(total * sizeof(*edges));
+  uint8_t *mask = calloc(cells, sizeof(*mask));
+  uint32_t *heights = calloc(grid.nx, sizeof(*heights));
+  bool8_t done = false_v;
+  if (!ceiling || !next || !depth || !label || !queue || !edges || !mask ||
+      !heights) {
+    goto cleanup;
+  }
+
+  /* Indoor floor: passable, under a ceiling within reach; and the floor of
+     each neighbouring cell a capsule steps to. */
+  for (size_t i = 0; i < total; ++i) {
+    next[i * 4u + 0u] = next[i * 4u + 1u] = -1;
+    next[i * 4u + 2u] = next[i * 4u + 3u] = -1;
+    depth[i] = -1;
+    label[i] = LEVEL_ROOM_NONE;
+    const LevelNode *node = &grid.nodes[i];
+    const uint32_t cell = (uint32_t)(i / LEVEL_LAYER_MAX);
+    if ((uint32_t)(i % LEVEL_LAYER_MAX) >= grid.layers[cell] ||
+        !level_passable(node)) {
+      continue;
+    }
+    VkrPhysicsRayHit up = {0};
+    if (level_ray(grid.scene,
+                  vec3_add(node->position, vec3_new(0.0f, 0.05f, 0.0f)),
+                  vec3_new(0.0f, LEVEL_ROOM_CEILING_MAX, 0.0f), &up) &&
+        up.fraction > 0.0f) {
+      ceiling[i] = up.fraction * LEVEL_ROOM_CEILING_MAX + 0.05f;
+    }
+    const uint32_t x = cell % grid.nx;
+    const uint32_t z = cell / grid.nx;
+    for (uint32_t d = 0; d < 4u; ++d) {
+      const int32_t x2 = (int32_t)x + s_level_dx[d];
+      const int32_t z2 = (int32_t)z + s_level_dz[d];
+      if (x2 < 0 || z2 < 0 || x2 >= (int32_t)grid.nx ||
+          z2 >= (int32_t)grid.nz) {
+        continue;
+      }
+      const uint32_t cell2 = (uint32_t)z2 * grid.nx + (uint32_t)x2;
+      for (uint32_t l = 0; l < grid.layers[cell2]; ++l) {
+        const size_t j = (size_t)cell2 * LEVEL_LAYER_MAX + l;
+        if (level_step(&grid, node, &grid.nodes[j])) {
+          next[i * 4u + d] = (int32_t)j;
+          break;
+        }
+      }
+    }
+  }
+
+  /* Each indoor floor's steps from the edge of indoor floor: a wall, a
+     drop or floor without a ceiling. */
+  uint32_t head = 0u;
+  uint32_t tail = 0u;
+  for (size_t i = 0; i < total; ++i) {
+    if (ceiling[i] <= 0.0f) {
+      continue;
+    }
+    bool8_t inner = true_v;
+    for (uint32_t d = 0; d < 4u && inner; ++d) {
+      const int32_t j = next[i * 4u + d];
+      inner = j >= 0 && ceiling[j] > 0.0f;
+    }
+    if (!inner) {
+      depth[i] = 0;
+      queue[tail++] = (int32_t)i;
+    }
+  }
+  while (head < tail) {
+    const int32_t i = queue[head++];
+    for (uint32_t d = 0; d < 4u; ++d) {
+      const int32_t j = next[(size_t)i * 4u + d];
+      if (j >= 0 && ceiling[j] > 0.0f && depth[j] < 0) {
+        depth[j] = depth[i] + 1;
+        queue[tail++] = j;
+      }
+    }
+  }
+
+  /* Cores: indoor floor deeper than half an opening, which an opening's
+     floor never is (the walkable floor already keeps the capsule's radius
+     from its jambs). Each connected core is a room. */
+  const float32_t free_cells =
+      (opening - 2.0f * grid.capsule->radius) / grid.cell;
+  const int32_t core = Max((int32_t)floorf((free_cells - 1.0f) * 0.5f) + 1, 1);
+  uint32_t labels = 0u;
+  head = tail = 0u;
+  for (size_t i = 0; i < total; ++i) {
+    if (depth[i] < core || label[i] != LEVEL_ROOM_NONE) {
+      continue;
+    }
+    const uint32_t start = tail;
+    label[i] = labels;
+    queue[tail++] = (int32_t)i;
+    for (uint32_t k = start; k < tail; ++k) {
+      for (uint32_t d = 0; d < 4u; ++d) {
+        const int32_t j = next[(size_t)queue[k] * 4u + d];
+        if (j >= 0 && depth[j] >= core && label[j] == LEVEL_ROOM_NONE) {
+          label[j] = labels;
+          queue[tail++] = j;
+        }
+      }
+    }
+    labels++;
+  }
+  /* The cores grow back over the indoor floor around them, nearest
+     first, so an opening between two rooms splits at its middle. */
+  while (head < tail) {
+    const int32_t i = queue[head++];
+    for (uint32_t d = 0; d < 4u; ++d) {
+      const int32_t j = next[(size_t)i * 4u + d];
+      if (j >= 0 && ceiling[j] > 0.0f && label[j] == LEVEL_ROOM_NONE) {
+        label[j] = label[i];
+        queue[tail++] = j;
+      }
+    }
+  }
+  /* Indoor floor no core reached, a closet narrower than an opening, is a
+     room of its own. */
+  for (size_t i = 0; i < total; ++i) {
+    if (ceiling[i] <= 0.0f || label[i] != LEVEL_ROOM_NONE) {
+      continue;
+    }
+    head = tail = 0u;
+    label[i] = labels;
+    queue[tail++] = (int32_t)i;
+    while (head < tail) {
+      const int32_t k = queue[head++];
+      for (uint32_t d = 0; d < 4u; ++d) {
+        const int32_t j = next[(size_t)k * 4u + d];
+        if (j >= 0 && ceiling[j] > 0.0f && label[j] == LEVEL_ROOM_NONE) {
+          label[j] = labels;
+          queue[tail++] = j;
+        }
+      }
+    }
+    labels++;
+  }
+
+  /* Keep the spaces that are rooms: enough floor, mostly closed edges.
+     `depth` is reused as each label's new index. */
+  uint32_t *floor_count = calloc(Max(labels, 1u), sizeof(*floor_count));
+  uint32_t *open_edges = calloc(Max(labels, 1u), sizeof(*open_edges));
+  int32_t *keep = malloc(Max(labels, 1u) * sizeof(*keep));
+  if (!floor_count || !open_edges || !keep) {
+    free(floor_count);
+    free(open_edges);
+    free(keep);
+    goto cleanup;
+  }
+  for (size_t i = 0; i < total; ++i) {
+    if (label[i] == LEVEL_ROOM_NONE) {
+      continue;
+    }
+    floor_count[label[i]]++;
+    for (uint32_t d = 0; d < 4u; ++d) {
+      const int32_t j = next[i * 4u + d];
+      open_edges[label[i]] += j >= 0 && label[j] != label[i];
+    }
+  }
+  for (uint32_t l = 0; l < labels; ++l) {
+    keep[l] = -1;
+    const float32_t area = (float32_t)floor_count[l] * grid.cell * grid.cell;
+    /* The open share is of the floor's rim, about four times the side of
+       a square of its area in cells. */
+    const float32_t rim = 4.0f * sqrtf((float32_t)floor_count[l]);
+    if (area < LEVEL_ROOM_AREA_MIN ||
+        (float32_t)open_edges[l] > LEVEL_ROOM_OPEN_SHARE * rim) {
+      continue;
+    }
+    if (out->room_count >= VKR_EDITOR_ROOM_DERIVE_ROOMS) {
+      out->dropped++;
+      continue;
+    }
+    keep[l] = (int32_t)out->room_count;
+    out->rooms[out->room_count++].area = area;
+  }
+  for (size_t i = 0; i < total; ++i) {
+    if (label[i] != LEVEL_ROOM_NONE) {
+      label[i] =
+          keep[label[i]] >= 0 ? (uint32_t)keep[label[i]] : LEVEL_ROOM_NONE;
+    }
+  }
+  free(floor_count);
+  free(open_edges);
+  free(keep);
+
+  /* Boxes: the largest rectangles of each room's cells until they cover
+     most of its floor, from its lowest floor to its ceiling, with their
+     sides moved out to the walls. */
+  for (uint32_t r = 0; r < out->room_count; ++r) {
+    VkrEditorDerivedRoom *room = &out->rooms[r];
+    uint32_t remaining = 0u;
+    for (uint32_t c = 0; c < cells; ++c) {
+      mask[c] = 0u;
+      for (uint32_t l = 0; l < grid.layers[c]; ++l) {
+        if (label[(size_t)c * LEVEL_LAYER_MAX + l] == r) {
+          mask[c] = 1u;
+        }
+      }
+      remaining += mask[c];
+    }
+    const uint32_t floor_cells = remaining;
+    uint32_t snapped[VKR_EDITOR_ROOM_DERIVE_BOXES] = {0};
+    while (room->box_count < VKR_EDITOR_ROOM_DERIVE_BOXES &&
+           (float32_t)(floor_cells - remaining) <
+               LEVEL_ROOM_COVER * (float32_t)floor_cells) {
+      uint32_t rect[4];
+      const uint32_t area =
+          level_room_rect(mask, grid.nx, grid.nz, heights, rect);
+      if (!area ||
+          (float32_t)area * grid.cell * grid.cell < LEVEL_ROOM_BOX_AREA_MIN) {
+        break;
+      }
+      float32_t floor_y = INFINITY;
+      float32_t top = INFINITY;
+      for (uint32_t z = rect[2]; z <= rect[3]; ++z) {
+        for (uint32_t x = rect[0]; x <= rect[1]; ++x) {
+          const uint32_t c = z * grid.nx + x;
+          mask[c] = 0u;
+          remaining--;
+          for (uint32_t l = 0; l < grid.layers[c]; ++l) {
+            const size_t i = (size_t)c * LEVEL_LAYER_MAX + l;
+            if (label[i] == r) {
+              floor_y = Min(floor_y, grid.nodes[i].position.y);
+              top = Min(top, grid.nodes[i].position.y + ceiling[i]);
+            }
+          }
+        }
+      }
+      Vec3 lo = vec3_new(grid.min.x + (float32_t)rect[0] * grid.cell, floor_y,
+                         grid.min.z + (float32_t)rect[2] * grid.cell);
+      Vec3 hi = vec3_new(grid.min.x + (float32_t)(rect[1] + 1u) * grid.cell,
+                         Max(top - LEVEL_ROOM_WALL_INSET, floor_y + 0.5f),
+                         grid.min.z + (float32_t)(rect[3] + 1u) * grid.cell);
+      snapped[room->box_count] = level_room_snap(grid.scene, &lo, &hi);
+      room->min[room->box_count] = lo;
+      room->max[room->box_count] = hi;
+      room->box_count++;
+    }
+    level_room_join(room, snapped);
+  }
+
+  /* Portals: runs of steps between two spaces across one cell boundary. */
+  uint32_t edge_count = 0u;
+  for (size_t i = 0; i < total; ++i) {
+    for (uint32_t d = 0; d < 4u; d += 2u) {
+      /* Directions 0 (+x) and 2 (+z) see each boundary once. */
+      const int32_t j = next[i * 4u + d];
+      if (j < 0) {
+        continue;
+      }
+      const uint32_t a = level_room_of(label, (int32_t)i);
+      const uint32_t b = level_room_of(label, j);
+      if (a == b) {
+        continue;
+      }
+      const uint32_t cell = (uint32_t)(i / LEVEL_LAYER_MAX);
+      edges[edge_count++] = (LevelRoomEdge){
+          .rooms = {a, b},
+          .axis = d == 0u ? 0u : 1u,
+          .plane = d == 0u ? cell % grid.nx : cell / grid.nx,
+          .along = d == 0u ? cell / grid.nx : cell % grid.nx,
+          .floor = Min(grid.nodes[i].position.y, grid.nodes[j].position.y),
+      };
+    }
+  }
+  qsort(edges, edge_count, sizeof(*edges), level_room_edge_order);
+  for (uint32_t e = 0; e < edge_count;) {
+    uint32_t end = e;
+    float32_t floor_y = edges[e].floor;
+    while (end + 1u < edge_count &&
+           edges[end + 1u].rooms[0] == edges[e].rooms[0] &&
+           edges[end + 1u].rooms[1] == edges[e].rooms[1] &&
+           edges[end + 1u].axis == edges[e].axis &&
+           edges[end + 1u].plane == edges[e].plane &&
+           edges[end + 1u].along <= edges[end].along + 1u) {
+      end++;
+      floor_y = Min(floor_y, edges[end].floor);
+    }
+    level_room_portal(&grid, out, &edges[e], edges[end].along, floor_y);
+    e = end + 1u;
+  }
+  done = true_v;
+
+cleanup:
+  free(ceiling);
+  free(next);
+  free(depth);
+  free(label);
+  free(queue);
+  free(edges);
+  free(mask);
+  free(heights);
+  return done;
+}
+
 void vkr_editor_level_reachable_region(Vec3 from, Vec3 to, Vec3 *out_min,
                                        Vec3 *out_max) {
   const Vec3 pad = vec3_new(16.0f, 4.0f, 16.0f);
