@@ -258,11 +258,26 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
   }
 }
 
-/* Executes Custom graph slot `slot`'s range of camera bucket `bucket`. */
+/* Whether compaction plane `plane` and slot `slot` has draws to record this
+   frame: plane 0 a ready Custom graph, plane 1 slot 0 the extended Standard
+   draws and plane 1 a Custom slot whose extension pipelines are ready. */
+vkr_internal bool8_t
+vkr_metal_packet_custom_range_ready(const VkrMetalPacketIndirectPass *draw,
+                                    uint32_t plane, uint32_t slot) {
+  if (slot == 0u)
+    return plane != 0u && draw->brdf_ready;
+  const uint32_t mask =
+      plane == 0u ? draw->custom_ready_mask : draw->brdf_ready_mask;
+  return (mask & (1u << (slot - 1u))) != 0u;
+}
+
+/* Executes compaction plane `plane` and slot `slot`'s range of camera
+   bucket `bucket` (ADR-096, ADR-113). */
 vkr_internal void
 vkr_metal_packet_record_custom_bucket(id<MTL4RenderCommandEncoder> encoder,
                                       const VkrMetalPacketIndirectPass *draw,
-                                      uint32_t slot, uint32_t bucket)
+                                      uint32_t plane, uint32_t slot,
+                                      uint32_t bucket)
     API_AVAILABLE(macos(26.0)) {
   [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
   [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
@@ -270,7 +285,9 @@ vkr_metal_packet_record_custom_bucket(id<MTL4RenderCommandEncoder> encoder,
                                      : MTLWindingCounterClockwise];
   [encoder executeCommandsInBuffer:draw->commands
                     indirectBuffer:draw->custom_arguments +
-                                   ((uint64_t)slot *
+                                   (((uint64_t)plane *
+                                         VKR_METAL_CUSTOM_GRAPH_SLOTS +
+                                     slot) *
                                         VKR_WORLD_DRAW_STATE_BUCKET_COUNT +
                                     bucket) *
                                        2u * sizeof(uint32_t)];
@@ -323,23 +340,27 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
                       indirectBuffer:draw->arguments +
                                      (uint64_t)bucket * 2u * sizeof(uint32_t)];
   }
-  /* A camera pass draws the Custom graphs' buckets, and slot 0's extended
-     Standard draws, with its own pipeline: it writes no shading. */
-  for (uint32_t slot = 0u;
-       draw->custom_arguments && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
-    if (slot == 0u ? !draw->brdf_ready
-                   : (draw->custom_ready_mask & (1u << (slot - 1u))) == 0u)
-      continue;
-    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-         ++bucket) {
-      id<MTLRenderPipelineState> pipeline =
-          draw->opaque_pipeline && (bucket & 2u) == 0u ? draw->opaque_pipeline
-                                                       : draw->pipeline;
-      if (pipeline != bound_pipeline) {
-        [encoder setRenderPipelineState:pipeline];
-        bound_pipeline = pipeline;
+  /* A camera pass draws every filled compaction range, the Custom graphs'
+     and the extended draws', with its own pipeline: it writes no shading. */
+  for (uint32_t plane = 0u;
+       draw->custom_arguments && plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
+       ++plane) {
+    for (uint32_t slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+      if (!vkr_metal_packet_custom_range_ready(draw, plane, slot))
+        continue;
+      for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+           ++bucket) {
+        id<MTLRenderPipelineState> pipeline =
+            draw->opaque_pipeline && (bucket & 2u) == 0u
+                ? draw->opaque_pipeline
+                : draw->pipeline;
+        if (pipeline != bound_pipeline) {
+          [encoder setRenderPipelineState:pipeline];
+          bound_pipeline = pipeline;
+        }
+        vkr_metal_packet_record_custom_bucket(encoder, draw, plane, slot,
+                                              bucket);
       }
-      vkr_metal_packet_record_custom_bucket(encoder, draw, slot, bucket);
     }
   }
 }
@@ -376,45 +397,38 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
                      indirectBuffer:draw->arguments +
                                     (uint64_t)bucket * 2u * sizeof(uint32_t)];
       }
-      /* Slot 0's extended Standard draws shade with the extension variant
-         of the frame's forward pipelines (ADR-113). */
-      if (draw->custom_arguments && draw->brdf_ready) {
-        const uint32_t decals = pass->tiled.decals;
-        const uint32_t probes = pass->tiled.probes;
-        const uint32_t lighting = pass->tiled.lighting;
-        [encoder
-            setRenderPipelineState:
-                cutout ? renderer->tiled_coverage_pipelines[1][decals][probes]
-                                                           [lighting]
-                       : renderer->tiled_forward_pipelines[1][decals][probes]
-                                                          [lighting]];
-        for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-             ++bucket) {
-          if (((bucket & 2u) != 0u) != (cutout != 0u))
+      /* Each filled compaction range shades with its pipelines of the
+         frame's forward variant, in the same order: plane 1's slot 0 with
+         the Standard extension variant, a Custom slot with its graph's
+         pipelines of the plane's BRDF variant (ADR-096, ADR-113). */
+      const uint32_t decals = pass->tiled.decals;
+      const uint32_t probes = pass->tiled.probes;
+      const uint32_t lighting = pass->tiled.lighting;
+      for (uint32_t plane = 0u;
+           draw->custom_arguments && plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
+           ++plane) {
+        for (uint32_t slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+          if (!vkr_metal_packet_custom_range_ready(draw, plane, slot))
             continue;
-          vkr_metal_packet_record_custom_bucket(encoder, draw, 0u, bucket);
-        }
-      }
-      /* Each ready Custom graph shades its buckets with its own pipelines
-         of the frame's forward variant, in the same order. */
-      for (uint32_t slot = 1u;
-           draw->custom_arguments && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS;
-           ++slot) {
-        if ((draw->custom_ready_mask & (1u << (slot - 1u))) == 0u)
-          continue;
-        const VkrMetalCustomGraph *graph = &renderer->custom_graphs[slot];
-        const uint32_t decals = pass->tiled.decals;
-        const uint32_t probes = pass->tiled.probes;
-        const uint32_t lighting = pass->tiled.lighting;
-        [encoder setRenderPipelineState:cutout ? graph->coverage[decals][probes]
+          const VkrMetalCustomGraph *graph = &renderer->custom_graphs[slot];
+          id<MTLRenderPipelineState> pipeline =
+              slot == 0u
+                  ? (cutout ? renderer->tiled_coverage_pipelines[plane][decals]
+                                                                [probes]
                                                                 [lighting]
-                                               : graph->forward[decals][probes]
-                                                               [lighting]];
-        for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-             ++bucket) {
-          if (((bucket & 2u) != 0u) != (cutout != 0u))
-            continue;
-          vkr_metal_packet_record_custom_bucket(encoder, draw, slot, bucket);
+                            : renderer->tiled_forward_pipelines[plane][decals]
+                                                               [probes]
+                                                               [lighting])
+                  : (cutout ? graph->coverage[plane][decals][probes][lighting]
+                            : graph->forward[plane][decals][probes][lighting]);
+          [encoder setRenderPipelineState:pipeline];
+          for (uint32_t bucket = 0u;
+               bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT; ++bucket) {
+            if (((bucket & 2u) != 0u) != (cutout != 0u))
+              continue;
+            vkr_metal_packet_record_custom_bucket(encoder, draw, plane, slot,
+                                                  bucket);
+          }
         }
       }
     }

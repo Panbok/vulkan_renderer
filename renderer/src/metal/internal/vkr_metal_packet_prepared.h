@@ -56,8 +56,11 @@ typedef struct VkrMetalPacketIndirectPass {
      zero without Custom graphs (ADR-096). */
   uint64_t custom_arguments;
   uint32_t custom_ready_mask;
-  /* Slot 0 holds the extended Standard draws this frame (ADR-113). */
+  /* Plane 1's slot 0 holds the extended Standard draws this frame, and the
+     Custom slots in `brdf_ready_mask` (bit slot - 1) their extended draws
+     (ADR-113). */
   bool8_t brdf_ready;
+  uint32_t brdf_ready_mask;
 } VkrMetalPacketIndirectPass;
 
 typedef struct VkrMetalPacketGpuEncodeGroup {

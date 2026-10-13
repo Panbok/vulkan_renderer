@@ -55,8 +55,9 @@ The owner settled three points on 2026-10-09:
    - UV nodes: tile and offset, and world planar.
 
    A Custom graph writes base colour, opacity, metallic, roughness,
-   occlusion, normal and emissive. Clearcoat, sheen, anisotropy,
-   transmission and subsurface stay Standard-only. There is no vertex offset
+   occlusion, normal and emissive, and takes the BRDF extension values
+   from constants ([ADR-113](113-brdf-material-extensions.md)). Clearcoat,
+   sheen, anisotropy, transmission and subsurface stay Standard-only. There is no vertex offset
    and no custom code node (proposal, Settled decisions).
 3. **Code generation.**
    [vkr_material_codegen.c](../../runtime/src/assets/vkr_material_codegen.c)
@@ -94,17 +95,19 @@ The owner settled three points on 2026-10-09:
    probes and decals): 40 pipeline states a graph.
    `vkr_renderer_get_pipeline_stats` reports the graphs still pending.
 7. **Drawing.** Each frame takes a ready mask of the slots whose pipelines
-   exist and allocates one `VkrMetalCustomCompaction` table (4,240 bytes)
-   in its upload ring.
+   exist and allocates one `VkrMetalCustomCompaction` table (8,480 bytes)
+   in its upload ring. Its second plane holds the draws whose material
+   uses a BRDF extension ([ADR-113](113-brdf-material-extensions.md)).
    - The classify kernel sorts the camera view's draws of ready slots into
      per-slot buckets. It marks them in the classification word with bit 4
-     and the slot in bits 27 to 31, which the encode kernel clears. Slot 0
-     holds the Standard draws of materials that use a BRDF extension, marked
-     with bit 5 ([ADR-113](113-brdf-material-extensions.md)).
+     and the slot in bits 27 to 31, which the encode kernel clears. Bit 5
+     marks an extended draw in the second plane: a Standard one in slot 0,
+     a Custom one in its graph's slot.
    - The prefix kernel places each slot's ranges after the Standard buckets,
      within the view's capacity.
    - The tiled opaque pass executes each ready slot's ranges with its
-     pipelines in the same opaque-then-alpha-tested order. The picking pass
+     pipelines of the plane's BRDF variant in the same
+     opaque-then-alpha-tested order. The picking pass
      draws them with its own pipeline.
    - Shadow views keep Custom draws in the Standard buckets. Alpha-tested
      Custom shadows therefore use the fallback's alpha.

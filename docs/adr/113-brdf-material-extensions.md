@@ -128,19 +128,29 @@ extension code therefore runs only where an extended material shades:
   failure, extended materials shade with the base model. A frame whose
   feature bit is set while the set is READY (`tiled_brdf_draws`) buckets
   draws by material:
-  - The camera classify kernel sends a Standard draw whose material row is
-    extended to the Custom compaction's slot 0, marked with classification
-    bit 5 (`VKR_METAL_BRDF_CLASS_BIT`); `brdf_ready` in the compaction
-    enables it. Prefix and encode place slot 0 like the graph slots.
+  - The Custom compaction (ADR-096) has two planes by BRDF variant. The
+    camera classify kernel sends a draw whose material row is extended to
+    plane 1, marked with classification bit 5
+    (`VKR_METAL_BRDF_CLASS_BIT`): a Standard draw to slot 0 while
+    `brdf_ready` is set, a Custom draw to its graph's slot while that slot
+    is in `brdf_ready_mask`. Prefix and encode place both planes like the
+    graph slots.
   - The tiled opaque pass draws the Standard buckets with the base
-    pipelines and slot 0's buckets with the extension pipelines of the
-    same lighting, probe and decal variant. Picking and other camera passes
-    draw slot 0 with their own pipeline.
-  - The blend pass draws each blended draw whose Standard material is
-    extended with the extension pipeline, and the others with the base
-    one.
-  Custom graph pipelines take the base constant and do not draw the
-  extensions.
+    pipelines, plane 1's slot 0 with the Standard extension pipelines and a
+    Custom slot with its graph's pipelines of the plane's variant, each of
+    the frame's lighting, probe and decal variant. Picking and other camera
+    passes draw every filled range with their own pipeline.
+  - The blend pass draws each blended draw whose material is extended,
+    Custom fallbacks included, with the extension pipeline, and the others
+    with the base one.
+- **Custom graphs (Metal).** The six BRDF inputs of a Custom graph's
+  surface output take Scalar or Colour constants, which an instance can
+  override; a varying value is refused, because the values are one per
+  material. They stay out of the generated function, so a graph with and
+  without them shares its function, slot and base pipelines, and lowering
+  writes them as `.mt` keys. Each graph has a second pipeline set with the
+  extension constant, created in the background when a published material
+  of the graph first uses an extension; `pending_graphs` counts it.
 - **Desktop (Vulkan).** `brdf_extensions_enabled` joins
   `lighting_layers_enabled`. Bit 1 of the lighting root's `layered_tiles`
   makes tile classification also give the layered kernel pixels whose
@@ -178,8 +188,13 @@ baker material records grow from 96 to 112 bytes.
 - The DFG table is RGBA16F, 512 KiB, in both renderers and both GPU bakers
   ([ADR-053](053-energy-compensated-ggx.md)).
 - Only extended materials' draws pay the extended variant on the tiled
-  pipeline, and only desktop deferred tiles that hold an extended pixel
-  pay it there. A scene without an extended material shades as before.
+  pipeline, Custom graphs included, and only desktop deferred tiles that
+  hold an extended pixel pay it there. A scene without an extended material
+  shades as before.
+- A Custom graph used by an extended material holds 40 more pipeline
+  states, and its first extended material waits for their creation (9.5 s
+  cold in the check below). The Custom compaction table doubles to two
+  planes (8,480 bytes).
   Each enabled extension adds its own table samples: one for F82, one for
   the dual lobe, plus a second environment fetch and LTC sample when the
   dual lobe is active.
@@ -238,6 +253,20 @@ baker material records grow from 96 to 112 bytes.
   identity runs share it; each run's material edit is recorded here. Split
   snapshots match the per-frame build within 1/255: identity byte-identical,
   each term on every material and the mixed scene.
+- Custom graphs, Metal, M1 Pro, Release, headless Bistro editor
+  (`.scratch/brdf-ext/custom/check.py`): one Custom body with and without
+  constant BRDF inputs lowered to one function in slot 1; its base and
+  extension pipelines became READY and readiness waited for both. A floor
+  and a wall bound in turn to the two materials: the extended wall's mean
+  blue fell from 99–102 to 91–92 whenever it was extended, and the floor
+  took 7.4 extended and 14.7–17.7 base, also when the wall was extended in
+  the same frame. Editor captures vary between frames, so the check uses
+  region means, not pixel equality. The tiled Bistro snapshot without
+  Custom graphs stays byte-identical. `test_graph_custom` checks lowering,
+  an instance override and the refusal of a varying input. With the
+  two-plane compaction, the mixed Bistro timing gave 23.10 ms p50
+  (authoritative, same fingerprints) against 23.42 / 23.54 ms for the
+  single-plane split earlier that day; the runs were not interleaved.
 - Vulkan: the SPIR-V compiles and the host row asserts pass. The runtime
   reflection checks run at pipeline creation on a Vulkan device; they, native
   execution, a desktop furnace and Vulkan timing are not recorded.

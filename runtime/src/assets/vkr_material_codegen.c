@@ -510,6 +510,14 @@ static const struct {
     {"normal", "tangent_normal", 0u},
 };
 
+/* The BRDF extension inputs (ADR-113): per-material row values, which a
+   Custom graph takes from a Scalar or Colour constant. They stay out of the
+   generated function, so instances share its pipelines. */
+static const char *const s_brdf_inputs[] = {
+    "specular_f82_tint", "dual_specular_opacity", "dual_specular_scale",
+    "diffuse_roughness", "smooth_terminator",     "smooth_terminator_length",
+};
+
 static uint64_t codegen_hash(const char *text, uint64_t length) {
   uint64_t hash = UINT64_C(1469598103934665603);
   for (uint64_t i = 0; i < length; ++i) {
@@ -541,14 +549,30 @@ bool8_t vkr_material_codegen_msl(const VkrMaterialGraph *graph,
   if (!output) {
     return codegen_fail(&codegen, NULL, "The graph has no surface output");
   }
-  /* Inputs beyond the core outputs keep the Standard tier's meaning only. */
+  /* Inputs beyond the core outputs keep the Standard tier's meaning only;
+     the BRDF extension inputs take constants, which lowering writes. */
   const VkrMaterialNodeDesc *surface = vkr_material_node_desc(output->kind);
   for (uint32_t port = 0; port < surface->input_count; ++port) {
     bool8_t core = false_v;
     for (uint32_t i = 0; i < ArrayCount(s_outputs) && !core; ++i) {
       core = strcmp(surface->inputs[port].name, s_outputs[i].input) == 0;
     }
-    if (!core && output->inputs[port].node) {
+    bool8_t brdf = false_v;
+    for (uint32_t i = 0; i < ArrayCount(s_brdf_inputs) && !brdf; ++i) {
+      brdf = strcmp(surface->inputs[port].name, s_brdf_inputs[i]) == 0;
+    }
+    const VkrMaterialLink link = output->inputs[port];
+    if (brdf && link.node) {
+      const VkrMaterialNodeKind kind = graph->nodes[link.node - 1u].kind;
+      if (kind != VKR_MATERIAL_NODE_SCALAR && kind != VKR_MATERIAL_NODE_COLOR) {
+        return codegen_fail(&codegen, output,
+                            "'%s' takes a Scalar or Colour constant in a "
+                            "Custom graph: it is one value per material",
+                            surface->inputs[port].label);
+      }
+      continue;
+    }
+    if (!core && link.node) {
       return codegen_fail(&codegen, output,
                           "'%s' has no Custom form; a Custom graph drives "
                           "base colour, opacity, metallic, roughness, "

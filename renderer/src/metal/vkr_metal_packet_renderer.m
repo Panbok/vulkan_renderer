@@ -618,13 +618,18 @@ typedef enum VkrMetalCustomGraphState {
 
 typedef struct VkrMetalCustomGraph {
   char function[VKR_MATERIAL_CUSTOM_FUNCTION_CAPACITY];
-  /* A VkrMetalCustomGraphState; the background creation publishes READY or
-     FAILED with release order after writing the pipelines. */
-  VkrAtomicUint32 state;
-  id<MTLRenderPipelineState> forward[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+  /* A VkrMetalCustomGraphState per BRDF variant (ADR-113). The base set is
+     created when a material first names the function, the extension set
+     when a published material of the graph first uses a BRDF extension.
+     Each background creation publishes READY or FAILED with release order
+     after writing its pipelines. */
+  VkrAtomicUint32 state[VKR_METAL_TILED_BRDF_VARIANT_COUNT];
+  id<MTLRenderPipelineState> forward[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
+                                    [VKR_METAL_TILED_DECAL_VARIANT_COUNT]
                                     [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                                     [VKR_METAL_TILED_LIGHTING_COUNT];
-  id<MTLRenderPipelineState> coverage[VKR_METAL_TILED_DECAL_VARIANT_COUNT]
+  id<MTLRenderPipelineState> coverage[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
+                                     [VKR_METAL_TILED_DECAL_VARIANT_COUNT]
                                      [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                                      [VKR_METAL_TILED_LIGHTING_COUNT];
   float64_t create_seconds;
@@ -862,6 +867,9 @@ struct VkrMetalPacketRenderer {
      material uses an extension and the variant's pipelines are READY. The
      upload plan sets it. */
   bool8_t tiled_brdf_draws;
+  /* The Custom slots whose extension pipelines draw this frame, bit
+     slot - 1. */
+  uint32_t custom_brdf_ready_mask;
   id<MTLDepthStencilState> tiled_shade_state;
   id<MTLDepthStencilState> tiled_sky_state;
   id<MTLTexture> tiled_msaa_color;

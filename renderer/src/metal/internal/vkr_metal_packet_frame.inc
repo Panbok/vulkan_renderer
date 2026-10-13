@@ -1096,11 +1096,18 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
     if (!compaction)
       return;
     renderer->custom_ready_mask = vkr_metal_packet_custom_state_mask(
-        renderer, VKR_METAL_CUSTOM_GRAPH_READY);
+        renderer, VKR_METAL_CUSTOM_GRAPH_READY, 0u);
     compaction->ready_mask = renderer->custom_ready_mask;
     compaction->pending_mask = vkr_metal_packet_custom_state_mask(
-        renderer, VKR_METAL_CUSTOM_GRAPH_PENDING);
+        renderer, VKR_METAL_CUSTOM_GRAPH_PENDING, 0u);
+    /* Extended draws take plane 1 in frames that bucket them (ADR-113). */
     compaction->brdf_ready = renderer->tiled_brdf_draws ? 1u : 0u;
+    renderer->custom_brdf_ready_mask =
+        renderer->tiled_brdf_draws
+            ? vkr_metal_packet_custom_state_mask(
+                  renderer, VKR_METAL_CUSTOM_GRAPH_READY, 1u)
+            : 0u;
+    compaction->brdf_ready_mask = renderer->custom_brdf_ready_mask;
     compaction->materials =
         vkr_metal_material_table_device_gpu_address(renderer->materials);
     renderer->custom_compaction = compaction;
@@ -1912,6 +1919,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draws(
         offsetof(VkrMetalCustomCompaction, execution_ranges);
     prepared->indirect.custom_ready_mask = renderer->custom_ready_mask;
     prepared->indirect.brdf_ready = renderer->tiled_brdf_draws;
+    prepared->indirect.brdf_ready_mask = renderer->custom_brdf_ready_mask;
   }
   prepared->indirect.viewport =
       (MTLViewport){0.0,

@@ -650,6 +650,42 @@ static void test_graph_custom(VkrAllocator *allocator) {
   assert(!vkr_material_graph_lower(again, graph_test_str("x.mtg"), NULL, 0u,
                                    allocator, &definition, &lowering));
   assert(strcmp(lowering.node, "out") == 0);
+  /* BRDF extension values (ADR-113) come from constants, which an instance
+     overrides; they reach the row and leave the function as it was. */
+  const char *extended =
+      "{\"version\":1,\"nodes\":[{\"id\":\"clock\",\"type\":\"time\"},"
+      "{\"id\":\"rough\",\"type\":\"scalar\",\"value\":0.25,"
+      "\"parameter\":\"rough\"},"
+      "{\"id\":\"tint\",\"type\":\"color\",\"value\":[0.5,0.5,0.5]},"
+      "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
+      "{\"metallic\":\"clock.seconds\",\"diffuse_roughness\":"
+      "\"rough.value\",\"specular_f82_tint\":\"tint.value\"}}]}";
+  assert(vkr_material_graph_read(graph_test_str(extended), again, error,
+                                 sizeof(error)));
+  const VkrMaterialParam rough = {.name = "rough", .value = "0.75"};
+  assert(vkr_material_graph_lower(again, graph_test_str("x.mtg"), &rough, 1u,
+                                  allocator, &definition, &lowering));
+  assert(lowering.tier == VKR_MATERIAL_TIER_CUSTOM);
+  snprintf(function, sizeof(function), "%s", lowering.function);
+  graph_test_parse(allocator, "assets/materials/c/ext.mt", definition, &parsed);
+  assert(parsed.pbr.diffuse_roughness == 0.75f &&
+         parsed.pbr.specular_f82_tint.x == 0.5f &&
+         parsed.pbr.specular_f82_tint.z == 0.5f);
+  again->nodes[vkr_material_graph_find(again, graph_test_str("rough"))]
+      .value.x = 1.0f;
+  assert(vkr_material_graph_lower(again, graph_test_str("x.mtg"), NULL, 0u,
+                                  allocator, &definition, &lowering));
+  assert(strcmp(lowering.function, function) == 0);
+  /* A per-pixel value on a BRDF extension input is refused. */
+  const char *varying =
+      "{\"version\":1,\"nodes\":[{\"id\":\"clock\",\"type\":\"time\"},"
+      "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
+      "{\"diffuse_roughness\":\"clock.seconds\"}}]}";
+  assert(vkr_material_graph_read(graph_test_str(varying), again, error,
+                                 sizeof(error)));
+  assert(!vkr_material_graph_lower(again, graph_test_str("x.mtg"), NULL, 0u,
+                                   allocator, &definition, &lowering));
+  assert(strcmp(lowering.node, "out") == 0);
   free(graph);
   free(again);
   printf("  test_graph_custom PASSED\n");

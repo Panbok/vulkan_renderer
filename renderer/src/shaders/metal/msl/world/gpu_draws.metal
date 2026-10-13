@@ -36,30 +36,40 @@ struct VkrMetalPacketGpuDrawRoot {
   uint reserved_3;
 };
 
-// The camera view's draw buckets per Custom graph slot (ADR-096). Slot 0
-// holds the Standard draws whose material uses a BRDF extension, which the
-// tiled pipeline shades with its extension variant (ADR-113).
+// The camera view's draw buckets per Custom graph slot (ADR-096), in two
+// planes by BRDF variant (ADR-113): plane 0 holds the Custom graphs' draws;
+// plane 1 the draws whose material uses a BRDF extension, Standard ones in
+// slot 0 and Custom ones in their graph's slot. Plane 0's slot 0 stays empty.
 #define VKR_METAL_CUSTOM_GRAPH_SLOTS 33u
+#define VKR_METAL_CUSTOM_COMPACTION_PLANES 2u
 #define VKR_METAL_MATERIAL_CUSTOM_SHIFT 24u
 #define VKR_METAL_MATERIAL_CUSTOM_MASK 63u
 // A camera classification of a Custom draw: this bit, and its slot - 1 in the
 // bits the probe takes later.
 #define VKR_METAL_CUSTOM_CLASS_BIT 16u
-// A camera classification of an extended Standard draw, bucketed in slot 0.
+// A camera classification of a draw in plane 1: an extended Standard draw
+// alone, an extended Custom draw with the Custom bit and slot.
 #define VKR_METAL_BRDF_CLASS_BIT 32u
 #define VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT 27u
 struct VkrMetalCustomCompaction {
-  uint2 execution_ranges[VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
-  atomic_uint bucket_counts[VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
-  atomic_uint bucket_cursors[VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
+  uint2 execution_ranges[VKR_METAL_CUSTOM_COMPACTION_PLANES]
+                        [VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
+  atomic_uint bucket_counts[VKR_METAL_CUSTOM_COMPACTION_PLANES]
+                           [VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
+  atomic_uint bucket_cursors[VKR_METAL_CUSTOM_COMPACTION_PLANES]
+                            [VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
   atomic_uint late_count;
   // Slots whose pipelines exist this frame, and those still being created,
   // bit slot - 1.
   uint ready_mask;
   uint pending_mask;
-  // Nonzero when the tiled BRDF extension pipelines exist this frame; slot 0
-  // then takes the extended Standard draws.
+  // Nonzero when the tiled BRDF extension pipelines exist this frame; plane
+  // 1's slot 0 then takes the extended Standard draws.
   uint brdf_ready;
+  // The Custom slots whose BRDF extension pipelines exist this frame, bit
+  // slot - 1; their extended draws take plane 1.
+  uint brdf_ready_mask;
+  uint reserved;
   // The frame's material table; row flags carry each material's slot.
   const device VkrMetalPacketMaterial *materials;
 };
@@ -87,13 +97,19 @@ static uint vkr_metal_packet_custom_slot(constant VkrMetalPacketGpuDrawRoot &roo
   return slot;
 }
 
-// Whether a camera-view Standard candidate's material uses a BRDF extension
-// while the tiled extension pipelines exist (ADR-113).
+// Whether a camera-view candidate of Custom slot `slot` (0 for Standard)
+// takes plane 1: its material uses a BRDF extension and that slot's
+// extension pipelines exist this frame (ADR-113).
 static bool vkr_metal_packet_brdf_extended(
     constant VkrMetalPacketGpuDrawRoot &root,
-    const device VkrGpuCandidateDrawRow &candidate) {
-  if (root.custom_compaction == nullptr ||
-      root.custom_compaction->brdf_ready == 0u)
+    const device VkrGpuCandidateDrawRow &candidate, uint slot) {
+  if (root.custom_compaction == nullptr)
+    return false;
+  const bool ready =
+      slot == 0u ? root.custom_compaction->brdf_ready != 0u
+                 : ((root.custom_compaction->brdf_ready_mask >> (slot - 1u)) &
+                    1u) != 0u;
+  if (!ready)
     return false;
   const device VkrMetalPacketMaterial &material =
       root.custom_compaction->materials[candidate.material_index];
@@ -278,25 +294,24 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
       (instance.model * float4(candidate.local_bounding_sphere.xyz, 1.0)).xyz,
       candidate.local_bounding_sphere.w * instance.normal_column1.w,
       instance.normal_column1.w);
-  /* The camera sorts Custom draws into their graph's buckets. */
+  /* The camera sorts Custom draws into their graph's buckets, and draws
+     whose material uses a BRDF extension into plane 1, which the tiled
+     pipeline shades with the extension variant. */
   const uint slot =
       view_index == 0u ? vkr_metal_packet_custom_slot(root, candidate) : 0u;
-  if (slot != 0u && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS) {
+  const uint plane =
+      view_index == 0u && vkr_metal_packet_brdf_extended(root, candidate, slot)
+          ? 1u
+          : 0u;
+  if (plane != 0u || (slot != 0u && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS)) {
     root.classifications[classification_index] =
-        (bucket + 1u) | lod_state | VKR_METAL_CUSTOM_CLASS_BIT |
-        ((slot - 1u) << VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT);
+        (bucket + 1u) | lod_state |
+        (plane != 0u ? VKR_METAL_BRDF_CLASS_BIT : 0u) |
+        (slot != 0u ? VKR_METAL_CUSTOM_CLASS_BIT |
+                          ((slot - 1u) << VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT)
+                    : 0u);
     atomic_fetch_add_explicit(
-        &root.custom_compaction->bucket_counts[slot][bucket], 1u,
-        memory_order_relaxed);
-    return;
-  }
-  /* ...and a Standard draw whose material uses a BRDF extension into slot
-     0, which the tiled pipeline shades with its extension variant. */
-  if (view_index == 0u && vkr_metal_packet_brdf_extended(root, candidate)) {
-    root.classifications[classification_index] =
-        (bucket + 1u) | lod_state | VKR_METAL_BRDF_CLASS_BIT;
-    atomic_fetch_add_explicit(
-        &root.custom_compaction->bucket_counts[0][bucket], 1u,
+        &root.custom_compaction->bucket_counts[plane][slot][bucket], 1u,
         memory_order_relaxed);
     return;
   }
@@ -334,18 +349,22 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
      remaining capacity. */
   if (view_index == 0u && root.custom_compaction != nullptr) {
     device VkrMetalCustomCompaction &custom = *root.custom_compaction;
-    for (uint slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
-      for (uint bucket = 0u; bucket < 8u; ++bucket) {
-        uint bucket_count = atomic_load_explicit(
-            &custom.bucket_counts[slot][bucket], memory_order_relaxed);
-        uint written_count =
-            min(bucket_count, root.visible_capacity - visible_count);
-        custom.execution_ranges[slot][bucket] =
-            uint2(command_base + visible_count, written_count);
-        visible_count += written_count;
-        overflow_count += bucket_count - written_count;
-        atomic_store_explicit(&custom.bucket_cursors[slot][bucket], 0u,
-                              memory_order_relaxed);
+    for (uint plane = 0u; plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
+         ++plane) {
+      for (uint slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+        for (uint bucket = 0u; bucket < 8u; ++bucket) {
+          uint bucket_count = atomic_load_explicit(
+              &custom.bucket_counts[plane][slot][bucket],
+              memory_order_relaxed);
+          uint written_count =
+              min(bucket_count, root.visible_capacity - visible_count);
+          custom.execution_ranges[plane][slot][bucket] =
+              uint2(command_base + visible_count, written_count);
+          visible_count += written_count;
+          overflow_count += bucket_count - written_count;
+          atomic_store_explicit(&custom.bucket_cursors[plane][slot][bucket],
+                                0u, memory_order_relaxed);
+        }
       }
     }
   }
@@ -393,18 +412,19 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   uint visible_index = 0u;
   if ((classification &
        (VKR_METAL_CUSTOM_CLASS_BIT | VKR_METAL_BRDF_CLASS_BIT)) != 0u) {
-    /* A Custom or extended draw fills its slot's bucket after the Standard
-       ones. */
+    /* A Custom or extended draw fills its plane and slot's bucket after
+       the Standard ones. */
+    uint plane = (classification & VKR_METAL_BRDF_CLASS_BIT) != 0u ? 1u : 0u;
     uint slot = (classification & VKR_METAL_CUSTOM_CLASS_BIT) != 0u
                     ? (classification >> VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT) + 1u
                     : 0u;
     device VkrMetalCustomCompaction &custom = *root.custom_compaction;
     uint local_index = atomic_fetch_add_explicit(
-        &custom.bucket_cursors[slot][bucket], 1u, memory_order_relaxed);
-    if (local_index >= custom.execution_ranges[slot][bucket].y)
+        &custom.bucket_cursors[plane][slot][bucket], 1u, memory_order_relaxed);
+    if (local_index >= custom.execution_ranges[plane][slot][bucket].y)
       return;
-    visible_index =
-        custom.execution_ranges[slot][bucket].x - command_base + local_index;
+    visible_index = custom.execution_ranges[plane][slot][bucket].x -
+                    command_base + local_index;
   } else {
     uint local_index = atomic_fetch_add_explicit(&state.bucket_cursors[bucket],
                                                  1u, memory_order_relaxed);

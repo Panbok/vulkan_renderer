@@ -1427,15 +1427,27 @@ static bool8_t lower_custom(const VkrMaterialGraph *graph, String8 graph_path,
   }
   GraphText text = {.allocator = allocator};
   text_append(&text, "type=pbr\n");
-  /* The fallback: each core output fed straight by a constant. */
+  /* The fallback: each core output fed straight by a constant. The BRDF
+     extension values (ADR-113) come from constants only, and every draw of
+     the material takes them. */
   const VkrMaterialNode *output = NULL;
   for (uint32_t i = 0; i < graph->node_count; ++i) {
     if (graph->nodes[i].kind == VKR_MATERIAL_NODE_SURFACE_OUTPUT) {
       output = &graph->nodes[i];
     }
   }
-  static const uint32_t fallbacks[] = {SURFACE_BASE_COLOR, SURFACE_METALLIC,
-                                       SURFACE_ROUGHNESS, SURFACE_EMISSIVE};
+  static const uint32_t fallbacks[] = {
+      SURFACE_BASE_COLOR,
+      SURFACE_METALLIC,
+      SURFACE_ROUGHNESS,
+      SURFACE_EMISSIVE,
+      SURFACE_SPECULAR_F82_TINT,
+      SURFACE_DUAL_SPECULAR_OPACITY,
+      SURFACE_DUAL_SPECULAR_ROUGHNESS_SCALE,
+      SURFACE_DIFFUSE_ROUGHNESS,
+      SURFACE_SMOOTH_TERMINATOR,
+      SURFACE_SMOOTH_TERMINATOR_LENGTH,
+  };
   for (uint32_t f = 0; output && f < ArrayCount(fallbacks); ++f) {
     const SurfaceInput *spec = &s_surface[fallbacks[f]];
     const VkrMaterialLink link = output->inputs[fallbacks[f]];

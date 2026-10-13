@@ -509,26 +509,41 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
     fallback, and counts as late while its slot is in `pending_mask`.
    `materials` is the frame's material table, whose row flags carry each
    material's slot. */
+/* The compaction's planes by BRDF variant (ADR-113): plane 0 holds the
+   Custom graphs' draws, plane 1 the draws whose material uses a BRDF
+   extension, Standard ones in slot 0 and Custom ones in their graph's
+   slot. Plane 0's slot 0 stays empty: Standard draws use the view's own
+   buckets. */
+#define VKR_METAL_CUSTOM_COMPACTION_PLANES 2u
+
 typedef struct VkrMetalCustomCompaction {
-  uint32_t execution_ranges[VKR_METAL_CUSTOM_GRAPH_SLOTS]
+  uint32_t execution_ranges[VKR_METAL_CUSTOM_COMPACTION_PLANES]
+                           [VKR_METAL_CUSTOM_GRAPH_SLOTS]
                            [VKR_WORLD_DRAW_STATE_BUCKET_COUNT][2];
-  uint32_t bucket_counts[VKR_METAL_CUSTOM_GRAPH_SLOTS]
+  uint32_t bucket_counts[VKR_METAL_CUSTOM_COMPACTION_PLANES]
+                        [VKR_METAL_CUSTOM_GRAPH_SLOTS]
                         [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
-  uint32_t bucket_cursors[VKR_METAL_CUSTOM_GRAPH_SLOTS]
+  uint32_t bucket_cursors[VKR_METAL_CUSTOM_COMPACTION_PLANES]
+                         [VKR_METAL_CUSTOM_GRAPH_SLOTS]
                          [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t late_count;
   uint32_t ready_mask;
   uint32_t pending_mask;
-  /* Nonzero when slot 0 takes the Standard draws whose material uses a BRDF
-     extension (ADR-113). */
+  /* Nonzero when plane 1's slot 0 takes the Standard draws whose material
+     uses a BRDF extension. */
   uint32_t brdf_ready;
+  /* The Custom slots whose BRDF extension pipelines exist this frame, bit
+     slot - 1; their extended draws take plane 1. */
+  uint32_t brdf_ready_mask;
+  uint32_t reserved;
   uint64_t materials;
 } VkrMetalCustomCompaction;
 
 _Static_assert(sizeof(VkrMetalCustomCompaction) ==
-                   VKR_METAL_CUSTOM_GRAPH_SLOTS *
+                   VKR_METAL_CUSTOM_COMPACTION_PLANES *
+                           VKR_METAL_CUSTOM_GRAPH_SLOTS *
                            VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 16u +
-                       24u,
+                       32u,
                "Metal Custom compaction ABI drift");
 
 /* The compaction table spans contiguous draw-root cells, once a frame. */

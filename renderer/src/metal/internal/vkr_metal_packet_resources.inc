@@ -1251,8 +1251,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
     slot->owns_textures = false_v;
     slot->double_sided = material->double_sided;
     slot->custom_slot = custom_slot;
-    if (custom_slot)
-      renderer->custom_graphs[custom_slot].references++;
+    vkr_metal_packet_custom_reference(renderer, custom_slot, &pbr);
     slot->live = true_v;
     return true_v;
   }
@@ -2166,8 +2165,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_direct_draws(
               material->double_sided ? MTLCullModeNone : MTLCullModeBack,
           .winding =
               mirrored ? MTLWindingClockwise : MTLWindingCounterClockwise,
-          .brdf_extended = material->custom_slot == 0u &&
-                           vkr_pbr_brdf_extensions_active(&material->pbr),
+          .brdf_extended = vkr_pbr_brdf_extensions_active(&material->pbr),
       };
       offset += run_length;
     }
