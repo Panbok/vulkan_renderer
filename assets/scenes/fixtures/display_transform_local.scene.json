@@ -23,7 +23,7 @@
         ]
       },
       "mesh": {
-        "path": ".scratch/display-native/grid.vkb",
+        "path": "tests/fixtures/rendering/display_swatches.vkb",
         "pipeline_domain": "world"
       }
     }
