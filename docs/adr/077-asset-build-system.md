@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -276,7 +276,14 @@ from it.
   editor's material, graph and theme writes, which go to the workspace's
   own `assets/` (`vkr_vfs_overlay_write_path`), so a shared project
   carries them; the material index lists both trees. A workspace that is
-  the root overlays nothing.
+  the root overlays nothing. A project job's request names the overlay
+  (`asset_overlay`); Bakery sets it in-process and passes it to every tool
+  it runs as `VKR_ASSET_OVERLAY`, which `vkr_vfs_mount_startup`, the
+  Bakery entry points and the harness's scene-content manifest read
+  (`vkr_vfs_overlay_from_environment`). The bake tools' own file streams
+  open the overlay's copy through `vkr_vfs_read_path`, and the harness
+  manifest and Bakery's dependency checks digest that copy, so a bake
+  reads a workspace's materials as the editor shows them.
 - **Platform-neutral build textures** (owner decision, 2026-10-12). Cooked
   textures differ per GPU family (ASTC on Apple silicon, BC on x86-64), so
   a project another host shares arrives without them. The mesh cooker

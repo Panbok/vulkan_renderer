@@ -127,6 +127,17 @@ vkr_internal bool8_t vkr_project_job_init(VkrProjectJob *job) {
   (void)vkr_project_resolve(legacy && legacy[0] ? legacy : vkr_content_root(),
                             false_v, job->legacy_root,
                             sizeof(job->legacy_root));
+  /* The workspace's own assets, such as materials the editor wrote there,
+     serve reads before the root's, here and in every tool the job runs
+     (ADR-077). */
+  const char *overlay = vkr_project_json_text(job->request, "asset_overlay");
+  if (overlay && overlay[0] &&
+      (!vkr_project_resolve(overlay, true_v, job->asset_overlay,
+                            sizeof(job->asset_overlay)) ||
+       !vkr_vfs_set_overlay_root(job->asset_overlay))) {
+    return vkr_project_fail(job, "The asset overlay '%s' does not resolve",
+                            overlay);
+  }
   (void)snprintf(job->generated_root, sizeof(job->generated_root),
                  "%s/cache/generated", job->workspace);
   const char *tier = vkr_project_json_text(job->request, "texture_tier");

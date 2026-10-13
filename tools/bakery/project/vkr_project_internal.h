@@ -94,6 +94,9 @@ typedef struct VkrProjectJob {
   char project_root[VKR_PROJECT_PATH];
   char final_path[VKR_PROJECT_PATH]; /* project/scenes/<scene_id> */
   char legacy_root[VKR_PROJECT_PATH];
+  /* The editor's workspace overlay (`asset_overlay`), through which the job
+     and its tools read `assets/` as the editor does; empty for none. */
+  char asset_overlay[VKR_PROJECT_PATH];
   char stage[VKR_PROJECT_PATH]; /* Empty when no staging directory. */
   char runtime_directory[VKR_PROJECT_PATH];
   char generated_root[VKR_PROJECT_PATH];

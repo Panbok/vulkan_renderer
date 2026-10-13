@@ -1,6 +1,7 @@
 #include "harness_test.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_subsystem_plan.h"
+#include "filesystem/vkr_vfs.h"
 
 #include "test_temp_dir.h"
 #include "vkr_harness.h"
@@ -1284,6 +1285,61 @@ vkr_internal void test_harness_scene_manifest_uppercase_obj_owner(void) {
   assert(rmdir(assets) == 0);
   assert(rmdir(root) == 0);
   printf("  test_harness_scene_manifest_uppercase_obj_owner PASSED\n");
+}
+
+/* A project bake's capture names an `assets/` file the editor wrote to the
+   workspace overlay, outside the harness root (ADR-077). With the overlay
+   the manifest resolves and digests it; without, it is missing. */
+vkr_internal void test_harness_scene_manifest_workspace_overlay(void) {
+  printf("  Running test_harness_scene_manifest_workspace_overlay...\n");
+  char root[] = "/tmp/vkr_scene_manifest_root_XXXXXX";
+  char overlay[] = "/tmp/vkr_scene_manifest_overlay_XXXXXX";
+  assert(vkr_test_temp_dir_create(root));
+  assert(vkr_test_temp_dir_create(overlay));
+  VkrHarnessError error = {0};
+  char scenes[VKR_HARNESS_PATH_MAX];
+  char models[VKR_HARNESS_PATH_MAX];
+  snprintf(scenes, sizeof(scenes), "%s/assets/scenes", root);
+  snprintf(models, sizeof(models), "%s/assets/models", overlay);
+  assert(vkr_harness_make_directories(scenes, &error));
+  assert(vkr_harness_make_directories(models, &error));
+  char scene_path[VKR_HARNESS_PATH_MAX];
+  char obj_path[VKR_HARNESS_PATH_MAX];
+  snprintf(scene_path, sizeof(scene_path), "%s/test.scene.json", scenes);
+  snprintf(obj_path, sizeof(obj_path), "%s/test.obj", models);
+  const char *scene = "{\"mesh\":\"assets/models/test.obj\",\"entities\":[]}";
+  const char *obj = "o workspace\n";
+  assert(vkr_harness_atomic_write(scene_path, scene, strlen(scene), &error));
+  assert(vkr_harness_atomic_write(obj_path, obj, strlen(obj), &error));
+
+  Arena *arena = arena_create(MB(8), MB(4));
+  assert(arena);
+  assert(vkr_vfs_set_overlay_root(overlay));
+  VkrHarnessSceneManifest manifest = {0};
+  assert(vkr_harness_scene_manifest_build(root, "assets/scenes/test.scene.json",
+                                          arena, &manifest, &error));
+  assert(manifest.asset_count == 2u);
+  assert(vkr_vfs_set_overlay_root(NULL));
+  VkrHarnessSceneManifest missing = {0};
+  MemZero(&error, sizeof(error));
+  assert(!vkr_harness_scene_manifest_build(
+      root, "assets/scenes/test.scene.json", arena, &missing, &error));
+  assert(string_equals(error.code, "scene_manifest.missing"));
+  arena_destroy(arena);
+
+  char root_assets[VKR_HARNESS_PATH_MAX];
+  char overlay_assets[VKR_HARNESS_PATH_MAX];
+  snprintf(root_assets, sizeof(root_assets), "%s/assets", root);
+  snprintf(overlay_assets, sizeof(overlay_assets), "%s/assets", overlay);
+  assert(remove(obj_path) == 0);
+  assert(remove(scene_path) == 0);
+  assert(rmdir(scenes) == 0);
+  assert(rmdir(root_assets) == 0);
+  assert(rmdir(root) == 0);
+  assert(rmdir(models) == 0);
+  assert(rmdir(overlay_assets) == 0);
+  assert(rmdir(overlay) == 0);
+  printf("  test_harness_scene_manifest_workspace_overlay PASSED\n");
 }
 #endif
 
@@ -3267,6 +3323,7 @@ bool32_t run_harness_tests(void) {
 #if !defined(_WIN32)
   test_harness_scene_manifest_tracks_transitive_content();
   test_harness_scene_manifest_uppercase_obj_owner();
+  test_harness_scene_manifest_workspace_overlay();
   test_harness_managed_workspace_closure();
 #endif
   test_harness_scene_manifest_identity_is_host_neutral();

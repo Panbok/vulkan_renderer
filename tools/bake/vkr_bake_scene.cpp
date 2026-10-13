@@ -137,7 +137,8 @@ bool append_unique_path(std::vector<std::string> *paths,
 }
 
 bool read_file(const char *path, std::vector<uint8_t> *out_bytes) {
-  std::ifstream file(vkr_filesystem_native_utf8_path(path),
+  /* A workspace's own copy serves first (ADR-077). */
+  std::ifstream file(vkr_filesystem_content_read_path(path),
                      std::ios::binary | std::ios::ate);
   if (!file)
     return false;

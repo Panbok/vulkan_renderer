@@ -1,4 +1,5 @@
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "vkr_bakery_internal.h"
 
 #include "platform/vkr_platform.h"
@@ -167,6 +168,11 @@ int vkr_bakery_tool_main(int argc, char **argv) {
              vkr_bakery_tools[i].summary);
     }
     return argc < 2 ? 2 : 0;
+  }
+  /* A project bake's tools read the workspace's assets as its job does. */
+  if (!vkr_vfs_overlay_from_environment()) {
+    fprintf(stderr, "%s does not fit\n", VKR_VFS_ASSET_OVERLAY_VARIABLE);
+    return 1;
   }
   const VkrBakeryTool *tool = vkr_bakery_tool_find(argv[1]);
   if (!tool) {

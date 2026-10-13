@@ -653,8 +653,19 @@ vkr_vfs_executable_directories(char directories[2][VKR_VFS_PATH_MAX]) {
   return directory_count;
 }
 
+bool8_t vkr_vfs_overlay_from_environment(void) {
+  char directory[VKR_VFS_PATH_MAX];
+  if (!vkr_platform_environment_variable(VKR_VFS_ASSET_OVERLAY_VARIABLE,
+                                         directory, sizeof(directory))) {
+    vkr_vfs_report("%s does not fit", VKR_VFS_ASSET_OVERLAY_VARIABLE);
+    return false_v;
+  }
+  return !directory[0] || vkr_vfs_set_overlay_root(directory);
+}
+
 bool8_t vkr_vfs_mount_startup(void) {
   vkr_vfs_default_root();
+  (void)vkr_vfs_overlay_from_environment();
   const char *record = getenv("VKR_VFS_RECORD");
   if (record && record[0] && !vkr_vfs.record) {
     vkr_vfs.record = file_fopen(record, "ab");
@@ -796,6 +807,29 @@ bool8_t vkr_vfs_overlay_write_path(const FilePath *path, FilePath *out_path,
       .path = {.str = (uint8_t *)buffer, .length = overlay->length + length},
       .type = FILE_PATH_TYPE_ABSOLUTE};
   return true_v;
+}
+
+const char *vkr_vfs_read_path(const char *path, char *buffer,
+                              uint64_t capacity) {
+  if (!path || !path[0] || !buffer || !vkr_vfs_overlay_root()) {
+    return path;
+  }
+  vkr_vfs_default_root();
+  char absolute[VKR_VFS_PATH_MAX];
+  const bool8_t relative =
+      !vkr_vfs_is_separator((uint8_t)path[0]) && !(path[0] && path[1] == ':');
+  const int written =
+      relative ? snprintf(absolute, sizeof(absolute), "%.*s/%s",
+                          (int)vkr_vfs.root_length, vkr_vfs.root, path)
+               : snprintf(absolute, sizeof(absolute), "%s", path);
+  if (written <= 0 || (uint32_t)written >= sizeof(absolute)) {
+    return path;
+  }
+  const FilePath source = {.path = string8_create_from_cstr(
+                               (const uint8_t *)absolute, (uint64_t)written),
+                           .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath overlaid = {0};
+  return fs_vfs_overlay(&source, &overlaid, buffer, capacity) ? buffer : path;
 }
 
 bool8_t fs_vfs_overlay(const FilePath *path, FilePath *out_path, char *buffer,

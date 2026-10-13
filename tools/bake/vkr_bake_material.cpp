@@ -366,14 +366,16 @@ bool8_t layer_texture_intent_valid(const std::string &value, uint32_t slot) {
 }
 
 bool8_t read_file(const fs::path &path, std::vector<uint8_t> *out_bytes) {
+  /* A workspace's own copy serves first (ADR-077). */
+  const fs::path native = vkr_filesystem_content_read_path(path.u8string());
   std::error_code error;
-  if (!fs::is_regular_file(vkr_filesystem_native_path(path), error) || error)
+  if (!fs::is_regular_file(native, error) || error)
     return false_v;
-  const uintmax_t size = fs::file_size(vkr_filesystem_native_path(path), error);
+  const uintmax_t size = fs::file_size(native, error);
   if (error || size == 0u || size > INT_MAX || size > SIZE_MAX)
     return false_v;
   out_bytes->resize((size_t)size);
-  std::ifstream file(vkr_filesystem_native_path(path), std::ios::binary);
+  std::ifstream file(native, std::ios::binary);
   return file && file.read((char *)out_bytes->data(),
                            (std::streamsize)out_bytes->size())
              ? true_v
@@ -519,7 +521,9 @@ bool8_t decode_bc_level(uint32_t vk_format, const uint8_t *blocks,
 bool8_t decode_ktx2(VkrBakeTextureStore *store, const fs::path &path,
                     VkrBakeTextureEntry *entry) {
   ktxTexture2 *texture = nullptr;
-  if (vkr_ktx_read_file(path.u8string().c_str(),
+  char overlaid[4096];
+  if (vkr_ktx_read_file(vkr_vfs_read_path(path.u8string().c_str(), overlaid,
+                                          sizeof(overlaid)),
                         KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
                         &texture) != KTX_SUCCESS ||
       !texture)
@@ -939,7 +943,7 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
       *out_error = VKR_BAKE_MATERIAL_ERROR_INVALID_ARGUMENT;
     return false_v;
   }
-  std::ifstream source(vkr_filesystem_native_utf8_path(material_path));
+  std::ifstream source(vkr_filesystem_content_read_path(material_path));
   if (!source) {
     if (out_error)
       *out_error = VKR_BAKE_MATERIAL_ERROR_IO;

@@ -156,6 +156,16 @@ bool8_t vkr_vfs_set_content_root(const char *directory);
  * vkr_vfs_unmount_all(). Returns false when `directory` is too long.
  */
 bool8_t vkr_vfs_set_overlay_root(const char *directory);
+/** The environment variable naming an overlay directory for a process the
+ * editor starts, such as a project bake's tools (ADR-077). */
+#define VKR_VFS_ASSET_OVERLAY_VARIABLE "VKR_ASSET_OVERLAY"
+/**
+ * Sets the overlay from VKR_VFS_ASSET_OVERLAY_VARIABLE when it names one;
+ * an unset variable keeps the current overlay. vkr_vfs_mount_startup calls
+ * it; a tool that does not mount reads it itself. False when the value does
+ * not fit.
+ */
+bool8_t vkr_vfs_overlay_from_environment(void);
 /**
  * The overlay directory with a trailing separator, or NULL when none is set.
  * The string stays valid until vkr_vfs_unmount_all().
@@ -169,6 +179,15 @@ const char *vkr_vfs_overlay_root(void);
  */
 bool8_t vkr_vfs_overlay_write_path(const FilePath *path, FilePath *out_path,
                                    char *buffer, uint64_t capacity);
+/**
+ * The path a read of `path` should open, for a tool that opens files without
+ * the VFS, such as the bake tools' streams: the overlay's copy of an
+ * `assets/` identity below the content root (a relative `path` counts from
+ * the root) when that file exists, written to `buffer`; otherwise `path`
+ * itself. Writes keep `path`.
+ */
+const char *vkr_vfs_read_path(const char *path, char *buffer,
+                              uint64_t capacity);
 /** Maps and validates one archive and appends it to the mount order. */
 bool8_t vkr_vfs_mount_pack(const char *path);
 /**

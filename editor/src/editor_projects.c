@@ -1831,6 +1831,10 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
       project_json_text(writer, "legacy_root",
                         projects->legacy_root[0] ? projects->legacy_root
                                                  : vkr_content_root()) &&
+      /* The tools read the workspace's own assets as the editor does
+         (ADR-077). */
+      project_json_text(writer, "asset_overlay",
+                        vkr_vfs_overlay_root() ? vkr_vfs_overlay_root() : "") &&
       project_json_text(writer, "bootstrap_directory",
                         projects->bootstrap_directory) &&
       project_json_text(
@@ -2401,6 +2405,10 @@ static uint64_t project_start_finalize(VkrEditorProjects *projects,
       project_json_text(writer, "legacy_root",
                         projects->legacy_root[0] ? projects->legacy_root
                                                  : vkr_content_root()) &&
+      /* The tools read the workspace's own assets as the editor does
+         (ADR-077). */
+      project_json_text(writer, "asset_overlay",
+                        vkr_vfs_overlay_root() ? vkr_vfs_overlay_root() : "") &&
       project_json_text(writer, "runtime_directory", job_directory) &&
       project_json_text(writer, "scene_id",
                         projects->project->scenes[scene].id) &&
@@ -2456,6 +2464,10 @@ static uint64_t project_start_project_finalize(VkrEditorProjects *projects,
       project_json_text(writer, "legacy_root",
                         projects->legacy_root[0] ? projects->legacy_root
                                                  : vkr_content_root()) &&
+      /* The tools read the workspace's own assets as the editor does
+         (ADR-077). */
+      project_json_text(writer, "asset_overlay",
+                        vkr_vfs_overlay_root() ? vkr_vfs_overlay_root() : "") &&
       project_json_text(writer, "runtime_directory", job_directory) &&
       project_write_progressive_fields(projects, frame, writer,
                                        job_directory) &&

@@ -547,8 +547,14 @@ vkr_internal bool8_t vkr_bake_dependency(VkrBake *bake,
   char resolved[2][VKR_BAKE_PATH];
   uint32_t resolved_count = 0u;
   for (uint32_t i = 0u; i < candidate_count; ++i) {
+    /* The workspace's own copy of an asset is the one the baker read
+       (ADR-077). */
+    char overlaid[VKR_BAKE_PATH];
     char path[VKR_BAKE_PATH];
-    if (!vkr_bake_resolve(candidates[i], path) || !vkr_bakery_is_file(path)) {
+    if (!vkr_bake_resolve(
+            vkr_vfs_read_path(candidates[i], overlaid, sizeof(overlaid)),
+            path) ||
+        !vkr_bakery_is_file(path)) {
       continue;
     }
     bool8_t seen = false_v;
@@ -1984,6 +1990,13 @@ vkr_internal bool8_t vkr_bake_scene_manifest(
     }
     char path[VKR_BAKE_PATH];
     VKR_BAKE_TRY(vkr_bake_confined(bake, root, relative, "Scene asset", path));
+    /* The workspace's own copy of an asset is the one the capture read and
+       its manifest digests (ADR-077). */
+    char overlaid[VKR_BAKE_PATH];
+    if (strncmp(relative, "assets/", 7u) == 0 &&
+        vkr_vfs_read_path(relative, overlaid, sizeof(overlaid)) == overlaid) {
+      (void)snprintf(path, sizeof(path), "%s", overlaid);
+    }
     int64_t bytes = -1;
     if (self_output && strcmp(path, self_output) == 0) {
       const char *recorded =
@@ -3134,6 +3147,12 @@ int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv) {
     return 1;
   }
   (void)vkr_bake_resolve(vkr_content_root(), bake.repo);
+  /* A project bake's tools read the workspace's assets as its job does. */
+  if (!vkr_vfs_overlay_from_environment()) {
+    fprintf(stderr, "%s does not fit\n", VKR_VFS_ASSET_OVERLAY_VARIABLE);
+    arena_destroy(bake.arena);
+    return 1;
+  }
   vkr_bakery_install_cancel_signals();
   const int code =
       strcmp(argv[0], "diffuse") == 0 ? vkr_bake_diffuse_main(&bake, argc, argv)

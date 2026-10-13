@@ -6,6 +6,7 @@
 
 extern "C" {
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 }
 
 /* Use at a filesystem operation, after resolving any document-relative paths.
@@ -33,4 +34,14 @@ vkr_filesystem_native_path(const std::filesystem::path &path) {
 inline std::filesystem::path
 vkr_filesystem_native_utf8_path(const std::string &utf8) {
   return vkr_filesystem_native_path(std::filesystem::u8path(utf8));
+}
+
+/* The native path to read content `utf8` from: the workspace overlay's copy
+ * of an `assets/` identity when the process has one (vkr_vfs_read_path),
+ * else `utf8`. For reads only; writes use vkr_filesystem_native_utf8_path. */
+inline std::filesystem::path
+vkr_filesystem_content_read_path(const std::string &utf8) {
+  char buffer[4096];
+  return vkr_filesystem_native_utf8_path(
+      vkr_vfs_read_path(utf8.c_str(), buffer, sizeof(buffer)));
 }

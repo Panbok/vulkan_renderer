@@ -1,6 +1,7 @@
 #include "assets/vkr_mesh_cooked.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_json.h"
+#include "filesystem/vkr_vfs.h"
 #include "vkr_harness.h"
 
 #define VKR_HARNESS_FNV1A64_OFFSET_BASIS 0xcbf29ce484222325ull
@@ -298,6 +299,34 @@ static bool8_t vkr_harness_scene_generated_material_source(
                        stem) > 0;
 }
 
+/* The workspace overlay's copy of an `assets/` identity, which a runtime
+   with that overlay (VKR_ASSET_OVERLAY, as a project bake's tools run)
+   reads before the root's (ADR-077). */
+static bool8_t
+vkr_harness_scene_overlay_file(const char *identity,
+                               char out_absolute[VKR_HARNESS_PATH_MAX]) {
+  const char *overlay = vkr_vfs_overlay_root();
+  char overlay_root[VKR_HARNESS_PATH_MAX];
+  char candidate[VKR_HARNESS_PATH_MAX];
+  return overlay && string_n_equals(identity, "assets/", 7u) &&
+         vkr_harness_realpath(overlay, overlay_root) &&
+         string_format(candidate, sizeof(candidate), "%s%s", overlay,
+                       identity) > 0 &&
+         vkr_harness_realpath(candidate, out_absolute) &&
+         vkr_harness_scene_path_below(overlay_root, out_absolute);
+}
+
+/* The file a recorded dependency names: the overlay's copy of an `assets/`
+   identity first, as the runtime reads it, then the root's. */
+static bool8_t
+vkr_harness_scene_asset_file(const char *resolved_root, const char *identity,
+                             char out_absolute[VKR_HARNESS_PATH_MAX],
+                             VkrHarnessError *out_error) {
+  return vkr_harness_scene_overlay_file(identity, out_absolute) ||
+         vkr_harness_resolve_existing_path(resolved_root, identity,
+                                           out_absolute, out_error);
+}
+
 static bool8_t vkr_harness_scene_manifest_resolve(
     const char *resolved_root, const char *owner_relative,
     const char *reference, VkrHarnessAssetContext context,
@@ -347,6 +376,10 @@ static bool8_t vkr_harness_scene_manifest_resolve(
   clean[clean_length] = '\0';
   if (!vkr_harness_scene_asset_extension(clean, context)) {
     return false_v;
+  }
+
+  if (vkr_harness_scene_overlay_file(clean, out_absolute)) {
+    return string_format(out_relative, VKR_HARNESS_PATH_MAX, "%s", clean) > 0;
   }
 
   char candidate[VKR_HARNESS_PATH_MAX];
@@ -631,8 +664,8 @@ vkr_harness_scene_manifest_hash_missing(const char *resolved_root, Arena *arena,
     if (manifest->assets[i].identity[0] != '\0') {
       continue;
     }
-    if (!vkr_harness_resolve_existing_path(
-            resolved_root, manifest->assets[i].path, paths[count], out_error)) {
+    if (!vkr_harness_scene_asset_file(resolved_root, manifest->assets[i].path,
+                                      paths[count], out_error)) {
       return false_v;
     }
     indices[count++] = i;
@@ -893,6 +926,12 @@ bool8_t vkr_harness_scene_manifest_build_context(
   }
   MemZero(out_manifest, sizeof(*out_manifest));
   out_manifest->asset_context = context;
+  /* The overlay a project bake names for this process, once. */
+  static bool8_t overlay_read = false_v;
+  if (!overlay_read) {
+    overlay_read = true_v;
+    (void)vkr_vfs_overlay_from_environment();
+  }
   out_manifest->assets = arena_alloc(
       arena, sizeof(VkrHarnessSceneAsset) * VKR_HARNESS_MAX_SCENE_ASSETS,
       ARENA_MEMORY_TAG_ARRAY);
@@ -956,8 +995,8 @@ bool8_t vkr_harness_scene_manifest_build_context(
       break;
     }
     char absolute[VKR_HARNESS_PATH_MAX];
-    if (!vkr_harness_resolve_existing_path(resolved_root, asset->path, absolute,
-                                           out_error)) {
+    if (!vkr_harness_scene_asset_file(resolved_root, asset->path, absolute,
+                                      out_error)) {
       ok = false_v;
       break;
     }

@@ -3,6 +3,7 @@
 #include "../vkr_bakery_buffer.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_asset_path.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_platform.h"
 
 #include <errno.h>
@@ -2228,10 +2229,16 @@ bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
                                 const char *const *arguments, uint32_t count,
                                 const char *label, const char *stdout_path,
                                 int32_t *out_code) {
+  /* A tool reads the workspace's assets as the job does. */
+  const VkrPlatformEnvironmentVariable overlay[] = {
+      {VKR_VFS_ASSET_OVERLAY_VARIABLE, job->asset_overlay}};
+  const bool8_t overlaid = job->asset_overlay[0] != '\0';
   const VkrPlatformProcessConfig config = {
       .executable = executable,
       .arguments = arguments,
       .argument_count = count,
+      .environment = overlaid ? overlay : NULL,
+      .environment_count = overlaid ? 1u : 0u,
       .working_directory = job->config->root[0] ? job->config->root : NULL,
       .stdout_path = stdout_path,
       .stderr_path = stdout_path,
