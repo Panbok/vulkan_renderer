@@ -6843,6 +6843,190 @@ static VkrEditorOpStatus ops_run_resolve(OpsContext *ctx) {
   return ops_submit(ctx, batch, ops_arg_bool(args, "dry_run", false_v));
 }
 
+/* Whether an entity's `name` matches `pattern`: equal to it, or, when it
+   ends in `*`, starting with the rest. */
+static bool8_t ops_name_matches(String8 name, String8 pattern) {
+  if (pattern.length && pattern.str[pattern.length - 1u] == '*') {
+    const uint64_t prefix = pattern.length - 1u;
+    return name.length >= prefix &&
+           MemCompare(name.str, pattern.str, prefix) == 0;
+  }
+  return name.length == pattern.length &&
+         MemCompare(name.str, pattern.str, name.length) == 0;
+}
+
+static bool8_t ops_draw_distance_equal(const SceneDrawDistance *a,
+                                       const SceneDrawDistance *b) {
+  return a->max_distance == b->max_distance &&
+         a->min_screen_pixels == b->min_screen_pixels &&
+         a->shadow_distance == b->shadow_distance &&
+         a->cast_shadows == b->cast_shadows;
+}
+
+/* draw_distance.set (large-level rendering): sets `values` on the
+   draw_distance component of every entity of one container chosen by
+   name, kind, tags, region or root, adding it where missing, or with
+   `remove` removes it, as one journal group. Entities it would not change
+   stay out of the batch; the answer counts those it changed. */
+static VkrEditorOpStatus ops_run_draw_distance_set(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  if (call->stage) {
+    const VkrEditorOpStatus status = ops_batch_wait(ctx);
+    const OpsPendingBatch *pending = call->state;
+    if (status == VKR_EDITOR_OP_DONE && call->result && !call->error_code) {
+      ops_set(ctx, call->result, "changed",
+              vkr_bakery_json_int(call->arena, pending->batch.op_count));
+    }
+    return status;
+  }
+
+  /* The selection, as scene.describe reads it, and the name and kind. */
+  const VkrBakeryJson *args = call->args;
+  OpsSelection selection;
+  if (!ops_selection_read(ctx, args, &selection)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  String8 name = {0};
+  const bool8_t named =
+      vkr_bakery_json_get_string(args, "name", &name) && name.length;
+  /* `mesh` names entities that draw a cooked mesh, which scene.describe
+     lists no component for; other kinds are component types. */
+  String8 kind = {0};
+  const bool8_t kind_given = vkr_bakery_json_get_string(args, "kind", &kind);
+  const bool8_t kind_mesh = kind_given && ops_equals(kind, "mesh");
+  const VkrTypeDesc *kind_type = NULL;
+  uint32_t kind_field = 0u;
+  if (kind_given && !kind_mesh) {
+    kind_type = ops_type_named(kind, &kind_field);
+    if (!kind_type) {
+      ops_fail(ctx, OPS_INVALID,
+               "'kind' is mesh or a component type as scene.describe lists "
+               "them, such as brush, shape or scatter");
+      return VKR_EDITOR_OP_DONE;
+    }
+  }
+  if (!named && !kind_given && !selection.region && !selection.tags.text[0] &&
+      !selection.root.entity.u64) {
+    ops_fail(ctx, OPS_INVALID,
+             "Choose the entities by 'name', 'kind', 'tags', 'region' or "
+             "'root'");
+    return VKR_EDITOR_OP_DONE;
+  }
+
+  /* The values, checked once over the defaults before any entity. */
+  const VkrTypeDesc *type = &vkr_scene_draw_distance_type;
+  const bool8_t remove = ops_arg_bool(args, "remove", false_v);
+  const VkrBakeryJson *values = vkr_bakery_json_get(args, "values");
+  if (remove == (values != NULL)) {
+    ops_fail(ctx, OPS_INVALID, "Give 'values' to set, or 'remove' true");
+    return VKR_EDITOR_OP_DONE;
+  }
+  SceneDrawDistance probe;
+  vkr_type_defaults(type, &probe);
+  char error[160] = {0};
+  if (!remove && !ops_component_read(ctx, type, values, &probe)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_type_validate(type, &probe, error, sizeof(error))) {
+    ops_fail(ctx, OPS_INVALID, "%s: %s", type->name, error);
+    return VKR_EDITOR_OP_DONE;
+  }
+
+  OpsBatch *batch =
+      arena_alloc(call->arena, sizeof(*batch), ARENA_MEMORY_TAG_STRUCT);
+  if (!batch) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  MemZero(batch, sizeof(*batch));
+  batch->container = -1;
+  batch->review = ops_arg_bool(args, "review", true_v);
+  batch->select = ops_arg_bool(args, "select", false_v);
+  if (!vkr_bakery_json_get_string(args, "label", &batch->label) ||
+      !batch->label.length) {
+    batch->label = remove ? string8_lit("Remove draw distance")
+                          : string8_lit("Set draw distance");
+  }
+  const OpsDef *add = ops_find(string8_lit("component.add"));
+  const OpsDef *set = ops_find(string8_lit("component.set"));
+  const OpsDef *drop = ops_find(string8_lit("component.remove"));
+
+  /* One component edit per entity the selection holds and the edit
+     changes; parts such as brush faces belong to their owners. */
+  const VkrScene *scene = ops_scene(ctx->frame, selection.container);
+  _Alignas(16) uint8_t kind_bytes[VKR_TYPE_VALUE_MAX];
+  uint32_t matched = 0u;
+  for (uint32_t i = 0; scene && i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    if (!vkr_scene_entity_alive(scene, entity) ||
+        vkr_scene_entity_is_part(scene, entity)) {
+      continue;
+    }
+    if (named && !ops_name_matches(vkr_scene_get_name(scene, entity), name)) {
+      continue;
+    }
+    if (kind_mesh && !vkr_entity_get_component_if_alive_const(
+                         scene->world, entity, scene->comp_mesh_renderer)) {
+      continue;
+    }
+    if (kind_type &&
+        !ops_component_get(scene, entity, kind_type, kind_field, kind_bytes)) {
+      continue;
+    }
+    Vec3 lo = {0};
+    Vec3 hi = {0};
+    bool8_t bounded = false_v;
+    if (!ops_selection_has(scene, &selection, entity, &lo, &hi, &bounded)) {
+      continue;
+    }
+    matched++;
+
+    const SceneDrawDistance *current = vkr_scene_get_typed(scene, entity, type);
+    const OpsDef *def = remove ? drop : current ? set : add;
+    if (remove && !current) {
+      continue;
+    }
+    if (!remove && current) {
+      SceneDrawDistance next = *current;
+      if (!ops_component_read(ctx, type, values, &next)) {
+        return VKR_EDITOR_OP_DONE;
+      }
+      if (ops_draw_distance_equal(current, &next)) {
+        continue;
+      }
+    }
+    if (batch->op_count >= VKR_SAMPLE_EDIT_BATCH_MAX) {
+      ops_fail(ctx, OPS_LIMIT,
+               "More than %u entities would change; narrow the selection",
+               VKR_SAMPLE_EDIT_BATCH_MAX);
+      return VKR_EDITOR_OP_DONE;
+    }
+    char id[40];
+    ops_id_text(entity, id, sizeof(id));
+    VkrBakeryJson *edit = vkr_bakery_json_object(call->arena);
+    ops_set(ctx, edit, "entity", vkr_bakery_json_cstr(call->arena, id));
+    ops_set(ctx, edit, "type", vkr_bakery_json_cstr(call->arena, type->name));
+    if (!remove) {
+      ops_set(ctx, edit, "values", vkr_bakery_json_clone(call->arena, values));
+    }
+    if (!def || !ops_build_one(ctx, def, edit, batch)) {
+      if (!call->error_code) {
+        ops_fail(ctx, OPS_INVALID, "The component operations are missing");
+      }
+      return VKR_EDITOR_OP_DONE;
+    }
+  }
+
+  if (!batch->count) {
+    call->result = vkr_bakery_json_object(call->arena);
+    ops_set(ctx, call->result, "matched",
+            vkr_bakery_json_int(call->arena, matched));
+    ops_set(ctx, call->result, "changed", vkr_bakery_json_int(call->arena, 0));
+    return VKR_EDITOR_OP_DONE;
+  }
+  return ops_submit(ctx, batch, ops_arg_bool(args, "dry_run", false_v));
+}
+
 static VkrEditorOpStatus ops_run_changes_list(OpsContext *ctx) {
   VkrBakeryJson *changes = vkr_bakery_json_array(ops_arena(ctx));
   for (uint32_t i = 0; i < ctx->ops->change_count; ++i) {
@@ -14809,6 +14993,20 @@ static const OpsDef s_ops[] = {
      ",\"gap\":{\"type\":\"number\",\"minimum\":0.002,\"maximum\":0.1}"
      "," OPS_REVIEW_SCHEMA "},\"required\":[\"region\"]}",
      ops_run_resolve, NULL, 0u},
+    {"draw_distance.set",
+     "Set how far the camera draws objects, on every entity of one scene "
+     "that 'name' (exact, or a prefix ending in *), 'kind' (mesh, or a "
+     "component type as scene.describe lists it, such as brush), 'tags', "
+     "'region' and 'root' all choose: 'values' (max_distance m, "
+     "min_screen_pixels up to 7.5, shadow_distance m, cast_shadows; 0 is no "
+     "limit) go onto each one's draw_distance component, added where "
+     "missing, or 'remove' takes it off. Children without their own take "
+     "it. One journal group; 'changed' counts the entities it changed.",
+     "{\"type\":\"object\",\"properties\":{" OPS_TAGS_REGION_SCHEMA
+     ",\"name\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\"},"
+     "\"values\":" OPS_VALUES_SCHEMA
+     ",\"remove\":{\"type\":\"boolean\"}," OPS_REVIEW_SCHEMA "}}",
+     ops_run_draw_distance_set, NULL, 0u},
     {"level.map",
      "The region's floors as text, a floor plan to read instead of a "
      "picture: 'rows' run from min z to max z, each character a cell along "

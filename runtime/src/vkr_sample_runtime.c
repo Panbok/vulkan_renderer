@@ -442,6 +442,10 @@ typedef struct State {
   float32_t ibl_validation_base_intensity;
   float32_t ibl_validation_base_diffuse_intensity;
   float32_t ibl_validation_base_specular_intensity;
+
+  /* The VKR_DRAW_DISTANCE=0 diagnostic as the runtime read it at creation:
+     the camera draws everything whatever the Scene's view asks. */
+  bool8_t draw_distance_diagnostic_off;
 } State;
 
 vkr_global State *state = NULL;
@@ -5230,6 +5234,11 @@ static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
      or in a game (ADR-084). */
   const bool8_t volumes = application->editor_viewport.enabled &&
                           !application->editor_viewport.simulation_running;
+  /* The Scene's draw distance switch likewise applies only while the editor
+     edits: Play draws what the game draws. */
+  application->draw_distance_off =
+      state->draw_distance_diagnostic_off ||
+      (volumes && state->view_state.draw_distance_off);
   /* The editor's hidden objects likewise apply only while it edits. */
   const uint32_t hidden_count = volumes ? state->hidden.count : 0u;
   /* The model stage hides every container's objects: an isolated id no
@@ -7177,6 +7186,7 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
       /* A blank level shows its ground grid (ADR-076). */
       .grid_enabled = true_v,
   };
+  state->draw_distance_diagnostic_off = application->draw_distance_off;
   state->app_arena = application->app_arena;
   state->event_arena = application->host.events.arena;
   state->event_manager = &application->host.events;

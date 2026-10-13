@@ -10,6 +10,7 @@
 #include "core/vkr_json_writer.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_types.h"
+#include "vkr_gpu_abi.h"
 
 #include <float.h>
 #include <math.h>
@@ -813,6 +814,87 @@ static void lighting_entity_lines(LightingLines *lines, const VkrScene *scene,
   }
 }
 
+/* How far from the centre of a sphere of `radius` the Scene camera stops
+   drawing a draw of cull word `cull`, as the classify kernels test it
+   (vkr_gpu_draw_distance_culled): past the draw distance, or below the
+   smallest size for the camera's projection and rows. Infinity when
+   neither limits it, or in an orthographic view, where size never changes
+   with distance. */
+static float32_t lighting_draw_reach(const VkrSampleUiFrame *frame,
+                                     uint32_t cull, float32_t radius) {
+  float32_t scale = 1.0f;
+  float32_t rows = frame->mapping.image_rect_px.w;
+  if (frame->graphics) {
+    const VkrGraphicsSettings *settings = &frame->graphics->settings;
+    scale = vkr_graphics_settings_draw_distance_scale(settings);
+    rows *= vkr_graphics_settings_render_scale(frame->graphics, settings);
+  }
+
+  float32_t reach = INFINITY;
+  const uint32_t far_code = cull & VKR_GPU_DRAW_CULL_CODE_MASK;
+  if (far_code) {
+    reach = vkr_gpu_draw_cull_metres(far_code) * scale;
+  }
+  const uint32_t half_pixels =
+      (cull >> VKR_GPU_DRAW_CULL_PIXELS_SHIFT) & VKR_GPU_DRAW_CULL_PIXELS_MASK;
+  const VkrGpuLodView view = vkr_gpu_lod_view(
+      frame->view_projection, rows, vec3_zero(), vec3_zero(), false_v);
+  const float32_t pixels_per_metre = view.position_scale.w;
+  if (half_pixels && pixels_per_metre > 0.0f &&
+      !(view.flags & VKR_GPU_LOD_VIEW_CONSTANT)) {
+    /* The diameter spans 2 r k / d pixels at nearest distance d. */
+    reach = Min(reach, 2.0f * radius * pixels_per_metre * scale /
+                           (0.5f * (float32_t)half_pixels));
+  }
+
+  /* The kernels measure from the sphere's nearest point. */
+  return reach + radius;
+}
+
+/* The selected object's draw distance as a ring on the ground below its
+   box: the Scene camera at the object's height stops drawing it beyond the
+   ring, also while the Scene draws every object. The box stands in for the
+   bounding spheres of its draws. Terrains never leave, and scatter and
+   spline copies leave one by one, so they show none. */
+static void lighting_draw_distance_ring(LightingLines *lines,
+                                        const VkrSampleUiFrame *frame,
+                                        const VkrScene *scene,
+                                        VkrEntityId entity) {
+  if (vkr_scene_get_typed(scene, entity, &vkr_scene_terrain_type) ||
+      vkr_scene_get_typed(scene, entity, &vkr_scene_scatter_type) ||
+      vkr_scene_get_typed(scene, entity, &vkr_scene_spline_type)) {
+    return;
+  }
+  bool8_t shadowless = false_v;
+  const uint32_t cull = vkr_scene_draw_cull(
+      scene, entity, VKR_SCENE_DRAW_KIND_OBJECT, &shadowless);
+  const uint32_t camera_mask =
+      VKR_GPU_DRAW_CULL_CODE_MASK |
+      (VKR_GPU_DRAW_CULL_PIXELS_MASK << VKR_GPU_DRAW_CULL_PIXELS_SHIFT);
+  if (!(cull & camera_mask)) {
+    return;
+  }
+
+  VkrBrushGeometry *scratch =
+      vkr_allocator_alloc(frame->ui->frame_allocator, sizeof(*scratch),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  if (!scratch ||
+      !vkr_editor_entity_world_box(scene, entity, scratch, &lo, &hi)) {
+    return;
+  }
+  const Vec3 center = vec3_scale(vec3_add(lo, hi), 0.5f);
+  const float32_t radius = 0.5f * vec3_length(vec3_sub(hi, lo));
+  const float32_t reach = lighting_draw_reach(frame, cull, radius);
+  if (!isfinite(reach)) {
+    return;
+  }
+  lighting_circle(lines, vec3_new(center.x, lo.y, center.z), vec3_right(),
+                  vec3_new(0.0f, 0.0f, 1.0f), reach,
+                  (Vec4){1.0f, 0.78f, 0.3f, 0.9f});
+}
+
 uint32_t vkr_editor_lighting_lines(const VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame,
                                    VkrEditorBrushGridLine *out,
@@ -829,6 +911,12 @@ uint32_t vkr_editor_lighting_lines(const VkrEditorUi *editor,
     if (scene && vkr_scene_entity_alive(scene, selected[i])) {
       lighting_entity_lines(&lines, scene, selected[i]);
     }
+  }
+  /* One selected object shows where the camera stops drawing it. */
+  const VkrScene *only =
+      count == 1u ? vkr_editor_entity_scene(frame, selected[0]) : NULL;
+  if (only && vkr_scene_entity_alive(only, selected[0])) {
+    lighting_draw_distance_ring(&lines, frame, only, selected[0]);
   }
   /* The diffuse volume's box while the Bake settings window shows it. */
   VkrEditorBakeSettings *settings =

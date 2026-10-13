@@ -163,6 +163,10 @@ that reads the area back, reshapes it and stamps it in square crops.
   cutouts clear.
 - Every copy is a culling candidate for every view, shadow cascades and
   local shadow faces included. Count the views before adding thousands.
+- Copies leave the camera below 2 pixels across and cast sun shadows only
+  into cascades that start within 50 m. To change that for a rule,
+  `draw_distance.set` its scatter or spline entity (see
+  `vkr-level-design`, Draw distance); every copy takes the rule's values.
 
 ## Light and look
 

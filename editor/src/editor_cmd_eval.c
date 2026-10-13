@@ -96,26 +96,14 @@ static const char *const eval_entity_members[] = {
     "name",  "position", "rotation",       "scale", "visible",
     "light", "id",       "world_position", NULL};
 static const char *const eval_vec_members[] = {"x", "y", "z", "length", NULL};
-static const char *const eval_view_members[] = {"camera",
-                                                "mode",
-                                                "grid",
-                                                "grid_spacing",
-                                                "camera_speed",
-                                                "tool",
-                                                "grid_labels",
-                                                "grid_through",
-                                                "collision",
-                                                "snap",
-                                                "snap_offset",
-                                                "snap_yaw",
-                                                "snap_align",
-                                                "snap_centers",
-                                                "camera_sensitivity",
-                                                "grid_height",
-                                                "snap_magnet",
-                                                "snap_moves",
-                                                "snap_turns",
-                                                NULL};
+static const char *const eval_view_members[] = {
+    "camera",       "mode",          "grid",
+    "grid_spacing", "camera_speed",  "tool",
+    "grid_labels",  "grid_through",  "collision",
+    "snap",         "snap_offset",   "snap_yaw",
+    "snap_align",   "snap_centers",  "camera_sensitivity",
+    "grid_height",  "snap_magnet",   "snap_moves",
+    "snap_turns",   "draw_distance", NULL};
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
 /* `maximized`: the Scene fills the window (layout.maximize, G). `icons`:
@@ -662,6 +650,9 @@ static bool8_t eval_view_member(Eval *eval, String8 name, Value *out) {
     return true_v;
   case 18:
     *out = eval_bool(eval->editor->placement.turn_steps);
+    return true_v;
+  case 19:
+    *out = eval_bool(!view->draw_distance_off);
     return true_v;
   case 5:
     for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
@@ -1685,13 +1676,15 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
       next.render_mode = vkr_editor_cmd_render_mode_values[choice];
     else
       next.gizmo_tool = vkr_editor_cmd_tool_modes[choice];
-  } else if (index == 2 || index == 6 || index == 7) {
+  } else if (index == 2 || index == 6 || index == 7 || index == 19) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member))
       return false_v;
     if (index == 2)
       next.grid_enabled = value->number != 0.0;
     else if (index == 6)
       next.grid_labels = value->number != 0.0;
+    else if (index == 19)
+      next.draw_distance_off = value->number == 0.0;
     else
       next.grid_through_geometry = value->number != 0.0;
   } else if (index == 8) {

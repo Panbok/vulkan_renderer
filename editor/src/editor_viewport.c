@@ -35,6 +35,9 @@ enum {
   VIEW_POPUP_SNAP,
   /* The time of day: a scrubber and Keep (ADR-100). */
   VIEW_POPUP_TIME,
+  /* Whether the Scene applies the game's draw distances, and the View
+     distance setting that scales them. */
+  VIEW_POPUP_DISTANCE,
   VIEW_POPUP_COUNT,
 };
 
@@ -55,6 +58,10 @@ enum {
 
 static const char *const view_camera_names[] = {
     "Perspective", "Top", "Left", "Right", "Bottom", "Front", "Back"};
+
+/* The View distance setting's values (VkrGraphicsSettings::view_distance). */
+static const char *const view_distance_names[] = {"Near", "Medium", "Far",
+                                                  "Epic"};
 
 static const struct {
   const char *name;
@@ -262,8 +269,9 @@ static const VkrScene *view_texture_scene(const VkrSampleUiFrame *frame) {
   return frame->scene ? frame->scene : frame->world;
 }
 
-/* Left chip labels: camera, view mode, grid spacing, Show, quality. */
-#define VIEW_LEFT_CHIPS 5u
+/* Left chip labels: camera, view mode, grid spacing, Show, quality and draw
+   distance. */
+#define VIEW_LEFT_CHIPS 6u
 
 static void view_chip_text(const VkrEditorUi *editor,
                            const VkrSampleUiFrame *frame,
@@ -297,6 +305,7 @@ static void view_chip_text(const VkrEditorUi *editor,
   } else {
     snprintf(text[4], 48, "Quality");
   }
+  snprintf(text[5], 48, "%s", state->draw_distance_off ? "All" : "Game");
 }
 
 /* The chip's content: padding, icon, gap, text, gap and caret. */
@@ -672,6 +681,32 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
       ViewRow *invert = &rows[count++];
       *invert = (ViewRow){.checked = frame->graphics->settings.invert_mouse_y};
       snprintf(invert->text, sizeof(invert->text), "Invert mouse Y");
+    }
+    break;
+  }
+  case VIEW_POPUP_DISTANCE: {
+    /* Rows: the two modes, then the View distance header and its values. */
+    ViewRow *game = &rows[count++];
+    *game = (ViewRow){.checked = !state->draw_distance_off};
+    snprintf(game->text, sizeof(game->text), "Game draw distances");
+    ViewRow *all = &rows[count++];
+    *all = (ViewRow){.checked = state->draw_distance_off};
+    snprintf(all->text, sizeof(all->text), "Draw every object");
+    if (!frame->graphics) {
+      break;
+    }
+    const VkrGraphicsSettings settings = view_graphics(editor, frame);
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text), "View distance");
+    for (uint32_t i = 0; i < ArrayCount(view_distance_names); ++i) {
+      VkrGraphicsSettings option = settings;
+      option.view_distance = i;
+      ViewRow *row = &rows[count++];
+      *row = (ViewRow){.checked = settings.view_distance == i,
+                       .disabled = !frame->graphics_request};
+      snprintf(row->text, sizeof(row->text), "%s  %.2gx",
+               view_distance_names[i],
+               (double)vkr_graphics_settings_draw_distance_scale(&option));
     }
     break;
   }
@@ -2707,6 +2742,20 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
     }
     return true_v;
   }
+  case VIEW_POPUP_DISTANCE: {
+    /* Rows: the two modes, a header, then the View distance values. */
+    if (index < 2u) {
+      next->draw_distance_off = index == 1u;
+      return false_v;
+    }
+    if (index >= 3u && index - 3u < ArrayCount(view_distance_names) &&
+        frame->graphics && frame->graphics_request) {
+      VkrGraphicsSettings settings = view_graphics(editor, frame);
+      settings.view_distance = index - 3u;
+      view_quality_apply(frame, settings);
+    }
+    return true_v;
+  }
   default:
     return true_v;
   }
@@ -2974,6 +3023,12 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
                     layout.compact,
                     "Scalability preset and screen percentage, applied live",
                     VIEW_POPUP_QUALITY);
+    (void)view_chip(editor, ui, "distance", 5, VKR_UI_ICON_RULER, text[5],
+                    editor->view_popup == VIEW_POPUP_DISTANCE,
+                    state->draw_distance_off, disabled, layout.compact,
+                    "Draw distance: the Scene draws what the game draws, or "
+                    "every object at any distance",
+                    VIEW_POPUP_DISTANCE);
     (void)vkr_ui_panel_end(ui);
   }
 

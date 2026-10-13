@@ -757,6 +757,15 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
       }
       snprintf(ctx->message, sizeof(ctx->message), "Greybox view %s",
                next.greybox_view ? "on" : "off");
+    } else if (def->value == 4u) {
+      /* On applies the game's draw distances; off draws every object. */
+      bool8_t game = !next.draw_distance_off;
+      if (!cmd_switch(ctx, word, game, &game)) {
+        return false_v;
+      }
+      next.draw_distance_off = !game;
+      snprintf(ctx->message, sizeof(ctx->message), "Draw distances %s",
+               game ? "on" : "off");
     } else if (!cmd_switch(ctx, word, next.grid_enabled, &next.grid_enabled))
       return false_v;
   } else {
@@ -2365,6 +2374,10 @@ static const CmdDef cmd_defs[] = {
      "Show every brush face in its surface's greybox look, over any "
      "material",
      cmd_run_view, CMD_COUNT, 3u},
+    {"draw_distance", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Apply the game's draw distances in the Scene, or draw every object at "
+     "any distance",
+     cmd_run_view, CMD_COUNT, 4u},
     {"grid.spacing", CMD_ARG_NUMBER, "<units>",
      "Set the grid cell size and show the grid", cmd_run_view, CMD_COUNT, 1u},
     {"grid.height", CMD_ARG_NUMBER, "<y>",

@@ -95,8 +95,9 @@ void vkr_editor_lighting_time_rows(VkrEditorUi *editor,
 
 /** World-space outlines of the selected objects: a point light's range as
     three circles, a spot light's cones, a rectangle light's outline and
-    emission arrow, a directional light's arrow, and the boxes of look
-    volumes, decals and reflection probes with their blend margins. Writes
+    emission arrow, a directional light's arrow, the boxes of look volumes,
+    decals and reflection probes with their blend margins, and one selected
+    object's draw distance as a ground ring. Writes
     at most `capacity` into `out` and returns the count; with a NULL `out`,
     the count the selection needs. None while scripts run. */
 uint32_t vkr_editor_lighting_lines(const VkrEditorUi *editor,

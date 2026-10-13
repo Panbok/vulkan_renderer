@@ -106,6 +106,10 @@ typedef struct VkrSampleViewState {
   /* Every brush face shows its surface's greybox look, art-owned materials
      too (vkr_surface.h). */
   bool8_t greybox_view;
+  /* The Scene draws every object at any distance and size while the editor
+     edits, instead of the game's draw distances; Play keeps them
+     (VkrStandardSceneRuntime::draw_distance_off). */
+  bool8_t draw_distance_off;
 } VkrSampleViewState;
 
 /* The free-camera speeds, in world units per second, that the Scene's speed

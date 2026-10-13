@@ -250,6 +250,33 @@ structures, and put a cutout around a room before the ground reaches it.
   `range` within its room. A lamp just under a panel lights the panel's
   underside, a bright path the bake finds by chance: blotches.
 
+## Draw distance
+
+- `draw_distance.set` sets how far the camera draws objects. It edits
+  every entity of one scene that all of `name` (exact, or a prefix ending
+  in `*`), `kind` (`mesh`, or a component type as `scene.describe` lists
+  it, such as `brush`, `shape` or `scatter`), `tags`, `region` and `root`
+  choose; give at least one.
+- `values` go onto each entity's `draw_distance` component, which the
+  operation adds where it is missing: `max_distance` in metres,
+  `min_screen_pixels` (the smallest size in pixels across, at most 7.5),
+  `shadow_distance` in metres (sun cascades that start farther leave the
+  object out) and `cast_shadows`. 0 means no limit. `remove` true takes
+  the component off instead.
+- All edits are one change to review. The answer's `changed` counts the
+  entities that changed; entities that already had the values stay out.
+  A call changes at most 2,048 entities.
+- An entity's component also applies to its children that have none.
+  Without one, an object stops drawing when it is smaller than 1 pixel
+  across, scatter and spline copies below 2 pixels, and terrains always
+  draw. The View distance setting (near 0.5x, medium 0.75x, far 1x, epic
+  1.5x) scales `max_distance` and the pixel size, not the shadow distance.
+- The Scene draws with the game's draw distances. Cmd `draw_distance off`
+  (the ruler chip in the Scene's toolbar) draws every object while you
+  edit, and `view.draw_distance` reads the setting; Play always uses the
+  game's distances. With one object selected,
+  an amber ring on the ground shows where the camera stops drawing it.
+
 ## Verify, cheapest first
 
 Put the checks in the same `level_run.py` plan as the writes, each with
