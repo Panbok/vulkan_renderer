@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "recipe_version": 1,
-  "scene": "assets/scenes/bistro.scene.json",
+  "scene": "assets/scenes/fixtures/bistro_sparse_volume_local.scene.json",
   "position": [
     -7.5,
     2.2,
@@ -17,8 +17,8 @@
   "scene_manifest": {
     "schema_version": 2,
     "kind": "vkr.harness.scene-content-manifest",
-    "scene": "assets/scenes/bistro.scene.json",
-    "sha256": "sha256:cb63d21ea729310984a87aa8061a12e3e5bfa957916d7f55519674b7347307ae",
+    "scene": "assets/scenes/fixtures/bistro_sparse_volume_local.scene.json",
+    "sha256": "sha256:62205d3d15d97a8de374e7816aa4dcc1212eb3e8a0cd59f215284134b08549a4",
     "assets": [
       {
         "path": "assets/models/bistro-lights-main.vkb",
@@ -27,22 +27,16 @@
         "sha256": "sha256:c3bc160977ae1ca41c292e0d82912a57e4ed592b88d20e76334844f8a59574d4"
       },
       {
-        "path": "assets/scenes/bistro.scene.json",
-        "identity": "sha256:75b5f197ca55b94625f2d9cd6964fe796ccd1f1521473e68e44a83ff27d80c12",
-        "bytes": 2019,
-        "sha256": "sha256:3183df78598c1b90b2262b4f352310d598325907db4d515975c4718e107eb34c"
-      },
-      {
-        "path": "assets/scenes/bistro.scene.json.editor.json",
-        "identity": "sha256:1ca3c240535b27d84d2a352ea169c19a62c73019ec4454d7f25681a7aa4d7595",
-        "bytes": 66571,
-        "sha256": "sha256:1ca3c240535b27d84d2a352ea169c19a62c73019ec4454d7f25681a7aa4d7595"
+        "path": "assets/scenes/fixtures/bistro_sparse_volume_local.scene.json",
+        "identity": "sha256:fcd92b8aa759917848edc7dd6e7955e9935b7bbea079a71f1c5d91a0d45c1fe7",
+        "bytes": 2463,
+        "sha256": "sha256:beca273a443715fbcfc08b5ae5ca291d214b8ae969a8d7f2df0aab479fb77824"
       },
       {
         "path": "assets/textures/bistro_cafe_probe.vkt",
-        "identity": "sha256:03be0ece66dc56492cc0affc85ae14fe6a72f18d3c41ef01b8cab0ce1774de2b",
+        "identity": "sha256:82cb5573158d16673525b6d3e4929b8d7de2f13e4f76bed7b76e7517ff6cad63",
         "bytes": 4194728,
-        "sha256": "sha256:03be0ece66dc56492cc0affc85ae14fe6a72f18d3c41ef01b8cab0ce1774de2b"
+        "sha256": "sha256:82cb5573158d16673525b6d3e4929b8d7de2f13e4f76bed7b76e7517ff6cad63"
       },
       {
         "path": "assets/textures/bistro_sparse_volume_local.vkdv",
@@ -52,17 +46,17 @@
       }
     ]
   },
-  "output_sha256": "sha256:82cb5573158d16673525b6d3e4929b8d7de2f13e4f76bed7b76e7517ff6cad63",
+  "output_sha256": "sha256:9ec73770da5cb0730a158d203bee2d23e80e93ddd5336186165e98e09ca4a2ef",
   "captures": [
     {
       "face": "px",
-      "sha256": "sha256:f9f5100d04f7fee39e2574b654880d93b53aa93526fc8fc3534217b8cf252217",
-      "metadata_sha256": "sha256:66fe4f8bb6b7a1569d04db37a04d1922246d9614019a42ee89224d0b955432cb",
-      "report_sha256": "sha256:f7ca5417ae0a6332377d862265a0b5ec235cb87f4f62ae3a48deefd8afcdd0aa",
+      "sha256": "sha256:a24e1be3535437dd5046413d8deb57ede047e9c6345894397015e80f02133769",
+      "metadata_sha256": "sha256:b3fa7ee4d5d3b77baec04c68b6e1bf4b49b8b65de18e29eff84f9392553cae47",
+      "report_sha256": "sha256:02675087e0987076d273d10c7c025d73d8e721a6f4e4a4b2acc44a5db3c68005",
       "provenance": {
-        "git_sha": "d7d0f74efa56960d947c3b3b1146b0ac4763bf90",
+        "git_sha": "83f9b9b01cdda7b3cf12edceddc9cc28b051f1f2",
         "dirty": true,
-        "binary_sha256": "sha256:4223c7e6c025cd2b518270d286d178228198dc50f5c0d3aec1941564aa292a60",
+        "binary_sha256": "sha256:d714cc89dce4361d6f756c4af33c52be8cae989751d6fb86165bd912f19cfb2d",
         "gpu": "AMD Radeon RX 6700 XT",
         "gpu_vendor_id": 0,
         "gpu_device_id": 0,
@@ -71,13 +65,13 @@
     },
     {
       "face": "nx",
-      "sha256": "sha256:1b9ca9a62ae3810c73ad721eb933be2e230a95d21d64650c19843b9b28d737cd",
-      "metadata_sha256": "sha256:426b12dc0571553a5c611b36de703ee3cf58e2a600d363759871d2ccf04d2027",
-      "report_sha256": "sha256:f7ca5417ae0a6332377d862265a0b5ec235cb87f4f62ae3a48deefd8afcdd0aa",
+      "sha256": "sha256:704466bc1c8cc3d2edf680d7d44b273b97f387a60db652c6142bbd2d0754b15a",
+      "metadata_sha256": "sha256:071e1ac15e926a195928723b6eb70e36f3b66f90f9b60fea804335f296c0f7b5",
+      "report_sha256": "sha256:02675087e0987076d273d10c7c025d73d8e721a6f4e4a4b2acc44a5db3c68005",
       "provenance": {
-        "git_sha": "d7d0f74efa56960d947c3b3b1146b0ac4763bf90",
+        "git_sha": "83f9b9b01cdda7b3cf12edceddc9cc28b051f1f2",
         "dirty": true,
-        "binary_sha256": "sha256:4223c7e6c025cd2b518270d286d178228198dc50f5c0d3aec1941564aa292a60",
+        "binary_sha256": "sha256:d714cc89dce4361d6f756c4af33c52be8cae989751d6fb86165bd912f19cfb2d",
         "gpu": "AMD Radeon RX 6700 XT",
         "gpu_vendor_id": 0,
         "gpu_device_id": 0,
@@ -86,13 +80,13 @@
     },
     {
       "face": "py",
-      "sha256": "sha256:914f584f19cfb4c67f0350643c8a69e6790f53ae84adfd871bc0e73aca90d819",
-      "metadata_sha256": "sha256:db030a13f7eb649c72d10310c31a876a53a5c25879473d5a735ecc42690fc3c0",
-      "report_sha256": "sha256:f7ca5417ae0a6332377d862265a0b5ec235cb87f4f62ae3a48deefd8afcdd0aa",
+      "sha256": "sha256:968059a15ee2cdd3434927b4539e8413fa59bf4320d2494bfe2a473e34dcd2c4",
+      "metadata_sha256": "sha256:1d7200140f66b9a251f56540e93739081d208a6ee6cf5ed426832255f531803a",
+      "report_sha256": "sha256:02675087e0987076d273d10c7c025d73d8e721a6f4e4a4b2acc44a5db3c68005",
       "provenance": {
-        "git_sha": "d7d0f74efa56960d947c3b3b1146b0ac4763bf90",
+        "git_sha": "83f9b9b01cdda7b3cf12edceddc9cc28b051f1f2",
         "dirty": true,
-        "binary_sha256": "sha256:4223c7e6c025cd2b518270d286d178228198dc50f5c0d3aec1941564aa292a60",
+        "binary_sha256": "sha256:d714cc89dce4361d6f756c4af33c52be8cae989751d6fb86165bd912f19cfb2d",
         "gpu": "AMD Radeon RX 6700 XT",
         "gpu_vendor_id": 0,
         "gpu_device_id": 0,
@@ -101,13 +95,13 @@
     },
     {
       "face": "ny",
-      "sha256": "sha256:4a01d7b80c37e53643ee0fd5aff64fb0ff6647908f51b2fd6956b10000066f98",
-      "metadata_sha256": "sha256:9b096702c09a8b7c37945751e546da5f2880f645c7c0668a4e4686b9f687a896",
-      "report_sha256": "sha256:f7ca5417ae0a6332377d862265a0b5ec235cb87f4f62ae3a48deefd8afcdd0aa",
+      "sha256": "sha256:889efda64a4638a3f757581921289d017417ab90af0996188614f01318283549",
+      "metadata_sha256": "sha256:bb277c1968791bb041505f8906f73bbb2813fd5c183d2eef6c1125b5f38b6e65",
+      "report_sha256": "sha256:02675087e0987076d273d10c7c025d73d8e721a6f4e4a4b2acc44a5db3c68005",
       "provenance": {
-        "git_sha": "d7d0f74efa56960d947c3b3b1146b0ac4763bf90",
+        "git_sha": "83f9b9b01cdda7b3cf12edceddc9cc28b051f1f2",
         "dirty": true,
-        "binary_sha256": "sha256:4223c7e6c025cd2b518270d286d178228198dc50f5c0d3aec1941564aa292a60",
+        "binary_sha256": "sha256:d714cc89dce4361d6f756c4af33c52be8cae989751d6fb86165bd912f19cfb2d",
         "gpu": "AMD Radeon RX 6700 XT",
         "gpu_vendor_id": 0,
         "gpu_device_id": 0,
@@ -116,13 +110,13 @@
     },
     {
       "face": "pz",
-      "sha256": "sha256:de7a8f811ec365f6ba7512caa95ff32d1420925727d443ae670e8da51274acdd",
-      "metadata_sha256": "sha256:588aaed45e802a86df2e15b78501e2c873c18d87d9a626721b109aaac45a39fc",
-      "report_sha256": "sha256:f7ca5417ae0a6332377d862265a0b5ec235cb87f4f62ae3a48deefd8afcdd0aa",
+      "sha256": "sha256:8f7fe940bb11c030b812339a7ef90ff82dd4e6c476ec3d18908e64aef0166531",
+      "metadata_sha256": "sha256:24b6454ac333c3689408a5ca4db5ecb5059bcb3cfb9177bb65f50e548321873c",
+      "report_sha256": "sha256:02675087e0987076d273d10c7c025d73d8e721a6f4e4a4b2acc44a5db3c68005",
       "provenance": {
-        "git_sha": "d7d0f74efa56960d947c3b3b1146b0ac4763bf90",
+        "git_sha": "83f9b9b01cdda7b3cf12edceddc9cc28b051f1f2",
         "dirty": true,
-        "binary_sha256": "sha256:4223c7e6c025cd2b518270d286d178228198dc50f5c0d3aec1941564aa292a60",
+        "binary_sha256": "sha256:d714cc89dce4361d6f756c4af33c52be8cae989751d6fb86165bd912f19cfb2d",
         "gpu": "AMD Radeon RX 6700 XT",
         "gpu_vendor_id": 0,
         "gpu_device_id": 0,
@@ -131,13 +125,13 @@
     },
     {
       "face": "nz",
-      "sha256": "sha256:fe238c5bcabf941df2c0628a0d190b3a5d865962831a2e85f5632a931c19f146",
-      "metadata_sha256": "sha256:23cdbf690169c2f50964363edc0f741691dd35b8f94a11b528422edb54b72aae",
-      "report_sha256": "sha256:f7ca5417ae0a6332377d862265a0b5ec235cb87f4f62ae3a48deefd8afcdd0aa",
+      "sha256": "sha256:258c913287f78a8ba47be9c79474cca67f36f01d2983cdba1586fa20f3e8918b",
+      "metadata_sha256": "sha256:575e9e114014a674c42b878178f50bf08496405daeba150bb1ef87f0d44bff9a",
+      "report_sha256": "sha256:02675087e0987076d273d10c7c025d73d8e721a6f4e4a4b2acc44a5db3c68005",
       "provenance": {
-        "git_sha": "d7d0f74efa56960d947c3b3b1146b0ac4763bf90",
+        "git_sha": "83f9b9b01cdda7b3cf12edceddc9cc28b051f1f2",
         "dirty": true,
-        "binary_sha256": "sha256:4223c7e6c025cd2b518270d286d178228198dc50f5c0d3aec1941564aa292a60",
+        "binary_sha256": "sha256:d714cc89dce4361d6f756c4af33c52be8cae989751d6fb86165bd912f19cfb2d",
         "gpu": "AMD Radeon RX 6700 XT",
         "gpu_vendor_id": 0,
         "gpu_device_id": 0,

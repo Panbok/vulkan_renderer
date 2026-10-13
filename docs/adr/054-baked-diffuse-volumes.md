@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -189,11 +189,14 @@ A volume is used only once all five publications are confirmed and their
 uploads have completed; until then the frame lights without it. A missing or
 invalid file logs an error, and the scene loads without a volume.
 
-Since 2026-10-12 `assets/scenes/bistro.scene.json` names
-`assets/textures/bistro_sparse_volume_local.vkdv`, so the café takes baked
-bounce light. The file is generated and untracked, about 315 MB; the
-2026-10-09 Windows bake below wrote it from the fixture that names the same
-file. Regenerate it with
+Bistro's volume, `assets/textures/bistro_sparse_volume_local.vkdv`, is
+generated and untracked, about 315 MB, so only the `*_local` fixtures name it;
+the tracked `assets/scenes/bistro.scene.json` does not, and a checkout without
+the file still opens it. The café probe is captured from
+`bistro_sparse_volume_local.scene.json`, so its reflections hold the volume's
+bounce light ([ADR-019](019-bounded-forward-spatial-lighting.md)). The
+2026-10-09 Windows bake below wrote the file from that fixture. Regenerate it
+with
 
 ```sh
 ./build_release/tools/bakery/vkr_bakery bake diffuse \

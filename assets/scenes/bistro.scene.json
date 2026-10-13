@@ -69,8 +69,5 @@
               "pipeline_domain": "world"
             }
         }
-    ],
-    "diffuse_volume": {
-        "path": "assets/textures/bistro_sparse_volume_local.vkdv"
-    }
+    ]
 }

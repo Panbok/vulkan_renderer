@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-13
 authority: adr
 ---
 
@@ -538,11 +538,15 @@ Bistro's café probe (box centre (-7.5, 2.2, 9.0), half extents
 `assets/textures/bistro_cafe_probe.vkt`, a 256² cube of nine levels, about
 4.2 MB. The cube and its `.vkt.bake.json` are tracked as an exception to the
 `.vkt` rule in `.gitignore`: an uncompressed RGBA16F cube is the same on
-every host. The editor Bakery panel's probe row writes it, as does:
+every host. It is captured from
+`assets/scenes/fixtures/bistro_sparse_volume_local.scene.json`, which names
+Bistro's untracked diffuse volume, so the room in the cube holds baked bounce
+light ([ADR-054](054-baked-diffuse-volumes.md)); the tracked
+`bistro.scene.json` names no volume. Re-bake it with:
 
 ```sh
 ./build_release/tools/bakery/vkr_bakery bake probe \
-  --scene assets/scenes/bistro.scene.json \
+  --scene assets/scenes/fixtures/bistro_sparse_volume_local.scene.json \
   --output assets/textures/bistro_cafe_probe.vkt \
   --position -7.5 2.2 9.0 --size 256 \
   --harness build_release/tools/vkr_harness.exe
@@ -820,8 +824,20 @@ non-authoritative:
     pixels differ by more than 16/255 from the placeholder render. A small
     green patch of bounce on the street's cobbles comes from the volume.
 - `vkr_bakery bake probe --check --output assets/textures/bistro_cafe_probe.vkt`
-  reports `current` for the café probe baked from `bistro.scene.json`, a scene
-  that names the probe it replaces.
+  reports `current` for the café probe baked from a scene that names the probe
+  it replaces. On 2026-10-13 `bistro.scene.json` stopped naming the untracked
+  volume and the cube was re-baked from
+  `bistro_sparse_volume_local.scene.json` (sha256 `9ec73770…`, `--check`
+  `current`).
+- Café specular on both pipelines (2026-10-13, desktop capture at the indoor
+  camera against the Mac's tiled capture): surfaces that turned grey or silver
+  once the probe's specular gain went from 0 to 1 are authored as metal or as
+  near-black gloss: the pendant shade and floor strip have F0 0.47 to 0.60 at
+  roughness 0.30 with zero albedo, the bar panelling F0 0.19 with albedo 0.016,
+  and the stools and chairs albedo at most 0.024. Turning the probe's specular
+  off restores the old dark look; turning the environment's off does not. Both
+  pipelines show the same result, so it is the materials' response to room
+  reflections, not a pipeline defect.
 - Not run: Metal (no Mac available), so the tiled pipeline's side was
   neither compiled nor run, and no timing.
 
