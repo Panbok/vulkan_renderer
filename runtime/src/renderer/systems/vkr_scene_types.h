@@ -51,6 +51,9 @@ extern const VkrTypeDesc vkr_scene_terrain_type;
 extern const VkrTypeDesc vkr_scene_terrain_cutout_type;
 /* Per-object draw and shadow distances (SceneDrawDistance). */
 extern const VkrTypeDesc vkr_scene_draw_distance_type;
+/* Rooms and portals (vkr_scene_rooms.h). */
+extern const VkrTypeDesc vkr_scene_room_type;
+extern const VkrTypeDesc vkr_scene_portal_type;
 /* Population (ADR-084). */
 extern const VkrTypeDesc vkr_scene_spline_type;
 extern const VkrTypeDesc vkr_scene_spline_point_type;

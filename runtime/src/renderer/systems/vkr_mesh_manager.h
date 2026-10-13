@@ -559,6 +559,10 @@ vkr_mesh_manager_instance_set_shadow_mobility(VkrMeshManager *manager,
                                               VkrMeshInstanceHandle handle,
                                               VkrShadowCasterMobility mobility);
 
+/** Notes a change to what static casters cast that no mesh or instance
+    holds, as a room becoming sealed: every retained shadow redraws. */
+void vkr_mesh_manager_note_caster_change(VkrMeshManager *manager);
+
 /** An instance's draw and shadow distances and whether it casts shadows,
     under the contract of vkr_mesh_manager_set_draw_cull. */
 bool8_t vkr_mesh_manager_instance_set_draw_cull(VkrMeshManager *manager,

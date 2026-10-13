@@ -431,6 +431,10 @@ typedef struct SceneScatter {
   /* Copies also land on the triangles of drawn meshes, which need no
      collision (vkr_mesh_raycast.h); the Model view's scatter paint sets it. */
   bool8_t render_surfaces;
+  /* Metres from the camera past which 64 m cells of copies draw one merged
+     mesh of their coarsest level instead (vkr_scene_population_mark_proxies);
+     zero keeps every copy. */
+  float32_t proxy_distance;
 } SceneScatter;
 
 /* A painted area of the scatter that is its parent (ADR-102): copies fill a
@@ -468,6 +472,21 @@ typedef struct SceneDrawDistance {
   float32_t shadow_distance;
   bool8_t cast_shadows;
 } SceneDrawDistance;
+
+/* A `room` component (vkr_scene_rooms.h): the entity's world transform
+   places a box, [-0.5, 0.5] on each axis, around the room's interior. A
+   room entity whose parent is a room adds its box to the parent. A
+   `sealed` room lets in no sunlight, so its draws skip every cascade. */
+typedef struct SceneRoom {
+  bool8_t sealed;
+} SceneRoom;
+
+/* A `portal` component: the entity's transform places a rectangle,
+   [-0.5, 0.5] in X and Y, facing along Z, in an opening between two rooms
+   or a room and the outside. A closed portal hides what lies behind it. */
+typedef struct ScenePortal {
+  bool8_t open;
+} ScenePortal;
 
 /* The default draw distances of a draw that no draw_distance component
    reaches. Objects (meshes, brushes, shapes) leave the camera below one
@@ -1446,6 +1465,13 @@ typedef struct VkrScene {
   /** Population state, created with the first spline mesh or scatter
       (vkr_scene_population.h). */
   struct s_VkrScenePopulation *population;
+  /** Rooms, portals and the draws' rooms, created with the first frame
+      that finds a room (vkr_scene_rooms.h). */
+  struct s_VkrSceneRooms *rooms;
+  /** One more than the structure revision at which the scene held no room,
+      so frames skip the search until the structure changes; zero before
+      the first search. */
+  uint64_t rooms_absent_structure;
   /** World partition cells, created with the first one
       (vkr_scene_partition.h). */
   struct s_VkrScenePartition *partition;

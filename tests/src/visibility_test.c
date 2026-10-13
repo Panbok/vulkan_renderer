@@ -86,9 +86,9 @@ vkr_internal void test_packet_pre_recording_rejection(void) {
 }
 vkr_internal void test_candidate_residency_generation_contract(void) {
   VkrCandidateResidencyState committed = {0};
-  assert(vkr_candidate_residency_needs_static_repack(&committed, 1u, 1u, 1u));
+  assert(vkr_candidate_residency_needs_static_repack(&committed, 1u, 1u, 1u, 9u));
   const VkrCandidateResidencyState staged =
-      vkr_candidate_residency_stage(3u, 5u, 7u, 11u, 2u);
+      vkr_candidate_residency_stage(3u, 5u, 7u, 9u, 11u, 2u);
   assert(
       staged.valid && staged.static_generation == 3u &&
       staged.publication_generation == 5u && staged.resource_generation == 7u &&
@@ -97,16 +97,18 @@ vkr_internal void test_candidate_residency_generation_contract(void) {
      Only the backend's successful-submit path performs this assignment. */
   assert(!committed.valid);
   committed = staged;
-  assert(!vkr_candidate_residency_needs_static_repack(&committed, 3u, 5u, 7u));
-  assert(vkr_candidate_residency_needs_static_repack(&committed, 3u, 6u, 7u));
-  committed = vkr_candidate_residency_stage(3u, 6u, 7u, 13u, 0u);
+  assert(!vkr_candidate_residency_needs_static_repack(&committed, 3u, 5u, 7u, 9u));
+  assert(vkr_candidate_residency_needs_static_repack(&committed, 3u, 6u, 7u, 9u));
+  committed = vkr_candidate_residency_stage(3u, 6u, 7u, 9u, 13u, 0u);
   assert(committed.packed_static_count == 13u &&
          committed.omitted_static_count == 0u);
-  assert(!vkr_candidate_residency_needs_static_repack(&staged, 3u, 5u, 7u));
-  assert(vkr_candidate_residency_needs_static_repack(&staged, 4u, 5u, 7u));
-  assert(vkr_candidate_residency_needs_static_repack(&staged, 3u, 6u, 7u));
-  assert(vkr_candidate_residency_needs_static_repack(&staged, 3u, 5u, 8u));
-  assert(!vkr_candidate_residency_stage(0u, 1u, 1u, 0u, 0u).valid);
+  assert(!vkr_candidate_residency_needs_static_repack(&staged, 3u, 5u, 7u, 9u));
+  assert(vkr_candidate_residency_needs_static_repack(&staged, 4u, 5u, 7u, 9u));
+  assert(vkr_candidate_residency_needs_static_repack(&staged, 3u, 6u, 7u, 9u));
+  assert(vkr_candidate_residency_needs_static_repack(&staged, 3u, 5u, 8u, 9u));
+  /* A cull word that changed without a static content change repacks. */
+  assert(vkr_candidate_residency_needs_static_repack(&staged, 3u, 5u, 7u, 10u));
+  assert(!vkr_candidate_residency_stage(0u, 1u, 1u, 9u, 0u, 0u).valid);
 }
 
 vkr_internal void test_packet_independent_transmission_stream(void) {

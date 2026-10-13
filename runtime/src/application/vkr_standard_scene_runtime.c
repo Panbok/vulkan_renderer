@@ -4,6 +4,8 @@
 
 #include "physics/vkr_physics.h"
 #include "platform/vkr_platform.h"
+#include "renderer/systems/vkr_scene_population.h"
+#include "renderer/systems/vkr_scene_rooms.h"
 
 #include <assert.h>
 #include <math.h>
@@ -578,6 +580,10 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
   const char *draw_distance = getenv("VKR_DRAW_DISTANCE");
   application->draw_distance_off =
       draw_distance && strcmp(draw_distance, "0") == 0;
+  const char *rooms = getenv("VKR_ROOMS");
+  application->rooms_off = rooms && strcmp(rooms, "0") == 0;
+  const char *proxies = getenv("VKR_PROXIES");
+  application->proxies_off = proxies && strcmp(proxies, "0") == 0;
   const char *local_shadow_fade = getenv("VKR_LOCAL_SHADOW_FADE_DISTANCE");
   const float32_t fade_distance =
       local_shadow_fade ? strtof(local_shadow_fade, NULL) : 0.0f;
@@ -1029,6 +1035,57 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
      acquired (vkr_standard_scene_runtime_prepare_acquired). */
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.world_payload_build) {
+    /* Rooms hide what the camera cannot see through portals and far
+       scatter cells swap their copies for merged proxies; a probe capture
+       and the Scene's "All" draw everything. */
+    VkrSceneDrawGate gate = {0};
+    VkrScenePopulationFrame proxy_frame = {0};
+    if (!draw->scene_stopped) {
+      VkrScene *scene = vkr_standard_scene_runtime_render_scene(application);
+      const bool8_t everything =
+          application->static_capture || application->draw_distance_off;
+      gate.rooms =
+          everything || application->rooms_off
+              ? NULL
+              : vkr_scene_rooms_frame(scene, application->globals.view_position,
+                                      mat4_mul(application->globals.projection,
+                                               application->globals.view));
+      /* Every rendered scene's far cells, the added ones too, since each
+         draws both a cell and its copies unless marked; drawing
+         everything keeps the copies. */
+      bool8_t proxies = vkr_scene_population_has_proxies(scene);
+      for (uint32_t i = 0; i < application->additive_count; ++i) {
+        proxies = proxies || vkr_scene_population_has_proxies(
+                                 application->additive_scenes[i]);
+      }
+      const VkrMeshManager *meshes = &application->assets.mesh_manager;
+      proxy_frame = (VkrScenePopulationFrame){
+          .instance_slot_count = vkr_mesh_manager_instance_capacity(meshes),
+          .mesh_slot_count = vkr_mesh_manager_capacity(meshes),
+      };
+      if (proxies) {
+        proxy_frame.instance_hidden =
+            vkr_allocator_alloc(draw->scratch, proxy_frame.instance_slot_count,
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+        proxy_frame.mesh_hidden =
+            vkr_allocator_alloc(draw->scratch, proxy_frame.mesh_slot_count,
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      if (proxy_frame.instance_hidden && proxy_frame.mesh_hidden) {
+        MemZero(proxy_frame.instance_hidden, proxy_frame.instance_slot_count);
+        MemZero(proxy_frame.mesh_hidden, proxy_frame.mesh_slot_count);
+        const bool8_t copies_only = everything || application->proxies_off;
+        vkr_scene_population_mark_proxies(scene,
+                                          application->globals.view_position,
+                                          copies_only, &proxy_frame);
+        for (uint32_t i = 0; i < application->additive_count; ++i) {
+          vkr_scene_population_mark_proxies(application->additive_scenes[i],
+                                            application->globals.view_position,
+                                            copies_only, &proxy_frame);
+        }
+        gate.proxies = &proxy_frame;
+      }
+    }
     if (!draw->scene_stopped)
       world_error = vkr_scene_build_world_draws(
           &application->assets.mesh_manager,
@@ -1039,6 +1096,7 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
           application->static_capture || application->draw_distance_off
               ? 0.0f
               : application->draw_distance_scale,
+          &gate,
           application->renderer.graphics_pipeline ==
               VKR_GRAPHICS_PIPELINE_TILED,
           application->static_capture, draw->scratch, &draw->world_payload,

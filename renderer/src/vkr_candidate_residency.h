@@ -14,6 +14,10 @@ typedef struct VkrCandidateResidencyState {
   uint64_t static_generation;
   uint64_t publication_generation;
   uint64_t resource_generation;
+  /* The static rows' cull words (VkrWorldPassPayload::
+     static_cull_generation), which change without a static content
+     change. */
+  uint64_t static_cull_generation;
   uint32_t packed_static_count;
   uint32_t omitted_static_count;
   bool8_t valid;
@@ -21,22 +25,25 @@ typedef struct VkrCandidateResidencyState {
 
 static inline bool8_t vkr_candidate_residency_needs_static_repack(
     const VkrCandidateResidencyState *state, uint64_t static_generation,
-    uint64_t publication_generation, uint64_t resource_generation) {
+    uint64_t publication_generation, uint64_t resource_generation,
+    uint64_t static_cull_generation) {
   return !state->valid || state->static_generation != static_generation ||
                  state->publication_generation != publication_generation ||
-                 state->resource_generation != resource_generation
+                 state->resource_generation != resource_generation ||
+                 state->static_cull_generation != static_cull_generation
              ? true_v
              : false_v;
 }
 
 static inline VkrCandidateResidencyState vkr_candidate_residency_stage(
     uint64_t static_generation, uint64_t publication_generation,
-    uint64_t resource_generation, uint32_t packed_static_count,
-    uint32_t omitted_static_count) {
+    uint64_t resource_generation, uint64_t static_cull_generation,
+    uint32_t packed_static_count, uint32_t omitted_static_count) {
   return (VkrCandidateResidencyState){
       .static_generation = static_generation,
       .publication_generation = publication_generation,
       .resource_generation = resource_generation,
+      .static_cull_generation = static_cull_generation,
       .packed_static_count = packed_static_count,
       .omitted_static_count = omitted_static_count,
       .valid = static_generation != 0u && publication_generation != 0u &&

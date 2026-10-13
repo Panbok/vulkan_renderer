@@ -376,6 +376,14 @@ typedef struct VkrWorldPassPayload {
   uint32_t static_candidate_count;
   uint64_t static_generation;
   /**
+   * A hash of the static candidates' cull words (VkrWorldDrawCandidate::cull),
+   * nonzero. It changes when rooms, far scatter cells or draw distances
+   * change what the camera draws without a static content change, so a
+   * backend repacks the static rows it keeps resident; retained shadows do
+   * not read it.
+   */
+  uint64_t static_cull_generation;
+  /**
    * The static changes of every generation after `static_change_floor`,
    * oldest first. Retained shadows drawn at a static generation not below the
    * floor stay valid where no later change reaches; NULL means unknown, and

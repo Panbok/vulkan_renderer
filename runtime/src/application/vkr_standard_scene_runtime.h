@@ -308,6 +308,11 @@ typedef struct VkrStandardSceneRuntime {
   /** The camera draws every object at any distance: the editor's Scene shows
       far content for editing, or the VKR_DRAW_DISTANCE=0 diagnostic. */
   bool8_t draw_distance_off;
+  /** Diagnostic: VKR_ROOMS=0 draws every room whatever the portals show. */
+  bool8_t rooms_off;
+  /** Diagnostic: VKR_PROXIES=0 draws every scatter copy and no merged far
+      cell. */
+  bool8_t proxies_off;
   /* Optional user quality gates; zero preserves scene-authored rendering. */
   bool8_t disable_directional_shadows;
   bool8_t disable_local_shadows;

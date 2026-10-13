@@ -741,9 +741,10 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
         root.classifications[classification_index] = 0xffffffffu;
         return;
     }
-    // The camera skips candidates past their draw distance or below their
-    // smallest drawn size; a cascade skips casters whose shadow distance
-    // ends before its slice. Other views have no slice start and keep them.
+    // The camera skips candidates in hidden rooms, past their draw distance
+    // or below their smallest drawn size; a cascade skips sealed casters and
+    // those whose shadow distance ends before its slice. Other views have no
+    // slice start and keep them.
     VkrGpuLodView lod_view = root.lod_views[view_index];
     uint cull = vkr_gpu_draw_cull_word(candidate.state_flags);
     if (cull != 0u && (candidate_flags & 1u) != 0u &&

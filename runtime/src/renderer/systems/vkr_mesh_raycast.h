@@ -55,6 +55,28 @@ bool8_t vkr_mesh_raycast_instance(VkrMeshRaycastCache *cache,
                                   VkrMeshInstanceHandle instance, Vec3 origin,
                                   Vec3 delta, VkrMeshRaycastHit *out_hit);
 
+/* One submesh of a mesh at its coarsest level of detail (ADR-085), for
+   merged far proxies: `vertices` and `indices` (three per triangle, each
+   below `vertex_count`) in the asset's local space. */
+typedef struct VkrMeshCoarseRange {
+  VkrVertex3d *vertices;
+  uint32_t vertex_count;
+  uint32_t *indices;
+  uint32_t index_count;
+} VkrMeshCoarseRange;
+
+/* The coarsest level of each of `asset`'s submeshes, in submesh order, from
+   its cooked mesh file through the cache's held decode, allocated from
+   `allocator`; up to `capacity` ranges. Returns how many it wrote, zero when
+   the asset is stale, has no cooked file or the file cannot be decoded. A
+   submesh without triangles writes an empty range. */
+uint32_t vkr_mesh_raycast_coarse_ranges(VkrMeshRaycastCache *cache,
+                                        VkrMeshManager *meshes,
+                                        VkrMeshAssetHandle asset_handle,
+                                        VkrAllocator *allocator,
+                                        VkrMeshCoarseRange *out,
+                                        uint32_t capacity);
+
 /* For tests and generated callers: sets the triangles of the live asset
  * `asset` in `meshes` from local-space `positions` and `indices` (three per
  * triangle, each below `position_count`) instead of decoding its file. They

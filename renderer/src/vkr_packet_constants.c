@@ -152,10 +152,11 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
       out_views[view] = vkr_gpu_lod_view(
           packet->input.shadow->cascades[cascade].light_view_projection,
           (float32_t)frame->shadow_map_size, vec3_zero(), vec3_zero(), false_v);
-      /* Casters whose shadow distance ends before the slice skip it. */
+      /* Casters whose shadow distance ends before the slice skip it, and
+         sealed casters every slice; a cascade's start is never zero. */
       out_views[view].shadow_near = Max(
           packet->input.shadow->cascades[cascade].split_near_far_texel_depth.x,
-          0.0f);
+          VKR_GPU_LOD_SHADOW_NEAR_MIN);
       /* A composed cascade draws its static casters into its static layer
          and its dynamic casters over the copy of that layer. */
       if (view > frame->shadow_cascade_count)

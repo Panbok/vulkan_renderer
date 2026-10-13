@@ -2380,7 +2380,8 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_sources(
       plan->world &&
       vkr_candidate_residency_needs_static_repack(
           &plan->slot->candidate_residency, plan->world->static_generation,
-          plan->world->publication_generation, plan->resource_generation);
+          plan->world->publication_generation, plan->resource_generation,
+          plan->world->static_cull_generation);
   plan->gpu_draw_stage_count =
       plan->source_dynamic_count +
       (plan->repack_static ? plan->source_static_count : 0u);
@@ -2833,7 +2834,8 @@ vkr_internal bool8_t vkr_metal_packet_pack_upload_candidates(
     }
     plan->slot->pending_candidate_residency = vkr_candidate_residency_stage(
         plan->world->static_generation, plan->world->publication_generation,
-        plan->resource_generation, packed_static_count, omitted_static_count);
+        plan->resource_generation, plan->world->static_cull_generation,
+        packed_static_count, omitted_static_count);
     plan->slot->candidate_residency_pending = packed;
     stage_first = plan->source_static_count;
   }

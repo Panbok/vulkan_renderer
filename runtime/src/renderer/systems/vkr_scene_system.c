@@ -10,6 +10,7 @@
 #include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_population.h"
+#include "renderer/systems/vkr_scene_rooms.h"
 #include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_scene_animation.h"
@@ -2272,6 +2273,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
   vkr_scene_decal_shutdown(scene);
   vkr_scene_material_override_shutdown(scene);
   vkr_scene_population_shutdown(scene);
+  vkr_scene_rooms_shutdown(scene);
   vkr_scene_terrain_shutdown(scene);
   vkr_scene_partition_shutdown(scene);
   scene_origin_free(scene);

@@ -356,6 +356,9 @@ uint32_t vkr_gpu_draw_cull_word(float32_t draw_distance,
 bool8_t vkr_gpu_draw_distance_culled(uint32_t cull, float32_t scale,
                                      uint32_t flags, float32_t distance_scale,
                                      float32_t distance, float32_t radius) {
+  if ((cull & VKR_GPU_DRAW_CULL_HIDDEN_BIT) != 0u) {
+    return true_v;
+  }
   if (!(distance_scale > 0.0f)) {
     return false_v;
   }

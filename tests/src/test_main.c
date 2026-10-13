@@ -27,6 +27,7 @@
 #include "net_wire_test.h"
 #include "physics_test.h"
 #include "player_animation_test.h"
+#include "room_test.h"
 #include "scene_animation_tests.h"
 #include "scene_physics_test.h"
 #include "scene_simulation_test.h"
@@ -125,6 +126,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_scene_edit_tests),
     VKR_TEST_SUITE(run_brush_tests),
     VKR_TEST_SUITE(run_heightfield_tests),
+    VKR_TEST_SUITE(run_room_tests),
     VKR_TEST_SUITE(run_spline_tests),
     VKR_TEST_SUITE(run_io_tests),
     VKR_TEST_SUITE(run_editor_project_store_tests),

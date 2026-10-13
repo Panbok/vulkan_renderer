@@ -645,6 +645,118 @@ cleanup:
   return success;
 }
 
+uint32_t vkr_mesh_raycast_coarse_ranges(VkrMeshRaycastCache *cache,
+                                        VkrMeshManager *meshes,
+                                        VkrMeshAssetHandle asset_handle,
+                                        VkrAllocator *allocator,
+                                        VkrMeshCoarseRange *out,
+                                        uint32_t capacity) {
+  VkrMeshAsset *asset =
+      cache && meshes ? mesh_raycast_live_asset(meshes, asset_handle) : NULL;
+  if (!asset || !allocator || !out || !capacity) {
+    return 0u;
+  }
+  uint32_t written = 0u;
+  Arena *scratch_arena = arena_create(MB(64), MB(1));
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  if (!scratch_arena || !vkr_allocator_arena(&scratch)) {
+    goto cleanup;
+  }
+  const VkrMeshCookedDecoded *decoded =
+      mesh_raycast_acquire_file(cache, asset->mesh_path, &scratch);
+  if (!decoded) {
+    goto cleanup;
+  }
+  const VkrGeometryUploadBuffer *buffer = &decoded->mesh_buffer;
+  uint32_t first_range = 0u;
+  uint32_t range_count = (uint32_t)decoded->ranges.length;
+  if (decoded->source.nodes.length != 0u ||
+      asset->source_mesh_index_plus_one != 0u) {
+    const uint32_t selected = asset->source_mesh_index_plus_one - 1u;
+    if (asset->source_mesh_index_plus_one == 0u ||
+        selected >= decoded->source.meshes.length) {
+      goto cleanup;
+    }
+    const VkrMeshSourceMesh *source_mesh =
+        &decoded->source.meshes.data[selected];
+    first_range = source_mesh->first_range;
+    range_count = source_mesh->range_count;
+    if (first_range > decoded->ranges.length ||
+        range_count > decoded->ranges.length - first_range) {
+      goto cleanup;
+    }
+  }
+
+  const uint32_t *source_indices = buffer->indices;
+  for (uint32_t r = first_range;
+       r < first_range + range_count && written < capacity; ++r) {
+    const VkrGeometryUploadRange *range = &decoded->ranges.data[r];
+    VkrMeshCoarseRange *coarse = &out[written++];
+    *coarse = (VkrMeshCoarseRange){0};
+    if (range->index_count == 0u) {
+      continue;
+    }
+    /* The range's last level, or level 0 without a level row. */
+    uint32_t first_index = range->first_index;
+    uint32_t index_count = range->index_count;
+    const VkrGpuGeometryDecodeRecord *decode =
+        &buffer->decodes[range->decode_index];
+    if (decode->lod_record != 0u &&
+        decode->lod_record + VKR_GPU_GEOMETRY_LOD_RECORDS <=
+            buffer->decode_count) {
+      const VkrGpuGeometryLodRow *row =
+          (const VkrGpuGeometryLodRow *)(buffer->decodes + decode->lod_record);
+      if (row->level_count > 1u &&
+          row->level_count <= VKR_GPU_GEOMETRY_LOD_LEVEL_MAX) {
+        const VkrGpuGeometryLodLevel *level =
+            &row->levels[row->level_count - 1u];
+        first_index = range->first_index + level->first_index;
+        index_count = level->index_count;
+      }
+    }
+    if (index_count == 0u || index_count % 3u != 0u ||
+        first_index + index_count > buffer->index_count) {
+      continue;
+    }
+    uint32_t min_vertex = UINT32_MAX;
+    uint32_t max_vertex = 0u;
+    for (uint32_t i = 0u; i < index_count; ++i) {
+      const uint32_t vertex = source_indices[first_index + i];
+      min_vertex = Min(min_vertex, vertex);
+      max_vertex = Max(max_vertex, vertex);
+    }
+    if (max_vertex >= buffer->vertex_count) {
+      continue;
+    }
+    const uint32_t vertex_count = max_vertex - min_vertex + 1u;
+    coarse->vertices = vkr_allocator_alloc(
+        allocator, (uint64_t)vertex_count * sizeof(VkrVertex3d),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    coarse->indices =
+        vkr_allocator_alloc(allocator, (uint64_t)index_count * sizeof(uint32_t),
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!coarse->vertices || !coarse->indices) {
+      written = 0u;
+      goto cleanup;
+    }
+    vkr_packed_geometry_unpack(
+        &((const VkrPackedStaticVertex *)buffer->vertices)[min_vertex],
+        vertex_count, decode, coarse->vertices);
+    for (uint32_t i = 0u; i < index_count; ++i) {
+      coarse->indices[i] = source_indices[first_index + i] - min_vertex;
+    }
+    coarse->vertex_count = vertex_count;
+    coarse->index_count = index_count;
+  }
+
+cleanup:
+  if (scratch_arena) {
+    vkr_allocator_release_global_accounting(&scratch);
+    arena_destroy(scratch_arena);
+  }
+  return written;
+}
+
 // =============================================================================
 // Ray tests
 // =============================================================================

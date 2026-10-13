@@ -270,9 +270,10 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   constant VkrGpuLodView &lod_view = root.lod_views[view_index];
   const float radius =
       candidate.local_bounding_sphere.w * instance.normal_column1.w;
-  /* The camera skips candidates past their draw distance or below their
-     smallest drawn size; a cascade skips casters whose shadow distance ends
-     before its slice. */
+  /* The camera skips candidates in hidden rooms, past their draw distance or
+     below their smallest drawn size; a cascade skips sealed casters and
+     those whose shadow distance ends before its slice. Other views have no
+     slice start and keep them. */
   const uint cull = vkr_gpu_draw_cull_word(candidate.state_flags);
   if (cull != 0u && (candidate_flags & 1u) != 0u &&
       (view_index == 0u

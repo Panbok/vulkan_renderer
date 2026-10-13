@@ -3749,6 +3749,10 @@ bool8_t vkr_mesh_manager_instance_set_shadow_mobility(
   return true_v;
 }
 
+void vkr_mesh_manager_note_caster_change(VkrMeshManager *manager) {
+  vkr_mesh_manager_note_topology_change(manager);
+}
+
 bool8_t vkr_mesh_manager_instance_set_draw_cull(VkrMeshManager *manager,
                                                 VkrMeshInstanceHandle handle,
                                                 uint32_t cull,

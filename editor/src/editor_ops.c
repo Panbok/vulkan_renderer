@@ -3409,6 +3409,37 @@ static bool8_t ops_build_brush_stairs(OpsContext *ctx,
   return true_v;
 }
 
+/* Appends an entity of `name` carrying `type`'s `component` under the
+   batch's item `parent_item`, or under `brush->parent` when it is -1: a
+   room's box or a doorway's portal (vkr_scene_rooms.h). */
+static bool8_t ops_marker_add(OpsContext *ctx, OpsBatch *batch,
+                              const OpsBrushArgs *brush, int32_t parent_item,
+                              const char *name, Vec3 position, VkrQuat rotation,
+                              Vec3 scale, const VkrTypeDesc *type,
+                              const void *component) {
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, brush->container, VKR_SCENE_EDIT_CREATE);
+  if (!item) {
+    return false_v;
+  }
+  if (parent_item >= 0) {
+    item->parent_ref = parent_item;
+  } else {
+    item->request.parent = brush->parent.entity;
+    item->parent_ref = brush->parent.item;
+  }
+  VkrSceneEditValues *values = &item->request.values;
+  values->fields =
+      VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
+  snprintf(values->name, sizeof(values->name), "%s", name);
+  values->position = position;
+  values->rotation = rotation;
+  values->scale = scale;
+  values->component_type = type;
+  MemCopy(values->component, component, type->size);
+  return true_v;
+}
+
 /* Box walls, floor and ceiling around an interior box in group space; the
    group sits at the floor's center. Each part's name starts with `prefix`
    and a slash ("north/Store/Wall East +X"), so parts of two rooms differ. */
@@ -3502,6 +3533,16 @@ static bool8_t ops_build_room(OpsContext *ctx, const VkrBakeryJson *args,
                       vec3_new(half.x, size.y, half.z),
                       ops_snap((float32_t)wall, brush.grid),
                       ops_arg_bool(args, "ceiling", true_v), true_v, &floor)) {
+    return false_v;
+  }
+  /* The interior box is the room the camera's portal walk sees. */
+  char room_name[VKR_SCENE_EDIT_NAME_CAPACITY];
+  snprintf(room_name, sizeof(room_name), "%s%sRoom", brush.name,
+           brush.name[0] ? "/" : "");
+  const SceneRoom room = {.sealed = ops_arg_bool(args, "sealed", false_v)};
+  if (!ops_marker_add(ctx, batch, &brush, (int32_t)group, room_name,
+                      vec3_new(0.0f, size.y * 0.5f, 0.0f), vkr_quat_identity(),
+                      size, &vkr_scene_room_type, &room)) {
     return false_v;
   }
   batch->op_item[batch->op_count] = group;
@@ -4173,6 +4214,33 @@ static bool8_t ops_build_doorway(OpsContext *ctx, const VkrBakeryJson *args,
       return false_v;
     }
     first = first == UINT32_MAX ? item : first;
+  }
+  /* A portal fills the opening, facing across the wall. */
+  const Vec3 opening = along_x
+                           ? vec3_new(center, lo.y + (float32_t)height * 0.5f,
+                                      (lo.z + hi.z) * 0.5f)
+                           : vec3_new((lo.x + hi.x) * 0.5f,
+                                      lo.y + (float32_t)height * 0.5f, center);
+  const VkrQuat facing =
+      along_x
+          ? transform->rotation
+          : vkr_quat_mul(transform->rotation,
+                         vkr_quat_from_axis_angle(vec3_up(), 1.57079632679f));
+  char portal_name[VKR_SCENE_EDIT_NAME_CAPACITY] = "Doorway portal";
+  if (wall_name.length) {
+    snprintf(
+        portal_name, sizeof(portal_name), "%.*s portal",
+        (int)Min(wall_name.length, (uint64_t)VKR_SCENE_EDIT_NAME_CAPACITY - 8u),
+        (const char *)wall_name.str);
+  }
+  const ScenePortal portal = {.open = true_v};
+  if (!ops_marker_add(
+          ctx, batch, &brush, -1, portal_name,
+          vec3_add(transform->position,
+                   vkr_quat_rotate_vec3(transform->rotation, opening)),
+          facing, vec3_new((float32_t)width, (float32_t)height, 1.0f),
+          &vkr_scene_portal_type, &portal)) {
+    return false_v;
   }
   /* A wall the batch made goes with its faces; a scene wall takes its
      other children along. */
@@ -14591,12 +14659,13 @@ static const OpsDef s_ops[] = {
     {"blockout.room",
      "Create a closed room under a group: floor, ceiling and four walls of "
      "'wall' thickness around an interior box from 'min' (interior corner) "
-     "of 'size'.",
+     "of 'size', and a 'room' box on that interior for portal visibility "
+     "('sealed' keeps its objects out of the sun's shadows).",
      "{\"type\":\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
      ",\"size\":" OPS_VEC3_SCHEMA ",\"wall\":{\"type\":\"number\"},"
-     "\"ceiling\":{\"type\":\"boolean\"},\"floor_surface\":" OPS_SURFACE_SCHEMA
-     "," OPS_BRUSH_SCHEMA "," OPS_REVIEW_SCHEMA
-     "},\"required\":[\"min\",\"size\"]}",
+     "\"ceiling\":{\"type\":\"boolean\"},\"sealed\":{\"type\":"
+     "\"boolean\"},\"floor_surface\":" OPS_SURFACE_SCHEMA "," OPS_BRUSH_SCHEMA
+     "," OPS_REVIEW_SCHEMA "},\"required\":[\"min\",\"size\"]}",
      NULL, ops_build_room},
     {"blockout.corridor",
      "An editable corridor (a blockout shape) along 'points' (2 to 16 floor "
@@ -14641,7 +14710,8 @@ static const OpsDef s_ops[] = {
     {"blockout.doorway",
      "Cut a doorway through an existing box wall brush: it becomes up to "
      "three brushes around an opening 'width' wide and 'height' high, "
-     "'offset' meters from the wall's center along its length.",
+     "'offset' meters from the wall's center along its length, with an open "
+     "'portal' in the opening for room visibility.",
      "{\"type\":\"object\",\"properties\":{\"wall\":" OPS_ENTITY_SCHEMA
      ",\"offset\":{\"type\":\"number\"},\"width\":{\"type\":\"number\"},"
      "\"height\":{\"type\":\"number\"}," OPS_REVIEW_SCHEMA

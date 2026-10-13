@@ -14,6 +14,18 @@
 
 typedef struct s_VkrScenePopulation VkrScenePopulation;
 
+/** One frame's far proxies of the rendered scenes' scatters (large-level
+    rendering, section 2), in caller storage: per mesh-manager instance
+    slot, whether the camera leaves the copy out because its cell lies past
+    the proxy distance, and per mesh slot, whether it leaves a cell's merged
+    mesh out because the cell is near. */
+typedef struct VkrScenePopulationFrame {
+  uint8_t *instance_hidden;
+  uint32_t instance_slot_count;
+  uint8_t *mesh_hidden;
+  uint32_t mesh_slot_count;
+} VkrScenePopulationFrame;
+
 /* Spline meshes and scatters one scene holds. */
 #define VKR_SCENE_POPULATION_RULE_MAX 64u
 /* Copies one rule places. */
@@ -31,6 +43,17 @@ void vkr_scene_population_entity_destroying(VkrScene *scene,
                                             VkrEntityId entity);
 /* Rebuilds the rules whose inputs changed. */
 void vkr_scene_population_update(VkrScene *scene);
+/* Whether a scatter of `scene` has built proxy cells. */
+bool8_t vkr_scene_population_has_proxies(const VkrScene *scene);
+/* Swaps each proxy cell of `scene`'s scatters for the camera at `camera`
+   into `frame`, whose tables the caller zeroes once for every rendered
+   scene: past its rule's proxy distance the cell's merged mesh draws
+   instead of its copies, and within 90% of it the copies return; with
+   `copies_only` every copy draws and no merged mesh does. The copies keep
+   casting shadows either way. */
+void vkr_scene_population_mark_proxies(VkrScene *scene, Vec3 camera,
+                                       bool8_t copies_only,
+                                       VkrScenePopulationFrame *frame);
 /* Rules whose copies do not follow their inputs yet, as a scatter waiting
    for terrain collision. */
 uint32_t vkr_scene_population_pending(const VkrScene *scene);

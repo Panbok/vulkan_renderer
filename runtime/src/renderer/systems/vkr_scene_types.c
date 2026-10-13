@@ -2621,6 +2621,18 @@ static const VkrPropertyDesc s_scatter_properties[] = {
                 "such as imported models",
      .offset = TYPE_OFFSET(SceneScatter, render_surfaces),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "proxy_distance",
+     .label = "Proxy distance",
+     .unit = "m",
+     .tooltip = "Past this distance from the camera, each 64 m cell of "
+                "copies draws as one merged mesh of their simplest level; "
+                "keep it past the shadow distance. 0 keeps every copy",
+     .zero_label = "Off",
+     .offset = TYPE_OFFSET(SceneScatter, proxy_distance),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 20000.0f,
+     .step = 10.0f},
 };
 
 static void scatter_defaults(void *value) {
@@ -2812,6 +2824,49 @@ const VkrTypeDesc vkr_scene_draw_distance_type = {
     .size = sizeof(SceneDrawDistance),
     .align = _Alignof(SceneDrawDistance),
     .defaults = draw_distance_defaults,
+};
+
+static const VkrPropertyDesc s_room_properties[] = {
+    {.name = "sealed",
+     .label = "Sealed",
+     .tooltip = "No sunlight reaches the room, so its objects cast no sun "
+                "shadows",
+     .offset = TYPE_OFFSET(SceneRoom, sealed),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+const VkrTypeDesc vkr_scene_room_type = {
+    .name = "room",
+    .label = "Room",
+    .category = "Level",
+    .properties = s_room_properties,
+    .property_count = ArrayCount(s_room_properties),
+    .size = sizeof(SceneRoom),
+    .align = _Alignof(SceneRoom),
+};
+
+static const VkrPropertyDesc s_portal_properties[] = {
+    {.name = "open",
+     .label = "Open",
+     .tooltip = "The camera sees through the opening; a closed portal hides "
+                "what lies behind it",
+     .offset = TYPE_OFFSET(ScenePortal, open),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void portal_defaults(void *value) {
+  *(ScenePortal *)value = (ScenePortal){.open = true_v};
+}
+
+const VkrTypeDesc vkr_scene_portal_type = {
+    .name = "portal",
+    .label = "Portal",
+    .category = "Level",
+    .properties = s_portal_properties,
+    .property_count = ArrayCount(s_portal_properties),
+    .size = sizeof(ScenePortal),
+    .align = _Alignof(ScenePortal),
+    .defaults = portal_defaults,
 };
 
 // =============================================================================
@@ -4118,6 +4173,8 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_scatter_area_type,
     &vkr_scene_terrain_cutout_type,
     &vkr_scene_draw_distance_type,
+    &vkr_scene_room_type,
+    &vkr_scene_portal_type,
 };
 
 /* Types registered by modules outside the renderer. The frame thread only
@@ -4209,6 +4266,7 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_scatter_area_type ||
          type == &vkr_scene_terrain_cutout_type ||
          type == &vkr_scene_draw_distance_type ||
+         type == &vkr_scene_room_type || type == &vkr_scene_portal_type ||
          type == &vkr_scene_world_partition_type ||
          type == &vkr_scene_always_loaded_type ||
          type == &vkr_scene_free_placement_type ||

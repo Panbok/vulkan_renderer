@@ -17,11 +17,30 @@
 /* Metres terrain samples must lie above a ray's hit to replace it, past the
    gap between a height field body's triangles and the bilinear samples. */
 #define POPULATION_GROUND_TOLERANCE 0.05f
+/* A scatter with a proxy distance merges its copies by cells of this side
+   on the ground plane; past the distance a cell draws one merged mesh of
+   its copies' coarsest level per submesh in their place (large-level
+   rendering, section 2). A cell turns back to its copies within this share
+   of the distance, so a camera at the boundary does not flip it. */
+#define POPULATION_CELL_SIZE 64.0f
+#define POPULATION_CELL_MAX 1024u
+#define POPULATION_PROXY_NEAR_SHARE 0.9f
+#define POPULATION_PROXY_SUBMESH_MAX 8u
 
 typedef enum PopulationKind {
   POPULATION_SPLINE_MESH = 0,
   POPULATION_SCATTER,
 } PopulationKind;
+
+/* A cell of a scatter's copies: the sphere around their bounds and the
+   merged mesh standing in for them past the proxy distance. */
+typedef struct PopulationCell {
+  Vec3 center;
+  float32_t radius;
+  /* The merged mesh's mesh-manager slot, or VKR_INVALID_ID. */
+  uint32_t mesh_index;
+  bool8_t far;
+} PopulationCell;
 
 typedef struct PopulationRule {
   VkrEntityId entity;
@@ -39,6 +58,14 @@ typedef struct PopulationRule {
   /* The copies' draw distances (vkr_scene_draw_cull) as last applied. */
   uint32_t draw_cull;
   bool8_t shadowless;
+  /* Proxy cells (POPULATION_CELL_MAX, allocated with the first) and the
+     cell of each copy; none without a proxy distance. Cells wait for the
+     copies' mesh to finish publishing (`cells_pending`). */
+  float32_t proxy_distance;
+  bool8_t cells_pending;
+  PopulationCell *cells;
+  uint32_t cell_count;
+  uint16_t *copy_cells;
   char status[160];
 } PopulationRule;
 
@@ -99,9 +126,23 @@ static PopulationRule *population_find(const VkrScene *scene,
   return NULL;
 }
 
+/* Removes the rule's merged cell meshes. */
+static void population_release_cells(VkrScene *scene, PopulationRule *rule) {
+  struct VkrRenderAssets *assets = scene->assets;
+  for (uint32_t i = 0; assets && i < rule->cell_count; ++i) {
+    if (rule->cells[i].mesh_index != VKR_INVALID_ID) {
+      (void)vkr_mesh_manager_remove(&assets->mesh_manager,
+                                    rule->cells[i].mesh_index);
+    }
+  }
+  rule->cell_count = 0u;
+}
+
 static void population_release_instances(VkrScene *scene,
                                          PopulationRule *rule) {
   struct VkrRenderAssets *assets = scene->assets;
+  /* Cells share the copies' materials, so they go first. */
+  population_release_cells(scene, rule);
   for (uint32_t i = 0; assets && i < rule->instance_count; ++i) {
     (void)vkr_mesh_manager_destroy_instance(&assets->mesh_manager,
                                             rule->instances[i]);
@@ -118,6 +159,15 @@ static void population_remove(VkrScene *scene, PopulationRule *rule) {
   if (rule->instances) {
     vkr_allocator_free(scene->alloc, rule->instances,
                        sizeof(VkrMeshInstanceHandle) *
+                           VKR_SCENE_POPULATION_RULE_INSTANCE_MAX,
+                       POPULATION_TAG);
+  }
+  if (rule->cells) {
+    vkr_allocator_free(scene->alloc, rule->cells,
+                       sizeof(PopulationCell) * POPULATION_CELL_MAX,
+                       POPULATION_TAG);
+    vkr_allocator_free(scene->alloc, rule->copy_cells,
+                       sizeof(uint16_t) *
                            VKR_SCENE_POPULATION_RULE_INSTANCE_MAX,
                        POPULATION_TAG);
   }
@@ -814,6 +864,12 @@ static void population_show(VkrScene *scene, PopulationRule *rule,
                             bool8_t visible) {
   VkrMeshManager *manager = &scene->assets->mesh_manager;
   rule->visible = visible;
+  for (uint32_t i = 0; i < rule->cell_count; ++i) {
+    if (rule->cells[i].mesh_index != VKR_INVALID_ID) {
+      (void)vkr_mesh_manager_set_visible(manager, rule->cells[i].mesh_index,
+                                         visible);
+    }
+  }
   for (uint32_t i = 0; i < rule->instance_count; ++i) {
     const VkrMeshInstance *instance =
         vkr_mesh_manager_get_instance(manager, rule->instances[i]);
@@ -841,6 +897,252 @@ static void population_apply_draw_cull(VkrScene *scene, PopulationRule *rule,
     (void)vkr_mesh_manager_instance_set_draw_cull(
         &scene->assets->mesh_manager, rule->instances[i], cull, shadowless);
   }
+}
+
+/* Index of the cell of ground position (`x`, `z`) in the rule's cells,
+   added when new; UINT32_MAX when the cells are full. `keys` holds each
+   cell's packed grid coordinates. */
+static uint32_t population_cell_of(PopulationRule *rule, int32_t *keys,
+                                   float32_t x, float32_t z) {
+  const int32_t cx = (int32_t)floorf(x / POPULATION_CELL_SIZE);
+  const int32_t cz = (int32_t)floorf(z / POPULATION_CELL_SIZE);
+  for (uint32_t i = 0; i < rule->cell_count; ++i) {
+    if (keys[i * 2u] == cx && keys[i * 2u + 1u] == cz) {
+      return i;
+    }
+  }
+  if (rule->cell_count == POPULATION_CELL_MAX) {
+    return UINT32_MAX;
+  }
+  keys[rule->cell_count * 2u] = cx;
+  keys[rule->cell_count * 2u + 1u] = cz;
+  rule->cells[rule->cell_count] = (PopulationCell){
+      .center = vec3_zero(), .radius = 0.0f, .mesh_index = VKR_INVALID_ID};
+  return rule->cell_count++;
+}
+
+/* `direction` turned and scaled by `model`'s upper 3x3. */
+static Vec3 population_direction(Mat4 model, Vec3 direction) {
+  return vec3_add(vec3_add(vec3_scale(model.cols[0], direction.x),
+                           vec3_scale(model.cols[1], direction.y)),
+                  vec3_scale(model.cols[2], direction.z));
+}
+
+/* Appends `coarse`'s triangles placed by `model` to a cell's vertices and
+   indices at `*vertex_count` and `*index_count`. */
+static void population_cell_append(const VkrMeshCoarseRange *coarse, Mat4 model,
+                                   VkrVertex3d *vertices, uint32_t *indices,
+                                   uint32_t *vertex_count,
+                                   uint32_t *index_count) {
+  const uint32_t base = *vertex_count;
+  for (uint32_t v = 0; v < coarse->vertex_count; ++v) {
+    VkrVertex3d vertex = coarse->vertices[v];
+    const Vec3 position =
+        mat4_mul_vec3(model, vec3_new(vertex.position.x, vertex.position.y,
+                                      vertex.position.z));
+    /* Copies turn about Y and scale evenly, so the model rotates
+       directions as it does positions. */
+    const Vec3 normal = vec3_normalize(population_direction(
+        model, vec3_new(vertex.normal.x, vertex.normal.y, vertex.normal.z)));
+    const Vec3 tangent = vec3_normalize(population_direction(
+        model, vec3_new(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z)));
+    vertex.position = vkr_vertex_pack_vec3(position);
+    vertex.normal = vkr_vertex_pack_vec3(normal);
+    vertex.tangent =
+        vec4_new(tangent.x, tangent.y, tangent.z, vertex.tangent.w);
+    vertices[(*vertex_count)++] = vertex;
+  }
+  for (uint32_t i = 0; i < coarse->index_count; ++i) {
+    indices[(*index_count)++] = base + coarse->indices[i];
+  }
+}
+
+/* Builds the rule's proxy cells from its copies: each copy's cell, and per
+   cell one mesh of their coarsest level per submesh. The meshes cast no
+   shadow, since the copies keep casting. A copy mesh that has not finished
+   publishing leaves the rule pending, for a later update to build. */
+static void population_build_cells(VkrScene *scene, PopulationRule *rule) {
+  struct VkrRenderAssets *assets = scene->assets;
+  population_release_cells(scene, rule);
+  rule->cells_pending = false_v;
+  const SceneScatter *scatter =
+      rule->kind == POPULATION_SCATTER
+          ? vkr_scene_get_typed(scene, rule->entity, &vkr_scene_scatter_type)
+          : NULL;
+  rule->proxy_distance = scatter ? scatter->proxy_distance : 0.0f;
+  const uint32_t count = rule->instance_count;
+  if (!(rule->proxy_distance > 0.0f) || count == 0u) {
+    return;
+  }
+  if (!rule->cells) {
+    rule->cells = vkr_allocator_alloc(
+        scene->alloc, sizeof(PopulationCell) * POPULATION_CELL_MAX,
+        POPULATION_TAG);
+    rule->copy_cells = vkr_allocator_alloc(
+        scene->alloc, sizeof(uint16_t) * VKR_SCENE_POPULATION_RULE_INSTANCE_MAX,
+        POPULATION_TAG);
+    if (!rule->cells || !rule->copy_cells) {
+      snprintf(rule->status, sizeof(rule->status), "Out of memory");
+      return;
+    }
+  }
+  VkrMeshManager *manager = &assets->mesh_manager;
+  const VkrMeshInstance *first =
+      vkr_mesh_manager_get_instance(manager, rule->instances[0]);
+  VkrMeshAsset *asset =
+      first ? vkr_mesh_manager_get_live_asset(manager, first->asset) : NULL;
+  if (!asset || asset->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+    rule->cells_pending = asset != NULL;
+    return;
+  }
+
+  VkrAllocatorScope scope =
+      vkr_allocator_begin_scope(&assets->scratch_allocator);
+  VkrAllocator *scratch = &assets->scratch_allocator;
+  VkrMeshCoarseRange coarse[POPULATION_PROXY_SUBMESH_MAX];
+  const uint32_t submesh_count =
+      Min(vkr_mesh_raycast_coarse_ranges(vkr_render_assets_mesh_raycast(assets),
+                                         manager, first->asset, scratch, coarse,
+                                         POPULATION_PROXY_SUBMESH_MAX),
+          (uint32_t)asset->submeshes.length);
+  int32_t *keys = vkr_allocator_alloc(
+      scratch, sizeof(int32_t) * 2u * POPULATION_CELL_MAX, POPULATION_TAG);
+  uint32_t *cell_copies = vkr_allocator_alloc(
+      scratch, sizeof(uint32_t) * POPULATION_CELL_MAX, POPULATION_TAG);
+  if (!submesh_count || !keys || !cell_copies) {
+    snprintf(rule->status, sizeof(rule->status),
+             "The far proxies could not read the mesh's levels");
+    vkr_allocator_end_scope(&scope, POPULATION_TAG);
+    return;
+  }
+
+  /* Each copy's cell, and each cell's sphere around its copies' bounds. */
+  MemZero(cell_copies, sizeof(uint32_t) * POPULATION_CELL_MAX);
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrMeshInstance *copy =
+        vkr_mesh_manager_get_instance(manager, rule->instances[i]);
+    const Vec3 at = copy ? mat4_position(copy->model) : vec3_zero();
+    const uint32_t cell = population_cell_of(rule, keys, at.x, at.z);
+    rule->copy_cells[i] = cell == UINT32_MAX ? UINT16_MAX : (uint16_t)cell;
+    if (cell == UINT32_MAX || !copy || !copy->bounds_valid) {
+      continue;
+    }
+    PopulationCell *target = &rule->cells[cell];
+    cell_copies[cell]++;
+    target->center = vec3_add(target->center, copy->bounds_world_center);
+    target->radius = Max(target->radius, copy->bounds_world_radius);
+  }
+  for (uint32_t c = 0; c < rule->cell_count; ++c) {
+    if (cell_copies[c]) {
+      rule->cells[c].center =
+          vec3_scale(rule->cells[c].center, 1.0f / (float32_t)cell_copies[c]);
+    }
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrMeshInstance *copy =
+        vkr_mesh_manager_get_instance(manager, rule->instances[i]);
+    const uint32_t cell = rule->copy_cells[i];
+    if (cell != UINT16_MAX && copy && copy->bounds_valid) {
+      PopulationCell *target = &rule->cells[cell];
+      target->radius =
+          Max(target->radius,
+              vec3_distance(target->center, copy->bounds_world_center) +
+                  copy->bounds_world_radius);
+    }
+  }
+
+  /* One merged mesh per cell, one submesh per mesh submesh. */
+  const uint32_t render_id = vkr_scene_get_render_id(scene, rule->entity);
+  const uint32_t picking_id =
+      render_id ? scene->render_id_base + render_id : 0u;
+  for (uint32_t c = 0; c < rule->cell_count; ++c) {
+    if (!cell_copies[c]) {
+      continue;
+    }
+    VkrSubMeshDesc submeshes[POPULATION_PROXY_SUBMESH_MAX];
+    uint32_t built = 0u;
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      if (!coarse[s].index_count) {
+        continue;
+      }
+      VkrAllocatorScope cell_scope = vkr_allocator_begin_scope(scratch);
+      const uint32_t vertex_capacity = coarse[s].vertex_count * cell_copies[c];
+      const uint32_t index_capacity = coarse[s].index_count * cell_copies[c];
+      VkrVertex3d *vertices = vkr_allocator_alloc(
+          scratch, sizeof(VkrVertex3d) * vertex_capacity, POPULATION_TAG);
+      uint32_t *indices = vkr_allocator_alloc(
+          scratch, sizeof(uint32_t) * index_capacity, POPULATION_TAG);
+      uint32_t vertex_count = 0u;
+      uint32_t index_count = 0u;
+      for (uint32_t i = 0; vertices && indices && i < count; ++i) {
+        const VkrMeshInstance *copy =
+            vkr_mesh_manager_get_instance(manager, rule->instances[i]);
+        if (copy && rule->copy_cells[i] == c) {
+          population_cell_append(&coarse[s], copy->model, vertices, indices,
+                                 &vertex_count, &index_count);
+        }
+      }
+      const Vec3 extent = vec3_new(rule->cells[c].radius, rule->cells[c].radius,
+                                   rule->cells[c].radius);
+      VkrGeometryConfig config = {
+          .vertex_size = sizeof(VkrVertex3d),
+          .vertex_count = vertex_count,
+          .vertices = vertices,
+          .index_size = sizeof(uint32_t),
+          .index_count = index_count,
+          .indices = indices,
+          .center = rule->cells[c].center,
+          .min_extents = vec3_sub(rule->cells[c].center, extent),
+          .max_extents = vec3_add(rule->cells[c].center, extent),
+      };
+      snprintf(config.name, sizeof(config.name), "scatter_cell_%u_%u_%u_%u",
+               (unsigned)rule->entity.parts.index,
+               (unsigned)rule->entity.parts.generation, c, s);
+      VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+      const VkrGeometryHandle geometry =
+          vertices && indices && index_count
+              ? vkr_geometry_system_create(&assets->geometry_system, &config,
+                                           true_v, &error)
+              : (VkrGeometryHandle){0};
+      vkr_allocator_end_scope(&cell_scope, POPULATION_TAG);
+      if (!geometry.id) {
+        continue;
+      }
+      submeshes[built++] = (VkrSubMeshDesc){
+          .geometry = geometry,
+          .material = asset->submeshes.data[s].material,
+          .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+          .owns_geometry = true_v,
+      };
+    }
+    if (!built) {
+      continue;
+    }
+    const VkrMeshDesc desc = {
+        .transform = vkr_transform_identity(),
+        .submeshes = submeshes,
+        .submesh_count = built,
+        .shadow_mobility = VKR_SHADOW_CASTER_MOBILITY_STATIC,
+    };
+    uint32_t mesh_index = VKR_INVALID_ID;
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_mesh_manager_add(manager, &desc, &mesh_index, &error)) {
+      for (uint32_t s = 0; s < built; ++s) {
+        vkr_geometry_system_release(&assets->geometry_system,
+                                    submeshes[s].geometry);
+      }
+      continue;
+    }
+    rule->cells[c].mesh_index = mesh_index;
+    rule->cells[c].far = false_v;
+    (void)vkr_mesh_manager_set_model(manager, mesh_index, mat4_identity());
+    (void)vkr_mesh_manager_set_visible(manager, mesh_index, rule->visible);
+    (void)vkr_mesh_manager_set_render_id(manager, mesh_index, picking_id);
+    /* The copies' draw distances, without their shadows. */
+    (void)vkr_mesh_manager_set_draw_cull(manager, mesh_index, rule->draw_cull,
+                                         true_v);
+  }
+  vkr_allocator_end_scope(&scope, POPULATION_TAG);
 }
 
 /* Places the rule's copies anew. */
@@ -938,6 +1240,7 @@ static void population_build(VkrScene *scene, PopulationRule *rule,
                                                 picking_id, rule->visible);
   }
   population_apply_draw_cull(scene, rule, true_v);
+  population_build_cells(scene, rule);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
@@ -945,6 +1248,12 @@ void vkr_scene_population_update(VkrScene *scene) {
   VkrScenePopulation *state = scene ? scene->population : NULL;
   if (!state || !scene->assets) {
     return;
+  }
+  /* Proxy cells wait for their copies' mesh to finish publishing. */
+  for (uint32_t i = 0; i < state->rule_count; ++i) {
+    if (state->rules[i].cells_pending) {
+      population_build_cells(scene, &state->rules[i]);
+    }
   }
   /* Taken before any build, so a build that moves a revision leaves the
      next update to look again. */
@@ -996,6 +1305,51 @@ void vkr_scene_population_update(VkrScene *scene) {
   /* A rule waiting for terrain or the child index keeps the next update
      looking. */
   state->matched = matched ? seen : (PopulationMatched){0};
+}
+
+bool8_t vkr_scene_population_has_proxies(const VkrScene *scene) {
+  const VkrScenePopulation *state = scene ? scene->population : NULL;
+  for (uint32_t r = 0; state && r < state->rule_count; ++r) {
+    if (state->rules[r].cell_count > 0u) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+void vkr_scene_population_mark_proxies(VkrScene *scene, Vec3 camera,
+                                       bool8_t copies_only,
+                                       VkrScenePopulationFrame *frame) {
+  VkrScenePopulation *state = scene ? scene->population : NULL;
+  for (uint32_t r = 0; state && r < state->rule_count; ++r) {
+    PopulationRule *rule = &state->rules[r];
+    if (!rule->cell_count) {
+      continue;
+    }
+    for (uint32_t c = 0; c < rule->cell_count; ++c) {
+      PopulationCell *cell = &rule->cells[c];
+      if (cell->mesh_index == VKR_INVALID_ID) {
+        continue;
+      }
+      const float32_t distance =
+          vec3_distance(cell->center, camera) - cell->radius;
+      cell->far = !copies_only &&
+                  (cell->far ? distance > rule->proxy_distance *
+                                              POPULATION_PROXY_NEAR_SHARE
+                             : distance > rule->proxy_distance);
+      if (!cell->far && cell->mesh_index < frame->mesh_slot_count) {
+        frame->mesh_hidden[cell->mesh_index] = 1u;
+      }
+    }
+    for (uint32_t i = 0; i < rule->instance_count; ++i) {
+      const uint32_t cell = rule->copy_cells[i];
+      const uint32_t slot = rule->instances[i].id - 1u;
+      if (cell != UINT16_MAX && cell < rule->cell_count &&
+          rule->cells[cell].far && slot < frame->instance_slot_count) {
+        frame->instance_hidden[slot] = 1u;
+      }
+    }
+  }
 }
 
 uint32_t vkr_scene_population_pending(const VkrScene *scene) {

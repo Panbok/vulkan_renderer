@@ -70,16 +70,20 @@ _Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT ==
 /* A candidate's draw-distance word (VkrWorldDrawCandidate::cull), above the
    bucket and the four candidate flags of its state: the camera's draw
    distance code in bits 0 to 7, the smallest diameter the camera draws in
-   half pixels in bits 8 to 11, and the shadow distance code in bits 12 to
-   19. A code c above zero stands for 2^((c - 1) / 16) metres; zero is no
-   limit. Mirrors shared/lod_kernel.slangh. */
+   half pixels in bits 8 to 11, the shadow distance code in bits 12 to 19,
+   and the room bits below. A code c above zero stands for 2^((c - 1) / 16)
+   metres; zero is no limit. Mirrors shared/lod_kernel.slangh. */
 #define VKR_GPU_DRAW_CULL_SHIFT 7u
 #define VKR_GPU_DRAW_CULL_CODE_MASK 0xFFu
 #define VKR_GPU_DRAW_CULL_PIXELS_SHIFT 8u
 #define VKR_GPU_DRAW_CULL_PIXELS_MASK 0xFu
 #define VKR_GPU_DRAW_CULL_SHADOW_SHIFT 12u
 #define VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE 16.0f
-#define VKR_GPU_DRAW_CULL_BITS 20u
+/* Bit 20: the candidate's rooms are hidden from the camera this frame; bit
+   21: its rooms are sealed, so no cascade draws it (vkr_scene_rooms.h). */
+#define VKR_GPU_DRAW_CULL_HIDDEN_BIT (1u << 20u)
+#define VKR_GPU_DRAW_CULL_SEALED_BIT (1u << 21u)
+#define VKR_GPU_DRAW_CULL_BITS 22u
 /* The candidate state bits a visible row keeps: the bucket and the flags. */
 #define VKR_GPU_DRAW_CANDIDATE_STATE_MASK 0x7Fu
 
@@ -109,7 +113,8 @@ uint32_t vkr_gpu_draw_cull_word(float32_t draw_distance,
                                 float32_t shadow_distance);
 /** Whether the camera skips a candidate of `cull` whose bounding sphere of
     `radius` lies `distance` metres away at its nearest point, for a view of
-    LOD `scale` and `flags`; mirrors vkr_gpu_draw_distance_culled. */
+    LOD `scale` and `flags`: its rooms are hidden, or it fails the distance
+    tests; mirrors vkr_gpu_draw_distance_culled. */
 bool8_t vkr_gpu_draw_distance_culled(uint32_t cull, float32_t scale,
                                      uint32_t flags, float32_t distance_scale,
                                      float32_t distance, float32_t radius);
@@ -287,13 +292,18 @@ typedef struct VkrGpuLodView {
   /** The camera's multiplier of candidates' draw distances and divisor of
       their smallest drawn diameters; zero draws every candidate. */
   float32_t distance_scale;
-  /** A cascade's slice start from the camera, in metres: casters whose
-      shadow distance ends before it skip the cascade. Zero elsewhere. */
+  /** A cascade's slice start from the camera, in metres, at least
+      VKR_GPU_LOD_SHADOW_NEAR_MIN: casters whose shadow distance ends before
+      it, and sealed casters, skip the cascade. Zero for other views. */
   float32_t shadow_near;
   uint32_t reserved;
 } VkrGpuLodView;
 
 _Static_assert(sizeof(VkrGpuLodView) == 48, "LOD view ABI must be 48 bytes");
+
+/* The smallest cascade slice start a view carries, so a cascade's is never
+   the zero of the other views. */
+#define VKR_GPU_LOD_SHADOW_NEAR_MIN 1e-3f
 
 /* Projected error, in pixels or texels, at which the next level takes over. */
 #define VKR_GPU_LOD_THRESHOLD 1.0f

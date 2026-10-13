@@ -6,6 +6,8 @@
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_ids.h"
+#include "renderer/systems/vkr_scene_population.h"
+#include "renderer/systems/vkr_scene_rooms.h"
 
 vkr_internal uint32_t vkr_scene_material_features(const VkrMaterial *material) {
   if (!material || material->material_type != VKR_MATERIAL_TYPE_PBR) {
@@ -321,6 +323,28 @@ vkr_internal void vkr_scene_count_world_sources(
   *out_static_candidate_count = static_candidate_count_64;
 }
 
+/* The camera's hidden and sealed bits of submesh `submesh` of mesh or
+   instance slot `slot` under `gate`. */
+vkr_internal INLINE uint32_t vkr_scene_gate_bits(const VkrSceneDrawGate *gate,
+                                                 bool8_t instance,
+                                                 uint32_t slot,
+                                                 uint32_t submesh) {
+  if (!gate) {
+    return 0u;
+  }
+  uint32_t bits =
+      vkr_scene_room_cull_bits(gate->rooms, instance, slot, submesh);
+  const VkrScenePopulationFrame *proxies = gate->proxies;
+  if (proxies) {
+    const uint8_t *hidden =
+        instance ? proxies->instance_hidden : proxies->mesh_hidden;
+    const uint32_t count =
+        instance ? proxies->instance_slot_count : proxies->mesh_slot_count;
+    bits |= slot < count && hidden[slot] ? VKR_GPU_DRAW_CULL_HIDDEN_BIT : 0u;
+  }
+  return bits;
+}
+
 /* Whether the camera at `view_position` keeps a blend draw of `cull` whose
    world sphere is `center`, `radius`: inside its frustum and its draw
    distance times `draw_distance_scale`. The blend list tests metres only;
@@ -345,10 +369,10 @@ vkr_scene_blend_visible(const VkrFrustum *camera_frustum, Vec3 view_position,
 vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
     VkrMeshManager *meshes, VkrMaterialSystem *materials,
     const VkrFrustum *camera_frustum, Vec3 view_position,
-    float32_t draw_distance_scale, uint32_t mesh_count,
-    uint32_t live_instance_count, uint32_t gpu_candidate_count,
-    bool8_t transmission_blended, bool8_t static_only,
-    uint8_t *transparent_visible) {
+    float32_t draw_distance_scale, const VkrSceneDrawGate *gate,
+    uint32_t mesh_count, uint32_t live_instance_count,
+    uint32_t gpu_candidate_count, bool8_t transmission_blended,
+    bool8_t static_only, uint8_t *transparent_visible) {
   VkrVisibilityStats stats = {0};
   uint32_t opaque_material_features = 0u;
   uint32_t gpu_camera_opaque_candidate_count = 0u;
@@ -394,9 +418,11 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
           vkr_visibility_submesh_sphere(mesh->model, submesh->center,
                                         submesh->min_extents,
                                         submesh->max_extents, &center, &radius);
-          visible = vkr_scene_blend_visible(camera_frustum, view_position,
-                                            draw_distance_scale,
-                                            mesh->draw_cull, center, radius);
+          visible = vkr_scene_blend_visible(
+              camera_frustum, view_position, draw_distance_scale,
+              mesh->draw_cull |
+                  vkr_scene_gate_bits(gate, false_v, mesh_slot, s),
+              center, radius);
         }
         assert_log(source_index < gpu_candidate_count,
                    "Visibility pass exceeded the counted sources");
@@ -452,7 +478,9 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
                                         submesh->max_extents, &center, &radius);
           visible = vkr_scene_blend_visible(
               camera_frustum, view_position, draw_distance_scale,
-              instance->draw_cull, center, radius);
+              instance->draw_cull |
+                  vkr_scene_gate_bits(gate, true_v, instance_slot, s),
+              center, radius);
         }
         assert_log(source_index < gpu_candidate_count,
                    "Visibility pass exceeded the counted sources");
@@ -482,7 +510,7 @@ vkr_internal void vkr_scene_emit_world_sources(
     VkrMeshManager *meshes, VkrMaterialSystem *materials, uint32_t mesh_count,
     uint32_t live_instance_count, uint32_t temporal_instance_offset,
     VkrSkinningInput *skinning, uint32_t skinning_count, bool8_t static_only,
-    const VkrSceneWorldEmitContext *initial) {
+    const VkrSceneDrawGate *gate, const VkrSceneWorldEmitContext *initial) {
   VkrSceneWorldEmitContext emit = *initial;
   uint32_t skinning_cursor = 0;
 
@@ -528,7 +556,8 @@ vkr_internal void vkr_scene_emit_world_sources(
           .temporal_index = mesh_slot,
           .temporal_generation = mesh->temporal_generation,
           .lightmap_slot = mesh->lightmap_slot,
-          .draw_cull = mesh->draw_cull,
+          .draw_cull = mesh->draw_cull |
+                       vkr_scene_gate_bits(gate, false_v, mesh_slot, s),
           .bounds_valid = mesh->bounds_valid,
           .transmissive = transmissive,
           .double_sided = material ? material->double_sided : false_v,
@@ -598,7 +627,8 @@ vkr_internal void vkr_scene_emit_world_sources(
           .temporal_generation = instance->generation,
           .skinning_index = skinning_index,
           .lightmap_slot = instance->lightmap_slot,
-          .draw_cull = instance->draw_cull,
+          .draw_cull = instance->draw_cull |
+                       vkr_scene_gate_bits(gate, true_v, instance_slot, s),
           .bounds_valid = instance->bounds_valid,
           .transmissive = transmissive,
           .double_sided =
@@ -623,7 +653,8 @@ VkrRendererError vkr_scene_build_world_draws(
     VkrMeshManager *meshes, VkrMaterialSystem *materials,
     bool8_t publication_pending, uint64_t publication_generation, Mat4 view,
     Mat4 projection, Vec3 view_position, float32_t draw_distance_scale,
-    bool8_t transmission_blended, bool8_t static_only, VkrAllocator *scratch,
+    const VkrSceneDrawGate *gate, bool8_t transmission_blended,
+    bool8_t static_only, VkrAllocator *scratch,
     VkrWorldPassPayload *out_payload, VkrVisibilityStats *out_stats) {
   *out_payload = (VkrWorldPassPayload){0};
   if (out_stats)
@@ -690,7 +721,7 @@ VkrRendererError vkr_scene_build_world_draws(
 
   const VkrSceneWorldClassification totals = vkr_scene_classify_world_sources(
       meshes, materials, &camera_frustum, view_position, draw_distance_scale,
-      mesh_count, live_instance_count, gpu_candidate_count,
+      gate, mesh_count, live_instance_count, gpu_candidate_count,
       transmission_blended, static_only, transparent_visible);
   const uint32_t transmission_gpu_candidate_count =
       totals.transmission_gpu_candidate_count;
@@ -749,7 +780,16 @@ VkrRendererError vkr_scene_build_world_draws(
 
   vkr_scene_emit_world_sources(meshes, materials, mesh_count,
                                live_instance_count, temporal_instance_offset,
-                               skinning, skinning_count, static_only, &emit);
+                               skinning, skinning_count, static_only, gate,
+                               &emit);
+
+  /* Resident static rows repack when a static cull word changes. */
+  uint64_t static_cull_generation = UINT64_C(0xcbf29ce484222325);
+  for (uint32_t i = 0; i < static_candidate_count; ++i) {
+    static_cull_generation =
+        (static_cull_generation ^ gpu_candidates[i].cull) *
+        UINT64_C(0x100000001b3);
+  }
 
   if (transparent_draw_count > 1u)
     qsort(transparent_candidates, transparent_draw_count,
@@ -780,6 +820,7 @@ VkrRendererError vkr_scene_build_world_draws(
       .gpu_shadow_candidate_count = gpu_candidate_count,
       .static_candidate_count = static_candidate_count,
       .static_generation = meshes->generations.static_content,
+      .static_cull_generation = static_cull_generation | 1u,
       .static_changes = static_changes,
       .static_change_count = static_change_count,
       .static_change_floor = static_change_floor,

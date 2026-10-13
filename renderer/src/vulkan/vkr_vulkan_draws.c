@@ -83,6 +83,8 @@ vkr_internal uint64_t vkr_vk_candidate_epoch(const VkrWorldPassPayload *world) {
   uint64_t hash = 1469598103934665603ull;
   hash = vkr_vk_hash_bytes(hash, &world->static_generation,
                            sizeof(world->static_generation));
+  hash = vkr_vk_hash_bytes(hash, &world->static_cull_generation,
+                           sizeof(world->static_cull_generation));
   hash = vkr_vk_hash_bytes(hash, &world->dynamic_generation,
                            sizeof(world->dynamic_generation));
   hash = vkr_vk_hash_bytes(hash, &world->publication_generation,
@@ -893,6 +895,7 @@ vkr_vk_static_bucket_counts_current(const VkrVulkanFrameSlot *slot) {
          counted->static_generation == resident->static_generation &&
          counted->publication_generation == resident->publication_generation &&
          counted->resource_generation == resident->resource_generation &&
+         counted->static_cull_generation == resident->static_cull_generation &&
          counted->packed_static_count == resident->packed_static_count &&
          counted->omitted_static_count == resident->omitted_static_count;
 }
@@ -1099,7 +1102,8 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       const bool8_t repack_static =
           vkr_candidate_residency_needs_static_repack(
               &slot->candidate_residency, world->static_generation,
-              world->publication_generation, resource_generation) ||
+              world->publication_generation, resource_generation,
+              world->static_cull_generation) ||
           !vkr_vk_static_bucket_counts_current(slot);
       uint32_t packed_static_count =
           repack_static ? 0u : slot->candidate_residency.packed_static_count;
@@ -1120,7 +1124,8 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
         }
         slot->pending_candidate_residency = vkr_candidate_residency_stage(
             world->static_generation, world->publication_generation,
-            resource_generation, packed_static_count, omitted_static_count);
+            resource_generation, world->static_cull_generation,
+            packed_static_count, omitted_static_count);
         slot->gpu_static_bucket_residency = slot->pending_candidate_residency;
         slot->candidate_residency_pending = packed;
       }
