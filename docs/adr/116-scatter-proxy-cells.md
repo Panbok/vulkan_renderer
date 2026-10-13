@@ -73,6 +73,21 @@ static candidate set redraws retained shadows
   from a median of 4,490 to 4,134 while `Tiled.Opaque` stayed at 4.8 ms. The
   overview capture changed 0.45% of pixels, mostly sky through automatic
   exposure. Proxies are for scatters of heavier meshes.
+- Matched Release timing on the glide (2026-10-13; M1 Pro, Metal 4, tiled
+  pipeline, 1280x720 hidden window with immediate presentation;
+  `large_level_bistro_metal_glide_windowed.case.json`,
+  `performance-windowed-gpu.json`, five children each, authoritative with
+  matching fingerprints, clean tree at `6752317b`), against `VKR_PROXIES=0`
+  in the same binary: `frame.wall` 14.815 ms off and 14.827 ms on (child
+  means' standard deviation 0.013 and 0.034 ms), no gain; `Tiled.Opaque`
+  9.778 to 9.748 ms; the camera's visible rows a mean of 5,373 to 4,247;
+  `cpu.world_payload_build` 1.29 to 1.06 ms. GPU memory was the same,
+  since the diagnostic stops the swap but the cells stay built. Reports
+  `sha256:95a0ddebcf4ceff870395c4187408c8ddb6be7c794e8ef717c5c36092aa024f1`
+  (on) and
+  `sha256:0bd6eea71fe76e32450bf184d932ae9dd9e0947ce8559b45384d42bfdd19a45b`
+  (off). A first proxies-on report with one child slowed by another
+  process's build was discarded.
 
 ## Alternatives considered
 
