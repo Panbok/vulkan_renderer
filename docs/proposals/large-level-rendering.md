@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-12
+updated: 2026-10-13
 authority: proposal
 ---
 
@@ -8,8 +8,9 @@ authority: proposal
 
 Four features for large levels that mix a wide outdoor view with an indoor
 base: per-object draw distance, simpler distant trees and rocks, baked
-reflections for water planes, and room-by-room visibility indoors. No part is
-implemented. Each section gives the problem, the options, a recommendation,
+reflections for water planes, and room-by-room visibility indoors. Per-object
+draw distance is implemented ([ADR-114](../adr/114-per-object-draw-distance.md))
+and section 1 keeps only its remaining work. Each section gives the problem, the options, a recommendation,
 the data and owners, the cost, both pipeline classes, open questions,
 phases and the evidence needed to accept it.
 
@@ -62,11 +63,9 @@ These code facts bound every section:
   [deferred.slang](../../renderer/src/shaders/vulkan/slang/world/deferred.slang)).
   The views are the camera, each cascade, each cascade's dynamic-caster
   view and each local shadow face drawn this frame.
-- **Classify tests no distance.** Its tests are the flag and mobility
-  filters, the frustum, the HZB on the camera view, the sub-texel caster
-  skip in cascades (`vkr_gpu_cascade_caster_too_small`) and LOD selection.
-  The 20 km far plane (ADR-109) puts the whole backdrop and every scatter
-  copy in the camera frustum.
+- **Classify tested no distance** before ADR-114. The 20 km far plane
+  (ADR-109) put the whole backdrop and every scatter copy in the camera
+  frustum; the measurements below predate the draw distance.
 - **The HZB works only for a still camera.** History is rejected when the
   view-projection changes at all (ADR-028; `CAMERA_CHANGED` in
   [vkr_metal_packet_graph.inc](../../renderer/src/metal/internal/vkr_metal_packet_graph.inc)
@@ -113,161 +112,41 @@ valley above it. The level has no `world_partition` singleton.
 
 ## Phase 0: measurement and the Bistro fixture
 
-Every section's acceptance uses one new tracked Bistro fixture and its cases,
-because no Bistro scene holds terrain, scatters, water or rooms today.
+The fixture exists:
+[`bistro_tiled_large_level_local`](../../assets/scenes/fixtures/bistro_tiled_large_level_local.scene.json)
+puts Bistro inside a 2,048 m terrain at 8 m spacing and a 16,384 m backdrop
+at 64 m, both written by
+[make_terrain.py](../../tests/fixtures/rendering/large_level/make_terrain.py),
+and four scatter rules of 2,048 copies each (fir, spruce, boulder, shrub;
+[large_level](../../tests/fixtures/rendering/large_level/)). Its cases,
+`tools/cases/local/large_level_bistro_{metal,vulkan}_{overview,glide}.case.json`
+and `large_level_bistro_metal_overview_capture.case.json`, hold a still hill
+view and a 12 s glide down over the town.
 
-- **Fixture.** `bistro_tiled_large_level_local`, derived from
-  [`bistro_tiled_local`](../../assets/scenes/fixtures/bistro_tiled_local.scene.json):
-  a 2 km terrain around the town and a backdrop terrain, four scatter rules
-  of tree and rock meshes on the terrain, a water plane in the square, and
-  rooms and portals in the café interior. Bistro has no collision, so copies
-  land on the terrain, as ADR-102's evidence did.
-- **Cases.** A still capture view and a moving glide for each of: the
-  outdoor overview, the water plane at two eye heights, and the café walk.
-  A Vulkan twin of each case for the desktop pipeline.
-- **Attribution.** Per-pass timings (`VKR_RG_GPU_TIMING=1`) and the
-  `draw.*` candidate, visible and indirect-command counts per view, on the
-  still and the moving cases. This gives the `Cull.*` share, which no report
-  has isolated for a large level.
+Remaining:
+
+- A water plane in the square and its two eye heights (section 3).
+- Rooms and portals in the café interior and the café walk (section 4).
+- Matched before/after Release reports per section; no report has yet
+  isolated `Cull.*` for a still and a moving camera on matched builds.
 
 ## 1. Per-object draw distance
 
-### Problem
+Implemented: [ADR-114](../adr/114-per-object-draw-distance.md) records the
+component, the kind defaults, the cull word in the candidate state, the
+per-view tests and the editor and agent surfaces. Remaining:
 
-Nothing limits how far away an object draws. Every visible candidate is
-classified in every view, encoded when it passes the frustum, and drawn even
-when it covers less than a pixel. Before ADR-109 the 500 m far plane acted as
-one global draw distance. The 20 km plane removed that limit for all objects
-at once. The HZB cannot replace it, because it is off whenever the camera
-moves. The [foliage](foliage.md) draft lists the same gap for scatter rules
-(G6).
-
-### Options
-
-| Option | Saves | Cost and risk |
-|---|---|---|
-| A. CPU cull before candidate publication | Candidates in every view, so `Cull.*` too | Adding or removing a static candidate is a static change (ADR-041): retained cascades and cached local faces in its box redraw as the camera moves. Shadows of camera-culled objects vanish |
-| B. Per-view test in the classify kernel | Encode, indirect commands and raster per view | Classify still runs for every candidate. One more word read per candidate |
-| C. B plus a coarse CPU step for scatter cells beyond every shadow view | B's savings, and candidates of far cells | Needs section 2's cells. A change outside every cascade fit and light range leaves retained shadows valid (ADR-041, ADR-019) |
-
-### Recommendation
-
-Choose B now and C with section 2. The test runs in the classify kernel of
-both backends, per view kind:
-
-| View | Test | Why it keeps retained shadows valid |
-|---|---|---|
-| Camera | Drop the candidate when its distance to the bounding sphere exceeds its draw distance × the view's distance scale, or when its projected radius is under its minimum screen size | No retained state |
-| Cascade k (static and dynamic views) | Draw the caster only when its shadow distance reaches cascade k's near split | The splits are fixed per preset without the opt-in SDSM, so a cascade's caster set does not depend on camera position. The CPU candidate set, and so the measured caster box, does not change |
-| Local face | Only the `cast_shadows` switch; no distance | Face content depends on the light alone, so cached faces stay valid |
-| Reflection view (section 3) | As the camera, with its own distance scale | No retained state |
-
-The screen-size test reuses the LOD view's scale: projected radius in pixels
-is radius × `VkrGpuLodView.position_scale.w` / distance, already computed for
-LOD selection. The view's distance scale and its cascade index fit in
-`VkrGpuLodView.reserved`, so the 48-byte view ABI does not grow.
-
-**Authoring.** A `draw_distance` component holds `max_distance` (metres,
-zero for the kind default), `min_screen_pixels`, `shadow_distance`,
-`cast_shadows` and `fade`. It applies to its entity and to descendants that
-have none, as `visibility` inheritance does. Scatter and spline-mesh rules
-carry the same fields for their copies, which closes the foliage draft's
-phase 3 with one mechanism. The CPU resolves the inherited values when a
-transform or component changes, not every frame.
-
-Defaults per kind, scaled by the quality preset:
-
-| Kind | Draw distance default | Shadow default |
-|---|---|---|
-| Scatter and spline-mesh copies | Minimum screen size 2 px | Shadow distance short of cascade 3 |
-| Cooked meshes and props | Minimum screen size 1 px | All cascades |
-| Brushes and blockout shapes | Minimum screen size 1 px | All cascades |
-| Terrains, water and movers | Never culled by distance | All cascades |
-
-A screen-size default scales with object size and resolution, so a large
-cliff brush stays while a small crate goes. An authored `max_distance` caps
-it.
-
-**Fade.** The tiled pipeline's opaque variants never discard, which keeps
-hidden-surface removal on its fast path (ADR-087, decision 5). A dithered
-fade must discard, so classify moves a candidate inside its fade band into
-the alpha-tested bucket of its state for that frame. Only draws inside the
-band pay. Without temporal history the tiled pipeline shows the dither as
-stipple through alpha to coverage, so fade is off by default and the
-screen-size test keeps pops under about 2 px. On the desktop pipeline TAA
-resolves the dither.
-
-**HZB.** A culled object writes no depth, so it occludes nothing in the next
-frame's pyramid. Large occluders keep drawing under the screen-size default.
-The fading band writes depth through the alpha-tested bucket.
-
-**Editor.** Details gains a Draw distance section. A selected object shows
-its draw distance as a ring on the ground. The Scene applies game draw
-distances by default; a toolbar chip turns them off for editing far content.
-A `Draw distance` inspection mode tints each object by its distance to its
-cull point. `stats` reports candidates culled by distance and by screen size
-per view.
-
-**Agent operations.** `draw_distance.set` sets the component on entities
-chosen by name, tag, kind or region, as one journal group.
-`view.cull_report` returns, for a camera, the candidate, culled and drawn
-counts per view and reason, and the ten most expensive kinds by drawn
-triangles. Both go in `s_ops` in
-[editor_ops.c](../../editor/src/editor_ops.c).
-
-### Data and ownership
-
-| Part | Owner |
-|---|---|
-| `draw_distance` component, kind defaults | Scene types ([vkr_scene_types.c](../../runtime/src/renderer/systems/vkr_scene_types.c)) |
-| Resolved distances per instance | Mesh manager instance state, written at transform or component sync |
-| Per-candidate word: two half-precision distances and flags | A side array parallel to the candidate table, uploaded with it ([vkr_frame_input.h](../../renderer/src/vkr_frame_input.h)); its lifetime is the candidate table's frame slot |
-| Per-view distance scale and cascade index | `VkrGpuLodView` ([vkr_gpu_abi.h](../../renderer/src/vkr_gpu_abi.h)) |
-| The test | Shared kernel beside `vkr_gpu_lod_select` ([lod_kernel.slangh](../../renderer/src/shaders/shared/lod_kernel.slangh)), called from both classify kernels |
-
-### Cost and budget
-
-The side array costs 4 bytes per candidate, at most 1 MiB at the
-262,144-candidate capacity, per frame slot. Classify reads one more word per
-candidate and view. The saving is in encode, indirect commands, vertex work
-and small-triangle raster. Phase 0 sets the expected saving; the earlier
-attribution bounds the scatter share at about 0.4 ms p95 in the valley.
-
-### Both pipeline classes
-
-The test is a shared kernel with one meaning on both backends. The tiled
-pipeline needs the fade bucket remap in `gpu_draws.metal`; the desktop
-pipeline needs it in `deferred.slang`. Native evidence on Vulkan needs a
-Windows host.
-
-### Open questions
-
-| Question | Recommendation | Tradeoff |
-|---|---|---|
-| Screen-size defaults or metre defaults per kind | Screen size, with an authored metre cap | Metres are easier to read but cull a large and a small object at the same range |
-| Scene view applies game distances by default | Yes, with a toolbar chip | Off by default hides what players see; on hides far content while editing |
-| Fade on the tiled pipeline | Off by default; opt-in per object | Stipple without temporal history against small pops |
-| Adaptive quality scales draw distance | No at first; only presets | Scaling under load spikes makes objects pop in and out |
-
-### Phases
-
-1. Classify test, side array, kind defaults and the component; scatter rule
-   fields.
-2. Editor section, ring, inspection mode, `draw_distance.set` and
-   `view.cull_report`.
-3. Fade band, if phase 1 captures show visible pops.
-
-### Evidence
-
-- Capture sequence on the outdoor glide: pops stay under the minimum screen
-  size; no object larger than 2 px disappears.
-- Retained cascades: `draw.shadow.cascadeN` redraw counts on the glide match
-  the build without the feature.
-- Matched Release `local-windowed-gpu-single` and `gpu.submission` reports
-  on the outdoor still and glide cases, before and after, on M1 Pro. Report
-  `Cull.*`, `Tiled.Opaque`, cascade refreshes and frame p95.
-- One focused Metal API validation run of the capture case. On Windows, the
-  Vulkan twin under validation with synchronization checks.
+- **Fade band.** A dithered fade must discard, so classify would move a
+  candidate inside its band into the alpha-tested bucket of its state for
+  that frame. Without temporal history the tiled pipeline shows the dither
+  as stipple, so add it only if captures show pops above the smallest size.
+- **`view.cull_report`** and per-reason counts in `stats`, computed on the
+  CPU from the host mirror of the camera test (the GPU compaction state keeps
+  its size), and a `Draw distance` inspection mode.
+- **Evidence.** Retained-cascade redraw counts on the glide matched against a
+  build without the feature; matched Release `local-windowed-gpu-single` and
+  `gpu.submission` reports on the overview and glide; one focused Metal API
+  validation run; the Vulkan twins under validation on Windows.
 
 ## 2. Simpler distant trees and rocks
 

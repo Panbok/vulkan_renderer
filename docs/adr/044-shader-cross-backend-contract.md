@@ -898,6 +898,18 @@ the shared `vkr_gpu_cascade_caster_too_small` (`lod_kernel.slangh`) finds its
 bounding-sphere diameter below one texel of the view's LOD scale. Native
 Vulkan evidence of the skip is not recorded.
 
+Both classify kernels also apply the per-object draw distance
+([ADR-114](114-per-object-draw-distance.md)) through the shared
+`vkr_gpu_draw_distance_culled` (camera) and `vkr_gpu_draw_shadow_culled`
+(cascades) in `lod_kernel.slangh`, reading the cull word above the candidate
+flags of `state_flags` and `VkrGpuLodView`'s former reserved words
+`distance_scale` and `shadow_near` (bytes 36 and 40; the view keeps 48
+bytes). Both encode kernels keep only the bucket and candidate flags of the
+candidate state in the visible row. The host mirror
+`vkr_gpu_draw_distance_culled` in `vkr_gpu_abi.c` serves the blend list and
+editor ring. Metal ran it on Bistro and the large-level fixture (2026-10-13);
+Vulkan has compiled SPIR-V only.
+
 Directional GTAO is desktop-only and keeps the existing 192-byte parameter
 record; Vulkan uses its existing 240-byte utility root. Raw and denoised graph
 images are RGBA8, with world bent direction in RGB and visibility in alpha. The
