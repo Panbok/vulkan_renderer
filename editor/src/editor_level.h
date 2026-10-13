@@ -59,10 +59,11 @@ typedef enum VkrEditorLevelIssueKind {
      count. */
   VKR_EDITOR_LEVEL_LIGHT_OVERFLOW,
   /* A portal that joins nothing, its one space on both sides, a portal
-     whose door names no mover, or a gap in a room's walls, floor or
-     ceiling that no solid, room or portal closes (vkr_scene_rooms_check,
-     ADR-115); the value is a gap's open square metres, zero for a
-     portal. */
+     whose door names no mover, a gap in a room's walls, floor or ceiling
+     that no solid, room or portal closes (vkr_scene_rooms_check,
+     ADR-115), or, in a scene with rooms, a drawn object in an enclosed
+     space no room holds; the value is a gap's open square metres, zero
+     otherwise. */
   VKR_EDITOR_LEVEL_ROOMS,
   VKR_EDITOR_LEVEL_ISSUE_COUNT,
 } VkrEditorLevelIssueKind;

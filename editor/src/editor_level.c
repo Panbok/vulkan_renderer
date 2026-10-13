@@ -896,7 +896,82 @@ static bool8_t level_room_solid(void *context, Vec3 point) {
   return level_blocked((VkrScene *)context, point, 0.05f);
 }
 
-/* Portals that join nothing and gaps in rooms that lie in the region. */
+/* How far the rays that test whether an object is enclosed reach, metres. */
+#define LEVEL_ENCLOSED_REACH 8.0f
+
+/* Whether collision closes in a box centred at `center` with half extents
+   `half`: rays up and along +-x and +-z, each starting just past the box so
+   it leaves the object's own collision, all meet some within reach. */
+static bool8_t level_enclosed(VkrScene *scene, Vec3 center, Vec3 half) {
+  static const float32_t directions[5][3] = {{0.0f, 1.0f, 0.0f},
+                                             {1.0f, 0.0f, 0.0f},
+                                             {-1.0f, 0.0f, 0.0f},
+                                             {0.0f, 0.0f, 1.0f},
+                                             {0.0f, 0.0f, -1.0f}};
+  for (uint32_t d = 0; d < 5u; ++d) {
+    const Vec3 direction =
+        vec3_new(directions[d][0], directions[d][1], directions[d][2]);
+    const float32_t clear = fabsf(direction.x) * half.x +
+                            fabsf(direction.y) * half.y +
+                            fabsf(direction.z) * half.z + 0.05f;
+    VkrPhysicsRayHit hit = {0};
+    if (!level_ray(scene, vec3_add(center, vec3_scale(direction, clear)),
+                   vec3_scale(direction, LEVEL_ENCLOSED_REACH), &hit)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Drawn objects of the region in an enclosed space that no room holds,
+   when the scene has rooms: they belong to the outside, which a room's
+   walk hides unless a portal to it is in view, so they vanish when seen
+   through an opening without one. Brushes are walls and floors, which
+   room boxes leave out by design. */
+static void level_lint_unroomed(LevelGrid *grid, LevelIssues *issues) {
+  VkrScene *scene = grid->scene;
+  if (!vkr_scene_find_typed(scene, &vkr_scene_room_type, NULL, 0u)) {
+    return;
+  }
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        scene->world, entity, scene->comp_transform);
+    Vec3 lo = vec3_zero();
+    Vec3 hi = vec3_zero();
+    const bool8_t drawn =
+        vkr_entity_get_component_if_alive_const(scene->world, entity,
+                                                scene->comp_mesh_renderer) ||
+        vkr_entity_get_component_if_alive_const(scene->world, entity,
+                                                scene->comp_shape);
+    if (!transform || !drawn ||
+        vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) ||
+        !vkr_scene_entity_local_bounds(scene, entity, &lo, &hi)) {
+      continue;
+    }
+    Vec3 wlo = vec3_new(INFINITY, INFINITY, INFINITY);
+    Vec3 whi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    for (uint32_t c = 0; c < 8u; ++c) {
+      const Vec3 p =
+          mat4_mul_vec3(transform->world,
+                        vec3_new((c & 1u) ? hi.x : lo.x, (c & 2u) ? hi.y : lo.y,
+                                 (c & 4u) ? hi.z : lo.z));
+      wlo = vec3_new(Min(wlo.x, p.x), Min(wlo.y, p.y), Min(wlo.z, p.z));
+      whi = vec3_new(Max(whi.x, p.x), Max(whi.y, p.y), Max(whi.z, p.z));
+    }
+    const Vec3 center = vec3_scale(vec3_add(wlo, whi), 0.5f);
+    if (!level_in_region(grid, center) ||
+        vkr_scene_room_at(scene, center) != VKR_SCENE_ROOM_OUTSIDE ||
+        !level_enclosed(scene, center, vec3_scale(vec3_sub(whi, wlo), 0.5f))) {
+      continue;
+    }
+    level_issue_pair(issues, VKR_EDITOR_LEVEL_ROOMS, center, entity,
+                     VKR_ENTITY_ID_INVALID, 0.0f);
+  }
+}
+
+/* Portals that join nothing and gaps in rooms that lie in the region, and
+   drawn objects no room holds in an enclosed space. */
 static void level_lint_rooms(LevelGrid *grid, LevelIssues *issues) {
   VkrSceneRoomIssue found[64];
   const uint32_t count =
@@ -909,6 +984,7 @@ static void level_lint_rooms(LevelGrid *grid, LevelIssues *issues) {
                        found[i].entity, VKR_ENTITY_ID_INVALID, found[i].value);
     }
   }
+  level_lint_unroomed(grid, issues);
 }
 
 /* Seconds a mover takes from one end to the other: its length over its
@@ -2006,6 +2082,137 @@ static void level_room_join(VkrEditorDerivedRoom *room,
   }
 }
 
+/* The arrays of one room derivation: per node its ceiling height, the
+   nodes it steps to (four), its room label and a queue; edges between
+   spaces; and a cell mask and row of heights for the rectangles. */
+typedef struct LevelRoomWork {
+  LevelGrid *grid;
+  uint32_t cells;
+  size_t total;
+  float32_t *ceiling;
+  int32_t *next;
+  uint32_t *label;
+  LevelRoomEdge *edges;
+  uint8_t *mask;
+  uint32_t *heights;
+} LevelRoomWork;
+
+/* Gives each room its boxes. */
+static void level_room_boxes(const LevelRoomWork *work,
+                             VkrEditorRoomDerive *out) {
+  LevelGrid *grid = work->grid;
+  const uint32_t cells = work->cells;
+  const float32_t *ceiling = work->ceiling;
+  const uint32_t *label = work->label;
+  uint8_t *mask = work->mask;
+  uint32_t *heights = work->heights;
+  /* Boxes: the largest rectangles of each room's cells until they cover
+     most of its floor, from its lowest floor to its ceiling, with their
+     sides moved out to the walls. */
+  for (uint32_t r = 0; r < out->room_count; ++r) {
+    VkrEditorDerivedRoom *room = &out->rooms[r];
+    uint32_t remaining = 0u;
+    for (uint32_t c = 0; c < cells; ++c) {
+      mask[c] = 0u;
+      for (uint32_t l = 0; l < grid->layers[c]; ++l) {
+        if (label[(size_t)c * LEVEL_LAYER_MAX + l] == r) {
+          mask[c] = 1u;
+        }
+      }
+      remaining += mask[c];
+    }
+    const uint32_t floor_cells = remaining;
+    uint32_t snapped[VKR_EDITOR_ROOM_DERIVE_BOXES] = {0};
+    while (room->box_count < VKR_EDITOR_ROOM_DERIVE_BOXES &&
+           (float32_t)(floor_cells - remaining) <
+               LEVEL_ROOM_COVER * (float32_t)floor_cells) {
+      uint32_t rect[4];
+      const uint32_t area =
+          level_room_rect(mask, grid->nx, grid->nz, heights, rect);
+      if (!area ||
+          (float32_t)area * grid->cell * grid->cell < LEVEL_ROOM_BOX_AREA_MIN) {
+        break;
+      }
+      float32_t floor_y = INFINITY;
+      float32_t top = INFINITY;
+      for (uint32_t z = rect[2]; z <= rect[3]; ++z) {
+        for (uint32_t x = rect[0]; x <= rect[1]; ++x) {
+          const uint32_t c = z * grid->nx + x;
+          mask[c] = 0u;
+          remaining--;
+          for (uint32_t l = 0; l < grid->layers[c]; ++l) {
+            const size_t i = (size_t)c * LEVEL_LAYER_MAX + l;
+            if (label[i] == r) {
+              floor_y = Min(floor_y, grid->nodes[i].position.y);
+              top = Min(top, grid->nodes[i].position.y + ceiling[i]);
+            }
+          }
+        }
+      }
+      Vec3 lo = vec3_new(grid->min.x + (float32_t)rect[0] * grid->cell, floor_y,
+                         grid->min.z + (float32_t)rect[2] * grid->cell);
+      Vec3 hi = vec3_new(grid->min.x + (float32_t)(rect[1] + 1u) * grid->cell,
+                         Max(top - LEVEL_ROOM_WALL_INSET, floor_y + 0.5f),
+                         grid->min.z + (float32_t)(rect[3] + 1u) * grid->cell);
+      snapped[room->box_count] = level_room_snap(grid->scene, &lo, &hi);
+      room->min[room->box_count] = lo;
+      room->max[room->box_count] = hi;
+      room->box_count++;
+    }
+    level_room_join(room, snapped);
+  }
+}
+
+/* Gives each run of steps between two spaces its portal. */
+static void level_room_portals(const LevelRoomWork *work,
+                               VkrEditorRoomDerive *out) {
+  LevelGrid *grid = work->grid;
+  const size_t total = work->total;
+  const int32_t *next = work->next;
+  const uint32_t *label = work->label;
+  LevelRoomEdge *edges = work->edges;
+  /* Portals: runs of steps between two spaces across one cell boundary. */
+  uint32_t edge_count = 0u;
+  for (size_t i = 0; i < total; ++i) {
+    for (uint32_t d = 0; d < 4u; d += 2u) {
+      /* Directions 0 (+x) and 2 (+z) see each boundary once. */
+      const int32_t j = next[i * 4u + d];
+      if (j < 0) {
+        continue;
+      }
+      const uint32_t a = level_room_of(label, (int32_t)i);
+      const uint32_t b = level_room_of(label, j);
+      if (a == b) {
+        continue;
+      }
+      const uint32_t cell = (uint32_t)(i / LEVEL_LAYER_MAX);
+      edges[edge_count++] = (LevelRoomEdge){
+          .rooms = {a, b},
+          .axis = d == 0u ? 0u : 1u,
+          .plane = d == 0u ? cell % grid->nx : cell / grid->nx,
+          .along = d == 0u ? cell / grid->nx : cell % grid->nx,
+          .floor = Min(grid->nodes[i].position.y, grid->nodes[j].position.y),
+      };
+    }
+  }
+  qsort(edges, edge_count, sizeof(*edges), level_room_edge_order);
+  for (uint32_t e = 0; e < edge_count;) {
+    uint32_t end = e;
+    float32_t floor_y = edges[e].floor;
+    while (end + 1u < edge_count &&
+           edges[end + 1u].rooms[0] == edges[e].rooms[0] &&
+           edges[end + 1u].rooms[1] == edges[e].rooms[1] &&
+           edges[end + 1u].axis == edges[e].axis &&
+           edges[end + 1u].plane == edges[e].plane &&
+           edges[end + 1u].along <= edges[end].along + 1u) {
+      end++;
+      floor_y = Min(floor_y, edges[end].floor);
+    }
+    level_room_portal(grid, out, &edges[e], edges[end].along, floor_y);
+    e = end + 1u;
+  }
+}
+
 bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
                                    const VkrScene *scene, float32_t opening,
                                    VkrEditorRoomDerive *out) {
@@ -2206,102 +2413,17 @@ bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
   free(open_edges);
   free(keep);
 
-  /* Boxes: the largest rectangles of each room's cells until they cover
-     most of its floor, from its lowest floor to its ceiling, with their
-     sides moved out to the walls. */
-  for (uint32_t r = 0; r < out->room_count; ++r) {
-    VkrEditorDerivedRoom *room = &out->rooms[r];
-    uint32_t remaining = 0u;
-    for (uint32_t c = 0; c < cells; ++c) {
-      mask[c] = 0u;
-      for (uint32_t l = 0; l < grid.layers[c]; ++l) {
-        if (label[(size_t)c * LEVEL_LAYER_MAX + l] == r) {
-          mask[c] = 1u;
-        }
-      }
-      remaining += mask[c];
-    }
-    const uint32_t floor_cells = remaining;
-    uint32_t snapped[VKR_EDITOR_ROOM_DERIVE_BOXES] = {0};
-    while (room->box_count < VKR_EDITOR_ROOM_DERIVE_BOXES &&
-           (float32_t)(floor_cells - remaining) <
-               LEVEL_ROOM_COVER * (float32_t)floor_cells) {
-      uint32_t rect[4];
-      const uint32_t area =
-          level_room_rect(mask, grid.nx, grid.nz, heights, rect);
-      if (!area ||
-          (float32_t)area * grid.cell * grid.cell < LEVEL_ROOM_BOX_AREA_MIN) {
-        break;
-      }
-      float32_t floor_y = INFINITY;
-      float32_t top = INFINITY;
-      for (uint32_t z = rect[2]; z <= rect[3]; ++z) {
-        for (uint32_t x = rect[0]; x <= rect[1]; ++x) {
-          const uint32_t c = z * grid.nx + x;
-          mask[c] = 0u;
-          remaining--;
-          for (uint32_t l = 0; l < grid.layers[c]; ++l) {
-            const size_t i = (size_t)c * LEVEL_LAYER_MAX + l;
-            if (label[i] == r) {
-              floor_y = Min(floor_y, grid.nodes[i].position.y);
-              top = Min(top, grid.nodes[i].position.y + ceiling[i]);
-            }
-          }
-        }
-      }
-      Vec3 lo = vec3_new(grid.min.x + (float32_t)rect[0] * grid.cell, floor_y,
-                         grid.min.z + (float32_t)rect[2] * grid.cell);
-      Vec3 hi = vec3_new(grid.min.x + (float32_t)(rect[1] + 1u) * grid.cell,
-                         Max(top - LEVEL_ROOM_WALL_INSET, floor_y + 0.5f),
-                         grid.min.z + (float32_t)(rect[3] + 1u) * grid.cell);
-      snapped[room->box_count] = level_room_snap(grid.scene, &lo, &hi);
-      room->min[room->box_count] = lo;
-      room->max[room->box_count] = hi;
-      room->box_count++;
-    }
-    level_room_join(room, snapped);
-  }
-
-  /* Portals: runs of steps between two spaces across one cell boundary. */
-  uint32_t edge_count = 0u;
-  for (size_t i = 0; i < total; ++i) {
-    for (uint32_t d = 0; d < 4u; d += 2u) {
-      /* Directions 0 (+x) and 2 (+z) see each boundary once. */
-      const int32_t j = next[i * 4u + d];
-      if (j < 0) {
-        continue;
-      }
-      const uint32_t a = level_room_of(label, (int32_t)i);
-      const uint32_t b = level_room_of(label, j);
-      if (a == b) {
-        continue;
-      }
-      const uint32_t cell = (uint32_t)(i / LEVEL_LAYER_MAX);
-      edges[edge_count++] = (LevelRoomEdge){
-          .rooms = {a, b},
-          .axis = d == 0u ? 0u : 1u,
-          .plane = d == 0u ? cell % grid.nx : cell / grid.nx,
-          .along = d == 0u ? cell / grid.nx : cell % grid.nx,
-          .floor = Min(grid.nodes[i].position.y, grid.nodes[j].position.y),
-      };
-    }
-  }
-  qsort(edges, edge_count, sizeof(*edges), level_room_edge_order);
-  for (uint32_t e = 0; e < edge_count;) {
-    uint32_t end = e;
-    float32_t floor_y = edges[e].floor;
-    while (end + 1u < edge_count &&
-           edges[end + 1u].rooms[0] == edges[e].rooms[0] &&
-           edges[end + 1u].rooms[1] == edges[e].rooms[1] &&
-           edges[end + 1u].axis == edges[e].axis &&
-           edges[end + 1u].plane == edges[e].plane &&
-           edges[end + 1u].along <= edges[end].along + 1u) {
-      end++;
-      floor_y = Min(floor_y, edges[end].floor);
-    }
-    level_room_portal(&grid, out, &edges[e], edges[end].along, floor_y);
-    e = end + 1u;
-  }
+  const LevelRoomWork work = {.grid = &grid,
+                              .cells = cells,
+                              .total = total,
+                              .ceiling = ceiling,
+                              .next = next,
+                              .label = label,
+                              .edges = edges,
+                              .mask = mask,
+                              .heights = heights};
+  level_room_boxes(&work, out);
+  level_room_portals(&work, out);
   done = true_v;
 
 cleanup:

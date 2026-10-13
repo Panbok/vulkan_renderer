@@ -1,5 +1,5 @@
 ---
-status: partial
+status: implemented
 updated: 2026-10-13
 authority: adr
 ---
@@ -8,15 +8,13 @@ authority: adr
 
 ## Status
 
-Accepted (partial). Rooms hide the camera's draws, lights and reflection
-probes that no open portal shows, and sealed rooms keep their draws out of
-every cascade, on both pipeline classes; doors shut their portals,
-`room.probes` gives rooms their probes, `room.derive` proposes rooms and
-portals and the `rooms` lint check finds leaks. Linting objects no room
-holds, from the
-[large-level rendering](../proposals/large-level-rendering.md) proposal, is
-not built. The tiled pipeline has native Metal evidence; the desktop
-pipeline has compiled SPIR-V only.
+Accepted. Rooms hide the camera's draws, lights and reflection probes
+that no open portal shows, and sealed rooms keep their draws out of every
+cascade, on both pipeline classes; doors shut their portals, `room.probes`
+gives rooms their probes, `room.derive` proposes rooms and portals and the
+`rooms` lint check finds leaks. The tiled pipeline has native Metal
+evidence; the desktop pipeline has compiled SPIR-V only, and `room.probes`
+has not run in a project scene (Consequences).
 
 ## Context
 
@@ -99,6 +97,10 @@ along a corridor.
    both sides, a portal whose door names no mover, and a gap in a room box's face: samples 0.5 m apart, 0.1 m
    past the face, that no solid (the editor's collision), other room box or
    portal opening closes, kept when their area reaches 0.25 m².
+   In a scene with rooms it also reports a drawn object (a mesh or shape,
+   not a brush) whose box centre lies in no room and around which rays up
+   and along both horizontal axes all meet collision within 8 m: the
+   outside, which a room's walk hides unless a portal to it is in view.
    `level.lint` reports them as `rooms`
    ([editor_level.c](../../editor/src/editor_level.c)) with the portal or
    room box and the open area. Box containment takes its tolerance in
@@ -167,7 +169,9 @@ along a corridor.
   with another to the outside, proposed two room boxes within 1 cm of the
   interiors and two 1.2 m portals of the doorways' heights; with a 4 m
   opening instead, one room of two boxes; a canopy without walls made no
-  room. `level.lint` `rooms` reported nothing on either result.
+  room. `level.lint` `rooms` reported nothing on either result. Beside a
+  blockout room with its box and one without, it reported only the cube
+  shape in the room without a box, not the one in the room or outside.
 - `room.probes` was run only on a scene outside a project, where it refuses
   as `probe.create` does; its probe creation in a project scene is not
   exercised.

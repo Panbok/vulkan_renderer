@@ -301,8 +301,9 @@ splits two rooms); review it, then lint it. Or add them by hand:
   none (a scene holds 16); save and bake lighting so they reflect.
 - `level.lint` with `kinds` [`rooms`] reports a portal that joins nothing
   and a gap in a room's walls, floor or ceiling that no solid, room or
-  portal closes (`value` its square metres); a gap is where the camera
-  sees through a hidden room. Expect none.
+  portal closes (`value` its square metres), and, once a scene has rooms,
+  a drawn object in an enclosed space no room holds; a gap is where the
+  camera sees through a hidden room. Expect none.
 - Prove a level by capturing the same views with `VKR_ROOMS=0` set before
   starting the editor and without it: the images must match.
 

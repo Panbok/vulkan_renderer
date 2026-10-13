@@ -131,8 +131,8 @@ feature off in one build.
 Remaining:
 
 - A water plane in the square and its two eye heights (section 3).
-- Matched Release reports for section 2 and the overview; ADR-114 and
-  ADR-115 record those of the glide and the café walk on Metal.
+- A matched Release report for the overview; ADR-114 to ADR-116 record
+  those of the glide and the café walk on Metal.
 
 ## 1. Per-object draw distance
 
@@ -167,9 +167,9 @@ Remaining:
 - **Fade across the swap**, with section 1's fade band, if captures show
   the swap.
 - **Cells on job workers** when a rule's build time shows in edits.
-- **Evidence.** Matched Release timing and resident memory against a build
-  without proxies on the fixture's glide; a capture series across the swap
-  distance.
+- **Evidence.** Resident memory against a build that builds no cells, on a
+  scene with heavier scatter meshes; a capture series across the swap
+  distance. ADR-116 records the glide's matched timing.
 
 ## 3. Baked reflections for water planes
 
@@ -303,9 +303,7 @@ Remaining, in order:
 
 1. **`room.probes` in a project scene**, captured by Bakery and shown to
    reflect the room instead of the sky.
-2. **Drawn objects in an indoor region that no room holds**, added to the
-   `rooms` lint check.
-3. **Evidence.** The Vulkan twin under validation on Windows.
+2. **Evidence.** The Vulkan twin under validation on Windows.
 
 ## Order and dependencies
 
