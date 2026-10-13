@@ -839,3 +839,49 @@ VkrRendererError vkr_scene_build_world_draws(
     *out_stats = totals.stats;
   return VKR_RENDERER_ERROR_NONE;
 }
+
+void vkr_scene_cull_report(const VkrWorldPassPayload *world,
+                           Mat4 view_projection, float32_t image_rows,
+                           Vec3 view_position, VkrSceneCullReport *out) {
+  *out = (VkrSceneCullReport){.distance_scale = world->draw_distance_scale};
+  const VkrFrustum frustum = vkr_frustum_from_matrix(view_projection);
+  const VkrGpuLodView view = vkr_gpu_lod_view(
+      view_projection, image_rows, view_position, view_position, true_v);
+  for (uint32_t i = 0; i < world->gpu_candidate_count; ++i) {
+    const VkrWorldDrawCandidate *candidate = &world->gpu_candidates[i];
+    if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE) == 0u) {
+      continue;
+    }
+    out->candidates++;
+    /* The world sphere as the instance row carries it. */
+    const Mat4 model = candidate->instance.model;
+    const Vec4 local = candidate->local_bounding_sphere;
+    const Vec3 center =
+        mat4_mul_vec3(model, vec3_new(local.x, local.y, local.z));
+    const float32_t radius = local.w * mat4_affine_sphere_scale(model);
+    if (!vkr_frustum_test_sphere(&frustum, center, radius)) {
+      out->outside_view++;
+      continue;
+    }
+    /* The nearest point of the sphere, as vkr_lod_distance takes it. */
+    const float32_t distance =
+        Max(vec3_length(vec3_sub(center, view_position)) - radius, 1e-3f);
+    switch (vkr_gpu_draw_distance_reason(candidate->cull, view.position_scale.w,
+                                         view.flags, world->draw_distance_scale,
+                                         distance, radius)) {
+    case VKR_GPU_DRAW_CULL_REASON_HIDDEN:
+      out->hidden++;
+      break;
+    case VKR_GPU_DRAW_CULL_REASON_DISTANCE:
+      out->distance++;
+      break;
+    case VKR_GPU_DRAW_CULL_REASON_SIZE:
+      out->size++;
+      break;
+    case VKR_GPU_DRAW_CULL_REASON_NONE:
+    default:
+      out->drawn++;
+      break;
+    }
+  }
+}

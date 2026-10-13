@@ -353,29 +353,40 @@ uint32_t vkr_gpu_draw_cull_word(float32_t draw_distance,
           << VKR_GPU_DRAW_CULL_SHADOW_SHIFT);
 }
 
-bool8_t vkr_gpu_draw_distance_culled(uint32_t cull, float32_t scale,
-                                     uint32_t flags, float32_t distance_scale,
-                                     float32_t distance, float32_t radius) {
+VkrGpuDrawCullReason
+vkr_gpu_draw_distance_reason(uint32_t cull, float32_t scale, uint32_t flags,
+                             float32_t distance_scale, float32_t distance,
+                             float32_t radius) {
   if ((cull & VKR_GPU_DRAW_CULL_HIDDEN_BIT) != 0u) {
-    return true_v;
+    return VKR_GPU_DRAW_CULL_REASON_HIDDEN;
   }
   if (!(distance_scale > 0.0f)) {
-    return false_v;
+    return VKR_GPU_DRAW_CULL_REASON_NONE;
   }
   const uint32_t far_code = cull & VKR_GPU_DRAW_CULL_CODE_MASK;
   if (far_code != 0u &&
       distance > vkr_gpu_draw_cull_metres(far_code) * distance_scale) {
-    return true_v;
+    return VKR_GPU_DRAW_CULL_REASON_DISTANCE;
   }
   const uint32_t half_pixels =
       (cull >> VKR_GPU_DRAW_CULL_PIXELS_SHIFT) & VKR_GPU_DRAW_CULL_PIXELS_MASK;
   if (half_pixels == 0u || !(scale > 0.0f)) {
-    return false_v;
+    return VKR_GPU_DRAW_CULL_REASON_NONE;
   }
   const float32_t diameter = (flags & VKR_GPU_LOD_VIEW_CONSTANT) != 0u
                                  ? 2.0f * radius * scale
                                  : 2.0f * radius * scale / distance;
-  return diameter * distance_scale < 0.5f * (float32_t)half_pixels;
+  return diameter * distance_scale < 0.5f * (float32_t)half_pixels
+             ? VKR_GPU_DRAW_CULL_REASON_SIZE
+             : VKR_GPU_DRAW_CULL_REASON_NONE;
+}
+
+bool8_t vkr_gpu_draw_distance_culled(uint32_t cull, float32_t scale,
+                                     uint32_t flags, float32_t distance_scale,
+                                     float32_t distance, float32_t radius) {
+  return vkr_gpu_draw_distance_reason(cull, scale, flags, distance_scale,
+                                      distance,
+                                      radius) != VKR_GPU_DRAW_CULL_REASON_NONE;
 }
 
 bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {

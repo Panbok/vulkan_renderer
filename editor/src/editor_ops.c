@@ -6870,6 +6870,56 @@ static VkrEditorOpStatus ops_run_greybox(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* view.cull_report (ADR-114): has the runtime sort the next Scene frame's
+   camera candidates by the camera's tests, then answers with the counts.
+   Stage 1 waits for the report whose serial passes the one saved. */
+static VkrEditorOpStatus ops_run_cull_report(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  const VkrSampleUiFrame *frame = ctx->frame;
+  if (!call->stage) {
+    uint64_t *serial =
+        arena_alloc(call->arena, sizeof(*serial), ARENA_MEMORY_TAG_STRUCT);
+    if (!serial) {
+      ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!frame->cull_report_request) {
+      ops_fail(ctx, OPS_BUSY, "No Scene renders to report on");
+      return VKR_EDITOR_OP_DONE;
+    }
+    *serial = frame->cull_report_serial;
+    *frame->cull_report_request = true_v;
+    call->state = serial;
+    call->stage = 1u;
+    call->frames = 0u;
+    return VKR_EDITOR_OP_WAIT;
+  }
+  const uint64_t *serial = call->state;
+  if (frame->cull_report_serial <= *serial) {
+    if (++call->frames > OPS_WAIT_FRAMES) {
+      ops_fail(ctx, OPS_BUSY, "The Scene drew no frame to report on");
+      return VKR_EDITOR_OP_DONE;
+    }
+    return VKR_EDITOR_OP_WAIT;
+  }
+  const VkrSceneCullReport *report = &frame->cull_report;
+  Arena *arena = call->arena;
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "candidates",
+          vkr_bakery_json_int(arena, report->candidates));
+  ops_set(ctx, result, "outside_view",
+          vkr_bakery_json_int(arena, report->outside_view));
+  ops_set(ctx, result, "hidden", vkr_bakery_json_int(arena, report->hidden));
+  ops_set(ctx, result, "distance",
+          vkr_bakery_json_int(arena, report->distance));
+  ops_set(ctx, result, "size", vkr_bakery_json_int(arena, report->size));
+  ops_set(ctx, result, "drawn", vkr_bakery_json_int(arena, report->drawn));
+  ops_set(ctx, result, "distance_scale",
+          ops_number(ctx, report->distance_scale));
+  call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
 static VkrEditorOpStatus ops_run_raycast(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
   Vec3 origin = {0};
@@ -15657,6 +15707,15 @@ static const OpsDef s_ops[] = {
      ",\"to\":" OPS_VEC3_SCHEMA ",\"entity\":" OPS_ENTITY_SCHEMA
      "," OPS_SETTLE_SCHEMA "}}",
      ops_run_measure, NULL, OPS_QUICK | OPS_SETTLES},
+    {"view.cull_report",
+     "Count how the camera's tests sort the Scene's next frame's opaque "
+     "candidates, on the CPU as the GPU classify does: 'outside_view' of "
+     "the frustum, 'hidden' (rooms the portals do not show, or scatter "
+     "copies a proxy cell draws in place of), past their draw 'distance', "
+     "below their smallest drawn 'size', and 'drawn' (still subject to "
+     "occlusion), with the 'distance_scale' the View distance setting gave "
+     "(0 when the Scene's draw distance chip shows All).",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_cull_report, NULL},
     {"view.greybox",
      "Show every brush face's surface greybox look, art-owned materials "
      "too ('on' true), or return to them ('on' false). The view persists "

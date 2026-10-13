@@ -119,6 +119,21 @@ bool8_t vkr_gpu_draw_distance_culled(uint32_t cull, float32_t scale,
                                      uint32_t flags, float32_t distance_scale,
                                      float32_t distance, float32_t radius);
 
+/** Which of those camera tests skips the candidate: none, the hidden bit
+    (its rooms are hidden or a proxy cell draws in its place), its draw
+    distance, or its smallest drawn size. */
+typedef enum VkrGpuDrawCullReason {
+  VKR_GPU_DRAW_CULL_REASON_NONE = 0,
+  VKR_GPU_DRAW_CULL_REASON_HIDDEN,
+  VKR_GPU_DRAW_CULL_REASON_DISTANCE,
+  VKR_GPU_DRAW_CULL_REASON_SIZE,
+} VkrGpuDrawCullReason;
+
+VkrGpuDrawCullReason
+vkr_gpu_draw_distance_reason(uint32_t cull, float32_t scale, uint32_t flags,
+                             float32_t distance_scale, float32_t distance,
+                             float32_t radius);
+
 typedef struct VkrGeometryMegabufferMetrics {
   uint64_t vertex_capacity_bytes;
   uint64_t index_capacity_bytes;

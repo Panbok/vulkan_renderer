@@ -7,6 +7,7 @@
 #include "core/vkr_text.h"
 #include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_scene_edit.h"
+#include "renderer/systems/vkr_scene_frame.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "script/vkr_script_host.h"
 #include "vkr_graphics_settings.h"
@@ -459,6 +460,12 @@ typedef struct VkrSampleUiFrame {
   VkrSamplePickRequest *pick_request;
   VkrSampleGridFitRequest *grid_fit_request;
   VkrSampleTimeOfDayRequest *time_of_day_request;
+  /* Set to sort the next Scene frame's camera candidates by the camera's
+     tests (view.cull_report); `cull_report` holds the latest sort and
+     `cull_report_serial` counts them. */
+  bool8_t *cull_report_request;
+  VkrSceneCullReport cull_report;
+  uint64_t cull_report_serial;
   /* The last grid fit's outcome, or empty. */
   String8 grid_status;
   uint64_t scene_generation;

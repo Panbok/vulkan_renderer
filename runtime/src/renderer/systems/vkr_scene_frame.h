@@ -47,3 +47,26 @@ VkrRendererError vkr_scene_build_world_draws(
     const VkrSceneDrawGate *gate, bool8_t transmission_blended,
     bool8_t static_only, VkrAllocator *scratch,
     VkrWorldPassPayload *out_payload, VkrVisibilityStats *out_stats);
+
+/** How the camera's tests sort one payload's camera candidates
+    (view.cull_report): outside the frustum, hidden (rooms the portals do
+    not show, or scatter copies a proxy cell draws in place of), past their
+    draw distance, below their smallest drawn size, or drawn. Drawn rows
+    still face HZB occlusion. */
+typedef struct VkrSceneCullReport {
+  uint32_t candidates;
+  uint32_t outside_view;
+  uint32_t hidden;
+  uint32_t distance;
+  uint32_t size;
+  uint32_t drawn;
+  float32_t distance_scale;
+} VkrSceneCullReport;
+
+/** Sorts `world`'s camera candidates as the classify kernels do, through
+    the host mirror of their camera test (vkr_gpu_draw_distance_reason), for
+    a camera of `view_projection` at `view_position` whose image is
+    `image_rows` pixels high. */
+void vkr_scene_cull_report(const VkrWorldPassPayload *world,
+                           Mat4 view_projection, float32_t image_rows,
+                           Vec3 view_position, VkrSceneCullReport *out);

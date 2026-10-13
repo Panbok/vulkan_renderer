@@ -95,6 +95,11 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
    entities chosen by name, kind, tags, region or root as one journal group,
    and the Cmd command `draw_distance` and value `view.draw_distance` switch
    and read the chip ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
+   `view.cull_report` has the runtime sort the next frame's camera
+   candidates by the camera's tests on the CPU (`vkr_scene_cull_report`,
+   through `vkr_gpu_draw_distance_reason`, the host mirror the kernels'
+   test is split from) and answers with the counts per reason. It runs only
+   on request, over the payload the frame built.
 
 ## Consequences
 
@@ -126,8 +131,12 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
   `sha256:a1c3fe26c7bec9ebbe7d2db359df7116df4fdc25d1c944cef9a290639e6ba5c6`
   (off). The fixture's distant draws are small, so the gain is too.
 - No per-reason GPU counter exists; the compaction state keeps its 144
-  bytes. Counts per reason come from the CPU mirror
-  (`vkr_gpu_draw_distance_culled` on the host).
+  bytes. `view.cull_report` gives the counts from the CPU mirror. On the
+  fixture's hill view in the editor (2026-10-13) it sorted 15,701 camera
+  candidates into 6,727 outside the view, 1,865 hidden, 1,768 below their
+  size and 5,341 drawn, against 5,224 visible rows after occlusion in the
+  harness's hill view; with the Scene's chip on All, 414 hidden (the
+  merged proxy meshes) and 8,560 drawn, against 8,481.
 
 ## Alternatives considered
 

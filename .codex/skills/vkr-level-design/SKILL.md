@@ -276,6 +276,10 @@ structures, and put a cutout around a room before the ground reaches it.
   edit, and `view.draw_distance` reads the setting; Play always uses the
   game's distances. With one object selected,
   an amber ring on the ground shows where the camera stops drawing it.
+- `view.cull_report` counts, for the Scene camera's next frame, the
+  opaque draws outside the view, hidden by rooms or proxy cells, past
+  their draw distance, below their smallest size, and drawn. Use it to
+  see what a draw distance edit or a room saves from a given view.
 
 ## Rooms and portals
 

@@ -1109,6 +1109,17 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
   if (world_error != VKR_RENDERER_ERROR_NONE) {
     return world_error;
   }
+  /* A requested cull report, once, over the payload just built. */
+  if (application->cull_report_request && !draw->scene_stopped) {
+    vkr_scene_cull_report(
+        &draw->world_payload,
+        mat4_mul(application->globals.projection, application->globals.view),
+        (float32_t)application->renderer.scene_output_height *
+            application->renderer.render_scale,
+        application->globals.view_position, &application->cull_report);
+    application->cull_report_serial++;
+    application->cull_report_request = false_v;
+  }
   draw->world_payload.caster_publication_generation =
       application->assets.caster_publication_generation;
   /* Both pipelines draw decals (ADR-092); their textures join this frame's

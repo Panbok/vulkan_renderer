@@ -313,6 +313,11 @@ typedef struct VkrStandardSceneRuntime {
   /** Diagnostic: VKR_PROXIES=0 draws every scatter copy and no merged far
       cell. */
   bool8_t proxies_off;
+  /** The next world payload sorts its camera candidates into `cull_report`
+      (view.cull_report) and advances `cull_report_serial`. */
+  bool8_t cull_report_request;
+  VkrSceneCullReport cull_report;
+  uint64_t cull_report_serial;
   /* Optional user quality gates; zero preserves scene-authored rendering. */
   bool8_t disable_directional_shadows;
   bool8_t disable_local_shadows;
