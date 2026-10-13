@@ -88,6 +88,16 @@ bool8_t vkr_scene_rooms_box_hidden(const VkrSceneRoomFrame *frame, Vec3 center,
 uint32_t vkr_scene_rooms_list(const VkrScene *scene, VkrEntityId *out_entities,
                               Vec3 *out_min, Vec3 *out_max, uint32_t capacity);
 
+/* How far a room's probe box (room.probes) reaches past the room's box, and
+   the fade inside its faces, in metres. A probe's influence ends at its box
+   and fades in from its faces, so a box on the interior alone would give no
+   probe to the room's walls, floor and ceiling: their centres lie just
+   outside it, and their inner faces on it. The margin covers walls up to
+   twice the fade thick; box projection then places the walls this much
+   farther out than they are. */
+#define VKR_SCENE_ROOM_PROBE_MARGIN 0.5f
+#define VKR_SCENE_ROOM_PROBE_BLEND 0.25f
+
 /* What a room check finds: a portal with one space on both sides, which
    joins nothing; a portal whose door names no mover, which never shuts it;
    and a gap in a room's walls, floor or ceiling that no solid, no other

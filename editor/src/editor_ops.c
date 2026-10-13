@@ -2687,8 +2687,15 @@ static bool8_t ops_build_room_probes(OpsContext *ctx, const VkrBakeryJson *args,
     }
     SceneReflectionProbeSettings probe;
     vkr_type_defaults(&vkr_scene_reflection_probe_type, &probe);
+    /* The box reaches past the room's shell so its surfaces take the probe
+       (VKR_SCENE_ROOM_PROBE_MARGIN); the capture stays at the room's
+       centre. */
     probe.center = vec3_scale(vec3_add(lo, hi), 0.5f);
-    probe.extents = vec3_scale(vec3_sub(hi, lo), 0.5f);
+    probe.extents = vec3_add(vec3_scale(vec3_sub(hi, lo), 0.5f),
+                             vec3_new(VKR_SCENE_ROOM_PROBE_MARGIN,
+                                      VKR_SCENE_ROOM_PROBE_MARGIN,
+                                      VKR_SCENE_ROOM_PROBE_MARGIN));
+    probe.blend_distance = VKR_SCENE_ROOM_PROBE_BLEND;
     probe.box_projection = true_v;
     VkrSampleEditBatchItem *item =
         ops_batch_add(ctx, batch, 0u, VKR_SCENE_EDIT_CREATE);

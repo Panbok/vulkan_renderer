@@ -13,8 +13,7 @@ that no open portal shows, and sealed rooms keep their draws out of every
 cascade, on both pipeline classes; doors shut their portals, `room.probes`
 gives rooms their probes, `room.derive` proposes rooms and portals and the
 `rooms` lint check finds leaks. The tiled pipeline has native Metal
-evidence; the desktop pipeline has compiled SPIR-V only, and `room.probes`
-has not run in a project scene (Consequences).
+evidence; the desktop pipeline has compiled SPIR-V only.
 
 ## Context
 
@@ -89,12 +88,22 @@ along a corridor.
    table by distance (ADR-019).
 7. **Probes.** A reflection probe whose box and blend distance hide by the
    same rule leaves the frame's 16 slots to the probes the camera can see
-   (`vkr_scene_rooms_box_hidden`). A draw in a room keeps taking the
-   smallest probe box around its centre, so a probe on a room's box wins
-   over the hall around it. `room.probes` adds a box-projected probe on the
-   box of each room that holds none, up to the scene's 16 probes.
+   (`vkr_scene_rooms_box_hidden`). `room.probes` adds a box-projected probe
+   to each room that holds none, up to the scene's 16 probes, captured at
+   the room box's centre. A probe's influence ends at its box and fades in
+   from its faces over its blend distance, and the tiled pipeline gives
+   each draw the first probe, smallest box first, holding half influence
+   at its centre. A probe on the interior box would therefore reach none of
+   the room's walls, floor or ceiling, whose centres lie just outside it.
+   So its box reaches `VKR_SCENE_ROOM_PROBE_MARGIN` (0.5 m) past the
+   room's box with a 0.25 m blend distance
+   ([vkr_scene_rooms.h](../../runtime/src/renderer/systems/vkr_scene_rooms.h)):
+   walls up to 0.5 m thick take it fully, on the tiled pipeline's per-draw
+   choice and on the desktop pipeline's per-pixel blend. Box projection
+   then places the walls 0.5 m farther out than they are.
 8. **Lint.** `vkr_scene_rooms_check` reports a portal with one space on
-   both sides, a portal whose door names no mover, and a gap in a room box's face: samples 0.5 m apart, 0.1 m
+   both sides, a portal whose door names no mover, and a gap in a room
+   box's face: samples 0.5 m apart, 0.1 m
    past the face, that no solid (the editor's collision), other room box or
    portal opening closes, kept when their area reaches 0.25 m².
    In a scene with rooms it also reports a drawn object (a mesh or shape,
@@ -172,9 +181,15 @@ along a corridor.
   room. `level.lint` `rooms` reported nothing on either result. Beside a
   blockout room with its box and one without, it reported only the cube
   shape in the room without a box, not the one in the room or outside.
-- `room.probes` was run only on a scene outside a project, where it refuses
-  as `probe.create` does; its probe creation in a project scene is not
-  exercised.
+- In the FPS Arena starter project (a clone of a scratch workspace,
+  Metal, 2026-10-13), a sealed blockout room with a lamp, a copper floor
+  (metallic 1, roughness 0.02) and greybox walls took a probe from
+  `room.probes`, and Bake lighting captured it at the room's centre. With
+  the probe the floor mirrored the room's walls, corner and seams; with the
+  probe deleted, saved and reloaded it showed the flat colour of the global
+  environment, and the floor's mean luminance moved from 0.069 to 0.094.
+  The first version put the probe on the interior box: its bake succeeded,
+  but no surface of the room selected it.
 - Metal API validation of the café bar and overview captures
   (`local-metal-offscreen-validation-serial`, `MTL_DEBUG_LAYER=1`) reported
   no error.

@@ -296,16 +296,12 @@ on the tiled pipeline only, as the planar reflections proposal scopes it.
 
 ## 4. Room-by-room visibility indoors
 
-Implemented in part: [ADR-115](../adr/115-rooms-and-portals.md) records the
+Implemented: [ADR-115](../adr/115-rooms-and-portals.md) records the
 `room` and `portal` components, the membership of static draws, the portal
 walk, the camera and cascade bits, the light and probe gates, doors that
 shut portals, `room.probes`, `room.derive` and the `rooms` lint check,
 and `blockout.room` and `blockout.doorway` create rooms and portals.
-Remaining, in order:
-
-1. **`room.probes` in a project scene**, captured by Bakery and shown to
-   reflect the room instead of the sky.
-2. **Evidence.** The Vulkan twin under validation on Windows.
+Remaining: the Vulkan twin under validation on Windows.
 
 ## Order and dependencies
 
