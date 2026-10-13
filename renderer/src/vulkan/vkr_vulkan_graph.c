@@ -1468,6 +1468,35 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
   case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
     return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
                                           true_v, 0u);
+  case VKR_RG_EXECUTOR_REFLECTION_RASTER: {
+    /* The quarter tier draws the top-left quarter of the half-size target,
+       which lighting samples with the same scale. */
+    const uint32_t width =
+        Min(target_width, vkr_render_graph_reflection_extent(
+                              &renderer->prepared_frame,
+                              renderer->prepared_frame.viewport_width));
+    const uint32_t height =
+        Min(target_height, vkr_render_graph_reflection_extent(
+                               &renderer->prepared_frame,
+                               renderer->prepared_frame.viewport_height));
+    prepared->viewport.width = (float32_t)width;
+    prepared->viewport.height = (float32_t)height;
+    /* Only the reflector's screen rectangle is drawn; the cleared rest
+       leaves its pixels to the probes. */
+    const Vec4 rect = packet->input.planar_reflection->screen_rect;
+    const uint32_t x0 = (uint32_t)floorf(rect.x * (float32_t)width);
+    const uint32_t y0 = (uint32_t)floorf(rect.y * (float32_t)height);
+    const uint32_t x1 = Min((uint32_t)ceilf(rect.z * (float32_t)width), width);
+    const uint32_t y1 =
+        Min((uint32_t)ceilf(rect.w * (float32_t)height), height);
+    prepared->scissor = (VkRect2D){
+        .offset = {(int32_t)x0, (int32_t)y0},
+        .extent = {Max(x1, x0 + 1u) - x0, Max(y1, y0 + 1u) - y0},
+    };
+    return vkr_vk_prepare_deferred_raster(
+        renderer, &prepared->raster, pass, false_v,
+        vkr_render_graph_reflection_view(&renderer->prepared_frame));
+  }
   case VKR_RG_EXECUTOR_WORLD_BLEND: {
     if (!packet->input.world)
       return true_v;
@@ -1835,6 +1864,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_PICKING:
   case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
   case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
+  case VKR_RG_EXECUTOR_REFLECTION_RASTER:
   case VKR_RG_EXECUTOR_WORLD_BLEND:
   case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
   case VKR_RG_EXECUTOR_TONEMAP:
@@ -2172,6 +2202,7 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
     break;
   case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
   case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
+  case VKR_RG_EXECUTOR_REFLECTION_RASTER:
     vkr_vk_record_prepared_raster(renderer, command, &prepared->raster);
     break;
   case VKR_RG_EXECUTOR_PICKING:
@@ -2244,6 +2275,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_PICKING:
     case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
     case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
+    case VKR_RG_EXECUTOR_REFLECTION_RASTER:
     case VKR_RG_EXECUTOR_WORLD_BLEND:
     case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
     case VKR_RG_EXECUTOR_TONEMAP:

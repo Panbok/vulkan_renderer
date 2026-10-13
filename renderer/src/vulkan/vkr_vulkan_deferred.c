@@ -313,6 +313,22 @@ void vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
                     slot->readback.handle, 1u, &prepared->copies[i]);
 }
 
+/* The mirrored view-projection cropped to the reflector's screen rectangle,
+   so the culling frustum holds only what that rectangle can show. Clip x
+   and y map the rectangle's NDC range onto [-1, 1]. */
+vkr_internal Mat4 vkr_vk_reflection_cull_view_projection(
+    Mat4 projection, const VkrPlanarReflectionPayload *mirror) {
+  const Vec4 rect = mirror->screen_rect;
+  const float32_t scale_x = rect.z - rect.x;
+  const float32_t scale_y = rect.w - rect.y;
+  const float32_t center_x = rect.x + rect.z - 1.0f;
+  const float32_t center_y = rect.y + rect.w - 1.0f;
+  const Mat4 crop = mat4_new(
+      1.0f / scale_x, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f / scale_y, 0.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f, -center_x / scale_x, -center_y / scale_y, 0.0f, 1.0f);
+  return mat4_mul(crop, mat4_mul(projection, mirror->view));
+}
+
 vkr_internal bool8_t vkr_vk_deferred_cull_root(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
     const VkrRgPass *pass, VkrVulkanDeferredPipeline pipeline,
@@ -390,11 +406,19 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       planes[plane] = (Vec4){source->normal.x, source->normal.y,
                              source->normal.z, source->d};
     }
+    const uint32_t reflection_view =
+        renderer->prepared_frame.planar_reflection_active
+            ? vkr_render_graph_reflection_view(&renderer->prepared_frame)
+            : UINT32_MAX;
     for (uint32_t i = 1u; i < view_count; ++i) {
-      /* Cascade and dynamic-caster views, then opaque and transmission
-         culling views, one per render slot. */
+      /* Cascade and dynamic-caster views, opaque and transmission culling
+         views, one per render slot, then the planar reflection's, which
+         follows a frame that draws no local face too. */
       views[i] =
-          i < local_first
+          i == reflection_view ? vkr_vk_reflection_cull_view_projection(
+                                     packet->input.globals.projection,
+                                     packet->input.planar_reflection)
+          : i < local_first
               ? packet->input.shadow
                     ->cascades[vkr_render_graph_view_cascade(
                         &renderer->prepared_frame, i)]
@@ -457,7 +481,16 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       .command_partitions = transmission
                                 ? slot->transmission_gpu_command_partitions
                                 : slot->gpu_command_partitions,
+      .reflection_view = UINT32_MAX,
   };
+  if (!transmission && renderer->prepared_frame.planar_reflection_active) {
+    const VkrPlanarReflectionPayload *reflection =
+        renderer->graph->packet->input.planar_reflection;
+    out_root->reflection_plane = reflection->plane;
+    out_root->reflection_view =
+        vkr_render_graph_reflection_view(&renderer->prepared_frame);
+    out_root->reflection_object_id = reflection->object_id;
+  }
   /* A retained cascade draws nothing this frame: its view still counts
      casters for the cascade metrics, but encodes no commands. Directional
      views end below bit 1 + 2 * VKR_SHADOW_CASCADE_COUNT_MAX. */
@@ -878,16 +911,21 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
   const VkrPreparedFrame *packet = renderer->graph->packet;
   /* View zero is the camera. A shadow pass draws with the culling view it
      names: a cascade's, its dynamic casters' or a local face's render
-     slot's. */
-  const bool8_t shadow = view_index != 0u;
+     slot's. A planar reflection shades its mirrored view forward. */
+  const bool8_t reflection =
+      renderer->prepared_frame.planar_reflection_active &&
+      view_index == vkr_render_graph_reflection_view(&renderer->prepared_frame);
+  const bool8_t shadow = view_index != 0u && !reflection;
   const uint32_t local_first =
       vkr_render_graph_local_shadow_first_view(&renderer->prepared_frame);
-  const bool8_t local_shadow = view_index >= local_first;
+  const bool8_t local_shadow = shadow && view_index >= local_first;
   const Mat4 view_projection =
-      local_shadow ? packet->input.local_shadow
-                         ->views[packet->input.local_shadow
-                                     ->render_views[view_index - local_first]]
-                         .light_view_projection
+      reflection     ? mat4_mul(packet->input.globals.projection,
+                                packet->input.planar_reflection->view)
+      : local_shadow ? packet->input.local_shadow
+                           ->views[packet->input.local_shadow
+                                       ->render_views[view_index - local_first]]
+                           .light_view_projection
       : shadow ? packet->input.shadow
                      ->cascades[vkr_render_graph_view_cascade(
                          &renderer->prepared_frame, view_index)]
@@ -902,12 +940,29 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
       vkr_vk_packet_frame_root(slot, &frame_address);
   if (!frame_root)
     return false_v;
+  /* The reflection lights its surfaces with the camera's sun cascades and
+     local shadow atlas. */
+  uint32_t shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  uint32_t local_shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (reflection &&
+      ((renderer->prepared_frame.shadow_cascade_count > 0u &&
+        !vkr_vk_deferred_sampled_index(renderer, pass, 5u, &shadow_texture)) ||
+       (renderer->prepared_frame.local_shadow_view_count > 0u &&
+        !vkr_vk_deferred_sampled_index(renderer, pass, 8u,
+                                       &local_shadow_texture))))
+    return false_v;
   vkr_vk_fill_packet_frame_root(
       renderer, frame_root, slot, &frame,
       transmission ? slot->transmission_gpu_candidate_instances
                    : slot->gpu_candidate_instances,
-      view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
-      VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, false_v);
+      view_projection, shadow_texture, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      local_shadow_texture, reflection);
+  /* The mirrored eye sets the view direction; `view` stays the camera's,
+     whose depth picks the sun cascade. */
+  if (reflection) {
+    const Vec3 eye = packet->input.planar_reflection->view_position;
+    frame_root->view_position = (Vec4){eye.x, eye.y, eye.z, 1.0f};
+  }
   VkrVulkanRasterRoot root = {
       .geometry_rows = slot->gpu_geometry_rows,
       .visible_rows = visible->buffer.address,
@@ -951,7 +1006,8 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
        ++bucket) {
     const bool8_t opaque_bucket = (bucket & 2u) == 0u;
     const VkrVulkanPacketPipeline wanted_pipeline =
-        local_shadow
+        reflection ? VKR_VULKAN_PACKET_PIPELINE_REFLECTION
+        : local_shadow
             ? (opaque_bucket ? VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_OPAQUE
                              : VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW)
         : shadow ? (opaque_bucket
@@ -963,9 +1019,11 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
     prepared->pipelines[bucket] = renderer->packet_pipelines[wanted_pipeline];
     prepared->cull_modes[bucket] =
         (bucket & 1u) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
-    prepared->front_faces[bucket] = (bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
-                                        ? VK_FRONT_FACE_CLOCKWISE
-                                        : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    /* The mirrored view reverses every triangle's winding. */
+    const bool8_t mirrored =
+        ((bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT) != 0u) != reflection;
+    prepared->front_faces[bucket] =
+        mirrored ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     const VkDeviceSize argument_offset =
         ((VkDeviceSize)view_index * root.visible_capacity +
          partitions->first[bucket]) *
@@ -1548,6 +1606,16 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   /* Deferred lighting measures every frame it shades; the readback publishes
    * the counters only for such frames. */
   slot->light_contribution_written = slot->light_contribution_requested;
+  /* Reflector pixels take the mirrored view where it covers them. */
+  uint32_t planar_reflection = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (renderer->prepared_frame.planar_reflection_active &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 45u, &planar_reflection))
+    return false_v;
+  const VkrRenderGraphFrameInfo *frame_info = &renderer->prepared_frame;
+  const float32_t planar_image_width =
+      (float32_t)Max(frame_info->viewport_width / 2u, 1u);
+  const float32_t planar_image_height =
+      (float32_t)Max(frame_info->viewport_height / 2u, 1u);
   const VkrVulkanLightingRoot root = {
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -1587,6 +1655,22 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                 ? slot->light_contribution.address
                                 : 0u,
       .shadow_moments_sampler = renderer->transmission_sampler_slot,
+      .planar_reflection_texture = planar_reflection,
+      .planar_reflection_sampler = renderer->dfg_sampler_slot.index,
+      .planar_reflection_plane = frame_info->planar_reflection_active
+                                     ? packet->input.planar_reflection->plane
+                                     : (Vec4){0},
+      .planar_reflection_uv_scale =
+          {(float32_t)vkr_render_graph_reflection_extent(
+               frame_info, frame_info->viewport_width) /
+               planar_image_width,
+           (float32_t)vkr_render_graph_reflection_extent(
+               frame_info, frame_info->viewport_height) /
+               planar_image_height},
+      .planar_reflection_object_id =
+          frame_info->planar_reflection_active
+              ? packet->input.planar_reflection->object_id
+              : 0u,
       .subsurface_source_texture = subsurface_source,
       .subsurface_profile_count =
           renderer->prepared_frame.subsurface_enabled &&

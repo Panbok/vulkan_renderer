@@ -833,8 +833,33 @@ typedef struct VkrAnimationPreviewInput {
   uint32_t draw_count;
 } VkrAnimationPreviewInput;
 
+/**
+ * The mirrored view of the frame's one planar reflector (desktop pipeline).
+ * The renderer draws the scene from `view` with the camera's projection into
+ * an image `divisor` times smaller on each axis; reflector pixels sample it.
+ */
+typedef struct VkrPlanarReflectionPayload {
+  /** The camera's view composed with the reflection about `plane`. */
+  Mat4 view;
+  /** xyz: unit normal toward the camera; w: offset, so a point x lies on the
+      plane where dot(xyz, x) + w is zero. Render space. */
+  Vec4 plane;
+  /** The camera position mirrored about the plane. */
+  Vec3 view_position;
+  /** The reflector's bounds on screen as UV, y down: xy the top-left and
+      zw the bottom-right corner. The mirrored view draws and culls only
+      inside it; pixels outside take the probes. */
+  Vec4 screen_rect;
+  /** The `object_id` of the reflector's draws (VkrInstanceDataGPU). */
+  uint32_t object_id;
+  /** 2 or 4. */
+  uint32_t divisor;
+} VkrPlanarReflectionPayload;
+
 typedef struct VkrFrameInput {
   const VkrAnimationPreviewInput *animation_preview;
+  /** Optional; absent renders no planar reflection. */
+  const VkrPlanarReflectionPayload *planar_reflection;
   uint32_t version;
   VkrFrameInfo frame;
   VkrFrameGlobals globals;

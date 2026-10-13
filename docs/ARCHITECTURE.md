@@ -1117,7 +1117,12 @@ lobes of a coated material, and diffuse indirect light from lightmaps,
 diffuse volumes and the environment. SMAA T2x replaced portable TAA and
 FXAA on 2026-10-13
 ([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
-Planar water reflections and DDGI-style volume updates are proposed work
+On the desktop pipeline, a `planar_reflector` entity's surface on its plane
+reflects the scene mirrored about it: one reflector a frame gets a culling
+view and a forward-shaded image at half or quarter resolution, and its
+pixels take that image in place of the probes where it covers them
+([ADR-117](adr/117-desktop-planar-reflections.md)). The tiled pipeline's
+baked plane probe and DDGI-style volume updates are proposed work
 ([Short-history rendering](proposals/short-history-rendering.md)).
 
 Scenes may author analytic height fog. Frame preparation uploads one 48-byte

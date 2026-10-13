@@ -14,7 +14,10 @@ Section 1 is implemented (2026-10-12): [ADR-052](../adr/052-vulkan-fsr31-upscali
 [ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md) record the
 removal as declined. Most of the section 5 probe audit is implemented
 (2026-10-12; [ADR-019](../adr/019-bounded-forward-spatial-lighting.md)); its
-table marks the open rows. The other sections are not implemented.
+table marks the open rows. Sections 2 to 4 are implemented on the desktop
+pipeline (2026-10-13), and so are section 5's planar water reflections
+([ADR-117](../adr/117-desktop-planar-reflections.md)). Section 6 is not
+implemented.
 
 ## Owner decisions (2026-10-12)
 
@@ -290,14 +293,23 @@ prefiltered at load into a 9-mip GGX cube and L2 SH
 3. **Probe placement for rooms.** Per-room probes with portals
    ([Large-level rendering](large-level-rendering.md), section 4) keep a
    surface from reading another room's probe.
-4. **Planar reflections for water on both pipelines.** The technique,
-   reflector component and evidence stay in
-   [Planar reflections](planar-reflections.md); the desktop pipeline renders
-   the mirrored view as one more visibility-buffer view at reduced
-   resolution. Water samples the reflection image with its normal-map
-   offset and falls back to the probe where the offset leaves the image.
-   [Large-level rendering](large-level-rendering.md) owns water planes and
-   their baked plane-bound probe.
+4. **Planar reflections for water on both pipelines.** Implemented on the
+   desktop pipeline (2026-10-13,
+   [ADR-117](../adr/117-desktop-planar-reflections.md)): a
+   `planar_reflector` component, one mirrored culling view per frame shaded
+   forward at half or quarter resolution, with every light and shadow, and
+   reflector pixels that sample it with a normal-map offset and fall back
+   to the probes where it leaves the image or holds nothing. The owner
+   decided on 2026-10-13 that the tiled pipeline takes a baked plane-bound
+   probe first
+   ([Large-level rendering](large-level-rendering.md), section 3, option B)
+   and measures a real-time near field afterwards
+   ([Planar reflections](planar-reflections.md)).
+
+Item 3's `room.probes` exists
+([ADR-115](../adr/115-rooms-and-portals.md)); its capture in a project
+scene is [Large-level rendering](large-level-rendering.md) section 4,
+item 1. Item 2 and the tiled part of item 4 need the Mac.
 
 ### Probe audit (2026-10-12)
 
@@ -369,8 +381,10 @@ shader-side fix (R1, R4, R5, R11) needs a matched Release timing of
   step-1 build and the café interior with the baked probe and Bistro's
   diffuse volume ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md),
   Evidence). Every Metal check is still needed.
-- A Bistro water-plane case (added with [Large-level rendering](large-level-rendering.md),
-  phase 0) for planar reflections on both pipelines, with Release timing.
+- Planar water on the desktop pipeline: the
+  `planar_water_bistro_street_*` cases on
+  `bistro_planar_water_local` (ADR-117, Evidence). The tiled pipeline's
+  plane probe needs its own captures and timing on the Mac.
 
 ## 6. DDGI-style volume updates on the desktop pipeline
 
@@ -447,7 +461,9 @@ visibility and composition stay unchanged:
 5. SMAA T2x replacing portable TAA and FXAA (section 2). Done 2026-10-13 on
    the desktop pipeline (ADR-037).
 6. Tiled per-draw probes, room probes and planar water (section 5, items 2
-   to 4).
+   to 4). Desktop planar water done 2026-10-13 (ADR-117); the tiled
+   plane probe and per-pixel probe choice are open on the Mac, and room
+   probe capture with the large-level work.
 7. DDGI-style updates (section 6).
 
 ## Documents to update when each step lands
@@ -459,7 +475,7 @@ visibility and composition stay unchanged:
 | 3 | ADR-042 (GTAO) |
 | 4 | ADR-043, 044, 061 and 087 (colour pipeline), ADR-099 |
 | 5 | ADR-037 rewritten for SMAA T2x; ADR-043 (FXAA) |
-| 6 | ADR-087; [Tiled graphics pipeline](tiled-pipeline.md), [Planar reflections](planar-reflections.md), [Large-level rendering](large-level-rendering.md) |
+| 6 | Desktop planar water done 2026-10-13: ADR-117, ADR-044, ADR-087, `ARCHITECTURE.md`, [Planar reflections](planar-reflections.md), [Large-level rendering](large-level-rendering.md). With the tiled work: [Tiled graphics pipeline](tiled-pipeline.md) |
 | 7 | ADR-054 or a new ADR; [Sparse diffuse volumes](sparse-diffuse-volumes.md) item 2 |
 
 ## Sources

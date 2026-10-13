@@ -734,6 +734,7 @@ domain under the [evidence rules](#evidence-rules).
 | Tiled forward, atmosphere and blend | Tiled | shared material, light, fog, atmosphere and transmission kernels below | `metal/msl/world/tiled.metal`, `lighting.metalh`, `metal/msl/shadow/sampling.metalh` | — |
 | Projected decals | Shared semantics, one implementation per backend | — | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
 | Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |
+| Planar reflection: mirrored view shaded forward, reflector lookup | Desktop | the material, light, shadow and probe kernels below | — | `vulkan/slang/world/deferred.slang` (`vk_reflection_vertex`, `vk_reflection_fragment`, `vk_planar_reflection_specular`), `world/default.slang` (`packet_world_shade_surface`) |
 | Material/light math | Shared | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/tiled.metal`, `lighting.metalh` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Clearcoat, sheen, anisotropy, thin-sheet diffuse transmission | Desktop | `shared/clearcoat_kernel.slangh`, `sheen_kernel.slangh`, `anisotropy_kernel.slangh` | — | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission composition | Shared | `shared/transmission_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |

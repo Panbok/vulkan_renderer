@@ -1905,20 +1905,22 @@ float3 packet_forward_wire(VkrVulkanVertexOutput input, uint primitive_id)
     return vkr_editor_wire_color(barycentric, ddx(barycentric), ddy(barycentric));
 }
 
-float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
-                          uint primitive_id)
+// Forward shading of one surface of `visible`'s draw with `frame`'s view and
+// lights: the blend path's draws and a planar reflection's mirrored view.
+float4 packet_world_shade_surface(VkrVulkanPacketFrameRoot *frame,
+                                  VkrGpuVisibleDrawRow visible,
+                                  VkrVulkanVertexOutput input,
+                                  bool front_facing)
 {
-    VkrVulkanPacketDrawRoot *draw = vkr_vulkan_packet_draw_root();
-    VkrVulkanPacketFrameRoot *frame = draw.frame;
-    VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
     VkrVulkanMaterial material = frame.materials[visible.material_index];
-    float4 base = packet_base_color(input);
+    float4 base =
+        g_textures[NonUniformResourceIndex(material.base_color_texture)]
+            .Sample(g_samplers[NonUniformResourceIndex(
+                        material.base_color_sampler)],
+                    input.uv) *
+        material.tint * input.color;
     if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
         discard;
-    if (frame.render_mode == 12u)
-    {
-        return float4(packet_forward_wire(input, primitive_id), base.a);
-    }
     bool neutral_lighting = vkr_editor_neutral_lighting(frame.render_mode);
     if ((frame.flags & 1u) == 0u && !neutral_lighting)
         return base;
@@ -2214,6 +2216,24 @@ struct VkrVulkanTemporalBlendOutput
     float2 motion : SV_Target2;
     float2 validity : SV_Target3;
 };
+
+float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
+                          uint primitive_id)
+{
+    VkrVulkanPacketDrawRoot *draw = vkr_vulkan_packet_draw_root();
+    VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
+    if (draw.frame.render_mode == 12u)
+    {
+        VkrVulkanMaterial material =
+            draw.frame.materials[visible.material_index];
+        float4 base = packet_base_color(input);
+        if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
+            discard;
+        return float4(packet_forward_wire(input, primitive_id), base.a);
+    }
+    return packet_world_shade_surface(draw.frame, visible, input,
+                                      front_facing);
+}
 
 [shader("fragment")]
 float4 world_fragment(VkrVulkanVertexOutput input,

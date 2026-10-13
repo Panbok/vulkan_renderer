@@ -492,6 +492,24 @@ typedef struct ScenePortal {
   VkrEntityRef door;
 } ScenePortal;
 
+/* The image size of a planar reflector's mirrored view, as a divisor of the
+   camera's. */
+typedef enum VkrScenePlanarReflectorResolution {
+  VKR_SCENE_PLANAR_REFLECTOR_HALF = 0,
+  VKR_SCENE_PLANAR_REFLECTOR_QUARTER = 1,
+} VkrScenePlanarReflectorResolution;
+
+/* A `planar_reflector` component: the entity's world transform places a
+   mirror plane through its origin, facing along its Y axis. The entity's own
+   draws whose surface lies on that plane reflect the scene mirrored about
+   it; one reflector renders per frame, the largest on screen within
+   `max_distance` (zero is unlimited) of a camera above its plane. */
+typedef struct ScenePlanarReflector {
+  bool8_t enabled;
+  uint32_t resolution; /* VkrScenePlanarReflectorResolution. */
+  float32_t max_distance;
+} ScenePlanarReflector;
+
 /* The default draw distances of a draw that no draw_distance component
    reaches. Objects (meshes, brushes, shapes) leave the camera below one
    pixel. Scatter and spline-mesh copies leave it below two and cast only

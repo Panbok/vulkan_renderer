@@ -54,6 +54,8 @@ extern const VkrTypeDesc vkr_scene_draw_distance_type;
 /* Rooms and portals (vkr_scene_rooms.h). */
 extern const VkrTypeDesc vkr_scene_room_type;
 extern const VkrTypeDesc vkr_scene_portal_type;
+/* Planar reflections (ScenePlanarReflector). */
+extern const VkrTypeDesc vkr_scene_planar_reflector_type;
 /* Population (ADR-084). */
 extern const VkrTypeDesc vkr_scene_spline_type;
 extern const VkrTypeDesc vkr_scene_spline_point_type;

@@ -103,6 +103,8 @@
   "packet.visibility_opaque.frag.spv"
 #define VKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV                           \
   "packet.visibility_shadow.frag.spv"
+#define VKR_VULKAN_PACKET_REFLECTION_VERT_SPV "packet.reflection.vert.spv"
+#define VKR_VULKAN_PACKET_REFLECTION_FRAG_SPV "packet.reflection.frag.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV                   \
   "packet.local_shadow_transmission.vert.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV                   \
@@ -262,11 +264,11 @@ enum {
 };
 
 enum {
-  /* The camera, the cascades and their dynamic-caster views, then opaque
-     and transmission views per local render slot. */
+  /* The camera, the cascades and their dynamic-caster views, opaque and
+     transmission views per local render slot, then a planar reflection. */
   VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX =
       1 + 2 * VKR_SHADOW_CASCADE_COUNT_MAX +
-      2 * VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
+      2 * VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX + 1,
   /* The final target can be RGBA8 or RGBA16F. A tightly packed 1x1 image
    * copy therefore occupies eight bytes in the extended-linear case. */
   VKR_VULKAN_READBACK_COLOR_SIZE = 8,
@@ -317,6 +319,8 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_GRID,
   VKR_VULKAN_PACKET_PIPELINE_ANIMATION_PREVIEW,
+  /* A planar reflection's mirrored view, shaded forward (ADR-087). */
+  VKR_VULKAN_PACKET_PIPELINE_REFLECTION,
   VKR_VULKAN_PACKET_PIPELINE_COUNT,
 } VkrVulkanPacketPipeline;
 
@@ -358,6 +362,8 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_VERTEX,
   VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_REFLECTION_VERTEX,
+  VKR_VULKAN_PACKET_SHADER_REFLECTION_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_COUNT,
 } VkrVulkanPacketShader;
 
@@ -621,6 +627,13 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCullRoot {
   uint64_t lod_views;
   uint64_t geometry_rows;
   VkrVulkanCommandPartitions command_partitions;
+  /** The planar reflection's mirror plane (unit normal, offset): its view
+      skips candidates wholly below it and the reflector's own draws. */
+  Vec4 reflection_plane;
+  /** The reflection's culling view, or UINT32_MAX without one. */
+  uint32_t reflection_view;
+  uint32_t reflection_object_id;
+  uint32_t reserved[2];
 } VkrVulkanCullRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanRasterRoot {
@@ -827,6 +840,17 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
       without a selected lamp. */
   uint32_t baked_lamp_shadow_texture;
   uint32_t baked_reserved;
+  /** Reflection.Raster's mirrored view and its linear sampler, or the
+      sentinel slot without a planar reflection. */
+  uint32_t planar_reflection_texture;
+  uint32_t planar_reflection_sampler;
+  /** The mirror plane (unit normal, offset) the reflector's pixels lie on. */
+  Vec4 planar_reflection_plane;
+  /** The drawn part of the half-size target: the quarter tier draws its
+      top-left quarter. */
+  float32_t planar_reflection_uv_scale[2];
+  uint32_t planar_reflection_object_id;
+  uint32_t planar_reserved;
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        176u &&
@@ -1807,7 +1831,9 @@ _Static_assert(VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX <=
                    VKR_LOCAL_SHADOW_MASK_LAYER_COUNT <=
                        VKR_VULKAN_GRAPH_LAYER_MAX,
                "a layered local shadow graph image exceeds the graph layers");
-_Static_assert(sizeof(VkrVulkanCullRoot) == 272u,
+_Static_assert(sizeof(VkrVulkanCullRoot) == 304u &&
+                   offsetof(VkrVulkanCullRoot, reflection_plane) == 272u &&
+                   offsetof(VkrVulkanCullRoot, reflection_view) == 288u,
                "Deferred cull-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, static_candidate_count) == 188u,
                "Vulkan cull root mobility ABI drift");
@@ -1877,7 +1903,11 @@ _Static_assert(offsetof(VkrVulkanTemporalResolveRoot, extent) == 68u &&
                             transmission_visible_rows) == 88u &&
                    offsetof(VkrVulkanTemporalResolveRoot, reserved) == 116u,
                "Temporal resolve-root ABI offset drift");
-_Static_assert(sizeof(VkrVulkanLightingRoot) == 224u,
+_Static_assert(sizeof(VkrVulkanLightingRoot) == 256u &&
+                   offsetof(VkrVulkanLightingRoot, planar_reflection_texture) ==
+                       216u &&
+                   offsetof(VkrVulkanLightingRoot, planar_reflection_plane) ==
+                       224u,
                "Deferred lighting-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, light_contribution) == 184u,
                "Deferred lighting-root contribution ABI drift");
@@ -1899,7 +1929,7 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, shadow_moments_texture) ==
                        164u &&
                    offsetof(VkrVulkanLightingRoot, shadow_moments_sampler) ==
                        192u &&
-                   sizeof(VkrVulkanLightingRoot) == 224u,
+                   sizeof(VkrVulkanLightingRoot) == 256u,
                "Deferred lighting-root EVSM moments ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");

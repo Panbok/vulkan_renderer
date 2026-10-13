@@ -133,6 +133,13 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->scene_rendering = packet->scene_rendering;
   frame->post_transform_cache_enabled = packet->post_transform_cache_enabled;
   frame->smaa_enabled = packet->smaa_enabled;
+  /* The tiled pipeline takes a baked plane probe instead (ADR-087). */
+  frame->planar_reflection_active = packet->scene_rendering &&
+                                    !packet->tiled_pipeline &&
+                                    packet->input.planar_reflection != NULL;
+  frame->planar_reflection_divisor =
+      frame->planar_reflection_active ? packet->input.planar_reflection->divisor
+                                      : 0u;
   const VkrWorldPassPayload *world = packet->input.world;
   frame->skinning_enabled = world && world->skinning_count;
   uint32_t skinning_vertices = 0;
@@ -409,6 +416,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                         VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION] = {"pass.vbuffer.transmission",
                                               VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_REFLECTION_RASTER] = {"pass.reflection.raster",
+                                           VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_GBUFFER_RESOLVE] = {"pass.gbuffer.resolve",
                                          VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_GTAO_DEPTH_PREFILTER] = {"pass.gtao.depth_prefilter",

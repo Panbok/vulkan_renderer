@@ -186,6 +186,16 @@
       "stage": "fragment"
     },
     {
+      "name": "packet.reflection.vert",
+      "entry": "vk_reflection_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.reflection.frag",
+      "entry": "vk_reflection_fragment",
+      "stage": "fragment"
+    },
+    {
       "name": "packet.local_shadow_transmission.vert",
       "entry": "vk_local_shadow_transmission_vertex",
       "stage": "vertex"

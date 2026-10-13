@@ -85,6 +85,11 @@ struct VkrVkCullRoot
     VkrGpuLodView *lod_views;
     VkrVkGeometryRow *geometry_rows;
     VkrVkCommandPartitions command_partitions;
+    // The planar reflection's mirror plane and culling view (UINT_MAX
+    // without one), and its reflector's object id.
+    float4 reflection_plane;
+    uint reflection_view;
+    uint reflection_object_id;
 };
 
 struct VkrVkRasterRoot
@@ -111,6 +116,19 @@ struct VkrVkVisibilityOutput
 struct VkrVkVisibilityFragment
 {
     uint2 value : SV_Target0;
+};
+
+// A planar reflection's mirrored view: the surface the forward shading
+// lights, and the visible row it belongs to.
+struct VkrVkReflectionOutput
+{
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    float4 color : COLOR0;
+    float3 world_position : TEXCOORD1;
+    float3 world_normal : TEXCOORD2;
+    float4 world_tangent : TEXCOORD3;
+    nointerpolation uint visible_index : TEXCOORD4;
 };
 
 struct VkrVkTemporalTransformRoot
@@ -273,6 +291,14 @@ struct VkrVkLightingRoot
     // that their moving casters hide; zero without a selected lamp.
     uint baked_lamp_shadow_texture;
     uint baked_reserved;
+    // Reflection.Raster's mirrored view (zero without a planar reflection),
+    // its plane, the drawn part of its target and its reflector's object id.
+    uint planar_reflection_texture;
+    uint planar_reflection_sampler;
+    float4 planar_reflection_plane;
+    float2 planar_reflection_uv_scale;
+    uint planar_reflection_object_id;
+    uint planar_reserved;
 };
 
 // DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
@@ -682,6 +708,53 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
     return true;
 }
 
+// A reflector pixel lies on the mirror plane within this many metres and
+// faces it at least this closely; its sides and other draws keep probes.
+#define VKR_PLANAR_REFLECTION_PLANE_TOLERANCE 0.05f
+#define VKR_PLANAR_REFLECTION_FACING_MIN 0.9f
+// Screen-space shift of the reflection per unit of the shading normal's tilt
+// off the plane, in view-space units.
+#define VKR_PLANAR_REFLECTION_DISTORTION 0.05f
+
+// The environment specular of a planar reflector's pixel: the mirrored
+// view's radiance where it covers the pixel, the probes' elsewhere. The
+// mirrored view shares the camera's projection, so a point's reflection
+// lies at its own screen position; the shading normal's tilt shifts it.
+float3 vk_planar_reflection_specular(VkrVkLightingRoot root,
+                                     VkrVulkanPacketFrameRoot *frame,
+                                     uint encoded, uint2 pixel, float3 world,
+                                     float3 normal, float3 horizon_normal,
+                                     float3 view, float roughness, float ao,
+                                     VkrGgxMaterialEnergy energy,
+                                     float3 environment_specular,
+                                     float gtao_cone)
+{
+    VkrGpuVisibleDrawRow visible = root.visible_rows[encoded - 1u];
+    if (frame.instances[visible.instance_index].object_id !=
+        root.planar_reflection_object_id)
+        return environment_specular;
+    float4 plane = root.planar_reflection_plane;
+    if (abs(dot(plane.xyz, world) + plane.w) >
+            VKR_PLANAR_REFLECTION_PLANE_TOLERANCE ||
+        dot(horizon_normal, plane.xyz) < VKR_PLANAR_REFLECTION_FACING_MIN)
+        return environment_specular;
+    float3 tilt = normal - plane.xyz * dot(normal, plane.xyz);
+    float2 offset = mul((float3x3)frame.view, tilt).xy * float2(1.0f, -1.0f);
+    float2 uv = (float2(pixel) + 0.5f) / float2(root.extent) +
+                offset * VKR_PLANAR_REFLECTION_DISTORTION;
+    if (any(uv < 0.0f) || any(uv > 1.0f))
+        return environment_specular;
+    float4 reflected =
+        g_textures[root.planar_reflection_texture].SampleLevel(
+            g_samplers[root.planar_reflection_sampler],
+            uv * root.planar_reflection_uv_scale, 0.0f);
+    float3 planar = reflected.rgb *
+                    packet_environment_specular_weight(
+                        normal, horizon_normal, view, roughness, ao, energy) *
+                    gtao_cone;
+    return lerp(environment_specular, planar, reflected.a);
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
@@ -693,13 +766,18 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
         view_index >= root.view_count)
         return;
     VkrGpuCandidateDrawRow candidate = root.candidates[candidate_index];
-    uint required_flags = view_index == 0u ? root.camera_required_flags
-                                           : root.shadow_required_flags;
+    // A planar reflection's mirrored view draws what the camera draws.
+    bool reflection = view_index == root.reflection_view;
+    bool camera_rules = view_index == 0u || reflection;
+    uint required_flags = camera_rules ? root.camera_required_flags
+                                       : root.shadow_required_flags;
     uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
     uint excluded_flags = 0u;
-    if (view_index >= root.transmission_first_view)
+    // The reflection view follows the transmission views but keeps the
+    // camera's flags.
+    if (!reflection && view_index >= root.transmission_first_view)
         required_flags = root.transmission_required_flags;
-    else if (view_index >= root.local_shadow_first_view)
+    else if (!reflection && view_index >= root.local_shadow_first_view)
         excluded_flags = root.local_shadow_excluded_flags;
     // A static square or cascade layer holds the static casters; a dynamic
     // square or composed cascade adds the dynamic ones over a copy of it.
@@ -725,6 +803,17 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     float world_radius = local.w * instance.normal_column1.w;
     uint classification_index =
         view_index * root.candidate_capacity + candidate_index;
+    // The mirrored view leaves out the reflector, which would reflect
+    // itself, and whatever lies wholly below its plane.
+    if (reflection &&
+        (instance.object_id == root.reflection_object_id ||
+         ((candidate_flags & 1u) != 0u &&
+          dot(root.reflection_plane.xyz, world_center.xyz) +
+                  root.reflection_plane.w < -world_radius)))
+    {
+        root.classifications[classification_index] = 0xffffffffu;
+        return;
+    }
     float4 world_sphere = float4(world_center.xyz, world_radius);
     if ((candidate_flags & 1u) != 0u &&
         !vkr_vk_sphere_visible(root, world_sphere, view_index))
@@ -739,7 +828,7 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     VkrGpuLodView lod_view = root.lod_views[view_index];
     uint cull = vkr_gpu_draw_cull_word(candidate.state_flags);
     if (cull != 0u && (candidate_flags & 1u) != 0u &&
-        (view_index == 0u
+        (camera_rules
              ? vkr_gpu_draw_distance_culled(
                    cull, lod_view.position_scale.w, lod_view.flags,
                    lod_view.distance_scale,
@@ -752,7 +841,7 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
         return;
     }
     // Sub-texel casters skip the directional cascades.
-    if (view_index != 0u && (candidate_flags & 1u) != 0u &&
+    if (!camera_rules && (candidate_flags & 1u) != 0u &&
         vkr_gpu_cascade_caster_too_small(lod_view.position_scale.w,
                                          lod_view.flags, world_radius))
     {
@@ -923,6 +1012,69 @@ VkrVkVisibilityOutput vk_visibility_vertex(uint vertex_id : SV_VertexID,
     output.color = vertex.color;
     output.visible_index = visible_instance;
     return output;
+}
+
+[shader("vertex")]
+VkrVkReflectionOutput vk_reflection_vertex(uint vertex_id : SV_VertexID,
+                                           uint draw_index : SV_DrawIndex)
+{
+    VkrVkRasterRoot *root = g_raster_push.root;
+    uint visible_instance =
+        root.states[root.view_index].execution_ranges[g_raster_push.bucket].x +
+        draw_index;
+    VkrGpuVisibleDrawRow visible =
+        root.visible_rows[root.view_index * root.visible_capacity +
+                          visible_instance];
+    VkrVkGeometryRow geometry = root.geometry_rows[visible.geometry_index];
+    VkrGpuDecodedVertex vertex = vkr_decode_packed_vertex(
+        geometry.vertices[geometry.first_vertex + vertex_id],
+        geometry.decode[visible.decode_index]);
+    VkrVulkanInstance instance = root.frame.instances[visible.instance_index];
+    vertex = vkr_apply_deformation(vertex, instance.deformation_address, vertex_id);
+    float previous_height;
+    vertex = vkr_gpu_terrain_morph(vertex, geometry.vertices + geometry.first_vertex,
+                                   geometry.decode[visible.decode_index],
+                                   vertex_id, visible.state_flags,
+                                   previous_height);
+    float4 world = mul(instance.model, float4(vertex.position, 1.0f));
+    VkrVkReflectionOutput output;
+    output.position = mul(root.frame.view_projection, world);
+    output.uv = vertex.texcoord;
+    output.color = vertex.color;
+    output.world_position = world.xyz;
+    output.world_normal = normalize(vkr_instance_transform_normal(
+        instance.normal_column0.xyz, instance.normal_column1.xyz,
+        instance.normal_column2.xyz, vertex.normal));
+    output.world_tangent = float4(
+        normalize(mul(instance.model, float4(vertex.tangent.xyz, 0.0f)).xyz),
+        vertex.tangent.w * instance.normal_column0.w);
+    output.visible_index = visible_instance;
+    return output;
+}
+
+// Alpha one marks the pixels the mirrored view covers; lighting takes the
+// probes and environment elsewhere.
+[shader("fragment")]
+float4 vk_reflection_fragment(VkrVkReflectionOutput input,
+                              bool front_facing : SV_IsFrontFace)
+    : SV_Target0
+{
+    VkrVkRasterRoot *root = g_raster_push.root;
+    VkrGpuVisibleDrawRow visible =
+        root.visible_rows[root.view_index * root.visible_capacity +
+                          input.visible_index];
+    VkrVulkanVertexOutput surface;
+    surface.position = input.position;
+    surface.uv = input.uv;
+    surface.color = input.color;
+    surface.world_position = input.world_position;
+    surface.world_normal = input.world_normal;
+    surface.object_id = 0u;
+    surface.world_tangent = input.world_tangent;
+    surface.instance_index = visible.instance_index;
+    float4 color = packet_world_shade_surface(root.frame, visible, surface,
+                                              front_facing);
+    return float4(color.rgb, 1.0f);
 }
 
 [shader("fragment")]
@@ -2985,6 +3137,11 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
             indirect_diffuse = environment.diffuse;
             indirect_specular = environment.specular * gtao_cone;
         }
+        if (root.planar_reflection_texture != 0u)
+            indirect_specular = vk_planar_reflection_specular(
+                root, frame, encoded.x, thread_id.xy, world, normal,
+                horizon_normal, view, roughness, ao, energy,
+                indirect_specular, gtao_cone);
         if (clearcoat_active)
         {
             float clearcoat_gtao_cone = vkr_gtao_cone_specular(

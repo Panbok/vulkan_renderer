@@ -2,8 +2,10 @@
 
 #include "application/vkr_standard_scene_runtime.h"
 
+#include "math/vkr_frustum.h"
 #include "physics/vkr_physics.h"
 #include "platform/vkr_platform.h"
+#include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_rooms.h"
 
@@ -76,6 +78,9 @@ typedef struct VkrStandardSceneRuntimeDrawContext {
   /* The rooms the camera sees this frame (vkr_scene_rooms.h), or NULL:
      reflection probes in hidden rooms leave the frame's slots. */
   const VkrSceneRoomFrame *room_frame;
+  /* The mirrored view of the frame's planar reflector (desktop pipeline). */
+  VkrPlanarReflectionPayload planar_reflection;
+  bool8_t has_planar_reflection;
   VkrAnimationPreviewInput animation_preview;
   bool8_t has_animation_preview;
 } VkrStandardSceneRuntimeDrawContext;
@@ -1924,6 +1929,156 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
   }
 }
 
+/* The planar reflectors a frame considers; more are ignored. */
+#define VKR_PLANAR_REFLECTOR_CANDIDATE_MAX 64u
+
+/* The reflection about `plane` (unit normal xyz, offset w):
+   x' = x - 2 (n . x + w) n. */
+vkr_internal Mat4 vkr_standard_scene_runtime_plane_reflection(Vec4 plane) {
+  const float32_t x = plane.x;
+  const float32_t y = plane.y;
+  const float32_t z = plane.z;
+  const float32_t w = plane.w;
+  return mat4_new(1.0f - 2.0f * x * x, -2.0f * y * x, -2.0f * z * x, 0.0f,
+                  -2.0f * x * y, 1.0f - 2.0f * y * y, -2.0f * z * y, 0.0f,
+                  -2.0f * x * z, -2.0f * y * z, 1.0f - 2.0f * z * z, 0.0f,
+                  -2.0f * w * x, -2.0f * w * y, -2.0f * w * z, 1.0f);
+}
+
+/* The screen rectangle, as UV with y down, of the box `local_min` to
+   `local_max` under `world` in the camera's `view_projection`; the whole
+   screen when a corner lies behind the camera. */
+vkr_internal Vec4 vkr_standard_scene_runtime_screen_rect(Mat4 view_projection,
+                                                         Mat4 world,
+                                                         Vec3 local_min,
+                                                         Vec3 local_max) {
+  Vec2 low = vec2_new(1.0f, 1.0f);
+  Vec2 high = vec2_new(0.0f, 0.0f);
+  const Mat4 transform = mat4_mul(view_projection, world);
+  for (uint32_t corner = 0; corner < 8u; ++corner) {
+    const Vec4 local =
+        vec4_new((corner & 1u) ? local_max.x : local_min.x,
+                 (corner & 2u) ? local_max.y : local_min.y,
+                 (corner & 4u) ? local_max.z : local_min.z, 1.0f);
+    const Vec4 clip = mat4_mul_vec4(transform, local);
+    if (clip.w <= 1e-4f) {
+      return vec4_new(0.0f, 0.0f, 1.0f, 1.0f);
+    }
+    const float32_t u = 0.5f * clip.x / clip.w + 0.5f;
+    const float32_t v = 0.5f * clip.y / clip.w + 0.5f;
+    low = vec2_new(Min(low.x, u), Min(low.y, v));
+    high = vec2_new(Max(high.x, u), Max(high.y, v));
+  }
+  return vec4_new(Clamp(low.x, 0.0f, 1.0f), Clamp(low.y, 0.0f, 1.0f),
+                  Clamp(high.x, 0.0f, 1.0f), Clamp(high.y, 0.0f, 1.0f));
+}
+
+/* Picks the frame's planar reflector, the one that covers the most of the
+   view: enabled and visible, with the camera above its plane, its bounds in
+   the camera frustum and within its distance. Its mirrored view becomes the
+   frame's planar reflection payload (desktop pipeline). */
+vkr_internal void vkr_standard_scene_runtime_prepare_planar_reflection(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  draw->has_planar_reflection = false_v;
+  const VkrScene *scene = draw->active_scene;
+  if (!scene || draw->scene_stopped ||
+      application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
+    return;
+  }
+  VkrEntityId entities[VKR_PLANAR_REFLECTOR_CANDIDATE_MAX];
+  const uint32_t count =
+      Min(vkr_scene_find_typed(scene, &vkr_scene_planar_reflector_type,
+                               entities, ArrayCount(entities)),
+          (uint32_t)ArrayCount(entities));
+  if (count == 0u) {
+    return;
+  }
+
+  const Vec3 eye = application->globals.view_position;
+  const VkrFrustum frustum = vkr_frustum_from_matrix(
+      mat4_mul(application->globals.projection, application->globals.view));
+  float32_t best_score = 0.0f;
+  for (uint32_t i = 0; i < count; ++i) {
+    const ScenePlanarReflector *reflector = vkr_scene_get_typed(
+        scene, entities[i], &vkr_scene_planar_reflector_type);
+    const uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        scene->world, entities[i], scene->comp_transform);
+    Vec3 local_min;
+    Vec3 local_max;
+    if (!reflector || !reflector->enabled || !render_id || !transform ||
+        !vkr_scene_entity_visible(scene, entities[i]) ||
+        !vkr_scene_entity_local_bounds(scene, entities[i], &local_min,
+                                       &local_max)) {
+      continue;
+    }
+
+    /* The plane passes through the entity's origin along its Y axis. */
+    const Mat4 world = transform->world;
+    const Vec3 origin = vec3_new(world.m03, world.m13, world.m23);
+    const Vec3 axis = vec3_new(world.m01, world.m11, world.m21);
+    const float32_t axis_length = vec3_length(axis);
+    if (!(axis_length > 1e-6f)) {
+      continue;
+    }
+    const Vec3 normal = vec3_scale(axis, 1.0f / axis_length);
+    const float32_t offset = -vec3_dot(normal, origin);
+    const float32_t eye_height = vec3_dot(normal, eye) + offset;
+    if (eye_height <= 0.0f) {
+      continue;
+    }
+
+    /* The bounds' sphere in world space, scaled by the largest axis. */
+    const Vec3 local_center = vec3_scale(vec3_add(local_min, local_max), 0.5f);
+    const Vec4 center4 = mat4_mul_vec4(
+        world, vec4_new(local_center.x, local_center.y, local_center.z, 1.0f));
+    const Vec3 center = vec3_new(center4.x, center4.y, center4.z);
+    const float32_t scale =
+        Max(vec3_length(vec3_new(world.m00, world.m10, world.m20)),
+            Max(axis_length,
+                vec3_length(vec3_new(world.m02, world.m12, world.m22))));
+    const float32_t radius =
+        0.5f * vec3_length(vec3_sub(local_max, local_min)) * scale;
+    if (!vkr_frustum_test_sphere(&frustum, center, radius)) {
+      continue;
+    }
+    const float32_t distance = Max(vec3_distance(eye, center) - radius, 0.0f);
+    if (reflector->max_distance > 0.0f && distance > reflector->max_distance) {
+      continue;
+    }
+    /* Projected area grows with the squared radius over the squared
+       distance; the near limit keeps a camera inside the bounds finite. */
+    const float32_t near_distance = Max(distance, 0.1f);
+    const float32_t score = (radius * radius) / (near_distance * near_distance);
+    if (score <= best_score) {
+      continue;
+    }
+
+    const Vec4 screen_rect = vkr_standard_scene_runtime_screen_rect(
+        mat4_mul(application->globals.projection, application->globals.view),
+        world, local_min, local_max);
+    if (!(screen_rect.x < screen_rect.z && screen_rect.y < screen_rect.w)) {
+      continue;
+    }
+    best_score = score;
+    const Vec4 plane = vec4_new(normal.x, normal.y, normal.z, offset);
+    draw->planar_reflection = (VkrPlanarReflectionPayload){
+        .view = mat4_mul(application->globals.view,
+                         vkr_standard_scene_runtime_plane_reflection(plane)),
+        .plane = plane,
+        .view_position = vec3_sub(eye, vec3_scale(normal, 2.0f * eye_height)),
+        .screen_rect = screen_rect,
+        .object_id = vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
+                                           scene->render_id_base + render_id),
+        .divisor = reflector->resolution == VKR_SCENE_PLANAR_REFLECTOR_QUARTER
+                       ? 4u
+                       : 2u,
+    };
+    draw->has_planar_reflection = true_v;
+  }
+}
+
 /* Assembles the frame input. Its payload pointers borrow `draw`, which the
    caller keeps alive until submit returns. */
 vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
@@ -1990,6 +2145,8 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
   VkrFrameInput packet = {
       .animation_preview =
           draw->has_animation_preview ? &draw->animation_preview : NULL,
+      .planar_reflection =
+          draw->has_planar_reflection ? &draw->planar_reflection : NULL,
       .version = VKR_FRAME_INPUT_VERSION,
       .frame =
           {
@@ -2708,6 +2865,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
 
   vkr_standard_scene_runtime_prepare_debug_payload(application, draw);
   vkr_standard_scene_runtime_prepare_frame_lighting(application, draw);
+  vkr_standard_scene_runtime_prepare_planar_reflection(application, draw);
 
   if (draw->has_editor && !draw->scene_stopped) {
     application->gizmo_system.pixel_scale =

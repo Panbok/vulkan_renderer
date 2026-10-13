@@ -10,7 +10,14 @@ Mirror-like surfaces on the tiled pipeline
 ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md)) reflect clearly by
 rendering the scene mirrored about each surface's plane. This proposal records
 the technique, how it fits the tiled pipeline on Apple M-series, the open
-choices and the evidence needed to accept it. No part of it is implemented.
+choices and the evidence needed to accept it. The desktop pipeline renders
+planar reflections since 2026-10-13
+([ADR-117](../adr/117-desktop-planar-reflections.md)) with the
+`planar_reflector` component this proposal recommends; no part of the tiled
+pipeline's pass is implemented. The owner decided on 2026-10-13 that tiled
+water first takes a baked plane-bound probe
+([Large-level rendering](large-level-rendering.md), section 3, option B), and
+that this real-time pass is measured afterwards as its near field.
 
 ## Problem and scope
 
@@ -32,6 +39,8 @@ mirrors, still water, polished floors and glass panes viewed at grazing angles.
   2026-10-12). Planar reflections are the only reflection path for water; the
   global environment and box-projected reflection probes serve metal, weapons
   and other surfaces ([Short-history rendering](short-history-rendering.md)).
+  The tiled pipeline starts with the baked plane probe (owner decision,
+  2026-10-13).
 - **Probes alone fail for mirrors.** A cube captured at one point has
   parallax errors away from that point, even when box-projected, and it does
   not show dynamic objects or the player.
@@ -100,12 +109,12 @@ at quarter resolution.
 
 ## Authoring and data
 
-A scene component marks an entity as a planar reflector. The plane comes from
-the entity transform: its origin and up axis. The component holds a
-resolution tier (half or quarter), a maximum distance beyond which the plane
-falls back to probes, and an enable flag. The editor shows the component in
-Details and outlines the plane when the entity is selected. The reflector's
-own draws sample the reflection image; other draws are unchanged.
+The `planar_reflector` component exists
+([ADR-117](../adr/117-desktop-planar-reflections.md)): the plane comes from
+the entity's origin and Y axis, and the component holds an enable flag, a
+half or quarter resolution tier and a maximum distance past which the
+surface takes probes. The editor shows it in Details; it does not yet
+outline the plane. The tiled pass would read the same component.
 
 ## Open choices
 

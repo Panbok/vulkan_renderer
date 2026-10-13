@@ -1962,6 +1962,44 @@
       ]
     },
     {
+      "name": "planar_reflection_color",
+      "type": "image",
+      "condition": "planar_reflection_active",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "planar_reflection_depth",
+      "type": "image",
+      "condition": "planar_reflection_active",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "SWAPCHAIN_DEPTH",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
       "name": "skinning_output",
       "condition": "skinning_enabled",
       "type": "buffer",
@@ -4307,6 +4345,115 @@
       "execute": "pass.diffuse_volume.fallback"
     },
     {
+      "name": "Reflection.Raster",
+      "condition": "planar_reflection_active",
+      "type": "graphics",
+      "domain": "WORLD",
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        },
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "shadow_cascades_active"
+        },
+        {
+          "image": "local_shadow_map",
+          "access": "SAMPLED",
+          "binding": 8,
+          "when": "local_shadows_active"
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active"
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active"
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active"
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active"
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "planar_reflection_color",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ],
+        "depth": {
+          "image": "planar_reflection_depth",
+          "load": "CLEAR",
+          "store": "DONT_CARE",
+          "clear": {
+            "depth": 0.0,
+            "stencil": 0
+          }
+        }
+      },
+      "execute": "pass.reflection.raster"
+    },
+    {
       "name": "Lighting.Deferred.Fullscreen",
       "type": "compute",
       "condition": "scene_rendering && !editor_enabled",
@@ -4479,6 +4626,12 @@
           "access": "STORAGE_READ",
           "binding": 16,
           "when": "local_shadow_mask_active"
+        },
+        {
+          "image": "planar_reflection_color",
+          "access": "SAMPLED",
+          "binding": 45,
+          "when": "planar_reflection_active"
         },
         {
           "image": "baked_lamp_irradiance",
@@ -4695,6 +4848,12 @@
           "when": "local_shadow_mask_active"
         },
         {
+          "image": "planar_reflection_color",
+          "access": "SAMPLED",
+          "binding": 45,
+          "when": "planar_reflection_active"
+        },
+        {
           "image": "baked_lamp_irradiance",
           "access": "STORAGE_READ",
           "binding": 18,
@@ -4909,6 +5068,12 @@
           "when": "local_shadow_mask_active"
         },
         {
+          "image": "planar_reflection_color",
+          "access": "SAMPLED",
+          "binding": 45,
+          "when": "planar_reflection_active"
+        },
+        {
           "image": "baked_lamp_irradiance",
           "access": "STORAGE_READ",
           "binding": 18,
@@ -5121,6 +5286,12 @@
           "access": "STORAGE_READ",
           "binding": 16,
           "when": "local_shadow_mask_active"
+        },
+        {
+          "image": "planar_reflection_color",
+          "access": "SAMPLED",
+          "binding": 45,
+          "when": "planar_reflection_active"
         },
         {
           "image": "baked_lamp_irradiance",

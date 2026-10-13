@@ -2875,6 +2875,54 @@ const VkrTypeDesc vkr_scene_portal_type = {
     .defaults = portal_defaults,
 };
 
+static const char *const s_planar_reflector_resolution_names[] = {
+    "half", "quarter", NULL};
+static const char *const s_planar_reflector_resolution_labels[] = {
+    "Half", "Quarter", NULL};
+
+static const VkrPropertyDesc s_planar_reflector_properties[] = {
+    {.name = "enabled",
+     .label = "Enabled",
+     .offset = TYPE_OFFSET(ScenePlanarReflector, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "resolution",
+     .label = "Resolution",
+     .tooltip = "Image size of the mirrored view against the camera's",
+     .names = s_planar_reflector_resolution_names,
+     .labels = s_planar_reflector_resolution_labels,
+     .offset = TYPE_OFFSET(ScenePlanarReflector, resolution),
+     .kind = VKR_PROPERTY_ENUM},
+    {.name = "max_distance",
+     .label = "Max distance",
+     .unit = "m",
+     .tooltip = "Past this distance from the camera the surface reflects "
+                "probes only; 0 is unlimited",
+     .zero_label = "Unlimited",
+     .offset = TYPE_OFFSET(ScenePlanarReflector, max_distance),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 100000.0f,
+     .step = 1.0f},
+};
+
+static void planar_reflector_defaults(void *value) {
+  *(ScenePlanarReflector *)value = (ScenePlanarReflector){
+      .enabled = true_v,
+      .resolution = VKR_SCENE_PLANAR_REFLECTOR_HALF,
+  };
+}
+
+const VkrTypeDesc vkr_scene_planar_reflector_type = {
+    .name = "planar_reflector",
+    .label = "Planar reflector",
+    .category = "Rendering",
+    .properties = s_planar_reflector_properties,
+    .property_count = ArrayCount(s_planar_reflector_properties),
+    .size = sizeof(ScenePlanarReflector),
+    .align = _Alignof(ScenePlanarReflector),
+    .defaults = planar_reflector_defaults,
+};
+
 // =============================================================================
 // Entity IO (ADR-084)
 // =============================================================================
@@ -4181,6 +4229,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_draw_distance_type,
     &vkr_scene_room_type,
     &vkr_scene_portal_type,
+    &vkr_scene_planar_reflector_type,
 };
 
 /* Types registered by modules outside the renderer. The frame thread only
@@ -4260,6 +4309,7 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_decal_type || type == &vkr_scene_look_volume_type ||
          type == &vkr_scene_material_override_type ||
          type == &vkr_scene_surface_theme_type ||
+         type == &vkr_scene_planar_reflector_type ||
          type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
          type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
          type == &vkr_scene_button_type || type == &vkr_scene_timer_type ||

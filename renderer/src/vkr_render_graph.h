@@ -556,6 +556,11 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t post_transform_cache_enabled;
   /** SMAA antialiases the display-linear image before the final pass. */
   bool8_t smaa_enabled;
+  /** The frame draws a planar reflector's mirrored view (desktop pipeline)
+      into an image `planar_reflection_divisor` times smaller than the
+      viewport on each axis, inside the half-size reflection target. */
+  bool8_t planar_reflection_active;
+  uint32_t planar_reflection_divisor;
   bool8_t clearcoat_enabled;
   bool8_t sheen_enabled;
   bool8_t anisotropy_enabled;
@@ -753,8 +758,7 @@ typedef struct VkrRenderGraphFrameInfo {
  * GPU culling views, in order: the camera; one view per cascade, which draws
  * the cascade whole or its static layer; one dynamic-caster view per cascade
  * while any cascade draws its dynamic casters over a copy; the drawn local
- * faces; then
- * their transmission views.
+ * faces; their transmission views; then a planar reflection's mirrored view.
  */
 
 /** Culling view of the dynamic casters of `cascade`'s composed layer. */
@@ -777,11 +781,26 @@ vkr_render_graph_local_shadow_first_view(const VkrRenderGraphFrameInfo *frame) {
          frame->shadow_cascade_dynamic_view_count;
 }
 
+/** One axis of the mirrored view's drawn extent: the viewport's over the
+    reflector's divisor, rounded down as graph extents are, inside the
+    half-size target. */
+vkr_internal INLINE uint32_t vkr_render_graph_reflection_extent(
+    const VkrRenderGraphFrameInfo *frame, uint32_t viewport_extent) {
+  return Max(viewport_extent / Max(frame->planar_reflection_divisor, 1u), 1u);
+}
+
+/** The planar reflection's culling view, after the transmission views. */
 vkr_internal INLINE uint32_t
-vkr_render_graph_gpu_draw_view_count(const VkrRenderGraphFrameInfo *frame) {
+vkr_render_graph_reflection_view(const VkrRenderGraphFrameInfo *frame) {
   return vkr_render_graph_local_shadow_first_view(frame) +
          frame->local_shadow_render_count +
          frame->local_shadow_transmission_render_count;
+}
+
+vkr_internal INLINE uint32_t
+vkr_render_graph_gpu_draw_view_count(const VkrRenderGraphFrameInfo *frame) {
+  return vkr_render_graph_reflection_view(frame) +
+         (frame->planar_reflection_active ? 1u : 0u);
 }
 
 /**

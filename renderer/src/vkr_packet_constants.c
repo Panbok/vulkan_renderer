@@ -146,7 +146,23 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
   out_views[0].distance_scale =
       packet->input.world ? packet->input.world->draw_distance_scale : 0.0f;
   const uint32_t local_first = vkr_render_graph_local_shadow_first_view(frame);
+  const uint32_t reflection_view = frame->planar_reflection_active
+                                       ? vkr_render_graph_reflection_view(frame)
+                                       : UINT32_MAX;
   for (uint32_t view = 1u; view < view_count; ++view) {
+    /* The mirrored view selects levels for its own image rows from the
+       mirrored eye, and culls by the camera's draw distances. */
+    if (view == reflection_view) {
+      const VkrPlanarReflectionPayload *reflection =
+          packet->input.planar_reflection;
+      out_views[view] = vkr_gpu_lod_view(
+          mat4_mul(packet->input.globals.projection, reflection->view),
+          (float32_t)frame->viewport_height /
+              (float32_t)frame->planar_reflection_divisor,
+          reflection->view_position, reflection->view_position, false_v);
+      out_views[view].distance_scale = out_views[0].distance_scale;
+      continue;
+    }
     if (view < local_first) {
       const uint32_t cascade = vkr_render_graph_view_cascade(frame, view);
       out_views[view] = vkr_gpu_lod_view(

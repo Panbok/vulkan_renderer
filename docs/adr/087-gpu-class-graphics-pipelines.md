@@ -157,9 +157,10 @@ pipeline rather than a backend mechanism.
    (`vkr_graphics_pipeline_draws_render_mode`). The tiled class turns
    off temporal reconstruction, GTAO,
    surface diffusion, depth of field, motion blur, froxel fog, the local
-   shadow mask, SDSM and the transmission passes
+   shadow mask, SDSM, the transmission passes and planar reflections
    ([`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
-   [`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c)).
+   [`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c),
+   [ADR-117](117-desktop-planar-reflections.md)).
 8. The forward shader
    ([`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal))
    uses the shared material model: filtered roughness, the DFG energy, the

@@ -130,7 +130,10 @@ feature off in one build.
 
 Remaining:
 
-- A water plane in the square and its two eye heights (section 3).
+- A water plane in the square and its two eye heights (section 3). The
+  desktop pipeline's planar water uses its own Bistro fixture,
+  `bistro_planar_water_local` (owner decision, 2026-10-13); this fixture
+  still has no water plane.
 - A matched Release report for the overview; ADR-114 to ADR-116 record
   those of the glide and the café walk on Metal.
 
@@ -258,10 +261,12 @@ near field; the planar reflections proposal holds its target and estimates.
 ### Both pipeline classes
 
 The reflector binding and the capture filter are shared. The tiled pipeline
-reads the bound probe through its existing probe variant; the desktop
-pipeline blends probes per pixel, so the binding there raises the plane
-probe's weight on the reflector's pixels to one. D runs on the tiled
-pipeline only, as the planar reflections proposal scopes it.
+reads the bound probe through its existing probe variant; the owner decided
+on 2026-10-13 that it ships B first. The desktop pipeline already renders
+the mirrored view in real time on reflector pixels
+([ADR-117](../adr/117-desktop-planar-reflections.md)) and falls back to its
+blended probes elsewhere, so B there serves only as that fallback. D runs
+on the tiled pipeline only, as the planar reflections proposal scopes it.
 
 ### Open questions
 

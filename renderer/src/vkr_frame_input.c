@@ -616,6 +616,52 @@ vkr_internal VkrRendererError vkr_frame_input_validate_animation_preview(
   return VKR_RENDERER_ERROR_NONE;
 }
 
+/* The mirrored view must be finite, its plane normal unit length, and its
+   image a supported divisor of the camera's. */
+vkr_internal VkrRendererError vkr_frame_input_validate_planar_reflection(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
+  const VkrPlanarReflectionPayload *reflection = packet->planar_reflection;
+  if (!reflection) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+  if (!vkr_renderer_matrix_finite(&reflection->view)) {
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.planar_reflection.view",
+                      "must contain only finite values");
+  }
+  const Vec4 plane = reflection->plane;
+  const float32_t normal_length_squared =
+      plane.x * plane.x + plane.y * plane.y + plane.z * plane.z;
+  if (!isfinite(plane.w) || !(fabsf(normal_length_squared - 1.0f) < 1e-3f)) {
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.planar_reflection.plane",
+                      "must hold a unit normal and a finite offset");
+  }
+  const Vec3 eye = reflection->view_position;
+  if (!isfinite(eye.x) || !isfinite(eye.y) || !isfinite(eye.z)) {
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.planar_reflection.view_position",
+                      "must be finite");
+  }
+  const Vec4 rect = reflection->screen_rect;
+  if (!(rect.x >= 0.0f && rect.y >= 0.0f && rect.z <= 1.0f && rect.w <= 1.0f &&
+        rect.x < rect.z && rect.y < rect.w)) {
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.planar_reflection.screen_rect",
+                      "must be a non-empty rectangle inside [0, 1]");
+  }
+  if (reflection->divisor != 2u && reflection->divisor != 4u) {
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.planar_reflection.divisor", "must be 2 or 4");
+  }
+  if (reflection->object_id == 0u) {
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.planar_reflection.object_id",
+                      "must name the reflector's draws");
+  }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
 /* A face's atlas square is a power-of-two side from the smallest face to the
  * map size, aligned to its own size inside one atlas layer, and its texel
  * size matches that side. Returns the side in texels, or zero. */
@@ -1445,6 +1491,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
   }
   error =
       vkr_frame_input_validate_animation_preview(packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+  error =
+      vkr_frame_input_validate_planar_reflection(packet, out_validation_error);
   if (error != VKR_RENDERER_ERROR_NONE) {
     return error;
   }

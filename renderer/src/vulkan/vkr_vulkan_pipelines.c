@@ -1486,6 +1486,16 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
                                baked_lamp_shadow_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, baked_reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                               planar_reflection_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                               planar_reflection_sampler),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, planar_reflection_plane),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                               planar_reflection_uv_scale),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                               planar_reflection_object_id),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, planar_reserved),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_atmosphere_fields[] = {
@@ -2160,6 +2170,8 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "ui_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX
                   ? "vk_visibility_vertex"
+              : vertex_shader == VKR_VULKAN_PACKET_SHADER_REFLECTION_VERTEX
+                  ? "vk_reflection_vertex"
               : vertex_shader ==
                       VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_VERTEX
                   ? "vk_local_shadow_transmission_vertex"
@@ -2202,6 +2214,8 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "ui_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT
                   ? "vk_visibility_fragment"
+              : fragment_shader == VKR_VULKAN_PACKET_SHADER_REFLECTION_FRAGMENT
+                  ? "vk_reflection_fragment"
               : fragment_shader ==
                       VKR_VULKAN_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT
                   ? "vk_visibility_opaque_fragment"
@@ -2438,6 +2452,8 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV,
       VKR_VULKAN_PACKET_EDITOR_GRID_VERT_SPV,
       VKR_VULKAN_PACKET_EDITOR_GRID_FRAG_SPV,
+      VKR_VULKAN_PACKET_REFLECTION_VERT_SPV,
+      VKR_VULKAN_PACKET_REFLECTION_FRAG_SPV,
   };
   for (uint32_t i = 0u; i < VKR_VULKAN_PACKET_SHADER_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],
@@ -2527,6 +2543,12 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT,
              VK_FORMAT_R32G32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v,
              false_v, false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_REFLECTION,
+             VKR_VULKAN_PACKET_SHADER_REFLECTION_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_REFLECTION_FRAGMENT,
+             VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
+             true_v, false_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE,
              VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
