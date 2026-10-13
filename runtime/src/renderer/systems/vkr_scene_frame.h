@@ -18,6 +18,10 @@ struct VkrScenePopulationFrame;
 typedef struct VkrSceneDrawGate {
   const struct VkrSceneRoomFrame *rooms;
   const struct VkrScenePopulationFrame *proxies;
+  /* Render ids whose draws the camera leaves out: a reflection-probe capture
+     hides planar reflectors, whose own probe must not see them (ADR-117). */
+  const uint32_t *hidden_render_ids;
+  uint32_t hidden_render_id_count;
 } VkrSceneDrawGate;
 
 /** Current loaded caster bounds used before shadow cascade fitting. */

@@ -328,12 +328,18 @@ vkr_internal void vkr_scene_count_world_sources(
 vkr_internal INLINE uint32_t vkr_scene_gate_bits(const VkrSceneDrawGate *gate,
                                                  bool8_t instance,
                                                  uint32_t slot,
-                                                 uint32_t submesh) {
+                                                 uint32_t submesh,
+                                                 uint32_t render_id) {
   if (!gate) {
     return 0u;
   }
   uint32_t bits =
       vkr_scene_room_cull_bits(gate->rooms, instance, slot, submesh);
+  for (uint32_t i = 0; render_id && i < gate->hidden_render_id_count; ++i) {
+    if (gate->hidden_render_ids[i] == render_id) {
+      bits |= VKR_GPU_DRAW_CULL_HIDDEN_BIT;
+    }
+  }
   const VkrScenePopulationFrame *proxies = gate->proxies;
   if (proxies) {
     const uint8_t *hidden =
@@ -420,8 +426,8 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
                                         submesh->max_extents, &center, &radius);
           visible = vkr_scene_blend_visible(
               camera_frustum, view_position, draw_distance_scale,
-              mesh->draw_cull |
-                  vkr_scene_gate_bits(gate, false_v, mesh_slot, s),
+              mesh->draw_cull | vkr_scene_gate_bits(gate, false_v, mesh_slot, s,
+                                                    mesh->render_id),
               center, radius);
         }
         assert_log(source_index < gpu_candidate_count,
@@ -479,7 +485,8 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
           visible = vkr_scene_blend_visible(
               camera_frustum, view_position, draw_distance_scale,
               instance->draw_cull |
-                  vkr_scene_gate_bits(gate, true_v, instance_slot, s),
+                  vkr_scene_gate_bits(gate, true_v, instance_slot, s,
+                                      instance->render_id),
               center, radius);
         }
         assert_log(source_index < gpu_candidate_count,
@@ -556,8 +563,9 @@ vkr_internal void vkr_scene_emit_world_sources(
           .temporal_index = mesh_slot,
           .temporal_generation = mesh->temporal_generation,
           .lightmap_slot = mesh->lightmap_slot,
-          .draw_cull = mesh->draw_cull |
-                       vkr_scene_gate_bits(gate, false_v, mesh_slot, s),
+          .draw_cull =
+              mesh->draw_cull |
+              vkr_scene_gate_bits(gate, false_v, mesh_slot, s, mesh->render_id),
           .bounds_valid = mesh->bounds_valid,
           .transmissive = transmissive,
           .double_sided = material ? material->double_sided : false_v,
@@ -628,7 +636,8 @@ vkr_internal void vkr_scene_emit_world_sources(
           .skinning_index = skinning_index,
           .lightmap_slot = instance->lightmap_slot,
           .draw_cull = instance->draw_cull |
-                       vkr_scene_gate_bits(gate, true_v, instance_slot, s),
+                       vkr_scene_gate_bits(gate, true_v, instance_slot, s,
+                                           instance->render_id),
           .bounds_valid = instance->bounds_valid,
           .transmissive = transmissive,
           .double_sided =

@@ -3282,6 +3282,7 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
         return false_v;
       packed[i] = (VkrMetalPacketIblProbe){
           .sh_slot = probe->sh_slot,
+          .owner_object_id = probe->owner_object_id,
           .prefilter_texture_id = prefilter->resource.resource_id,
           .center_blend = {probe->center.x, probe->center.y, probe->center.z,
                            probe->blend_distance},

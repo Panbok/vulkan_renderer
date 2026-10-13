@@ -503,11 +503,15 @@ typedef enum VkrScenePlanarReflectorResolution {
    mirror plane through its origin, facing along its Y axis. The entity's own
    draws whose surface lies on that plane reflect the scene mirrored about
    it; one reflector renders per frame, the largest on screen within
-   `max_distance` (zero is unlimited) of a camera above its plane. */
+   `max_distance` (zero is unlimited) of a camera above its plane. `probe`
+   binds a baked plane probe, the scene's reflection probe of that 1-based
+   index (zero is none): the tiled pipeline shades the reflector's draws with
+   it in place of the mirrored view it does not render. */
 typedef struct ScenePlanarReflector {
   bool8_t enabled;
   uint32_t resolution; /* VkrScenePlanarReflectorResolution. */
   float32_t max_distance;
+  uint32_t probe;
 } ScenePlanarReflector;
 
 /* The default draw distances of a draw that no draw_distance component

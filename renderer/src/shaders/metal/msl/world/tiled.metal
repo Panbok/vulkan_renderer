@@ -585,7 +585,10 @@ static uint vkr_metal_tiled_pixel_probe(constant VkrMetalPacketFrameRoot *frame,
   if (frame->ibl_probes == nullptr)
     return 0u;
   for (uint i = 0u; i < count; ++i) {
-    if (vkr_metal_packet_probe_influence(frame->ibl_probes[i],
+    // A probe bound to a planar reflector serves that reflector's draws only
+    // (vkr_metal_packet_draw_probe).
+    if (frame->ibl_probes[i].owner_object_id == 0u &&
+        vkr_metal_packet_probe_influence(frame->ibl_probes[i],
                                          world_position) >= 0.5f)
       return i + 1u;
   }

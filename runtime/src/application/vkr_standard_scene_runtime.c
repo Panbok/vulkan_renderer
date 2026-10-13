@@ -1031,6 +1031,54 @@ vkr_internal bool8_t vkr_standard_scene_runtime_pump_frame_assets(
   return true_v;
 }
 
+/* The planar reflectors a frame considers; more are ignored. */
+#define VKR_PLANAR_REFLECTOR_CANDIDATE_MAX 64u
+
+/* The picking object id of the draws each scene probe is bound to: an
+   enabled, visible planar reflector's `probe` names its baked plane probe. */
+vkr_internal void vkr_standard_scene_runtime_probe_owners(
+    const VkrScene *scene, uint32_t owners[VKR_SCENE_REFLECTION_PROBE_MAX]) {
+  MemZero(owners, sizeof(uint32_t) * VKR_SCENE_REFLECTION_PROBE_MAX);
+  VkrEntityId entities[VKR_PLANAR_REFLECTOR_CANDIDATE_MAX];
+  const uint32_t count =
+      Min(vkr_scene_find_typed(scene, &vkr_scene_planar_reflector_type,
+                               entities, ArrayCount(entities)),
+          (uint32_t)ArrayCount(entities));
+  for (uint32_t i = 0; i < count; ++i) {
+    const ScenePlanarReflector *reflector = vkr_scene_get_typed(
+        scene, entities[i], &vkr_scene_planar_reflector_type);
+    const uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
+    if (!reflector || !reflector->enabled || !render_id ||
+        reflector->probe == 0u ||
+        reflector->probe > scene->reflection_probe_count ||
+        !vkr_scene_entity_visible(scene, entities[i])) {
+      continue;
+    }
+    owners[reflector->probe - 1u] = vkr_picking_encode_id(
+        VKR_PICKING_ID_KIND_SCENE, scene->render_id_base + render_id);
+  }
+}
+
+/* The render ids of the scene's planar reflectors, which a reflection-probe
+   capture hides so a plane's own probe never sees the plane (ADR-117).
+   Returns the count written to `out`. */
+vkr_internal uint32_t vkr_standard_scene_runtime_reflector_render_ids(
+    const VkrScene *scene, uint32_t out[VKR_PLANAR_REFLECTOR_CANDIDATE_MAX]) {
+  VkrEntityId entities[VKR_PLANAR_REFLECTOR_CANDIDATE_MAX];
+  const uint32_t count =
+      Min(vkr_scene_find_typed(scene, &vkr_scene_planar_reflector_type,
+                               entities, ArrayCount(entities)),
+          (uint32_t)ArrayCount(entities));
+  uint32_t written = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
+    if (render_id) {
+      out[written++] = scene->render_id_base + render_id;
+    }
+  }
+  return written;
+}
+
 /* Builds the world payload unless the Scene is stopped. Returns the build
    error that cancels the frame; texture demand and visibility stats are
    refreshed only when there is none. */
@@ -1048,8 +1096,15 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
        and the Scene's "All" draw everything. */
     VkrSceneDrawGate gate = {0};
     VkrScenePopulationFrame proxy_frame = {0};
+    uint32_t hidden_render_ids[VKR_PLANAR_REFLECTOR_CANDIDATE_MAX];
     if (!draw->scene_stopped) {
       VkrScene *scene = vkr_standard_scene_runtime_render_scene(application);
+      if (application->static_capture && scene) {
+        gate.hidden_render_ids = hidden_render_ids;
+        gate.hidden_render_id_count =
+            vkr_standard_scene_runtime_reflector_render_ids(scene,
+                                                            hidden_render_ids);
+      }
       const bool8_t everything =
           application->static_capture || application->draw_distance_off;
       gate.rooms =
@@ -1769,21 +1824,31 @@ vkr_standard_scene_runtime_probe_volume(const VkrFrameIblProbe *probe) {
   return probe->extents.x * probe->extents.y * probe->extents.z;
 }
 
-/* Keeps the `cap` probes nearest the camera, then lists them smaller box
-   first: shaders give each probe the share the ones before it leave, so a
-   room probe takes priority over the hall around it (ADR-019). Insertion
-   sorts over at most VKR_FRAME_IBL_PROBE_MAX entries. */
+/* The rank that keeps a probe within the frame's cap: a probe bound to a
+   planar reflector comes first, so its reflector never loses it to nearer
+   boxes; the rest go by distance. */
+vkr_internal float32_t vkr_standard_scene_runtime_probe_keep_rank(
+    const VkrFrameIblProbe *probe, Vec3 position) {
+  return probe->owner_object_id
+             ? -1.0f
+             : vkr_standard_scene_runtime_probe_distance(probe, position);
+}
+
+/* Keeps the `cap` probes nearest the camera, bound probes first, then lists
+   them smaller box first: shaders give each probe the share the ones before
+   it leave, so a room probe takes priority over the hall around it
+   (ADR-019). Insertion sorts over at most VKR_FRAME_IBL_PROBE_MAX entries. */
 vkr_internal uint32_t vkr_standard_scene_runtime_order_probes(
     VkrFrameIblProbe *probes, VkrTextureHandle *sources, uint32_t count,
     uint32_t cap, Vec3 camera_position) {
   for (uint32_t i = 1u; i < count; ++i) {
     const VkrFrameIblProbe probe = probes[i];
     const VkrTextureHandle source = sources[i];
-    const float32_t distance =
-        vkr_standard_scene_runtime_probe_distance(&probe, camera_position);
+    const float32_t rank =
+        vkr_standard_scene_runtime_probe_keep_rank(&probe, camera_position);
     uint32_t j = i;
-    while (j > 0u && vkr_standard_scene_runtime_probe_distance(
-                         &probes[j - 1u], camera_position) > distance) {
+    while (j > 0u && vkr_standard_scene_runtime_probe_keep_rank(
+                         &probes[j - 1u], camera_position) > rank) {
       probes[j] = probes[j - 1u];
       sources[j] = sources[j - 1u];
       --j;
@@ -1824,6 +1889,10 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
   const VkrScene *active_scene = draw->active_scene;
   VkrFrameIblProbe *frame_ibl_probes = draw->frame_ibl_probes;
   uint32_t frame_ibl_probe_count = 0;
+  uint32_t probe_owners[VKR_SCENE_REFLECTION_PROBE_MAX] = {0};
+  if (active_scene) {
+    vkr_standard_scene_runtime_probe_owners(active_scene, probe_owners);
+  }
   /* Cold ADR-038 control: the fixture asserts the packed count, so an
      unavailable probe texture cannot silently reduce the measured work. */
   const uint32_t frame_ibl_probe_cap =
@@ -1872,6 +1941,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
           .intensity = probe->intensity * time_of_day_light,
           .diffuse_intensity = probe->diffuse_intensity,
           .specular_intensity = probe->specular_intensity,
+          .owner_object_id = probe_owners[i],
           .box_projection_enabled = probe->box_projection,
       };
     }
@@ -1928,9 +1998,6 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
                  active_scene->origin_offset);
   }
 }
-
-/* The planar reflectors a frame considers; more are ignored. */
-#define VKR_PLANAR_REFLECTOR_CANDIDATE_MAX 64u
 
 /* The reflection about `plane` (unit normal xyz, offset w):
    x' = x - 2 (n . x + w) n. */

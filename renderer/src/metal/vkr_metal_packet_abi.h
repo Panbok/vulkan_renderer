@@ -712,11 +712,11 @@ _Static_assert(sizeof(VkrMetalPacketTableDrawUpload) <=
                "Table draw upload must fit one root-ring cell");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketIblProbe {
-  /** ADR-038 final layout: offset 0 carries the coefficient slot, offset 4 is
-      reserved, and every field from offset 8 onward keeps its previous offset.
-   */
+  /** ADR-038 final layout: offset 0 carries the coefficient slot and every
+      field from offset 8 onward keeps its previous offset. */
   uint32_t sh_slot;
-  uint32_t sh_reserved;
+  /** VkrFrameIblProbe::owner_object_id. */
+  uint32_t owner_object_id;
   uint64_t prefilter_texture_id;
   Vec4 center_blend;
   Vec4 extents_weight;

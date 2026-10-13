@@ -502,7 +502,8 @@ vkr_global const VkrMetalPacketAbiField vkr_tiled_sky_root_fields[] = {
 
 vkr_global const VkrMetalPacketAbiField vkr_ibl_probe_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, sh_slot, "sh_slot", 0),
-    VKR_ABI_FIELD(VkrMetalPacketIblProbe, sh_reserved, "sh_reserved", 4),
+    VKR_ABI_FIELD(VkrMetalPacketIblProbe, owner_object_id, "owner_object_id",
+                  4),
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, prefilter_texture_id, "prefilter", 8),
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, center_blend, "center_blend", 16),
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, extents_weight, "extents_weight", 32),

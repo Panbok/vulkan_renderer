@@ -207,7 +207,9 @@ pipeline rather than a backend mechanism.
    (`vkr_metal_tiled_pixel_probe` in
    [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)).
    The first probe past one half is the one the desktop pipeline's priority
-   blend gives most of the point. Influence and lookup direction come from
+   blend gives most of the point. A probe bound to a planar reflector
+   (`owner_object_id`, [ADR-117](117-desktop-planar-reflections.md)) serves
+   that reflector's draws ahead of this rule and no other draw. Influence and lookup direction come from
    the shared
    [`reflection_probe_kernel.slangh`](../../renderer/src/shaders/shared/reflection_probe_kernel.slangh).
    The desktop pipeline instead blends the probes per pixel; that blend

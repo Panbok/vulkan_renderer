@@ -43,7 +43,8 @@ struct VkrMetalPacketIblProbe
     // ADR-038 final layout: offsets 0 and 4 carry the coefficient slot; every
     // field from offset 8 onward keeps its previous offset.
     uint sh_slot;
-    uint sh_reserved;
+    // The object id of the draws bound to this probe, or zero.
+    uint owner_object_id;
     TextureCube<float4> prefilter;
     float4 center_blend;
     float4 extents_weight;

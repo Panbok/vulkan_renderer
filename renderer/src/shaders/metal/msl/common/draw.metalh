@@ -127,10 +127,12 @@ struct VkrMetalPacketCustomMaterial {
 };
 
 struct VkrMetalPacketIblProbe {
-  // ADR-038 final layout: offset 0 carries the coefficient slot, offset 4 is
-  // reserved, and every field from offset 8 onward keeps its previous offset.
+  // ADR-038 final layout: offset 0 carries the coefficient slot and every
+  // field from offset 8 onward keeps its previous offset.
   uint sh_slot;
-  uint sh_reserved;
+  // The object id of the draws bound to this probe (a planar reflector's
+  // baked plane probe), or zero.
+  uint owner_object_id;
   texturecube<float, access::sample> prefilter;
   float4 center_blend;
   float4 extents_weight;

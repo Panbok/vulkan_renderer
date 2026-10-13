@@ -11,8 +11,9 @@ authority: adr
 Accepted (partial). The desktop pipeline (Vulkan) renders one planar
 reflector a frame: its mirrored view, shaded forward with the frame's lights
 and shadows, replaces the probes' reflection on the reflector's surface. The
-tiled pipeline's baked plane-bound probe, which the owner chose on
-2026-10-13 to come first there, is not built
+tiled pipeline (Metal) shades a reflector's draws with its baked plane-bound
+probe, the first step the owner chose for it on 2026-10-13 (decision 6). Its
+real-time near field is not built
 ([Large-level rendering](../proposals/large-level-rendering.md), section 3;
 [Planar reflections](../proposals/planar-reflections.md)).
 
@@ -91,6 +92,23 @@ local shadow atlas, the diffuse volume and the probes from any frame root.
    probes' radiance is, replaces the environment specular in proportion to
    its alpha; off the image, outside the reflector or over sky, the probes
    and environment remain.
+6. **Baked plane probe (tiled).** The component's `probe` names one of the
+   scene's reflection probes by 1-based index (zero is none), baked at the
+   plane by `vkr_bakery bake probe` with its box set to the surrounding
+   walls and `box_projection` on. Each frame
+   `vkr_standard_scene_runtime_probe_owners` gives that probe the enabled,
+   visible reflector's draw `object_id` as `VkrFrameIblProbe.owner_object_id`,
+   and `vkr_standard_scene_runtime_order_probes` ranks it ahead of the
+   distance order, so the probe cap never drops it (a cap of zero, as in a
+   probe capture, still keeps none). The tiled encode kernel
+   (`vkr_metal_packet_draw_probe`) gives a draw the probe its `object_id`
+   owns before the first-probe-past-one-half rule, and that rule and the
+   per-pixel glass choice skip owned probes, so the plane probe shades its
+   reflector only. In a reflection-probe capture (`static_capture`) the
+   runtime marks every planar reflector's draws with the camera's hidden bit
+   through `VkrSceneDrawGate.hidden_render_ids`, so a plane's probe never
+   sees the plane. The desktop pipeline ignores `owner_object_id` and blends
+   the plane probe like any other.
 
 ## Consequences
 
@@ -104,6 +122,12 @@ aerial perspective, froxel and analytic fog, transmission and blended
 surfaces. Its sky is the probes' or environment's, through the empty
 pixels. Room gates and draw distances follow the camera's; a room the
 camera cannot see stays hidden in the reflection.
+
+On the tiled pipeline the plane probe shows the static scene from its
+capture point, corrected by its box: parallax grows for content far from
+the box walls, and dynamic objects and the player do not reflect. Content
+wholly below the plane is not filtered from the capture; for a viewer above
+the plane, reflected rays point upward and rarely reach it.
 
 ## Evidence
 
@@ -137,6 +161,22 @@ non-authoritative:
 The first run crashed: the culling-view loop computed a local shadow face
 index modulo the frame's face count before choosing the reflection view,
 and a frame that drew no face divided by zero.
+
+Metal Release, M1 Pro, 2026-10-13, local and non-authoritative: the
+fixture gains a plane probe (`assets/textures/bistro_water_probe.vkt`, box
+x −40.2 to −28.3, y 0 to 12, z −13.5 to 3.3 m, fitted from depth captures
+around the plane) baked with
+`vkr_bakery bake probe --scene assets/scenes/fixtures/bistro_planar_water_local.scene.json --output assets/textures/bistro_water_probe.vkt --position -34 0.5 -5 --size 256`,
+which `--check` reports current. Its downward face shows the cobbles, not
+the water. With a temporary perfect-mirror water material,
+`planar_water_bistro_street_tiled_capture` showed the sky before the
+binding and the surrounding façade, windows, door and lit wall lamp after
+it; with the greybox water the change is a paler, flatter reflection under
+Fresnel, and depth stays byte-identical. Metal API validation of the case
+reported no message (`sha256:d1245c68…`), and `build_test.sh` passed
+(809 tests). Not run: the Vulkan build of the shared changes, and the
+large-level proposal's error against a real-time reference image, which
+only the desktop pipeline draws.
 
 ## Alternatives considered
 

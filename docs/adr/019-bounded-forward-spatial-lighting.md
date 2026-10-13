@@ -64,8 +64,9 @@ Pack up to 16 ready local IBL probes per frame
 (`vkr_standard_scene_runtime_order_probes` in
 [`vkr_standard_scene_runtime.c`](../../runtime/src/application/vkr_standard_scene_runtime.c)):
 when more are ready than `ibl_probe_limit` allows, it keeps those nearest the
-camera by distance to their box, then sorts the kept probes by box volume,
-smallest first. The scene and the frame both hold at most 16 probes, so
+camera by distance to their box, a probe a planar reflector binds first
+([ADR-117](117-desktop-planar-reflections.md)), then sorts the kept probes
+by box volume, smallest first. The scene and the frame both hold at most 16 probes, so
 today the distance rank drops probes only under a lower `ibl_probe_limit`.
 
 The shared kernel
@@ -550,7 +551,9 @@ cubemap camera modes the harness child sets the runtime's
 ([`vkr_scene_frame.c`](../../runtime/src/renderer/systems/vkr_scene_frame.c))
 then leaves out meshes and instances of DYNAMIC mobility (movers, physics
 bodies, skinned and animated models) and every alpha-blended draw;
-anything that moves would stay frozen in the probe. Opaque, cutout and
+anything that moves would stay frozen in the probe. Planar reflectors'
+draws carry the camera's hidden bit there too, so a plane's own probe
+never sees the plane (ADR-117). Opaque, cutout and
 transmissive static surfaces stay, and so does fog, which lies between
 the probe and what it reflects. Faces render `--supersample` times
 wider than `--size` (1, 2 or 4, default 4, at most 1024 texels), and the

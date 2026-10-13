@@ -53,6 +53,10 @@ typedef struct VkrFrameIblProbe {
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
+  /** The picking object id of the draws bound to this probe (a planar
+      reflector's baked plane probe), or zero: the tiled pipeline gives those
+      draws this probe ahead of the influence order. */
+  uint32_t owner_object_id;
   bool8_t box_projection_enabled;
 } VkrFrameIblProbe;
 

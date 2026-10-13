@@ -394,19 +394,27 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
 }
 
 // The reflection probe a camera-view draw shades with on the tiled pipeline
-// (ADR-087), as frame probe index + 1: the first probe, in the host's
-// smaller-box-first order, whose influence at the draw's bounding-sphere
-// centre reaches one half. Zero takes the global environment.
+// (ADR-087), as frame probe index + 1: the probe bound to the draw's object
+// (a planar reflector's baked plane probe), else the first unbound probe, in
+// the host's smaller-box-first order, whose influence at the draw's
+// bounding-sphere centre reaches one half. A bound probe serves its owner
+// only. Zero takes the global environment.
 static uint vkr_metal_packet_draw_probe(
     constant VkrMetalPacketFrameRoot *frame,
     const device VkrMetalPacketInstance &instance, float4 local_sphere) {
   const uint count = min(frame->ibl_probe_count, VKR_GPU_DRAW_PROBE_MASK - 1u);
   if (count == 0u || frame->ibl_probes == nullptr)
     return 0u;
+  for (uint i = 0u; i < count; ++i) {
+    if (frame->ibl_probes[i].owner_object_id != 0u &&
+        frame->ibl_probes[i].owner_object_id == instance.object_id)
+      return i + 1u;
+  }
   float3 center = (instance.model * float4(local_sphere.xyz, 1.0f)).xyz;
   for (uint i = 0u; i < count; ++i) {
-    if (vkr_metal_packet_probe_influence(frame->ibl_probes[i], center) >=
-        0.5f)
+    if (frame->ibl_probes[i].owner_object_id == 0u &&
+        vkr_metal_packet_probe_influence(frame->ibl_probes[i], center) >=
+            0.5f)
       return i + 1u;
   }
   return 0u;

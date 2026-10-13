@@ -2903,6 +2903,16 @@ static const VkrPropertyDesc s_planar_reflector_properties[] = {
      .min = 0.0f,
      .max = 100000.0f,
      .step = 1.0f},
+    {.name = "probe",
+     .label = "Baked probe",
+     .tooltip = "The scene's reflection probe, by 1-based index, that the "
+                "tiled pipeline reflects on this surface",
+     .zero_label = "None",
+     .offset = TYPE_OFFSET(ScenePlanarReflector, probe),
+     .kind = VKR_PROPERTY_U32,
+     .min = 0.0f,
+     .max = (float32_t)VKR_SCENE_REFLECTION_PROBE_MAX,
+     .step = 1.0f},
 };
 
 static void planar_reflector_defaults(void *value) {

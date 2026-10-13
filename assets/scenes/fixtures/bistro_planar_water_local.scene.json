@@ -28,6 +28,17 @@
       "diffuse_intensity": 1.0,
       "specular_intensity": 1.0,
       "cubemap": {"path": "assets/textures/bistro_cafe_probe.vkt"}
+    },
+    {
+      "enabled": true,
+      "center": [-34.25, 6.0, -5.1],
+      "extents": [5.95, 6.0, 8.4],
+      "blend_distance": 0.75,
+      "intensity": 1.0,
+      "diffuse_intensity": 1.0,
+      "specular_intensity": 1.0,
+      "box_projection": true,
+      "cubemap": {"path": "assets/textures/bistro_water_probe.vkt"}
     }
   ],
   "entities": [
@@ -89,7 +100,8 @@
         "planar_reflector": {
           "enabled": true,
           "resolution": "half",
-          "max_distance": 0
+          "max_distance": 0,
+          "probe": 2
         }
       }
     }

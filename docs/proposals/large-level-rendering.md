@@ -279,7 +279,15 @@ on the tiled pipeline only, as the planar reflections proposal scopes it.
 
 ### Phases
 
-1. Reflector `baked` mode, capture filter and per-draw binding.
+1. Implemented 2026-10-13 on the tiled pipeline
+   ([ADR-117](../adr/117-desktop-planar-reflections.md), decision 6), in a
+   narrower form than above: the reflector names its probe by index
+   (`probe`) instead of a `baked` mode, the capture filter hides planar
+   reflectors' draws in every reflection-probe capture but does not clip
+   content below the plane, and the binding is per frame through the
+   probe's owner object id. The fixture
+   `bistro_planar_water_local` carries the plane probe; the desktop
+   pipeline ignores the binding.
 2. Near-field pass with `reflection_distance`, after the planar reflections
    proposal's pass exists.
 
@@ -287,7 +295,8 @@ on the tiled pipeline only, as the planar reflections proposal scopes it.
 
 - The fixture's water plane at two eye heights. The real-time pass, drawn in
   a diagnostic build for the full scene, is the reference image. Report the
-  mean error of B and D against it inside the plane's pixels.
+  mean error of B and D against it inside the plane's pixels. Still open
+  for B: only the desktop pipeline draws the reference.
 - Captures that show no water reflecting itself and nothing from below the
   plane.
 - Matched Release timing for D against B at the high eye position.

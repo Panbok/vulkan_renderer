@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "recipe_version": 2,
+  "scene": "assets/scenes/fixtures/bistro_planar_water_local.scene.json",
+  "position": [
+    -34.0,
+    0.5,
+    -5.0
+  ],
+  "size": 256,
+  "supersample": 4,
+  "near_plane": 0.1,
+  "far_plane": 1000.0,
+  "lighting": "direct + emissive + global environment; local probes disabled; static meshes only, no alpha-blended surfaces; fog kept",
+  "source_channel": "hdr_post_transmission",
+  "capture_to_cube": "flip each face vertically once",
+  "capture_session": "single",
+  "scene_manifest": {
+    "schema_version": 2,
+    "kind": "vkr.harness.scene-content-manifest",
+    "scene": "assets/scenes/fixtures/bistro_planar_water_local.scene.json",
+    "sha256": "sha256:e0f085b903f70a2f98ef597c2d5962427c06628c5ffaf06648cd3a8ff840e616",
+    "assets": [
+      {
+        "path": "assets/materials/greybox/water_floor.mt",
+        "identity": "sha256:3fce292ea9518ced8eec0b21b39a8417b040175d21bac673da02c3289893130c",
+        "bytes": 346,
+        "sha256": "sha256:3fce292ea9518ced8eec0b21b39a8417b040175d21bac673da02c3289893130c"
+      },
+      {
+        "path": "assets/models/bistro-lights-main.vkb",
+        "identity": "sha256:ab5abe194c9694d26db3ccc47b550276c30f92fe1a6ec624acdd8900dfd6fe5c",
+        "bytes": 30977920,
+        "sha256": "sha256:916912ab0bea26c218d43511f6b9b43a50256a05c72b0aa329b94709f041a5f7"
+      },
+      {
+        "path": "assets/scenes/fixtures/bistro_planar_water_local.scene.json",
+        "identity": "sha256:45897fc6449a55c26b705f599256c47ce86736760c6ad2705f85d700e49fd9ea",
+        "bytes": 2583,
+        "sha256": "sha256:45897fc6449a55c26b705f599256c47ce86736760c6ad2705f85d700e49fd9ea"
+      },
+      {
+        "path": "assets/textures/bistro_cafe_probe.vkt",
+        "identity": "sha256:d2b6b6712f9b96d07257a43cd73bec75efc0b02e69aafc6e49463ce68c9f324a",
+        "bytes": 4195416,
+        "sha256": "sha256:d2b6b6712f9b96d07257a43cd73bec75efc0b02e69aafc6e49463ce68c9f324a"
+      },
+      {
+        "path": "assets/textures/bistro_water_probe.vkt",
+        "identity": "sha256:a0243756efc540a83b69ff18ed6552bf67c71a047b5a785f208cbd9d79c4a14e",
+        "bytes": 4194768,
+        "sha256": "sha256:a0243756efc540a83b69ff18ed6552bf67c71a047b5a785f208cbd9d79c4a14e"
+      },
+      {
+        "path": "assets/textures/greybox/greybox_grid.png",
+        "identity": "sha256:cd1e1ba9d1d048cc25a282be845e4fa8536244cf2d0a3d762026e1f03a62d4ec",
+        "bytes": 4138,
+        "sha256": "sha256:cd1e1ba9d1d048cc25a282be845e4fa8536244cf2d0a3d762026e1f03a62d4ec"
+      },
+      {
+        "path": "assets/textures/greybox/greybox_grid.png.vkt",
+        "identity": "sha256:1de005f438e63a2a7d7d410c0f35c0b6160e894c13aeb9c99be28ec86aabbe6f",
+        "bytes": 159152,
+        "sha256": "sha256:a86c9a830827a1e92826250fa192c89a4313ea182d66b4d4e94463744c81a2a6"
+      }
+    ]
+  },
+  "capture_record": {
+    "origin": [
+      -34.0,
+      0.5,
+      -5.0
+    ],
+    "layers": []
+  },
+  "output_sha256": "sha256:e342c41f1d3da073ba23ecba9dd77ba261053b4bc9d764e8d9e76ded5f88714d",
+  "captures": [
+    {
+      "face": "px",
+      "sha256": "sha256:d84c96de8803e5a83fc7512eae3117e82f3767f2305f194ec75086bca3fe35cc",
+      "metadata_sha256": "sha256:af4375663824ca967737e0ef5d5713ddbe4f2a785173b87b170b8619f5926e12",
+      "report_sha256": "sha256:aa8e5c87720ae7a516bf15ec10dff2ce68db0a35aaf8c4e3ce64ff6e38319b81",
+      "provenance": {
+        "git_sha": "12a18fd46fd51846e4e57ef1c831a6fdfcdc0092",
+        "dirty": true,
+        "binary_sha256": "sha256:97ed3982b0ea3ff84b2b468e37be15d2675ff478a2e18f86ca9a46398a11c635",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4"
+      }
+    },
+    {
+      "face": "nx",
+      "sha256": "sha256:2f5391c063a7c9219de2d9e46ed353879103ca5a3d7b01596eb5f2d7a90c35d2",
+      "metadata_sha256": "sha256:8e2b5e8f8dc5984451f1085ead5e63cb66a88c131d497a167e3b93a28858f670",
+      "report_sha256": "sha256:aa8e5c87720ae7a516bf15ec10dff2ce68db0a35aaf8c4e3ce64ff6e38319b81",
+      "provenance": {
+        "git_sha": "12a18fd46fd51846e4e57ef1c831a6fdfcdc0092",
+        "dirty": true,
+        "binary_sha256": "sha256:97ed3982b0ea3ff84b2b468e37be15d2675ff478a2e18f86ca9a46398a11c635",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4"
+      }
+    },
+    {
+      "face": "py",
+      "sha256": "sha256:709ca8c9a22cef870d4579a28356518c1ce05835ea87b2e18492fc6134ed4a1c",
+      "metadata_sha256": "sha256:ff09b91b5c8e59ce59fb619b122f7f18ed4751b40477fecd4dda67386a35abc7",
+      "report_sha256": "sha256:aa8e5c87720ae7a516bf15ec10dff2ce68db0a35aaf8c4e3ce64ff6e38319b81",
+      "provenance": {
+        "git_sha": "12a18fd46fd51846e4e57ef1c831a6fdfcdc0092",
+        "dirty": true,
+        "binary_sha256": "sha256:97ed3982b0ea3ff84b2b468e37be15d2675ff478a2e18f86ca9a46398a11c635",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4"
+      }
+    },
+    {
+      "face": "ny",
+      "sha256": "sha256:754e00aa3cf74c182fbc09bd6f6a0dd546d1fed3262c760937c3d7455e48866c",
+      "metadata_sha256": "sha256:81a45da78d7c6c181e27424bab4b6a9fab5606f40dbb812d4c916e2a2ee40b1c",
+      "report_sha256": "sha256:aa8e5c87720ae7a516bf15ec10dff2ce68db0a35aaf8c4e3ce64ff6e38319b81",
+      "provenance": {
+        "git_sha": "12a18fd46fd51846e4e57ef1c831a6fdfcdc0092",
+        "dirty": true,
+        "binary_sha256": "sha256:97ed3982b0ea3ff84b2b468e37be15d2675ff478a2e18f86ca9a46398a11c635",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4"
+      }
+    },
+    {
+      "face": "pz",
+      "sha256": "sha256:6f1da3106ad58275bdfc1724b5ec09d22efbfb2fda40437e8cb943ecf0012bc9",
+      "metadata_sha256": "sha256:1896be419423b1fae976958a6ded7112120d28f93196b6cd26d2d8dc30957d51",
+      "report_sha256": "sha256:aa8e5c87720ae7a516bf15ec10dff2ce68db0a35aaf8c4e3ce64ff6e38319b81",
+      "provenance": {
+        "git_sha": "12a18fd46fd51846e4e57ef1c831a6fdfcdc0092",
+        "dirty": true,
+        "binary_sha256": "sha256:97ed3982b0ea3ff84b2b468e37be15d2675ff478a2e18f86ca9a46398a11c635",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4"
+      }
+    },
+    {
+      "face": "nz",
+      "sha256": "sha256:9164b9ad7f1425518f999b1bd9693080fffaaed8573ae9b97f1c880b387ad528",
+      "metadata_sha256": "sha256:4dd101f53fc7a654c0ccd31e5d27e42b9e3b67226b1765adcf5c899062cae219",
+      "report_sha256": "sha256:aa8e5c87720ae7a516bf15ec10dff2ce68db0a35aaf8c4e3ce64ff6e38319b81",
+      "provenance": {
+        "git_sha": "12a18fd46fd51846e4e57ef1c831a6fdfcdc0092",
+        "dirty": true,
+        "binary_sha256": "sha256:97ed3982b0ea3ff84b2b468e37be15d2675ff478a2e18f86ca9a46398a11c635",
+        "gpu": "Apple M1 Pro",
+        "gpu_vendor_id": 0,
+        "gpu_device_id": 0,
+        "driver": "Metal 4"
+      }
+    }
+  ]
+}
