@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "id": "local.large_level.metal.glide_windowed",
+  "suite": "local",
+  "description": "Large-level fixture on the tiled pipeline: the 12 s hill glide of large_level_bistro_metal_glide in a hidden window with immediate presentation, for the authoritative windowed profiles.",
+  "scene": "assets/scenes/fixtures/bistro_tiled_large_level_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 3,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 240,
+    "measure": 720
+  },
+  "renderer": {
+    "backend": "metal",
+    "render_scale": 1.0,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4294967295,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 20000,
+    "keys": [
+      {
+        "t": 0.0,
+        "position": [
+          -420.0,
+          170.0,
+          -320.0
+        ],
+        "yaw": 37.875,
+        "pitch": -10.436
+      },
+      {
+        "t": 4.0,
+        "position": [
+          -260.0,
+          70.0,
+          -180.0
+        ],
+        "yaw": 34.695,
+        "pitch": -11.615
+      },
+      {
+        "t": 8.0,
+        "position": [
+          -120.0,
+          30.0,
+          -40.0
+        ],
+        "yaw": 18.435,
+        "pitch": -11.18
+      },
+      {
+        "t": 12.0,
+        "position": [
+          60.0,
+          40.0,
+          160.0
+        ],
+        "yaw": 45.0,
+        "pitch": 2.382
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}
