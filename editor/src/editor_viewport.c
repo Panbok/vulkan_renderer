@@ -393,6 +393,37 @@ static bool8_t *view_icon_flag(VkrEditorUi *editor, uint32_t offset) {
   return (bool8_t *)((uint8_t *)editor + offset);
 }
 
+/* The draw distance chip's rows: the two modes, then the View distance
+   header and its values. Returns how many. */
+static uint32_t view_distance_rows(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   ViewRow *rows) {
+  const VkrSampleViewState *state = &frame->view_state;
+  uint32_t count = 0;
+  ViewRow *game = &rows[count++];
+  *game = (ViewRow){.checked = !state->draw_distance_off};
+  snprintf(game->text, sizeof(game->text), "Game draw distances");
+  ViewRow *all = &rows[count++];
+  *all = (ViewRow){.checked = state->draw_distance_off};
+  snprintf(all->text, sizeof(all->text), "Draw every object");
+  if (!frame->graphics) {
+    return count;
+  }
+  const VkrGraphicsSettings settings = view_graphics(editor, frame);
+  rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+  snprintf(rows[count++].text, sizeof(rows[0].text), "View distance");
+  for (uint32_t i = 0; i < ArrayCount(view_distance_names); ++i) {
+    VkrGraphicsSettings option = settings;
+    option.view_distance = i;
+    ViewRow *row = &rows[count++];
+    *row = (ViewRow){.checked = settings.view_distance == i,
+                     .disabled = !frame->graphics_request};
+    snprintf(row->text, sizeof(row->text), "%s  %.2gx", view_distance_names[i],
+             (double)vkr_graphics_settings_draw_distance_scale(&option));
+  }
+  return count;
+}
+
 /* Fill `rows` for `popup`; returns how many. */
 static uint32_t view_popup_rows(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame, uint32_t popup,
@@ -684,32 +715,9 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     }
     break;
   }
-  case VIEW_POPUP_DISTANCE: {
-    /* Rows: the two modes, then the View distance header and its values. */
-    ViewRow *game = &rows[count++];
-    *game = (ViewRow){.checked = !state->draw_distance_off};
-    snprintf(game->text, sizeof(game->text), "Game draw distances");
-    ViewRow *all = &rows[count++];
-    *all = (ViewRow){.checked = state->draw_distance_off};
-    snprintf(all->text, sizeof(all->text), "Draw every object");
-    if (!frame->graphics) {
-      break;
-    }
-    const VkrGraphicsSettings settings = view_graphics(editor, frame);
-    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text), "View distance");
-    for (uint32_t i = 0; i < ArrayCount(view_distance_names); ++i) {
-      VkrGraphicsSettings option = settings;
-      option.view_distance = i;
-      ViewRow *row = &rows[count++];
-      *row = (ViewRow){.checked = settings.view_distance == i,
-                       .disabled = !frame->graphics_request};
-      snprintf(row->text, sizeof(row->text), "%s  %.2gx",
-               view_distance_names[i],
-               (double)vkr_graphics_settings_draw_distance_scale(&option));
-    }
+  case VIEW_POPUP_DISTANCE:
+    count = view_distance_rows(editor, frame, rows);
     break;
-  }
   default:
     break;
   }
