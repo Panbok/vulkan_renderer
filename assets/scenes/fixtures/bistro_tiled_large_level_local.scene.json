@@ -1,0 +1,390 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": true,
+    "intensity": 1.0,
+    "diffuse_intensity": 1.0,
+    "specular_intensity": 1.0
+  },
+  "atmosphere": {
+    "enabled": true,
+    "sun_direction": [
+      0.57735,
+      0.57735,
+      0.57735
+    ]
+  },
+  "clouds": {
+    "enabled": true,
+    "base_altitude_m": 1500,
+    "top_altitude_m": 4000,
+    "coverage": 0.45,
+    "density": 0.02,
+    "wind_mps": [
+      10,
+      0
+    ]
+  },
+  "lightmaps": {
+    "tiled": {
+      "path": "assets/scenes/bistro_tiled.vklm"
+    }
+  },
+  "reflection_probes": [
+    {
+      "enabled": true,
+      "center": [
+        -7.5,
+        2.2,
+        9.0
+      ],
+      "extents": [
+        5.5,
+        2.5,
+        8.0
+      ],
+      "blend_distance": 0.75,
+      "intensity": 1.0,
+      "diffuse_intensity": 1.0,
+      "specular_intensity": 1.0,
+      "cubemap": {
+        "path": "assets/textures/bistro_cafe_probe.vkt"
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "SceneRoot",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "directional_light": {
+        "enabled": true,
+        "color": [
+          0.77092856,
+          0.9677925,
+          1.0
+        ],
+        "intensity": 1.91198,
+        "direction_local": [
+          -0.57735,
+          -0.57735,
+          -0.57735
+        ],
+        "atmosphere_sun": true
+      }
+    },
+    {
+      "name": "Bistro Lights",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "path": "assets/models/bistro-lights-lightmapped.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Terrain",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": {
+        "terrain": {
+          "heightfield": "tests/fixtures/rendering/large_level/ll_terrain.vkrhf",
+          "layer0": "assets/materials/greybox/grass_floor.mt",
+          "layer1": "assets/materials/greybox/rock_floor.mt",
+          "layer2": "",
+          "layer3": "",
+          "texture_size": 4.0,
+          "stream_radius": 512.0,
+          "backdrop": false
+        }
+      }
+    },
+    {
+      "name": "Backdrop",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": {
+        "terrain": {
+          "heightfield": "tests/fixtures/rendering/large_level/ll_backdrop.vkrhf",
+          "layer0": "assets/materials/greybox/grass_floor.mt",
+          "layer1": "assets/materials/greybox/rock_floor.mt",
+          "layer2": "",
+          "layer3": "",
+          "texture_size": 4.0,
+          "stream_radius": 512.0,
+          "backdrop": true
+        }
+      }
+    },
+    {
+      "name": "Forest north",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          150,
+          620
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": {
+        "scatter": {
+          "mesh": "tests/fixtures/rendering/large_level/ll_fir.vkb",
+          "mesh_index": 0,
+          "count": 2048,
+          "seed": 11,
+          "extents": [
+            1000,
+            200,
+            380
+          ],
+          "scale_min": 0.8,
+          "scale_max": 1.4,
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "align_to_surface": false,
+          "random_yaw": true,
+          "render_surfaces": false
+        }
+      }
+    },
+    {
+      "name": "Forest south",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          150,
+          -620
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": {
+        "scatter": {
+          "mesh": "tests/fixtures/rendering/large_level/ll_spruce.vkb",
+          "mesh_index": 0,
+          "count": 2048,
+          "seed": 12,
+          "extents": [
+            1000,
+            200,
+            380
+          ],
+          "scale_min": 0.8,
+          "scale_max": 1.4,
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "align_to_surface": false,
+          "random_yaw": true,
+          "render_surfaces": false
+        }
+      }
+    },
+    {
+      "name": "Rocks east",
+      "parent": null,
+      "transform": {
+        "pos": [
+          620,
+          150,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": {
+        "scatter": {
+          "mesh": "tests/fixtures/rendering/large_level/ll_boulder.vkb",
+          "mesh_index": 0,
+          "count": 2048,
+          "seed": 13,
+          "extents": [
+            380,
+            200,
+            1000
+          ],
+          "scale_min": 0.8,
+          "scale_max": 1.4,
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "align_to_surface": false,
+          "random_yaw": true,
+          "render_surfaces": false
+        }
+      }
+    },
+    {
+      "name": "Shrubs west",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -620,
+          150,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": {
+        "scatter": {
+          "mesh": "tests/fixtures/rendering/large_level/ll_shrub.vkb",
+          "mesh_index": 0,
+          "count": 2048,
+          "seed": 14,
+          "extents": [
+            380,
+            200,
+            1000
+          ],
+          "scale_min": 0.8,
+          "scale_max": 1.4,
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "align_to_surface": false,
+          "random_yaw": true,
+          "render_surfaces": false
+        }
+      }
+    }
+  ]
+}

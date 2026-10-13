@@ -1,0 +1,199 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "VKR large-level fixture"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "spruce",
+   "mesh": 0
+  }
+ ],
+ "meshes": [
+  {
+   "name": "spruce",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2
+     },
+     "indices": 3,
+     "material": 0
+    },
+    {
+     "attributes": {
+      "POSITION": 4,
+      "NORMAL": 5,
+      "TEXCOORD_0": 6
+     },
+     "indices": 7,
+     "material": 1
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "bark",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.2,
+     0.14,
+     0.1,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.95
+   }
+  },
+  {
+   "name": "needles",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.075,
+     0.135,
+     0.075,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.9
+   }
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "ll_spruce.bin",
+   "byteLength": 7152
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 144,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 144,
+   "byteLength": 144,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 288,
+   "byteLength": 96,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 384,
+   "byteLength": 144,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 528,
+   "byteLength": 1512,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 2040,
+   "byteLength": 1512,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 3552,
+   "byteLength": 1008,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 4560,
+   "byteLength": 2592,
+   "target": 34963
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 12,
+   "type": "VEC3",
+   "min": [
+    -0.63,
+    0.0,
+    -0.5455960043841963
+   ],
+   "max": [
+    0.63,
+    12.88,
+    0.5455960043841964
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 12,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 12,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5125,
+   "count": 36,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 4,
+   "componentType": 5126,
+   "count": 126,
+   "type": "VEC3",
+   "min": [
+    -3.428965643439353,
+    -0.21802786443171596,
+    -3.3661898156845744
+   ],
+   "max": [
+    3.5910281499939303,
+    14.0,
+    3.181814625015586
+   ]
+  },
+  {
+   "bufferView": 5,
+   "componentType": 5126,
+   "count": 126,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 6,
+   "componentType": 5126,
+   "count": 126,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 7,
+   "componentType": 5125,
+   "count": 648,
+   "type": "SCALAR"
+  }
+ ]
+}
