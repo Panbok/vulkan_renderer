@@ -407,6 +407,26 @@
       "stage": "compute"
     },
     {
+      "name": "packet.smaa_edges.comp",
+      "entry": "vk_smaa_edges",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.smaa_weights.comp",
+      "entry": "vk_smaa_weights",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.smaa_blend.comp",
+      "entry": "vk_smaa_blend",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.smaa_resolve.comp",
+      "entry": "vk_smaa_resolve",
+      "stage": "compute"
+    },
+    {
       "name": "packet.fog_apply.comp",
       "entry": "fog_apply_compute",
       "stage": "compute"

@@ -33,6 +33,11 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_EDITOR},
     {"post_transform_cache_enabled && !editor_enabled",
      VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_FULLSCREEN},
+    {"smaa_enabled", VKR_RG_JSON_CONDITION_SMAA_ENABLED},
+    {"post_transform_cache_enabled && !smaa_enabled",
+     VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_NO_SMAA},
+    {"smaa_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SMAA_EDITOR},
+    {"smaa_enabled && !editor_enabled", VKR_RG_JSON_CONDITION_SMAA_FULLSCREEN},
     {"clearcoat_enabled", VKR_RG_JSON_CONDITION_CLEARCOAT_ENABLED},
     {"sheen_enabled", VKR_RG_JSON_CONDITION_SHEEN_ENABLED},
     {"anisotropy_enabled", VKR_RG_JSON_CONDITION_ANISOTROPY_ENABLED},
@@ -2013,6 +2018,14 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->post_transform_cache_enabled && frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_FULLSCREEN:
     return frame->post_transform_cache_enabled && !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_SMAA_ENABLED:
+    return frame->smaa_enabled;
+  case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_NO_SMAA:
+    return frame->post_transform_cache_enabled && !frame->smaa_enabled;
+  case VKR_RG_JSON_CONDITION_SMAA_EDITOR:
+    return frame->smaa_enabled && frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_SMAA_FULLSCREEN:
+    return frame->smaa_enabled && !frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_CLEARCOAT_ENABLED:
     return frame->clearcoat_enabled;
   case VKR_RG_JSON_CONDITION_SHEEN_ENABLED:

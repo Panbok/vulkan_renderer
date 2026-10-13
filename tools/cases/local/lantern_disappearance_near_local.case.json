@@ -34,7 +34,7 @@
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
     "render_mode": "direct_diffuse",
-    "fxaa_enabled": false
+    "smaa_enabled": false
   },
   "camera": {
     "mode": "static",

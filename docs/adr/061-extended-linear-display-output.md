@@ -51,7 +51,7 @@ peak of 250 H cd/m² and returns display-relative values in [0, H]
 The ACES comparison transform retains its SDR result through scene luminance
 1; above that anchor, highlights rise along a smooth shoulder whose remaining
 distance to current headroom halves every four stops, with one RGB scale that
-retains hue, bounded by the largest component. FXAA and sharpening
+retains hue, bounded by the largest component. SMAA and sharpening
 operate in display-relative units after this lift. Convert to native output
 units once at final output. UI white retains its SDR luminance; editor
 recomposition does not scale an already converted Scene image again.

@@ -1,315 +1,9 @@
 #include "vkr_temporal.h"
-#include "vkr_prepared_frame.h"
 
 #include <math.h>
 
 #define VKR_TEMPORAL_CAMERA_CUT_DISTANCE 10.0f
 #define VKR_TEMPORAL_CAMERA_CUT_FORWARD_DOT 0.5f
-
-vkr_internal void temporal_scene_lane(VkrTemporalSceneSignature *signature,
-                                      uint64_t lane) {
-  // Two independent 64-bit recurrences over semantic lanes, not struct bytes.
-  signature->hash[0] ^= lane;
-  signature->hash[0] =
-      (signature->hash[0] << 27u) | (signature->hash[0] >> 37u);
-  signature->hash[0] *= UINT64_C(0x9e3779b185ebca87);
-  signature->hash[1] += lane ^ UINT64_C(0xc2b2ae3d27d4eb4f);
-  signature->hash[1] =
-      (signature->hash[1] << 31u) | (signature->hash[1] >> 33u);
-  signature->hash[1] *= UINT64_C(0x165667b19e3779f9);
-}
-
-vkr_internal void temporal_scene_pair(VkrTemporalSceneSignature *signature,
-                                      uint32_t a, uint32_t b) {
-  temporal_scene_lane(signature, (uint64_t)a | ((uint64_t)b << 32u));
-}
-
-vkr_internal void temporal_scene_floats(VkrTemporalSceneSignature *signature,
-                                        float32_t a, float32_t b) {
-  uint32_t a_bits, b_bits;
-  MemCopy(&a_bits, &a, sizeof(a_bits));
-  MemCopy(&b_bits, &b, sizeof(b_bits));
-  temporal_scene_pair(signature, a_bits, b_bits);
-}
-
-vkr_internal void temporal_scene_vec3(VkrTemporalSceneSignature *signature,
-                                      Vec3 v) {
-  temporal_scene_floats(signature, v.x, v.y);
-  temporal_scene_floats(signature, v.z, 0.0f);
-}
-
-vkr_internal void temporal_scene_vec4(VkrTemporalSceneSignature *signature,
-                                      Vec4 v) {
-  temporal_scene_floats(signature, v.x, v.y);
-  temporal_scene_floats(signature, v.z, v.w);
-}
-
-vkr_internal void temporal_scene_matrix(VkrTemporalSceneSignature *signature,
-                                        Mat4 matrix) {
-  for (uint32_t i = 0u; i < 16u; i += 2u)
-    temporal_scene_floats(signature, matrix.elements[i],
-                          matrix.elements[i + 1u]);
-}
-
-vkr_internal void temporal_scene_instance(VkrTemporalSceneSignature *signature,
-                                          const VkrInstanceDataGPU *instance) {
-  temporal_scene_matrix(signature, instance->model);
-  temporal_scene_pair(signature, instance->object_id, instance->temporal_index);
-  temporal_scene_pair(signature, instance->temporal_generation,
-                      instance->temporal_flags);
-}
-
-vkr_internal void
-temporal_scene_candidates(VkrTemporalSceneSignature *signature,
-                          const VkrWorldDrawCandidate *rows, uint32_t count) {
-  temporal_scene_lane(signature, count);
-  for (uint32_t i = 0u; i < count; ++i) {
-    const VkrWorldDrawCandidate *row = &rows[i];
-    temporal_scene_pair(signature, row->mesh.id, row->mesh.generation);
-    temporal_scene_pair(signature, row->geometry.id, row->geometry.generation);
-    temporal_scene_pair(signature, row->material.id, row->material.generation);
-    temporal_scene_pair(signature, row->submesh_index, row->state_bucket);
-    temporal_scene_lane(signature, row->flags);
-    temporal_scene_instance(signature, &row->instance);
-    temporal_scene_vec4(signature, row->local_bounding_sphere);
-  }
-}
-
-/* Decal rows and their materials are content (ADR-092); the grid follows
-   from the rows. */
-vkr_internal void temporal_scene_decals(VkrTemporalSceneSignature *signature,
-                                        const VkrDecal *decals,
-                                        uint32_t count) {
-  temporal_scene_lane(signature, count);
-  for (uint32_t i = 0u; i < count; ++i) {
-    const VkrDecal *decal = &decals[i];
-    temporal_scene_matrix(signature, decal->world_to_box);
-    temporal_scene_pair(signature, decal->material.id,
-                        decal->material.generation);
-    temporal_scene_floats(signature, decal->opacity, decal->depth_fade);
-    temporal_scene_floats(signature, decal->fade_cos_start,
-                          decal->fade_cos_end);
-  }
-}
-
-/* The published atmosphere generation and its authored settings are content.
-   The camera altitude that selects the sky-view lookup is not. */
-vkr_internal void temporal_scene_sky(VkrTemporalSceneSignature *signature,
-                                     const VkrSkyPassPayload *sky) {
-  temporal_scene_lane(signature, sky != NULL);
-  if (!sky)
-    return;
-  const VkrAtmosphereSettings *atmosphere = &sky->atmosphere;
-  temporal_scene_lane(signature, atmosphere->enabled);
-  temporal_scene_vec3(signature, atmosphere->sun_direction);
-  temporal_scene_vec3(signature, atmosphere->solar_irradiance);
-  temporal_scene_vec3(signature, atmosphere->moon_direction);
-  temporal_scene_vec3(signature, atmosphere->lunar_irradiance);
-  temporal_scene_floats(signature, atmosphere->moon_angular_diameter_degrees,
-                        atmosphere->star_intensity);
-  temporal_scene_vec3(signature, atmosphere->celestial_pole);
-  temporal_scene_vec3(signature, atmosphere->ground_albedo);
-  temporal_scene_floats(signature, atmosphere->observer_altitude_m,
-                        atmosphere->sun_angular_diameter_degrees);
-  temporal_scene_floats(signature, atmosphere->rayleigh_density_scale,
-                        atmosphere->mie_density_scale);
-  temporal_scene_floats(signature, atmosphere->ozone_density_scale,
-                        atmosphere->mie_anisotropy);
-  temporal_scene_floats(signature, atmosphere->metres_per_world_unit,
-                        atmosphere->sun_glow);
-  temporal_scene_pair(signature, sky->transmittance.id,
-                      sky->transmittance.generation);
-  temporal_scene_pair(signature, sky->multiple_scattering.id,
-                      sky->multiple_scattering.generation);
-  temporal_scene_vec3(signature, sky->constant_radiance);
-  /* The wind offset animates every frame; only the authored layer resets. */
-  const VkrCloudSettings *clouds = &sky->clouds;
-  temporal_scene_lane(signature, clouds->enabled);
-  temporal_scene_floats(signature, clouds->base_altitude_m,
-                        clouds->top_altitude_m);
-  temporal_scene_floats(signature, clouds->coverage, clouds->density);
-  temporal_scene_floats(signature, clouds->wind_mps.x, clouds->wind_mps.y);
-}
-
-vkr_internal void temporal_scene_lighting(VkrTemporalSceneSignature *signature,
-                                          const VkrFrameLighting *lighting) {
-  temporal_scene_lane(signature, lighting != NULL);
-  if (lighting) {
-    temporal_scene_pair(signature, lighting->directional_enabled,
-                        lighting->ibl_enabled);
-    temporal_scene_vec3(signature, lighting->directional_direction);
-    temporal_scene_vec3(signature, lighting->directional_color);
-    temporal_scene_floats(signature, lighting->directional_intensity,
-                          lighting->ibl_intensity);
-    temporal_scene_pair(signature, lighting->ibl_source.id,
-                        lighting->ibl_source.generation);
-    temporal_scene_floats(signature, lighting->ibl_diffuse_intensity,
-                          lighting->ibl_specular_intensity);
-    temporal_scene_lane(signature, lighting->rectangle_light_count);
-    for (uint32_t i = 0u; i < lighting->rectangle_light_count; ++i) {
-      const VkrRectangleLight *light = &lighting->rectangle_lights[i];
-      temporal_scene_vec3(signature, light->position);
-      temporal_scene_vec3(signature, light->right);
-      temporal_scene_vec3(signature, light->up);
-      temporal_scene_vec3(signature, light->color);
-      temporal_scene_floats(signature, light->half_width, light->half_height);
-      temporal_scene_floats(signature, light->radiance, 0.0f);
-      temporal_scene_lane(signature, light->render_id);
-    }
-    temporal_scene_lane(signature, lighting->point_light_count);
-    for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
-      const VkrPointLight *light = &lighting->point_lights[i];
-      temporal_scene_vec3(signature, light->position);
-      temporal_scene_vec3(signature, light->color);
-      temporal_scene_floats(signature, light->intensity, light->constant);
-      temporal_scene_floats(signature, light->linear, light->quadratic);
-      temporal_scene_floats(signature, light->range, light->inner_cone_angle);
-      temporal_scene_vec3(signature, light->direction);
-      temporal_scene_floats(signature, light->outer_cone_angle, 0.0f);
-      temporal_scene_pair(signature, light->kind, light->render_id);
-    }
-    /* The composed SH changes in place, so its composition stands for its
-       contents. */
-    const VkrDiffuseVolumeBinding *volume = &lighting->diffuse_volume;
-    temporal_scene_pair(signature, volume->indirection.id,
-                        volume->indirection.generation);
-    temporal_scene_pair(signature, volume->sh.id, volume->sh.generation);
-    temporal_scene_pair(signature, volume->composition, volume->probe_count);
-    temporal_scene_vec3(signature, volume->origin);
-    temporal_scene_floats(signature, volume->spacing, volume->sh_scale);
-    temporal_scene_pair(signature, volume->dimensions[0],
-                        volume->dimensions[1]);
-    temporal_scene_lane(signature, volume->dimensions[2]);
-    temporal_scene_lane(signature, lighting->ibl_probe_count);
-    for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
-      const VkrFrameIblProbe *probe = &lighting->ibl_probes[i];
-      temporal_scene_pair(signature, probe->sh_slot,
-                          probe->box_projection_enabled);
-      temporal_scene_pair(signature, probe->prefilter.id,
-                          probe->prefilter.generation);
-      temporal_scene_vec3(signature, probe->center);
-      temporal_scene_vec3(signature, probe->capture_origin);
-      temporal_scene_vec3(signature, probe->extents);
-      temporal_scene_floats(signature, probe->blend_distance, probe->weight);
-      temporal_scene_floats(signature, probe->intensity,
-                            probe->diffuse_intensity);
-      temporal_scene_floats(signature, probe->specular_intensity, 0.0f);
-    }
-  }
-}
-
-VkrTemporalSceneSignature
-vkr_temporal_scene_signature(const VkrPreparedFrame *packet) {
-  VkrTemporalSceneSignature signature = {
-      .hash = {UINT64_C(0x243f6a8885a308d3), UINT64_C(0x13198a2e03707344)},
-      .eligible = true_v,
-  };
-  const VkrWorldPassPayload *world = packet->input.world;
-  if (world && (world->publication_pending || world->text_draw_count)) {
-    signature.eligible = false_v;
-    return signature;
-  }
-  temporal_scene_matrix(&signature, packet->input.globals.view);
-  temporal_scene_matrix(&signature, packet->input.globals.projection);
-  temporal_scene_vec3(&signature, packet->input.globals.view_position);
-  temporal_scene_vec4(&signature, packet->input.globals.ambient_color);
-  temporal_scene_pair(
-      &signature, packet->input.globals.render_mode,
-      packet->input.debug ? packet->input.debug->shadow_debug_mode : 0u);
-  temporal_scene_vec4(&signature, packet->fog.color_density);
-  temporal_scene_vec4(&signature, packet->fog.height_distance);
-  temporal_scene_lane(&signature, packet->froxel_fog_signature);
-  temporal_scene_lane(&signature, packet->gtao.enabled);
-  temporal_scene_floats(&signature, packet->gtao.radius, packet->gtao.power);
-  temporal_scene_lane(&signature, world != NULL);
-  if (world) {
-    temporal_scene_candidates(&signature, world->gpu_candidates,
-                              world->gpu_candidate_count);
-    temporal_scene_candidates(&signature, world->transmission_gpu_candidates,
-                              world->transmission_gpu_candidate_count);
-    temporal_scene_decals(&signature, world->decals, world->decal_count);
-    temporal_scene_pair(&signature, world->gpu_camera_opaque_candidate_count,
-                        world->gpu_shadow_candidate_count);
-    temporal_scene_lane(&signature, world->instance_count);
-    for (uint32_t i = 0u; i < world->instance_count; ++i)
-      temporal_scene_instance(&signature, &world->instances[i]);
-    temporal_scene_lane(&signature, world->transparent_draw_count);
-    for (uint32_t i = 0u; i < world->transparent_draw_count; ++i) {
-      const VkrDrawItem *draw = &world->transparent_draws[i];
-      temporal_scene_pair(&signature, draw->mesh.id, draw->mesh.generation);
-      temporal_scene_pair(&signature, draw->geometry.id,
-                          draw->geometry.generation);
-      temporal_scene_pair(&signature, draw->material.id,
-                          draw->material.generation);
-      temporal_scene_pair(&signature, draw->submesh_index,
-                          draw->instance_count);
-      temporal_scene_lane(&signature, draw->first_instance);
-      temporal_scene_lane(&signature, draw->sort_key);
-    }
-  }
-  const VkrFrameLighting *lighting = packet->input.lighting;
-  temporal_scene_lighting(&signature, lighting);
-  if (lighting && lighting->point_light_count) {
-    const VkrPointLightGrid *grid = lighting->point_light_grid;
-    temporal_scene_vec3(&signature, grid->origin);
-    temporal_scene_floats(&signature, grid->cell_size, 0.0f);
-    temporal_scene_pair(&signature, grid->dimensions[0], grid->dimensions[1]);
-    temporal_scene_pair(&signature, grid->dimensions[2], grid->cell_count);
-    for (uint32_t i = 0u; i < VKR_POINT_LIGHT_GRID_MASK_WORDS; i += 2u)
-      temporal_scene_pair(&signature, grid->global_mask.words[i],
-                          grid->global_mask.words[i + 1u]);
-    for (uint32_t cell = 0u; cell < grid->cell_count; ++cell)
-      for (uint32_t i = 0u; i < VKR_POINT_LIGHT_GRID_MASK_WORDS; i += 2u)
-        temporal_scene_pair(&signature, grid->masks[cell].words[i],
-                            grid->masks[cell].words[i + 1u]);
-  }
-  const VkrShadowPassPayload *shadow = packet->input.shadow;
-  temporal_scene_lane(&signature, shadow != NULL);
-  if (shadow) {
-    temporal_scene_pair(&signature, shadow->cascade_count,
-                        shadow->sdsm_enabled);
-    for (uint32_t i = 0u; i < shadow->cascade_count; ++i) {
-      temporal_scene_matrix(&signature,
-                            shadow->cascades[i].light_view_projection);
-      temporal_scene_vec4(&signature,
-                          shadow->cascades[i].split_near_far_texel_depth);
-      const Vec4 origin = shadow->cascades[i].origin_inv_size_sun;
-      temporal_scene_vec4(&signature, origin);
-    }
-    const VkrShadowReceiverPacketData *receiver = &shadow->receiver;
-    temporal_scene_floats(&signature, receiver->receiver_bias_texels,
-                          receiver->slope_bias_texels);
-    temporal_scene_floats(&signature, receiver->normal_offset_texels,
-                          receiver->pcf_radius_texels);
-    temporal_scene_pair(&signature, receiver->pcf_sample_count,
-                        receiver->pcf_uniform_early_out);
-    temporal_scene_floats(&signature, receiver->cascade_blend_fraction,
-                          receiver->fade_start);
-    temporal_scene_floats(&signature, receiver->fade_end, 0.0f);
-    const VkrShadowConfigOverride bias = shadow->config_override
-                                             ? *shadow->config_override
-                                             : (VkrShadowConfigOverride){0};
-    temporal_scene_floats(&signature, bias.depth_bias_constant,
-                          bias.depth_bias_slope);
-    temporal_scene_floats(&signature, bias.depth_bias_clamp, 0.0f);
-  }
-  const VkrLocalShadowPassPayload *local = packet->input.local_shadow;
-  temporal_scene_lane(&signature, local != NULL);
-  if (local) {
-    temporal_scene_pair(&signature, local->view_count, local->map_size);
-    for (uint32_t i = 0; i < VKR_MAX_SCENE_POINT_LIGHTS; ++i)
-      temporal_scene_lane(&signature, local->light_first_view[i]);
-    for (uint32_t i = 0; i < local->view_count; ++i) {
-      temporal_scene_matrix(&signature, local->views[i].light_view_projection);
-      temporal_scene_vec4(&signature, local->views[i].light_position_near);
-      temporal_scene_vec4(&signature, local->views[i].light_direction_far);
-      temporal_scene_vec4(&signature, local->views[i].projection_params);
-      temporal_scene_vec4(&signature, local->views[i].shadow_params);
-    }
-  }
-  temporal_scene_sky(&signature, packet->input.sky);
-  return signature;
-}
 
 Mat4 vkr_temporal_sky_reprojection(Mat4 current_view_projection,
                                    Mat4 previous_view_projection,
@@ -345,29 +39,19 @@ Mat4 vkr_temporal_sky_reprojection(Mat4 current_view_projection,
   return reprojection;
 }
 
-vkr_internal float32_t vkr_temporal_halton(uint32_t index, uint32_t base) {
-  float32_t result = 0.0f;
-  float32_t fraction = 1.0f;
-  while (index > 0u) {
-    fraction /= (float32_t)base;
-    result += fraction * (float32_t)(index % base);
-    index /= base;
-  }
-  return result;
-}
-
 Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index) {
-  return vkr_temporal_jitter_for_frame_phases(frame_index,
-                                              VKR_TEMPORAL_SEQUENCE_LENGTH);
+  /* SMAA T2x's two subsamples (Jimenez et al. 2012, @SUBSAMPLE_INDICES):
+     (0.25, -0.25) and (-0.25, 0.25) with y up are right-down and left-up
+     shifts, which VKR's raster pixels, y down, write as below. */
+  return frame_index % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u
+             ? (Vec2){0.25f, 0.25f}
+             : (Vec2){-0.25f, -0.25f};
 }
 
-Vec2 vkr_temporal_jitter_for_frame_phases(uint32_t frame_index,
-                                          uint32_t phase_count) {
-  const uint32_t sequence_length =
-      phase_count ? phase_count : VKR_TEMPORAL_SEQUENCE_LENGTH;
-  const uint32_t sequence_index = frame_index % sequence_length + 1u;
-  return (Vec2){vkr_temporal_halton(sequence_index, 2u) - 0.5f,
-                vkr_temporal_halton(sequence_index, 3u) - 0.5f};
+Vec4 vkr_temporal_smaa_subsample_indices(uint32_t frame_index) {
+  return frame_index % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u
+             ? (Vec4){1.0f, 1.0f, 1.0f, 0.0f}
+             : (Vec4){2.0f, 2.0f, 2.0f, 0.0f};
 }
 
 vkr_internal Vec3 vkr_temporal_view_forward(Mat4 view) {
@@ -440,14 +124,21 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
       frame.reset_reasons |= VKR_TEMPORAL_RESET_SCENE_CHANGE;
     if (state->render_mode != input->render_mode)
       frame.reset_reasons |= VKR_TEMPORAL_RESET_MODE_CHANGE;
-    if (!vkr_temporal_matrix_equal(state->projection, input->projection))
+    /* History reprojects perspective changes such as a zoom. An orthographic
+       projection keeps a fixed eye ray, which the sky reprojection assumes
+       (vkr_temporal_sky_reprojection), so any change involving one resets. */
+    const bool8_t orthographic =
+        state->projection.m32 == 0.0f || input->projection.m32 == 0.0f;
+    if (orthographic &&
+        !vkr_temporal_matrix_equal(state->projection, input->projection))
       frame.reset_reasons |= VKR_TEMPORAL_RESET_PROJECTION_CHANGE;
     if (vkr_temporal_camera_cut(state, input))
       frame.reset_reasons |= VKR_TEMPORAL_RESET_CAMERA_CUT;
   }
   if (input->enabled && input->width > 0u && input->height > 0u) {
-    frame.jitter_pixels = vkr_temporal_jitter_for_frame_phases(
-        input->frame_index, input->jitter_phase_count);
+    frame.jitter_pixels = vkr_temporal_jitter_for_frame(input->frame_index);
+    frame.smaa_subsample_indices =
+        vkr_temporal_smaa_subsample_indices(input->frame_index);
     frame.jittered_projection = vkr_temporal_jitter_projection(
         input->projection, frame.jitter_pixels, input->width, input->height);
   }

@@ -227,7 +227,7 @@ typedef struct VkrHarnessRendererConfigV4 {
   uint32_t shadow_debug_mode;
   uint32_t ibl_probe_limit;
   bool8_t tonemap_enabled;
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   bool8_t transmission_depth_diagnostic_enabled;
 } VkrHarnessRendererConfigV4;
 
@@ -295,7 +295,7 @@ typedef struct VkrHarnessRendererConfigV5 {
   uint32_t shadow_debug_mode;
   uint32_t ibl_probe_limit;
   bool8_t tonemap_enabled;
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   bool8_t transmission_depth_diagnostic_enabled;
   float32_t render_scale;
   uint32_t render_width;
@@ -408,7 +408,7 @@ typedef struct VkrHarnessRendererConfigV7 {
   uint32_t shadow_debug_mode;
   uint32_t ibl_probe_limit;
   bool8_t tonemap_enabled;
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   bool8_t transmission_depth_diagnostic_enabled;
   float32_t render_scale;
   uint32_t render_width;
@@ -488,7 +488,7 @@ typedef struct VkrHarnessRendererConfigV8 {
   uint32_t shadow_debug_mode;
   uint32_t ibl_probe_limit;
   bool8_t tonemap_enabled;
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   bool8_t transmission_depth_diagnostic_enabled;
   float32_t render_scale;
   uint32_t render_width;
@@ -773,7 +773,7 @@ typedef struct VkrHarnessRendererConfigV9 {
   /** Whether the fullscreen ACES tonemap stage is enabled. */
   bool8_t tonemap_enabled;
   /** Whether the fullscreen FXAA stage is enabled. */
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   /** Enables the capture-only fifth transmission peel on every case frame. */
   bool8_t transmission_depth_diagnostic_enabled;
   /** Internal renderer resolution relative to the present target. */
@@ -909,7 +909,7 @@ typedef struct VkrHarnessRendererConfigV10 {
   /** Whether the fullscreen ACES tonemap stage is enabled. */
   bool8_t tonemap_enabled;
   /** Whether the fullscreen FXAA stage is enabled. */
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   /** Enables the capture-only fifth transmission peel on every case frame. */
   bool8_t transmission_depth_diagnostic_enabled;
   /** Internal renderer resolution relative to the present target. */
@@ -1040,7 +1040,7 @@ typedef struct VkrHarnessRendererConfigV11 {
   uint32_t shadow_debug_mode;
   uint32_t ibl_probe_limit;
   bool8_t tonemap_enabled;
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   bool8_t transmission_depth_diagnostic_enabled;
   float32_t render_scale;
   uint32_t render_width;
@@ -1157,7 +1157,7 @@ typedef struct VkrHarnessRendererConfigV12 {
   uint32_t shadow_debug_mode;
   uint32_t ibl_probe_limit;
   bool8_t tonemap_enabled;
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   bool8_t transmission_depth_diagnostic_enabled;
   float32_t render_scale;
   uint32_t render_width;
@@ -1287,7 +1287,7 @@ typedef struct VkrHarnessRendererConfigV14 {
   /** Whether the fullscreen ACES tonemap stage is enabled. */
   bool8_t tonemap_enabled;
   /** Whether the fullscreen FXAA stage is enabled. */
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   /** Enables the capture-only fifth transmission peel on every case frame. */
   bool8_t transmission_depth_diagnostic_enabled;
   /** Internal renderer resolution relative to the present target. */
@@ -1506,7 +1506,7 @@ typedef struct VkrHarnessRendererConfigV16 {
   /** Whether the fullscreen ACES tonemap stage is enabled. */
   bool8_t tonemap_enabled;
   /** Whether the fullscreen FXAA stage is enabled. */
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   /** Enables the capture-only fifth transmission peel on every case frame. */
   bool8_t transmission_depth_diagnostic_enabled;
   /** Internal renderer resolution relative to the present target. */

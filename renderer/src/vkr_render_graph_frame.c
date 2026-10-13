@@ -132,6 +132,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->editor_enabled = packet->input.frame.editor_enabled;
   frame->scene_rendering = packet->scene_rendering;
   frame->post_transform_cache_enabled = packet->post_transform_cache_enabled;
+  frame->smaa_enabled = packet->smaa_enabled;
   const VkrWorldPassPayload *world = packet->input.world;
   frame->skinning_enabled = world && world->skinning_count;
   uint32_t skinning_vertices = 0;
@@ -417,6 +418,14 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
     [VKR_RG_EXECUTOR_GTAO_EVALUATE] = {"pass.gtao.evaluate",
                                        VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_GTAO_DENOISE] = {"pass.gtao.denoise",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SMAA_EDGES] = {"pass.smaa.edges",
+                                    VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SMAA_WEIGHTS] = {"pass.smaa.weights",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SMAA_BLEND] = {"pass.smaa.blend",
+                                    VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SMAA_RESOLVE] = {"pass.smaa.resolve",
                                       VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK] = {"pass.local_shadow.mask",
                                            VKR_RG_PASS_TYPE_COMPUTE},

@@ -55,6 +55,7 @@
 #include "post/dof.slang"
 #include "post/motion_blur.slang"
 #include "post/gtao.slang"
+#include "post/smaa.slang"
 #include "post/subsurface.slang"
 #include "post/fog.slang"
 #include "post/froxel_fog.slang"

@@ -3,24 +3,9 @@
 #include "defines.h"
 #include "math/mat.h"
 #include "math/vec.h"
-#include "shaders/shared/temporal_contract.slangh"
 
-/** Renderer-owned jitter period used to align deterministic replay. */
-#define VKR_TEMPORAL_SEQUENCE_LENGTH 8u
-
-struct VkrPreparedFrame;
-
-/** Rendered-input identity for static accumulation; native resource and graph
- * revisions must also match. Contains no borrowed storage. */
-typedef struct VkrTemporalSceneSignature {
-  uint64_t hash[2];
-  bool8_t eligible;
-} VkrTemporalSceneSignature;
-
-/** Consumes a validated packet with normalized renderer-owned frame controls.
- * Excludes temporal sampling noise and post-temporal exposure/bloom/UI. */
-VkrTemporalSceneSignature
-vkr_temporal_scene_signature(const struct VkrPreparedFrame *packet);
+/** SMAA T2x's jitter period: two subsamples, alternating every frame. */
+#define VKR_TEMPORAL_SEQUENCE_LENGTH 2u
 
 typedef enum VkrTemporalResetReason {
   VKR_TEMPORAL_RESET_NONE = 0u,
@@ -56,8 +41,6 @@ typedef struct VkrTemporalFrameInput {
   uint32_t width;
   uint32_t height;
   uint32_t render_mode;
-  /** Consumer jitter period. Zero preserves the portable TAA period. */
-  uint32_t jitter_phase_count;
   uint32_t explicit_reset_reasons;
   bool8_t enabled;
 } VkrTemporalFrameInput;
@@ -69,17 +52,19 @@ typedef struct VkrTemporalFrame {
       without history. */
   Vec3 previous_view_position;
   Vec2 jitter_pixels;
+  /** SMAA's area-texture rows for `jitter_pixels`; zero without jitter. */
+  Vec4 smaa_subsample_indices;
   uint32_t reset_reasons;
   bool8_t history_valid;
   bool8_t enabled;
 } VkrTemporalFrame;
 
-/** Raster shift in pixels for an enabled temporal frame's fixed sequence. */
+/** Raster shift in pixels (y down) of an enabled temporal frame's SMAA T2x
+ * subsample. */
 Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index);
 
-/** Halton jitter with a caller-selected phase count. */
-Vec2 vkr_temporal_jitter_for_frame_phases(uint32_t frame_index,
-                                          uint32_t phase_count);
+/** SMAA's area-texture subsample rows for the frame's jitter. */
+Vec4 vkr_temporal_smaa_subsample_indices(uint32_t frame_index);
 
 /** True when the camera moved or turned too far between two frames for history
  * to follow it. Other camera-driven transitions snap on the same frames. */

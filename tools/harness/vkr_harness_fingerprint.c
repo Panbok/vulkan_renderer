@@ -164,7 +164,7 @@ vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest) {
   }
   const bool8_t tiled =
       renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
-  return (renderer->fxaa_enabled && !tiled) || renderer->image_sharpness > 0.0f;
+  return (renderer->smaa_enabled && !tiled) || renderer->image_sharpness > 0.0f;
 }
 
 vkr_internal bool8_t vkr_harness_renderer_fields(
@@ -186,8 +186,8 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
      controls existed. Only non-default state changes the workload identity. */
   if (!renderer->tonemap_enabled)
     ADD("renderer.tonemap_enabled", "%u", 0u);
-  if (!renderer->fxaa_enabled)
-    ADD("renderer.fxaa_enabled", "%u", 0u);
+  if (!renderer->smaa_enabled)
+    ADD("renderer.smaa_enabled", "%u", 0u);
   ADD("renderer.backend", "%s",
       renderer->backend[0] ? renderer->backend : "external");
   /* Every resolved shadow experiment control belongs to the workload. */

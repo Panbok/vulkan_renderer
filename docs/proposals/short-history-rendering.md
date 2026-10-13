@@ -39,14 +39,12 @@ previous frame.
 
 ## Current baseline
 
-- **TAA** ([ADR-037](../adr/037-portable-same-resolution-temporal-antialiasing.md)):
-  same-resolution scene-linear resolve before the tonemap, eight Halton
-  phases, history weight 0.9 for moving and 0.99 for stationary surfaces,
-  static accumulation up to 128 samples
-  ([`temporal_filter_kernel.slangh`](../../renderer/src/shaders/shared/temporal_filter_kernel.slangh)),
-  identity, depth and raw-footprint history validation
-  ([`vkr_temporal.c`](../../renderer/src/vkr_temporal.c)). FXAA runs on
-  output when TAA does not ([ADR-043](../adr/043-presentation-dpi-and-color-transfer.md)).
+- **Antialiasing** ([ADR-037](../adr/037-portable-same-resolution-temporal-antialiasing.md)):
+  SMAA T2x since 2026-10-13 (section 2). Before it, a same-resolution
+  scene-linear TAA resolve ran before the tonemap with eight Halton phases,
+  history weights 0.9 and 0.99, static accumulation up to 128 samples and
+  identity, depth and raw-footprint history validation, and FXAA ran on output
+  when TAA did not.
 - **SSR, SSGI and FSR 3.1** are removed (section 1). The desktop pipeline
   renders the Scene at unit scale.
 - **GTAO** ([ADR-042](../adr/042-scene-linear-post-processing.md)): desktop
@@ -166,14 +164,19 @@ T2x needs these inputs changed first:
 
 ### Evidence
 
-- Bistro motion cases (translation, rotation, a moving object) captured with
-  the old TAA and with SMAA T2x: no trail longer than one frame behind moving
-  edges, and a still camera that converges in two frames.
-- A Bistro still view with sub-pixel geometry (railings, foliage, wires) for
-  edge and shimmer comparison.
-- Release timing of the AA passes at 2560×1440 against the removed TAA resolve.
-- The reference publishes 1.32 ms for T2x at 1080p on a GTX 470, of which
-  0.3 ms is temporal. That figure is context, not a budget for RDNA 2.
+Implemented 2026-10-13 on the desktop pipeline
+([ADR-037](../adr/037-portable-same-resolution-temporal-antialiasing.md)):
+a still camera converges in two frames and stays stable, moving foliage and
+window frames are sharper than with the old TAA with no trail, and the
+antialiasing chain costs 1.41 ms at 2560 × 1440 against TAA's 0.94 ms. Two
+choices differ from the design above: identity and depth reject history only
+for moving pixels (on still pixels they rejected T2x's own other subsample
+along silhouettes and foliage), and blended overlays with an identity keep
+history (their blend path writes rigid motion; rejecting them made glass and
+foliage alternate between subsamples). Local shadows keep four rotated taps
+in two phases that follow the jitter (owner decision). Still open: a Bistro
+case with a skinned or procedurally moving object, and the reference's
+velocity weight scale of 30 at 2560 × 1440.
 
 ## 3. Spatial GTAO
 
@@ -450,7 +453,8 @@ visibility and composition stay unchanged:
    noise. Done 2026-10-13 on the desktop pipeline (ADR-042).
 4. GT7 tone mapping (section 4); it fixes the colour space SMAA T2x reads.
    Done 2026-10-13 on the desktop pipeline; Metal compile and timing open.
-5. SMAA T2x replacing portable TAA and FXAA (section 2).
+5. SMAA T2x replacing portable TAA and FXAA (section 2). Done 2026-10-13 on
+   the desktop pipeline (ADR-037).
 6. Tiled per-draw probes, room probes and planar water (section 5, items 2
    to 4).
 7. DDGI-style updates (section 6).

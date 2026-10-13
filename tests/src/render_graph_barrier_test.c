@@ -2109,9 +2109,9 @@ vkr_internal void test_tiled_graph_topology(void) {
 vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   enum {
-    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 379u,
-    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 373u,
-    VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT = 395u,
+    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 384u,
+    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 378u,
+    VKR_MAIN_GRAPH_COMPOSED_FULL_PASS_COUNT = 400u,
   };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -2156,6 +2156,8 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .editor_image_available = true_v,
       .editor_image_width = VKR_TEXTURE_MAX_DIMENSION,
       .editor_image_height = VKR_TEXTURE_MAX_DIMENSION,
+      .post_transform_cache_enabled = true_v,
+      .smaa_enabled = true_v,
       .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
       .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,

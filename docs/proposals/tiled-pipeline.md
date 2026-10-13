@@ -33,7 +33,7 @@ measured.
 |---|---|---|
 | Culling and draw encoding | GPU classification, indirect-count draws | Shared classification, Metal ICB draws |
 | Opaque surfaces | Visibility buffer, compute G-buffer resolve, compute lighting | One MSAA render pass of forward shading with clustered lists of the dynamic lights, without a depth pre-pass (decided) |
-| Anti-aliasing | Portable TAA | 4× MSAA with alpha to coverage and a tone-mapped resolve in tile memory; no FXAA or temporal history (decided, ADR-087) |
+| Anti-aliasing | Portable TAA | 4× MSAA with alpha to coverage and a tone-mapped resolve in tile memory; no SMAA or temporal history (decided, ADR-087) |
 | Static light | Every static light evaluated per pixel each frame | Lightmaps baked by `vkr_bakery`: direct and bounced diffuse light from static lights, on a second UV set (owner decision, 2026-10-05) |
 | Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)) | Lightmaps on static surfaces; IBL and baked volumes for dynamic objects |
 | Ambient occlusion | GTAO in compute | Baked AO in the lightmap alpha, on environment specular (decided, ADR-088) |

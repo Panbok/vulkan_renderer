@@ -33,7 +33,7 @@
     "shadow_cascades": 3,
     "render_mode": "default",
     "display_transform": "gt7",
-    "fxaa_enabled": false,
+    "smaa_enabled": false,
     "display_output": "auto_extended_linear"
   },
   "camera": {

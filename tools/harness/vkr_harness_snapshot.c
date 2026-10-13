@@ -43,8 +43,8 @@ vkr_internal int vkr_harness_snapshot_spawn(
       {.name = "VKR_DISPLAY_OUTPUT", .value = renderer->display_output},
       {.name = "VKR_TONEMAP_DISABLED",
        .value = renderer->tonemap_enabled ? "0" : "1"},
-      {.name = "VKR_FXAA_DISABLED",
-       .value = renderer->fxaa_enabled ? "0" : "1"},
+      {.name = "VKR_SMAA_DISABLED",
+       .value = renderer->smaa_enabled ? "0" : "1"},
   };
   VkrPlatformEnvironmentVariable
       environment[ArrayCount(environment_defaults) + 1u] = {0};

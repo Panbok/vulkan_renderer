@@ -1,3 +1,5 @@
+#include "smaa/AreaTex.h"
+#include "smaa/SearchTex.h"
 #include "vkr_dfg_lut.h"
 #include "vkr_ltc_lut.h"
 #include "vkr_sheen_lut.h"
@@ -1451,6 +1453,164 @@ void vkr_vk_collect_anisotropy_upload(VkrVulkanRenderer *renderer,
   renderer->anisotropy_upload_retire_value = 0u;
 }
 
+/* SMAA's precomputed area and search tables, unmodified from the reference
+   (vendor/smaa.md), uploaded once like the lookup tables above. */
+vkr_internal const VkFormat vkr_vk_smaa_table_formats[] = {
+    [VKR_VULKAN_SMAA_TABLE_AREA] = VK_FORMAT_R8G8_UNORM,
+    [VKR_VULKAN_SMAA_TABLE_SEARCH] = VK_FORMAT_R8_UNORM,
+};
+vkr_internal const uint32_t vkr_vk_smaa_table_widths[] = {
+    [VKR_VULKAN_SMAA_TABLE_AREA] = AREATEX_WIDTH,
+    [VKR_VULKAN_SMAA_TABLE_SEARCH] = SEARCHTEX_WIDTH,
+};
+vkr_internal const uint32_t vkr_vk_smaa_table_heights[] = {
+    [VKR_VULKAN_SMAA_TABLE_AREA] = AREATEX_HEIGHT,
+    [VKR_VULKAN_SMAA_TABLE_SEARCH] = SEARCHTEX_HEIGHT,
+};
+vkr_internal const VkDeviceSize vkr_vk_smaa_table_offsets[] = {
+    [VKR_VULKAN_SMAA_TABLE_AREA] = 0u,
+    [VKR_VULKAN_SMAA_TABLE_SEARCH] = sizeof(areaTexBytes),
+};
+
+vkr_internal bool8_t vkr_vk_create_smaa_resources(VkrVulkanRenderer *renderer) {
+  _Static_assert(sizeof(areaTexBytes) == AREATEX_SIZE &&
+                     sizeof(searchTexBytes) == SEARCHTEX_SIZE,
+                 "SMAA tables must match their published sizes");
+  const VkDeviceSize upload_size =
+      sizeof(areaTexBytes) + sizeof(searchTexBytes);
+  for (uint32_t table = 0u; table < VKR_VULKAN_SMAA_TABLE_COUNT; ++table) {
+    VkFormatProperties properties = {0};
+    vkGetPhysicalDeviceFormatProperties(
+        vkr_vulkan_device_physical(renderer->device),
+        vkr_vk_smaa_table_formats[table], &properties);
+    const VkFormatFeatureFlags required =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if ((properties.optimalTilingFeatures & required) != required) {
+      log_error("Vulkan SMAA table format lacks linear sampled/transfer "
+                "destination support");
+      return false_v;
+    }
+  }
+  if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+                            VKR_GPU_ALLOCATION_OWNER_STAGING, upload_size,
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            &renderer->smaa_upload) ||
+      !renderer->smaa_upload.allocation.mapped)
+    goto cleanup;
+  for (uint32_t table = 0u; table < VKR_VULKAN_SMAA_TABLE_COUNT; ++table) {
+    if (!vkr_vk_create_image_ex(renderer, vkr_vk_smaa_table_widths[table],
+                                vkr_vk_smaa_table_heights[table], 1u, 1u, 1u,
+                                vkr_vk_smaa_table_formats[table], 0u,
+                                VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D,
+                                VK_IMAGE_USAGE_SAMPLED_BIT |
+                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                VKR_GPU_ALLOCATION_OWNER_SHADER,
+                                &renderer->smaa_images[table], NULL))
+      goto cleanup;
+  }
+  uint8_t *mapped = (uint8_t *)renderer->smaa_upload.allocation.mapped;
+  MemCopy(mapped + vkr_vk_smaa_table_offsets[VKR_VULKAN_SMAA_TABLE_AREA],
+          areaTexBytes, sizeof(areaTexBytes));
+  MemCopy(mapped + vkr_vk_smaa_table_offsets[VKR_VULKAN_SMAA_TABLE_SEARCH],
+          searchTexBytes, sizeof(searchTexBytes));
+  if (!vkr_vk_flush(renderer, &renderer->smaa_upload.allocation, 0u,
+                    upload_size))
+    goto cleanup;
+  renderer->smaa_upload_pending = true_v;
+  return true_v;
+
+cleanup:
+  for (uint32_t table = 0u; table < VKR_VULKAN_SMAA_TABLE_COUNT; ++table)
+    if (renderer->smaa_images[table].handle)
+      vkr_vk_destroy_image(renderer, &renderer->smaa_images[table]);
+  if (renderer->smaa_upload.handle)
+    vkr_vk_destroy_buffer(renderer, &renderer->smaa_upload);
+  return false_v;
+}
+
+void vkr_vk_record_smaa_upload(VkrVulkanRenderer *renderer,
+                               VkrVulkanFrameSlot *slot,
+                               VkCommandBuffer command) {
+  if (!renderer->smaa_upload_pending)
+    return;
+  for (uint32_t table = 0u; table < VKR_VULKAN_SMAA_TABLE_COUNT; ++table) {
+    VkrVulkanImage *image = &renderer->smaa_images[table];
+    vkr_vk_cmd_image_barrier(
+        command, image->handle, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    const VkBufferImageCopy2 region = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+        .bufferOffset = vkr_vk_smaa_table_offsets[table],
+        .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .layerCount = 1u},
+        .imageExtent = {.width = vkr_vk_smaa_table_widths[table],
+                        .height = vkr_vk_smaa_table_heights[table],
+                        .depth = 1u},
+    };
+    const VkCopyBufferToImageInfo2 copy = {
+        .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+        .srcBuffer = renderer->smaa_upload.handle,
+        .dstImage = image->handle,
+        .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .regionCount = 1u,
+        .pRegions = &region,
+    };
+    vkCmdCopyBufferToImage2(command, &copy);
+    vkr_vk_cmd_image_barrier(
+        command, image->handle, VK_PIPELINE_STAGE_2_COPY_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  }
+  slot->smaa_upload_recorded = true_v;
+}
+
+bool8_t vkr_vk_commit_smaa_upload(VkrVulkanRenderer *renderer,
+                                  VkrVulkanFrameSlot *slot,
+                                  uint64_t retire_value) {
+  if (!slot->smaa_upload_recorded)
+    return true_v;
+  if (!renderer->smaa_upload_pending || !renderer->smaa_upload.handle ||
+      !vkr_vk_retire_buffer(renderer, &renderer->smaa_upload, retire_value))
+    return false_v;
+  renderer->smaa_upload_pending = false_v;
+  renderer->smaa_upload_retire_value = retire_value;
+  for (uint32_t table = 0u; table < VKR_VULKAN_SMAA_TABLE_COUNT; ++table)
+    renderer->smaa_images[table].layout =
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  slot->smaa_upload_recorded = false_v;
+  return true_v;
+}
+
+void vkr_vk_collect_smaa_upload(VkrVulkanRenderer *renderer,
+                                uint64_t completed) {
+  if (!renderer->smaa_upload_retire_value ||
+      renderer->smaa_upload_retire_value > completed)
+    return;
+  vkr_vk_destroy_buffer(renderer, &renderer->smaa_upload);
+  renderer->smaa_upload_retire_value = 0u;
+}
+
+void vkr_vk_retire_smaa_descriptor_slots(VkrVulkanRenderer *renderer) {
+  const uint64_t completed = renderer->completed_value;
+  for (uint32_t table = 0u; table < VKR_VULKAN_SMAA_TABLE_COUNT; ++table) {
+    VkrGpuSlotHandle *slot = &renderer->smaa_texture_slots[table];
+    if (!slot->generation || !renderer->sampled_image_slots)
+      continue;
+    if (vkr_gpu_slot_table_retire(renderer->sampled_image_slots, *slot,
+                                  completed) != VKR_GPU_SLOT_STATUS_OK)
+      log_error("Vulkan failed to retire an SMAA sampled-image descriptor");
+    *slot = (VkrGpuSlotHandle){0};
+  }
+  if (renderer->sampled_image_slots)
+    (void)vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
+                                     NULL);
+}
+
 void vkr_vk_retire_anisotropy_descriptor_slots(VkrVulkanRenderer *renderer) {
   const uint64_t completed = renderer->completed_value;
   for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table) {
@@ -1635,6 +1795,10 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
   }
   if (!vkr_vk_create_cloud_noise_resources(renderer)) {
     log_error("Vulkan failed to create the cloud noise resources");
+    return false_v;
+  }
+  if (!vkr_vk_create_smaa_resources(renderer)) {
+    log_error("Vulkan failed to create the SMAA lookup resources");
     return false_v;
   }
   if (!vkr_vk_create_target_set(
@@ -1998,7 +2162,7 @@ vkr_internal bool8_t vkr_vk_publish_fixed_sampler(
 }
 
 /* Sampled-image slots: 0 sentinel, 1 DFG, 2-3 LTC, 4-8 sheen, 9-11
- * anisotropy, 12-14 cloud noise. */
+ * anisotropy, 12-14 cloud noise, 15-16 SMAA area and search. */
 vkr_internal bool8_t vkr_vk_publish_permanent_sampled_images(
     VkrVulkanRenderer *renderer, VkrGpuSlotHandle *out_sentinel) {
   if (!vkr_vk_publish_fixed_sampled_image(
@@ -2046,6 +2210,16 @@ vkr_internal bool8_t vkr_vk_publish_permanent_sampled_images(
             renderer, renderer->cloud_noise_images[i].view,
             VK_IMAGE_LAYOUT_GENERAL, 9u + VKR_ANISOTROPY_LUT_TABLE_COUNT + i,
             &renderer->cloud_noise_texture_slots[i])) {
+      return false_v;
+    }
+  }
+  for (uint32_t table = 0u; table < VKR_VULKAN_SMAA_TABLE_COUNT; ++table) {
+    if (!vkr_vk_publish_fixed_sampled_image(
+            renderer, renderer->smaa_images[table].view,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            9u + VKR_ANISOTROPY_LUT_TABLE_COUNT + VKR_VULKAN_CLOUD_NOISE_COUNT +
+                table,
+            &renderer->smaa_texture_slots[table])) {
       return false_v;
     }
   }

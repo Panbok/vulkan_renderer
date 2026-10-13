@@ -8,6 +8,9 @@
  * Worley erosion field and the weather map a coverage field. */
 #define VKR_CLOUD_BASE_NOISE_SIZE 128u
 #define VKR_CLOUD_DETAIL_NOISE_SIZE 32u
+/* Frames before the cloud march offset repeats (frame_index % 64u in
+   vkr_cloud_march_offset, cloud_kernel.slangh). */
+#define VKR_CLOUD_MARCH_NOISE_PERIOD 64u
 #define VKR_CLOUD_WEATHER_SIZE 256u
 
 /** World periods of the noise textures in kilometres. The weather period is a

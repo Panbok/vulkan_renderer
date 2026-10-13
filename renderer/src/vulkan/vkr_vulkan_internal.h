@@ -171,6 +171,12 @@
   "packet.gtao_depth_mip.comp.spv"
 #define VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV "packet.gtao_evaluate.comp.spv"
 #define VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV "packet.gtao_denoise.comp.spv"
+#define VKR_VULKAN_PACKET_SMAA_EDGES_COMP_SPV "packet.smaa_edges.comp.spv"
+#define VKR_VULKAN_PACKET_SMAA_WEIGHTS_COMP_SPV "packet.smaa_weights.comp.spv"
+#define VKR_VULKAN_PACKET_SMAA_BLEND_COMP_SPV "packet.smaa_blend.comp.spv"
+#define VKR_VULKAN_PACKET_SMAA_RESOLVE_COMP_SPV "packet.smaa_resolve.comp.spv"
+/* Texture LOD bias of published material samplers under SMAA T2x. */
+#define VKR_VULKAN_MATERIAL_LOD_BIAS -0.5f
 #define VKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV "packet.fog_apply.comp.spv"
 #define VKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV "packet.froxel_inject.comp.spv"
 #define VKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV                            \
@@ -318,7 +324,6 @@ typedef enum VkrVulkanFullscreenFlag {
   /* Editor's retained scene was already lifted for the physical output. */
   VKR_VULKAN_FULLSCREEN_ALREADY_OUTPUT_ENCODED = 1u << 0u,
   VKR_VULKAN_FULLSCREEN_TONEMAP = 1u << 1u,
-  VKR_VULKAN_FULLSCREEN_FXAA = 1u << 2u,
   VKR_VULKAN_FULLSCREEN_SOURCE_DISPLAY_LINEAR = 1u << 5u,
   VKR_VULKAN_FULLSCREEN_PREPARE_DISPLAY_LINEAR = 1u << 6u,
   VKR_VULKAN_FULLSCREEN_SCENE_BLUR = 1u << 7u,
@@ -446,6 +451,10 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DEPTH_MIP,
   VKR_VULKAN_DEFERRED_PIPELINE_GTAO_EVALUATE,
   VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DENOISE,
+  VKR_VULKAN_DEFERRED_PIPELINE_SMAA_EDGES,
+  VKR_VULKAN_DEFERRED_PIPELINE_SMAA_WEIGHTS,
+  VKR_VULKAN_DEFERRED_PIPELINE_SMAA_BLEND,
+  VKR_VULKAN_DEFERRED_PIPELINE_SMAA_RESOLVE,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -745,12 +754,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
   uint64_t visible_rows;
   uint64_t instances;
   uint32_t scene_texture;
-  uint32_t pre_transmission_texture;
   uint32_t motion_texture;
   uint32_t validity_texture;
   uint32_t depth_texture;
   uint32_t vbuffer_texture;
-  uint32_t history_color_texture;
   uint32_t history_depth_texture;
   uint32_t history_identity_texture;
   uint32_t history_surface_texture;
@@ -758,24 +765,18 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
   uint32_t output_depth_texture;
   uint32_t output_identity_texture;
   uint32_t output_surface_texture;
-  uint32_t history_sampler;
+  /** SMAA T2x's per-pixel weight on last frame's subsample (R8). */
+  uint32_t output_accept_texture;
   uint32_t extent[2];
   uint32_t history_valid;
   uint32_t render_mode;
-  uint32_t camera_stationary;
+  uint32_t reserved0;
   uint64_t transmission_visible_rows;
   uint64_t transmission_instances;
   uint32_t transmission_vbuffer_texture;
   uint32_t transmission_depth_texture;
   uint32_t transmission_enabled;
-  uint32_t scene_history_mode;
-  Vec2 current_jitter_pixels;
-  Vec2 previous_jitter_pixels;
-  /** Ratio from the history producer's pre-exposure to this frame's. */
-  float32_t history_pre_exposure_scale;
-  /** Scales the absolute luminance floor of the transmission reactivity. */
-  float32_t pre_exposure;
-  uint32_t reserved[2];
+  uint32_t reserved[3];
 } VkrVulkanTemporalResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
@@ -1251,6 +1252,40 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanGtaoRoot {
   uint32_t destination_extent[2];
   uint32_t reserved[2];
 } VkrVulkanGtaoRoot;
+
+/** Mirrors VkrVkSmaaRoot in shaders/vulkan/slang/post/smaa.slang. Each SMAA
+    pass reads the fields it names; `subsample_indices` selects the area
+    texture's rows for the frame's jitter. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanSmaaRoot {
+  uint32_t source_texture;
+  uint32_t destination_texture;
+  uint32_t edges_texture;
+  uint32_t blend_texture;
+  uint32_t area_texture;
+  uint32_t search_texture;
+  uint32_t linear_sampler;
+  uint32_t point_sampler;
+  uint32_t extent[2];
+  /** Blend pass: the scene's motion, whose length rides in alpha for T2x. */
+  uint32_t motion_texture;
+  uint32_t reserved;
+  Vec4 subsample_indices;
+} VkrVulkanSmaaRoot;
+
+/** Mirrors VkrVkSmaaResolveRoot in shaders/vulkan/slang/post/smaa.slang: SMAA
+    T2x's blend of this frame's antialiased subsample with last frame's. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanSmaaResolveRoot {
+  uint32_t current_texture;
+  uint32_t previous_texture;
+  uint32_t motion_texture;
+  uint32_t accept_texture;
+  uint32_t destination_texture;
+  uint32_t linear_sampler;
+  uint32_t point_sampler;
+  uint32_t history_valid;
+  uint32_t extent[2];
+  uint32_t reserved[2];
+} VkrVulkanSmaaResolveRoot;
 
 typedef struct VkrVulkanSdsmState {
   uint32_t min_device_z_bits;
@@ -1835,16 +1870,13 @@ _Static_assert(offsetof(VkrVulkanResolveRoot, anisotropy_texture) == 344u,
                "Deferred resolve-root anisotropy ABI drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, sky_reprojection) == 352u,
                "G-buffer sky-reprojection matrix ABI drift");
-_Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 160u,
+_Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 128u,
                "Temporal resolve-root ABI size drift");
-_Static_assert(
-    offsetof(VkrVulkanTemporalResolveRoot, scene_history_mode) == 124u &&
-        offsetof(VkrVulkanTemporalResolveRoot, current_jitter_pixels) == 128u &&
-        offsetof(VkrVulkanTemporalResolveRoot, previous_jitter_pixels) ==
-            136u &&
-        offsetof(VkrVulkanTemporalResolveRoot, history_pre_exposure_scale) ==
-            144u,
-    "Temporal resolve-root scene/jitter ABI drift");
+_Static_assert(offsetof(VkrVulkanTemporalResolveRoot, extent) == 68u &&
+                   offsetof(VkrVulkanTemporalResolveRoot,
+                            transmission_visible_rows) == 88u &&
+                   offsetof(VkrVulkanTemporalResolveRoot, reserved) == 116u,
+               "Temporal resolve-root ABI offset drift");
 _Static_assert(sizeof(VkrVulkanLightingRoot) == 224u,
                "Deferred lighting-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, light_contribution) == 184u,
@@ -1948,6 +1980,16 @@ _Static_assert(offsetof(VkrVulkanGtaoRoot, source_extent) == 216u,
                "Vulkan GTAO extent ABI offset drift");
 _Static_assert(offsetof(VkrVulkanGtaoRoot, reserved) == 232u,
                "Vulkan GTAO root tail ABI offset drift");
+_Static_assert(sizeof(VkrVulkanSmaaRoot) == 64u,
+               "Vulkan SMAA root ABI size drift");
+_Static_assert(offsetof(VkrVulkanSmaaRoot, extent) == 32u,
+               "Vulkan SMAA extent ABI offset drift");
+_Static_assert(offsetof(VkrVulkanSmaaRoot, subsample_indices) == 48u,
+               "Vulkan SMAA subsample ABI offset drift");
+_Static_assert(sizeof(VkrVulkanSmaaResolveRoot) == 48u,
+               "Vulkan SMAA resolve root ABI size drift");
+_Static_assert(offsetof(VkrVulkanSmaaResolveRoot, extent) == 32u,
+               "Vulkan SMAA resolve extent ABI offset drift");
 _Static_assert(sizeof(VkrVulkanSdsmRoot) == 32u,
                "Deferred SDSM-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSdsmState) == VKR_VULKAN_SDSM_STATE_SIZE,
@@ -2135,13 +2177,6 @@ typedef struct VkrVulkanTargetSet {
   uint32_t height;
 } VkrVulkanTargetSet;
 
-typedef struct VkrVulkanTemporalSceneState {
-  VkrTemporalSceneSignature signature;
-  uint64_t radiance_revision;
-  uint64_t publication_generation;
-  uint64_t graph_revision;
-} VkrVulkanTemporalSceneState;
-
 typedef struct VkrVulkanGraphImageInstance {
   VkrVulkanImage image;
   VkImageView mip_views[VKR_VULKAN_TEXTURE_MIP_MAX];
@@ -2162,7 +2197,6 @@ typedef struct VkrVulkanGraphImageInstance {
   uint32_t history_height;
   uint64_t history_frame_index;
   uint64_t history_scene_generation;
-  VkrVulkanTemporalSceneState history_scene;
   bool8_t has_sampled_mip_slot[VKR_VULKAN_TEXTURE_MIP_MAX];
   bool8_t has_storage_mip_slot[VKR_VULKAN_TEXTURE_MIP_MAX];
   bool8_t has_sampled_slot;
@@ -2404,7 +2438,6 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t reacquired_presented_image;
   uint64_t frame_upload_cursor;
   uint64_t candidate_upload_cursor;
-  VkrVulkanTemporalSceneState temporal_scene;
   VkrVulkanSkinningRoot skinning_roots[VKR_SKINNING_BINDING_CAPACITY];
   VkrVulkanPreparedCompute skinning_dispatches[VKR_SKINNING_BINDING_CAPACITY];
   uint64_t skinning_addresses[VKR_SKINNING_BINDING_CAPACITY];
@@ -2519,6 +2552,8 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t sheen_upload_recorded;
   /** True only while this slot's command buffer owns the anisotropy upload. */
   bool8_t anisotropy_upload_recorded;
+  /** True only while this slot's command buffer owns the SMAA table upload. */
+  bool8_t smaa_upload_recorded;
   /** Slots this frame's packet references, registered against its submit
       serial once submission succeeds. */
   uint32_t sh_referenced_slots[VKR_FRAME_IBL_PROBE_MAX + 1u];
@@ -2534,8 +2569,6 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t hzb_history_valid;
   VkrVulkanGraphBufferInstance *temporal_transform_input;
   VkrVulkanGraphBufferInstance *temporal_transform_output;
-  VkrVulkanGraphImageInstance *temporal_color_input;
-  VkrVulkanGraphImageInstance *temporal_color_output;
   VkrVulkanGraphImageInstance *temporal_depth_input;
   VkrVulkanGraphImageInstance *temporal_depth_output;
   VkrVulkanGraphImageInstance *temporal_identity_input;
@@ -2543,6 +2576,9 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphImageInstance *temporal_surface_input;
   VkrVulkanGraphImageInstance *temporal_surface_output;
   bool8_t temporal_history_valid;
+  /** SMAA T2x: last frame's antialiased subsample, and this frame's. */
+  VkrVulkanGraphImageInstance *smaa_history_input;
+  VkrVulkanGraphImageInstance *smaa_history_output;
   float32_t motion_blur_interval_scale;
   VkrVulkanGraphImageInstance *froxel_history_input;
   VkrVulkanGraphImageInstance *froxel_history_output;
@@ -3016,6 +3052,13 @@ struct VkrVulkanRenderer {
   VkrGpuSlotHandle anisotropy_texture_slots[VKR_ANISOTROPY_LUT_TABLE_COUNT];
   uint64_t anisotropy_upload_retire_value;
   bool8_t anisotropy_upload_pending;
+  /** SMAA's area and search tables (vendor/smaa). The staging buffer retires
+     after their first submitted upload; sampled rows persist. */
+  VkrVulkanImage smaa_images[VKR_VULKAN_SMAA_TABLE_COUNT];
+  VkrVulkanBuffer smaa_upload;
+  VkrGpuSlotHandle smaa_texture_slots[VKR_VULKAN_SMAA_TABLE_COUNT];
+  uint64_t smaa_upload_retire_value;
+  bool8_t smaa_upload_pending;
   // Linear clamp sampler for immutable transmission feedback. Its permanent
   // slot avoids per-pass sampler publication and matches Metal filtering.
   VkSampler transmission_sampler;
@@ -3206,6 +3249,15 @@ bool8_t vkr_vk_commit_anisotropy_upload(VkrVulkanRenderer *renderer,
 void vkr_vk_collect_anisotropy_upload(VkrVulkanRenderer *renderer,
                                       uint64_t completed);
 void vkr_vk_retire_anisotropy_descriptor_slots(VkrVulkanRenderer *renderer);
+void vkr_vk_record_smaa_upload(VkrVulkanRenderer *renderer,
+                               VkrVulkanFrameSlot *slot,
+                               VkCommandBuffer command);
+bool8_t vkr_vk_commit_smaa_upload(VkrVulkanRenderer *renderer,
+                                  VkrVulkanFrameSlot *slot,
+                                  uint64_t retire_value);
+void vkr_vk_collect_smaa_upload(VkrVulkanRenderer *renderer,
+                                uint64_t completed);
+void vkr_vk_retire_smaa_descriptor_slots(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_prepare_cloud_noise(VkrVulkanRenderer *renderer,
                                    VkrVulkanPreparedIbl *prepared);
@@ -3376,6 +3428,18 @@ bool8_t vkr_vk_prepare_gtao_evaluate(VkrVulkanRenderer *renderer,
                                      VkrVulkanPreparedCompute *prepared,
                                      const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_gtao_denoise(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_smaa_edges(VkrVulkanRenderer *renderer,
+                                  VkrVulkanPreparedCompute *prepared,
+                                  const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_smaa_weights(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_smaa_blend(VkrVulkanRenderer *renderer,
+                                  VkrVulkanPreparedCompute *prepared,
+                                  const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_smaa_resolve(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
                                     const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_deferred_sdsm(VkrVulkanRenderer *renderer,

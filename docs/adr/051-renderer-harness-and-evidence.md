@@ -54,8 +54,9 @@ and SSGI sampled ([ADR-055](055-screen-space-reflections.md),
 64-phase GTAO noise sequence alone, and the fingerprint no longer records
 their controls. Since 2026-10-13 GTAO uses the same spatial noise every frame
 ([ADR-042](042-scene-linear-post-processing.md)), and warmup aligns to the
-64-frame period of the contact-shadow march pattern under TAA
-(`VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD`), which the eight raster phases
+64-frame period of the cloud march offset (`VKR_CLOUD_MARCH_NOISE_PERIOD`;
+contact-shadow noise follows SMAA T2x's two phases since 2026-10-13,
+ADR-037), which the two raster phases
 divide. The period and the phase it selects are unchanged, so version 8
 stays. Case manifests no longer accept the renderer keys
 `ssr_enabled`, `ssgi_enabled` and `upscaler`; stored capture summaries keep

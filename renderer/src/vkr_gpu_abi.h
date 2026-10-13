@@ -444,8 +444,6 @@ typedef struct VkrGpuVisibleDrawRow {
  * lights past the last layer inline. Matches the shaders'
  * VKR_LOCAL_SHADOW_MASK_SLOT_COUNT and the render graph's mask layers. */
 #define VKR_LOCAL_SHADOW_MASK_LAYER_COUNT 8u
-/* Frames before the contact-shadow march pattern repeats under TAA. */
-#define VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD 64u
 
 _Static_assert(VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX <= 64u,
                "local shadow render slot and transmission layer masks are "

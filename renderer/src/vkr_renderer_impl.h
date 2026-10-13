@@ -29,10 +29,12 @@ enum {
      opaque and three transmitting local shadow passes for each of the 64
      local faces (a face drawn into a dynamic square takes a copy and a draw
      and no transmission, so it never adds passes), the local shadow mask, the
-     layered deferred-lighting kernel and the diffuse-volume composition, total
-     378 passes. Composing every cascade from its static layer adds a static
-     draw and a copy per cascade, 394 in all. */
-  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 397,
+     layered deferred-lighting kernel, the diffuse-volume composition, both
+     GTAO denoise passes, the display-linear target and SMAA T2x's four
+     passes, total 384 passes. Composing every cascade from its static layer
+     adds a static draw and a copy per cascade, 400 in all; the cap leaves
+     room for a few more passes. */
+  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 416,
   VKR_RENDERER_IMPL_MAX_PASS_TIMINGS = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
   VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT = VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
   VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT = 8,

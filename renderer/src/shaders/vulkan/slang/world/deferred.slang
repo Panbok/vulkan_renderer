@@ -1,4 +1,3 @@
-#include "../../../shared/temporal_filter_kernel.slangh"
 
 // Vulkan deferred visibility path. All variable-sized data is reached through
 // physical storage-buffer addresses; descriptor indices name graph images.
@@ -201,12 +200,10 @@ struct VkrVkTemporalResolveRoot
     VkrGpuVisibleDrawRow *visible_rows;
     VkrVulkanInstance *instances;
     uint scene_texture;
-    uint pre_transmission_texture;
     uint motion_texture;
     uint validity_texture;
     uint depth_texture;
     uint vbuffer_texture;
-    uint history_color_texture;
     uint history_depth_texture;
     uint history_identity_texture;
     uint history_surface_texture;
@@ -214,23 +211,17 @@ struct VkrVkTemporalResolveRoot
     uint output_depth_texture;
     uint output_identity_texture;
     uint output_surface_texture;
-    uint history_sampler;
+    uint output_accept_texture;
     uint2 extent;
     uint history_valid;
     uint render_mode;
-    uint camera_stationary;
+    uint reserved0;
     VkrGpuVisibleDrawRow *transmission_visible_rows;
     VkrVulkanInstance *transmission_instances;
     uint transmission_vbuffer_texture;
     uint transmission_depth_texture;
     uint transmission_enabled;
-    uint scene_history_mode;
-    float2 current_jitter_pixels;
-    float2 previous_jitter_pixels;
-    float history_pre_exposure_scale;
-    // Scales the absolute luminance floor of the transmission reactivity.
-    float pre_exposure;
-    uint reserved[2];
+    uint reserved[3];
 };
 
 struct VkrVkLightingRoot
@@ -3077,172 +3068,61 @@ void vk_deferred_lighting_layered(uint3 thread_id : SV_DispatchThreadID,
     vk_deferred_shade<true>(thread_id);
 }
 
-float vkr_vk_temporal_luminance(float3 color)
-{
-    return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
-}
+// Relative device-depth difference within which last frame's sample shows the
+// same surface. Reversed depth is close to inverse linear depth, so this is a
+// relative linear-depth tolerance at any distance.
+#define VKR_TEMPORAL_DEPTH_TOLERANCE 0.02f
 
-struct VkrVkTemporalHistorySample
-{
-    float4 color;
-    float confidence;
-    bool accepted;
-};
+// Motion in pixels below which a sample counts as still. A still pixel's
+// history is SMAA T2x's other subsample of the same content, which may land
+// on another leaf, wire or silhouette side; the identity and depth checks
+// apply only to moving pixels, where history can disocclude.
+#define VKR_TEMPORAL_STILL_PIXELS 0.5f
 
-// Metadata remains on the raw jittered grid. Color is reconstructed onto
-// the canonical grid, so each color tap validates its own metadata footprint.
-bool vkr_vk_temporal_coverage_support(
-    VkrVkTemporalResolveRoot root, uint2 pixel, uint2 previous_pixel, float2 reference_motion,
-    uint2 identity, uint surface_token, float previous_depth)
+// Whether last frame's raw samples around `history_uv` hold the current
+// surface: one of the 3x3 texels around it has its identity and surface token
+// and a device depth near `expected_depth`, the depth the surface had then.
+// The neighbourhood accepts a silhouette or thin geometry that last frame's
+// subsample missed at this pixel, whose two subsamples T2x averages, and
+// rejects a surface that was hidden nearby, a disocclusion.
+bool vkr_vk_temporal_history_matches(VkrVkTemporalResolveRoot root,
+                                     float2 history_uv, uint2 identity,
+                                     uint surface_token, float expected_depth,
+                                     bool check_depth)
 {
-    if (identity.x != 0u && surface_token == 0u)
-        return false;
-    float2 previous_position = float2(previous_pixel) + 0.5f - root.previous_jitter_pixels;
-    for (int y = -1; y <= 1; ++y)
-        for (int x = -1; x <= 1; ++x)
+    int2 base = int2(floor(history_uv * float2(root.extent))) - 1;
+    for (int y = 0; y <= 2; ++y)
+    {
+        for (int x = 0; x <= 2; ++x)
         {
-            uint2 p = uint2(clamp(int2(pixel) + int2(x, y), int2(0), int2(root.extent) - 1));
-            float2 valid = g_textures[root.validity_texture].Load(int3(p, 0)).xy;
-            if (valid.x != 1.0f || abs(valid.y - previous_depth) > 0.005f)
+            uint2 p = uint2(clamp(base + int2(x, y), int2(0),
+                                  int2(root.extent) - 1));
+            if (any(g_storage_uint2_2d[root.history_identity_texture][p] !=
+                    identity) ||
+                g_storage_uint_2d[root.history_surface_texture][p] !=
+                    surface_token)
                 continue;
-            float2 motion = g_textures[root.motion_texture].Load(int3(p, 0)).xy;
-            if (length((motion - reference_motion) * float2(root.extent)) > 0.5f)
-                continue;
-            float2 projected = float2(p) + 0.5f - root.current_jitter_pixels + motion * float2(root.extent);
-            if (any(abs(projected - previous_position) > 1.5f))
-                continue;
-            if (root.camera_stationary != 0u && length(motion * float2(root.extent)) < 0.01f)
-            {
-                float depth = g_depth_textures[root.depth_texture].Load(int3(p, 0));
-                if (abs(depth - valid.y) > 0.005f)
-                    continue;
-            }
-            uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][p];
-            if ((encoded.x & 0x80000000u) != 0u ||
-                (root.transmission_enabled != 0u && g_storage_uint2_images[root.transmission_vbuffer_texture][uint3(p, 0u)].x != 0u))
-                continue;
-            uint2 neighbor_identity = 0u;
-            uint neighbor_surface = 0u;
-            if (encoded.x != 0u)
-            {
-                VkrGpuVisibleDrawRow row = root.visible_rows[encoded.x - 1u];
-                VkrVulkanInstance instance = root.instances[row.instance_index];
-                neighbor_identity = uint2(instance.temporal_index + 1u, instance.temporal_generation);
-                neighbor_surface = instance.temporal_flags >> 1u;
-            }
-            if (all(neighbor_identity == identity) && neighbor_surface == surface_token)
+            float previous_depth =
+                g_storage_2d[root.history_depth_texture][p].x;
+            if (!check_depth ||
+                abs(previous_depth - expected_depth) <=
+                VKR_TEMPORAL_DEPTH_TOLERANCE *
+                    max(previous_depth, expected_depth))
                 return true;
         }
+    }
     return false;
 }
 
-VkrVkTemporalHistorySample vkr_vk_temporal_history_sample(
-    VkrVkTemporalResolveRoot root, float2 history_uv, uint2 identity,
-    uint surface_token, float expected_depth, bool check_depth,
-    uint2 current_pixel, float2 reference_motion, bool allow_coverage)
-{
-
-
-    float2 texel = history_uv * float2(root.extent) - 0.5f;
-    int2 base = int2(floor(texel));
-    float2 fraction = frac(texel);
-    bool cubic_candidate = check_depth && any(fraction != 0.0f) &&
-                           all(base >= 1) && all(base + 2 < int2(root.extent));
-    int2 color_span = int2(cubic_candidate || fraction.x != 0.0f ? 2 : 1,
-                          cubic_candidate || fraction.y != 0.0f ? 2 : 1);
-    float2 metadata_fraction = frac(root.previous_jitter_pixels);
-    int2 extra = int2(metadata_fraction.x > 0.0f ? 1 : 0, metadata_fraction.y > 0.0f ? 1 : 0);
-    // Clamp canonical color taps first: their source footprints belong to
-    // the clamped color position, including when bilinear taps hit an edge.
-    int2 color_base = clamp(base, int2(0), int2(root.extent) - 1);
-    int2 color_upper = clamp(base + color_span - 1, int2(0), int2(root.extent) - 1);
-    int2 metadata_base = color_base + int2(floor(root.previous_jitter_pixels));
-    int2 metadata_span = color_upper - color_base + 1 + extra;
-    // The canonical inner 2x2 needs at most nine distinct raw metadata taps.
-    uint metadata_mask = 0u;
-    bool cubic_compatible = cubic_candidate;
-    for (int y = 0; y < metadata_span.y; ++y)
-        for (int x = 0; x < metadata_span.x; ++x)
-        {
-            uint2 p = uint2(clamp(metadata_base + int2(x, y), int2(0), int2(root.extent) - 1));
-            uint2 previous_identity = g_storage_uint2_2d[root.history_identity_texture][p];
-            uint previous_surface = g_storage_uint_2d[root.history_surface_texture][p];
-            float previous_depth = g_storage_float2_2d[root.history_depth_texture][p].x;
-            bool strict = all(previous_identity == identity) && previous_surface == surface_token &&
-                          (!check_depth || abs(previous_depth - expected_depth) <= 0.005f);
-            cubic_compatible = cubic_compatible && strict;
-            bool accepted = strict;
-            if (!accepted && allow_coverage)
-                accepted = vkr_vk_temporal_coverage_support(root, current_pixel, p, reference_motion,
-                                                     previous_identity, previous_surface, previous_depth);
-            metadata_mask |= accepted ? 1u << uint(y * 3 + x) : 0u;
-        }
-    // Cubic color spans four canonical taps per axis; validate only the raw
-    // outer ring not already cached above (at most 25 metadata taps total).
-    if (cubic_compatible)
-        for (int y = -1; y <= 2 + extra.y && cubic_compatible; ++y)
-            for (int x = -1; x <= 2 + extra.x && cubic_compatible; ++x)
-            {
-                if (x >= 0 && x < metadata_span.x && y >= 0 && y < metadata_span.y)
-                    continue;
-                uint2 p = uint2(clamp(metadata_base + int2(x, y), int2(0), int2(root.extent) - 1));
-                if (any(g_storage_uint2_2d[root.history_identity_texture][p] != identity) || g_storage_uint_2d[root.history_surface_texture][p] != surface_token ||
-                    abs(g_storage_float2_2d[root.history_depth_texture][p].x - expected_depth) > 0.005f)
-                    cubic_compatible = false;
-            }
-    VkrVkTemporalHistorySample result;
-    result.color = 0.0f;
-    result.confidence = 0.0f;
-    result.accepted = false;
-    if (cubic_compatible)
-    {
-        float4 wx = vkr_temporal_cubic_weights(fraction.x);
-        float4 wy = vkr_temporal_cubic_weights(fraction.y);
-        float3 weights_x = float3(wx.x, wx.y + wx.z, wx.w);
-        float3 weights_y = float3(wy.x, wy.y + wy.z, wy.w);
-        float3 coords_x = (float(base.x) + float3(-1.0f, wx.z / weights_x.y, 2.0f) + 0.5f) / float(root.extent.x);
-        float3 coords_y = (float(base.y) + float3(-1.0f, wy.z / weights_y.y, 2.0f) + 0.5f) / float(root.extent.y);
-        for (int y = 0; y < 3; ++y)
-            for (int x = 0; x < 3; ++x)
-                result.color += g_textures[root.history_color_texture].SampleLevel(g_samplers[root.history_sampler], float2(coords_x[x], coords_y[y]), 0.0f) * (weights_x[x] * weights_y[y]);
-        result.accepted = true;
-        result.confidence = 1.0f;
-        return result;
-    }
-    float weight_sum = 0.0f;
-    for (int y = 0; y < color_span.y; ++y)
-        for (int x = 0; x < color_span.x; ++x)
-        {
-            float weight = (x == 0 ? 1.0f - fraction.x : fraction.x) *
-                           (y == 0 ? 1.0f - fraction.y : fraction.y);
-            if (weight <= 1e-5f)
-                continue;
-            uint2 p = uint2(clamp(base + int2(x, y), int2(0), int2(root.extent) - 1));
-            int2 metadata_offset = int2(p) - color_base;
-            float confidence = 0.0f;
-            for (int sy = 0; sy <= extra.y; ++sy)
-                for (int sx = 0; sx <= extra.x; ++sx)
-                {
-                    uint bit = 1u << uint((metadata_offset.y + sy) * 3 + metadata_offset.x + sx);
-                    float metadata_weight =
-                        (sx == 0 ? 1.0f - metadata_fraction.x : metadata_fraction.x) *
-                        (sy == 0 ? 1.0f - metadata_fraction.y : metadata_fraction.y);
-                    confidence += (metadata_mask & bit) != 0u ? metadata_weight : 0.0f;
-                }
-            // Preserve partial support both when reconstructing color and
-            // when choosing retention; normalization alone loses confidence.
-            weight *= confidence;
-            if (weight <= 1e-5f)
-                continue;
-            result.color += g_textures[root.history_color_texture].Load(int3(p, 0)) * weight;
-            weight_sum += weight;
-        }
-    result.accepted = weight_sum > 1e-5f;
-    result.confidence = result.accepted ? saturate(weight_sum) : 0.0f;
-    result.color = result.accepted ? result.color / weight_sum : float4(0.0f);
-    return result;
-}
-
+// SMAA T2x resolves after the tonemap (ADR-037). This pass hands the jittered
+// raster colour to post-processing and records, per pixel, how much of last
+// frame's sample of the same surface the T2x resolve may blend in: zero where
+// the surface's identity, surface or depth changed, on blended overlays
+// without an identity, and off screen; one elsewhere. A blended overlay's
+// depth is the opaque surface's behind it, so its match checks identity and
+// surface only. Authored temporal reactivity shortened the long history this
+// pass once kept; two frames ghost for at most one, so T2x ignores it, and a
+// partial weight would make a still image alternate between its subsamples.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
@@ -3253,21 +3133,7 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         return;
 
     uint2 pixel = thread_id.xy;
-    // Projection shifts raster samples by +jitter. Reconstruct current color
-    // at canonical pixel p from raw samples around p + jitter.
-    float4 current = 0.0f;
-    float current_weight = 0.0f;
-    for (int y = -1; y <= 1; ++y)
-        for (int x = -1; x <= 1; ++x)
-        {
-            float weight = vkr_temporal_current_weight(float2(x, y), root.current_jitter_pixels);
-            if (weight <= 0.0f)
-                continue;
-            uint2 p = uint2(clamp(int2(pixel) + int2(x, y), int2(0), int2(root.extent) - 1));
-            current += g_textures[root.scene_texture].Load(int3(p, 0)) * weight;
-            current_weight += weight;
-        }
-    current /= current_weight;
+    float4 current = g_textures[root.scene_texture].Load(int3(pixel, 0));
     float surface_depth =
         g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][pixel];
@@ -3275,11 +3141,9 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
     const uint generation_mask = 0x7fffffffu;
     const uint surface_mask = 0x1ffffu;
 
-    // Keep metadata on the raw center grid; history lookup accounts for jitter.
     float2 motion = g_textures[root.motion_texture].Load(int3(pixel, 0)).xy;
     float2 validity = g_textures[root.validity_texture].Load(int3(pixel, 0)).xy;
     bool blend_overlay = (encoded.x & overlay_bit) != 0u;
-    bool check_history_depth = !blend_overlay;
     uint2 identity = 0u;
     uint surface_token = 0u;
     if (blend_overlay)
@@ -3323,157 +3187,32 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         }
     }
 
-    // CPU scene/resource equality proves that missing current coverage is
-    // another sample of the same radiance field, including thin transmission.
-    bool checked_static =
-        root.scene_history_mode == VKR_TEMPORAL_HISTORY_STATIC_ACCUMULATE &&
-        root.history_valid != 0u && validity.x > 0.5f &&
-        !(blend_overlay && identity.x == 0u) &&
-        (identity.x == 0u || surface_token != 0u);
-    if (checked_static)
-    {
-        // The ordinary resolve stored its result's effective sample count, so
-        // after a camera stop the integral continues from the settled ordinary
-        // history. A still pixel whose content changed
-        // stored zero, and the integral restarts from the current frame.
-        float previous_age = g_storage_float2_2d[root.history_depth_texture][pixel].y;
-        float age = min(previous_age + 1.0f, VKR_TEMPORAL_STATIC_SAMPLE_COUNT);
-        float authored_reactive = validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;
-        float history_weight = ((age - 1.0f) / age) * (1.0f - authored_reactive);
-        float4 history = g_textures[root.history_color_texture].Load(int3(pixel, 0));
-        history.rgb *= root.history_pre_exposure_scale;
-        // A capped EMA still oscillates with thin-coverage jitter forever.
-        // Copy the completed static integral exactly. Only this path reaches
-        // the full count: the ordinary resolve stores at most one below it,
-        // and zero for a still pixel whose content changed.
-        float4 resolved = previous_age >= VKR_TEMPORAL_STATIC_SAMPLE_COUNT && authored_reactive == 0.0f
-                              ? history
-                              : float4(lerp(current.rgb, history.rgb, history_weight), current.a);
-        if (root.render_mode == 7u)
-            resolved = float4(saturate(abs(motion) * float2(root.extent) / 16.0f), validity.x, 1.0f);
-        else if (root.render_mode == 8u)
-            resolved = float4(0.0f, 1.0f, 0.0f, 1.0f);
-        g_storage_2d[root.output_color_texture][pixel] = resolved;
-        g_storage_float2_2d[root.output_depth_texture][pixel] = float2(surface_depth, age);
-        g_storage_uint2_2d[root.output_identity_texture][pixel] = identity;
-        g_storage_uint_2d[root.output_surface_texture][pixel] = surface_token;
-        return;
-    }
-
-    // Optical contrast is used only by the normal temporal resolve. The
-    // checked static path returned before these texture reads and RGB state.
-    float3 pre_transmission = 0.0f;
-    for (int y = -1; y <= 1; ++y)
-        for (int x = -1; x <= 1; ++x)
-        {
-            float weight = vkr_temporal_current_weight(float2(x, y), root.current_jitter_pixels);
-            if (weight <= 0.0f)
-                continue;
-            uint2 p = uint2(clamp(int2(pixel) + int2(x, y), int2(0), int2(root.extent) - 1));
-            pre_transmission += g_textures[root.pre_transmission_texture].Load(int3(p, 0)).rgb * weight;
-        }
-    pre_transmission /= current_weight;
-
-    float current_luminance = vkr_vk_temporal_luminance(current.rgb);
-    float pre_luminance = vkr_vk_temporal_luminance(pre_transmission);
-    float derived_reactive =
-        min(0.75f,
-                  saturate(abs(current_luminance - pre_luminance) /
-                           max(max(current_luminance, pre_luminance),
-                               0.05f * root.pre_exposure)));
-    float authored_reactive =
-        validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;
-    float reactive = max(derived_reactive, authored_reactive);
     float2 uv = (float2(pixel) + 0.5f) / float2(root.extent);
     float2 history_uv = uv + motion;
-    float motion_pixels = length(motion * float2(root.extent));
-    bool stationary_surface =
-        root.camera_stationary != 0u && motion_pixels < 0.01f;
-    bool allow_coverage = validity.x == 1.0f && reactive == 0.0f && !blend_overlay &&
-                          (!stationary_surface || abs(surface_depth - validity.y) <= 0.005f);
+    bool still = length(motion * float2(root.extent)) < VKR_TEMPORAL_STILL_PIXELS;
     bool accepted =
-        root.history_valid != 0u &&
+        root.history_valid != 0u && validity.x > 0.5f &&
         !(blend_overlay && identity.x == 0u) &&
-        validity.x > 0.5f && (identity.x == 0u || surface_token != 0u) &&
-        all(history_uv >= 0.0f) && all(history_uv <= 1.0f);
-    // The output slot is distinct from accepted history inputs. Publish raw
-    // identity now; depth is written with the sample count below.
+        (identity.x == 0u || surface_token != 0u) &&
+        all(history_uv >= 0.0f) && all(history_uv <= 1.0f) &&
+        (still || vkr_vk_temporal_history_matches(root, history_uv, identity,
+                                                  surface_token, validity.y,
+                                                  !blend_overlay));
+    float accept = accepted ? 1.0f : 0.0f;
+
+    if (root.render_mode == 7u)
+        current = float4(saturate(abs(motion) * float2(root.extent) / 16.0f),
+                         validity.x, 1.0f);
+    else if (root.render_mode == 8u)
+        current = float4(1.0f - accept, accept, 0.0f, 1.0f);
+
+    g_storage_2d[root.output_color_texture][pixel] = current;
+    g_storage_2d[root.output_depth_texture][pixel] =
+        float4(surface_depth, 0.0f, 0.0f, 0.0f);
     g_storage_uint2_2d[root.output_identity_texture][pixel] = identity;
     g_storage_uint_2d[root.output_surface_texture][pixel] = surface_token;
-    float4 history = current;
-    float history_confidence = 0.0f;
-    float history_samples = 1.0f;
-    if (accepted)
-    {
-        VkrVkTemporalHistorySample sample = vkr_vk_temporal_history_sample(
-            root, history_uv, identity, surface_token, validity.y,
-            check_history_depth, pixel, motion, allow_coverage);
-        accepted = sample.accepted;
-        history_confidence = sample.confidence;
-        history = accepted ? float4(sample.color.rgb *
-                                        root.history_pre_exposure_scale,
-                                    sample.color.a)
-                           : current;
-        // Sample count of the history texel the lookup lands in, written by
-        // either path; zero from before this rule counts as one sample.
-        uint2 history_pixel = uint2(clamp(int2(floor(history_uv * float2(root.extent))),
-                                          int2(0), int2(root.extent) - 1));
-        history_samples = g_storage_float2_2d[root.history_depth_texture][history_pixel].y;
-    }
-
-    if (accepted)
-    {
-        float3 neighborhood_min = current.rgb;
-        float3 neighborhood_max = current.rgb;
-        [unroll] for (int y = -1; y <= 1; ++y)
-        {
-            [unroll] for (int x = -1; x <= 1; ++x)
-            {
-                int2 sample_pixel =
-                    clamp(int2(pixel) + int2(x, y), int2(0),
-                          int2(root.extent) - 1);
-                float3 sample_color =
-                    g_textures[root.scene_texture]
-                        .Load(int3(sample_pixel, 0))
-                        .rgb;
-                neighborhood_min = min(neighborhood_min, sample_color);
-                neighborhood_max = max(neighborhood_max, sample_color);
-            }
-        }
-        history.rgb = clamp(history.rgb, neighborhood_min, neighborhood_max);
-    }
-    float history_retention = vkr_temporal_history_retention(stationary_surface);
-    float history_weight = accepted
-                               ? history_retention * history_confidence * (1.0f - reactive) *
-                                     saturate(1.0f - motion_pixels / 128.0f)
-                               : 0.0f;
-    float4 resolved =
-        float4(lerp(current.rgb, history.rgb, history_weight), current.a);
-    if (root.render_mode == 7u)
-        resolved = float4(saturate(abs(motion) * float2(root.extent) / 16.0f),
-                          validity.x, 1.0f);
-    else if (root.render_mode == 8u)
-        resolved = accepted ? float4(0.0f, 1.0f, 0.0f, 1.0f)
-                            : float4(1.0f, 0.0f, 0.0f, 1.0f);
-
-    g_storage_2d[root.output_color_texture][pixel] = resolved;
-    // The second channel carries the result's effective sample count, the
-    // seed of the static integral when the scene next stops changing. An
-    // unchanged scene matches its signature on the camera's first still frame
-    // and takes the static path, so a still pixel in an ordinary frame saw a
-    // content change. Its 0.99 history still holds the old content: it seeds
-    // nothing, and the static integral restarts from the current frame.
-    // Moving pixels keep the camera-stop seed.
-    bool content_changed =
-        stationary_surface &&
-        root.scene_history_mode == VKR_TEMPORAL_HISTORY_ORDINARY;
-    float sample_count =
-        content_changed
-            ? 0.0f
-            : vkr_temporal_effective_samples(accepted ? history_samples : 1.0f,
-                                             history_weight);
-    g_storage_float2_2d[root.output_depth_texture][pixel] =
-        float2(surface_depth, sample_count);
+    g_storage_2d[root.output_accept_texture][pixel] =
+        float4(accept, 0.0f, 0.0f, 0.0f);
 }
 
 // Each moments texel takes the 4x4 depth texels around its 2x2 footprint with

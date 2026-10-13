@@ -572,7 +572,7 @@ void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
   VKR_STRING_COPY_LITERAL(renderer->display_output, "sdr");
   renderer->taa_enabled = true_v;
   renderer->tonemap_enabled = true_v;
-  renderer->fxaa_enabled = true_v;
+  renderer->smaa_enabled = true_v;
   renderer->manual_exposure = VKR_DEFAULT_EXPOSURE;
   renderer->exposure_reset_frame = UINT32_MAX;
   renderer->editor_stop_frame = UINT32_MAX;
@@ -931,8 +931,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer_upscaling(
                           "Dynamic resolution requires the tiled pipeline");
     return false_v;
   }
-  if (!vkr_harness_manifest_bool(doc, token, "fxaa_enabled", false_v,
-                                 &renderer->fxaa_enabled, error))
+  if (!vkr_harness_manifest_bool(doc, token, "smaa_enabled", false_v,
+                                 &renderer->smaa_enabled, error))
     return false_v;
   if (renderer->dynamic_resolution) {
     VkrDynamicResolutionConfig dynamic_config = {
@@ -1042,7 +1042,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "physics_fixture",
       "taa_enabled",
       "tonemap_enabled",
-      "fxaa_enabled",
+      "smaa_enabled",
       "transmission_depth_diagnostic_enabled",
       "image_sharpness",
       "render_scale",

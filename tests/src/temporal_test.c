@@ -100,138 +100,6 @@ vkr_internal void test_temporal_projection_pixel_shift(void) {
   printf("  test_temporal_projection_pixel_shift PASSED\n");
 }
 
-vkr_internal bool32_t temporal_signature_equal(VkrTemporalSceneSignature a,
-                                               VkrTemporalSceneSignature b) {
-  return a.eligible && b.eligible && a.hash[0] == b.hash[0] &&
-         a.hash[1] == b.hash[1];
-}
-
-vkr_internal void test_temporal_scene_signature(void) {
-  printf("  Running test_temporal_scene_signature...\n");
-  VkrWorldDrawCandidate candidate = {
-      .geometry = {1u, 1u},
-      .material = {2u, 1u},
-      .instance = {.model = mat4_identity()},
-  };
-  VkrWorldDrawCandidate transmission = candidate;
-  VkrInstanceDataGPU instance = {.model = mat4_identity()};
-  VkrDrawItem draw = {
-      .geometry = {3u, 1u},
-      .material = {4u, 1u},
-      .instance_count = 1u,
-  };
-  VkrWorldPassPayload world = {
-      .gpu_candidates = &candidate,
-      .gpu_candidate_count = 1u,
-      .transmission_gpu_candidates = &transmission,
-      .transmission_gpu_candidate_count = 1u,
-      .transparent_draws = &draw,
-      .transparent_draw_count = 1u,
-      .instances = &instance,
-      .instance_count = 1u,
-  };
-  VkrPointLight light = {.color = {1.0f, 0.8f, 0.5f}, .intensity = 2.0f};
-  VkrPointLightGrid grid = {.cell_size = 4.0f,
-                            .dimensions = {1u, 1u, 1u},
-                            .cell_count = 1u,
-                            .masks = {{{1u, 0u, 0u, 0u}}}};
-  VkrFrameIblProbe probe = {.prefilter = {5u, 1u}, .weight = 1.0f};
-  VkrFrameLighting lighting = {
-      .point_lights = &light,
-      .point_light_count = 1u,
-      .point_light_grid = &grid,
-      .ibl_probes = &probe,
-      .ibl_probe_count = 1u,
-  };
-  VkrShadowPassPayload shadow = {.cascade_count = 1u};
-  shadow.cascades[0].light_view_projection = mat4_identity();
-  VkrSkyPassPayload sky = {.atmosphere = vkr_atmosphere_settings_defaults(),
-                           .transmittance = {6u, 1u},
-                           .multiple_scattering = {7u, 1u}};
-  sky.atmosphere.enabled = true_v;
-  VkrPreparedFrame packet = {
-      .input =
-          {
-              .globals = {.view = mat4_identity(),
-                          .projection = mat4_identity(),
-                          .color_contrast = 1.0f,
-                          .color_saturation = 1.0f},
-              .world = &world,
-              .lighting = &lighting,
-              .shadow = &shadow,
-              .sky = &sky,
-          },
-      .gtao = {.enabled = true_v, .radius = 0.5f, .power = 2.2f}};
-  const VkrTemporalSceneSignature baseline =
-      vkr_temporal_scene_signature(&packet);
-  assert(baseline.eligible);
-
-  // Each mutation changes scene radiance or its spatial/temporal identity.
-#define EXPECT_SCENE_CHANGE(field, value)                                      \
-  do {                                                                         \
-    field = value;                                                             \
-    assert(!temporal_signature_equal(baseline,                                 \
-                                     vkr_temporal_scene_signature(&packet)));  \
-  } while (0)
-  EXPECT_SCENE_CHANGE(candidate.instance.model.m03, 1.0f);
-  candidate.instance.model.m03 = 0.0f;
-  EXPECT_SCENE_CHANGE(transmission.instance.model.m13, 1.0f);
-  transmission.instance.model.m13 = 0.0f;
-  EXPECT_SCENE_CHANGE(instance.model.m23, 1.0f);
-  instance.model.m23 = 0.0f;
-  EXPECT_SCENE_CHANGE(draw.material.generation, 2u);
-  draw.material.generation = 1u;
-  EXPECT_SCENE_CHANGE(light.color.x, 0.25f);
-  light.color.x = 1.0f;
-  EXPECT_SCENE_CHANGE(grid.masks[0].words[0], 0u);
-  grid.masks[0].words[0] = 1u;
-  EXPECT_SCENE_CHANGE(probe.weight, 0.5f);
-  probe.weight = 1.0f;
-  EXPECT_SCENE_CHANGE(shadow.receiver.pcf_radius_texels, 2.0f);
-  shadow.receiver.pcf_radius_texels = 0.0f;
-  EXPECT_SCENE_CHANGE(shadow.cascades[0].light_view_projection.m03, 2.0f);
-  shadow.cascades[0].light_view_projection.m03 = 0.0f;
-  EXPECT_SCENE_CHANGE(sky.transmittance.generation, 2u);
-  sky.transmittance.generation = 1u;
-  EXPECT_SCENE_CHANGE(sky.atmosphere.sun_direction.x, 0.5f);
-  sky.atmosphere.sun_direction.x = 0.0f;
-  EXPECT_SCENE_CHANGE(packet.input.globals.view_position.x, 1.0f);
-  packet.input.globals.view_position.x = 0.0f;
-  EXPECT_SCENE_CHANGE(packet.gtao.radius, 1.0f);
-  packet.gtao.radius = 0.5f;
-#undef EXPECT_SCENE_CHANGE
-  assert(temporal_signature_equal(baseline,
-                                  vkr_temporal_scene_signature(&packet)));
-
-  // Relocating borrowed arrays preserves content; addresses are not identity.
-  const VkrWorldDrawCandidate relocated_candidate = candidate;
-  const VkrPointLight relocated_light = light;
-  world.gpu_candidates = &relocated_candidate;
-  lighting.point_lights = &relocated_light;
-  assert(temporal_signature_equal(baseline,
-                                  vkr_temporal_scene_signature(&packet)));
-  // Frame phase drives GTAO noise as well as jitter. Post-temporal controls
-  // and normalized-away authoring values cannot reset the scene proof.
-  packet.input.frame.frame_index = 37u;
-  packet.input.frame.delta_time = 0.125;
-  packet.temporal.jitter_pixels = (Vec2){0.25f, -0.4f};
-  packet.temporal.jittered_projection.m02 = 0.4f;
-  packet.exposure.manual = 16.0f;
-  packet.input.globals.manual_exposure = 16.0f;
-  packet.input.globals.bloom_intensity = 2.0f;
-  packet.input.globals.gtao_radius = 7.0f;
-  VkrUiPassPayload ui = {0};
-  packet.input.ui = &ui;
-  assert(temporal_signature_equal(baseline,
-                                  vkr_temporal_scene_signature(&packet)));
-  world.publication_pending = true_v;
-  assert(!vkr_temporal_scene_signature(&packet).eligible);
-  world.publication_pending = false_v;
-  world.text_draw_count = 1u;
-  assert(!vkr_temporal_scene_signature(&packet).eligible);
-  printf("  test_temporal_scene_signature PASSED\n");
-}
-
 vkr_internal void test_temporal_reset_reasons(void) {
   printf("  Running test_temporal_reset_reasons...\n");
   VkrTemporalState state = {0};
@@ -243,15 +111,13 @@ vkr_internal void test_temporal_reset_reasons(void) {
   changed.width = 1280u;
   changed.scene_generation = 2u;
   changed.render_mode = 1u;
-  changed.projection.m00 *= 0.9f;
   changed.view_position = (Vec3){20.0f, 0.0f, 0.0f};
   changed.explicit_reset_reasons = VKR_TEMPORAL_RESET_EXPLICIT;
   VkrTemporalFrame frame = vkr_temporal_prepare(&state, &changed);
   const uint32_t expected =
       VKR_TEMPORAL_RESET_MODE_CHANGE | VKR_TEMPORAL_RESET_FRAME_GAP |
       VKR_TEMPORAL_RESET_EXTENT_CHANGE | VKR_TEMPORAL_RESET_SCENE_CHANGE |
-      VKR_TEMPORAL_RESET_PROJECTION_CHANGE | VKR_TEMPORAL_RESET_CAMERA_CUT |
-      VKR_TEMPORAL_RESET_EXPLICIT;
+      VKR_TEMPORAL_RESET_CAMERA_CUT | VKR_TEMPORAL_RESET_EXPLICIT;
   assert((frame.reset_reasons & expected) == expected);
   assert(!frame.history_valid);
 
@@ -264,6 +130,18 @@ vkr_internal void test_temporal_reset_reasons(void) {
   assert(frame.jitter_pixels.x == 0.0f && frame.jitter_pixels.y == 0.0f);
   assert(temporal_near(frame.jittered_projection.m02, changed.projection.m02) &&
          temporal_near(frame.jittered_projection.m12, changed.projection.m12));
+
+  // History reprojects a perspective zoom; an orthographic change resets.
+  changed = input;
+  changed.frame_index = 11u;
+  changed.projection.m00 *= 0.9f;
+  changed.projection.m11 *= 0.9f;
+  frame = vkr_temporal_prepare(&state, &changed);
+  assert(frame.reset_reasons == VKR_TEMPORAL_RESET_NONE && frame.history_valid);
+  changed.projection =
+      mat4_ortho_zo_yinv_reversed(-8.0f, 8.0f, -4.5f, 4.5f, 0.1f, 100.0f);
+  frame = vkr_temporal_prepare(&state, &changed);
+  assert((frame.reset_reasons & VKR_TEMPORAL_RESET_PROJECTION_CHANGE) != 0u);
   printf("  test_temporal_reset_reasons PASSED\n");
 }
 
@@ -271,12 +149,25 @@ vkr_internal void test_temporal_sequence_repeats(void) {
   printf("  Running test_temporal_sequence_repeats...\n");
   VkrTemporalState state = {0};
   VkrTemporalFrameInput first_input = temporal_input(0u);
-  VkrTemporalFrameInput repeated_input = temporal_input(8u);
+  VkrTemporalFrameInput second_input = temporal_input(1u);
+  VkrTemporalFrameInput repeated_input =
+      temporal_input(VKR_TEMPORAL_SEQUENCE_LENGTH);
   const VkrTemporalFrame first = vkr_temporal_prepare(&state, &first_input);
+  const VkrTemporalFrame second = vkr_temporal_prepare(&state, &second_input);
   const VkrTemporalFrame repeated =
       vkr_temporal_prepare(&state, &repeated_input);
   assert(temporal_near(first.jitter_pixels.x, repeated.jitter_pixels.x));
   assert(temporal_near(first.jitter_pixels.y, repeated.jitter_pixels.y));
+  // SMAA T2x's subsamples (@SUBSAMPLE_INDICES): (0.25, -0.25) y up with
+  // area rows 1, then (-0.25, 0.25) with rows 2; VKR pixels run y down.
+  assert(temporal_near(first.jitter_pixels.x, 0.25f) &&
+         temporal_near(first.jitter_pixels.y, 0.25f));
+  assert(temporal_near(second.jitter_pixels.x, -0.25f) &&
+         temporal_near(second.jitter_pixels.y, -0.25f));
+  assert(temporal_near(first.smaa_subsample_indices.x, 1.0f) &&
+         temporal_near(first.smaa_subsample_indices.w, 0.0f));
+  assert(temporal_near(second.smaa_subsample_indices.x, 2.0f) &&
+         temporal_near(second.smaa_subsample_indices.z, 2.0f));
   printf("  test_temporal_sequence_repeats PASSED\n");
 }
 
@@ -819,7 +710,6 @@ bool32_t run_temporal_tests(void) {
   printf("Running temporal tests...\n");
   test_temporal_jitter_and_commit();
   test_temporal_projection_pixel_shift();
-  test_temporal_scene_signature();
   test_froxel_fog_history_scope();
   test_froxel_fog_history_survives_refits();
   test_temporal_reset_reasons();

@@ -33,7 +33,7 @@
     "shadow_cascades": 3,
     "render_mode": "default",
     "display_transform": "gt7",
-    "fxaa_enabled": false,
+    "smaa_enabled": false,
     "white_balance_temperature": 0.3,
     "white_balance_tint": -0.2,
     "color_contrast": 1.1,

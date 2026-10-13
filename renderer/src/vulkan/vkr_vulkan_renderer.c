@@ -493,6 +493,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   slot->ltc_upload_recorded = false_v;
   slot->sheen_upload_recorded = false_v;
   slot->anisotropy_upload_recorded = false_v;
+  slot->smaa_upload_recorded = false_v;
   slot->source_frame_index = source_frame_index;
   slot->acquired_window_image = false_v;
   slot->reacquired_presented_image = false_v;
@@ -632,25 +633,6 @@ vkr_vk_report_upload_exhaustion(VkrVulkanRenderer *renderer,
 
 vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
                                                    VkrVulkanFrameSlot *slot) {
-  slot->temporal_scene = (VkrVulkanTemporalSceneState){0};
-  if (renderer->graph->packet->scene_rendering &&
-      renderer->graph->packet->temporal.enabled &&
-      vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle)) {
-    // Capture rendered inputs before upload/IBL commands publish new content.
-    slot->temporal_scene = (VkrVulkanTemporalSceneState){
-        .signature = vkr_temporal_scene_signature(renderer->graph->packet),
-        .radiance_revision = renderer->radiance_revision,
-        .publication_generation = renderer->candidate_publication_generation,
-        .graph_revision = renderer->graph_revision,
-    };
-    slot->temporal_scene.signature.eligible =
-        slot->temporal_scene.signature.eligible &&
-        !renderer->pending_texture_initialization_count &&
-        !renderer->pending_buffer_initialization_count &&
-        !renderer->pending_ibl_bake_count &&
-        !renderer->geometry_megabuffer.copy_pending &&
-        renderer->sh_coefficients_cleared;
-  }
   if (!vkr_vk_prepare_packet_uploads(renderer, slot, renderer->graph->packet)) {
     vkr_vk_report_upload_exhaustion(renderer, slot);
     return false_v;
@@ -793,6 +775,7 @@ vkr_internal bool8_t vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
   vkr_vk_record_ltc_upload(renderer, slot, command);
   vkr_vk_record_sheen_upload(renderer, slot, command);
   vkr_vk_record_anisotropy_upload(renderer, slot, command);
+  vkr_vk_record_smaa_upload(renderer, slot, command);
 
   vkr_vk_bind_descriptor_buffers(renderer, command);
 
@@ -1122,6 +1105,9 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
   if (!vkr_vk_commit_anisotropy_upload(renderer, slot, signal_value))
     return vkr_vk_fail_after_submit(renderer,
                                     "the anisotropy upload could not retire");
+  if (!vkr_vk_commit_smaa_upload(renderer, slot, signal_value))
+    return vkr_vk_fail_after_submit(renderer,
+                                    "the SMAA table upload could not retire");
   vkr_vk_commit_cloud_noise(renderer, slot);
   vkr_vk_commit_diffuse_volume_compose(renderer, slot);
   if (slot->candidate_residency_pending) {
@@ -2126,6 +2112,9 @@ vkr_internal void vkr_vk_destroy_lookup_resources(VkrVulkanRenderer *renderer) {
   vkr_vk_destroy_buffer(renderer, &renderer->anisotropy_upload);
   for (uint32_t table = 0u; table < VKR_ANISOTROPY_LUT_TABLE_COUNT; ++table)
     vkr_vk_destroy_image(renderer, &renderer->anisotropy_images[table]);
+  vkr_vk_destroy_buffer(renderer, &renderer->smaa_upload);
+  for (uint32_t table = 0u; table < VKR_VULKAN_SMAA_TABLE_COUNT; ++table)
+    vkr_vk_destroy_image(renderer, &renderer->smaa_images[table]);
 }
 
 /* Releases what vkr_vk_create_descriptor_slot_tables allocated. */
@@ -2258,6 +2247,7 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     vkr_vk_retire_ltc_descriptor_slots(renderer);
     vkr_vk_retire_sheen_descriptor_slots(renderer);
     vkr_vk_retire_anisotropy_descriptor_slots(renderer);
+    vkr_vk_retire_smaa_descriptor_slots(renderer);
     vkr_vk_destroy_cloud_noise(renderer);
     if (renderer->dfg_sampler)
       vkDestroySampler(device, renderer->dfg_sampler, NULL);

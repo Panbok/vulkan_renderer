@@ -26,7 +26,7 @@ gain an MSAA path that bypasses those consumers.
 ## Proposed gap
 
 Measure whether a representative visibility-buffer edge case has a defect that
-temporal AA and the final FXAA pass cannot address. Only then design a bounded
+SMAA T2x cannot address. Only then design a bounded
 two- or four-sample path. The design must represent per-sample visibility,
 depth, coverage, and resolve semantics, then account for its attachment memory,
 bandwidth, graph barriers, and both backend lowering paths.

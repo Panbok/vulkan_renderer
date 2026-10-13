@@ -23,6 +23,10 @@ enum {
   VKR_VULKAN_TARGET_IMAGE_MAX = 8,
   /* Cloud base volume, detail volume and weather map (ADR-074). */
   VKR_VULKAN_CLOUD_NOISE_COUNT = 3,
+  /* SMAA's area (R8G8) and search (R8) tables (vendor/smaa). */
+  VKR_VULKAN_SMAA_TABLE_AREA = 0,
+  VKR_VULKAN_SMAA_TABLE_SEARCH = 1,
+  VKR_VULKAN_SMAA_TABLE_COUNT = 2,
   /* Sampled-image heap rows the renderer holds for its own device lifetime, so
      they are never available to published textures. Derived from the tables
      that occupy them, so adding a table moves the configuration bound and the
@@ -30,7 +34,8 @@ enum {
   VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS =
       1 /* black sentinel */ + 1 /* DFG */ + VKR_LTC_LUT_TABLE_COUNT +
       1 /* Charlie directional albedo */ + VKR_SHEEN_LTC_LUT_TABLE_COUNT +
-      VKR_ANISOTROPY_LUT_TABLE_COUNT + VKR_VULKAN_CLOUD_NOISE_COUNT,
+      VKR_ANISOTROPY_LUT_TABLE_COUNT + VKR_VULKAN_CLOUD_NOISE_COUNT +
+      VKR_VULKAN_SMAA_TABLE_COUNT,
 };
 
 typedef struct VkrVulkanRenderer VkrVulkanRenderer;

@@ -1019,10 +1019,10 @@ vkr_internal void test_harness_fingerprints(void) {
       environment, output, policy, &error))
   char analytic_workload[VKR_HARNESS_DIGEST_MAX];
   char cached_workload[VKR_HARNESS_DIGEST_MAX];
-  /* A desktop-pipeline case, whose final pass filters with FXAA. */
+  /* A desktop-pipeline case, whose final pass reads SMAA's output. */
   const uint32_t resolved_graphics = case_manifest.renderer.graphics_pipeline;
   case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_DESKTOP;
-  assert(case_manifest.renderer.fxaa_enabled &&
+  assert(case_manifest.renderer.smaa_enabled &&
          case_manifest.renderer.image_sharpness == 0.0f);
   SET_POST_CACHE("0");
   POST_FINGERPRINT(analytic_workload);
@@ -1032,7 +1032,7 @@ vkr_internal void test_harness_fingerprints(void) {
   SET_POST_CACHE("1");
   POST_FINGERPRINT(workload);
   assert(strcmp(cached_workload, workload) == 0);
-  // The tiled pipeline draws no FXAA (ADR-087), so an unsharpened case keeps
+  // The tiled pipeline draws no SMAA (ADR-087), so an unsharpened case keeps
   // the analytic identity under the default spelling.
   case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_TILED;
   SET_POST_CACHE("");
@@ -1042,7 +1042,7 @@ vkr_internal void test_harness_fingerprints(void) {
   assert(strcmp(cached_workload, workload) == 0);
   case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_DESKTOP;
   // Sharpening alone filters the final pass.
-  case_manifest.renderer.fxaa_enabled = false_v;
+  case_manifest.renderer.smaa_enabled = false_v;
   POST_FINGERPRINT(analytic_workload);
   SET_POST_CACHE("");
   POST_FINGERPRINT(workload);
@@ -1053,7 +1053,7 @@ vkr_internal void test_harness_fingerprints(void) {
   POST_FINGERPRINT(workload);
   assert(strcmp(cached_workload, workload) != 0);
   case_manifest.renderer.image_sharpness = 0.0f;
-  case_manifest.renderer.fxaa_enabled = true_v;
+  case_manifest.renderer.smaa_enabled = true_v;
   case_manifest.renderer.graphics_pipeline = resolved_graphics;
   if (had_post_cache) {
     SET_POST_CACHE(saved_post_cache);
@@ -1853,7 +1853,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   legacy_v4->case_manifest.renderer.shadow_debug_mode = 3u;
   legacy_v4->case_manifest.renderer.ibl_probe_limit = 7u;
   legacy_v4->case_manifest.renderer.tonemap_enabled = true_v;
-  legacy_v4->case_manifest.renderer.fxaa_enabled = true_v;
+  legacy_v4->case_manifest.renderer.smaa_enabled = true_v;
   legacy_v4->case_manifest.renderer.transmission_depth_diagnostic_enabled =
       true_v;
   legacy_v4->case_manifest.camera.far_plane = 654.0f;
@@ -1978,7 +1978,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.shadow_debug_mode == 3u);
   assert(summary.case_manifest.renderer.ibl_probe_limit == 7u);
   assert(summary.case_manifest.renderer.tonemap_enabled);
-  assert(summary.case_manifest.renderer.fxaa_enabled);
+  assert(summary.case_manifest.renderer.smaa_enabled);
   assert(summary.case_manifest.renderer.transmission_depth_diagnostic_enabled);
   assert(summary.case_manifest.renderer.render_scale == 1.0f);
   assert(summary.case_manifest.content_scale == 1.0f);

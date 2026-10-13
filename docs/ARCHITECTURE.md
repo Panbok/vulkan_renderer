@@ -843,8 +843,9 @@ post controls and the temporal consumer. The main dataflow is:
    transmission pyramid. Transmission and ordinary blend sample the current
    integrated volume when froxel fog is enabled. Shade transmission from deepest
    to nearest, resolve requested picking, then draw ordinary blend.
-4. Reconstruct temporal Scene HDR through portable TAA.
-5. Meter exposure, produce/combine bloom, tonemap/FXAA and compose native UI.
+4. Compose the jittered Scene HDR and SMAA T2x's history accept mask.
+5. Meter exposure, produce/combine bloom, tonemap, run SMAA T2x on the
+   display-linear image and compose native UI.
 
 Optional profiled surface diffusion uses eight scene-authored RGB distance
 profiles, 32 samples and a 32 internal-pixel radius cap. Two graph-owned RGBA16F
@@ -1113,8 +1114,8 @@ were removed from the desktop pipeline on 2026-10-12
 [ADR-052](adr/052-vulkan-fsr31-upscaling.md)). Specular indirect light comes
 from the global environment and box-projected reflection probes on both
 lobes of a coated material, and diffuse indirect light from lightmaps,
-diffuse volumes and the environment. Portable TAA keeps only its ordinary
-and static-accumulation modes
+diffuse volumes and the environment. SMAA T2x replaced portable TAA and
+FXAA on 2026-10-13
 ([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
 Planar water reflections and DDGI-style volume updates are proposed work
 ([Short-history rendering](proposals/short-history-rendering.md)).
@@ -1174,27 +1175,19 @@ fixed splits and zero proactive budget remain defaults. See
 [ADR-041](adr/041-retained-cascaded-shadows.md) and
 [ADR-033](adr/033-occupied-depth-sdsm-feedback.md).
 
-Portable TAA consumes rigid motion, stable instance/submesh identity, depth and
-reactive composition. Current color is reconstructed onto the unjittered grid;
-history validation accounts for raw metadata's jittered footprint. Opaque/background
-coverage can survive camera motion while its surface, depth and motion remain
-supported nearby; partial support reduces history confidence. Temporal history uses
-the preceding submitted frame with GPU dependencies, and output reuse still
-proves completion. Fully supported 4x4 color footprints use clamped cubic
-reconstruction; rejected edges keep masked bilinear sampling. Resets exclude
-every pre-reset producer. A frame-input content signature plus native resource and
-graph revisions enables accumulation without coverage clipping for unchanged
-scenes, including static glass and thin geometry absent in one jitter phase.
-Pending writers and unsupported text disable that path; any content or camera
-change restores normal rejection. After 128 unchanged samples, nonreactive pixels
-retain their completed value exactly. Sample age uses the existing depth-history
-spare channel, with no additional images. Retained shadow images converge to a
-common submitted projection so cached per-image fits cannot prevent temporal
-convergence after camera movement. The G-buffer writes
-sky rotation motion for portable TAA. Completed history remains
-scene-linear. It is stored at the frame's whole-stop pre-exposure, and each
-consumer rescales it exactly when that changes
-([ADR-081](adr/081-physical-night-sky.md)).
+SMAA T2x alternates two subpixel jitters and runs SMAA 1x on each frame's
+display-linear image after the tonemap; its resolve blends the antialiased
+subsample with the previous frame's, reprojected by rigid motion and weighted
+by the reference's velocity term times a per-pixel accept mask. The
+scene-linear `Temporal.Resolve` writes that mask from stable instance/submesh
+identity and depth: a still pixel always accepts, a moving one needs its
+surface among the 3x3 previous texels at a relative depth tolerance. No scene
+colour history remains; history uses the preceding submitted frame with GPU
+dependencies, output reuse still proves completion, and resets exclude every
+pre-reset producer. Retained shadow images converge to a common submitted
+projection so cached per-image fits cannot prevent convergence after camera
+movement. The G-buffer writes sky rotation motion for the resolve
+([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
 
 Automatic exposure adapts over elapsed time since its selected completed state,
 using a renderer-owned committed exposure clock and a bounded hitch policy.
@@ -1231,14 +1224,12 @@ The frame's `image_sharpness` control is finite in `[0,1]`, with zero as an exac
 bypass. The sample initializes it to 0.25; zero-initialized packet callers and
 harness cases default to zero. A shared, neighborhood-limited sharpening filter
 operates on tone-mapped linear Scene RGB in the existing presentation draw, after
-FXAA when the desktop pipeline enables it. FXAA reuses its samples and
-attenuates sharpening where its subpixel blend is strongest. UI, editor recomposition, diagnostic views and
+SMAA on the desktop pipeline. UI, editor recomposition, diagnostic views and
 temporal histories are excluded.
-When FXAA or sharpening filters the final draw, an output-size RGBA16F
+When SMAA or sharpening filters the final draw, an output-size RGBA16F
 display-linear image is prepared first, so the display transform runs once per
-pixel rather than per filter sample. FXAA filters only desktop frames without
-temporal reconstruction: portable TAA frames omit it, and the tiled
-pipeline draws no FXAA (ADR-087).
+pixel rather than per filter sample. SMAA runs on desktop frames in the default
+render mode; the tiled pipeline draws no SMAA (ADR-087).
 [ADR-043](adr/043-presentation-dpi-and-color-transfer.md) records its measured
 cost.
 `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic per-sample reference path. The
@@ -1349,7 +1340,7 @@ end. Transfer timing is not supported. Every Vulkan pass interval likewise
 starts no earlier than the previous timed pass's end.
 The harness owns case identity, artifacts, comparison and performance authority.
 After resource/bootstrap readiness it starts authored warmup at the common zero
-of raster jitter and the contact-shadow noise period, with temporal history
+of the raster jitter and the cloud march noise period, with temporal history
 invalidated; replay version 8 aligns to that 64-frame period.
 See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-and-evidence.md).
 
@@ -1534,11 +1525,12 @@ These are limits of current code or retained acceptance, not scheduled promises:
   and the [Windows/Vulkan verification checklist](proposals/windows-vulkan-verification.md).
 - SH needs deterministic GPU projection fixtures, local-probe quality review,
   submitted-frame lifetime stress and a valid comparative performance record.
-- Moving TAA quality, final-color baseline acceptance and authoritative
-  post-effect/reconstruction performance require their own matched Vulkan
-  evidence. No tiled-pipeline Bistro baseline is accepted yet.
-- TAA and motion blur read the immediately preceding frame's
-  history, but cloud history without TAA and froxel fog history still take
+- SMAA T2x with skinned or procedural motion, final-color baseline
+  acceptance and authoritative post-effect/reconstruction performance require
+  their own matched Vulkan evidence. No tiled-pipeline Bistro baseline is
+  accepted yet.
+- SMAA T2x and motion blur read the immediately preceding frame's
+  history, but cloud history without T2x and froxel fog history still take
   the newest completed producer, so their history age follows GPU timing
   ([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
 - Native evidence for the 2026-10-12 removal of SSR, SSGI and FSR 3.1

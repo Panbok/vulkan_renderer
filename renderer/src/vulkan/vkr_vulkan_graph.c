@@ -1226,8 +1226,11 @@ vkr_internal bool8_t vkr_vk_graph_sampled_index(VkrVulkanRenderer *renderer,
 vkr_internal bool8_t vkr_vk_graph_fullscreen_source(VkrVulkanRenderer *renderer,
                                                     const VkrRgPass *pass,
                                                     uint32_t *out_index) {
+  /* Binding 6 is SMAA's antialiased display-linear image, 5 the plain one;
+     a pass declares at most one of them for its frame. */
   const uint32_t binding =
-      vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u)   ? 5u
+      vkr_rg_pass_find_image_use(&pass->desc, 6u, 0u)   ? 6u
+      : vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u) ? 5u
       : vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u) ? 2u
       : vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u) ? 3u
       : vkr_rg_pass_find_image_use(&pass->desc, 4u, 0u) ? 4u
@@ -1517,7 +1520,7 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
                                       target_height);
   }
   case VKR_RG_EXECUTOR_EDITOR: {
-    /* The retained sRGB texture already contains exposure, tonemap and FXAA.
+    /* The retained sRGB texture already contains exposure, tonemap and SMAA.
        Decode/sample/re-encode it without applying those operations again. */
     uint32_t texture_index = 0u;
     if (!vkr_vk_graph_fullscreen_source(renderer, pass, &texture_index))
@@ -1553,7 +1556,8 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     const bool8_t prepare_display_linear =
         kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE;
     const bool8_t source_display_linear =
-        vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u) != NULL;
+        vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u) != NULL ||
+        vkr_rg_pass_find_image_use(&pass->desc, 6u, 0u) != NULL;
     uint32_t texture_index = 0u;
     const VkrRgBufferUse *exposure_use =
         vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
@@ -2008,6 +2012,14 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     return vkr_vk_prepare_gtao_evaluate(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_GTAO_DENOISE:
     return vkr_vk_prepare_gtao_denoise(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_SMAA_EDGES:
+    return vkr_vk_prepare_smaa_edges(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_SMAA_WEIGHTS:
+    return vkr_vk_prepare_smaa_weights(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_SMAA_BLEND:
+    return vkr_vk_prepare_smaa_blend(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_SMAA_RESOLVE:
+    return vkr_vk_prepare_smaa_resolve(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_TRANSMISSION_SHADE:
     return vkr_vk_prepare_deferred_transmission(renderer, &prepared->compute,
                                                 pass);
@@ -2047,8 +2059,6 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
   slot->hzb_history_output = NULL;
   slot->temporal_transform_input = NULL;
   slot->temporal_transform_output = NULL;
-  slot->temporal_color_input = NULL;
-  slot->temporal_color_output = NULL;
   slot->temporal_depth_input = NULL;
   slot->temporal_depth_output = NULL;
   slot->temporal_identity_input = NULL;
@@ -2056,6 +2066,8 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
   slot->temporal_surface_input = NULL;
   slot->temporal_surface_output = NULL;
   slot->temporal_history_valid = false_v;
+  slot->smaa_history_input = NULL;
+  slot->smaa_history_output = NULL;
   slot->motion_blur_interval_scale = 0.0f;
   slot->froxel_history_input = NULL;
   slot->froxel_history_output = NULL;

@@ -1347,6 +1347,9 @@ vkr_internal bool8_t vkr_vk_create_published_sampler(
       .addressModeU = vkr_vk_sampler_address_mode(description->u_repeat_mode),
       .addressModeV = vkr_vk_sampler_address_mode(description->v_repeat_mode),
       .addressModeW = vkr_vk_sampler_address_mode(description->w_repeat_mode),
+      /* SMAA T2x's jitter blurs sampled detail; the bias restores it, as the
+         reference recommends (ADR-037). */
+      .mipLodBias = VKR_VULKAN_MATERIAL_LOD_BIAS,
       .anisotropyEnable =
           description->anisotropy_enable && max_anisotropy > 1.0f,
       .maxAnisotropy = description->anisotropy_enable ? max_anisotropy : 1.0f,
@@ -1662,6 +1665,7 @@ void vkr_vk_collect_asset_publications(VkrVulkanRenderer *renderer,
   vkr_vk_collect_ltc_upload(renderer, completed);
   vkr_vk_collect_sheen_upload(renderer, completed);
   vkr_vk_collect_anisotropy_upload(renderer, completed);
+  vkr_vk_collect_smaa_upload(renderer, completed);
   for (uint32_t i = 0u; i < ArrayCount(renderer->geometry_megabuffer.retired);
        ++i) {
     VkrVulkanRetiredGeometryMegabuffer *retired =

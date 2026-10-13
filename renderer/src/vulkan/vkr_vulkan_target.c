@@ -464,6 +464,7 @@ void vkr_vulkan_renderer_cancel_frame(VkrVulkanRenderer *renderer) {
   slot->ltc_upload_recorded = false_v;
   slot->sheen_upload_recorded = false_v;
   slot->anisotropy_upload_recorded = false_v;
+  slot->smaa_upload_recorded = false_v;
   vkr_vk_discard_unsubmitted_asset_uses(renderer);
   const bool8_t submitted = slot->acquired_window_image
                                 ? vkr_vk_present_cancelled_frame(renderer, slot)

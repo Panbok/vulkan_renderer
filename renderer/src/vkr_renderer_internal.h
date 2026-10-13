@@ -214,7 +214,7 @@ struct VkrRenderer {
      it follows (vkr_froxel_fog_static_generation). */
   uint64_t froxel_static_seen;
   uint64_t froxel_static_followed;
-  bool8_t fxaa_enabled;
+  bool8_t smaa_enabled;
   /* False only for the analytic reference path; a frame uses the display-linear
      target when its final pass filters (vkr_renderer_prepare_frame_data). */
   bool8_t post_transform_cache_enabled;

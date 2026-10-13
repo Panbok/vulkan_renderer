@@ -906,7 +906,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
      and without it must not require a rebuild. */
   renderer->bloom_forced_disabled =
       vkr_renderer_env_enabled("VKR_BLOOM_DISABLED");
-  renderer->fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED");
+  renderer->smaa_enabled = !vkr_renderer_env_enabled("VKR_SMAA_DISABLED");
   /* Filtering display-linear pixels is the default (ADR-043); only the explicit
      "0" spelling keeps the analytic per-tap transform as a reference. */
   const char *post_transform_cache = getenv("VKR_POST_TRANSFORM_CACHE");
@@ -1038,17 +1038,25 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.tiled_pipeline = tiled;
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
-  /* Portable TAA reconstructs edges temporally, so FXAA filters only
-     frames without temporal reconstruction. The tiled pipeline's
-     multisampling resolves its edges instead (ADR-087). */
+  /* SMAA antialiases the display-linear target on the desktop pipeline. The
+     tiled pipeline's multisampling resolves its edges instead (ADR-087), and
+     the analytic reference path omits the target. */
+  const bool8_t default_output =
+      prepared->frame.scene_rendering &&
+      packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
+  prepared->frame.smaa_enabled = rf->smaa_enabled && !tiled && default_output &&
+                                 rf->post_transform_cache_enabled;
+  /* SMAA T2x: the two-subsample jitter and its resolve run with SMAA. The
+     motion and history views keep them to show the resolve's inputs. */
+  const bool8_t temporal_view =
+      packet->globals.render_mode == VKR_RENDER_MODE_TEMPORAL_MOTION ||
+      packet->globals.render_mode == VKR_RENDER_MODE_TEMPORAL_HISTORY;
   const bool8_t temporal_frame =
-      rf->temporal_enabled && !tiled &&
-      packet->globals.render_mode != VKR_RENDER_MODE_INDIRECT_DIFFUSE &&
-      packet->globals.render_mode != VKR_RENDER_MODE_WIREFRAME && !orthographic;
-  prepared->frame.fxaa_enabled = rf->fxaa_enabled && !temporal_frame && !tiled;
+      rf->temporal_enabled && !tiled && !orthographic &&
+      (prepared->frame.smaa_enabled || temporal_view);
   /* The display-linear target only pays off when the final pass filters. */
   const bool8_t output_filtered =
-      prepared->frame.fxaa_enabled || packet->globals.image_sharpness > 0.0f;
+      prepared->frame.smaa_enabled || packet->globals.image_sharpness > 0.0f;
   prepared->frame.post_transform_cache_enabled =
       rf->post_transform_cache_enabled && output_filtered &&
       prepared->frame.scene_rendering &&
@@ -1185,7 +1193,6 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       .width = temporal_width,
       .height = temporal_height,
       .render_mode = packet->globals.render_mode,
-      .jitter_phase_count = VKR_TEMPORAL_SEQUENCE_LENGTH,
       .explicit_reset_reasons =
           rf->temporal_reset_reasons |
           (fog_changed ? VKR_TEMPORAL_RESET_SCENE_CHANGE : 0u),
@@ -1285,7 +1292,9 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   if (prepared->frame.dof_enabled)
     prepared->frame.dof = vkr_dof_prepare(
         packet->globals.dof_focus_distance, packet->globals.dof_f_stop,
-        packet->globals.projection, prepared->frame.temporal.jitter_pixels,
+        /* SMAA T2x resolves after the tonemap, so DoF reads the jittered
+           raster image and its own depth with no offset between them. */
+        packet->globals.projection, (Vec2){0.0f, 0.0f},
         prepared->frame.scene_output_width, prepared->frame.scene_output_height,
         temporal_width, temporal_height);
   prepared->frame.motion_blur_delta_seconds = packet->frame.delta_time;
@@ -1299,9 +1308,9 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   if (prepared->frame.motion_blur_enabled)
     prepared->frame.motion_blur = vkr_motion_blur_prepare(
         packet->globals.motion_blur_shutter_angle, packet->globals.projection,
-        prepared->frame.temporal.jitter_pixels,
-        prepared->frame.scene_output_width, prepared->frame.scene_output_height,
-        temporal_width, temporal_height);
+        /* Motion blur reads the jittered raster image too (see DoF). */
+        (Vec2){0.0f, 0.0f}, prepared->frame.scene_output_width,
+        prepared->frame.scene_output_height, temporal_width, temporal_height);
   /* GTAO is current-frame spatial state: like bloom, it has no prepare/commit
      history chain. */
   prepared->frame.gtao = vkr_gtao_prepare(

@@ -112,8 +112,8 @@ bool vkr_local_shadow_mask_tag_matches(float tag, uint light_index)
 // Fully filtered lights take the first VKR_LOCAL_SHADOW_FILTER_TAP_COUNT
 // entries of the progressive Poisson table, unrotated. Under temporal
 // reconstruction Shadow.LocalMask takes the first
-// VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT instead, rotated per pixel and frame, and
-// TAA integrates the rotations into a disk.
+// VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT instead, rotated per pixel in two phases
+// that follow SMAA T2x's jitter, and its resolve averages them.
 #define VKR_LOCAL_SHADOW_FILTER_TAP_COUNT 9u
 #define VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT 4u
 
@@ -124,7 +124,7 @@ bool vkr_local_shadow_mask_tag_matches(float tag, uint light_index)
 #define VKR_LOCAL_SHADOW_INLINE_TAP_COUNT 4u
 
 // Tap rotation (cosine, sine) from interleaved gradient noise over the pixel,
-// shifted each frame by the temporal noise index.
+// shifted by the temporal noise index, which alternates with T2x's jitter.
 float2 vkr_local_shadow_tap_rotation(uint2 pixel, uint noise_index)
 {
     float2 position = float2(pixel) + 5.588238f * float(noise_index);
@@ -241,7 +241,7 @@ float vkr_local_light_contribution(float3 color, float intensity,
 #define VKR_LOCAL_SHADOW_CONTACT_LENGTH 0.25f
 
 // March start offset in [0, 1): an R2 sequence over the pixel, advanced by the
-// temporal noise index so TAA integrates the step pattern.
+// temporal noise index so SMAA T2x's resolve averages two step patterns.
 float vkr_local_shadow_contact_noise(uint2 pixel, uint noise_index)
 {
     float value = 0.5f + float(pixel.x) * 0.7548776662f +

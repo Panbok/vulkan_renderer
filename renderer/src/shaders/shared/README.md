@@ -22,7 +22,7 @@ bits; `gpu_draw.slangh` selects a candidate's level from its LOD row and morphs
 terrain vertices, and `draw.metalh` mirrors both for the native Metal library.
 
 `sharpen_kernel.slangh` owns neighborhood-limited detail recovery in post-tonemap
-linear RGB. Both final presentation shaders consume it after optional FXAA;
+linear RGB. Both final presentation shaders consume it after optional SMAA;
 native code owns sampling, frame strength and UI/composite bypasses.
 
 `point_light.slangh` owns the four-vector punctual-light GPU row compiled by

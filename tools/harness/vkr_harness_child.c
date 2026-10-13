@@ -26,26 +26,25 @@
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "script/vkr_script_host.h"
-#include "vkr_gpu_abi.h"
+#include "vkr_clouds.h"
 #include "vkr_temporal.h"
 #include <math.h>
 
 #define VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES GB(1)
 
-_Static_assert(VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD %
-                       VKR_TEMPORAL_SEQUENCE_LENGTH ==
+_Static_assert(VKR_CLOUD_MARCH_NOISE_PERIOD % VKR_TEMPORAL_SEQUENCE_LENGTH ==
                    0u,
                "Replay phase alignment must cover both temporal sequences");
 
 /* Everything below drives an instrumented repetition. Without
    instrumentation, vkr_harness_child_run reports the harness unavailable. */
 #if VKR_METRICS_ENABLED
-/* The contact-shadow noise period covers the raster jitter sequence
+/* The cloud march noise period covers the raster jitter sequence
    (asserted above), so its zero aligns both. */
 vkr_internal uint32_t
 vkr_harness_temporal_alignment(const VkrRenderer *renderer) {
   vkr_renderer_join_render_thread(renderer);
-  return VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD;
+  return VKR_CLOUD_MARCH_NOISE_PERIOD;
 }
 
 vkr_internal bool8_t vkr_harness_u64_add(uint64_t a, uint64_t b,

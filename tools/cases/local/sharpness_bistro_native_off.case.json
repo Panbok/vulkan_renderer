@@ -43,7 +43,7 @@
     "bloom_knee": 0.5,
     "bloom_intensity": 0.05,
     "image_sharpness": 0,
-    "fxaa_enabled": false
+    "smaa_enabled": false
   },
   "camera": {
     "mode": "static",

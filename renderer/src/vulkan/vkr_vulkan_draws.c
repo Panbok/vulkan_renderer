@@ -2092,21 +2092,16 @@ bool8_t vkr_vk_prepare_packet_fullscreen(
           : 0.0f;
   const float32_t image_sharpness =
       prepare_display_linear ? 0.0f : requested_sharpness;
-  root->transmission_sampler =
-      (composite || renderer->graph->packet->fxaa_enabled ||
-       requested_sharpness > 0.0f)
-          ? renderer->transmission_sampler_slot
-          : 0u;
+  root->transmission_sampler = (composite || requested_sharpness > 0.0f)
+                                   ? renderer->transmission_sampler_slot
+                                   : 0u;
   root->exposure_state = exposure_state ? exposure_state : manual_state_address;
   root->point_light_grid_origin_cell_size = (Vec4){
       (float32_t)output_width, (float32_t)output_height, image_sharpness, 0.0f};
   const VkrVulkanPushConstants push = {
       .root = root_address,
       .material_index = 0u,
-      .flags = flags | (!composite && !prepare_display_linear &&
-                                renderer->graph->packet->fxaa_enabled
-                            ? VKR_VULKAN_FULLSCREEN_FXAA
-                            : 0u),
+      .flags = flags,
   };
   *out = (VkrVulkanPreparedFullscreen){
       .pipeline = renderer->packet_pipelines[pipeline], .push = push};

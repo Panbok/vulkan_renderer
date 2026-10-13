@@ -22,7 +22,7 @@
     "skybox": true,
     "taa_enabled": false,
     "tonemap_enabled": true,
-    "fxaa_enabled": false,
+    "smaa_enabled": false,
     "shadow_preset": "balanced",
     "shadow_cascades": 3,
     "render_mode": "default",

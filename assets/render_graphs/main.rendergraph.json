@@ -1237,7 +1237,7 @@
       ]
     },
     {
-      "name": "temporal_history_color",
+      "name": "scene_resolved_color",
       "type": "image",
       "condition": "scene_rendering",
       "extent": {
@@ -1250,7 +1250,8 @@
         "TRANSFER_SRC"
       ],
       "flags": [
-        "HISTORY",
+        "TRANSIENT",
+        "PER_IMAGE",
         "RESIZABLE"
       ]
     },
@@ -1261,7 +1262,7 @@
       "extent": {
         "mode": "viewport"
       },
-      "format": "R16G16_SFLOAT",
+      "format": "R32_SFLOAT",
       "usage": [
         "STORAGE"
       ],
@@ -1299,6 +1300,24 @@
       ],
       "flags": [
         "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "temporal_history_accept",
+      "type": "image",
+      "condition": "scene_rendering",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
         "RESIZABLE"
       ]
     },
@@ -1783,6 +1802,77 @@
       ]
     },
     {
+      "name": "smaa_edges_fullscreen",
+      "type": "image",
+      "condition": "scene_rendering && smaa_enabled && !editor_enabled",
+      "extent": {
+        "mode": "window"
+      },
+      "format": "R8G8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "smaa_weights_fullscreen",
+      "type": "image",
+      "condition": "scene_rendering && smaa_enabled && !editor_enabled",
+      "extent": {
+        "mode": "window"
+      },
+      "format": "R8G8B8A8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "smaa_output_fullscreen",
+      "type": "image",
+      "condition": "scene_rendering && smaa_enabled && !editor_enabled",
+      "extent": {
+        "mode": "window"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "smaa_resolved_fullscreen",
+      "type": "image",
+      "condition": "scene_rendering && smaa_enabled && !editor_enabled",
+      "extent": {
+        "mode": "window"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
       "name": "post_display_linear_editor",
       "type": "image",
       "condition": "scene_rendering && post_transform_cache_enabled && editor_enabled",
@@ -1792,6 +1882,77 @@
       "format": "R16G16B16A16_SFLOAT",
       "usage": [
         "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "smaa_edges_editor",
+      "type": "image",
+      "condition": "scene_rendering && smaa_enabled && editor_enabled",
+      "extent": {
+        "mode": "editor_image"
+      },
+      "format": "R8G8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "smaa_weights_editor",
+      "type": "image",
+      "condition": "scene_rendering && smaa_enabled && editor_enabled",
+      "extent": {
+        "mode": "editor_image"
+      },
+      "format": "R8G8B8A8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "smaa_output_editor",
+      "type": "image",
+      "condition": "scene_rendering && smaa_enabled && editor_enabled",
+      "extent": {
+        "mode": "editor_image"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "smaa_resolved_editor",
+      "type": "image",
+      "condition": "scene_rendering && smaa_enabled && editor_enabled",
+      "extent": {
+        "mode": "editor_image"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
         "SAMPLED"
       ],
       "flags": [
@@ -9472,18 +9633,6 @@
           "binding": 0
         },
         {
-          "image": "hdr_pre_transmission",
-          "access": "SAMPLED",
-          "binding": 1,
-          "when": "!subsurface_enabled"
-        },
-        {
-          "image": "subsurface_color",
-          "access": "SAMPLED",
-          "binding": 1,
-          "when": "subsurface_enabled"
-        },
-        {
           "image": "temporal_motion",
           "access": "SAMPLED",
           "binding": 2
@@ -9548,7 +9697,7 @@
       ],
       "writes": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "STORAGE_WRITE",
           "binding": 8
         },
@@ -9566,6 +9715,11 @@
           "image": "temporal_history_surface",
           "access": "STORAGE_WRITE",
           "binding": 11
+        },
+        {
+          "image": "temporal_history_accept",
+          "access": "STORAGE_WRITE",
+          "binding": 16
         }
       ],
       "execute": "pass.temporal.resolve"
@@ -9584,18 +9738,6 @@
           "binding": 0
         },
         {
-          "image": "scene_pre_transmission",
-          "access": "SAMPLED",
-          "binding": 1,
-          "when": "!subsurface_enabled"
-        },
-        {
-          "image": "subsurface_color",
-          "access": "SAMPLED",
-          "binding": 1,
-          "when": "subsurface_enabled"
-        },
-        {
           "image": "temporal_motion",
           "access": "SAMPLED",
           "binding": 2
@@ -9660,7 +9802,7 @@
       ],
       "writes": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "STORAGE_WRITE",
           "binding": 8
         },
@@ -9678,6 +9820,11 @@
           "image": "temporal_history_surface",
           "access": "STORAGE_WRITE",
           "binding": 11
+        },
+        {
+          "image": "temporal_history_accept",
+          "access": "STORAGE_WRITE",
+          "binding": 16
         }
       ],
       "execute": "pass.temporal.resolve"
@@ -9691,7 +9838,7 @@
       ],
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0
         }
@@ -9793,7 +9940,7 @@
       ],
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0
         },
@@ -9905,7 +10052,7 @@
       ],
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0,
           "when": "!motion_blur_enabled"
@@ -9993,7 +10140,7 @@
       ],
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0,
           "when": "!motion_blur_enabled"
@@ -10043,7 +10190,7 @@
       ],
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0,
           "when": "!dof_enabled && !motion_blur_enabled"
@@ -10170,7 +10317,7 @@
       ],
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0,
           "when": "!dof_enabled && !motion_blur_enabled"
@@ -10213,7 +10360,7 @@
       "condition": "scene_rendering && post_transform_cache_enabled && !editor_enabled",
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0
@@ -10259,13 +10406,113 @@
       "execute": "pass.tonemap.prepare"
     },
     {
+      "name": "Post.SMAA.Edges.Fullscreen",
+      "type": "compute",
+      "condition": "scene_rendering && smaa_enabled && !editor_enabled",
+      "reads": [
+        {
+          "image": "post_display_linear_fullscreen",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_edges_fullscreen",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.smaa.edges"
+    },
+    {
+      "name": "Post.SMAA.Weights.Fullscreen",
+      "type": "compute",
+      "condition": "scene_rendering && smaa_enabled && !editor_enabled",
+      "reads": [
+        {
+          "image": "smaa_edges_fullscreen",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_weights_fullscreen",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.smaa.weights"
+    },
+    {
+      "name": "Post.SMAA.Blend.Fullscreen",
+      "type": "compute",
+      "condition": "scene_rendering && smaa_enabled && !editor_enabled",
+      "reads": [
+        {
+          "image": "post_display_linear_fullscreen",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "smaa_weights_fullscreen",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "temporal_motion",
+          "access": "SAMPLED",
+          "binding": 3
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_output_fullscreen",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        }
+      ],
+      "execute": "pass.smaa.blend"
+    },
+    {
+      "name": "Post.SMAA.Resolve.Fullscreen",
+      "type": "compute",
+      "condition": "scene_rendering && smaa_enabled && !editor_enabled",
+      "reads": [
+        {
+          "image": "smaa_output_fullscreen",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "temporal_motion",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "temporal_history_accept",
+          "access": "SAMPLED",
+          "binding": 2
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_resolved_fullscreen",
+          "access": "STORAGE_WRITE",
+          "binding": 3
+        }
+      ],
+      "execute": "pass.smaa.resolve"
+    },
+    {
       "name": "Post.Tonemap.Fullscreen",
       "type": "graphics",
       "domain": "POST",
       "condition": "scene_rendering && !editor_enabled",
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0
@@ -10302,7 +10549,13 @@
           "image": "post_display_linear_fullscreen",
           "access": "SAMPLED",
           "binding": 5,
-          "when": "post_transform_cache_enabled"
+          "when": "post_transform_cache_enabled && !smaa_enabled"
+        },
+        {
+          "image": "smaa_resolved_fullscreen",
+          "access": "SAMPLED",
+          "binding": 6,
+          "when": "smaa_enabled"
         }
       ],
       "attachments": {
@@ -10323,7 +10576,7 @@
       "condition": "scene_rendering && post_transform_cache_enabled && editor_enabled",
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0
@@ -10357,13 +10610,113 @@
       "execute": "pass.tonemap.prepare"
     },
     {
+      "name": "Post.SMAA.Edges.Editor",
+      "type": "compute",
+      "condition": "scene_rendering && smaa_enabled && editor_enabled",
+      "reads": [
+        {
+          "image": "post_display_linear_editor",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_edges_editor",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.smaa.edges"
+    },
+    {
+      "name": "Post.SMAA.Weights.Editor",
+      "type": "compute",
+      "condition": "scene_rendering && smaa_enabled && editor_enabled",
+      "reads": [
+        {
+          "image": "smaa_edges_editor",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_weights_editor",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.smaa.weights"
+    },
+    {
+      "name": "Post.SMAA.Blend.Editor",
+      "type": "compute",
+      "condition": "scene_rendering && smaa_enabled && editor_enabled",
+      "reads": [
+        {
+          "image": "post_display_linear_editor",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "smaa_weights_editor",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "temporal_motion",
+          "access": "SAMPLED",
+          "binding": 3
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_output_editor",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        }
+      ],
+      "execute": "pass.smaa.blend"
+    },
+    {
+      "name": "Post.SMAA.Resolve.Editor",
+      "type": "compute",
+      "condition": "scene_rendering && smaa_enabled && editor_enabled",
+      "reads": [
+        {
+          "image": "smaa_output_editor",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "temporal_motion",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "temporal_history_accept",
+          "access": "SAMPLED",
+          "binding": 2
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_resolved_editor",
+          "access": "STORAGE_WRITE",
+          "binding": 3
+        }
+      ],
+      "execute": "pass.smaa.resolve"
+    },
+    {
       "name": "Editor.Resolve",
       "type": "graphics",
       "domain": "POST",
       "condition": "scene_rendering && editor_enabled",
       "reads": [
         {
-          "image": "temporal_history_color",
+          "image": "scene_resolved_color",
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0
@@ -10388,7 +10741,13 @@
           "image": "post_display_linear_editor",
           "access": "SAMPLED",
           "binding": 5,
-          "when": "post_transform_cache_enabled"
+          "when": "post_transform_cache_enabled && !smaa_enabled"
+        },
+        {
+          "image": "smaa_resolved_editor",
+          "access": "SAMPLED",
+          "binding": 6,
+          "when": "smaa_enabled"
         }
       ],
       "attachments": {

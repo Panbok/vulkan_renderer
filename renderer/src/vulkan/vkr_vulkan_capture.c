@@ -11,7 +11,7 @@ vkr_internal bool8_t vkr_vk_capture_source(
   const char *name = channel->source_name;
   uint32_t layer = 0u;
   if (string_equals(channel->name, "scene_color")) {
-    name = "temporal_history_color";
+    name = "scene_resolved_color";
   } else if (string_equals(channel->name, "hdr_pre_transmission") &&
              packet->input.frame.editor_enabled) {
     name = "scene_pre_transmission";

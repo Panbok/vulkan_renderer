@@ -27,7 +27,7 @@
     "editor": false,
     "skybox": false,
     "taa_enabled": false,
-    "fxaa_enabled": false,
+    "smaa_enabled": false,
     "render_scale": 1.0,
     "dynamic_resolution": false,
     "exposure_mode": "manual",

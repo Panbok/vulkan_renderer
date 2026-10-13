@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.shader_fixes.bistro_fxaa_on",
   "suite": "local",
-  "description": "Matched moving Bistro FXAA on comparison; eight consecutive jitter phases.",
+  "description": "Matched moving Bistro SMAA on comparison; eight consecutive jitter phases.",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 20,
   "resolution": [
@@ -41,7 +41,7 @@
     "bloom_threshold": 1.0,
     "bloom_knee": 0.5,
     "bloom_intensity": 0.05,
-    "fxaa_enabled": true
+    "smaa_enabled": true
   },
   "camera": {
     "interpolation": "linear",

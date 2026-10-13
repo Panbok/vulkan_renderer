@@ -12,8 +12,9 @@ typedef struct VkrPreparedFrame {
   /** The tiled graphics pipeline (ADR-087): no temporal reconstruction,
    * screen-space effects, local shadows or transmission. */
   bool8_t tiled_pipeline;
-  /** FXAA filters the final draw: enabled and no temporal reconstruction. */
-  bool8_t fxaa_enabled;
+  /** SMAA antialiases the display-linear image: enabled, desktop pipeline,
+      default render mode and no temporal reconstruction. */
+  bool8_t smaa_enabled;
   bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
   /** The presenter composites this frame's Scene image with the UI on its

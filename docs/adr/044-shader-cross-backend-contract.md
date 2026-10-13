@@ -32,8 +32,8 @@ Each domain below names the backends that run it:
   light arithmetic that forward and deferred shading both call.
 - **Desktop**: only Vulkan runs it. This covers the visibility buffer,
   G-buffer resolve, deferred lighting, the local shadow mask, transmission
-  layers, TAA, GTAO, depth of field, motion blur, froxel
-  fog, profiled surface diffusion, FXAA and the clearcoat, sheen, anisotropy
+  layers, SMAA T2x, GTAO, depth of field, motion blur, froxel
+  fog, profiled surface diffusion and the clearcoat, sheen, anisotropy
   and thin-sheet diffuse transmission material layers.
 - **Tiled**: only Metal runs it: the tiled forward, atmosphere, blend and
   picking passes (ADR-087).
@@ -150,10 +150,10 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     both backends (`deferred.slang` before applied it to local views only),
     so the cascades' dynamic-caster views of ADR-041 take only dynamic
     casters. Native evidence: Metal only; the Vulkan change compiles.
-  - The tiled class draws no FXAA; its alpha-tested surfaces use alpha to
+  - The tiled class draws no SMAA; its alpha-tested surfaces use alpha to
     coverage and its opaque pass a tone-mapped tile resolve
     (`vkr_metal_tiled_resolve_tile`), a class difference the owner accepted
-    (ADR-087, decision 6). Vulkan's FXAA and tonemap shaders are unchanged.
+    (ADR-087, decision 6).
   - The Metal tonemap root's last 12 bytes carry `bloom_intensity` and the
     `bloom` texture; with `VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM` the pass adds
     that bloom level to its scene-linear samples, rounded to FP16 as
@@ -750,10 +750,10 @@ domain under the [evidence rules](#evidence-rules).
 | Volumetric clouds | Shared | `shared/cloud_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `ibl/sh_projection.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `world/tiled.metal` | `vulkan/slang/ibl/clouds.slang`, `ibl/default.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |
 | Exposure/bloom | Shared | matching `shared/*_kernel.slangh` | `metal/msl/post/exposure.metal`, `bloom.metal` | `vulkan/slang/post/exposure.slang`, `bloom.slang` |
 | GTAO | Desktop | `shared/gtao_kernel.slangh` | — | `vulkan/slang/post/gtao.slang` |
-| Temporal resolve | Desktop | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | — | `vulkan/slang/world/deferred.slang` |
+| Temporal accept mask | Desktop | native visibility/identity helpers | — | `vulkan/slang/world/deferred.slang` |
 | Depth of field, motion blur, surface diffusion | Desktop | `shared/dof_kernel.slangh`, `motion_blur_kernel.slangh`, `subsurface_kernel.slangh` | — | `vulkan/slang/post/dof.slang`, `motion_blur.slang`, `subsurface.slang` |
 | Tonemap/sharpening/display output | Shared | shared exposure state, `shared/sharpen_kernel.slangh`, `gt7_kernel.slangh`, `display_output_kernel.slangh`, `color_grading_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
-| FXAA | Desktop | — | — | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
+| SMAA T2x | Desktop | — | — | `vulkan/slang/post/smaa.slang` |
 | Text/UI | Shared | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
@@ -1103,11 +1103,11 @@ the restart's measured effect and ADR-062 the coat-shadow correction, both on
 the removed Metal desktop implementation. Vulkan compiles and all 95 SPIR-V
 modules validate; native Vulkan before/after captures are pending (checklist).
 
-The display-linear post target is the default whenever FXAA or sharpening
+The display-linear post target is the default whenever SMAA or sharpening
 filters the final draw ([ADR-043](043-presentation-dpi-and-color-transfer.md)).
-FXAA filters only desktop frames without temporal reconstruction; the frontend
-decides it once per frame, and the tiled class draws no FXAA. The Vulkan path
-has compiled SPIR-V but no recorded native execution.
+SMAA T2x runs on desktop frames in the default render mode; the frontend
+decides it once per frame, and the tiled class draws no SMAA
+([ADR-037](037-portable-same-resolution-temporal-antialiasing.md)).
 
 ## Windows Vulkan native feature sweep
 

@@ -1,208 +1,165 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-13
 authority: adr
 ---
 
-# ADR-037: Portable scene-linear temporal antialiasing
+# ADR-037: SMAA T2x temporal antialiasing
 
 ## Status
 
-Accepted (partial): rigid-motion production path; deformation and broader motion acceptance remain open.
-The desktop pipeline implements it on Vulkan. The tiled pipeline keeps no
-temporal history ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7).
+Accepted (partial): SMAA T2x on the desktop pipeline (Vulkan) since
+2026-10-13, replacing portable scene-linear TAA and FXAA (owner decision,
+[Short-history rendering](../proposals/short-history-rendering.md),
+section 2). Deformation and broader motion signals remain open. The tiled
+pipeline keeps multisampling without temporal history
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7).
 
 ## Context
 
-Visibility raster alone does not suppress subpixel geometry and specular shimmer.
-Temporal reconstruction needs stable identity, motion and completion-safe history,
-including transparent composition.
+Visibility raster alone does not suppress subpixel geometry and specular
+shimmer. Portable TAA averaged up to 128 frames, and its long history showed
+as smearing, ghosting and frozen noise; two of its static-accumulation inputs
+were found missing (skinned poses and cloud wind). Short history needs a
+morphological antialiaser for edges and at most one previous frame.
 
 ## Decision
 
-The desktop pipeline uses a same-resolution scene-linear temporal resolve with
-renderer-owned Halton jitter, previous transforms and reset policy. History
-selection uses the immediately preceding submitted frame, independently of
-command slots. Vulkan orders same-queue history writes before compute/fragment
-readers. CPU completion still governs output reuse. If the fixed history
-ring is busy, output acquisition waits for its oldest combined last use rather
-than failing the frame or overwriting live storage. Arbitrary completed-frame
-selection can split the eight jitter phases into independent accumulation chains.
-Reset publication invalidates older history entries, so an in-flight reset frame
-cannot leave pre-reset producers eligible for the next frame.
-Without final TAA, the temporal-transform tuple that motion blur reads
-follows the same rule: the immediately preceding frame's tuple, in flight or
-complete, or none (`vkr_vk_prepare_temporal_transform`). Until 2026-10-12
-that mode took the newest GPU-completed tuple, up to five frames old. In a
-TAA-off SSR case, removed with SSR, frames then read a tuple two to five
-frames old 53.5 % of the time, so screen-space history skipped submitted
-frames by GPU timing and replays differed. The same-queue
-transform-buffer and image barriers order the in-flight producer's writes,
-and output reuse still waits for completed last use.
-Projection jitter translates clip xy in proportion to clip w, so perspective
-and orthographic views both receive the requested depth-independent pixel shift.
+The desktop pipeline runs SMAA T2x (Jimenez et al. 2012) from the reference
+`SMAA.hlsl` at iryoku/smaa commit `71c806a8`, HIGH preset
+([`post/smaa.slang`](../../renderer/src/shaders/vulkan/slang/post/smaa.slang),
+[`vendor/smaa.md`](../../vendor/smaa.md)):
 
-History identity is the temporal instance index/generation plus a stable mesh-local
-submesh token, not a draw-local primitive number or compacted visible-row index.
-Native candidate preparation and ordinary-blend emission encode `submesh_index + 1`
-above bit 0 of the temporal flags. Ordinary blend requires the token to fit bits
-1–17 so its overlay encoding preserves all 17 token bits; opaque history retains
-the full token. Bit 0 elects the transform-history writer only. Readers of a valid
-previous transform do not need the writer bit. Zero tokens, or tokens that do not
-fit the blend overlay, disable the corresponding surface accumulation; external
-direct instance producers must preserve this identity contract.
+- **Jitter.** Two subsamples alternate every frame
+  (`VKR_TEMPORAL_SEQUENCE_LENGTH` 2): the reference's (0.25, −0.25) and
+  (−0.25, 0.25) with y up, which VKR's raster pixels, y down, write as
+  (+0.25, +0.25) and (−0.25, −0.25), with area-texture rows (1, 1, 1, 0) and
+  (2, 2, 2, 0) (`vkr_temporal_jitter_for_frame`,
+  `vkr_temporal_smaa_subsample_indices`). Projection jitter translates clip xy
+  in proportion to clip w.
+- **SMAA 1x on each subsample.** After exposure, grading and the GT7
+  transform write the display-linear target (ADR-043), three compute passes
+  run edge detection (luma of the square-root-encoded colour), blending
+  weights with diagonal and corner detection, and neighbourhood blending, which
+  stores `sqrt(5·|v|)` of the antialiased motion in alpha. The area
+  (160 × 560 R8G8) and search (64 × 16 R8) tables upload once at device
+  creation as permanent sampled rows.
+- **Resolve.** `Post.SMAA.Resolve` blends this frame's antialiased subsample
+  with last frame's at `uv + motion`, weight
+  `0.5 · saturate(1 − 30 · sqrt(|a²−b²| / 5)) · accept`, the reference's
+  velocity weighting times the accept mask below. VKR's motion already points
+  from the current to the previous position, so it is not negated as the
+  reference's motion-blur velocity is. The antialiased subsample is a history
+  image; the previous frame's instance is chosen as the temporal tuple is.
+- **Accept mask.** `Temporal.Resolve` no longer blends colour. It hands the
+  jittered raster colour (`scene_resolved_color`) to post-processing, keeps
+  raw depth (R32F), identity and surface token as history, and writes an R8
+  mask: zero without valid history, off screen, on invalid validity and on a
+  blended overlay without identity; for a pixel moving half a pixel or more,
+  also zero unless one of the 3 × 3 previous texels around its reprojected
+  position has its identity, surface token and, outside blended overlays, a
+  device depth within 2 % of the depth the surface had then. Reversed depth
+  is close to inverse linear depth, so the relative device tolerance is a
+  relative linear one; the former fixed 0.005 covered the whole depth range
+  beyond about 15 m at a 0.1 m near plane. A still pixel's history is the
+  other subsample of the same content, which may land on another leaf, wire
+  or silhouette side, so the identity and depth checks apply only to moving
+  pixels. Authored temporal reactivity no longer reduces the weight: two
+  frames ghost for at most one, and a partial weight makes a still image
+  alternate between its subsamples.
+- **Flags.** SMAA runs on desktop frames in the default render mode with the
+  display-linear target (`VKR_SMAA_DISABLED` turns it off); T2x's jitter and
+  resolve run with SMAA, and the motion and history views (render modes 7 and
+  8) keep them. A perspective projection change no longer resets history;
+  a change to or from an orthographic projection still does, because sky
+  reprojection assumes an orthographic eye ray stays fixed.
+- **Inputs moved off TAA.** Local shadows keep their four rotated filter taps
+  and contact-march offset (owner decision, 2026-10-13), but both alternate
+  between two phases in step with the jitter, which the resolve averages into
+  about eight taps; a still image therefore stays stable, and penumbrae keep a
+  fine per-pixel pattern. Nine fixed taps cost 1.28 ms more on the Bistro
+  street at 2560 × 1440. DoF and motion blur read
+  the jittered raster image and its depth with no offset. Vulkan material
+  samplers take a −0.5 texture LOD bias for the jitter's blur, as the
+  reference recommends; it applies to explicit-gradient and implicit
+  sampling alike.
 
-Portable resolve reconstructs current color onto the unjittered pixel grid with
-a positive tent at `pixel + current_jitter`. Previous color lives on that same
-grid and uses unjittered motion. Identity and depth remain samples of the raw
-raster grid; they are not labels for the complete accumulated color. Each
-canonical history color tap validates the raw footprint that contributed to its
-reconstruction, offset by the previous jitter. Color coordinates clamp before
-deriving that footprint, including at image borders.
+History selection is unchanged in kind: the immediately preceding submitted
+frame, in flight or complete, or none, now anchored on the depth history. Its
+same-queue barriers order the previous producer's writes before the readers,
+and output reuse waits for completed last use. Reset publication invalidates
+older depth and SMAA history, so an in-flight reset frame cannot leave
+pre-reset producers eligible. Motion blur reads the same transform tuple with
+or without T2x.
 
-Raw history samples normally require matching identity, submesh token and depth.
-A nonreactive opaque/background sample may also retain different subpixel
-coverage when that exact surface and expected previous depth are supported in
-the current 3x3 neighborhood. Supporting motion must agree within half a pixel,
-and its projected position must remain within the local footprint. This applies
-to camera motion as well as stationary views. Blend/transmission composition
-cannot use this fallback; zero non-sky tokens remain invalid. Weighted raw
-support supplies confidence for both bilinear reconstruction and final history
-retention, so a small accepted contributor cannot authorize a full-strength
-mixed color. The inner support cache uses at most nine metadata samples.
+History identity is the temporal instance index and generation plus a stable
+mesh-local submesh token in bits 1–17 of the temporal flags; bit 0 elects the
+transform-history writer. Opaque and rigid transmission and blend paths
+publish current-to-previous motion, and the G-buffer writes
+translation-free sky rotation motion.
 
-A fully matching raw footprint permits Catmull-Rom history reconstruction using
-nine bilinear color samples and at most 25 unique metadata samples. Only the
-positive inner weights combine into hardware interpolation; negative outer
-lobes stay separate. Cubic taps are never partially renormalized and remain
-disabled where the canonical 4x4 footprint crosses an image border. A 3x3
-current-color range clamps either reconstruction. Ordinary blend has no matching
-written depth and retains identity-only bilinear reconstruction. Motion and
-identity do not establish stationarity of animated alpha, materials or lighting.
-
-For consecutive unchanged scenes, a checked accumulation path retains coverage
-even when thin geometry disappears from the entire current neighborhood. One
-allocation-free CPU scan hashes explicit packet semantics into two 64-bit
-words: unjittered camera, geometry and transforms, materials, lighting with
-every point light of the scene table, shadows and GTAO controls. Native color
-history also records resource-radiance, candidate-publication and graph
-revisions. Both eligible records must match; a camera-only match is
-insufficient. Text and pending publication/upload/IBL writer frames are
-excluded. A frame whose records match the selected producer's takes the
-128-sample static integral at once; any mismatch or invalid history takes
-the ordinary path. Only successful submission publishes a frame's record,
-so cancelled frames cannot change the next producer's. Until 2026-10-12,
-frames with SSR enabled first stayed on ordinary TAA for 128 matching
-frames with retention capped at 0.9; that settling mode was removed with
-SSR ([ADR-055](055-screen-space-reflections.md)).
-
-Native TAA lowering encodes ordinary or static-accumulate mode in the
-existing scene-history word. The selected producer's scene equality retains
-its CPU ownership. Camera stationarity remains separate because it also
-controls metadata validation. Vulkan's mode is at offset 124 in its 160-byte
-root, and shared constants define the retention math.
-
-The signature is a probabilistic content check, not collision-free equality.
-It excludes jitter/noise phase and downstream exposure, bloom and UI. The scan
-runs only while portable TAA is on.
-
-That path reads canonical history at the same pixel without coverage rejection,
-neighborhood clipping or contrast-derived glass reactivity. Authored material
-reactivity and basic validity/identity exclusions still apply. The unused second
-depth-history channel stores sample age. Since 2026-10-11 the ordinary resolve
-writes the effective sample count of its result, `1 / ((1 - w)² + w² / n)`
-from the history texel's count `n` and its blend weight `w`, capped at 127
-(`vkr_temporal_effective_samples`): a running mean gives `n + 1`, and a
-constant 0.9 converges to 19. The static integral therefore continues from
-the ordinary history instead of restarting at one sample, and it includes
-ordinary-phase samples. Since 2026-10-12 a still pixel (stationary camera,
-under 0.01 pixel of motion) in an ordinary frame stores zero instead. An
-unchanged scene matches its signature on the camera's first still frame and
-takes the static path, so a still pixel in an ordinary frame saw a content
-change; its 0.99 history still holds the old content, and the static
-integral restarts from the current frame there. Moving pixels keep the
-camera-stop seed. A hashed input
-that still changes on the frames after a camera stop, as cascades that SDSM
-fits to the new view can, keeps those frames ordinary and restarts every
-still pixel's integral. The ordinary resolve reads one more float2 per pixel. Checked accumulation
-increments it up to 128 and uses `(age - 1) / age` retention. After 128 unchanged
-samples, nonreactive pixels copy their completed history exactly. A capped
-exponential average would continue oscillating with subpixel coverage indefinitely.
-The finite sample count spans two complete GTAO noise cycles and sixteen raster
-jitter cycles; it takes about 2.1 seconds at 60 Hz. Authored reactive pixels keep
-updating. This convergence rule adds no image storage. Metadata
-depth and identity remain raw raster samples. Camera, object, light or resource
-changes return to the normal motion/rejection path, including moving objects
-behind otherwise stationary glass. Native scene records publish only after a
-successful submission and preserve the existing GPU lifetime rules.
-
-Opaque and rigid transmission/blend paths publish current-to-previous motion.
-Stationary transparency can accumulate, while moving composition and authored
-material reactivity limit history, including with a stationary camera. The
-G-buffer producer writes translation-free sky rotation motion for temporal
-reconstruction. Native clip conventions remain backend-owned; sky validity uses
-background depth one rather than a finite far-plane point's projected depth.
-Extent, scene, camera and source discontinuities
-reset accumulation. Invalid history uses a one-sample passthrough.
-
-Exposure is applied after temporal resolve, so changing exposure does not change
-stored history radiance. Output-space FXAA does not run on frames this resolve
-reconstructs; it remains for frames with TAA disabled (ADR-043).
-Deferred lighting applies bounded normal-footprint roughness filtering before
-temporal accumulation. The portable resolve works at the internal Scene extent.
-
-Deformation, procedural/particle motion and broader dynamic material signals
-are not complete production motion contracts.
+Removed with portable TAA: Halton jitter over eight phases, current-colour
+reconstruction onto the unjittered grid, cubic and footprint-validated history
+reconstruction, the neighbourhood clamp, the 0.9 and 0.99 retention, the
+128-sample static accumulation with its CPU scene signature, and FXAA.
 
 ## Consequences
 
-Cubic reconstruction reduces blur from repeated bilinear history resampling.
-Canonical current reconstruction and motion-aware support add filtering and
-metadata cost. Checked static-scene accumulation adds one CPU content scan and
-small private records, while avoiding the normal history-filter work for eligible
-pixels. In changing scenes, a feature absent from the entire current support
-neighborhood can still lose coverage.
-Motion remains a local approximation read at the raw center sample, so strong
-depth motion can differ from the flow at the canonical pixel center.
+Edges come from SMAA on every frame and a two-sample supersample from T2x;
+there is no long history to smear, ghost or freeze. A still camera converges
+after two frames. Specular and subpixel shimmer that long history averaged now
+shows, limited by the existing specular antialiasing. A pixel that disoccludes
+or changes surface while moving takes the current subsample alone for a frame.
 
-The portable consumer has shared semantics, but image quality depends on identity,
-reactivity and motion coverage. Source agreement and fixed-camera captures do
-not establish moving-camera or animation acceptance.
+Evidence, Vulkan Release, RX 6700 XT, 2026-10-13, local and
+non-authoritative, `local-offscreen.json`:
+- `shader_fixes_bistro_move_stop` (800 × 600, eight frames after the camera
+  stops): consecutive frames differ by more than 8/255 on 0 % of pixels
+  (mean 0.004–0.011/255, from the moving clouds). The first accept mask, which
+  checked identity and depth on still pixels as well, flickered on 2.3 % (2 × 2
+  footprint) and 0.6 % (3 × 3) of pixels along silhouettes and foliage.
+- `shader_fixes_bistro_fxaa_on` (moving camera): T2x is sharper than the
+  former TAA on foliage and window frames, with no trail behind moving edges.
+- SMAA 1x alone on `local_shadow_bistro_street_capture` changes 4.4 % of
+  pixels, all on edges, and smooths railings, window frames and door edges.
+- Timing, `profile` with `local-offscreen-gpu-repeated.json` on the street
+  view of `local_shadow_bistro_street_capture` at 2560 × 1440 with T2x on,
+  5 × 60 measured frames, p50: the antialiasing chain (`Temporal.Resolve`,
+  `Post.DisplayLinear`, three SMAA passes, `Post.SMAA.Resolve` and the final
+  draw) takes 1.41 ms (0.56 + 0.21 + 0.32 + 0.21 + 0.11) against portable
+  TAA's 0.94 ms (`Temporal.Resolve` 0.72 and the final draw 0.23, same view,
+  same day); `Shadow.LocalMask` 4.34 ms against 4.33 ms; frame wall 19.9 ms
+  against 19.2–19.3 ms. The runs are local; warmup stability was not met, so
+  they carry no authority.
 
-Native Vulkan, the only implementation since 2026-10-06, has not run the
-2026-10-11 seeded integral across a camera stop. The 2026-10-12 zero seed
-needs a static Bistro case with a content change while the camera is still,
-such as a light toggle, captured across the switch to static mode: no
-pre-change radiance may remain after static mode starts. No such case
-exists yet.
-
-The exact predecessor without final TAA was checked on native Vulkan on
-2026-10-12 with SSR cases that were removed with SSR; that evidence went
-with them. The previous skinned positions that motion blur reads take the
-same in-flight predecessor without a barrier of their own, as they did with
-TAA on; no validated case has a skinned mesh. Cloud history without TAA
-([ADR-074](074-volumetric-cloud-layer.md)) and froxel fog history
-([ADR-059](059-froxel-volumetric-fog.md)) still take the newest completed
-producer, so their history age follows GPU timing; no capture has yet
-shown whether fog's varies.
+The tiled pipeline has not changed. A Bistro case with a skinned or
+procedurally moving object has not been captured, so deformation remains an
+open motion contract; the previous skinned positions that motion blur reads
+take the in-flight predecessor without a barrier of their own.
 
 ## Alternatives considered
 
-FXAA alone cannot reconstruct temporal detail. Blind history blending produces
-ghosting; a stationary camera does not establish stationary geometry. Exact
-triangle matching rejects coverage that a previous raster sample missed, while
-unrestricted history acceptance loses disocclusion boundaries. The accepted
-raw-footprint coverage support keeps surface/depth validation and requires
-moving-image acceptance for its coverage/ghosting tradeoff.
-MSAA for the visibility buffer remains a separate unimplemented proposal.
+Filmic SMAA T2x (Call of Duty, 2016) adds an exponential history filter, which
+brings back long history. Decima's FXAA with two-frame TAA publishes no
+rejection details, and FXAA is softer than SMAA. Keeping the plan's overlay
+rejection made every transparent surface alternate between subsamples in a
+still image; the blend path does write rigid motion, so identity-matched
+overlays keep history. MSAA for the visibility buffer remains a separate
+proposal.
 
 ## Revisit when
 
-New animation/motion producers or accepted moving-image fixtures expose missing
-signals or unacceptable rejection/ghosting.
+New animation or motion producers, or moving-image fixtures, expose missing
+signals or unacceptable rejection or ghosting; or the resolve's velocity weight
+scale of 30, tuned by the reference at lower resolutions, rejects too much at
+2560 × 1440.
 
 ## Implementation
 
 [`vkr_temporal.c`](../../renderer/src/vkr_temporal.c),
-[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c), and
-[`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang).
+[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c)
+(`vkr_vk_prepare_temporal_transform`, `vkr_vk_prepare_temporal_resolve`,
+`vkr_vk_prepare_smaa_*`),
+[`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang)
+(`vk_temporal_resolve`), [`smaa.slang`](../../renderer/src/shaders/vulkan/slang/post/smaa.slang)
+and [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json).

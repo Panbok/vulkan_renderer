@@ -554,6 +554,8 @@ typedef struct VkrRenderGraphFrameInfo {
    * swapchain before it. */
   bool8_t ui_fullscreen_enabled;
   bool8_t post_transform_cache_enabled;
+  /** SMAA antialiases the display-linear image before the final pass. */
+  bool8_t smaa_enabled;
   bool8_t clearcoat_enabled;
   bool8_t sheen_enabled;
   bool8_t anisotropy_enabled;

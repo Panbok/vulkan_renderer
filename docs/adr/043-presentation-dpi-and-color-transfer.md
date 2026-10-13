@@ -9,8 +9,10 @@ authority: adr
 ## Status
 
 Accepted. Both pipeline classes share the color transfer, display transform,
-grading and sharpening. FXAA runs only in the desktop pipeline on Vulkan; the
-tiled pipeline anti-aliases with MSAA instead
+grading and sharpening. SMAA T2x
+([ADR-037](037-portable-same-resolution-temporal-antialiasing.md)) runs only
+in the desktop pipeline on Vulkan, replacing FXAA since 2026-10-13; the tiled
+pipeline anti-aliases with MSAA instead
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 6).
 
 ## Context
@@ -64,7 +66,7 @@ controls share these validated ranges. A frame-owned 64-byte block holds the CAT
 white-balance matrix and grading controls; CPU preparation occurs once per frame.
 After exposure, apply white balance, luminance contrast about 0.18 and saturation,
 then the display transform. Metering, bloom and scene-linear temporal histories
-precede grading. Neutral grading bypasses the shader work. When FXAA or
+precede grading. Neutral grading bypasses the shader work. When SMAA or
 sharpening filters the final draw, the display transform runs once per output
 pixel before filtering (see below). Editor composition and diagnostic modes
 bypass grading.
@@ -92,29 +94,28 @@ tiled pipeline nor native Vulkan has run this grid.
 
 Direct mode tonemaps to the target. Editor mode tonemaps/composites the Scene
 rectangle and draws native-resolution UI afterward. In the desktop pipeline,
-output-space FXAA stays in the final draw, with offsets expressed in output
-pixels. It filters only frames without temporal reconstruction; portable TAA
-frames omit it. On the Metal desktop implementation, removed on
+SMAA's three passes and T2x's resolve run on the display-linear image at
+output resolution between the preparation and final draws (ADR-037). Until
+2026-10-13, output-space FXAA ran in the final draw on frames without
+portable TAA. On the Metal desktop implementation, removed on
 2026-10-06, `bistro_metal_production_040` (a Metal desktop case since removed;
 M1 Pro, 0.4 render scale, portable TAA) ran at 17.54 ms per frame with FXAA and
 16.27 ms without, and an orbit frame changed by more than 8/255 in 2,044 of
 921,600 pixels (non-authoritative `local-windowed-gpu-single` runs,
-2026-10-01). Frames with TAA disabled keep FXAA. HDR/intermediate and
+2026-10-01). HDR/intermediate and
 final-color captures are different contracts and must be compared accordingly.
 
 The user-approved `VkrFrameGlobals.image_sharpness` control applies to
-portable TAA and native Scene presentation. It accepts finite values in
+native Scene presentation. It accepts finite values in
 [0,1]; zero bypasses sharpening, and the sample app starts at 0.25. The harness
 default is zero so existing cases retain their settings. Frame-input version 32
 makes the added control explicit.
 
 Sharpen post-tonemap linear RGB in the existing final draw, preserving alpha.
 A four-neighbor cross average supplies the unsharp residual; clamp that residual
-to the sampled color envelope to limit ringing. With FXAA enabled, reuse its
-nine samples, sharpen its selected result and multiply strength by
-`1 - subpixel_blend`. The low-contrast FXAA exit still sharpens when requested.
-Without FXAA, a nonzero strength adds four samples; zero adds no samples or
-filter arithmetic. Sampling offsets use output pixels and clamp at image edges.
+to the sampled color envelope to limit ringing. It sharpens SMAA's
+resolved image on the desktop pipeline. A nonzero strength adds four samples;
+zero adds no samples or filter arithmetic. Sampling offsets use output pixels and clamp at image edges.
 This is bounded detail recovery, not FSR RCAS or a new antialiasing algorithm.
 
 Sharpening adds no temporal history; its source is the display-linear image
@@ -128,16 +129,17 @@ captures.
 ## Display-linear preparation
 
 Default scene rendering filters an output-resolution RGBA16F intermediate
-whenever the final draw filters: FXAA on frames without temporal
-reconstruction, or nonzero sharpening. `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic reference
+whenever the final draw filters: SMAA on desktop frames in the default
+render mode, or nonzero sharpening. `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic reference
 path, which transforms every filter sample; unset, empty and other values
 select the intermediate. A preparation draw applies exposure, grading, GT7 or
 ACES (with its scene-relative extended-linear mapping) once per output pixel. It
-omits FXAA, sharpening and the physical display scale. The final draw filters
+omits SMAA, sharpening and the physical display scale. The final draw filters
 that image, then applies the physical output scale once. Editor.Resolve follows
 the same split; Editor.Composite continues sampling its already converted Scene
-image. Diagnostic render modes and frames without FXAA or sharpening keep the
-single analytic draw.
+image. Diagnostic render modes and frames without SMAA or sharpening keep the
+single analytic draw; SMAA needs the intermediate, so the analytic reference
+path runs without it.
 
 The graph declares separate fullscreen and editor targets and activates only
 the current target. Each image uses `PER_IMAGE` storage with final-target
@@ -148,7 +150,7 @@ per realized instance: 21.09 MiB for three 1280×720 instances or 47.46 MiB for
 three 1920×1080 instances, before allocator alignment and resize overlap.
 No temporal history or shader-root fields are added.
 
-This moves a nonlinear transform before fractional FXAA sampling and introduces
+This moves a nonlinear transform before fractional filter sampling and introduces
 FP16 storage, so edges and saturated highlights differ from the analytic path.
 It trades one full-image write and subsequent sampled reads for repeated
 analytic arithmetic. The harness adds `renderer.post_transform_cache` to the
