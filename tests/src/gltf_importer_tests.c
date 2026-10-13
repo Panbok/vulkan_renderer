@@ -1401,6 +1401,64 @@ static void test_gltf_import_preserves_transmission_volume(void) {
   printf("  test_gltf_import_preserves_transmission_volume PASSED\n");
 }
 
+static void test_gltf_import_applies_emissive_strength(void) {
+  printf("  Running test_gltf_import_applies_emissive_strength...\n");
+  const char *stem = "gltf_import_emissive_strength";
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+
+  char gltf_path[1024] = {0};
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  char strong_mt_path[1024] = {0};
+  gltf_test_make_material_paths(stem, gltf_path, 0, strong_mt_path,
+                                sizeof(strong_mt_path), NULL, 0, NULL, 0);
+  char plain_mt_path[1024] = {0};
+  gltf_test_make_material_paths(stem, gltf_path, 1, plain_mt_path,
+                                sizeof(plain_mt_path), NULL, 0, NULL, 0);
+
+  /* glTF defines the emitted radiance as emissiveFactor times
+     KHR_materials_emissive_strength; without the extension it is the factor. */
+  const char *json =
+      "{\"asset\":{\"version\":\"2.0\"},"
+      "\"extensionsUsed\":[\"KHR_materials_emissive_strength\"],"
+      "\"materials\":[{\"emissiveFactor\":[1.0,0.5,0.25],\"extensions\":{"
+      "\"KHR_materials_emissive_strength\":{\"emissiveStrength\":4.0}}},"
+      "{\"emissiveFactor\":[1.0,0.5,0.25]}]}";
+  assert(gltf_test_write_file_text(gltf_path, json) == true_v);
+
+  Arena *arena = arena_create(MB(2), MB(2));
+  Arena *scratch_arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrAllocator scratch_allocator = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&allocator));
+  assert(vkr_allocator_arena(&scratch_allocator));
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      &allocator, &scratch_allocator, gltf_path, &error, NULL);
+  parse_info.on_primitive = NULL;
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
+  assert(error == VKR_RENDERER_ERROR_NONE);
+
+  String8 strong = {0};
+  assert(gltf_test_read_file_text(&allocator, strong_mt_path, &strong) ==
+         true_v);
+  assert(strstr((const char *)strong.str,
+                "emissive_factor=4.000000,2.000000,1.000000") != NULL);
+  String8 plain = {0};
+  assert(gltf_test_read_file_text(&allocator, plain_mt_path, &plain) == true_v);
+  assert(strstr((const char *)plain.str,
+                "emissive_factor=1.000000,0.500000,0.250000") != NULL);
+
+  arena_destroy(scratch_arena);
+  arena_destroy(arena);
+  gltf_test_remove_file(plain_mt_path);
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+  printf("  test_gltf_import_applies_emissive_strength PASSED\n");
+}
+
 static void test_gltf_spec_gloss_numeric_conversion(void) {
   printf("  Running test_gltf_spec_gloss_numeric_conversion...\n");
 
@@ -2555,6 +2613,7 @@ bool32_t run_gltf_importer_tests(void) {
   test_gltf_import_collects_external_dependencies();
   test_gltf_import_generate_materials_regenerates_missing_files();
   test_gltf_import_preserves_transmission_volume();
+  test_gltf_import_applies_emissive_strength();
   test_gltf_spec_gloss_numeric_conversion();
   test_gltf_import_prepares_spec_gloss_textures();
   test_gltf_import_bakes_cutout_texture_variants();

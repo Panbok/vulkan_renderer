@@ -2751,9 +2751,16 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
       material->occlusion_texture.scale != 0.0f
           ? (float32_t)material->occlusion_texture.scale
           : 1.0f;
-  Vec3 emissive_factor =
-      vec3_new(material->emissive_factor[0], material->emissive_factor[1],
-               material->emissive_factor[2]);
+  // KHR_materials_emissive_strength scales the factor past one for HDR
+  // emitters; the cooked factor carries the product.
+  const float32_t emissive_strength =
+      material->has_emissive_strength
+          ? (float32_t)material->emissive_strength.emissive_strength
+          : 1.0f;
+  Vec3 emissive_factor = vec3_scale(vec3_new(material->emissive_factor[0],
+                                             material->emissive_factor[1],
+                                             material->emissive_factor[2]),
+                                    emissive_strength);
   const float32_t transmission_factor =
       material->has_transmission
           ? (float32_t)material->transmission.transmission_factor
