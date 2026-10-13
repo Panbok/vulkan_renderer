@@ -786,9 +786,8 @@ VkrRendererError vkr_scene_build_world_draws(
   /* Resident static rows repack when a static cull word changes. */
   uint64_t static_cull_generation = UINT64_C(0xcbf29ce484222325);
   for (uint32_t i = 0; i < static_candidate_count; ++i) {
-    static_cull_generation =
-        (static_cull_generation ^ gpu_candidates[i].cull) *
-        UINT64_C(0x100000001b3);
+    static_cull_generation = (static_cull_generation ^ gpu_candidates[i].cull) *
+                             UINT64_C(0x100000001b3);
   }
 
   if (transparent_draw_count > 1u)
