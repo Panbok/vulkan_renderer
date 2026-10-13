@@ -302,6 +302,12 @@ typedef struct VkrStandardSceneRuntime {
   /** A reflection-probe capture (vkr_bakery bake probe, ADR-019): world
       draws keep static meshes only and no alpha-blended surfaces. */
   bool8_t static_capture;
+  /** The camera's multiplier of objects' draw distances, from the View
+      distance setting (VkrWorldPassPayload::draw_distance_scale). */
+  float32_t draw_distance_scale;
+  /** The camera draws every object at any distance: the editor's Scene shows
+      far content for editing, or the VKR_DRAW_DISTANCE=0 diagnostic. */
+  bool8_t draw_distance_off;
   /* Optional user quality gates; zero preserves scene-authored rendering. */
   bool8_t disable_directional_shadows;
   bool8_t disable_local_shadows;

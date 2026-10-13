@@ -2386,6 +2386,42 @@ bool8_t vkr_mesh_manager_set_shadow_mobility(VkrMeshManager *manager,
   return true_v;
 }
 
+/* Whether two draw-distance settings put a caster in different shadows. */
+vkr_internal bool8_t vkr_mesh_draw_cull_casts_differ(uint32_t cull_a,
+                                                     bool8_t shadowless_a,
+                                                     uint32_t cull_b,
+                                                     bool8_t shadowless_b) {
+  const uint32_t shadow_mask = VKR_GPU_DRAW_CULL_CODE_MASK
+                               << VKR_GPU_DRAW_CULL_SHADOW_SHIFT;
+  return shadowless_a != shadowless_b ||
+         (cull_a & shadow_mask) != (cull_b & shadow_mask);
+}
+
+bool8_t vkr_mesh_manager_set_draw_cull(VkrMeshManager *manager, uint32_t index,
+                                       uint32_t cull, bool8_t shadowless) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (index >= manager->meshes.length)
+    return false_v;
+
+  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, index);
+  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
+    return false_v;
+
+  const bool8_t casts_differ = vkr_mesh_draw_cull_casts_differ(
+      mesh->draw_cull, mesh->shadowless, cull, shadowless);
+  mesh->draw_cull = cull;
+  mesh->shadowless = shadowless;
+  if (casts_differ && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
+    Vec3 min = vec3_zero();
+    Vec3 max = vec3_zero();
+    const bool8_t bounded = vkr_mesh_world_box(mesh, &min, &max);
+    vkr_mesh_manager_note_topology_change_within(manager, bounded, min, max);
+  }
+
+  return true_v;
+}
+
 bool8_t vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
                                        uint32_t render_id) {
   assert_log(manager != NULL, "Manager is NULL");
@@ -3710,6 +3746,32 @@ bool8_t vkr_mesh_manager_instance_set_shadow_mobility(
   /* A retained cascade may already hold this caster's depth under the old
      contract, so the classification change itself must invalidate. */
   vkr_mesh_manager_note_topology_change(manager);
+  return true_v;
+}
+
+bool8_t vkr_mesh_manager_instance_set_draw_cull(VkrMeshManager *manager,
+                                                VkrMeshInstanceHandle handle,
+                                                uint32_t cull,
+                                                bool8_t shadowless) {
+  assert_log(manager != NULL, "Manager is NULL");
+  VkrMeshInstance *inst = vkr_mesh_manager_get_instance(manager, handle);
+  if (!inst)
+    return false_v;
+  const bool8_t casts_differ = vkr_mesh_draw_cull_casts_differ(
+      inst->draw_cull, inst->shadowless, cull, shadowless);
+  inst->draw_cull = cull;
+  inst->shadowless = shadowless;
+  if (!casts_differ || inst->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+    return true_v;
+  const Vec3 center = inst->bounds_world_center;
+  const float32_t radius = inst->bounds_world_radius;
+  const bool8_t bounded = inst->bounds_valid && isfinite(center.x) &&
+                          isfinite(center.y) && isfinite(center.z) &&
+                          isfinite(radius) && radius >= 0.0f;
+  const Vec3 extent = vec3_new(radius, radius, radius);
+  vkr_mesh_manager_note_topology_change_within(
+      manager, bounded, bounded ? vec3_sub(center, extent) : vec3_zero(),
+      bounded ? vec3_add(center, extent) : vec3_zero());
   return true_v;
 }
 

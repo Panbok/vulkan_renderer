@@ -1345,7 +1345,8 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
         .index_count = submesh->index_count,
         .vertex_offset = submesh->vertex_offset,
         .decode_index = submesh->decode_index,
-        .state_flags = vkr_gpu_draw_state_flags(state_bucket, candidate->flags),
+        .state_flags = vkr_gpu_draw_state_flags(state_bucket, candidate->flags,
+                                                candidate->cull),
         .local_bounding_sphere = candidate->local_bounding_sphere,
     };
     instances[packed_count].temporal_flags =
@@ -1812,7 +1813,7 @@ bool8_t vkr_vk_prepare_packet_draws(
                 .index_count = range->index_count,
                 .vertex_offset = range->vertex_offset,
                 .decode_index = range->decode_index,
-                .state_flags = vkr_gpu_draw_state_flags(0u, 0u),
+                .state_flags = vkr_gpu_draw_state_flags(0u, 0u, 0u),
             },
     };
     const uint64_t pending_submit = renderer->submit_value + 1u;

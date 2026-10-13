@@ -142,6 +142,9 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
       (float32_t)frame->scene_output_height * frame->render_scale,
       packet->input.globals.view_position,
       packet->temporal.previous_view_position, true_v);
+  /* The camera alone culls by draw distance and screen size. */
+  out_views[0].distance_scale =
+      packet->input.world ? packet->input.world->draw_distance_scale : 0.0f;
   const uint32_t local_first = vkr_render_graph_local_shadow_first_view(frame);
   for (uint32_t view = 1u; view < view_count; ++view) {
     if (view < local_first) {
@@ -149,6 +152,10 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
       out_views[view] = vkr_gpu_lod_view(
           packet->input.shadow->cascades[cascade].light_view_projection,
           (float32_t)frame->shadow_map_size, vec3_zero(), vec3_zero(), false_v);
+      /* Casters whose shadow distance ends before the slice skip it. */
+      out_views[view].shadow_near = Max(
+          packet->input.shadow->cascades[cascade].split_near_far_texel_depth.x,
+          0.0f);
       /* A composed cascade draws its static casters into its static layer
          and its dynamic casters over the copy of that layer. */
       if (view > frame->shadow_cascade_count)

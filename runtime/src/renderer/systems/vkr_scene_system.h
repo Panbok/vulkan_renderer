@@ -452,6 +452,38 @@ typedef struct SceneTerrainCutout {
   float32_t margin;
 } SceneTerrainCutout;
 
+/* A `draw_distance` component (large-level rendering): how far the camera
+   draws the entity, and its descendants that have none of their own, and
+   how far their shadows reach. It replaces the defaults of their kind
+   (vkr_scene_draw_cull). The camera leaves a draw out past `max_distance`
+   metres or when its bounding sphere spans fewer than `min_screen_pixels`
+   pixels across; zero turns either test off. A cascade whose slice starts
+   past `shadow_distance` metres from the camera leaves its shadow out, zero
+   keeping every cascade; `cast_shadows` off casts none. The View distance
+   setting scales both camera tests, never the shadow distance, so retained
+   shadows stay valid while it changes. */
+typedef struct SceneDrawDistance {
+  float32_t max_distance;
+  float32_t min_screen_pixels;
+  float32_t shadow_distance;
+  bool8_t cast_shadows;
+} SceneDrawDistance;
+
+/* The default draw distances of a draw that no draw_distance component
+   reaches. Objects (meshes, brushes, shapes) leave the camera below one
+   pixel. Scatter and spline-mesh copies leave it below two and cast only
+   into cascades starting within 50 m, short of the High preset's last
+   cascade (about 54 m). Terrains never leave either. */
+typedef enum VkrSceneDrawKind {
+  VKR_SCENE_DRAW_KIND_OBJECT = 0,
+  VKR_SCENE_DRAW_KIND_COPY,
+  VKR_SCENE_DRAW_KIND_TERRAIN,
+} VkrSceneDrawKind;
+
+#define VKR_SCENE_DRAW_OBJECT_MIN_PIXELS 1.0f
+#define VKR_SCENE_DRAW_COPY_MIN_PIXELS 2.0f
+#define VKR_SCENE_DRAW_COPY_SHADOW_DISTANCE 50.0f
+
 typedef struct SceneScatterArea {
   float32_t radius;
   float32_t density;
@@ -2002,6 +2034,13 @@ void vkr_scene_set_visibility(VkrScene *scene, VkrEntityId entity,
 /** Effective visibility through inheriting parents. Hidden entities do not
     render, and hidden lights and world objects take no effect. */
 bool8_t vkr_scene_entity_visible(const VkrScene *scene, VkrEntityId entity);
+
+/** The draw-distance word (vkr_gpu_draw_cull_word) of `entity`'s draws of
+    `kind`, from the nearest draw_distance component on it or an ancestor,
+    else the kind's defaults; `out_shadowless` says whether they cast no
+    shadow. */
+uint32_t vkr_scene_draw_cull(const VkrScene *scene, VkrEntityId entity,
+                             VkrSceneDrawKind kind, bool8_t *out_shadowless);
 
 /** Set the editor Show filter; a change resyncs every renderable. */
 void vkr_scene_set_editor_hidden_kinds(VkrScene *scene, uint32_t hidden_kinds);

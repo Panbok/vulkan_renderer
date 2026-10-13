@@ -482,6 +482,8 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
       !settings->fog || !settings->volumetric_fog;
   application->disable_subsurface_scattering = !settings->subsurface_scattering;
   application->ibl_probe_limit = settings->reflection_probes ? UINT32_MAX : 0;
+  application->draw_distance_scale =
+      vkr_graphics_settings_draw_distance_scale(settings);
   application->host.window.input_state.invert_look_y = settings->invert_mouse_y;
   /* Ultra's extra local-shadow filtering was measured affordable only on the
    * Vulkan desktop host (ADR-019); Metal keeps High's budget. */

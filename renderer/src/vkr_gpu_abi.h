@@ -67,11 +67,52 @@ _Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT ==
                    VKR_GPU_DRAW_STATE_BUCKET_MASK + 1u,
                "Packed draw state requires exactly eight buckets");
 
+/* A candidate's draw-distance word (VkrWorldDrawCandidate::cull), above the
+   bucket and the four candidate flags of its state: the camera's draw
+   distance code in bits 0 to 7, the smallest diameter the camera draws in
+   half pixels in bits 8 to 11, and the shadow distance code in bits 12 to
+   19. A code c above zero stands for 2^((c - 1) / 16) metres; zero is no
+   limit. Mirrors shared/lod_kernel.slangh. */
+#define VKR_GPU_DRAW_CULL_SHIFT 7u
+#define VKR_GPU_DRAW_CULL_CODE_MASK 0xFFu
+#define VKR_GPU_DRAW_CULL_PIXELS_SHIFT 8u
+#define VKR_GPU_DRAW_CULL_PIXELS_MASK 0xFu
+#define VKR_GPU_DRAW_CULL_SHADOW_SHIFT 12u
+#define VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE 16.0f
+#define VKR_GPU_DRAW_CULL_BITS 20u
+/* The candidate state bits a visible row keeps: the bucket and the flags. */
+#define VKR_GPU_DRAW_CANDIDATE_STATE_MASK 0x7Fu
+
+_Static_assert(VKR_GPU_DRAW_STATE_BUCKET_BITS + 4u == VKR_GPU_DRAW_CULL_SHIFT,
+               "the cull word follows the four candidate flags");
+_Static_assert(VKR_GPU_DRAW_CULL_SHIFT + VKR_GPU_DRAW_CULL_BITS <= 32u,
+               "the cull word fits the candidate state");
+
 static INLINE uint32_t vkr_gpu_draw_state_flags(uint32_t state_bucket,
-                                                uint32_t flags) {
-  return (flags << VKR_GPU_DRAW_STATE_BUCKET_BITS) |
+                                                uint32_t flags, uint32_t cull) {
+  return (cull << VKR_GPU_DRAW_CULL_SHIFT) |
+         (flags << VKR_GPU_DRAW_STATE_BUCKET_BITS) |
          (state_bucket & VKR_GPU_DRAW_STATE_BUCKET_MASK);
 }
+
+/** The smallest code whose distance reaches `metres`, so a candidate never
+    culls before its authored distance; zero for no limit (zero, negative,
+    infinite or not a number). */
+uint32_t vkr_gpu_draw_cull_code(float32_t metres);
+/** The distance code `code` stands for; infinity for zero. */
+float32_t vkr_gpu_draw_cull_metres(uint32_t code);
+/** A cull word from a draw distance and a shadow distance in metres (zero
+    for no limit) and the smallest drawn diameter in pixels, rounded up to
+    half pixels and clamped to 7.5. */
+uint32_t vkr_gpu_draw_cull_word(float32_t draw_distance,
+                                float32_t min_screen_pixels,
+                                float32_t shadow_distance);
+/** Whether the camera skips a candidate of `cull` whose bounding sphere of
+    `radius` lies `distance` metres away at its nearest point, for a view of
+    LOD `scale` and `flags`; mirrors vkr_gpu_draw_distance_culled. */
+bool8_t vkr_gpu_draw_distance_culled(uint32_t cull, float32_t scale,
+                                     uint32_t flags, float32_t distance_scale,
+                                     float32_t distance, float32_t radius);
 
 typedef struct VkrGeometryMegabufferMetrics {
   uint64_t vertex_capacity_bytes;
@@ -243,7 +284,13 @@ typedef struct VkrGpuLodView {
   /** xyz: the view position one frame earlier, for motion vectors. */
   Vec4 previous_position;
   uint32_t flags;
-  uint32_t reserved[3];
+  /** The camera's multiplier of candidates' draw distances and divisor of
+      their smallest drawn diameters; zero draws every candidate. */
+  float32_t distance_scale;
+  /** A cascade's slice start from the camera, in metres: casters whose
+      shadow distance ends before it skip the cascade. Zero elsewhere. */
+  float32_t shadow_near;
+  uint32_t reserved;
 } VkrGpuLodView;
 
 _Static_assert(sizeof(VkrGpuLodView) == 48, "LOD view ABI must be 48 bytes");

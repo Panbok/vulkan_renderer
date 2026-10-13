@@ -373,6 +373,18 @@ bool8_t vkr_mesh_manager_set_shadow_mobility(VkrMeshManager *manager,
                                              VkrShadowCasterMobility mobility);
 
 /**
+ * @brief Set a mesh's draw and shadow distances and whether it casts shadows.
+ *
+ * `cull` is a vkr_gpu_draw_cull_word. A change to what the mesh casts, its
+ * shadow distance or `shadowless`, is a topology change within its bounds, so
+ * retained shadows there redraw; a change to its camera distances needs none,
+ * since candidates are built every frame.
+ * @return true if the mesh exists, false otherwise.
+ */
+bool8_t vkr_mesh_manager_set_draw_cull(VkrMeshManager *manager, uint32_t index,
+                                       uint32_t cull, bool8_t shadowless);
+
+/**
  * @brief Set mesh visibility flag used by view/picking systems.
  * @param manager The mesh manager.
  * @param index The index of the mesh.
@@ -546,6 +558,13 @@ bool8_t
 vkr_mesh_manager_instance_set_shadow_mobility(VkrMeshManager *manager,
                                               VkrMeshInstanceHandle handle,
                                               VkrShadowCasterMobility mobility);
+
+/** An instance's draw and shadow distances and whether it casts shadows,
+    under the contract of vkr_mesh_manager_set_draw_cull. */
+bool8_t vkr_mesh_manager_instance_set_draw_cull(VkrMeshManager *manager,
+                                                VkrMeshInstanceHandle handle,
+                                                uint32_t cull,
+                                                bool8_t shadowless);
 
 /** Sets `count` lightmap slots (VkrMeshInstance, VkrMesh) in order, skipping
     stale handles and removed meshes. When a static draw's slot changes it

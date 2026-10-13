@@ -232,6 +232,8 @@ typedef struct VkrWorldDrawCandidate {
   Vec4 local_bounding_sphere;
   uint32_t state_bucket;
   uint32_t flags;
+  /** Draw and shadow distances, vkr_gpu_draw_cull_word; zero has no limit. */
+  uint32_t cull;
 } VkrWorldDrawCandidate;
 
 /**
@@ -325,6 +327,10 @@ typedef struct VkrWorldPassPayload {
   bool8_t opaque_material_features_valid;
   const VkrWorldDrawCandidate *gpu_candidates;
   uint32_t gpu_candidate_count;
+  /** The camera's multiplier of the candidates' draw distances and divisor
+   * of their smallest drawn diameters (VkrGpuLodView::distance_scale); zero
+   * draws every candidate at any distance. */
+  float32_t draw_distance_scale;
   /** Rows in gpu_candidates eligible for the camera opaque/cutout view. */
   uint32_t gpu_camera_opaque_candidate_count;
   /** Rows in gpu_candidates eligible for shadow-cascade views. */

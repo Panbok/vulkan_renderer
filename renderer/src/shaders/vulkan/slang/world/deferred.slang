@@ -741,11 +741,28 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
         root.classifications[classification_index] = 0xffffffffu;
         return;
     }
+    // The camera skips candidates past their draw distance or below their
+    // smallest drawn size; a cascade skips casters whose shadow distance
+    // ends before its slice. Other views have no slice start and keep them.
+    VkrGpuLodView lod_view = root.lod_views[view_index];
+    uint cull = vkr_gpu_draw_cull_word(candidate.state_flags);
+    if (cull != 0u && (candidate_flags & 1u) != 0u &&
+        (view_index == 0u
+             ? vkr_gpu_draw_distance_culled(
+                   cull, lod_view.position_scale.w, lod_view.flags,
+                   lod_view.distance_scale,
+                   vkr_lod_distance(lod_view.position_scale.xyz,
+                                    world_center.xyz, world_radius),
+                   world_radius)
+             : vkr_gpu_draw_shadow_culled(cull, lod_view.shadow_near)))
+    {
+        root.classifications[classification_index] = 0xffffffffu;
+        return;
+    }
     // Sub-texel casters skip the directional cascades.
     if (view_index != 0u && (candidate_flags & 1u) != 0u &&
-        vkr_gpu_cascade_caster_too_small(
-            root.lod_views[view_index].position_scale.w,
-            root.lod_views[view_index].flags, world_radius))
+        vkr_gpu_cascade_caster_too_small(lod_view.position_scale.w,
+                                         lod_view.flags, world_radius))
     {
         root.classifications[classification_index] = 0xffffffffu;
         return;
@@ -766,7 +783,7 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
               vkr_gpu_geometry_lod_row(
                   root.geometry_rows[candidate.geometry_index].decode,
                   candidate.decode_index),
-              root.lod_views[view_index], world_center.xyz, world_radius,
+              lod_view, world_center.xyz, world_radius,
               instance.normal_column1.w);
     root.classifications[classification_index] = bucket | lod_state;
     uint ignored;
@@ -849,7 +866,8 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     visible.index_count = index_count;
     visible.vertex_offset = candidate.vertex_offset;
     visible.decode_index = candidate.decode_index;
-    visible.state_flags = candidate.state_flags | lod_state;
+    visible.state_flags =
+        (candidate.state_flags & VKR_GPU_DRAW_CANDIDATE_STATE_MASK) | lod_state;
     root.visible[view_index * root.candidate_capacity + visible_index] =
         visible;
     uint argument_index = view_index * root.candidate_capacity +

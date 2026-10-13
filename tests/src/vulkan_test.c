@@ -343,11 +343,22 @@ static void test_shared_gpu_memory_and_abi_contracts(void) {
   assert(geometry.publication_generation == 4u);
   const uint32_t candidate_flags = 0x5u;
   const uint32_t packed_draw_state = vkr_gpu_draw_state_flags(
-      VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED, candidate_flags);
+      VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED, candidate_flags, 0xABCDEu);
   assert((packed_draw_state & VKR_GPU_DRAW_STATE_BUCKET_MASK) ==
          VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED);
-  assert((packed_draw_state >> VKR_GPU_DRAW_STATE_BUCKET_BITS) ==
-         candidate_flags);
+  assert(((packed_draw_state & VKR_GPU_DRAW_CANDIDATE_STATE_MASK) >>
+          VKR_GPU_DRAW_STATE_BUCKET_BITS) == candidate_flags);
+  assert((packed_draw_state >> VKR_GPU_DRAW_CULL_SHIFT) == 0xABCDEu);
+  /* A distance code never culls before the authored distance and stays
+     within one code step (2^(1/16), 4.4%) of it. */
+  for (float32_t metres = 1.0f; metres < 50000.0f; metres *= 1.0137f) {
+    const uint32_t code = vkr_gpu_draw_cull_code(metres);
+    const float32_t decoded = vkr_gpu_draw_cull_metres(code);
+    assert(code != 0u && decoded >= metres && decoded <= metres * 1.0444f);
+  }
+  assert(vkr_gpu_draw_cull_code(0.0f) == 0u);
+  assert(vkr_gpu_draw_cull_code(INFINITY) == 0u);
+  assert(vkr_gpu_draw_cull_code(1e9f) == VKR_GPU_DRAW_CULL_CODE_MASK);
   const VkrGpuMemoryConfig config = {256u, 2u, 2u, 3u};
   uint8_t storage[2048] = {0};
   const uint64_t required = vkr_gpu_memory_storage_requirement(&config);

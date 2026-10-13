@@ -2756,6 +2756,64 @@ const VkrTypeDesc vkr_scene_terrain_cutout_type = {
     .defaults = terrain_cutout_defaults,
 };
 
+static const VkrPropertyDesc s_draw_distance_properties[] = {
+    {.name = "max_distance",
+     .label = "Draw distance",
+     .unit = "m",
+     .tooltip = "The camera stops drawing the object this far away; 0 draws "
+                "it at any distance. The View distance setting scales it",
+     .zero_label = "Unlimited",
+     .offset = TYPE_OFFSET(SceneDrawDistance, max_distance),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 50000.0f,
+     .step = 1.0f},
+    {.name = "min_screen_pixels",
+     .label = "Smallest size",
+     .unit = "px",
+     .tooltip = "The camera stops drawing the object when its bounds span "
+                "fewer pixels than this; 0 draws it at any size",
+     .offset = TYPE_OFFSET(SceneDrawDistance, min_screen_pixels),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 7.5f,
+     .step = 0.5f},
+    {.name = "cast_shadows",
+     .label = "Cast shadows",
+     .tooltip = "Draw the object into sun and light shadows",
+     .offset = TYPE_OFFSET(SceneDrawDistance, cast_shadows),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "shadow_distance",
+     .label = "Shadow distance",
+     .unit = "m",
+     .tooltip = "Sun shadow cascades that start farther than this from the "
+                "camera leave the object out; 0 keeps every cascade",
+     .zero_label = "All cascades",
+     .offset = TYPE_OFFSET(SceneDrawDistance, shadow_distance),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 50000.0f,
+     .step = 1.0f},
+};
+
+static void draw_distance_defaults(void *value) {
+  *(SceneDrawDistance *)value = (SceneDrawDistance){
+      .min_screen_pixels = VKR_SCENE_DRAW_OBJECT_MIN_PIXELS,
+      .cast_shadows = true_v,
+  };
+}
+
+const VkrTypeDesc vkr_scene_draw_distance_type = {
+    .name = "draw_distance",
+    .label = "Draw distance",
+    .category = "Rendering",
+    .properties = s_draw_distance_properties,
+    .property_count = ArrayCount(s_draw_distance_properties),
+    .size = sizeof(SceneDrawDistance),
+    .align = _Alignof(SceneDrawDistance),
+    .defaults = draw_distance_defaults,
+};
+
 // =============================================================================
 // Entity IO (ADR-084)
 // =============================================================================
@@ -4059,6 +4117,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_surface_theme_type,
     &vkr_scene_scatter_area_type,
     &vkr_scene_terrain_cutout_type,
+    &vkr_scene_draw_distance_type,
 };
 
 /* Types registered by modules outside the renderer. The frame thread only
@@ -4149,6 +4208,7 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_scatter_type ||
          type == &vkr_scene_scatter_area_type ||
          type == &vkr_scene_terrain_cutout_type ||
+         type == &vkr_scene_draw_distance_type ||
          type == &vkr_scene_world_partition_type ||
          type == &vkr_scene_always_loaded_type ||
          type == &vkr_scene_free_placement_type ||

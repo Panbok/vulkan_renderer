@@ -30,6 +30,9 @@ typedef struct VkrGraphicsSettings {
    * (ADR-083). Scene material textures reload when it changes; other
    * textures take it at the next start. */
   uint32_t texture_resolution;
+  /* How far objects draw: 0 near, 1 medium, 2 far, 3 epic scale each
+   * object's draw distance by vkr_graphics_settings_draw_distance_scale. */
+  uint32_t view_distance;
   bool8_t reflection_probes;
   bool8_t subsurface_scattering, fog, volumetric_fog;
   bool8_t bloom, depth_of_field, motion_blur;
@@ -84,6 +87,9 @@ extern const VkrTypeDesc vkr_graphics_settings_type;
 VkrGraphicsSettings
 vkr_graphics_settings_defaults(VkrRendererBackendType backend);
 bool8_t vkr_graphics_settings_valid(const VkrGraphicsSettings *settings);
+/* The multiplier of objects' draw distances that `settings` selects. */
+float32_t
+vkr_graphics_settings_draw_distance_scale(const VkrGraphicsSettings *settings);
 /* The texture load limit in texels that `settings` selects; zero is none. */
 uint32_t vkr_graphics_settings_texture_max_dimension(
     const VkrGraphicsSettings *settings);

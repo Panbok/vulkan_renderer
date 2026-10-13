@@ -376,6 +376,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
     return false_v;
   application->scene_generation = 1u;
   application->ibl_probe_limit = UINT32_MAX;
+  application->draw_distance_scale = 1.0f;
   application->globals = (VkrFrameGlobals){
       .ambient_color = vec4_new(0.1f, 0.1f, 0.1f, 1.0f),
       .exposure_mode = VKR_EXPOSURE_MODE_AUTOMATIC,
@@ -572,6 +573,11 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
   const char *local_shadow_feedback = getenv("VKR_LOCAL_SHADOW_FEEDBACK");
   application->disable_local_shadow_feedback =
       local_shadow_feedback && strcmp(local_shadow_feedback, "0") == 0;
+  /* Diagnostic: VKR_DRAW_DISTANCE=0 draws every object at any distance and
+     size, as before per-object draw distances. */
+  const char *draw_distance = getenv("VKR_DRAW_DISTANCE");
+  application->draw_distance_off =
+      draw_distance && strcmp(draw_distance, "0") == 0;
   const char *local_shadow_fade = getenv("VKR_LOCAL_SHADOW_FADE_DISTANCE");
   const float32_t fade_distance =
       local_shadow_fade ? strtof(local_shadow_fade, NULL) : 0.0f;
@@ -1028,6 +1034,11 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
           &application->assets.mesh_manager,
           &application->assets.material_system, false_v, 1u,
           application->globals.view, application->globals.projection,
+          application->globals.view_position,
+          /* A probe capture keeps every static object, near or far. */
+          application->static_capture || application->draw_distance_off
+              ? 0.0f
+              : application->draw_distance_scale,
           application->renderer.graphics_pipeline ==
               VKR_GRAPHICS_PIPELINE_TILED,
           application->static_capture, draw->scratch, &draw->world_payload,

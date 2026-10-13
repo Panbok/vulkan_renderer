@@ -265,6 +265,30 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
     root.classifications[classification_index] = 0u;
     return;
   }
+  const device VkrMetalPacketInstance &instance =
+      root.instances[candidate.instance_index];
+  constant VkrGpuLodView &lod_view = root.lod_views[view_index];
+  const float radius =
+      candidate.local_bounding_sphere.w * instance.normal_column1.w;
+  /* The camera skips candidates past their draw distance or below their
+     smallest drawn size; a cascade skips casters whose shadow distance ends
+     before its slice. */
+  const uint cull = vkr_gpu_draw_cull_word(candidate.state_flags);
+  if (cull != 0u && (candidate_flags & 1u) != 0u &&
+      (view_index == 0u
+           ? vkr_gpu_draw_distance_culled(
+                 cull, lod_view.position_scale.w, lod_view.flags,
+                 lod_view.distance_scale,
+                 vkr_lod_distance(
+                     lod_view.position_scale.xyz,
+                     (instance.model *
+                      float4(candidate.local_bounding_sphere.xyz, 1.0)).xyz,
+                     radius),
+                 radius)
+           : vkr_gpu_draw_shadow_culled(cull, lod_view.shadow_near))) {
+    root.classifications[classification_index] = 0u;
+    return;
+  }
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
   if (view.hzb_enabled != 0u &&
       vkr_metal_packet_candidate_occluded(root, candidate)) {
@@ -273,27 +297,22 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
                               memory_order_relaxed);
     return;
   }
-  /* The LOD state rides above the bucket (ADR-084). */
-  const device VkrMetalPacketInstance &instance =
-      root.instances[candidate.instance_index];
   /* Sub-texel casters skip the directional cascades. */
   if (view_index != 0u && (candidate_flags & 1u) != 0u &&
-      vkr_gpu_cascade_caster_too_small(
-          root.lod_views[view_index].position_scale.w,
-          root.lod_views[view_index].flags,
-          candidate.local_bounding_sphere.w * instance.normal_column1.w)) {
+      vkr_gpu_cascade_caster_too_small(lod_view.position_scale.w,
+                                       lod_view.flags, radius)) {
     root.classifications[classification_index] = 0u;
     return;
   }
   const device VkrGpuGeometryRow &geometry =
       root.geometry_rows[candidate.geometry_index];
-  /* A candidate without valid bounds has no distance and keeps level 0. */
+  /* The LOD state rides above the bucket (ADR-084). A candidate without
+     valid bounds has no distance and keeps level 0. */
   uint lod_state = (candidate_flags & 1u) == 0u ? 0u : vkr_gpu_lod_select(
       vkr_gpu_geometry_lod_row(geometry.decode_address, candidate.decode_index),
-      root.lod_views[view_index],
+      lod_view,
       (instance.model * float4(candidate.local_bounding_sphere.xyz, 1.0)).xyz,
-      candidate.local_bounding_sphere.w * instance.normal_column1.w,
-      instance.normal_column1.w);
+      radius, instance.normal_column1.w);
   /* The camera sorts Custom draws into their graph's buckets, and draws
      whose material uses a BRDF extension into plane 1, which the tiled
      pipeline shades with the extension variant. */
@@ -468,7 +487,8 @@ kernel void vkr_metal_packet_gpu_draw_encode(
       index_count,
       candidate.vertex_offset,
       candidate.decode_index,
-      candidate.state_flags | lod_state | probe_state};
+      (candidate.state_flags & VKR_GPU_DRAW_CANDIDATE_STATE_MASK) | lod_state |
+          probe_state};
   device uint *indices = reinterpret_cast<device uint *>(
       geometry.index_address + ulong(first_index) * sizeof(uint));
 

@@ -64,6 +64,71 @@ bool vkr_gpu_cascade_caster_too_small(float scale, uint flags, float radius)
            2.0f * radius * scale < VKR_GPU_CASCADE_CASTER_MIN_TEXELS;
 }
 
+// A candidate's draw-distance word, in its state flags above the bucket and
+// the candidate flags: the camera's draw distance code in bits 0 to 7, the
+// smallest diameter the camera draws in half pixels in bits 8 to 11, and the
+// shadow distance code in bits 12 to 19. A code c above zero stands for
+// 2^((c - 1) / 16) metres, 1 m to about 60 km in steps of 4.4%; zero is no
+// limit. The host packs it in renderer/src/vkr_gpu_abi.h.
+#define VKR_GPU_DRAW_CULL_SHIFT 7u
+#define VKR_GPU_DRAW_CULL_CODE_MASK 255u
+#define VKR_GPU_DRAW_CULL_PIXELS_SHIFT 8u
+#define VKR_GPU_DRAW_CULL_PIXELS_MASK 15u
+#define VKR_GPU_DRAW_CULL_SHADOW_SHIFT 12u
+#define VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE 16.0f
+// The candidate state bits a visible row keeps: the bucket and the flags.
+#define VKR_GPU_DRAW_CANDIDATE_STATE_MASK 127u
+
+uint vkr_gpu_draw_cull_word(uint state_flags)
+{
+    return state_flags >> VKR_GPU_DRAW_CULL_SHIFT;
+}
+
+float vkr_gpu_draw_cull_metres(uint code)
+{
+    return exp2(float(code - 1u) / VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE);
+}
+
+// Whether the camera skips a candidate of cull word `cull` whose bounding
+// sphere of `radius` lies `distance` metres away at its nearest point: past
+// its draw distance times `distance_scale`, or with a projected diameter
+// times `distance_scale` below its smallest drawn diameter. `scale` and
+// `flags` are the view's LOD scale, pixels per metre at unit distance under
+// the threshold of one, and its flags. A zero `distance_scale` keeps every
+// candidate.
+bool vkr_gpu_draw_distance_culled(uint cull, float scale, uint flags,
+                                  float distance_scale, float distance,
+                                  float radius)
+{
+    if (!(distance_scale > 0.0f))
+    {
+        return false;
+    }
+    uint far_code = cull & VKR_GPU_DRAW_CULL_CODE_MASK;
+    if (far_code != 0u &&
+        distance > vkr_gpu_draw_cull_metres(far_code) * distance_scale)
+    {
+        return true;
+    }
+    uint half_pixels =
+        (cull >> VKR_GPU_DRAW_CULL_PIXELS_SHIFT) & VKR_GPU_DRAW_CULL_PIXELS_MASK;
+    return half_pixels != 0u && scale > 0.0f &&
+           vkr_lod_projected(2.0f * radius, scale, flags, distance) *
+                   distance_scale <
+               0.5f * float(half_pixels);
+}
+
+// Whether a cascade whose slice begins `shadow_near` metres from the camera
+// skips a caster of cull word `cull`: its shadow distance ends before the
+// slice. The test reads no camera position, so a cascade's casters change
+// only when the preset's splits do and retained layers stay valid.
+bool vkr_gpu_draw_shadow_culled(uint cull, float shadow_near)
+{
+    uint code =
+        (cull >> VKR_GPU_DRAW_CULL_SHADOW_SHIFT) & VKR_GPU_DRAW_CULL_CODE_MASK;
+    return code != 0u && vkr_gpu_draw_cull_metres(code) < shadow_near;
+}
+
 // How far a level has morphed toward the next one, from the next level's
 // projected error: zero until the view reaches VKR_GPU_LOD_MORPH_START of
 // the distance at which the next level is acceptable, one there.

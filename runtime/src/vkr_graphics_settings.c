@@ -12,6 +12,10 @@ static const char *const s_texture_resolution_names[] = {"1024", "2048", "full",
                                                          NULL};
 /* Texel limits of `texture_resolution`; zero loads every mip. */
 static const uint32_t s_texture_resolution_limits[] = {1024u, 2048u, 0u};
+static const char *const s_view_distance_names[] = {"near", "medium", "far",
+                                                    "epic", NULL};
+/* Draw distance multipliers of `view_distance`. */
+static const float32_t s_view_distance_scales[] = {0.5f, 0.75f, 1.0f, 1.5f};
 
 #define GRAPHICS_OFFSET(field) (uint32_t)offsetof(VkrGraphicsSettings, field)
 
@@ -111,6 +115,15 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .kind = VKR_PROPERTY_U32,
      .min = 0.0f,
      .max = 2.0f},
+    {.name = "view_distance",
+     .label = "View distance",
+     .tooltip = "How far away objects keep drawing; nearer settings draw "
+                "fewer distant objects",
+     .names = s_view_distance_names,
+     .offset = GRAPHICS_OFFSET(view_distance),
+     .kind = VKR_PROPERTY_U32,
+     .min = 0.0f,
+     .max = 3.0f},
     {.name = "ambient_occlusion",
      .label = "Ambient occlusion",
      .tooltip = "Add contact shading where surfaces meet",
@@ -252,6 +265,7 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
          starts uncapped and lets it choose. */
       .render_scale = 1.0f,
       .shadow_quality = 2,
+      .view_distance = 2,
       /* Full-resolution Bistro textures take 3.2 GB of a 16 GB Mac's 8 GiB
          managed budget (ADR-083). */
       .texture_resolution =
@@ -286,6 +300,7 @@ graphics_preset_gates(const VkrGraphicsSettings *base,
   VkrGraphicsSettings out = *base;
   out.anti_aliasing = true_v;
   out.shadow_quality = epic ? 3u : high ? 2u : 1u;
+  out.view_distance = epic ? 3u : high ? 2u : medium ? 1u : 0u;
   out.soft_shadows = medium;
   out.filtered_far_shadows = high;
   out.local_shadows = medium;
@@ -316,6 +331,7 @@ vkr_graphics_settings_preset(const VkrGraphicsSettings *settings) {
     /* Field by field: struct padding is unspecified. */
     if (gates.anti_aliasing == settings->anti_aliasing &&
         gates.shadow_quality == settings->shadow_quality &&
+        gates.view_distance == settings->view_distance &&
         gates.soft_shadows == settings->soft_shadows &&
         gates.filtered_far_shadows == settings->filtered_far_shadows &&
         gates.local_shadows == settings->local_shadows &&
@@ -353,6 +369,13 @@ void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
   settings->hdr = running->hdr;
   settings->dynamic_resolution = running->dynamic_resolution;
   settings->render_scale = running->render_scale;
+}
+
+float32_t
+vkr_graphics_settings_draw_distance_scale(const VkrGraphicsSettings *settings) {
+  const uint32_t index = Min(settings->view_distance,
+                             (uint32_t)ArrayCount(s_view_distance_scales) - 1u);
+  return s_view_distance_scales[index];
 }
 
 uint32_t vkr_graphics_settings_texture_max_dimension(

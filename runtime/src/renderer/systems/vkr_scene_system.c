@@ -4243,6 +4243,60 @@ bool8_t vkr_scene_entity_visible(const VkrScene *scene, VkrEntityId entity) {
   return true_v;
 }
 
+uint32_t vkr_scene_draw_cull(const VkrScene *scene, VkrEntityId entity,
+                             VkrSceneDrawKind kind, bool8_t *out_shadowless) {
+  const VkrComponentTypeId comp_draw_distance =
+      vkr_scene_type_id(scene, &vkr_scene_draw_distance_type);
+  const uint32_t max_depth = scene->world->dir.capacity;
+  VkrEntityId current = entity;
+  for (uint32_t depth = 0u;
+       comp_draw_distance != VKR_COMPONENT_TYPE_INVALID &&
+       current.u64 != VKR_ENTITY_ID_INVALID.u64 && depth < max_depth;
+       ++depth) {
+    const SceneDrawDistance *draw = vkr_entity_get_component_if_alive_const(
+        scene->world, current, comp_draw_distance);
+    if (draw) {
+      *out_shadowless = !draw->cast_shadows;
+      return vkr_gpu_draw_cull_word(draw->max_distance, draw->min_screen_pixels,
+                                    draw->shadow_distance);
+    }
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        scene->world, current, scene->comp_transform);
+    current = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+
+  *out_shadowless = false_v;
+  switch (kind) {
+  case VKR_SCENE_DRAW_KIND_COPY:
+    return vkr_gpu_draw_cull_word(0.0f, VKR_SCENE_DRAW_COPY_MIN_PIXELS,
+                                  VKR_SCENE_DRAW_COPY_SHADOW_DISTANCE);
+  case VKR_SCENE_DRAW_KIND_TERRAIN:
+    return 0u;
+  case VKR_SCENE_DRAW_KIND_OBJECT:
+  default:
+    return vkr_gpu_draw_cull_word(0.0f, VKR_SCENE_DRAW_OBJECT_MIN_PIXELS, 0.0f);
+  }
+}
+
+/* The draw kind of a shape: a terrain's tiles never leave by distance. */
+vkr_internal VkrSceneDrawKind scene_shape_draw_kind(const VkrScene *scene,
+                                                    VkrEntityId entity) {
+  return vkr_scene_get_typed(scene, entity, &vkr_scene_terrain_type)
+             ? VKR_SCENE_DRAW_KIND_TERRAIN
+             : VKR_SCENE_DRAW_KIND_OBJECT;
+}
+
+/* Sets a shape mesh's draw distances from its entity. */
+vkr_internal void scene_sync_shape_draw_cull(VkrScene *scene,
+                                             VkrEntityId entity,
+                                             uint32_t mesh_index) {
+  bool8_t shadowless = false_v;
+  const uint32_t cull = vkr_scene_draw_cull(
+      scene, entity, scene_shape_draw_kind(scene, entity), &shadowless);
+  vkr_mesh_manager_set_draw_cull(&scene->assets->mesh_manager, mesh_index, cull,
+                                 shadowless);
+}
+
 void vkr_scene_set_editor_volumes(VkrScene *scene, bool8_t visible) {
   if (scene && scene->editor_volumes != visible) {
     scene->editor_volumes = visible;
@@ -4391,6 +4445,11 @@ vkr_internal void scene_sync_renderable(RenderSyncContext *ctx,
   vkr_mesh_manager_instance_sync_render_state(
       &ctx->assets->mesh_manager, instance, world,
       scene_picking_render_id(ctx->scene, render_id), is_visible);
+  bool8_t shadowless = false_v;
+  const uint32_t cull = vkr_scene_draw_cull(
+      ctx->scene, entity, VKR_SCENE_DRAW_KIND_OBJECT, &shadowless);
+  vkr_mesh_manager_instance_set_draw_cull(&ctx->assets->mesh_manager, instance,
+                                          cull, shadowless);
   scene_render_bridge_update_mapping(ctx->bridge, render_id, entity,
                                      is_visible);
 }
@@ -4486,6 +4545,7 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
     vkr_mesh_manager_set_visible(&assets->mesh_manager, mesh_index, is_visible);
     vkr_mesh_manager_set_render_id(&assets->mesh_manager, mesh_index,
                                    scene_picking_render_id(scene, render_id));
+    scene_sync_shape_draw_cull(scene, entities[i], mesh_index);
 
     // Update picking mapping
     scene_render_bridge_update_mapping(ctx->bridge, render_id, entities[i],
@@ -4563,6 +4623,7 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
                                    is_visible);
       vkr_mesh_manager_set_render_id(&assets->mesh_manager, shape->mesh_index,
                                      scene_picking_render_id(scene, render_id));
+      scene_sync_shape_draw_cull(scene, entity, shape->mesh_index);
       scene_render_bridge_update_mapping(ctx.bridge, render_id, entity,
                                          is_visible);
     }
@@ -5122,6 +5183,9 @@ vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
     vkr_scene_decal_changed(scene, entity);
   } else if (type == &vkr_scene_material_override_type) {
     vkr_scene_material_override_changed(scene, entity);
+  } else if (type == &vkr_scene_draw_distance_type) {
+    /* Descendants without their own take it, so every draw resyncs. */
+    scene->render_full_sync_needed = true;
   }
 }
 
@@ -5341,6 +5405,7 @@ bool8_t vkr_scene_attach_generated_mesh(VkrScene *scene, VkrEntityId entity,
                                  scene_picking_render_id(scene, render_id));
   vkr_mesh_manager_set_visible(&assets->mesh_manager, mesh_index, is_visible);
   vkr_mesh_manager_set_model(&assets->mesh_manager, mesh_index, mesh_model);
+  scene_sync_shape_draw_cull(scene, entity, mesh_index);
 
   scene_invalidate_queries(scene);
   scene->mesh_revision++;

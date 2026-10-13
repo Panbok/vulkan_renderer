@@ -2073,7 +2073,8 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
         .index_count = submesh->index_count,
         .vertex_offset = submesh->vertex_offset,
         .decode_index = submesh->decode_index,
-        .state_flags = vkr_gpu_draw_state_flags(state_bucket, source->flags),
+        .state_flags =
+            vkr_gpu_draw_state_flags(state_bucket, source->flags, source->cull),
         .local_bounding_sphere = source->local_bounding_sphere,
     };
     packed_count++;

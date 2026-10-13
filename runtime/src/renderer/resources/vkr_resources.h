@@ -146,6 +146,10 @@ typedef struct VkrMesh {
   bool8_t awaiting_publication;
   /** Zero, or the scene lightmap rectangle + 1 its draws sample (ADR-088). */
   uint32_t lightmap_slot;
+  /** Draw and shadow distances (vkr_gpu_draw_cull_word); zero has no limit. */
+  uint32_t draw_cull;
+  /** Casts no shadow: its draw distance settings turn shadows off. */
+  bool8_t shadowless;
 } VkrMesh;
 Array(VkrMesh);
 
@@ -308,6 +312,10 @@ typedef struct VkrMeshInstance {
   VkrShadowCasterMobility shadow_mobility;
   /** Zero, or the scene lightmap rectangle + 1 its draws sample (ADR-088). */
   uint32_t lightmap_slot;
+  /** Draw and shadow distances (vkr_gpu_draw_cull_word); zero has no limit. */
+  uint32_t draw_cull;
+  /** Casts no shadow: its draw distance settings turn shadows off. */
+  bool8_t shadowless;
 
   /** Entries in use of `material_overrides`; zero for an instance drawing
       only its asset's materials. */

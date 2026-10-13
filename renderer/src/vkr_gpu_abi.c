@@ -181,6 +181,8 @@ vkr_global const VkrGpuAbiField vkr_gpu_lod_view_fields[] = {
     VKR_GPU_ABI_FIELD(VkrGpuLodView, previous_position, "previous_position",
                       16),
     VKR_GPU_ABI_FIELD(VkrGpuLodView, flags, "flags", 32),
+    VKR_GPU_ABI_FIELD(VkrGpuLodView, distance_scale, "distance_scale", 36),
+    VKR_GPU_ABI_FIELD(VkrGpuLodView, shadow_near, "shadow_near", 40),
 };
 
 vkr_global const VkrGpuAbiField vkr_gpu_point_light_row_fields[] = {
@@ -316,6 +318,61 @@ VkrGpuLodView vkr_gpu_lod_view(Mat4 view_projection, float32_t image_rows,
                : morph  ? VKR_GPU_LOD_VIEW_MORPH
                         : 0u,
   };
+}
+
+uint32_t vkr_gpu_draw_cull_code(float32_t metres) {
+  if (!(metres > 0.0f) || !isfinite(metres)) {
+    return 0u;
+  }
+  const float32_t code =
+      ceilf(log2f(Max(metres, 1.0f)) * VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE) +
+      1.0f;
+  return code >= (float32_t)VKR_GPU_DRAW_CULL_CODE_MASK
+             ? VKR_GPU_DRAW_CULL_CODE_MASK
+             : (uint32_t)code;
+}
+
+float32_t vkr_gpu_draw_cull_metres(uint32_t code) {
+  return code == 0u ? INFINITY
+                    : exp2f((float32_t)(code - 1u) /
+                            VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE);
+}
+
+uint32_t vkr_gpu_draw_cull_word(float32_t draw_distance,
+                                float32_t min_screen_pixels,
+                                float32_t shadow_distance) {
+  uint32_t half_pixels = 0u;
+  if (min_screen_pixels > 0.0f) {
+    half_pixels = min_screen_pixels >= 7.5f
+                      ? VKR_GPU_DRAW_CULL_PIXELS_MASK
+                      : (uint32_t)ceilf(min_screen_pixels * 2.0f);
+  }
+  return vkr_gpu_draw_cull_code(draw_distance) |
+         (half_pixels << VKR_GPU_DRAW_CULL_PIXELS_SHIFT) |
+         (vkr_gpu_draw_cull_code(shadow_distance)
+          << VKR_GPU_DRAW_CULL_SHADOW_SHIFT);
+}
+
+bool8_t vkr_gpu_draw_distance_culled(uint32_t cull, float32_t scale,
+                                     uint32_t flags, float32_t distance_scale,
+                                     float32_t distance, float32_t radius) {
+  if (!(distance_scale > 0.0f)) {
+    return false_v;
+  }
+  const uint32_t far_code = cull & VKR_GPU_DRAW_CULL_CODE_MASK;
+  if (far_code != 0u &&
+      distance > vkr_gpu_draw_cull_metres(far_code) * distance_scale) {
+    return true_v;
+  }
+  const uint32_t half_pixels =
+      (cull >> VKR_GPU_DRAW_CULL_PIXELS_SHIFT) & VKR_GPU_DRAW_CULL_PIXELS_MASK;
+  if (half_pixels == 0u || !(scale > 0.0f)) {
+    return false_v;
+  }
+  const float32_t diameter = (flags & VKR_GPU_LOD_VIEW_CONSTANT) != 0u
+                                 ? 2.0f * radius * scale
+                                 : 2.0f * radius * scale / distance;
+  return diameter * distance_scale < 0.5f * (float32_t)half_pixels;
 }
 
 bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {

@@ -413,7 +413,9 @@ struct VkrGpuLodView {
   float4 position_scale;
   float4 previous_position;
   uint flags;
-  uint reserved[3];
+  float distance_scale;
+  float shadow_near;
+  uint reserved;
 };
 
 struct VkrGpuDecodedVertex {

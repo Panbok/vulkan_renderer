@@ -36,6 +36,9 @@ typedef struct PopulationRule {
   /* Inputs the instances were built from; zero forces a build. */
   uint64_t signature;
   bool8_t visible;
+  /* The copies' draw distances (vkr_scene_draw_cull) as last applied. */
+  uint32_t draw_cull;
+  bool8_t shadowless;
   char status[160];
 } PopulationRule;
 
@@ -822,6 +825,24 @@ static void population_show(VkrScene *scene, PopulationRule *rule,
   }
 }
 
+/* Gives the copies the draw distances of the rule's entity, when they
+   changed or with `force`. */
+static void population_apply_draw_cull(VkrScene *scene, PopulationRule *rule,
+                                       bool8_t force) {
+  bool8_t shadowless = false_v;
+  const uint32_t cull = vkr_scene_draw_cull(
+      scene, rule->entity, VKR_SCENE_DRAW_KIND_COPY, &shadowless);
+  if (!force && cull == rule->draw_cull && shadowless == rule->shadowless) {
+    return;
+  }
+  rule->draw_cull = cull;
+  rule->shadowless = shadowless;
+  for (uint32_t i = 0; i < rule->instance_count; ++i) {
+    (void)vkr_mesh_manager_instance_set_draw_cull(
+        &scene->assets->mesh_manager, rule->instances[i], cull, shadowless);
+  }
+}
+
 /* Places the rule's copies anew. */
 static void population_build(VkrScene *scene, PopulationRule *rule,
                              uint64_t signature) {
@@ -916,6 +937,7 @@ static void population_build(VkrScene *scene, PopulationRule *rule,
                                                 rule->instances[i], models[i],
                                                 picking_id, rule->visible);
   }
+  population_apply_draw_cull(scene, rule, true_v);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
@@ -961,6 +983,7 @@ void vkr_scene_population_update(VkrScene *scene) {
       if (visible != rule->visible) {
         population_show(scene, rule, visible);
       }
+      population_apply_draw_cull(scene, rule, false_v);
       continue;
     }
     /* A scatter rests on collision, so it waits for terrain to settle. */
