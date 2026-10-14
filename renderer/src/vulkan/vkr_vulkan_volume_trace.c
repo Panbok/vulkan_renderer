@@ -70,6 +70,18 @@ bool8_t vkr_vk_reserve_ray_rows(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+void vkr_vk_release_ray_rows(VkrVulkanRenderer *renderer,
+                             VkrVulkanFrameSlot *slot) {
+  if (slot->ray_rows) {
+    vkr_allocator_free(renderer->allocator, slot->ray_rows,
+                       (uint64_t)slot->ray_row_capacity *
+                           sizeof(*slot->ray_rows),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
+  slot->ray_rows = NULL;
+  slot->ray_row_capacity = 0u;
+}
+
 void vkr_vk_record_ray_row(VkrVulkanFrameSlot *slot, uint32_t row,
                            const VkrWorldDrawCandidate *candidate,
                            const VkrVulkanPublishedMaterial *material) {
@@ -197,14 +209,7 @@ void vkr_vk_destroy_volume_slot(VkrVulkanRenderer *renderer,
       vkr_vk_destroy_buffer(renderer, buffers[i]);
     }
   }
-  if (slot->ray_rows) {
-    vkr_allocator_free(renderer->allocator, slot->ray_rows,
-                       (uint64_t)slot->ray_row_capacity *
-                           sizeof(*slot->ray_rows),
-                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  }
-  slot->ray_rows = NULL;
-  slot->ray_row_capacity = 0u;
+  vkr_vk_release_ray_rows(renderer, slot);
 }
 
 /* Grows a slot buffer to at least `size` bytes. The slot's previous frame
@@ -258,8 +263,7 @@ vkr_vk_blas_geometry(VkDeviceAddress positions, uint32_t vertex_count) {
    over every packed candidate row whose BLAS exists.
    ------------------------------------------------------------------------- */
 
-vkr_internal bool8_t
-vkr_vk_volume_frame_active(const VkrVulkanRenderer *renderer) {
+bool8_t vkr_vk_volume_frame_active(const VkrVulkanRenderer *renderer) {
   return renderer->prepared_frame.dynamic_volume_active &&
          vkr_vk_volume_trace_enabled(renderer);
 }

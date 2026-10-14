@@ -3627,11 +3627,17 @@ void vkr_vk_commit_diffuse_volume_compose(VkrVulkanRenderer *renderer,
                                           VkrVulkanFrameSlot *slot);
 /* Dynamic diffuse volume layer (vkr_vulkan_volume_trace.c, ADR-119). */
 bool8_t vkr_vk_volume_trace_enabled(const VkrVulkanRenderer *renderer);
+/* The device traces and this frame carries a bound volume and its update. */
+bool8_t vkr_vk_volume_frame_active(const VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_create_volume_pipelines(VkrVulkanRenderer *renderer);
 void vkr_vk_destroy_volume_pipelines(VkrVulkanRenderer *renderer,
                                      VkDevice device);
 bool8_t vkr_vk_reserve_ray_rows(VkrVulkanRenderer *renderer,
                                 VkrVulkanFrameSlot *slot, uint32_t count);
+/* Frees the slot's ray rows: CPU records the frame's TLAS reads while it is
+   prepared, so a slot being prepared holds none in use. */
+void vkr_vk_release_ray_rows(VkrVulkanRenderer *renderer,
+                             VkrVulkanFrameSlot *slot);
 void vkr_vk_record_ray_row(VkrVulkanFrameSlot *slot, uint32_t row,
                            const VkrWorldDrawCandidate *candidate,
                            const VkrVulkanPublishedMaterial *material);

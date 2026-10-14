@@ -1312,9 +1312,15 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
       instance_source_offset + (uint64_t)count * sizeof(*instances);
   /* The dynamic volume layer's TLAS needs each opaque row's BLAS and
      transform (ADR-119). Transmission rows live in their own buffer, so
-     only the opaque streams' rows name ray rows. */
+     only the opaque streams' rows name ray rows. A frame without the layer
+     keeps none: up to 16 MiB a slot would sit in the renderer's bounded
+     allocator for nothing. */
+  const bool8_t volume_frame = vkr_vk_volume_frame_active(renderer);
+  if (!volume_frame) {
+    vkr_vk_release_ray_rows(renderer, slot);
+  }
   const bool8_t ray_rows =
-      trace_rows && vkr_vk_volume_trace_enabled(renderer) &&
+      trace_rows && volume_frame &&
       destination_first + count <= VKR_GPU_DRAW_CANDIDATE_CAPACITY &&
       vkr_vk_reserve_ray_rows(renderer, slot, destination_first + count);
   uint32_t packed_count = 0u;
