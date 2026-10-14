@@ -1,5 +1,7 @@
 #include "vulkan/vkr_vulkan_internal.h"
 
+#include "memory/vkr_dmemory_allocator.h"
+
 /* Dynamic diffuse volume layer on the desktop pipeline (ADR-119): one BLAS
    per traced submesh, built from positions decoded for it; one TLAS per
    frame over the packed candidate rows; and the probe trace that blends the
@@ -42,8 +44,39 @@ void vkr_vk_destroy_volume_pipelines(VkrVulkanRenderer *renderer,
 }
 
 /* -------------------------------------------------------------------------
-   Ray rows: written as candidates pack, read when the TLAS is built.
+   CPU records: ray rows and BLAS work lists in volume_memory.
    ------------------------------------------------------------------------- */
+
+/* Every slot's largest ray rows, one slot's rows growing beside them, and
+   the work lists. */
+#define VKR_VULKAN_VOLUME_MEMORY_RESERVE MB(80)
+
+/* The volume layer's allocator, created on first use; NULL if its address
+   space cannot be reserved. */
+vkr_internal VkrAllocator *
+vkr_vk_volume_allocator(VkrVulkanRenderer *renderer) {
+  if (!renderer->volume_memory.base_memory) {
+    if (!vkr_dmemory_create(MB(1), VKR_VULKAN_VOLUME_MEMORY_RESERVE,
+                            &renderer->volume_memory)) {
+      log_error("Vulkan failed to reserve the volume layer's CPU memory");
+      return NULL;
+    }
+    renderer->volume_allocator =
+        (VkrAllocator){.ctx = &renderer->volume_memory};
+    vkr_dmemory_allocator_create(&renderer->volume_allocator);
+  }
+  return &renderer->volume_allocator;
+}
+
+void vkr_vk_destroy_volume_memory(VkrVulkanRenderer *renderer) {
+  if (renderer->volume_memory.base_memory) {
+    vkr_dmemory_destroy(&renderer->volume_memory);
+  }
+  renderer->volume_memory = (VkrDMemory){0};
+  renderer->volume_allocator = (VkrAllocator){0};
+}
+
+/* Ray rows: written as candidates pack, read when the TLAS is built. */
 
 bool8_t vkr_vk_reserve_ray_rows(VkrVulkanRenderer *renderer,
                                 VkrVulkanFrameSlot *slot, uint32_t count) {
@@ -58,8 +91,12 @@ bool8_t vkr_vk_reserve_ray_rows(VkrVulkanRenderer *renderer,
   if (capacity < count) {
     return false_v;
   }
+  VkrAllocator *allocator = vkr_vk_volume_allocator(renderer);
+  if (!allocator) {
+    return false_v;
+  }
   VkrVulkanRayRow *rows = vkr_allocator_realloc(
-      renderer->allocator, slot->ray_rows,
+      allocator, slot->ray_rows,
       (uint64_t)slot->ray_row_capacity * sizeof(*rows),
       (uint64_t)capacity * sizeof(*rows), VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!rows) {
@@ -73,7 +110,7 @@ bool8_t vkr_vk_reserve_ray_rows(VkrVulkanRenderer *renderer,
 void vkr_vk_release_ray_rows(VkrVulkanRenderer *renderer,
                              VkrVulkanFrameSlot *slot) {
   if (slot->ray_rows) {
-    vkr_allocator_free(renderer->allocator, slot->ray_rows,
+    vkr_allocator_free(&renderer->volume_allocator, slot->ray_rows,
                        (uint64_t)slot->ray_row_capacity *
                            sizeof(*slot->ray_rows),
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -180,7 +217,7 @@ void vkr_vk_destroy_volume_slot(VkrVulkanRenderer *renderer,
   const VkrVulkanRayQueryFunctions *functions = vkr_vk_ray_query(renderer);
   vkr_vk_collect_blas_compaction(renderer, slot);
   if (slot->volume_lists) {
-    vkr_allocator_free(renderer->allocator, slot->volume_lists,
+    vkr_allocator_free(&renderer->volume_allocator, slot->volume_lists,
                        sizeof(*slot->volume_lists),
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     slot->volume_lists = NULL;
@@ -734,9 +771,11 @@ bool8_t vkr_vk_prepare_volume_build(VkrVulkanRenderer *renderer,
     return true_v;
   }
   if (!slot->volume_lists) {
+    VkrAllocator *allocator = vkr_vk_volume_allocator(renderer);
     slot->volume_lists =
-        vkr_allocator_alloc(renderer->allocator, sizeof(*slot->volume_lists),
-                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+        allocator ? vkr_allocator_alloc(allocator, sizeof(*slot->volume_lists),
+                                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER)
+                  : NULL;
     if (!slot->volume_lists) {
       return false_v;
     }

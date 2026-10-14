@@ -2307,6 +2307,8 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
   if (renderer->capture_storage_memory.base_memory) {
     vkr_dmemory_destroy(&renderer->capture_storage_memory);
   }
+  /* The frame slots released their ray rows and work lists above. */
+  vkr_vk_destroy_volume_memory(renderer);
   vkr_vk_destroy_graph_source(renderer, allocator);
   vkr_vulkan_device_destroy(renderer->device);
   if (renderer->publication_staging_memory.base_memory)

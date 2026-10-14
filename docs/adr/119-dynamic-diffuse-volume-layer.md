@@ -165,6 +165,11 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
 - The layer costs memory: on the café case at 1280 × 720, `mesh` allocations
   rose from 201 MB to 317 MB live (764 MB at peak while building, at the
   earlier 2048-probe settings).
+- The CPU records take their own reserve of 80 MiB, made on the first
+  traced frame: each frame slot's ray rows (64 bytes per packed opaque row,
+  16 MiB at the 262,144-row cap) and BLAS work lists. In the renderer's
+  128 MiB allocator a large level's rows left too little for the editor's
+  viewport image, and frames without the layer held them too.
 - Rectangle lights are approximated by their centre; spot cones use the
   shared punctual kernel.
 - The grid on a scene as large as Bistro is coarse (4.88 m spacing for

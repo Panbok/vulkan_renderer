@@ -3204,6 +3204,13 @@ struct VkrVulkanRenderer {
   VkrVulkanCloudHistory cloud_histories[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
   VkrDMemory publication_staging_memory;
   VkrDMemory capture_storage_memory;
+  /* The dynamic volume layer's CPU records (ADR-119): each frame slot's ray
+     rows, up to VKR_GPU_DRAW_CANDIDATE_CAPACITY of 64 bytes, and its BLAS
+     work lists. Created on the first frame that traces, so scenes without
+     the layer reserve nothing, and kept apart from the renderer's bounded
+     allocator, which a large level's rows would fill. */
+  VkrDMemory volume_memory;
+  VkrAllocator volume_allocator;
   Arena *graph_frame_arena;
   VkrAllocator graph_frame_allocator;
   VkrRgJsonGraph json_graph;
@@ -3638,6 +3645,8 @@ bool8_t vkr_vk_reserve_ray_rows(VkrVulkanRenderer *renderer,
    prepared, so a slot being prepared holds none in use. */
 void vkr_vk_release_ray_rows(VkrVulkanRenderer *renderer,
                              VkrVulkanFrameSlot *slot);
+/* Releases volume_memory once every frame slot has released its records. */
+void vkr_vk_destroy_volume_memory(VkrVulkanRenderer *renderer);
 void vkr_vk_record_ray_row(VkrVulkanFrameSlot *slot, uint32_t row,
                            const VkrWorldDrawCandidate *candidate,
                            const VkrVulkanPublishedMaterial *material);
