@@ -23,42 +23,35 @@ vkr_internal FilePath vkr_vk_shader_file(VkrVulkanRenderer *renderer,
 }
 
 bool8_t vkr_vk_pipeline_cache_initialize(VkrVulkanRenderer *renderer) {
-  const char *path = getenv("VKR_PIPELINE_CACHE_PATH");
-  const size_t path_length = path ? strlen(path) : 0u;
-  if (path_length >= sizeof(renderer->pipeline_cache_path)) {
-    log_error("Vulkan pipeline cache path exceeds %zu bytes",
-              sizeof(renderer->pipeline_cache_path) - 1u);
+  if (!vkr_platform_environment_variable(
+          "VKR_PIPELINE_CACHE_PATH", renderer->pipeline_cache_path,
+          sizeof(renderer->pipeline_cache_path))) {
+    log_error("Vulkan pipeline cache path exceeds %llu bytes",
+              (unsigned long long)sizeof(renderer->pipeline_cache_path) - 1u);
     return false_v;
   }
-  if (path_length) {
-    MemCopy(renderer->pipeline_cache_path, path, path_length + 1u);
+  if (renderer->pipeline_cache_path[0]) {
     log_info("Pipeline cache path: %s", renderer->pipeline_cache_path);
   }
-  void *initial_data = NULL;
-  size_t initial_size = 0u;
-  if (path_length) {
-    FILE *file = fopen(renderer->pipeline_cache_path, "rb");
-    if (file) {
-      if (fseek(file, 0, SEEK_END) == 0) {
-        const long end = ftell(file);
-        if (end > 0 && (uint64_t)end <= MB(64) &&
-            fseek(file, 0, SEEK_SET) == 0) {
-          initial_size = (size_t)end;
-          initial_data = vkr_allocator_alloc(renderer->allocator, initial_size,
-                                             VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-          if (!initial_data ||
-              fread(initial_data, 1u, initial_size, file) != initial_size) {
-            if (initial_data) {
-              vkr_allocator_free(renderer->allocator, initial_data,
-                                 initial_size,
-                                 VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-            }
-            initial_data = NULL;
-            initial_size = 0u;
-          }
-        }
+
+  uint8_t *initial_data = NULL;
+  uint64_t initial_size = 0u;
+  const FilePath cache_path = file_path_view(renderer->pipeline_cache_path);
+  FileStats stats = {0};
+  if (renderer->pipeline_cache_path[0] &&
+      file_stats(&cache_path, &stats) == FILE_ERROR_NONE && stats.size > 0u &&
+      stats.size <= MB(64)) {
+    FileMode mode = bitset8_create();
+    bitset8_set(&mode, FILE_MODE_READ);
+    bitset8_set(&mode, FILE_MODE_BINARY);
+    FileHandle file = {0};
+    if (file_open(&cache_path, mode, &file) == FILE_ERROR_NONE) {
+      if (file_read_all(&file, renderer->allocator, &initial_data,
+                        &initial_size) != FILE_ERROR_NONE) {
+        initial_data = NULL;
+        initial_size = 0u;
       }
-      fclose(file);
+      file_close(&file);
     }
   }
   VkPipelineCacheCreateInfo info = {
@@ -71,7 +64,7 @@ bool8_t vkr_vk_pipeline_cache_initialize(VkrVulkanRenderer *renderer) {
                             NULL, &renderer->pipeline_cache);
   if (initial_data) {
     vkr_allocator_free(renderer->allocator, initial_data, initial_size,
-                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+                       VKR_ALLOCATOR_MEMORY_TAG_FILE);
   }
   if (result != VK_SUCCESS && initial_size) {
     info.initialDataSize = 0u;
@@ -82,7 +75,8 @@ bool8_t vkr_vk_pipeline_cache_initialize(VkrVulkanRenderer *renderer) {
   if (result != VK_SUCCESS)
     return false_v;
   if (initial_size)
-    log_info("Loaded pipeline cache data: %zu bytes", initial_size);
+    log_info("Loaded pipeline cache data: %llu bytes",
+             (unsigned long long)initial_size);
   log_info("Initialized Vulkan pipeline cache with %s data",
            initial_size ? "persisted" : "empty");
   return true_v;
@@ -103,32 +97,35 @@ void vkr_vk_pipeline_cache_shutdown(VkrVulkanRenderer *renderer) {
       if (data && vkGetPipelineCacheData(device, renderer->pipeline_cache,
                                          &size, data) == VK_SUCCESS) {
         char temporary[sizeof(renderer->pipeline_cache_path) + 5u];
-        const int written = snprintf(temporary, sizeof(temporary), "%s.tmp",
-                                     renderer->pipeline_cache_path);
-        FILE *file = written > 0 && (size_t)written < sizeof(temporary)
-                         ? fopen(temporary, "wb")
-                         : NULL;
-        const bool8_t wrote = file && fwrite(data, 1u, size, file) == size;
-        const bool8_t closed = file && fclose(file) == 0;
-        if (wrote && closed) {
-          const FilePath temporary_path = {
-              .path = string8_create_from_cstr((const uint8_t *)temporary,
-                                               string_length(temporary)),
-              .type = FILE_PATH_TYPE_ABSOLUTE,
-          };
-          const FilePath cache_path = {
-              .path = string8_create_from_cstr(
-                  (const uint8_t *)renderer->pipeline_cache_path,
-                  string_length(renderer->pipeline_cache_path)),
-              .type = FILE_PATH_TYPE_ABSOLUTE,
-          };
-          if (file_rename(&temporary_path, &cache_path, true_v) ==
-              FILE_ERROR_NONE) {
-            log_info("Saved pipeline cache data: %zu bytes -> %s", size,
-                     renderer->pipeline_cache_path);
-          } else {
-            (void)file_remove(&temporary_path);
-          }
+        const int32_t written =
+            string_format(temporary, sizeof(temporary), "%s.tmp",
+                          renderer->pipeline_cache_path);
+        const FilePath temporary_path = file_path_view(temporary);
+        const FilePath cache_path =
+            file_path_view(renderer->pipeline_cache_path);
+        FileMode mode = bitset8_create();
+        bitset8_set(&mode, FILE_MODE_WRITE);
+        bitset8_set(&mode, FILE_MODE_CREATE);
+        bitset8_set(&mode, FILE_MODE_TRUNCATE);
+        bitset8_set(&mode, FILE_MODE_BINARY);
+        FileHandle file = {0};
+        const bool8_t opened =
+            written > 0 && (uint64_t)written < sizeof(temporary) &&
+            file_open(&temporary_path, mode, &file) == FILE_ERROR_NONE;
+        uint64_t bytes_written = 0u;
+        const bool8_t wrote =
+            opened &&
+            file_write(&file, size, data, &bytes_written) == FILE_ERROR_NONE &&
+            bytes_written == size && file_sync(&file) == FILE_ERROR_NONE;
+        if (opened) {
+          file_close(&file);
+        }
+        if (wrote && file_rename(&temporary_path, &cache_path, true_v) ==
+                         FILE_ERROR_NONE) {
+          log_info("Saved pipeline cache data: %llu bytes -> %s",
+                   (unsigned long long)size, renderer->pipeline_cache_path);
+        } else if (opened) {
+          (void)file_remove(&temporary_path);
         }
       }
       if (data) {

@@ -278,6 +278,11 @@ typedef struct FileStats {
 FilePath file_path_create(const char *path, VkrAllocator *allocator,
                           FilePathType type);
 
+/** Borrows a null-terminated UTF-8 path exactly as given, without the content
+ * root. The view is valid while `path` is; a null `path` gives an empty view.
+ */
+FilePath file_path_view(const char *path);
+
 /**
  * @brief Opens a file with the specified mode flags.
  *

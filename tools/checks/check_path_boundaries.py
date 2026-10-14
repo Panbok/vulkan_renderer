@@ -12,9 +12,9 @@ import re
 ROOT = Path(__file__).resolve().parents[2]
 NARROW_IO = re.compile(r'(?<![\w:])(?:std::)?(?:fopen|freopen|remove|rename)\s*\(')
 failures = []
-for directory in ('app/src', 'editor/src', 'runtime/src', 'tools'):
+for directory in ('app/src', 'editor/src', 'renderer/src', 'runtime/src', 'tools'):
     for path in (ROOT / directory).rglob('*'):
-        if path.suffix not in ('.c', '.cpp') or 'checks' in path.relative_to(ROOT).parts:
+        if path.suffix not in ('.c', '.cpp', '.m', '.inc') or 'checks' in path.relative_to(ROOT).parts:
             continue
         text = path.read_text(encoding='utf-8')
         for line, value in enumerate(text.splitlines(), 1):

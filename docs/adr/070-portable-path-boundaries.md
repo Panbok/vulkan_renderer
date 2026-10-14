@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-14
 authority: adr
 ---
 # ADR-070: Portable path boundaries
@@ -53,7 +53,9 @@ variable crosses the same boundary: `vkr_platform_environment_variable` reads
 the wide Windows environment as UTF-8, since `getenv` returns the active code
 page, and the process launcher widens the variables it sets for a child. The
 Bakery reads `VKR_BAKERY_CACHE`, its tools' usage-report path and its compiler
-paths this way.
+paths this way. The renderer reads `VKR_SHADER_CATALOG` and the Vulkan
+`VKR_PIPELINE_CACHE_PATH` this way, and opens, writes and renames the pipeline
+cache through the filesystem owner.
 
 Windows process working directories have a separate `CreateProcessW` length
 limit. For a deep directory the launcher uses its existing short-name spelling
@@ -95,9 +97,9 @@ No document version bump is needed for this repair.
 
 The normal CPU test wrappers run the source boundary guard, then build and run
 the path conformance check through the Debug `vkr_bakery project` runner before
-the C suite. The guard rejects new narrow file calls in
-shipping consumers and native serialization of managed references; behavioral
-tests remain the correctness oracle.
+the C suite. The guard rejects new narrow file calls in shipping consumers,
+the renderer included, and native serialization of managed references;
+behavioral tests remain the correctness oracle.
 
 ```sh
 python tools/checks/check_path_boundaries.py

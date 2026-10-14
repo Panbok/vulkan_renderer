@@ -48,6 +48,16 @@ FilePath file_path_create(const char *path, VkrAllocator *allocator,
                     .type = type};
 }
 
+FilePath file_path_view(const char *path) {
+  if (!path) {
+    return (FilePath){.type = FILE_PATH_TYPE_ABSOLUTE};
+  }
+  return (FilePath){
+      .path = (String8){.str = (uint8_t *)path, .length = string_length(path)},
+      .type = FILE_PATH_TYPE_ABSOLUTE,
+  };
+}
+
 String8 file_path_get_directory(VkrAllocator *allocator, String8 path) {
   if (!path.str || path.length == 0) {
     return (String8){0};

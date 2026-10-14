@@ -45,8 +45,13 @@ bool8_t vkr_shader_catalog_root(char *out, uint32_t capacity) {
     return (uint32_t)snprintf(out, capacity, "%s",
                               vkr_shader_catalog_override) < capacity;
   }
-  const char *environment = getenv("VKR_SHADER_CATALOG");
-  if (environment && environment[0]) {
+  /* A path: the wide Windows environment keeps non-ASCII names (ADR-070). */
+  char environment[4096];
+  if (!vkr_platform_environment_variable("VKR_SHADER_CATALOG", environment,
+                                         sizeof(environment))) {
+    return false_v;
+  }
+  if (environment[0]) {
     return (uint32_t)snprintf(out, capacity, "%s", environment) < capacity;
   }
   char executable[4096];
